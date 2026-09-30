@@ -3,38 +3,32 @@
 //!
 //! The clause runs last, so its commits disturb no other clause's reads: it first checks that
 //! those reads moved no partition from where it stood before them. It then reads a change stream's
-//! phases as the engine does, each partition of a phase to its
-//! end, then plans again from where they ended, so it reaches the changes a snapshot precedes. In
-//! each partition it reads on from where the source says the partition stands, asking again at
-//! every checkpoint, and tells the source the first checkpoints ahead are committed.
+//! phases as the engine does, each partition of a phase to its end, then plans again from where
+//! they ended, so it reaches the changes a snapshot precedes. In each partition it reads on from
+//! where the source says the partition stands, asking at every checkpoint where every partition it
+//! has seen stands, and tells the source the first checkpoints ahead are committed.
+//!
+//! The phase it reads last decides: each partition told a checkpoint there must stand at it. In
+//! every phase, the partitions told checkpoints either all keep them or all keep none, as a
+//! snapshot's partitions may.
+
+mod watch;
 
 use std::collections::BTreeMap;
-use std::num::NonZeroUsize;
-use std::time::Duration;
-
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
 
 use crate::catalog::{Catalog, ReadMode, StreamSpec};
 use crate::cursor::Cursor;
 use crate::id::PartitionId;
-use crate::sink::{PartitionFeed, SourceEvent, partition_channel};
-use crate::source::{AcknowledgedReader, Partition, PartitionPlan, ReadRequest, Source};
+use crate::source::{AcknowledgedReader, Partition, PartitionPlan, Source};
 use crate::state::{PartitionState, StreamState};
-use crate::testing::{Outcome, Violation, bounded, bounded_call, outcome};
-
-use super::STOP_WINDOW;
+use crate::testing::{Outcome, Violation, bounded_call, outcome};
 
 /// How many phases of a stream the clause reads, as a snapshot and then its changes are two.
 const PHASES: usize = 4;
 
 /// How many checkpoints ahead of where a partition stands the clause tells it are committed.
 const TOLD: usize = 2;
-
-/// How many checkpoints a read of an unbounded partition sends before it is asked to stop.
-const CHECKPOINTS: usize = 3;
-
-/// How long a read of an unbounded partition may send nothing before it is asked to stop.
-const QUIET: Duration = Duration::from_secs(1);
 
 /// Where each partition of a change stream's first phase stands.
 pub(super) type Standing = Vec<(PartitionId, Option<Cursor>)>;
@@ -54,11 +48,7 @@ pub(super) async fn standing(
     let Some(stream) = changes(catalog) else {
         return Ok(Vec::new());
     };
-    let probed = Probed {
-        source,
-        reader,
-        stream,
-    };
+    let probed = Probed::new(source, reader, stream);
     let mut standing = Vec::new();
     for partition in probed.plan(&StreamState::default()).await?.partitions {
         let position = probed.position(partition.id()).await?;
@@ -67,50 +57,61 @@ pub(super) async fn standing(
     Ok(standing)
 }
 
-/// `S-ACK` against `source`, whose position `reader` tells, where it tells one, and `standing`,
-/// where it stood before the other clauses.
+/// What tells where a source stands, and where it stood before the other clauses.
+pub(super) type Told = (Arc<dyn AcknowledgedReader>, Standing);
+
+/// `S-ACK` against `source`, where `told` says what tells where it stands, or why asking failed.
 pub(super) async fn acknowledged_only_when_committed(
     source: &dyn Source,
-    told: Option<(&dyn AcknowledgedReader, Result<Standing, Violation>)>,
+    told: Option<Result<Told, Violation>>,
     catalog: &Catalog,
 ) -> Outcome {
-    let Some((reader, standing)) = told else {
+    let Some(told) = told else {
         return Outcome::Skipped("the source does not tell where it stands".to_owned());
+    };
+    let (reader, standing) = match told {
+        Ok(told) => told,
+        Err(violation) => return outcome(Err(violation)),
     };
     let Some(stream) = changes(catalog) else {
         return Outcome::Skipped("the source reads no stream as changes".to_owned());
     };
-    let probed = Probed {
-        source,
-        reader,
-        stream,
-    };
+    let mut probed = Probed::new(source, reader.as_ref(), stream);
     let checked = async {
-        probed.unmoved_since(standing?).await?;
+        probed.unmoved_since(standing).await?;
         probed.walk().await
     };
     match checked.await {
         Err(violation) => outcome(Err(violation)),
-        Ok(Tally { told: 0, .. }) => Outcome::Skipped(format!(
-            "no partition of stream {} has anything ahead of where it stands to acknowledge, and \
-             reading them moved nothing",
+        Ok(Last::Nothing) => Outcome::Skipped(format!(
+            "no partition of the last phase of stream {} read has anything ahead of where it \
+             stands to acknowledge, and reading them moved nothing",
             stream.name()
         )),
-        Ok(Tally { kept: 0, .. }) => Outcome::Failed(format!(
-            "stream {}: told checkpoints are committed, no partition stands at one",
+        Ok(Last::Unkept(partition)) => Outcome::Failed(format!(
+            "stream {} partition {partition}: told checkpoints are committed, it keeps none",
             stream.name()
         )),
-        Ok(_) => Outcome::Passed,
+        Ok(Last::Kept) => Outcome::Passed,
     }
 }
 
-/// What the clause told the source, and where it answered.
-#[derive(Default)]
-struct Tally {
-    /// Partitions told a checkpoint is committed.
-    told: usize,
-    /// Of those, the partitions that stand where they were told.
-    kept: usize,
+/// What the partitions of the last phase the clause read did with the checkpoints it told them.
+enum Last {
+    /// None had anything ahead to tell.
+    Nothing,
+    /// Each stands at the last it was told.
+    Kept,
+    /// None keeps a position, as this one shows.
+    Unkept(PartitionId),
+}
+
+/// What probing a partition found.
+struct Probe {
+    /// Where the engine would record the partition's end, if anywhere.
+    end: Option<PartitionState>,
+    /// Whether it keeps the checkpoints it was told, where any lay ahead.
+    keeps: Option<bool>,
 }
 
 /// A change stream, read and asked where its partitions stand.
@@ -118,14 +119,43 @@ struct Probed<'a> {
     source: &'a dyn Source,
     reader: &'a dyn AcknowledgedReader,
     stream: &'a StreamSpec,
+    /// Where each partition the clause has seen stands, as it last found it.
+    seen: BTreeMap<PartitionId, Option<Cursor>>,
 }
 
-impl Probed<'_> {
+impl<'a> Probed<'a> {
+    fn new(
+        source: &'a dyn Source,
+        reader: &'a dyn AcknowledgedReader,
+        stream: &'a StreamSpec,
+    ) -> Self {
+        Self {
+            source,
+            reader,
+            stream,
+            seen: BTreeMap::new(),
+        }
+    }
+
+    /// A violation unless each partition stands where `standing` says it stood.
+    async fn unmoved_since(&mut self, standing: Standing) -> Result<(), Violation> {
+        for (partition, stood) in standing {
+            if self.position(&partition).await? != stood {
+                return Err(self.violation(
+                    &partition,
+                    "the other clauses' reads moved where it stands, nothing committed",
+                ));
+            }
+            self.seen.insert(partition, stood);
+        }
+        Ok(())
+    }
+
     /// Probes the partitions of each phase, until planning names no new phase or a phase reads an
-    /// unbounded partition, which never ends.
-    async fn walk(&self) -> Result<Tally, Violation> {
-        let mut tally = Tally::default();
+    /// unbounded partition, which never ends; what the last phase's partitions kept.
+    async fn walk(&mut self) -> Result<Last, Violation> {
         let mut state = StreamState::default();
+        let mut last = Last::Nothing;
         for walked in 0..PHASES {
             let planned = self.plan(&state).await?;
             let phase = planned.phase.unwrap_or(state.phase);
@@ -133,12 +163,18 @@ impl Probed<'_> {
                 break;
             }
             let mut ended = BTreeMap::new();
+            let mut told = Vec::new();
             for partition in &planned.partitions {
                 let start = planned.starts.get(partition.id()).cloned();
-                if let Some(end) = self.probe(partition, start, &mut tally).await? {
-                    ended.insert(partition.id().clone(), PartitionState::Cursor(end));
+                let probe = self.probe(partition, start).await?;
+                if let Some(end) = probe.end {
+                    ended.insert(partition.id().clone(), end);
+                }
+                if let Some(keeps) = probe.keeps {
+                    told.push((partition.id().clone(), keeps));
                 }
             }
+            last = self.judged(&told)?;
             if planned.partitions.iter().any(Partition::is_unbounded) {
                 break;
             }
@@ -148,20 +184,22 @@ impl Probed<'_> {
                 ..StreamState::default()
             };
         }
-        Ok(tally)
+        Ok(last)
     }
 
-    /// A violation unless each partition stands where `standing` says it stood.
-    async fn unmoved_since(&self, standing: Standing) -> Result<(), Violation> {
-        for (partition, stood) in standing {
-            if self.position(&partition).await? != stood {
-                return Err(self.violation(
-                    &partition,
-                    "the other clauses' reads moved where it stands, nothing committed",
-                ));
-            }
+    /// What a phase's partitions, `told` checkpoints and whether each kept them, show.
+    fn judged(&self, told: &[(PartitionId, bool)]) -> Result<Last, Violation> {
+        let keeping = told.iter().find(|(_, keeps)| *keeps);
+        let unkept = told.iter().find(|(_, keeps)| !*keeps);
+        match (keeping, unkept) {
+            (Some((keeping, _)), Some((unkept, _))) => Err(self.violation(
+                unkept,
+                &format!("keeps no position, though partition {keeping} of its phase does"),
+            )),
+            (Some(_), None) => Ok(Last::Kept),
+            (None, Some((unkept, _))) => Ok(Last::Unkept(unkept.clone())),
+            (None, None) => Ok(Last::Nothing),
         }
-        Ok(())
     }
 
     async fn plan(&self, state: &StreamState) -> Result<PartitionPlan, Violation> {
@@ -171,33 +209,31 @@ impl Probed<'_> {
             .map_err(|Violation(reason)| Violation::from(format!("plan {name}: {reason}")))
     }
 
-    /// Probes `partition`, which its phase starts at `start`, and returns where a read of it
-    /// ended.
+    /// Probes `partition`, which its phase starts at `start`.
     async fn probe(
-        &self,
+        &mut self,
         partition: &Partition,
         start: Option<Cursor>,
-        tally: &mut Tally,
-    ) -> Result<Option<Cursor>, Violation> {
+    ) -> Result<Probe, Violation> {
         // Read on from where it stands, which an earlier load may have moved: each checkpoint
         // then lies ahead of it.
-        let before = self.position(partition.id()).await?;
+        let id = partition.id();
+        let before = self.position(id).await?;
+        self.seen.insert(id.clone(), before.clone());
         let from = before.clone().or_else(|| start.clone());
-        let ahead = self
-            .watched(partition, from.clone(), before.as_ref())
-            .await?;
-        let Some(end) = ahead.last().cloned() else {
+        let read = self.watched(partition, from.clone()).await?;
+        let end = read.end(partition, from.as_ref());
+        if read.checkpoints.is_empty() {
             // Nothing lies ahead: a read from where the phase starts must still move nothing,
             // where the stream can read it again.
             if before.is_some() && self.stream.is_replayable() {
-                self.watched(partition, start, before.as_ref()).await?;
+                self.watched(partition, start).await?;
             }
-            return Ok(from);
-        };
-        tally.told += 1;
-        let mut standing = before;
-        for (index, cursor) in ahead.iter().take(TOLD).enumerate() {
-            let told = [(partition.id().clone(), cursor.clone())];
+            return Ok(Probe { end, keeps: None });
+        }
+        let mut keeps = None;
+        for (index, cursor) in read.checkpoints.iter().take(TOLD).enumerate() {
+            let told = [(id.clone(), cursor.clone())];
             bounded_call(
                 "committed",
                 self.source.committed(self.stream.name(), &told),
@@ -205,132 +241,31 @@ impl Probed<'_> {
             .await?;
             // A partition that keeps no position may keep none still; one that keeps one stands
             // where it was told.
-            let now = self.position(partition.id()).await?;
-            if now.as_ref() != Some(cursor) && !(now.is_none() && standing.is_none()) {
+            let now = self.position(id).await?;
+            let kept = now.as_ref() == Some(cursor);
+            let keeps_none = now.is_none() && self.seen.get(id).is_none_or(Option::is_none);
+            if !(kept || keeps_none) {
                 return Err(self.violation(
-                    partition.id(),
+                    id,
                     &format!(
                         "told checkpoint {} is committed, it stands elsewhere",
                         index + 1
                     ),
                 ));
             }
-            standing = now;
-            // Reading on without committing moves nothing.
-            self.watched(partition, Some(cursor.clone()), standing.as_ref())
-                .await?;
+            self.seen.insert(id.clone(), now);
+            // No other partition moved with it, and reading on without committing moves nothing.
+            self.unmoved().await?;
+            self.watched(partition, Some(cursor.clone())).await?;
+            keeps = Some(kept);
         }
-        if standing.is_some() {
-            tally.kept += 1;
-        }
-        Ok(Some(end))
+        Ok(Probe { end, keeps })
     }
 
     /// Where `partition` stands.
     async fn position(&self, partition: &PartitionId) -> Result<Option<Cursor>, Violation> {
         let asked = self.reader.acknowledged(self.stream.name(), partition);
         bounded_call("acknowledged", asked).await
-    }
-
-    /// The checkpoints of a read of `partition` from `cursor`, asking at each, and once it ends,
-    /// that the partition still stands at `standing`.
-    ///
-    /// A read of an unbounded partition is asked to stop after a few checkpoints, or once it is
-    /// quiet; one asked to stop that is still quiet a moment later waits for data, and is dropped.
-    async fn watched(
-        &self,
-        partition: &Partition,
-        cursor: Option<Cursor>,
-        standing: Option<&Cursor>,
-    ) -> Result<Vec<Cursor>, Violation> {
-        // One event at a time, so the read waits at each while it is asked where it stands.
-        let (sink, feed) = partition_channel(NonZeroUsize::MIN);
-        let request = ReadRequest {
-            stream: self.stream.name().clone(),
-            partition: partition.clone(),
-            cursor,
-        };
-        let stopped = CancellationToken::new();
-        let read = async {
-            tokio::select! {
-                biased;
-                read = self.source.read(request, sink) => Some(read),
-                () = async {
-                    stopped.cancelled().await;
-                    tokio::time::sleep(STOP_WINDOW).await;
-                } => None,
-            }
-        };
-        let watch = async {
-            let watched = self.watch(feed, partition, standing).await;
-            stopped.cancel();
-            watched
-        };
-        let what = format!(
-            "reading {} partition {}",
-            self.stream.name(),
-            partition.id()
-        );
-        let (read, checkpoints) = bounded(&what, async { tokio::join!(read, watch) }).await?;
-        let checkpoints = checkpoints?;
-        if let Some(read) = read {
-            read.map_err(|error| Violation::from(format!("{what}: {error}")))?;
-        }
-        self.unmoved(partition, standing).await?;
-        Ok(checkpoints)
-    }
-
-    /// The checkpoints `feed` sends, asking at each whether `partition` still stands at
-    /// `standing`; however the watch ends, the read is asked to stop.
-    async fn watch(
-        &self,
-        mut feed: PartitionFeed,
-        partition: &Partition,
-        standing: Option<&Cursor>,
-    ) -> Result<Vec<Cursor>, Violation> {
-        let unbounded = partition.is_unbounded();
-        let mut checkpoints = Vec::new();
-        let watched = loop {
-            if unbounded && checkpoints.len() >= CHECKPOINTS {
-                break Ok(());
-            }
-            let event = if unbounded {
-                match tokio::time::timeout(QUIET, feed.recv()).await {
-                    Ok(event) => event,
-                    Err(_) => break Ok(()),
-                }
-            } else {
-                feed.recv().await
-            };
-            let Some(event) = event else {
-                break Ok(());
-            };
-            if let SourceEvent::Checkpoint { cursor, .. } = event {
-                checkpoints.push(cursor);
-                if let Err(violation) = self.unmoved(partition, standing).await {
-                    break Err(violation);
-                }
-            }
-        };
-        // A stop request wins over any send, so the read's next event ends it.
-        feed.stop();
-        watched.map(|()| checkpoints)
-    }
-
-    /// A violation unless `partition` stands at `standing`.
-    async fn unmoved(
-        &self,
-        partition: &Partition,
-        standing: Option<&Cursor>,
-    ) -> Result<(), Violation> {
-        if self.position(partition.id()).await?.as_ref() == standing {
-            Ok(())
-        } else {
-            Err(self.violation(
-                partition.id(),
-                "reading it moved where it stands, nothing committed",
-            ))
-        }
     }
 
     fn violation(&self, partition: &PartitionId, what: &str) -> Violation {

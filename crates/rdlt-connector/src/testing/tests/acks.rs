@@ -2,7 +2,8 @@
 
 mod phased;
 
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::sync::{LazyLock, Mutex};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -17,6 +18,22 @@ use crate::source::{Partition, ReadStream, SourceConnector, Streams};
 use crate::spec::ConnectContext;
 use crate::state::StreamState;
 
+/// Positions kept outside any connection, as a broker keeps a group's offsets: by the name a
+/// configuration gives, then partition.
+static KEPT: LazyLock<Mutex<BTreeMap<(String, PartitionId), u64>>> = LazyLock::new(Mutex::default);
+
+/// Where `name` keeps `partition`.
+pub(super) fn kept(name: &str, partition: &PartitionId) -> Option<u64> {
+    let kept = KEPT.lock().expect("unpoisoned");
+    kept.get(&(name.to_owned(), partition.clone())).copied()
+}
+
+/// Keeps `partition` of `name` at `position`.
+pub(super) fn keep(name: &str, partition: &PartitionId, position: u64) {
+    let mut kept = KEPT.lock().expect("unpoisoned");
+    kept.insert((name.to_owned(), partition.clone()), position);
+}
+
 #[derive(Default, Deserialize, JsonSchema)]
 #[serde(default)]
 #[expect(
@@ -24,22 +41,57 @@ use crate::state::StreamState;
     reason = "each flag breaks or shapes one behavior"
 )]
 struct QueueConfig {
+    /// The name its positions are kept under, apart from every other test's.
+    name: String,
+    /// How many partitions it has, at least one.
+    partitions: u32,
     /// Moves the position as the queue is read, before any commit.
     ack_on_read: bool,
     /// Never moves the position.
     stuck: bool,
-    /// Where an earlier load left the position.
-    at: Option<u32>,
+    /// Where an earlier load left each partition.
+    at: Option<u64>,
     /// Forgets what it acknowledged: a read from before the position fails, as the stream says.
     forgets: bool,
     /// Never says where it stands.
     silent: bool,
+    /// Keeps what it was told in the connection, not beyond it.
+    per_connection: bool,
+    /// Keeps every committed cursor as the first partition's.
+    misroute: bool,
 }
 
-/// A queue of four messages, a checkpoint after each, that keeps where it was acknowledged.
+/// A queue of four messages a partition, a checkpoint after each, that keeps where it was
+/// acknowledged.
 struct Queue {
     config: QueueConfig,
-    position: Mutex<Option<u32>>,
+    /// What it keeps where it keeps it in the connection.
+    own: Mutex<BTreeMap<PartitionId, u64>>,
+}
+
+impl Queue {
+    fn ids(&self) -> Vec<PartitionId> {
+        (0..self.config.partitions.max(1))
+            .map(|index| PartitionId::parse(format!("p{index}")).expect("a valid partition"))
+            .collect()
+    }
+
+    fn position(&self, partition: &PartitionId) -> Option<u64> {
+        if self.config.per_connection {
+            self.own.lock().expect("unpoisoned").get(partition).copied()
+        } else {
+            kept(&self.config.name, partition)
+        }
+    }
+
+    fn set(&self, partition: &PartitionId, position: u64) {
+        if self.config.per_connection {
+            let mut own = self.own.lock().expect("unpoisoned");
+            own.insert(partition.clone(), position);
+        } else {
+            keep(&self.config.name, partition, position);
+        }
+    }
 }
 
 impl SourceConnector for Queue {
@@ -49,11 +101,18 @@ impl SourceConnector for Queue {
     type Config = QueueConfig;
 
     async fn connect(config: QueueConfig, _context: &ConnectContext) -> Result<Self> {
-        let at = config.at;
-        Ok(Self {
+        let queue = Self {
             config,
-            position: Mutex::new(at),
-        })
+            own: Mutex::default(),
+        };
+        if let Some(at) = queue.config.at {
+            for partition in queue.ids() {
+                if queue.position(&partition).is_none() {
+                    queue.set(&partition, at);
+                }
+            }
+        }
+        Ok(queue)
     }
 
     async fn check(&self) -> Result<()> {
@@ -72,7 +131,7 @@ struct Messages {
 }
 
 impl ReadStream<Queue> for Messages {
-    type Cursor = u32;
+    type Cursor = u64;
 
     fn spec(&self) -> StreamSpec {
         StreamSpec::new(StreamName::new("messages").expect("a valid stream"))
@@ -81,18 +140,18 @@ impl ReadStream<Queue> for Messages {
             .with_replayable(self.replayable)
     }
 
-    async fn partitions(&self, _source: &Queue, _state: &StreamState) -> Result<Vec<Partition>> {
-        Ok(vec![Partition::single()])
+    async fn partitions(&self, source: &Queue, _state: &StreamState) -> Result<Vec<Partition>> {
+        Ok(source.ids().into_iter().map(Partition::new).collect())
     }
 
     async fn read(
         &self,
         source: &Queue,
-        _partition: &Partition,
-        cursor: u32,
-        out: &mut Emitter<u32>,
+        partition: &Partition,
+        cursor: u64,
+        out: &mut Emitter<u64>,
     ) -> Result<()> {
-        let position = *source.position.lock().expect("unpoisoned");
+        let position = source.position(partition.id());
         if source.config.forgets && position.is_some_and(|position| cursor < position) {
             return Err(ConnectorError::new(
                 ConnectorErrorKind::Transient,
@@ -103,27 +162,33 @@ impl ReadStream<Queue> for Messages {
             out.rows(&[json!({ "message": message })]).await?;
             // As a consumer committing on its own does: the rows it hands out are acknowledged.
             if source.config.ack_on_read {
-                *source.position.lock().expect("unpoisoned") = Some(message + 1);
+                source.set(partition.id(), message + 1);
             }
             out.checkpoint(&(message + 1)).await?;
         }
         Ok(())
     }
 
-    async fn committed(&self, source: &Queue, cursors: &[(PartitionId, u32)]) -> Result<()> {
-        if !source.config.stuck {
-            for (_, cursor) in cursors {
-                *source.position.lock().expect("unpoisoned") = Some(*cursor);
+    async fn committed(&self, source: &Queue, cursors: &[(PartitionId, u64)]) -> Result<()> {
+        let first = source.ids().swap_remove(0);
+        for (partition, cursor) in cursors {
+            let partition = if source.config.misroute {
+                &first
+            } else {
+                partition
+            };
+            if !source.config.stuck {
+                source.set(partition, *cursor);
             }
         }
         Ok(())
     }
 
-    async fn acknowledged(&self, source: &Queue, _partition: &PartitionId) -> Result<Option<u32>> {
+    async fn acknowledged(&self, source: &Queue, partition: &PartitionId) -> Result<Option<u64>> {
         if source.config.silent {
             std::future::pending::<()>().await;
         }
-        Ok(*source.position.lock().expect("unpoisoned"))
+        Ok(source.position(partition))
     }
 }
 
@@ -136,16 +201,21 @@ pub(super) fn outcome(report: &Report) -> &Outcome {
 
 #[tokio::test]
 async fn a_queue_that_moves_only_when_committed_passes_s_ack() {
-    let report = certify_source::<Queue>(json!({})).await;
-    assert_eq!(outcome(&report), &Outcome::Passed);
+    for (name, partitions) in [("passing", 1), ("passing_twice", 2)] {
+        let report =
+            certify_source::<Queue>(json!({ "name": name, "partitions": partitions })).await;
+        assert_eq!(outcome(&report), &Outcome::Passed, "{report}");
+    }
 }
 
 #[tokio::test]
-async fn a_queue_that_moves_as_it_is_read_or_not_at_all_fails_s_ack() {
+async fn a_queue_that_moves_but_where_it_was_told_fails_s_ack() {
     let flawed = [
-        json!({ "ack_on_read": true }),
-        json!({ "ack_on_read": true, "forgets": true }),
-        json!({ "stuck": true }),
+        json!({ "name": "acks_on_read", "ack_on_read": true }),
+        json!({ "name": "forgets_on_read", "ack_on_read": true, "forgets": true }),
+        json!({ "name": "stuck", "stuck": true }),
+        json!({ "name": "per_connection", "per_connection": true }),
+        json!({ "name": "misroutes", "misroute": true, "partitions": 2 }),
     ];
     for config in flawed {
         // A violation stops the read rather than waiting out the clause's bound.
@@ -164,7 +234,7 @@ async fn a_queue_that_moves_as_it_is_read_or_not_at_all_fails_s_ack() {
 #[tokio::test]
 async fn a_queue_that_forgets_what_it_acknowledged_passes_every_clause() {
     // The other clauses read it from the start, which it forgets once S-ACK commits.
-    let report = certify_source::<Queue>(json!({ "forgets": true })).await;
+    let report = certify_source::<Queue>(json!({ "name": "forgets", "forgets": true })).await;
     report.assert_passed();
     assert_eq!(outcome(&report), &Outcome::Passed);
 }
@@ -172,7 +242,9 @@ async fn a_queue_that_forgets_what_it_acknowledged_passes_every_clause() {
 #[tokio::test]
 async fn a_queue_with_nothing_ahead_of_where_it_stands_skips_s_ack() {
     for forgets in [false, true] {
-        let report = certify_source::<Queue>(json!({ "at": 4, "forgets": forgets })).await;
+        let name = format!("at_the_end_{forgets}");
+        let config = json!({ "name": name, "at": 4, "forgets": forgets });
+        let report = certify_source::<Queue>(config).await;
         assert!(
             matches!(outcome(&report), Outcome::Skipped(_)),
             "forgets {forgets}: {:?}",
@@ -183,7 +255,7 @@ async fn a_queue_with_nothing_ahead_of_where_it_stands_skips_s_ack() {
 
 #[tokio::test(start_paused = true)]
 async fn a_queue_that_never_says_where_it_stands_fails_s_ack_alone() {
-    let report = certify_source::<Queue>(json!({ "silent": true })).await;
+    let report = certify_source::<Queue>(json!({ "name": "silent", "silent": true })).await;
     assert!(matches!(outcome(&report), Outcome::Failed(_)), "{report}");
     assert_eq!(report.failures().count(), 1, "{report}");
 }

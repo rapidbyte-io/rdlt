@@ -18,8 +18,8 @@ use crate::cursor::Cursor;
 use crate::id::StreamName;
 use crate::sink::{Push, SourceEvent, partition_channel};
 use crate::source::{
-    AcknowledgedReader, Partition, ReadRequest, Source, SourceConnector, SourceFactory,
-    source_factory,
+    ACKNOWLEDGED_CODE, AcknowledgedReader, Partition, ReadRequest, Source, SourceConnector,
+    SourceFactory, source_factory,
 };
 use crate::spec::ConnectContext;
 use crate::state::StreamState;
@@ -74,7 +74,7 @@ pub async fn certify_source_factory(
 ) -> Report {
     let connector = factory.spec().id.to_string();
     let results = match connected(factory, config).await {
-        Ok((source, reader)) => check_all(source.as_ref(), reader.as_deref()).await,
+        Ok((source, told)) => check_all(source.as_ref(), told).await,
         Err(Violation(reason)) => SOURCE_CLAUSES
             .iter()
             .map(|clause| ClauseResult {
@@ -86,31 +86,52 @@ pub async fn certify_source_factory(
     Report { connector, results }
 }
 
+/// What tells where a source stands, or why asking failed; none where the source does not tell.
+type Told = Option<Result<Arc<dyn AcknowledgedReader>, Violation>>;
+
 /// The source `factory` connects with `config`, and what tells where it stands, where it can.
+///
+/// A source that turns out not to tell is certified as one that says nothing; one whose reader
+/// fails to connect is certified in every clause but `S-ACK`, which fails.
 async fn connected(
     factory: &dyn SourceFactory,
     config: serde_json::Value,
-) -> Result<(Arc<dyn Source>, Option<Arc<dyn AcknowledgedReader>>), Violation> {
+) -> Result<(Arc<dyn Source>, Told), Violation> {
     let context = ConnectContext::new();
+    let mut told = None;
     if factory.acknowledges() {
-        let (source, reader) =
-            bounded_call("connect", factory.connect_acknowledging(config, context)).await?;
-        return Ok((source, Some(reader)));
+        let asked = async {
+            match factory
+                .connect_acknowledging(config.clone(), context.clone())
+                .await
+            {
+                Err(error) if error.code() == Some(ACKNOWLEDGED_CODE) => Ok(None),
+                connected => connected.map(Some),
+            }
+        };
+        match bounded_call("connect", asked).await {
+            Ok(Some((source, reader))) => return Ok((source, Some(Ok(reader)))),
+            Ok(None) => {}
+            Err(Violation(reason)) => {
+                let failed = format!("connecting what tells where the source stands: {reason}");
+                told = Some(Err(Violation::from(failed)));
+            }
+        }
     }
     let source = bounded_call("connect", factory.connect(config, context)).await?;
-    Ok((Arc::from(source), None))
+    Ok((Arc::from(source), told))
 }
 
-async fn check_all(
-    source: &dyn Source,
-    reader: Option<&dyn AcknowledgedReader>,
-) -> Vec<ClauseResult> {
+async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
     let catalog = bounded_call("discover", source.discover()).await;
     // Where the source stands before any clause reads it, which S-ACK, last, checks.
-    let mut told = match (reader, &catalog) {
-        (Some(reader), Ok(catalog)) => {
-            Some((reader, acks::standing(source, reader, catalog).await))
-        }
+    let mut told = match (told, &catalog) {
+        (Some(Ok(reader)), Ok(catalog)) => Some(
+            acks::standing(source, reader.as_ref(), catalog)
+                .await
+                .map(|standing| (reader, standing)),
+        ),
+        (Some(Err(violation)), _) => Some(Err(violation)),
         _ => None,
     };
     let mut results = Vec::new();

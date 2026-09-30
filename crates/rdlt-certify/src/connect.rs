@@ -6,20 +6,19 @@ use rdlt_connector::testing::{Clause, ClauseResult, Outcome, Report};
 use std::sync::Arc;
 
 use rdlt_connector::{
-    AcknowledgedReader, Acknowledging, BoxFuture, ConnectContext, ConnectorError, ConnectorSpec,
-    Destination, DestinationFactory, Role, Source, SourceFactory,
+    ACKNOWLEDGED_CODE, AcknowledgedReader, Acknowledging, BoxFuture, ConnectContext,
+    ConnectorError, ConnectorErrorKind, ConnectorSpec, Destination, DestinationFactory, Role,
+    Source, SourceFactory,
 };
 use rdlt_host::{RemoteDestination, RemoteSource};
 
-use crate::acknowledged::{self, AckProbe};
+use crate::acknowledged;
 use crate::target::Target;
 
 /// A factory of connections to `target`, as a connector factory makes connectors.
 pub(crate) struct Factory<'a> {
     target: &'a Target,
     spec: ConnectorSpec,
-    /// Whether the source tells where it stands: a handshake offering that accepted it.
-    acknowledges: bool,
 }
 
 /// Why a role cannot be certified at all.
@@ -69,17 +68,7 @@ impl<'a> Factory<'a> {
             }
         })?;
         let spec = connection.connector_spec(role).map_err(Unmet::Failed)?;
-        // A source that fails to answer the offer tells nothing: S-ACK is skipped, and the
-        // clauses that connect again meet the failure themselves.
-        let acknowledges = role == Role::Source
-            && acknowledged::handshaken(target, &config.to_string())
-                .await
-                .is_ok_and(|(_, accepted)| accepted);
-        Ok(Self {
-            target,
-            spec,
-            acknowledges,
-        })
+        Ok(Self { target, spec })
     }
 }
 
@@ -99,8 +88,9 @@ impl SourceFactory for Factory<'_> {
         })
     }
 
+    /// Whether the source tells where it stands is learnt by asking, in `connect_acknowledging`.
     fn acknowledges(&self) -> bool {
-        self.acknowledges
+        true
     }
 
     fn connect_acknowledging(
@@ -109,7 +99,13 @@ impl SourceFactory for Factory<'_> {
         context: ConnectContext,
     ) -> BoxFuture<'_, rdlt_connector::Result<Acknowledging>> {
         Box::pin(async move {
-            let probe = AckProbe::new(self.target.clone(), &config);
+            let Some(probe) = acknowledged::probe(self.target, &config.to_string()).await? else {
+                let message = "the source does not tell where it stands outside the engine";
+                return Err(
+                    ConnectorError::new(ConnectorErrorKind::Unsupported, message)
+                        .with_code(ACKNOWLEDGED_CODE),
+                );
+            };
             let source = SourceFactory::connect(self, config, context).await?;
             Ok((
                 Arc::from(source) as Arc<dyn Source>,
