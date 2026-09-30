@@ -496,6 +496,31 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn rows_a_partition_abandoned_make_no_commit_due() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", true)],
+    );
+    setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
+    let (task, mut harness) = setup.start().await;
+    harness.send(Progress::Started { partition: 0 });
+    harness.send(Progress::Written { rows: 6, bytes: 48 });
+    harness.send(Progress::Abandoned { rows: 6, bytes: 48 });
+    harness.send(Progress::Written { rows: 6, bytes: 48 });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(harness.barrier.borrow_and_update(), 0, "no commit was due");
+    harness.send(Progress::Written { rows: 4, bytes: 32 });
+    harness.barrier.changed().await.unwrap();
+    assert_eq!(
+        harness.barrier.borrow_and_update(),
+        1,
+        "the rows kept make it due"
+    );
+    harness.end(0, true);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn rows_that_miss_a_commit_stay_due_until_they_seal() {
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],

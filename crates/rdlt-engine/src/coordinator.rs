@@ -298,6 +298,10 @@ impl Coordinator {
                 self.pending_rows += rows;
                 self.pending_bytes += bytes;
             }
+            Progress::Abandoned { rows, bytes } => {
+                self.pending_rows = self.pending_rows.saturating_sub(rows);
+                self.pending_bytes = self.pending_bytes.saturating_sub(bytes);
+            }
             Progress::Sealed(seal) => {
                 if let Some(barrier) = seal.answers {
                     let partition = &mut self.parts.partitions[seal.partition];
