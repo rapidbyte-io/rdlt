@@ -305,9 +305,13 @@ impl std::str::FromStr for LoadId {
 
     /// The load id `value` writes, as [`Display`](fmt::Display) writes one.
     fn from_str(value: &str) -> Result<Self, IdError> {
-        uuid::Uuid::try_parse(value)
-            .map(Self)
-            .map_err(|_| IdError::Malformed { kind: "load id" })
+        let malformed = || IdError::Malformed { kind: "load id" };
+        let id = uuid::Uuid::try_parse(value).map_err(|_| malformed())?;
+        // Only the form a load id is written in, so one name never stands for two.
+        if id.hyphenated().to_string() != value {
+            return Err(malformed());
+        }
+        Ok(Self(id))
     }
 }
 

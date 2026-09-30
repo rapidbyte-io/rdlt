@@ -166,12 +166,18 @@ fn private_dir(dir: &Path) -> io::Result<Vec<PathBuf>> {
     // commit's frame synced in a directory a power loss forgets is lost with it.
     let missing: Vec<PathBuf> = dir
         .ancestors()
-        .take_while(|ancestor| !ancestor.exists())
+        .take_while(|ancestor| !ancestor.as_os_str().is_empty() && !ancestor.exists())
         .map(Path::to_path_buf)
         .collect();
     builder.create(dir)?;
     for created in missing.iter().rev() {
         if let Some(parent) = created.parent() {
+            // A relative base's parent is the working directory.
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             std::fs::File::open(parent)?.sync_all()?;
         }
     }
