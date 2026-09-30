@@ -118,6 +118,11 @@ impl StreamSpec {
     }
 
     /// Declares whether the stream can be re-read from any committed cursor.
+    ///
+    /// A stream that cannot is read incrementally, and each load keeps a write-ahead log of it,
+    /// since the source is acknowledged before the destination commits. Such a source serves each
+    /// row to at most one reader: rows one load read and was acknowledged for are not served to
+    /// another, which the log could not tell apart from rows it holds.
     #[must_use]
     pub fn with_replayable(mut self, replayable: bool) -> Self {
         self.replayable = replayable;

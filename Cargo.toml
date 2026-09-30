@@ -26,12 +26,13 @@ arrow-array = { version = "59.2", features = [
 ] } # record batches, with named time zones; one arrow major across the workspace, matching DataFusion
 arrow-buffer = "59.2" # null and offset buffers the shredder builds columns from
 arrow-cast = "59.2" # exact casts into a table's column types, and text renderings for lowering
-arrow-ipc = "59.2" # Arrow IPC files, for the files connectors
+arrow-ipc = "59.2" # Arrow IPC files, for the files connectors and the write-ahead log
 arrow-json = "59.2" # JSON renderings of values stored as Json, and JSON lines files
 arrow-row = "59.2" # comparable row encodings of merge keys
 arrow-schema = "59.2" # arrow data types and schemas
 arrow-select = "59.2" # take, filter and concat for discards, compaction and merges
 base64 = "0.22" # cursor bytes inside JSON state values
+crc32c = "0.6" # the write-ahead log's frame checksums, spec §15.6
 bytes = { version = "1.12.1", features = [
   "serde",
 ] } # zero-copy byte buffers for pushes, cursors and state

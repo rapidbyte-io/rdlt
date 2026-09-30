@@ -32,6 +32,8 @@ pub enum ErrorKind {
     Cancelled,
     /// A bug in the engine.
     Internal,
+    /// The write-ahead log could not be written or read.
+    Wal,
 }
 
 /// Which connector a [`ConnectorError`] came from.
@@ -81,6 +83,24 @@ impl Error {
 
     pub(crate) fn internal(context: impl Into<String>) -> Self {
         Self::new(ErrorKind::Internal, context)
+    }
+
+    pub(crate) fn wal(context: impl Into<String>) -> Self {
+        Self::new(ErrorKind::Wal, context)
+    }
+
+    /// The error for `error`, from the write-ahead log's store: retryable where the operation may
+    /// succeed if tried again.
+    pub(crate) fn from_wal(error: std::io::Error) -> Self {
+        use std::io::ErrorKind as Io;
+        let transient = matches!(
+            error.kind(),
+            Io::Interrupted | Io::TimedOut | Io::WouldBlock | Io::ResourceBusy
+        );
+        let mut wal = Self::wal(format!("the write-ahead log failed: {error}"));
+        wal.retryable = transient;
+        wal.source = Some(Box::new(error));
+        wal
     }
 
     /// Classifies a connector's `error` from `side`, keeping it as the cause.

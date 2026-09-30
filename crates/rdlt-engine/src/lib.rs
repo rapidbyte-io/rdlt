@@ -40,6 +40,7 @@ mod run;
 mod scope;
 mod shred;
 mod table;
+mod wal;
 mod watch;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
@@ -50,3 +51,4 @@ pub use plan::{DeleteMode, OnTruncate, PipelinePlan, StreamPlan, WriteMode};
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{AttemptReport, Report, RunStatus, StreamReport};
 pub use run::{Engine, RunControl, RunHandle, RunOutcome, StopMode};
+pub use wal::{Chunk, Claim, LocalWal, WalStore};

@@ -37,6 +37,12 @@ pub enum IdError {
         /// The first offending character.
         character: char,
     },
+    /// The value is not the identifier's written form.
+    #[error("{kind} is not written as one is")]
+    Malformed {
+        /// The identifier being built.
+        kind: &'static str,
+    },
 }
 
 fn validate(
@@ -291,6 +297,17 @@ impl LoadId {
 impl fmt::Display for LoadId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.hyphenated().fmt(f)
+    }
+}
+
+impl std::str::FromStr for LoadId {
+    type Err = IdError;
+
+    /// The load id `value` writes, as [`Display`](fmt::Display) writes one.
+    fn from_str(value: &str) -> Result<Self, IdError> {
+        uuid::Uuid::try_parse(value)
+            .map(Self)
+            .map_err(|_| IdError::Malformed { kind: "load id" })
     }
 }
 
