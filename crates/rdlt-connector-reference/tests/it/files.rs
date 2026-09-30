@@ -246,11 +246,11 @@ async fn a_partition_the_source_does_not_list_is_never_opened() {
         .await
         .unwrap();
     let (sink, _feed) = partition_channel(NonZeroUsize::MIN);
-    let request = ReadRequest {
-        stream: StreamName::new("inner").unwrap(),
-        partition: Partition::new(PartitionId::parse("../outside.jsonl").unwrap()),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        StreamName::new("inner").unwrap(),
+        Partition::new(PartitionId::parse("../outside.jsonl").unwrap()),
+        None,
+    );
     let error = source.read(request, sink).await.unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
 }
@@ -359,11 +359,11 @@ async fn the_files_source_reads_every_row_of_both_formats() {
             .await
             .expect("the stream plans")
             .partitions;
-        let request = ReadRequest {
-            stream: StreamName::new(stream).expect("a valid name"),
-            partition: partitions[0].clone(),
-            cursor: None,
-        };
+        let request = ReadRequest::new(
+            StreamName::new(stream).expect("a valid name"),
+            partitions[0].clone(),
+            None,
+        );
         let reading = source.read(request, sink);
         let counting = async {
             let mut rows = 0;

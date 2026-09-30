@@ -70,8 +70,8 @@ pub(crate) struct Ticks {
     config: TicksConfig,
 }
 
-/// Whether each read of [`Ticks`] was of a partition that never ends, in order.
-pub(crate) static UNBOUNDED: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+/// Each read of [`Ticks`]: whether its partition never ends, and whether it was asked to follow.
+pub(crate) static READS: std::sync::Mutex<Vec<(bool, bool)>> = std::sync::Mutex::new(Vec::new());
 
 /// How many idle reads of [`Ticks`] are running: only those, so other tests' reads in the same
 /// process never count.
@@ -152,10 +152,10 @@ impl ReadStream<Ticks> for TickStream {
         out: &mut Emitter<Tick>,
     ) -> Result<()> {
         let _running = source.config.idle.then(Running::start);
-        UNBOUNDED
+        READS
             .lock()
             .expect("the lock is not poisoned")
-            .push(partition.is_unbounded());
+            .push((partition.is_unbounded(), out.follows()));
         let config = &source.config;
         if config.chatty {
             out.log(rdlt_connector::LogLevel::Warn, "ticking").await?;

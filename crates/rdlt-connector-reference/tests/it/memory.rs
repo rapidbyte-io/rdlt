@@ -50,11 +50,11 @@ async fn a_cursor_past_the_end_reads_nothing() {
         .unwrap();
     let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
     let cursor = Cursor::encode(1, &json!({ "next": 99 })).unwrap();
-    let request = ReadRequest {
-        stream: StreamName::new("a").unwrap(),
-        partition: Partition::single(),
-        cursor: Some(cursor),
-    };
+    let request = ReadRequest::new(
+        StreamName::new("a").unwrap(),
+        Partition::single(),
+        Some(cursor),
+    );
     source.read(request, sink).await.unwrap();
     let event: Option<SourceEvent> = feed.recv().await;
     assert_eq!(event, None);
@@ -468,11 +468,11 @@ async fn the_memory_source_pushes_a_hundred_rows_a_page_by_default() {
         .await
         .expect("the source connects");
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
-    let request = ReadRequest {
-        stream: StreamName::new("a").expect("a valid name"),
-        partition: Partition::single(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        StreamName::new("a").expect("a valid name"),
+        Partition::single(),
+        None,
+    );
     // Drained while read, so a source pushing more pages than the channel holds fails, not hangs.
     let count = async {
         let mut pages = 0;

@@ -103,6 +103,7 @@ async fn start(
         cursor: request.cursor.as_ref().map(v1::Cursor::from),
         barrier,
         unbounded: request.partition.is_unbounded(),
+        follow: request.follow,
     };
     let control = |control| v1::ReadControl {
         control: Some(control),

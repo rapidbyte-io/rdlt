@@ -107,11 +107,11 @@ fn a_truncate_clears_the_table_its_changes_leave() {
 /// The change batches `source` pushes reading `partition` of `orders` from `cursor`.
 async fn read(source: &dyn Source, partition: &str, cursor: Option<Cursor>) -> Vec<RecordBatch> {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(16).unwrap());
-    let request = ReadRequest {
-        stream: orders(),
-        partition: Partition::new(PartitionId::parse(partition).unwrap()),
+    let request = ReadRequest::new(
+        orders(),
+        Partition::new(PartitionId::parse(partition).unwrap()),
         cursor,
-    };
+    );
     let collect = async {
         let mut batches = Vec::new();
         while let Some(event) = feed.recv().await {
@@ -227,11 +227,11 @@ fn changes_touch_the_snapshot_s_keys_and_half_as_many_again() {
 /// Where each checkpoint `source` sends reading `partition` of `orders` from its start resumes.
 async fn checkpoints(source: &dyn Source, partition: &str) -> Vec<Position> {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(16).unwrap());
-    let request = ReadRequest {
-        stream: orders(),
-        partition: Partition::new(PartitionId::parse(partition).unwrap()),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        orders(),
+        Partition::new(PartitionId::parse(partition).unwrap()),
+        None,
+    );
     let collect = async {
         let mut positions = Vec::new();
         while let Some(event) = feed.recv().await {
@@ -298,11 +298,11 @@ fn the_changes_a_seed_draws_stay_the_same() {
 async fn a_snapshot_partition_the_stream_does_not_have_is_refused() {
     let source = source().await;
     let (sink, _feed) = partition_channel(NonZeroUsize::new(16).unwrap());
-    let request = ReadRequest {
-        stream: orders(),
-        partition: Partition::new(PartitionId::parse("snapshot-2").unwrap()),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        orders(),
+        Partition::new(PartitionId::parse("snapshot-2").unwrap()),
+        None,
+    );
     let refused = source
         .read(request, sink)
         .await

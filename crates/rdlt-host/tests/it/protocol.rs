@@ -147,11 +147,11 @@ async fn a_configuration_beyond_the_connectors_limit_is_refused() {
 async fn read_items(source: &RemoteSource) -> rdlt_connector::Result<()> {
     let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::new(64).expect("not zero"));
     let drain = tokio::spawn(async move { while feed.recv().await.is_some() {} });
-    let request = ReadRequest {
-        stream: StreamName::new("items").expect("a valid stream name"),
-        partition: Partition::single(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        StreamName::new("items").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    );
     let read = source.read(request, sink).await;
     drain.abort();
     read
@@ -309,6 +309,7 @@ async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
         cursor: None,
         barrier: 0,
         unbounded: false,
+        follow: false,
     };
     controls.send(control(Control::Start(start))).await.unwrap();
     controls
@@ -394,6 +395,7 @@ async fn a_served_read_spends_its_credit_frame_by_frame_until_none_remains() {
         cursor: None,
         barrier: 0,
         unbounded: false,
+        follow: false,
     };
     let grant = 2000;
     controls.send(control(Control::Start(start))).await.unwrap();

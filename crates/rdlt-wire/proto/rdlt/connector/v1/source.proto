@@ -57,6 +57,9 @@ message ReadStart {
   uint64 barrier = 5;
   // Whether the partition never ends, as the plan said.
   bool unbounded = 6;
+  // Whether a read of an unbounded partition follows it once caught up, until asked to stop;
+  // otherwise it returns once caught up to where the source stood when the read started.
+  bool follow = 7;
 }
 
 // Asks for a checkpoint answering a barrier.

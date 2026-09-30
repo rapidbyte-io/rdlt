@@ -20,11 +20,11 @@ async fn generator(rows: u64, partitions: u64) -> Box<dyn Source> {
 
 async fn read_ids(source: &dyn Source, partition: Partition) -> Vec<(i64, i64)> {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(16).expect("16 is non-zero"));
-    let request = ReadRequest {
-        stream: StreamName::new("events").expect("valid stream name"),
+    let request = ReadRequest::new(
+        StreamName::new("events").expect("valid stream name"),
         partition,
-        cursor: None,
-    };
+        None,
+    );
     let collect = async {
         let mut rows = Vec::new();
         while let Some(event) = feed.recv().await {

@@ -114,6 +114,7 @@ async fn cursor(
         }),
         barrier: 0,
         unbounded: false,
+        follow: false,
     });
     // Credit, so a source that took the cursor answers at once rather than wait for it.
     let credit = v1::read_control::Control::Credit(v1::Credit { bytes: 1 << 20 });

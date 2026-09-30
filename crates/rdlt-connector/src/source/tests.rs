@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use bytes::Bytes;
 use schemars::JsonSchema;
@@ -79,6 +80,10 @@ impl ReadStream<Counter> for Numbers {
             out.rows(&[json!({ "n": n })]).await?;
             out.checkpoint(&Next { n: n + 1 }).await?;
         }
+        if out.follows() {
+            // Following, it waits for rows that never come until asked to stop.
+            out.stopped().await;
+        }
         Ok(())
     }
 
@@ -126,11 +131,7 @@ async fn connect(limit: u64) -> Box<dyn Source> {
 
 async fn read_all(source: &dyn Source, cursor: Option<Cursor>) -> (Result<()>, Vec<SourceEvent>) {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
-    let request = ReadRequest {
-        stream: numbers(),
-        partition: Partition::single(),
-        cursor,
-    };
+    let request = ReadRequest::new(numbers(), Partition::single(), cursor);
     let read = source.read(request, sink);
     let collect = async {
         let mut events = Vec::new();
@@ -250,11 +251,7 @@ async fn a_stopped_read_ends_cleanly() {
     let source = connect(100).await;
     let (sink, feed) = partition_channel(NonZeroUsize::MIN);
     feed.stop();
-    let request = ReadRequest {
-        stream: numbers(),
-        partition: Partition::single(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(numbers(), Partition::single(), None);
     source.read(request, sink).await.unwrap();
 }
 
@@ -264,11 +261,7 @@ async fn unknown_streams_are_config_errors() {
     let other = StreamName::new("other").unwrap();
     // Nothing reads the feed, so a read that wrongly reached a stream ends instead of blocking.
     let (sink, _) = partition_channel(NonZeroUsize::MIN);
-    let request = ReadRequest {
-        stream: other.clone(),
-        partition: Partition::single(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(other.clone(), Partition::single(), None);
     assert_eq!(
         source.read(request, sink).await.unwrap_err().code(),
         Some("unknown_stream")
@@ -357,4 +350,30 @@ fn a_partition_is_bounded_unless_it_says_it_never_ends() {
     let unbounded = Partition::new(id.clone()).unbounded();
     assert!(unbounded.is_unbounded());
     assert_eq!(unbounded.id(), &id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_read_waits_once_caught_up_until_asked_to_stop() {
+    let source = connect(2).await;
+    for follow in [false, true] {
+        let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).unwrap());
+        let partition = Partition::single().unbounded();
+        let request = ReadRequest::new(numbers(), partition, None).following(follow);
+        let read = source.read(request, sink);
+        let watch = async {
+            let mut checkpoints = 0;
+            while checkpoints < 2 {
+                if let Some(SourceEvent::Checkpoint { .. }) = feed.recv().await {
+                    checkpoints += 1;
+                }
+            }
+            let waited = tokio::time::timeout(Duration::from_secs(60), feed.recv()).await;
+            // Caught up, a read that follows waits; one that does not has ended.
+            assert_eq!(waited.is_err(), follow);
+            feed.stop();
+            while feed.recv().await.is_some() {}
+        };
+        let (read, ()) = tokio::join!(read, watch);
+        read.unwrap();
+    }
 }
