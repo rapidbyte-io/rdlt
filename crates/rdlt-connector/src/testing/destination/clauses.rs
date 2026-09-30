@@ -92,7 +92,15 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     Clause {
         id: "D-OWNED",
         statement: "a table belongs to the pipeline that created it: another pipeline's schema \
-                    change or writer is refused as table_owned, and the owner keeps loading it",
+                    change or writer is refused as table_owned, its generation swap too unless it \
+                    changes nothing, and the owner keeps loading it",
+    },
+    Clause {
+        id: "D-DROP",
+        statement: "a commit drops the tables it names, leaving nothing of them, and releases them: \
+                    dropping again changes nothing, a session fenced before cannot claim them \
+                    again, another pipeline may create a table of the name, and dropping another \
+                    pipeline's table is refused as table_owned",
     },
     Clause {
         id: "D-FENCE",

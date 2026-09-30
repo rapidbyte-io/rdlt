@@ -13,7 +13,7 @@ use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
     CommitKind, DeleteModes, Epoch, IdentifierCase, IdentifierChars, IdentifierRules,
-    NestedSupport, SchemaChanges, TypeKind, WriteModes,
+    NestedSupport, PipelineId, SchemaChanges, TypeKind, WriteModes,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -70,8 +70,12 @@ impl DestinationConnector for FilesDestination {
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<FilesSession>> {
         let dir = manifest::pipeline_dir(&self.root, &context.pipeline);
-        let opening = dir.clone();
-        let manifest = blocking(move || next_epoch(&opening)).await?;
+        let (opening, root, pipeline) = (
+            dir.clone(),
+            Arc::clone(&self.root),
+            context.pipeline.clone(),
+        );
+        let manifest = blocking(move || next_epoch(&opening, &root, &pipeline)).await?;
         let location = Location {
             root: Arc::clone(&self.root),
             pipeline: context.pipeline.clone(),
@@ -90,9 +94,16 @@ impl DestinationConnector for FilesDestination {
 
 /// Creates the pipeline's next manifest with the next epoch, retrying while other sessions
 /// create versions first.
-fn next_epoch(dir: &Path) -> Result<Manifest> {
+///
+/// The catalogs of tables the pipeline dropped are removed first, before this session can create
+/// any of them again.
+fn next_epoch(dir: &Path, root: &Path, pipeline: &PipelineId) -> Result<Manifest> {
     loop {
         let mut manifest = manifest::latest(dir)?.unwrap_or_default();
+        for name in &manifest.dropped {
+            tables::release(root, name, pipeline)?;
+        }
+        manifest.dropped.clear();
         manifest.version += 1;
         manifest.epoch = manifest.epoch.next();
         if manifest::put(dir, &manifest)? {
@@ -176,6 +187,7 @@ fn capabilities(format: FileFormat) -> Capabilities {
     };
     capabilities.partial_updates = true;
     capabilities.merge_changes = true;
+    capabilities.drop_tables = true;
     capabilities.nested = NestedSupport {
         structs: true,
         lists: true,

@@ -1,5 +1,6 @@
 //! A SQLite session: schema changes, staging writers and commits, each one transaction.
 
+mod owners;
 #[cfg(test)]
 mod tests;
 mod writer;
@@ -14,6 +15,7 @@ use rusqlite::Transaction;
 use rusqlite::types::Value;
 
 use super::database::{Database, columns, integer, query, run, run_all, text};
+use owners::{claim, owned};
 
 pub use writer::SqliteWriter;
 
@@ -77,7 +79,7 @@ impl Session for SqliteSession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let (planner, change) = (Arc::clone(&self.planner), change.clone());
-        let pipeline = self.pipeline.clone();
+        let (pipeline, epoch) = (self.pipeline.clone(), self.epoch);
         self.database
             .transaction(move |transaction| {
                 let table = change.table();
@@ -88,7 +90,7 @@ impl Session for SqliteSession {
                         .collect::<Result<Vec<_>>>()?;
                     planner.distinct(&table.name, &registered)?;
                 }
-                claim(transaction, &planner, &pipeline, &table.name)?;
+                claim(transaction, &planner, &pipeline, epoch, &table.name)?;
                 let target = columns(transaction, planner.dialect(), &planner.target(table))?;
                 let staging = columns(
                     transaction,
@@ -111,13 +113,14 @@ impl Session for SqliteSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<SqliteWriter> {
-        let (planner, pipeline, name) = (
+        let (planner, pipeline, epoch, name) = (
             Arc::clone(&self.planner),
             self.pipeline.clone(),
+            self.epoch,
             table.name.clone(),
         );
         self.database
-            .transaction(move |transaction| claim(transaction, &planner, &pipeline, &name))
+            .transaction(move |transaction| claim(transaction, &planner, &pipeline, epoch, &name))
             .await?;
         let (planner, changed) = (Arc::clone(&self.planner), table.clone());
         self.database
@@ -207,7 +210,19 @@ impl Session for SqliteSession {
                         continue;
                     };
                     let name = text(name)?;
+                    owned(transaction, &planner, &pipeline, &name)?;
                     swap(transaction, &planner, &name, *generation)?;
+                }
+                for dropped in &meta.drop_tables {
+                    owned(transaction, &planner, &pipeline, &dropped.name)?;
+                    let generations = generation_tables(transaction, &planner, &dropped.name)?
+                        .into_iter()
+                        .map(|(table, _)| table)
+                        .collect::<Vec<_>>();
+                    run_all(
+                        transaction,
+                        &planner.drop_table(&dropped.name, &generations)?,
+                    )?;
                 }
                 run_all(
                     transaction,
@@ -229,28 +244,6 @@ impl Session for SqliteSession {
 
     async fn close(self) -> Result<()> {
         Ok(())
-    }
-}
-
-/// Claims the table `name` for `pipeline` where no pipeline owns it; another pipeline's table is
-/// refused as `table_owned`.
-fn claim(
-    transaction: &Transaction<'_>,
-    planner: &SqlPlanner<Sqlite>,
-    pipeline: &PipelineId,
-    name: &str,
-) -> Result<()> {
-    run_all(transaction, &planner.claim(pipeline, name))?;
-    let owner = query(transaction, &planner.owner(name))?
-        .first()
-        .and_then(|row| row.first())
-        .map(text)
-        .transpose()?
-        .unwrap_or_default();
-    if owner == pipeline.as_str() {
-        Ok(())
-    } else {
-        Err(ConnectorError::table_owned(name, &owner))
     }
 }
 
@@ -361,14 +354,13 @@ fn staged_segment(row: &[Value]) -> Result<(Staged, i64, i64)> {
     Ok((staged, integer(count)?, integer(size)?))
 }
 
-/// Swaps `generation` in as the table `name`.
-fn swap(
+/// The generation tables of the table `name`, with their generations.
+fn generation_tables(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
     name: &str,
-    generation: GenerationId,
-) -> Result<()> {
-    let generations = query(transaction, &planner.generations(name))?
+) -> Result<Vec<(String, GenerationId)>> {
+    query(transaction, &planner.generations(name))?
         .iter()
         .map(|row| match &row[..] {
             [table, found] => Ok((
@@ -377,7 +369,17 @@ fn swap(
             )),
             _ => Err(ConnectorError::internal("a generation has missing fields")),
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect()
+}
+
+/// Swaps `generation` in as the table `name`.
+fn swap(
+    transaction: &Transaction<'_>,
+    planner: &SqlPlanner<Sqlite>,
+    name: &str,
+    generation: GenerationId,
+) -> Result<()> {
+    let generations = generation_tables(transaction, planner, name)?;
     let exists = !columns(transaction, planner.dialect(), name)?.is_empty();
     run_all(
         transaction,

@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -43,6 +43,10 @@ pub(super) struct Manifest {
     pub(super) tables: BTreeMap<String, TableFiles>,
     /// The identifier of each table path the pipeline wrote, by the path's JSON.
     pub(super) paths: BTreeMap<String, String>,
+    /// Tables the pipeline dropped whose catalogs may remain: the next open removes them, before
+    /// anything can create the tables again.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(super) dropped: BTreeSet<String>,
 }
 
 /// A commit's receipt, its commit time in microseconds.

@@ -79,10 +79,9 @@ impl Session for FilesSession {
     type Writer = FilesWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
-        let (root, change) = (Arc::clone(&self.location.root), change.clone());
-        let pipeline = self.location.pipeline.clone();
-        let claimed = change.clone();
-        blocking(move || tables::claim(&root, &claimed.table().name, &pipeline)).await?;
+        let (location, name) = (self.location.clone(), change.table().name.clone());
+        blocking(move || claim(&location, &name)).await?;
+        let change = change.clone();
         self.learn(change.table());
         let root = Arc::clone(&self.location.root);
         blocking(move || {
@@ -95,12 +94,8 @@ impl Session for FilesSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<FilesWriter> {
-        let (root, pipeline, name) = (
-            Arc::clone(&self.location.root),
-            self.location.pipeline.clone(),
-            table.name.clone(),
-        );
-        blocking(move || tables::claim(&root, &name, &pipeline)).await?;
+        let (location, name) = (self.location.clone(), table.name.clone());
+        blocking(move || claim(&location, &name)).await?;
         self.learn(table);
         Ok(FilesWriter {
             location: self.location.clone(),
@@ -127,6 +122,35 @@ impl Session for FilesSession {
     async fn close(self) -> Result<()> {
         Ok(())
     }
+}
+
+/// Claims the table `name` for `location`'s pipeline where no pipeline owns it; another
+/// pipeline's table is refused as `table_owned`, and a claim by a session a newer one fenced as
+/// fenced, since a drop may have released the table from it.
+///
+/// The catalog is outside the manifest, so the session is checked again once it claimed: a
+/// claim a drop overtook is undone.
+fn claim(location: &Location, name: &str) -> Result<()> {
+    let (root, pipeline) = (&location.root, &location.pipeline);
+    let unowned = tables::owner(root, name)?.is_none();
+    let fenced = || -> Result<Option<ConnectorError>> {
+        let epoch = manifest::latest(&location.dir)?.map(|manifest| manifest.epoch);
+        Ok((epoch != Some(location.epoch)).then(|| {
+            ConnectorError::fenced(format!(
+                "pipeline {pipeline} has a session newer than epoch {}",
+                location.epoch
+            ))
+        }))
+    };
+    if unowned && let Some(error) = fenced()? {
+        return Err(error);
+    }
+    tables::claim(root, name, pipeline)?;
+    if unowned && let Some(error) = fenced()? {
+        tables::release(root, name, pipeline)?;
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// The files a commit publishes, by table and generation.
@@ -156,15 +180,7 @@ fn commit(location: &Location, shared: &Mutex<Shared>, meta: &CommitMeta) -> Res
     };
     publish_all(location, &mut manifest, &staged, meta)?;
     manifest.paths.extend(names);
-    for (path, generation) in &meta.finish_generations {
-        let Some(name) = manifest.paths.get(&path_key(path)).cloned() else {
-            continue;
-        };
-        let table = manifest.tables.entry(name).or_default();
-        table.files = table.generations.remove(generation).unwrap_or_default();
-        table.generations.clear();
-        table.tombstones.clear();
-    }
+    finish(location, &mut manifest, meta)?;
     manifest.apply(&meta.state_delta);
     let receipt = Receipt {
         load_id: meta.load_id,
@@ -184,7 +200,38 @@ fn commit(location: &Location, shared: &Mutex<Shared>, meta: &CommitMeta) -> Res
         .lock()
         .staged
         .retain(|file| !meta.segments.contains(file.segment));
+    // The manifest is the truth: a catalog left behind here is removed by the next open.
+    for name in &manifest.dropped {
+        drop(tables::release(&location.root, name, &location.pipeline));
+    }
     Ok(receipt)
+}
+
+/// Swaps into `manifest` the generations `meta` finishes, and drops from it the tables `meta`
+/// drops, each of which another pipeline must not own.
+fn finish(location: &Location, manifest: &mut Manifest, meta: &CommitMeta) -> Result<()> {
+    for dropped in &meta.drop_tables {
+        if let Some(owner) = tables::owner(&location.root, &dropped.name)?
+            && owner != location.pipeline.as_str()
+        {
+            return Err(ConnectorError::table_owned(&dropped.name, &owner));
+        }
+    }
+    for (path, generation) in &meta.finish_generations {
+        let Some(name) = manifest.paths.get(&path_key(path)).cloned() else {
+            continue;
+        };
+        let table = manifest.tables.entry(name).or_default();
+        table.files = table.generations.remove(generation).unwrap_or_default();
+        table.generations.clear();
+        table.tombstones.clear();
+    }
+    for dropped in &meta.drop_tables {
+        manifest.tables.remove(&*dropped.name);
+        manifest.paths.remove(&path_key(&dropped.path));
+        manifest.dropped.insert(dropped.name.to_string());
+    }
+    Ok(())
 }
 
 /// Adds `files`, staged for the table `name` or one generation of it, to what `manifest` lists

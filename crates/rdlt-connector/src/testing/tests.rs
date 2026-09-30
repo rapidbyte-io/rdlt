@@ -524,6 +524,18 @@ struct VaultConfig {
     soft_deletes_only: bool,
     /// Declares it keeps no column an update leaves unchanged.
     no_partial_updates: bool,
+    /// Declares it drops no tables.
+    no_drops: bool,
+    /// Keeps the rows of the tables a commit drops.
+    keep_dropped: bool,
+    /// Drops a table's rows but keeps its owner, so no other pipeline may create it.
+    keep_owner: bool,
+    /// Drops another pipeline's table.
+    drop_others: bool,
+    /// Swaps a generation into another pipeline's table.
+    swap_others: bool,
+    /// Lets a session a newer one fenced claim a table no pipeline owns.
+    stale_claims: bool,
 }
 
 #[derive(Default)]
@@ -684,6 +696,7 @@ impl DestinationConnector for Vault {
         capabilities.delete_modes.hard &= !self.config.soft_deletes_only;
         capabilities.delete_modes.soft &= !self.config.hard_deletes_only;
         capabilities.partial_updates &= !self.config.no_partial_updates;
+        capabilities.drop_tables = !self.config.minimal && !self.config.no_drops;
         capabilities
     }
 
@@ -754,6 +767,20 @@ impl DestinationConnector for Vault {
 }
 
 impl VaultSession {
+    /// Claims `table` for the session's pipeline, as the vault's flags allow: a claim of a table
+    /// no pipeline owns by a session a newer one fenced is refused as fenced, unless
+    /// `stale_claims`.
+    fn claimed(&self, store: &mut VaultStore, table: &str) -> Result<()> {
+        let owned = store.owners.contains_key(table);
+        let current = self.config.epoch(store, &self.stores, &self.pipeline);
+        if !owned && current != self.epoch && !self.config.stale_claims {
+            return Err(ConnectorError::fenced("a newer session opened"));
+        }
+        store
+            .claim(&self.pipeline, table, self.config.share_tables)
+            .map_err(|error| self.config.refused_as(error))
+    }
+
     /// Applies the state changes of `meta`, to this connection's store with `local_state`.
     fn apply_state(&self, shared: &mut VaultStore, meta: &CommitMeta) {
         let mut local = self.stores.local.lock().unwrap();
@@ -769,6 +796,47 @@ impl VaultSession {
                 StateChange::Delete(_) if self.config.ignore_deletes => None,
                 StateChange::Delete(key) => state.remove(key),
             };
+        }
+    }
+
+    /// The refusal of a commit that swaps a generation into, or drops, another pipeline's table,
+    /// unless the vault is set to let it.
+    fn intruding(&self, store: &VaultStore, meta: &CommitMeta) -> Option<ConnectorError> {
+        let swapped = meta
+            .finish_generations
+            .iter()
+            .filter(|_| !self.config.swap_others)
+            .filter_map(|(path, _)| store.tables.get(path).cloned());
+        let dropped = meta
+            .drop_tables
+            .iter()
+            .filter(|_| !self.config.drop_others)
+            .map(|dropped| dropped.name.to_string());
+        swapped.chain(dropped).find_map(|name| {
+            let owner = store.owners.get(&name)?;
+            (*owner != self.pipeline).then(|| {
+                self.config
+                    .refused_as(ConnectorError::table_owned(&name, owner.as_str()))
+            })
+        })
+    }
+
+    /// Drops the tables `meta` names: their rows, generations, columns and tombstones, and their
+    /// owners.
+    fn drop_tables(&self, store: &mut VaultStore, meta: &CommitMeta) {
+        if self.config.keep_dropped {
+            return;
+        }
+        for dropped in &meta.drop_tables {
+            let name = dropped.name.to_string();
+            store.published.remove(&name);
+            store.generations.retain(|(table, _), _| *table != name);
+            store.columns.remove(&name);
+            store.tombstones.remove(&name);
+            store.tables.retain(|_, table| *table != name);
+            if !self.config.keep_owner {
+                store.owners.remove(&name);
+            }
         }
     }
 
@@ -943,13 +1011,7 @@ impl Session for VaultSession {
             return Err(ConnectorError::data(message));
         }
         let mut store = self.stores.shared.lock().unwrap();
-        store
-            .claim(
-                &self.pipeline,
-                &change.table().name,
-                self.config.share_tables,
-            )
-            .map_err(|error| self.config.refused_as(error))?;
+        self.claimed(&mut store, &change.table().name)?;
         let first = store.changes.insert(format!("{change:?}"));
         let alters = !matches!(change, TableChange::Create { .. });
         if self.config.refuse_repeated_changes && alters && !first {
@@ -982,10 +1044,11 @@ impl Session for VaultSession {
     async fn writer(&mut self, table: &TableRef) -> Result<VaultWriter> {
         {
             let mut store = self.stores.shared.lock().unwrap();
-            let claimed = store
-                .claim(&self.pipeline, &table.name, self.config.share_tables)
-                .map_err(|error| self.config.refused_as(error));
-            if claimed.is_err() && self.config.lock_on_intrusion {
+            let claimed = self.claimed(&mut store, &table.name);
+            let intruded = claimed
+                .as_ref()
+                .is_err_and(|error| error.kind() != ConnectorErrorKind::Fenced);
+            if intruded && self.config.lock_on_intrusion {
                 store.locked.insert(table.name.to_string());
             }
             claimed?;
@@ -1041,7 +1104,11 @@ impl Session for VaultSession {
                 "segment {segment} is not staged"
             )));
         }
+        if let Some(error) = self.intruding(&store, meta) {
+            return Err(error);
+        }
         let rows = self.publish(&mut store, meta);
+        self.drop_tables(&mut store, meta);
         if !self.config.forget_state {
             self.apply_state(&mut store, meta);
         }
@@ -1461,6 +1528,11 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("fold_names", &["D-NAMES"]),
     ("refuse_check", &["D-CHECK"]),
     ("lose_lanes", &["D-LANES"]),
+    ("keep_dropped", &["D-DROP"]),
+    ("keep_owner", &["D-DROP"]),
+    ("drop_others", &["D-DROP"]),
+    ("swap_others", &["D-OWNED"]),
+    ("stale_claims", &["D-DROP"]),
     ("miscount", &["D-COMMIT"]),
     ("republish", &["D-IDEMPOTENT"]),
     ("forget_state", &["D-STATE"]),
@@ -1485,6 +1557,7 @@ const BROKEN: &[(&str, &[&str])] = &[
             "D-TABLES",
             "D-LANES",
             "D-OWNED",
+            "D-DROP",
         ],
     ),
     (
@@ -1541,8 +1614,9 @@ async fn each_broken_destination_behavior_fails_exactly_its_clauses() {
 #[tokio::test]
 async fn change_clauses_check_only_what_a_destination_declares_it_does() {
     // Each broken behavior goes unchecked where the destination declares it does not do it.
-    let cases: [(&[&str], &[&str]); 6] = [
+    let cases: [(&[&str], &[&str]); 7] = [
         (&["no_replace", "keep_replaced_tombstones"], &["D-REPLACE"]),
+        (&["no_drops", "keep_dropped"], &["D-DROP"]),
         (
             &["no_change_merges", "ignore_seq_guard"],
             &["D-DELETE", "D-PARTIAL", "D-TRUNCATE"],
@@ -1579,14 +1653,17 @@ async fn change_clauses_check_only_what_a_destination_declares_it_does() {
 
 #[tokio::test]
 async fn each_way_of_letting_pipelines_meet_at_a_table_fails_d_owned() {
-    for flag in [
-        "share_tables",
-        "lock_on_intrusion",
-        "owned_as_data",
-        "owned_uncoded",
-    ] {
+    // A refusal of the wrong kind or without its code fails the drop of another pipeline's table
+    // too.
+    let cases: [(&str, &[&str]); 4] = [
+        ("share_tables", &["D-OWNED"]),
+        ("lock_on_intrusion", &["D-OWNED"]),
+        ("owned_as_data", &["D-OWNED", "D-DROP"]),
+        ("owned_uncoded", &["D-OWNED", "D-DROP"]),
+    ];
+    for (flag, clauses) in cases {
         let report = certify_vault(flag, Some(flag)).await;
-        assert_eq!(failed(&report), ["D-OWNED"], "{flag}: {report}");
+        assert_eq!(failed(&report), clauses, "{flag}: {report}");
     }
 }
 
@@ -1647,6 +1724,7 @@ async fn visible_staging_fails_every_clause_that_reads_published_data() {
             "D-NAMES",
             "D-LANES",
             "D-OWNED",
+            "D-DROP",
             "D-FENCE"
         ],
         "{report}"

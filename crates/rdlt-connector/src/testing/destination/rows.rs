@@ -7,8 +7,9 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, Int64Array, RecordBatch, StringArray};
 
+use crate::destination::TableRef;
 use crate::schema::TableSchema;
-use crate::testing::Violation;
+use crate::testing::{Violation, bounded_call};
 use crate::types::{Field, LogicalType};
 
 #[cfg(test)]
@@ -59,5 +60,39 @@ pub(super) fn expect_rows(actual: &[Row], segments: &[u64]) -> Result<(), Violat
         Ok(())
     } else {
         Err(format!("the published rows are {actual:?}, not those of segments {segments:?}").into())
+    }
+}
+
+impl super::Bench<'_> {
+    /// The rows the clause's table publishes, in order.
+    pub(super) async fn published_rows(&self) -> Result<Vec<Row>, Violation> {
+        self.rows_of(&self.table()).await
+    }
+
+    /// The `(id, name)` rows `table` publishes, in order.
+    pub(super) async fn rows_of(&self, table: &TableRef) -> Result<Vec<Row>, Violation> {
+        let batches = bounded_call("probe", self.probe.published(table)).await?;
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let column = |name: &str, logical: &arrow_schema::DataType| {
+                let column = batch.column_by_name(name).ok_or_else(|| {
+                    Violation::from(format!("a published batch has no {name} column"))
+                })?;
+                arrow_cast::cast(column, logical)
+                    .map_err(|error| Violation::from(format!("the {name}s read back as {error}")))
+            };
+            let ids = column("id", &arrow_schema::DataType::Int64)?;
+            let names = column("name", &arrow_schema::DataType::Utf8)?;
+            let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
+            for row in 0..batch.num_rows() {
+                if ids.is_null(row) {
+                    return Err("a published row has no id".into());
+                }
+                let name = names.is_valid(row).then(|| names.value(row).to_owned());
+                rows.push((ids.value(row), name));
+            }
+        }
+        rows.sort_unstable();
+        Ok(rows)
     }
 }
