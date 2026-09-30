@@ -143,6 +143,7 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
             stream: StreamName::new("s").expect("a valid stream"),
             partition: PartitionId::parse("p").expect("a valid partition"),
             replayable: true,
+            phase: 0,
             from: None,
             state: PartitionState::Done,
         }),

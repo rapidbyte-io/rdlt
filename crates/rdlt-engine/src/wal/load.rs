@@ -9,6 +9,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use bytes::Bytes;
 use rdlt_connector::{
     CommitMeta, CommitSeq, GenerationId, LoadId, PartitionId, PartitionState, PipelineId, Receipt,
     SchemaVersion, SegmentId, StreamName,
@@ -34,7 +35,10 @@ pub(crate) struct Sealed {
     pub(crate) partition: PartitionId,
     /// Whether the stream's source can read the segment again.
     pub(crate) replayable: bool,
-    /// Where the destination held the partition just before the segment's commit.
+    /// The phase of the stream the segment belongs to.
+    pub(crate) phase: u16,
+    /// Where the destination held the partition just before the segment's commit, once that
+    /// commit began the stream's phase if it did.
     pub(crate) from: Option<PartitionState>,
     pub(crate) state: PartitionState,
 }
@@ -137,8 +141,16 @@ impl LoadLog {
         Ok(index)
     }
 
-    /// Logs `sealed`, then `meta`'s commit, and returns once the commit's frame is durable.
-    pub(crate) async fn commit(&self, sealed: Vec<Sealed>, meta: &CommitMeta) -> Result<(), Error> {
+    /// Logs `sealed`, then the phases `begun` that `meta`'s commit begins with it and the commit,
+    /// and returns once the commit's frame is durable.
+    ///
+    /// The phase frames go in one append with the commit's, so a crash tears them with it.
+    pub(crate) async fn commit(
+        &self,
+        sealed: Vec<Sealed>,
+        begun: Vec<frame::BegunPhase>,
+        meta: &CommitMeta,
+    ) -> Result<(), Error> {
         // The commit settles every segment it sealed, those it publishes nothing of included, so
         // its receipt lets their chunks go.
         let mut segments = meta.segments.clone();
@@ -152,18 +164,24 @@ impl LoadLog {
                 stream: seal.stream,
                 partition: seal.partition,
                 replayable: seal.replayable,
+                phase: seal.phase,
                 from: seal.from,
                 state: seal.state,
             })
             .encode()?;
             self.writer.send(Command::Seal { segment, frame }).await?;
         }
+        let mut frames = Vec::new();
+        for begun in begun {
+            frames.extend_from_slice(&Frame::Begun(begun).encode()?);
+        }
+        frames.extend_from_slice(&Frame::Commit(Box::new(meta.clone())).encode()?);
         let (durable, answer) = oneshot::channel();
         self.writer
             .send(Command::Commit {
                 seq: meta.commit_seq,
                 segments,
-                frame: Frame::Commit(Box::new(meta.clone())).encode()?,
+                frame: Bytes::from(frames),
                 durable,
             })
             .await?;

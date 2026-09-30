@@ -13,7 +13,7 @@ use arrow_array::RecordBatch;
 use bytes::{BufMut, Bytes, BytesMut};
 use rdlt_connector::{
     CommitMeta, CommitSeq, LoadId, PartitionId, PartitionState, PipelineId, Receipt, SegmentId,
-    StreamName, TableRef, TableSchema,
+    StateChange, StreamName, TableRef, TableSchema,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,8 @@ pub(crate) enum Frame {
     Batch(Batch),
     /// A segment sealed with a partition's position.
     Seal(Seal),
+    /// A phase the next commit frame begins.
+    Begun(BegunPhase),
     /// A commit about to be made, whole.
     Commit(Box<CommitMeta>),
     /// A commit's receipt.
@@ -94,8 +96,22 @@ pub(crate) struct Seal {
     pub(crate) partition: PartitionId,
     /// Whether the stream's source can read the segment again.
     pub(crate) replayable: bool,
+    /// The phase of the stream the segment belongs to; a seal logged before seals named it reads
+    /// as phase 0's, and never applies in a later phase, where only a stream that reads again
+    /// could have logged it.
+    #[serde(default)]
+    pub(crate) phase: u16,
     pub(crate) from: Option<PartitionState>,
     pub(crate) state: PartitionState,
+}
+
+/// A stream's phase a commit begins: the changes that begin it, as the commit's state delta
+/// leads with them — the previous phase's entries deleted, where its partitions start, the phase.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct BegunPhase {
+    pub(crate) stream: StreamName,
+    pub(crate) phase: u16,
+    pub(crate) changes: Vec<StateChange>,
 }
 
 impl Frame {
@@ -108,6 +124,7 @@ impl Frame {
             Self::Commit(_) => 5,
             Self::Committed(_) => 6,
             Self::Closed => 7,
+            Self::Begun(_) => 8,
         }
     }
 
@@ -118,6 +135,7 @@ impl Frame {
             Self::Schema(table) => json(table)?,
             Self::Batch(batch) => batch_payload(batch)?,
             Self::Seal(seal) => json(seal)?,
+            Self::Begun(begun) => json(begun)?,
             Self::Commit(meta) => json(meta)?,
             Self::Committed(receipt) => json(receipt)?,
             Self::Closed => Vec::new(),
@@ -254,6 +272,7 @@ fn decode(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
         5 => parse(payload).map(|meta| Frame::Commit(Box::new(meta))),
         6 => parse(payload).map(Frame::Committed),
         7 if payload.is_empty() => Ok(Frame::Closed),
+        8 => parse(payload).map(Frame::Begun),
         other => Err(Error::internal(format!(
             "a write-ahead log frame of kind {other} does not decode"
         ))),

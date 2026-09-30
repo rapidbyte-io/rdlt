@@ -5,7 +5,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use bytes::{BufMut, Bytes, BytesMut};
 use rdlt_connector::{
     CommitMeta, CommitSeq, Epoch, LoadId, PartitionId, PartitionState, PipelineId, Receipt,
-    SegmentId, StreamName,
+    SegmentId, StateChange, StateEntry, StreamName,
 };
 
 use super::{batch, scan};
@@ -13,6 +13,7 @@ use crate::budget::MemoryBudget;
 use crate::compute::Inline;
 use crate::error::ErrorKind;
 use crate::table::testing::view;
+use crate::wal::frame::BegunPhase;
 use crate::wal::load::{LoadLog, Sealed};
 use crate::wal::memory::MemoryWal;
 use crate::wal::store::{Chunk, WalStore};
@@ -53,6 +54,7 @@ fn sealed(segment: u64) -> Sealed {
         stream: StreamName::new("orders").expect("a valid stream"),
         partition: PartitionId::parse("p0").expect("a valid partition"),
         replayable: true,
+        phase: 0,
         from: None,
         state: PartitionState::Done,
     }
@@ -61,6 +63,24 @@ fn sealed(segment: u64) -> Sealed {
 /// A log of two commits of segments 1 and 2, the first `received` or not, as a load that crashed
 /// after the second's frame was durable writes it.
 async fn logged(received: bool) -> Arc<MemoryWal> {
+    logged_beginning(received, Vec::new()).await
+}
+
+/// A phase `orders` begins, as the second commit of [`logged_beginning`] logs it.
+fn begun() -> BegunPhase {
+    let changes = StateEntry::Phase {
+        stream: StreamName::new("orders").expect("a valid stream"),
+        phase: 1,
+    };
+    BegunPhase {
+        stream: StreamName::new("orders").expect("a valid stream"),
+        phase: 1,
+        changes: vec![StateChange::Put(changes.to_record())],
+    }
+}
+
+/// A log as [`logged`] writes it, whose second commit begins the phases `begun`.
+async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryWal> {
     let store = Arc::new(MemoryWal::default());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
     let opened = Some((LoadId::from_parts(UNIX_EPOCH, 1), CommitSeq::FIRST));
@@ -76,7 +96,7 @@ async fn logged(received: bool) -> Arc<MemoryWal> {
         log.batch(&Inline, &budget, 1, &items, SegmentId(1), &ids(10))
             .await
             .expect("logged");
-        log.commit(vec![sealed(1)], &meta(1, &[1]))
+        log.commit(vec![sealed(1)], Vec::new(), &meta(1, &[1]))
             .await
             .expect("durable");
         let receipt = Receipt {
@@ -92,7 +112,7 @@ async fn logged(received: bool) -> Arc<MemoryWal> {
         log.batch(&Inline, &budget, 0, &orders, SegmentId(2), &ids(20))
             .await
             .expect("logged");
-        log.commit(vec![sealed(2)], &meta(2, &[2]))
+        log.commit(vec![sealed(2)], begun, &meta(2, &[2]))
             .await
             .expect("durable");
         drop(log);
@@ -198,6 +218,40 @@ async fn a_torn_chunk_reads_up_to_its_tear() {
         let commits: Vec<_> = scanned.commits.iter().map(|logged| &logged.meta).collect();
         assert_eq!(commits, [&meta(1, &[1])], "cut at {cut}");
         assert_eq!(scanned.pending().count(), 1, "cut at {cut}");
+    }
+}
+
+#[tokio::test]
+async fn a_phase_a_commit_began_scans_back_with_it_and_not_where_the_commit_is_torn() {
+    let whole = logged_beginning(false, vec![begun()]).await;
+    let scanned = scan(whole.as_ref(), &pipeline(), load())
+        .await
+        .expect("the log reads");
+    let begun_of: Vec<_> = scanned.commits.iter().map(|logged| &logged.begun).collect();
+    assert_eq!(begun_of, [&Vec::new(), &vec![begun()]]);
+    let last = whole
+        .stored(&pipeline())
+        .last()
+        .map(|(chunk, stored)| (*chunk, stored.bytes.clone()))
+        .expect("a chunk");
+    for cut in 0..last.1.len() {
+        let torn = MemoryWal::default();
+        for (chunk, stored) in whole.stored(&pipeline()) {
+            let bytes = if chunk == last.0 {
+                Bytes::copy_from_slice(&stored.bytes[..cut])
+            } else {
+                Bytes::from(stored.bytes)
+            };
+            torn.append(&pipeline(), chunk, bytes)
+                .await
+                .expect("appends");
+        }
+        let scanned = scan(&torn, &pipeline(), load())
+            .await
+            .expect("a torn log reads");
+        // The phase is logged with the commit that began it, and is gone where that commit is.
+        let begun_of: Vec<_> = scanned.commits.iter().map(|logged| &logged.begun).collect();
+        assert_eq!(begun_of, [&Vec::new()], "cut at {cut}");
     }
 }
 

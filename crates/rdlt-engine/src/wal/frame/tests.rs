@@ -11,7 +11,7 @@ use rdlt_connector::{
 };
 use rdlt_testkit::drawn::{self, Drawn};
 
-use super::{Batch, Frame, Frames, Header, Seal, Table, VERSION};
+use super::{Batch, BegunPhase, Frame, Frames, Header, Seal, Table, VERSION};
 
 fn load() -> LoadId {
     LoadId::from_parts(UNIX_EPOCH, 7)
@@ -61,10 +61,16 @@ fn metadata() -> Vec<Frame> {
             stream: StreamName::new("orders").expect("a valid stream"),
             partition: PartitionId::parse("p0").expect("a valid partition"),
             replayable: true,
+            phase: 2,
             from: Some(PartitionState::Done),
             state: PartitionState::Cursor(
                 Cursor::new(1, bytes::Bytes::from_static(b"{}")).expect("a cursor"),
             ),
+        }),
+        Frame::Begun(BegunPhase {
+            stream: StreamName::new("orders").expect("a valid stream"),
+            phase: 2,
+            changes: vec![StateChange::Delete("stale".to_owned())],
         }),
         Frame::Commit(Box::new(meta)),
         Frame::Committed(Receipt {
@@ -111,6 +117,31 @@ fn every_metadata_frame_decodes_as_it_was_written() {
         let bytes = frame.encode().expect("the frame encodes");
         assert_eq!(decoded(&bytes), [frame]);
     }
+}
+
+#[test]
+fn a_seal_logged_before_seals_named_their_phase_decodes_in_phase_0() {
+    let frame = metadata()
+        .into_iter()
+        .find(|frame| matches!(frame, Frame::Seal(_)))
+        .expect("a seal");
+    let bytes = frame.encode().expect("the frame encodes");
+    let mut payload: serde_json::Value =
+        serde_json::from_slice(&bytes[9..]).expect("a seal's payload is JSON");
+    payload
+        .as_object_mut()
+        .expect("an object")
+        .remove("phase")
+        .expect("the seal names its phase");
+    let payload = serde_json::to_vec(&payload).expect("JSON encodes");
+    let mut older = vec![bytes[0]];
+    older.extend(u32::try_from(payload.len()).expect("short").to_le_bytes());
+    older.extend(crc32c::crc32c(&payload).to_le_bytes());
+    older.extend(&payload);
+    let Frame::Seal(seal) = frame else {
+        unreachable!("the frame is a seal")
+    };
+    assert_eq!(decoded(&older), [Frame::Seal(Seal { phase: 0, ..seal })]);
 }
 
 proptest! {

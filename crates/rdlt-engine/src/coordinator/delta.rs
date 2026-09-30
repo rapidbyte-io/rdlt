@@ -26,8 +26,8 @@ pub(super) struct Collected {
 
 impl Coordinator {
     /// The sealed segments with rows, each partition's newest position, and each stream's counts,
-    /// discards included.
-    pub(super) fn collect(&mut self) -> Collected {
+    /// discards included; `begun` is the phases the commit begins, which its log records first.
+    pub(super) fn collect(&mut self, begun: &[StateChange]) -> Collected {
         let mut collected = Collected {
             segments: SegmentSet::new(),
             positions: BTreeMap::new(),
@@ -36,7 +36,7 @@ impl Coordinator {
         };
         let seals = std::mem::take(&mut self.sealed);
         if self.parts.wal.is_some() {
-            collected.sealed = self.logged(&seals);
+            collected.sealed = self.logged(&seals, begun);
         }
         for seal in seals {
             let stream = self.parts.partitions[seal.partition].stream;
@@ -62,10 +62,11 @@ impl Coordinator {
         collected
     }
 
-    /// `seals` as the load's log records them: each with where its partition stood before it, as
-    /// the commit's changes reach it.
-    fn logged(&self, seals: &[Seal]) -> Vec<Sealed> {
+    /// `seals` as the load's log records them: each with its stream's phase and where its partition
+    /// stood before it, as the commit's changes reach it, the phase it begins, `begun`, first.
+    fn logged(&self, seals: &[Seal], begun: &[StateChange]) -> Vec<Sealed> {
         let mut positions = self.parts.positions.clone();
+        positions.apply(begun);
         seals
             .iter()
             .map(|seal| {
@@ -82,6 +83,7 @@ impl Coordinator {
                     stream: stream.name.clone(),
                     partition: partition.id.clone(),
                     replayable: stream.replayable,
+                    phase: positions.phase(&stream.name),
                     from,
                     state: seal.state.clone(),
                 }
