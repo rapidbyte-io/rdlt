@@ -124,7 +124,7 @@ pub trait SqlDialect: Send + Sync {
     /// How the dialect writes a row whose key a row may already hold: in standard SQL unless it
     /// says otherwise.
     fn upserts(&self) -> Upserts {
-        Upserts::default()
+        Upserts::Guarded
     }
 
     /// The most bytes an identifier may have, where the database limits them, at least
