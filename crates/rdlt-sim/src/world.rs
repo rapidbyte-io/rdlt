@@ -80,8 +80,8 @@ pub struct World {
     /// The furthest offset acknowledged to each partition of a stream that cannot read again,
     /// by stream and partition: what it no longer holds.
     pub(crate) acknowledged: Mutex<BTreeMap<(String, String), u64>>,
-    /// The streams a reset cleared, whose committed positions moved back: an acknowledgement of
-    /// a commit that landed before the reset may reach the source after it.
+    /// The streams a reset is clearing while runs race it, whose committed positions move back:
+    /// an acknowledgement of a commit that landed before the reset may reach the source after it.
     pub(crate) reset: Mutex<BTreeSet<String>>,
     /// How many rows of each followed partition have arrived, by stream and partition index,
     /// while a streaming phase produces them; every row has arrived when there is none.

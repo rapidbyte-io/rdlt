@@ -63,6 +63,9 @@ impl Simulation {
         // The reset fences the runs it races: they may fail, faults or not.
         let running = self.attempt(phase, Scenario::Plain, false, None, &mut reports);
         let (_, unfinished) = tokio::join!(running, resetting);
+        // The raced runs have ended: no acknowledgement of a commit from before the reset is
+        // left to reach the source, so it is checked again from here on.
+        self.world.reset.lock().remove(drawn.streams[0].name());
         if let Some((engine, source, destination)) = unfinished {
             // Faults kept it from committing: without them, it must.
             self.world.set_faulty(false);
