@@ -111,11 +111,11 @@ async fn backpressured_partitions_do_not_lose_a_live_source() {
         let (sink, mut feed) = partition_channel(NonZeroUsize::new(1).expect("not zero"));
         let source = Arc::clone(&source);
         tokio::spawn(async move {
-            let request = ReadRequest {
-                stream: StreamName::new("blobs").expect("a valid stream name"),
-                partition: Partition::single(),
-                cursor: None,
-            };
+            let request = ReadRequest::new(
+                StreamName::new("blobs").expect("a valid stream name"),
+                Partition::single(),
+                None,
+            );
             source.read(request, sink).await
         });
         feed.recv().await.expect("the read sends");
@@ -268,11 +268,11 @@ async fn a_read_frame_beyond_the_hosts_limit_is_refused_typed() {
     };
     let source = blobs(serde_json::json!({}), options).await;
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
-    let request = ReadRequest {
-        stream: StreamName::new("blobs").expect("a valid stream name"),
-        partition: Partition::single(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        StreamName::new("blobs").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    );
     let reading = tokio::spawn(async move { source.read(request, sink).await });
     while feed.recv().await.is_some() {}
     let error = reading.await.expect("the read ends").unwrap_err();

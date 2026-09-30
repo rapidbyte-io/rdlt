@@ -10,7 +10,7 @@ use rdlt_connector_reference::{GeneratorSource, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 
-use crate::support::connectors::{COMMITTED, IDLE_READING, Ticks, UNBOUNDED};
+use crate::support::connectors::{COMMITTED, IDLE_READING, READS, Ticks};
 use crate::support::{Fake, Fault, engine, memory_destination, serve_fake, served};
 
 /// The ticks source, served, with `config`.
@@ -23,11 +23,11 @@ async fn ticks(config: serde_json::Value) -> RemoteSource {
 }
 
 fn request() -> ReadRequest {
-    ReadRequest {
-        stream: StreamName::new("ticks").expect("a valid stream name"),
-        partition: Partition::single(),
-        cursor: None,
-    }
+    ReadRequest::new(
+        StreamName::new("ticks").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    )
 }
 
 /// Reads `source`'s ticks to the end; the events it sent, and how the read ended.
@@ -73,20 +73,23 @@ async fn arrow_batches_whose_schema_changes_mid_read_load_across_the_wire() {
 }
 
 #[tokio::test]
-async fn a_served_read_learns_whether_its_partition_ends() {
+async fn a_served_read_learns_whether_its_partition_ends_and_whether_to_follow_it() {
     let source = ticks(serde_json::json!({ "rows": 1 })).await;
-    for partition in [Partition::single(), Partition::single().unbounded()] {
+    let reads = [
+        (Partition::single(), false),
+        (Partition::single().unbounded(), false),
+        (Partition::single().unbounded(), true),
+    ];
+    for (partition, follow) in reads {
         let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
-        let request = ReadRequest {
-            partition,
-            ..request()
-        };
+        let mut request = request().following(follow);
+        request.partition = partition;
         let read = source.read(request, sink).await;
         while feed.recv().await.is_some() {}
         read.expect("the read ends");
     }
-    let seen = UNBOUNDED.lock().expect("the lock is not poisoned").clone();
-    assert_eq!(seen, [false, true]);
+    let seen = READS.lock().expect("the lock is not poisoned").clone();
+    assert_eq!(seen, [(false, false), (true, false), (true, true)]);
 }
 
 #[tokio::test]
@@ -203,11 +206,7 @@ async fn a_barrier_pending_when_a_read_starts_is_answered_across_the_wire() {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
     // Raised before the read starts, as the engine raises one for a partition yet to start.
     feed.request_checkpoint(1);
-    let request = ReadRequest {
-        stream,
-        partition,
-        cursor: None,
-    };
+    let request = ReadRequest::new(stream, partition, None);
     source.read(request, sink).await.expect("the read succeeds");
     let mut answered = Vec::new();
     while let Some(event) = feed.recv().await {
@@ -230,11 +229,11 @@ async fn a_barrier_pending_when_a_read_starts_reaches_a_connector_that_knows_no_
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
     // Raised before the read starts: a connector that reads no barrier in the start still gets it.
     feed.request_checkpoint(1);
-    let request = ReadRequest {
-        stream: StreamName::new("events").expect("a valid stream name"),
-        partition: Partition::single(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        StreamName::new("events").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    );
     let read = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         source.read(request, sink),
@@ -260,11 +259,11 @@ async fn a_read_with_no_barrier_pending_asks_for_none() {
             .expect("the fake handshakes");
     let source = RemoteSource::new(connection);
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
-    let request = ReadRequest {
-        stream: StreamName::new("events").expect("a valid stream name"),
-        partition: Partition::single(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(
+        StreamName::new("events").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    );
     source.read(request, sink).await.expect("the read succeeds");
     let mut answered = Vec::new();
     while let Some(event) = feed.recv().await {

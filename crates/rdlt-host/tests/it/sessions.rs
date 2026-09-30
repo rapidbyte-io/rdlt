@@ -345,11 +345,11 @@ async fn a_schema_epoch_that_does_not_grow_is_refused() {
     let (sink, mut feed) =
         rdlt_connector::partition_channel(std::num::NonZeroUsize::new(8).unwrap());
     let drain = tokio::spawn(async move { while feed.recv().await.is_some() {} });
-    let request = rdlt_connector::ReadRequest {
-        stream: rdlt_connector::StreamName::new("items").expect("a valid stream name"),
-        partition: rdlt_connector::Partition::single(),
-        cursor: None,
-    };
+    let request = rdlt_connector::ReadRequest::new(
+        rdlt_connector::StreamName::new("items").expect("a valid stream name"),
+        rdlt_connector::Partition::single(),
+        None,
+    );
     let error = RemoteSource::new(connection)
         .read(request, sink)
         .await

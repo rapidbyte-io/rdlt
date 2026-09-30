@@ -271,6 +271,7 @@ impl<S> std::fmt::Debug for Streams<S> {
 
 /// What the engine asks one partition read for.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ReadRequest {
     /// The stream.
     pub stream: StreamName,
@@ -278,6 +279,31 @@ pub struct ReadRequest {
     pub partition: Partition,
     /// Where to resume; `None` reads from the start.
     pub cursor: Option<Cursor>,
+    /// Whether a read of an unbounded partition follows it once caught up, waiting for more
+    /// until asked to stop; otherwise it returns once caught up to where the source stood when
+    /// the read started.
+    ///
+    /// A bounded partition's read ignores it.
+    pub follow: bool,
+}
+
+impl ReadRequest {
+    /// A read of `partition` of `stream` from `cursor`, which returns once caught up.
+    pub fn new(stream: StreamName, partition: Partition, cursor: Option<Cursor>) -> Self {
+        Self {
+            stream,
+            partition,
+            cursor,
+            follow: false,
+        }
+    }
+
+    /// This read, following an unbounded partition where `follow` says so.
+    #[must_use]
+    pub fn following(mut self, follow: bool) -> Self {
+        self.follow = follow;
+        self
+    }
 }
 
 /// A connected source, as the engine drives it; built by [`source_factory`].

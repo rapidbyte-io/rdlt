@@ -18,7 +18,7 @@ struct Row {
 
 fn emitter() -> (Emitter<u64>, PartitionFeed) {
     let (sink, feed) = partition_channel(NonZeroUsize::new(16).unwrap());
-    (Emitter::new(sink, 7), feed)
+    (Emitter::new(sink, 7, false), feed)
 }
 
 fn ids(values: Vec<i64>) -> RecordBatch {
@@ -198,4 +198,21 @@ async fn rows_that_fail_to_serialize_are_a_data_error() {
     let error = out.rows(&[Unserializable]).await.unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
     assert!(error.to_string().contains("serializing rows"), "{error}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn stopped_resolves_once_the_engine_asks_the_read_to_stop_or_goes() {
+    let within = std::time::Duration::from_secs(1);
+    let (out, feed) = emitter();
+    let waiting = tokio::time::timeout(within, out.stopped()).await;
+    assert!(waiting.is_err(), "nothing asked the read to stop yet");
+    feed.stop();
+    tokio::time::timeout(within, out.stopped())
+        .await
+        .expect("asked to stop");
+    let (out, feed) = emitter();
+    drop(feed);
+    tokio::time::timeout(within, out.stopped())
+        .await
+        .expect("the engine went");
 }

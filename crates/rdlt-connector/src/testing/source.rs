@@ -232,11 +232,7 @@ async fn record(
     if let Some(barrier) = barrier {
         feed.request_checkpoint(barrier);
     }
-    let request = ReadRequest {
-        stream: stream.name().clone(),
-        partition: partition.clone(),
-        cursor,
-    };
+    let request = ReadRequest::new(stream.name().clone(), partition.clone(), cursor);
     let collect = async {
         let mut recording = Recording::default();
         while let Some(event) = feed.recv().await {
@@ -350,11 +346,7 @@ async fn read_starts(source: &dyn Source, catalog: &Catalog) -> Result<(), Viola
         return Ok(());
     };
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("64 is non-zero"));
-    let request = ReadRequest {
-        stream: stream.name().clone(),
-        partition: partition.clone(),
-        cursor: None,
-    };
+    let request = ReadRequest::new(stream.name().clone(), partition.clone(), None);
     let started = async {
         drop(tokio::time::timeout(START_WINDOW, feed.recv()).await);
         feed.stop();
@@ -379,11 +371,7 @@ async fn stops_are_prompt(source: &dyn Source, catalog: &Catalog) -> Result<(), 
         for partition in plan(source, stream.name()).await? {
             let (sink, feed) = partition_channel(NonZeroUsize::MIN);
             feed.stop();
-            let request = ReadRequest {
-                stream: stream.name().clone(),
-                partition: partition.clone(),
-                cursor: None,
-            };
+            let request = ReadRequest::new(stream.name().clone(), partition.clone(), None);
             let what = format!(
                 "a stopped read of {} partition {}",
                 stream.name(),

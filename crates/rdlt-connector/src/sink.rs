@@ -150,6 +150,15 @@ impl fmt::Debug for PartitionSink {
 }
 
 impl PartitionSink {
+    /// Resolves once the engine asks the read to stop or drops its end.
+    pub async fn stopped(&self) {
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => {}
+            () = self.events.closed() => {}
+        }
+    }
+
     /// Sends `event`, waiting while the channel is full; a read that runs elsewhere and forwards
     /// its events sends them here.
     ///

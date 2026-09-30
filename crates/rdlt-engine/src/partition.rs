@@ -192,11 +192,11 @@ async fn read_and_ingest(
     // outside the budget (spec §7.5).
     let admission = Arc::new(context.budget.clone());
     let (sink, feed) = admitted_partition_channel(context.buffer, admission);
-    let request = ReadRequest {
-        stream: job.stream.clone(),
-        partition: job.partition.clone(),
-        cursor: job.cursor.clone(),
-    };
+    let request = ReadRequest::new(
+        job.stream.clone(),
+        job.partition.clone(),
+        job.cursor.clone(),
+    );
     // An ingest failure ends the read rather than waiting for a source that may not emit again
     // for a long time. A read failure lets ingest drain what the source already sent.
     let ingest_failed = CancellationToken::new();

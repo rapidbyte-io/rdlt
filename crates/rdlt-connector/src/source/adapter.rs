@@ -4,8 +4,8 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use super::{
-    ACKNOWLEDGED_CODE, AcknowledgedReader, Acknowledging, Partition, PartitionPlan, ReadRequest,
-    ReadStream, Source, SourceConnector, SourceFactory,
+    ACKNOWLEDGED_CODE, AcknowledgedReader, Acknowledging, PartitionPlan, ReadRequest, ReadStream,
+    Source, SourceConnector, SourceFactory,
 };
 use crate::catalog::{Catalog, StreamSpec};
 use crate::config;
@@ -27,11 +27,11 @@ pub(crate) trait ErasedStream<S>: Send + Sync {
         state: &'a StreamState,
     ) -> BoxFuture<'a, Result<PartitionPlan>>;
 
+    /// Reads `request`'s partition, from its cursor, into `sink`.
     fn read<'a>(
         &'a self,
         source: &'a S,
-        partition: Partition,
-        cursor: Option<Cursor>,
+        request: ReadRequest,
         sink: PartitionSink,
     ) -> BoxFuture<'a, Result<()>>;
 
@@ -64,16 +64,21 @@ impl<S: SourceConnector, R: ReadStream<S>> ErasedStream<S> for R {
     fn read<'a>(
         &'a self,
         source: &'a S,
-        partition: Partition,
-        cursor: Option<Cursor>,
+        request: ReadRequest,
         sink: PartitionSink,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            let ReadRequest {
+                partition,
+                cursor,
+                follow,
+                ..
+            } = request;
             let cursor = match cursor {
                 Some(cursor) => decode::<S, R>(self, &cursor)?,
                 None => R::Cursor::default(),
             };
-            let mut out = Emitter::new(sink, R::CURSOR_VERSION);
+            let mut out = Emitter::new(sink, R::CURSOR_VERSION, follow);
             match ReadStream::read(self, source, &partition, cursor, &mut out).await {
                 Err(error) if error.kind() == ConnectorErrorKind::Stopped => Ok(()),
                 other => other,
@@ -156,7 +161,7 @@ impl<C: SourceConnector> Source for SourceAdapter<C> {
 
     fn read(&self, request: ReadRequest, sink: PartitionSink) -> BoxFuture<'_, Result<()>> {
         match self.stream(&request.stream) {
-            Ok(erased) => erased.read(&self.connector, request.partition, request.cursor, sink),
+            Ok(erased) => erased.read(&self.connector, request, sink),
             Err(error) => Box::pin(async move { Err(error) }),
         }
     }

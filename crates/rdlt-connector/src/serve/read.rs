@@ -57,11 +57,12 @@ fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
     } else {
         Partition::new(partition)
     };
-    Ok(ReadRequest {
+    Ok(ReadRequest::new(
         stream,
         partition,
-        cursor: start.cursor.map(Cursor::try_from).transpose()?,
-    })
+        start.cursor.map(Cursor::try_from).transpose()?,
+    )
+    .following(start.follow))
 }
 
 /// Frames waiting for credit, and what encodes them.

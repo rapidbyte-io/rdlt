@@ -23,16 +23,31 @@ use crate::sink::{LogLevel, PartitionSink, Push, SourceEvent};
 pub struct Emitter<C> {
     sink: PartitionSink,
     cursor_version: u16,
+    follow: bool,
     cursor: PhantomData<fn(&C)>,
 }
 
 impl<C: Serialize> Emitter<C> {
-    pub(crate) fn new(sink: PartitionSink, cursor_version: u16) -> Self {
+    pub(crate) fn new(sink: PartitionSink, cursor_version: u16, follow: bool) -> Self {
         Self {
             sink,
             cursor_version,
+            follow,
             cursor: PhantomData,
         }
+    }
+
+    /// Whether the engine asks this read to follow its unbounded partition once caught up,
+    /// waiting for more until asked to stop, rather than return once caught up to where the
+    /// source stood when the read started ([`ReadRequest::follow`](crate::ReadRequest::follow)).
+    pub fn follows(&self) -> bool {
+        self.follow
+    }
+
+    /// Resolves once the engine asks the read to stop, or stops listening: a read waiting for
+    /// data selects on it, and returns.
+    pub async fn stopped(&self) {
+        self.sink.stopped().await;
     }
 
     /// Pushes `rows` as JSON for the engine to infer their schema; an empty slice pushes nothing.

@@ -930,6 +930,10 @@ pub struct ReadStart {
     /// Whether the partition never ends, as the plan said.
     #[prost(bool, tag = "6")]
     pub unbounded: bool,
+    /// Whether a read of an unbounded partition follows it once caught up, until asked to stop;
+    /// otherwise it returns once caught up to where the source stood when the read started.
+    #[prost(bool, tag = "7")]
+    pub follow: bool,
 }
 /// Asks for a checkpoint answering a barrier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

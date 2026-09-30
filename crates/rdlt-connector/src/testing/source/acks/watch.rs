@@ -62,11 +62,7 @@ impl Probed<'_> {
         // A one-event channel keeps the read at most an event ahead of the questions; the
         // question once it ends covers what it sent last.
         let (sink, feed) = partition_channel(NonZeroUsize::MIN);
-        let request = ReadRequest {
-            stream: self.stream.name().clone(),
-            partition: partition.clone(),
-            cursor,
-        };
+        let request = ReadRequest::new(self.stream.name().clone(), partition.clone(), cursor);
         let stopped = CancellationToken::new();
         let read = async {
             tokio::select! {
