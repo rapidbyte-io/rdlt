@@ -53,18 +53,12 @@ impl Planning<'_> {
             _ => None,
         };
         let shape = normalized(self.context, plan, spec);
-        if shape.is_some() && plan.read_mode() == ReadMode::Cdc {
-            return Err(Error::config(format!(
-                "stream {name}: a change stream cannot normalize yet"
-            ))
-            .with_code("normalize_changes_unsupported")
-            .with_stream(name));
-        }
+        unnormalizable(plan, shape.is_some())?;
         let (resolver, table, model) =
             self.table(plan, spec, generation, tables, shape.is_some())?;
         // Refused before the table changes, and recorded by the attempt's first commit.
         let sequences = sequences::to_record(plan, tables.recorded_table(&table.path))?
-            .map(|sequences| (table.path.clone(), sequences));
+            .map(|(sequences, history)| (table.path.clone(), sequences, history));
         let index = tables.add_normalized(resolver, &table, model, shape.clone());
         if let Some(declared) = spec.schema() {
             let incoming = match &shape {
@@ -126,6 +120,11 @@ impl Planning<'_> {
             LineageColumns::None
         };
         let meta = MetaNames::assign_changes(&self.naming, !key.is_empty(), lineage, layout(plan))?;
+        let meta = if plan.keeps_history() {
+            meta.with_history(&self.naming, change_time(spec))?
+        } else {
+            meta
+        };
         let keys: BTreeSet<ColumnKey> = key.iter().cloned().map(ColumnKey::Source).collect();
         self.naming
             .assign_columns(&mut model.names, &keys, &meta.all())?;
@@ -168,11 +167,12 @@ fn planned(
 ) -> Planned {
     let cdc = plan.read_mode() == ReadMode::Cdc;
     let reset_retention = plan.retention_loss() == RetentionLoss::Reset;
+    // A history table's hashes need whole rows, which an update leaving columns unchanged lacks.
     let changes = cdc.then(|| ChangeMode {
-        merge: plan.write_mode() == WriteMode::Merge,
+        merge: plan.keyed(),
         deletes: plan.delete_mode(),
         truncates: plan.truncate_mode(),
-        partial_updates,
+        partial_updates: partial_updates && !plan.keeps_history(),
     });
     // Only change streams read in phases (spec §9.4).
     let tracked = cdc || (follow && plan.read_mode() == ReadMode::Incremental);
@@ -207,6 +207,25 @@ fn planned(
         reset_retention,
         partitions: partitioned.partitions,
     }
+}
+
+/// Refuses `plan`'s stream where it is `normalized` but cannot normalize yet: a change stream, or
+/// a history stream, whose child rows would need versions of their own.
+fn unnormalizable(plan: &StreamPlan, normalized: bool) -> Result<(), Error> {
+    if !normalized || (plan.read_mode() != ReadMode::Cdc && !plan.keeps_history()) {
+        return Ok(());
+    }
+    let (code, what) = if plan.keeps_history() {
+        ("history_normalize_unsupported", "a history stream")
+    } else {
+        ("normalize_changes_unsupported", "a change stream")
+    };
+    let name = plan.name();
+    Err(
+        Error::config(format!("stream {name}: {what} cannot normalize yet"))
+            .with_code(code)
+            .with_stream(name),
+    )
 }
 
 /// How `plan`'s stream normalizes, if its settings or the pipeline's say it does.
@@ -247,11 +266,11 @@ fn normalized(context: &RunContext, plan: &StreamPlan, spec: &StreamSpec) -> Opt
     })
 }
 
-/// How a change stream's table holds its changes: merged by key for a merge stream, as a log
-/// otherwise; `None` for a stream not read as changes.
+/// How a change stream's table holds its changes: merged by key for a merge or history stream,
+/// as a log otherwise; `None` for a stream not read as changes.
 fn layout(plan: &StreamPlan) -> Option<ChangeLayout> {
     match (plan.read_mode(), plan.write_mode()) {
-        (ReadMode::Cdc, WriteMode::Merge) => Some(ChangeLayout::Merge {
+        (ReadMode::Cdc, WriteMode::Merge | WriteMode::History) => Some(ChangeLayout::Merge {
             soft: plan.delete_mode() == DeleteMode::Soft,
         }),
         (ReadMode::Cdc, _) => Some(ChangeLayout::Log),
@@ -259,10 +278,18 @@ fn layout(plan: &StreamPlan) -> Option<ChangeLayout> {
     }
 }
 
-/// The columns a merge stream matches rows by: the plan's key, or else the stream's primary key;
-/// none for other streams.
+/// The column a history stream's versions begin at, its source's change time: a top-level
+/// column, as the stream's check makes it.
+fn change_time(spec: &StreamSpec) -> Option<Arc<str>> {
+    spec.change_time()
+        .and_then(|column| column.segments().next())
+        .map(Arc::from)
+}
+
+/// The columns a merge or history stream matches rows by: the plan's key, or else the stream's
+/// primary key; none for other streams.
 pub(super) fn merge_key(plan: &StreamPlan, spec: &StreamSpec) -> Result<Vec<ColumnPath>, Error> {
-    if plan.write_mode() != WriteMode::Merge {
+    if !plan.keyed() {
         return Ok(Vec::new());
     }
     let name = plan.name();

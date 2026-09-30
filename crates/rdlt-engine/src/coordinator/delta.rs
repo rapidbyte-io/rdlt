@@ -129,8 +129,13 @@ impl Coordinator {
             .streams
             .iter_mut()
             .filter_map(|stream| stream.sequences.take())
-            .map(|(table, sequences)| {
-                StateChange::Put(StateEntry::Sequences { table, sequences }.to_record())
+            .map(|(table, sequences, history)| {
+                let entry = StateEntry::Sequences {
+                    table,
+                    sequences,
+                    history,
+                };
+                StateChange::Put(entry.to_record())
             })
             .collect()
     }

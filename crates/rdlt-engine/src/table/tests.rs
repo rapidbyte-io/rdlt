@@ -56,6 +56,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
             id: None,
             parent: None,
             changes: None,
+            history: None,
         },
         root: None,
     }
@@ -730,6 +731,7 @@ fn models_come_from_committed_state() {
         names: model.names.clone(),
         sequences: None,
         exact: model.exact.clone(),
+        history: false,
     };
     // A model read from state starts this attempt's revisions afresh.
     assert_eq!(

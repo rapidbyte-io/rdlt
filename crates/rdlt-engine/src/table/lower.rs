@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use rdlt_connector::{
-    Capabilities, DELETED_AT_COLUMN, Field, ID_COLUMN, IDX_COLUMN, LOAD_ID_COLUMN,
-    LOADED_AT_COLUMN, LogicalType, OP_COLUMN, PARENT_ID_COLUMN, ROOT_ID_COLUMN, SEQ_COLUMN,
-    TimeUnit, TypeKind, UNCHANGED_COLUMN,
+    Capabilities, DELETED_AT_COLUMN, Field, ID_COLUMN, IDX_COLUMN, IS_CURRENT_COLUMN,
+    LOAD_ID_COLUMN, LOADED_AT_COLUMN, LogicalType, OP_COLUMN, PARENT_ID_COLUMN, ROOT_ID_COLUMN,
+    ROW_HASH_COLUMN, SEQ_COLUMN, TimeUnit, TypeKind, UNCHANGED_COLUMN, VALID_FROM_COLUMN,
+    VALID_TO_COLUMN,
 };
 
 use super::model::Model;
@@ -28,6 +29,21 @@ pub(crate) struct MetaNames {
     pub(crate) id: Option<Arc<str>>,
     /// The parent's id, the root's id and the position in the parent's array, for child tables.
     pub(crate) parent: Option<[Arc<str>; 3]>,
+    /// A history table's columns.
+    pub(crate) history: Option<HistoryNames>,
+}
+
+/// The identifiers of a history table's columns (spec §9.5), and where its versions' beginnings
+/// come from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryNames {
+    pub(crate) valid_from: Arc<str>,
+    pub(crate) valid_to: Arc<str>,
+    pub(crate) is_current: Arc<str>,
+    pub(crate) row_hash: Arc<str>,
+    /// The incoming column naming when each change happened, the stream's change time; `None`
+    /// begins each version when its load started.
+    pub(crate) change_time: Option<Arc<str>>,
 }
 
 /// How a change stream's table holds its changes.
@@ -119,7 +135,31 @@ impl MetaNames {
                 ]),
                 _ => None,
             },
+            history: None,
         })
+    }
+
+    /// These names, with a history table's columns under `naming`'s rules, whose versions begin
+    /// at the incoming `change_time` column, or when their load started.
+    pub(crate) fn with_history(
+        mut self,
+        naming: &Naming,
+        change_time: Option<Arc<str>>,
+    ) -> Result<Self, Error> {
+        let mut taken: BTreeSet<String> = self.all().into_iter().map(ToOwned::to_owned).collect();
+        let mut name = |column: &str| -> Result<Arc<str>, Error> {
+            let name = naming.metadata(column, &taken)?;
+            taken.insert(name.clone());
+            Ok(name.into())
+        };
+        self.history = Some(HistoryNames {
+            valid_from: name(VALID_FROM_COLUMN)?,
+            valid_to: name(VALID_TO_COLUMN)?,
+            is_current: name(IS_CURRENT_COLUMN)?,
+            row_hash: name(ROW_HASH_COLUMN)?,
+            change_time,
+        });
+        Ok(self)
     }
 
     /// Every metadata identifier, which source columns may not take.
@@ -129,6 +169,14 @@ impl MetaNames {
         if let Some(changes) = &self.changes {
             names.extend([changes.op.as_ref(), changes.unchanged.as_ref()]);
             names.extend(changes.deleted_at.as_deref());
+        }
+        if let Some(history) = &self.history {
+            names.extend([
+                history.valid_from.as_ref(),
+                history.valid_to.as_ref(),
+                history.is_current.as_ref(),
+                history.row_hash.as_ref(),
+            ]);
         }
         names.extend(self.id.as_deref());
         names.extend(self.parent.iter().flatten().map(AsRef::as_ref));
@@ -223,6 +271,13 @@ pub(crate) fn logical_fields(model: &Model, meta: &MetaNames) -> Vec<Field> {
             fields.push(column(deleted_at, loaded_at_type(), true));
         }
     }
+    if let Some(history) = &meta.history {
+        fields.push(column(&history.valid_from, loaded_at_type(), false));
+        fields.push(column(&history.valid_to, loaded_at_type(), true));
+        fields.push(column(&history.is_current, LogicalType::Bool, false));
+        // A delete's row carries no hash, only the key whose version it closes.
+        fields.push(column(&history.row_hash, LogicalType::Binary, true));
+    }
     // Lineage columns are nullable: rows loaded before their stream normalized have none.
     if let Some(id) = &meta.id {
         fields.push(column(id, ID_TYPE, true));
@@ -286,13 +341,21 @@ pub(crate) fn prepared_schema(fields: &[Field], logical: &[Field], columns: usiz
 }
 
 /// The fields of a merge table's written batches that only direct the merge, after its stored
-/// columns: a change stream's op and unchanged columns.
+/// columns: a change stream's op, and its unchanged columns but in a history table, whose hashes
+/// need whole rows.
 pub(crate) fn directive_fields(meta: &MetaNames) -> Vec<ArrowField> {
     match &meta.changes {
-        Some(changes) if !changes.stored => vec![
-            ArrowField::new(changes.op.as_ref(), DataType::Int8, false),
-            ArrowField::new(changes.unchanged.as_ref(), DataType::Binary, true),
-        ],
+        Some(changes) if !changes.stored => {
+            let mut fields = vec![ArrowField::new(changes.op.as_ref(), DataType::Int8, false)];
+            if meta.history.is_none() {
+                fields.push(ArrowField::new(
+                    changes.unchanged.as_ref(),
+                    DataType::Binary,
+                    true,
+                ));
+            }
+            fields
+        }
         _ => Vec::new(),
     }
 }

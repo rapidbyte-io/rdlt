@@ -1,6 +1,6 @@
 //! Checking a planned stream against the source's catalog and the destination's capabilities.
 
-use rdlt_connector::{Catalog, ReadMode, StreamSpec};
+use rdlt_connector::{Catalog, Field, LogicalType, ReadMode, StreamSpec};
 
 use super::RunContext;
 use crate::error::Error;
@@ -46,29 +46,63 @@ pub(super) fn check_stream<'a>(
         WriteMode::Append => modes.append,
         WriteMode::Replace => modes.replace,
         WriteMode::Merge => modes.merge,
+        WriteMode::History => modes.history,
     };
     if !writable {
         let detail = format!("the destination cannot write {:?}", plan.write_mode());
         return Err(refuse("write_mode_unsupported", &detail));
     }
-    if plan.merges_changes() {
-        let capabilities = context.destination.capabilities();
-        if !capabilities.merge_changes {
-            let detail = "the destination does not merge change streams";
-            return Err(refuse("change_merge_unsupported", detail));
-        }
-        let deletes = capabilities.delete_modes;
-        let (hard, soft) = removals(plan);
-        if (hard && !deletes.hard) || (soft && !deletes.soft) {
-            let detail = format!(
-                "the destination cannot remove rows as its deletes ({:?}) and truncates ({:?}) do",
-                plan.delete_mode(),
-                plan.truncate_mode()
-            );
-            return Err(refuse("delete_mode_unsupported", &detail));
-        }
+    if plan.keeps_history()
+        && let Some(detail) = change_time_invalid(spec)
+    {
+        return Err(refuse("change_time_invalid", &detail));
+    }
+    if let Some((code, detail)) = unmergeable(context, plan) {
+        return Err(refuse(code, &detail));
     }
     Ok(spec)
+}
+
+/// Why the destination cannot merge `plan`'s change stream as planned, if it is one and cannot.
+fn unmergeable(context: &RunContext, plan: &StreamPlan) -> Option<(&'static str, String)> {
+    if !plan.merges_changes() {
+        return None;
+    }
+    let capabilities = context.destination.capabilities();
+    if !capabilities.merge_changes {
+        let detail = "the destination does not merge change streams".to_owned();
+        return Some(("change_merge_unsupported", detail));
+    }
+    let deletes = capabilities.delete_modes;
+    let (hard, soft) = removals(plan);
+    if (hard && !deletes.hard) || (soft && !deletes.soft) {
+        let detail = format!(
+            "the destination cannot remove rows as its deletes ({:?}) and truncates ({:?}) do",
+            plan.delete_mode(),
+            plan.truncate_mode()
+        );
+        return Some(("delete_mode_unsupported", detail));
+    }
+    None
+}
+
+/// Why the stream's change time cannot begin its versions, if it cannot: it names a nested
+/// column, or a column the stream's declared schema lacks or holds as something other than a
+/// date or timestamp.
+fn change_time_invalid(spec: &StreamSpec) -> Option<String> {
+    let column = spec.change_time()?;
+    let mut segments = column.segments();
+    let (Some(name), None) = (segments.next(), segments.next()) else {
+        return Some(format!("its change time {column} names a nested column"));
+    };
+    let declared = spec.schema()?;
+    match declared.field(name).map(Field::logical_type) {
+        None => Some(format!("its change time {column} is none of its columns")),
+        Some(LogicalType::Timestamp(..) | LogicalType::Date) => None,
+        Some(other) => Some(format!(
+            "its change time {column} holds {other}, not a time"
+        )),
+    }
 }
 
 /// Whether a change stream merged by key removes rows outright, and whether it marks them

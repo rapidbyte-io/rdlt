@@ -14,6 +14,7 @@ mod engine;
 mod exactness;
 mod following;
 mod following_changes;
+mod history;
 mod json;
 mod ledger;
 mod merge;

@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use arrow_schema::SchemaRef;
 use rdlt_connector::{
-    ChangeColumns, ColumnKey, Deletion, Field, LogicalType, MergeKey, SchemaVersion, TableRef,
-    TableSchema,
+    ChangeColumns, ColumnKey, Deletion, Field, HistoryColumns, LogicalType, MergeKey,
+    SchemaVersion, TableRef, TableSchema,
 };
 
 #[cfg(test)]
@@ -112,12 +112,13 @@ impl TableView {
     }
 
     /// Whether batches keep only the last row of each key: a merge table's do, but not a child
-    /// table's, which keeps every row of its roots' winning rows for the destination to pick.
+    /// table's, which keeps every row of its roots' winning rows for the destination to pick, nor
+    /// a history table's, which keeps every version.
     pub(crate) fn compacts(&self) -> bool {
         self.table
             .merge
             .as_ref()
-            .is_some_and(|key| key.root.is_none())
+            .is_some_and(|key| key.root.is_none() && key.history.is_none())
     }
 
     /// The destination's columns as a schema, as a table is created.
@@ -167,7 +168,11 @@ fn merge_key(resolver: &Resolver, key_names: &[&str]) -> Option<MergeKey> {
         .filter(|changes| !changes.stored)
         .map(|changes| ChangeColumns {
             op: Arc::clone(&changes.op),
-            unchanged: Some(Arc::clone(&changes.unchanged)),
+            unchanged: resolver
+                .meta
+                .history
+                .is_none()
+                .then(|| Arc::clone(&changes.unchanged)),
             deletion: match &changes.deleted_at {
                 Some(at) => Deletion::Soft { at: Arc::clone(at) },
                 None => Deletion::Hard,
@@ -186,7 +191,16 @@ fn merge_key(resolver: &Resolver, key_names: &[&str]) -> Option<MergeKey> {
             seq: Arc::clone(seq),
             root: None,
             changes,
-            history: None,
+            history: resolver
+                .meta
+                .history
+                .as_ref()
+                .map(|history| HistoryColumns {
+                    valid_from: Arc::clone(&history.valid_from),
+                    valid_to: Arc::clone(&history.valid_to),
+                    is_current: Arc::clone(&history.is_current),
+                    row_hash: Arc::clone(&history.row_hash),
+                }),
         },
     })
 }

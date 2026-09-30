@@ -25,22 +25,26 @@ pub enum WriteMode {
     Replace,
     /// Upsert by key: a row replaces the table's row with the same key.
     Merge,
+    /// Keep every version of each key (spec §9.5): a row that changes its key's data closes the
+    /// key's current version and becomes the current one.
+    History,
 }
 
-/// What a change stream's deletes do to its merge table (spec §9.4).
+/// What a change stream's deletes do to its merge or history table (spec §9.4).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DeleteMode {
     /// Remove the row.
     #[default]
     Hard,
-    /// Keep the row with its last values, and record when it was deleted in `_rdlt_deleted_at`.
+    /// Keep the row with its last values, and record when it was deleted in `_rdlt_deleted_at`;
+    /// a history table closes the key's version and keeps a deleted one.
     Soft,
     /// Drop delete rows; the report counts them.
     Ignore,
 }
 
-/// What a change stream's truncates do to its merge table (spec §9.4).
+/// What a change stream's truncates do to its merge or history table (spec §9.4).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OnTruncate {
@@ -224,10 +228,20 @@ impl StreamPlan {
         self.truncates.unwrap_or_default()
     }
 
-    /// Whether the stream is read as changes and merged by key, so its deletes and truncates
+    /// Whether the stream matches rows by key: merged, or kept as history.
+    pub(crate) fn keyed(&self) -> bool {
+        matches!(self.write, WriteMode::Merge | WriteMode::History)
+    }
+
+    /// Whether the stream keeps every version of each key.
+    pub(crate) fn keeps_history(&self) -> bool {
+        self.write == WriteMode::History
+    }
+
+    /// Whether the stream is read as changes and matched by key, so its deletes and truncates
     /// change its table.
     pub(crate) fn merges_changes(&self) -> bool {
-        self.read == ReadMode::Cdc && self.write == WriteMode::Merge
+        self.read == ReadMode::Cdc && self.keyed()
     }
 }
 
@@ -354,16 +368,16 @@ fn check_modes(stream: &StreamPlan) -> Result<(), Error> {
             .with_code(code)
             .with_stream(&stream.name))
     };
-    if stream.key.is_some() && stream.write != WriteMode::Merge {
+    if stream.key.is_some() && !stream.keyed() {
         return refuse(
             "plan_key_unused",
-            "a key is set, but only merge streams match rows by key",
+            "a key is set, but only merge and history streams match rows by key",
         );
     }
     if (stream.deletes.is_some() || stream.truncates.is_some()) && !stream.merges_changes() {
         return refuse(
             "plan_deletes_unused",
-            "a delete or truncate mode is set, but only change streams merged by key apply them",
+            "a delete or truncate mode is set, but only change streams matched by key apply them",
         );
     }
     match (stream.read, stream.write) {
