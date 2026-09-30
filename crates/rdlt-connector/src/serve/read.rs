@@ -177,6 +177,16 @@ fn log_level(level: LogLevel) -> v1::LogLevel {
     }
 }
 
+/// A spawned read, aborted once dropped: a read the host leaves, which may wait for data that
+/// never comes, ends with the pump.
+struct Reading(tokio::task::JoinHandle<crate::error::Result<()>>);
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Reads the partition and sends its frames within credit until the read is done, or the host
 /// goes.
 async fn pump(
@@ -192,7 +202,9 @@ async fn pump(
     if let Some(barrier) = std::num::NonZeroU64::new(barrier) {
         feed.request_checkpoint(barrier.get());
     }
-    let mut reading = tokio::spawn(async move { source.read(request, sink).await });
+    let mut reading = Reading(tokio::spawn(
+        async move { source.read(request, sink).await },
+    ));
     let mut outbox = Outbox::new(host);
     let mut done = false;
     loop {
@@ -224,7 +236,7 @@ async fn pump(
                     outbox.event(event)
                 } else {
                     done = true;
-                    finish(&mut outbox, (&mut reading).await)
+                    finish(&mut outbox, (&mut reading.0).await)
                 };
                 if let Err(error) = queued {
                     // The host may have gone; the read ends either way.
