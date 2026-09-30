@@ -210,3 +210,16 @@ async fn the_log_source_is_certified_and_commits_offsets_only_when_told() {
         assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_log_that_grows_as_it_is_read_is_certified() {
+    // A following read of it never goes quiet: it is asked to stop while messages still arrive.
+    let config = json!({
+        "seed": 19,
+        "group": "certified_growing",
+        "streams": [{ "name": "events", "partitions": 2, "messages": 6, "per_second": 20 }],
+    });
+    let report = certify_source::<LogSource>(config).await;
+    report.assert_passed();
+    assert_eq!(report.outcome("S-STOP"), Some(&Outcome::Passed), "{report}");
+}
