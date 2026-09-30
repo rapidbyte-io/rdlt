@@ -121,6 +121,22 @@ async fn logs_and_metrics_are_forwarded() {
 }
 
 #[tokio::test]
+async fn replan_and_lag_signals_are_forwarded() {
+    let (mut out, feed) = emitter();
+    out.behind(12).await.unwrap();
+    out.replan().await.unwrap();
+    out.behind(0).await.unwrap();
+    assert_eq!(
+        drain(out, feed).await,
+        vec![
+            SourceEvent::Behind { records: 12 },
+            SourceEvent::Replan,
+            SourceEvent::Behind { records: 0 },
+        ]
+    );
+}
+
+#[tokio::test]
 async fn json_over_the_limit_is_refused_before_it_is_sent() {
     let (mut out, feed) = emitter();
     let too_big = Bytes::from(vec![

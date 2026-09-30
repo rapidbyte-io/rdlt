@@ -247,7 +247,10 @@ async fn record(
                     recording.checkpoints.push(cursor);
                     recording.answered.extend(answers);
                 }
-                SourceEvent::Log { .. } | SourceEvent::Metric { .. } => {}
+                SourceEvent::Log { .. }
+                | SourceEvent::Metric { .. }
+                | SourceEvent::Replan
+                | SourceEvent::Behind { .. } => {}
             }
         }
         recording

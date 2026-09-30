@@ -161,21 +161,7 @@ impl Reader {
                 .frame
                 .ok_or_else(|| invalid(&Invalid::Missing("read frame")))?
             {
-                Frame::Schema(schema) => {
-                    if self.epoch.is_some_and(|epoch| schema.schema_epoch <= epoch) {
-                        let message = format!(
-                            "schema epoch {} does not follow {:?}",
-                            schema.schema_epoch, self.epoch
-                        );
-                        return Err(ConnectorError::new(ConnectorErrorKind::Internal, message)
-                            .with_code(rdlt_connector::wire::MALFORMED_FRAME));
-                    }
-                    self.decoder
-                        .schema(&schema.ipc_schema)
-                        .map_err(|error| frame_error(&error))?;
-                    self.epoch = Some(schema.schema_epoch);
-                    Read::Nothing
-                }
+                Frame::Schema(schema) => self.schema(&schema)?,
                 Frame::Batch(batch) => self.batch(batch)?,
                 Frame::Json(json) => {
                     self.limits.admit_json(json.data.len()).map_err(refused)?;
@@ -208,9 +194,29 @@ impl Reader {
                         value: metric.value,
                     })
                 }
+                Frame::Replan(_) => Read::Event(SourceEvent::Replan),
+                Frame::Behind(behind) => Read::Event(SourceEvent::Behind {
+                    records: behind.records,
+                }),
                 Frame::Done(_) => Read::Done,
             },
         )
+    }
+
+    fn schema(&mut self, schema: &v1::SchemaFrame) -> rdlt_connector::Result<Read> {
+        if self.epoch.is_some_and(|epoch| schema.schema_epoch <= epoch) {
+            let message = format!(
+                "schema epoch {} does not follow {:?}",
+                schema.schema_epoch, self.epoch
+            );
+            return Err(ConnectorError::new(ConnectorErrorKind::Internal, message)
+                .with_code(rdlt_connector::wire::MALFORMED_FRAME));
+        }
+        self.decoder
+            .schema(&schema.ipc_schema)
+            .map_err(|error| frame_error(&error))?;
+        self.epoch = Some(schema.schema_epoch);
+        Ok(Read::Nothing)
     }
 
     fn batch(&mut self, batch: v1::BatchFrame) -> rdlt_connector::Result<Read> {

@@ -451,7 +451,10 @@ impl Ingested {
                 self.last_cursor = Some(cursor);
                 return context.report(Progress::Sealed(sealed.seal(job.index, state, answers)));
             }
-            SourceEvent::Log { .. } | SourceEvent::Metric { .. } => return Ok(()),
+            SourceEvent::Log { .. }
+            | SourceEvent::Metric { .. }
+            | SourceEvent::Replan
+            | SourceEvent::Behind { .. } => return Ok(()),
         };
         // Every push on an admitted channel carries the permit that reserved its bytes.
         let permit = permit.ok_or_else(|| Error::internal("a push arrived without its permit"))?;
