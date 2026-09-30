@@ -79,23 +79,27 @@ impl Session for FilesSession {
     type Writer = FilesWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
-        let (location, name) = (self.location.clone(), change.table().name.clone());
-        blocking(move || claim(&location, &name)).await?;
+        let (location, table) = (self.location.clone(), change.table().clone());
         let change = change.clone();
-        self.learn(change.table());
-        let root = Arc::clone(&self.location.root);
         blocking(move || {
-            tables::update(&root, &change.table().name, |current| {
-                let next = changed(current, &change)?;
-                Ok((current != Some(&next)).then_some(next))
+            let (root, name) = (&location.root, &change.table().name);
+            // Claimed and changed under one lock, so no release lands between them.
+            tables::locked(root, name, || {
+                claim(&location, name)?;
+                tables::update(root, name, |current| {
+                    let next = changed(current, &change)?;
+                    Ok((current != Some(&next)).then_some(next))
+                })
             })
         })
-        .await
+        .await?;
+        self.learn(&table);
+        Ok(())
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<FilesWriter> {
         let (location, name) = (self.location.clone(), table.name.clone());
-        blocking(move || claim(&location, &name)).await?;
+        blocking(move || tables::locked(&location.root, &name, || claim(&location, &name))).await?;
         self.learn(table);
         Ok(FilesWriter {
             location: self.location.clone(),
@@ -129,7 +133,7 @@ impl Session for FilesSession {
 /// fenced, since a drop may have released the table from it.
 ///
 /// The catalog is outside the manifest, so the session is checked again once it claimed: a
-/// claim a drop overtook is undone.
+/// claim a drop overtook is undone. The caller holds the catalog's lock.
 fn claim(location: &Location, name: &str) -> Result<()> {
     let (root, pipeline) = (&location.root, &location.pipeline);
     let unowned = tables::owner(root, name)?.is_none();
@@ -147,7 +151,7 @@ fn claim(location: &Location, name: &str) -> Result<()> {
     }
     tables::claim(root, name, pipeline)?;
     if unowned && let Some(error) = fenced()? {
-        tables::release(root, name, pipeline)?;
+        tables::release_held(root, name, pipeline)?;
         return Err(error);
     }
     Ok(())
