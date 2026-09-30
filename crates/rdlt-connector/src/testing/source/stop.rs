@@ -19,10 +19,10 @@ pub(super) async fn stops_are_prompt(
     catalog: &Catalog,
 ) -> Result<(), Violation> {
     for stream in catalog.iter() {
-        for partition in plan(source, stream.name()).await? {
+        for (partition, start) in plan(source, stream.name()).await? {
             let (sink, feed) = partition_channel(NonZeroUsize::MIN);
             feed.stop();
-            let request = ReadRequest::new(stream.name().clone(), partition.clone(), None);
+            let request = ReadRequest::new(stream.name().clone(), partition.clone(), start);
             let what = format!(
                 "a stopped read of {} partition {}",
                 stream.name(),

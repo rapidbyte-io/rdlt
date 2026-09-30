@@ -21,6 +21,7 @@ use super::{
 use crate::capabilities::{Capabilities, SchemaChanges};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::commit::{CommitMeta, Receipt};
+use crate::cursor::Cursor;
 use crate::destination::{
     DestinationConnector, MergeKey, OpenContext, Opened, RootKey, Session, TableChange, TableRef,
     TableWriter, WriteStats,
@@ -74,6 +75,9 @@ struct PagesConfig {
     replanned: String,
     /// The phase its plans name, as a stream read in phases does; 0 names none.
     phase: u16,
+    /// The page its phase starts at, which its plans name; a read from before it is refused, as
+    /// a change stream's is from before the position its snapshot captured.
+    start: u32,
 }
 
 impl Default for PagesConfig {
@@ -95,6 +99,7 @@ impl Default for PagesConfig {
             hang: String::new(),
             replanned: String::new(),
             phase: 0,
+            start: 0,
         }
     }
 }
@@ -193,7 +198,13 @@ impl ReadStream<Pages> for Page {
     }
 
     async fn plan(&self, source: &Pages, state: &StreamState) -> Result<PartitionPlan> {
-        let plan = PartitionPlan::from(self.partitions(source, state).await?);
+        let mut plan = PartitionPlan::from(self.partitions(source, state).await?);
+        if source.config.start > 0 {
+            let start = Cursor::encode(Self::CURSOR_VERSION, &source.config.start)?;
+            for partition in &plan.partitions {
+                plan.starts.insert(partition.id().clone(), start.clone());
+            }
+        }
         Ok(match source.config.phase {
             0 => plan,
             phase => plan.phase(phase),
@@ -215,6 +226,9 @@ impl ReadStream<Pages> for Page {
         }
         if source.config.idle {
             std::future::pending::<()>().await;
+        }
+        if cursor < source.config.start {
+            return Err(ConnectorError::data("the phase starts later"));
         }
         let (start, end) = match (source.config.ignore_cursor, source.config.shifted) {
             (true, _) => (0, source.config.pages),
@@ -253,7 +267,7 @@ async fn a_correct_source_passes_every_clause() {
 
 #[tokio::test]
 async fn a_source_whose_plans_name_their_phase_is_planned_again_within_it() {
-    let report = certify_source::<Pages>(json!({ "phase": 2 })).await;
+    let report = certify_source::<Pages>(json!({ "phase": 2, "start": 1 })).await;
     report.assert_passed();
     assert_eq!(report.outcome("S-PARTITION"), Some(&Outcome::Passed));
 }
