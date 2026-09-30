@@ -16,6 +16,7 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::history;
 use super::workload::{ChangeStream, Event, Merged};
 use crate::world::{FaultPoint, World};
 
@@ -69,6 +70,7 @@ impl SourceConnector for SimChangeSource {
             streams.with(Reader {
                 index,
                 replayable: stream.replayable,
+                history: stream.history,
             })
         })
     }
@@ -79,6 +81,8 @@ struct Reader {
     index: usize,
     /// Whether its source can read again what it acknowledged, which its spec says.
     replayable: bool,
+    /// Whether it keeps history, so its rows carry their change time.
+    history: bool,
 }
 
 impl Reader {
@@ -112,9 +116,13 @@ impl ReadStream<SimChangeSource> for Reader {
 
     fn spec(&self) -> StreamSpec {
         // The spec names the stream without the workload, so it stays what the catalog says.
-        StreamSpec::new(self.name())
-            .with_schema(schema())
-            .with_primary_key(["id"])
+        let spec = StreamSpec::new(self.name());
+        let spec = if self.history {
+            history::timed_spec(spec, &schema())
+        } else {
+            spec.with_schema(schema())
+        };
+        spec.with_primary_key(["id"])
             .with_read_modes([ReadMode::Cdc])
             .with_partitioning(Partitioning::Planned)
             .with_checkpointing(Checkpointing::Natural)
@@ -234,7 +242,7 @@ async fn read_changes(
         let rows: Vec<Change> = replay
             .map(|index| Change::of(&stream.events[index], index as u64 + 1))
             .collect();
-        out.changes(batch(&rows)).await?;
+        out.changes(batch(stream, &rows)).await?;
         out.checkpoint(&cursor).await?;
     }
     while next < visible {
@@ -246,7 +254,7 @@ async fn read_changes(
         let rows: Vec<Change> = (next..end)
             .map(|index| Change::of(&stream.events[index], index as u64 + 1))
             .collect();
-        out.changes(batch(&rows)).await?;
+        out.changes(batch(stream, &rows)).await?;
         next = end;
         let position = Position {
             next: next as u64,
@@ -260,7 +268,7 @@ async fn read_changes(
         let rows: Vec<Change> = (next..ahead)
             .map(|index| Change::of(&stream.events[index], index as u64 + 1))
             .collect();
-        out.changes(batch(&rows)).await?;
+        out.changes(batch(stream, &rows)).await?;
     }
     Ok(())
 }
@@ -305,7 +313,7 @@ async fn read_snapshot(
                 partial: false,
             })
             .collect();
-        out.changes(batch(&rows)).await?;
+        out.changes(batch(stream, &rows)).await?;
         next = end;
         let done = next >= keys.len();
         out.checkpoint(&Position {
@@ -369,9 +377,9 @@ impl Change {
     }
 }
 
-/// `rows` as a change batch: `id`, `value` and `n`, then the op, sequence and unchanged columns,
-/// a partial row flagging `value`, field 1.
-fn batch(rows: &[Change]) -> RecordBatch {
+/// `rows` of `stream` as a change batch: `id`, `value` and `n`, with a history stream's change
+/// time, then the op, sequence and unchanged columns, a partial row flagging `value`, field 1.
+fn batch(stream: &ChangeStream, rows: &[Change]) -> RecordBatch {
     let ids: Int64Array = rows.iter().map(|row| row.key).collect();
     let values: StringArray = rows.iter().map(|row| row.value.clone()).collect();
     let n: Int64Array = rows.iter().map(|row| row.n).collect();
@@ -390,7 +398,7 @@ fn batch(rows: &[Change]) -> RecordBatch {
             unchanged.append_null();
         }
     }
-    RecordBatch::try_from_iter([
+    let batch = RecordBatch::try_from_iter([
         ("id", Arc::new(ids) as ArrayRef),
         ("value", Arc::new(values) as ArrayRef),
         ("n", Arc::new(n) as ArrayRef),
@@ -398,5 +406,10 @@ fn batch(rows: &[Change]) -> RecordBatch {
         (SEQ_COLUMN, Arc::new(seqs) as ArrayRef),
         (UNCHANGED_COLUMN, Arc::new(unchanged.finish()) as ArrayRef),
     ])
-    .expect("a valid change batch")
+    .expect("a valid change batch");
+    if stream.history {
+        history::timed(&batch)
+    } else {
+        batch
+    }
 }

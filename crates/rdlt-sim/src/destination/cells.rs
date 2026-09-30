@@ -56,7 +56,7 @@ pub(crate) fn rows(batch: &RecordBatch) -> Result<Vec<Stored>> {
 }
 
 /// The text a cell compares by: its meaning, printed.
-fn text(row: &Stored, column: &str) -> String {
+pub(super) fn text(row: &Stored, column: &str) -> String {
     format!("{:?}", row.cells.get(column).unwrap_or(&Canon::Null))
 }
 
@@ -290,7 +290,7 @@ fn directs(name: &str, changes: &ChangeColumns) -> bool {
 }
 
 /// One stored row of `parts`: each column's field, one-row array and cell.
-fn compose(parts: Vec<(ArrowField, ArrayRef, Canon)>) -> Stored {
+pub(super) fn compose(parts: Vec<(ArrowField, ArrayRef, Canon)>) -> Stored {
     let fields: Vec<ArrowField> = parts
         .iter()
         .map(|(field, _, _)| field.clone().with_nullable(true))

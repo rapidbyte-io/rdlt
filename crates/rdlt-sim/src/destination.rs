@@ -3,6 +3,7 @@
 
 mod cells;
 mod columns;
+mod history;
 mod read;
 mod store;
 #[cfg(test)]

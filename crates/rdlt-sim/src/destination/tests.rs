@@ -271,3 +271,44 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
     });
     World::unregister(name);
 }
+
+/// Reads back what the simulated destination published, for certification.
+struct StoreProbe(Arc<World>);
+
+impl rdlt_connector::testing::Probe for StoreProbe {
+    fn published<'a>(
+        &'a self,
+        table: &'a TableRef,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<Vec<RecordBatch>>> {
+        let store = self.0.store.lock();
+        let rows = store
+            .tables
+            .get(table.name.as_ref())
+            .map(|table| table.published.iter().map(|row| row.row.clone()).collect())
+            .unwrap_or_default();
+        Box::pin(async move { Ok(rows) })
+    }
+}
+
+#[test]
+fn the_simulated_destination_keeps_history_as_certification_asks() {
+    let world = World::register_changes(
+        "certified-history",
+        &mut SplitMix64::new(3),
+        &mut SplitMix64::new(4),
+    );
+    let probe = StoreProbe(Arc::clone(&world));
+    let report = run(Seed::new(3), |_| async move {
+        rdlt_connector::testing::certify_destination::<SimDestination>(
+            serde_json::json!({ "world": "certified-history" }),
+            &probe,
+        )
+        .await
+    });
+    World::unregister("certified-history");
+    assert_eq!(
+        report.outcome("D-HIST"),
+        Some(&rdlt_connector::testing::Outcome::Passed),
+        "{report}"
+    );
+}

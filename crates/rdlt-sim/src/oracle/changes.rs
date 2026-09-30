@@ -12,7 +12,7 @@ use rdlt_testkit::canon::Canon;
 use super::scenario::{Scenario, execute_all, pick};
 use super::{FAULTY_RUNS, config, settle};
 use crate::changes::{
-    CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS,
+    CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Version,
 };
 use crate::destination::{Digest, Stored};
 use crate::env::SimEnv;
@@ -23,6 +23,10 @@ use crate::world::World;
 /// What the change oracle mixes into the seed, so its draws differ from the exactly-once
 /// oracle's: "changes" in ASCII.
 const CHANGES: u64 = 0x0063_6861_6e67_6573;
+
+/// What the change oracle mixes into the seed to draw which merge streams keep history, apart
+/// from every other draw: "history" in ASCII.
+const HISTORY: u64 = 0x0068_6973_746f_7279;
 
 /// Checks that every change of the workload `seed` generates lands as the model says, through
 /// faults, crashes, stops and racing runs; the destination's digest.
@@ -38,7 +42,11 @@ pub fn check_changes(seed: Seed) -> Digest {
 async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let mut rng = SplitMix64::new(seed.value() ^ CHANGES);
     let name = format!("changes-{seed}");
-    let world = World::register_changes(&name, &mut rng);
+    let world = World::register_changes(
+        &name,
+        &mut rng,
+        &mut SplitMix64::new(seed.value() ^ HISTORY),
+    );
     let features = world.workload.features;
     env.perturb(features.perturb);
     env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
@@ -63,9 +71,14 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
 /// The pipeline of every change stream, each written as the workload says.
 fn plan(streams: &[ChangeStream]) -> PipelinePlan {
     let streams = streams.iter().map(|stream| {
+        let write = if stream.history {
+            WriteMode::History
+        } else {
+            stream.write
+        };
         let plan = StreamPlan::new(StreamName::new(&stream.name).expect("a valid stream name"))
             .read(ReadMode::Cdc)
-            .write(stream.write);
+            .write(write);
         if stream.write == WriteMode::Merge {
             plan.deletes(stream.deletes).on_truncate(stream.truncates)
         } else {
@@ -119,6 +132,17 @@ fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
     let rows: Vec<Stored> = store.published(&stream.name);
     drop(store);
     let context = || format!("seed {seed}: round {round}: stream {}", stream.name);
+    if stream.history {
+        let mut versions: Vec<Version> = rows.iter().map(version).collect();
+        versions.sort();
+        assert_eq!(
+            versions,
+            stream.history(round),
+            "{}: the history",
+            context()
+        );
+        return;
+    }
     if stream.write == WriteMode::Append {
         let mut log: Vec<Logged> = rows.iter().map(logged).collect();
         log.sort();
@@ -187,6 +211,24 @@ fn check_acknowledged(world: &World, round: usize, seed: Seed) {
              position {acknowledged}, but committed {committed:?}"
         );
     }
+}
+
+/// A version of a history table: its key, beginning, value, counter, end, whether it is current,
+/// and whether a soft delete opened it.
+fn version(row: &Stored) -> Version {
+    let micros = |column: &str| match row.cells.get(column) {
+        Some(Canon::Instant(nanos)) => u64::try_from(nanos / 1_000).ok(),
+        _ => None,
+    };
+    (
+        number(row, "id").unwrap_or(-1),
+        micros("_rdlt_valid_from").unwrap_or(u64::MAX),
+        text(row, "value"),
+        number(row, "n").unwrap_or_default(),
+        micros("_rdlt_valid_to"),
+        row.cells.get("_rdlt_is_current") == Some(&Canon::Bool(true)),
+        !matches!(row.cells.get("_rdlt_deleted_at"), None | Some(Canon::Null)),
+    )
 }
 
 /// A row of a log: its op, key, value and counter.
