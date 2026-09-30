@@ -49,10 +49,11 @@ stress seeds="20":
 
 # Measure how much of the engine, connector and host code the simulation alone reaches, and hold
 # it above its floor: left out are test code, the connector's test kit and SQL planner, generated
-# code, and what the simulation never runs (process placement and a served binary's entry)
+# code, and what the simulation never runs (process placement, a served binary's entry, and the
+# write-ahead log's local-directory and in-memory stores: the simulation keeps logs in its own)
 sim-coverage seeds="1000":
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    RDLT_SIM_SEEDS="{{ seeds }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|registry|connect|kills|sink|wire)|rdlt-certify/|serve/(args|binary|inherited)' -E 'package(rdlt-sim) & test(through_faults)'
+    RDLT_SIM_SEEDS="{{ seeds }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|registry|connect|kills|sink|wire)|rdlt-certify/|serve/(args|binary|inherited)|wal/(local|memory)\.rs' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 81 --branches 73
 
 # Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and

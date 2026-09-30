@@ -3,7 +3,8 @@ use std::time::UNIX_EPOCH;
 use bytes::Bytes;
 use rdlt_connector::{LoadId, PipelineId};
 
-use super::{Chunk, LocalWal, WalStore};
+use super::LocalWal;
+use crate::wal::{Chunk, WalStore};
 
 fn pipeline(name: &str) -> PipelineId {
     PipelineId::parse(name).expect("a valid pipeline")
