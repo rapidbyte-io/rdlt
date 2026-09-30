@@ -47,8 +47,10 @@ partition inside a run; the second is an operator's command between runs. So the
     asked to stop.
   - Otherwise the read returns once caught up to where its source stood when the read started:
     the spec's `exhausted`, now for every unbounded partition, not only CDC's.
-  - `exhausted` reads without following; `forever` and `<duration>` follow. A bounded partition
-    ignores the flag.
+  - `exhausted` reads without following; `forever` and `<duration>` follow the streams they plan
+    again as they read (incremental and change streams). A full read ends at its head, so its
+    cycle completes and a replace stream's generation is swapped in. A bounded partition ignores
+    the flag.
   - `Emitter::stopped()` resolves once the engine asks the read to stop or drops its end, so a
     read waiting for data can return. Before this, a stop reached a waiting read only at its next
     emit.
@@ -60,10 +62,13 @@ partition inside a run; the second is an operator's command between runs. So the
   change stream's phases do. Every `replan` interval (`EngineConfigBuilder::replan`, default
   60 s, never zero, on `Env`'s clock) the coordinator plans each such stream again from its
   committed positions:
-  - a plan naming a new phase begins it once the current phase has ended, as before;
+  - a plan naming a new phase waits for the next commit to begin it: phases begin only after a
+    commit, which takes every seal, or a seal of the phase before would record its position
+    after the new phase began;
   - a partition the plan names that is neither running nor `Done` starts from its committed
-    position, or else the plan's start. New partitions start this way, and so do bounded
-    partitions that ended, so an incremental table is polled;
+    position, or else from its beginning, as initial planning starts it: a plan's starts place
+    only a new phase's partitions. New partitions start this way, and so do bounded partitions
+    that ended, so an incremental table is polled;
   - a running partition the plan no longer names is stopped through a token of its own. It seals
     its last checkpoint, and its end is committed. Its state entry stays, as initial planning keeps
     the entries of partitions a plan drops;
@@ -82,6 +87,14 @@ partition inside a run; the second is an operator's command between runs. So the
   - 60 s or 1 GiB otherwise.
 
   A policy that is set is kept. `EngineConfig::commit` is now `Option`.
+- **A bounded write-ahead log.** A partition that ends without sealing its open segment (a
+  stopped one, or an unbounded one with rows after its last checkpoint) tells the log, which
+  settles the segment, so it holds no chunk back. The writer forgets a settled segment once no
+  chunk holds it, so a load that commits for months keeps a bounded set.
+- **`S-STOP` certifies the follow contract.** Beside the read stopped before it starts, it reads
+  each unbounded partition following it, reached through the stream's phases as the engine
+  reaches them. It drains the read until it goes quiet, as one caught up waiting for data does,
+  then asks it to stop: the read must end within the stop window, cleanly.
 - **Bounded reports.** An attempt folds each commit into running totals rather than keeping every
   commit record. A run keeps only its latest two attempts unfolded, since a later attempt may
   credit a commit in flight to the one before it. A credit that finds its attempt already folded
