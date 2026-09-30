@@ -23,6 +23,8 @@ fn stream() -> ChangedStream {
         truncates: vec![30],
         captured: 0,
         replayable: true,
+        changed_at: false,
+        partial: true,
     }
 }
 
@@ -346,4 +348,69 @@ async fn a_source_that_forgets_refuses_the_changes_before_what_it_acknowledged()
         );
         assert!(!read(&*source, "changes", Some(at(9))).await.is_empty());
     }
+}
+
+#[tokio::test]
+async fn a_timed_stream_names_its_change_time_and_each_row_carries_its_position_as_it() {
+    let config = serde_json::json!({
+        "seed": 3,
+        "streams": [{ "name": "orders", "keys": 6, "snapshot_partitions": 1, "changes": 40,
+                      "batch_rows": 4, "captured": 10, "changed_at": true }],
+    });
+    let source = source_factory::<ChangesSource>()
+        .connect(config, ConnectContext::new())
+        .await
+        .unwrap();
+    let catalog = source.discover().await.unwrap();
+    let spec = catalog.get(&orders()).unwrap();
+    assert_eq!(
+        spec.change_time().map(ToString::to_string),
+        Some("changed_at".into())
+    );
+    let declared = spec.schema().unwrap().field("changed_at").unwrap();
+    assert!(matches!(
+        declared.logical_type(),
+        rdlt_connector::LogicalType::Timestamp(..)
+    ));
+    for partition in ["snapshot-0", "changes"] {
+        for batch in read(source.as_ref(), partition, None).await {
+            let at = batch.column_by_name("changed_at").unwrap();
+            let at = at.as_primitive::<arrow_array::types::TimestampMicrosecondType>();
+            let positions = keyed(std::slice::from_ref(&batch));
+            let micros: Vec<u64> = at.values().iter().map(|at| at.unsigned_abs()).collect();
+            let expected: Vec<u64> = positions.iter().map(|(_, position)| *position).collect();
+            assert_eq!(micros, expected, "{partition}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_stream_of_whole_rows_leaves_no_value_unchanged_and_changes_the_same_keys() {
+    let whole = |partial: bool| {
+        serde_json::json!({
+            "seed": 3,
+            "streams": [{ "name": "orders", "keys": 6, "changes": 60, "batch_rows": 4,
+                          "partial": partial }],
+        })
+    };
+    let mut read_back = Vec::new();
+    for partial in [true, false] {
+        let source = source_factory::<ChangesSource>()
+            .connect(whole(partial), ConnectContext::new())
+            .await
+            .unwrap();
+        let batches = read(source.as_ref(), "changes", None).await;
+        let flagged = batches
+            .iter()
+            .map(|batch| {
+                let flags = batch
+                    .column_by_name(rdlt_connector::UNCHANGED_COLUMN)
+                    .unwrap();
+                flags.len() - flags.null_count()
+            })
+            .sum::<usize>();
+        assert_eq!(flagged > 0, partial);
+        read_back.push(keyed(&batches));
+    }
+    assert_eq!(read_back[0], read_back[1]);
 }

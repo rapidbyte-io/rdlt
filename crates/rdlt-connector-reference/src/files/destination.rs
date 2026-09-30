@@ -179,7 +179,7 @@ fn capabilities(format: FileFormat) -> Capabilities {
         append: true,
         replace: true,
         merge: true,
-        history: false,
+        history: true,
     };
     capabilities.delete_modes = DeleteModes {
         hard: true,

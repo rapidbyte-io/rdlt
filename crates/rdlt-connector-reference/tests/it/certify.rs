@@ -81,12 +81,13 @@ async fn a_destination_whose_published_data_cannot_be_read_skips_the_clauses_tha
 
 #[tokio::test]
 async fn the_memory_destination_is_certified() {
-    certify_destination::<MemoryDestination>(
+    let report = certify_destination::<MemoryDestination>(
         json!({ "store": "certify" }),
         &MemoryProbe("certify"),
     )
-    .await
-    .assert_passed();
+    .await;
+    report.assert_passed();
+    assert_eq!(report.outcome("D-HIST"), Some(&Outcome::Passed), "{report}");
 }
 
 #[tokio::test]
@@ -112,6 +113,8 @@ async fn the_files_destination_is_certified_in_both_formats() {
         for _ in 0..2 {
             let report = certify_destination::<FilesDestination>(config.clone(), &probe).await;
             assert!(report.passed(), "{format}: {report}");
+            let history = report.outcome("D-HIST");
+            assert_eq!(history, Some(&Outcome::Passed), "{format}: {report}");
         }
     }
 }

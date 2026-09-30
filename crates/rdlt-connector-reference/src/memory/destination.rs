@@ -33,7 +33,8 @@ pub struct MemoryDestinationConfig {
 ///
 /// A replace generation's rows stay hidden until the commit that finishes the generation swaps
 /// them in for the table's rows. A merge table keeps one row per key: the newest commit's, and
-/// within a commit the row with the greatest sequence. Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
+/// within a commit the row with the greatest sequence; a history table keeps every version of
+/// each key. Commits are atomic under the store's lock, idempotent on `(load_id, commit_seq)` and
 /// fenced by the pipeline's epoch; so are flushes, so a fenced worker cannot stage rows that the
 /// latest session would publish.
 #[derive(Debug)]
@@ -229,6 +230,7 @@ impl DestinationConnector for MemoryDestination {
         let mut capabilities = Capabilities::minimal();
         capabilities.write_modes.replace = true;
         capabilities.write_modes.merge = true;
+        capabilities.write_modes.history = true;
         capabilities.delete_modes = DeleteModes {
             hard: true,
             soft: true,
@@ -297,6 +299,7 @@ impl Session for MemorySession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
+        crate::merge::refuse_history_generation(table)?;
         self.store.lock().table(&self.pipeline, self.epoch, table)?;
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),

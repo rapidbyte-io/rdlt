@@ -25,6 +25,8 @@ pub(crate) fn orders(truncates: &[u64]) -> ChangedStream {
         truncates: truncates.to_vec(),
         captured: 0,
         replayable: true,
+        changed_at: false,
+        partial: true,
     }
 }
 
@@ -38,6 +40,7 @@ pub(crate) fn config(seed: u64, streams: &[ChangedStream]) -> serde_json::Value 
                 "snapshot_partitions": stream.snapshot_partitions, "changes": stream.changes,
                 "batch_rows": stream.batch_rows, "truncates": stream.truncates,
                 "captured": stream.captured, "replayable": stream.replayable,
+                "changed_at": stream.changed_at, "partial": stream.partial,
             })
         })
         .collect();

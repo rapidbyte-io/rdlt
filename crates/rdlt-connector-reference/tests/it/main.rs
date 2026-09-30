@@ -7,6 +7,7 @@ mod children;
 mod discard;
 mod files;
 mod generator;
+mod history;
 mod memory;
 mod read_back;
 mod sqlite;

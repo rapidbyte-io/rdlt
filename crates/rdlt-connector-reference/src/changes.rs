@@ -1,15 +1,17 @@
 //! A source of seeded change streams: a snapshot of a keyed table, then the changes made to it.
 
+mod history;
+mod model;
 mod slot;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::builder::BinaryBuilder;
 use arrow_array::{
     ArrayRef, FixedSizeBinaryArray, Int8Array, Int64Array, RecordBatch, StringArray,
+    TimestampMicrosecondArray,
 };
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
@@ -19,9 +21,9 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub use history::{Version, history};
+pub use model::{Change, Row, change, expected, snapshot};
 use slot::Slot;
-
-use crate::generator::mix;
 
 /// Configuration of [`ChangesSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -63,11 +65,19 @@ pub struct ChangedStream {
     pub captured: u64,
     /// Whether the source serves again the changes its slot acknowledged; one that does not
     /// forgets them, as a replication slot does, and a read from before them waits.
-    #[serde(default = "replayable")]
+    #[serde(default = "yes")]
     pub replayable: bool,
+    /// Whether each row carries when its change happened in `changed_at`, a timestamp of its
+    /// position in microseconds, which the stream names its change time.
+    #[serde(default)]
+    pub changed_at: bool,
+    /// Whether an update may leave `value` unchanged; without, every update sets it, as a stream
+    /// kept as history needs.
+    #[serde(default = "yes")]
+    pub partial: bool,
 }
 
-fn replayable() -> bool {
+fn yes() -> bool {
     true
 }
 
@@ -84,6 +94,9 @@ pub const SNAPSHOT: u16 = 0;
 
 /// The phase a stream reads its changes in.
 pub const CHANGES: u16 = 1;
+
+/// The column a timed stream's rows say when their change happened in.
+const CHANGED_AT: &str = "changed_at";
 
 /// The id of the partition changes are read in.
 const CHANGES_PARTITION: &str = "changes";
@@ -143,104 +156,6 @@ struct Position {
     done: bool,
 }
 
-/// What change `position` of a stream does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Change {
-    /// Sets the key's row.
-    Upsert {
-        /// The key.
-        id: i64,
-        /// Its value; `None` leaves the value unchanged.
-        value: Option<String>,
-        /// Its counter: the change's position.
-        n: i64,
-    },
-    /// Removes the key's row.
-    Delete {
-        /// The key.
-        id: i64,
-    },
-    /// Removes every row.
-    Truncate,
-}
-
-/// Change `position` (from 1) of `stream` under `seed`.
-pub fn change(seed: u64, stream: &ChangedStream, position: u64) -> Change {
-    if stream.truncates.contains(&position) {
-        return Change::Truncate;
-    }
-    let draw = mix(seed ^ position.wrapping_mul(0x9E37_79B9));
-    // Half again as many keys as the snapshot holds, so changes insert keys too.
-    let span = stream.keys + stream.keys / 2 + 1;
-    let id = i64::try_from(draw % span).unwrap_or(i64::MAX);
-    let n = i64::try_from(position).unwrap_or(i64::MAX);
-    match (draw >> 32) % 10 {
-        0 | 1 => Change::Delete { id },
-        2 => Change::Upsert { id, value: None, n },
-        _ => Change::Upsert {
-            id,
-            value: Some(format!("v{position}")),
-            n,
-        },
-    }
-}
-
-/// One row of the table a stream's changes leave.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Row {
-    /// Its value.
-    pub value: Option<String>,
-    /// Its counter.
-    pub n: i64,
-}
-
-/// The table `stream` holds, by key, once its snapshot and every change apply with deletes
-/// removing rows.
-pub fn expected(seed: u64, stream: &ChangedStream) -> BTreeMap<i64, Row> {
-    let mut table = snapshot(seed, stream);
-    let captured = usize::try_from(stream.captured).unwrap_or(usize::MAX);
-    for position in (1..=stream.changes).skip(captured) {
-        apply(&mut table, change(seed, stream, position));
-    }
-    table
-}
-
-/// The table `stream`'s snapshot holds, by key: its `keys` rows once the first `captured`
-/// changes applied.
-pub fn snapshot(seed: u64, stream: &ChangedStream) -> BTreeMap<i64, Row> {
-    let mut table: BTreeMap<i64, Row> = (0..stream.keys)
-        .map(|key| {
-            let id = i64::try_from(key).unwrap_or(i64::MAX);
-            (id, snapshot_row(id))
-        })
-        .collect();
-    for position in 1..=stream.captured.min(stream.changes) {
-        apply(&mut table, change(seed, stream, position));
-    }
-    table
-}
-
-/// Applies `change` to `table`, deletes removing rows.
-fn apply(table: &mut BTreeMap<i64, Row>, change: Change) {
-    match change {
-        Change::Upsert { id, value, n } => {
-            let value = value.or_else(|| table.get(&id).and_then(|row| row.value.clone()));
-            table.insert(id, Row { value, n });
-        }
-        Change::Delete { id } => {
-            table.remove(&id);
-        }
-        Change::Truncate => table.clear(),
-    }
-}
-
-fn snapshot_row(id: i64) -> Row {
-    Row {
-        value: Some(format!("s{id}")),
-        n: 0,
-    }
-}
-
 impl Changed {
     fn snapshot_ids(&self) -> Vec<String> {
         (0..self.0.snapshot_partitions)
@@ -269,14 +184,25 @@ impl ReadStream<ChangesSource> for Changed {
     type Cursor = Position;
 
     fn spec(&self) -> StreamSpec {
-        let schema = TableSchema::new(vec![
+        let mut fields = vec![
             Field::new("id", LogicalType::Int64, true),
             Field::new("value", LogicalType::Utf8, true),
             Field::new("n", LogicalType::Int64, true),
-        ])
-        .expect("the change schema has distinct field names");
-        StreamSpec::new(StreamName::new(&self.0.name).expect("connect validated stream names"))
-            .with_schema(schema)
+        ];
+        if self.0.changed_at {
+            let micros =
+                LogicalType::Timestamp(rdlt_connector::TimeUnit::Microsecond, Some("UTC".into()));
+            fields.push(Field::new(CHANGED_AT, micros, true));
+        }
+        let schema = TableSchema::new(fields).expect("the change schema has distinct field names");
+        let spec =
+            StreamSpec::new(StreamName::new(&self.0.name).expect("connect validated stream names"));
+        let spec = if self.0.changed_at {
+            spec.with_change_time(CHANGED_AT)
+        } else {
+            spec
+        };
+        spec.with_schema(schema)
             .with_primary_key(["id"])
             .with_read_modes([ReadMode::Cdc])
             .with_partitioning(Partitioning::Planned)
@@ -388,7 +314,8 @@ impl ReadStream<ChangesSource> for Changed {
                     )
                 })
                 .collect::<Vec<_>>();
-            out.changes(changes_batch(&batch)?).await?;
+            out.changes(changes_batch(&batch, self.0.changed_at)?)
+                .await?;
             next = last;
             let done = next >= total;
             out.checkpoint(&Position { next, done }).await?;
@@ -429,7 +356,8 @@ impl Changed {
                     }
                 })
                 .collect::<Vec<_>>();
-            out.changes(changes_batch(&rows)?).await?;
+            out.changes(changes_batch(&rows, self.0.changed_at)?)
+                .await?;
             next = last + 1;
             out.checkpoint(&Position { next, done: false }).await?;
         }
@@ -448,9 +376,9 @@ type ChangeRow = (
     bool,
 );
 
-/// `rows` as a change batch: `id`, `value` and `n`, then the op, sequence and unchanged columns,
-/// the unchanged bitmap flagging `value`, field 1.
-fn changes_batch(rows: &[ChangeRow]) -> Result<RecordBatch> {
+/// `rows` as a change batch: `id`, `value` and `n`, where `timed` when each change happened, then
+/// the op, sequence and unchanged columns, the unchanged bitmap flagging `value`, field 1.
+fn changes_batch(rows: &[ChangeRow], timed: bool) -> Result<RecordBatch> {
     let ids: Int64Array = rows.iter().map(|row| row.2).collect();
     let values: StringArray = rows.iter().map(|row| row.3.clone()).collect();
     let n: Int64Array = rows.iter().map(|row| row.4).collect();
@@ -469,15 +397,24 @@ fn changes_batch(rows: &[ChangeRow]) -> Result<RecordBatch> {
             unchanged.append_null();
         }
     }
-    RecordBatch::try_from_iter([
+    let mut columns = vec![
         ("id", Arc::new(ids) as ArrayRef),
         ("value", Arc::new(values) as ArrayRef),
         ("n", Arc::new(n) as ArrayRef),
+    ];
+    if timed {
+        let at = rows
+            .iter()
+            .map(|row| i64::try_from(row.1).unwrap_or(i64::MAX));
+        let at = TimestampMicrosecondArray::from_iter_values(at).with_timezone("UTC");
+        columns.push((CHANGED_AT, Arc::new(at)));
+    }
+    columns.extend([
         (OP_COLUMN, Arc::new(ops) as ArrayRef),
         (SEQ_COLUMN, Arc::new(seqs) as ArrayRef),
         (UNCHANGED_COLUMN, Arc::new(unchanged.finish()) as ArrayRef),
-    ])
-    .internal("building a change batch")
+    ]);
+    RecordBatch::try_from_iter(columns).internal("building a change batch")
 }
 
 fn to_index(position: u64) -> usize {
