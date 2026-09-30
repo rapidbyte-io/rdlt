@@ -962,7 +962,7 @@ pub struct Stop {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ReadFrame {
     /// The frame.
-    #[prost(oneof = "read_frame::Frame", tags = "1, 2, 3, 4, 5, 6, 7")]
+    #[prost(oneof = "read_frame::Frame", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
     pub frame: ::core::option::Option<read_frame::Frame>,
 }
 /// Nested message and enum types in `ReadFrame`.
@@ -991,7 +991,23 @@ pub mod read_frame {
         /// The end of the read.
         #[prost(message, tag = "7")]
         Done(super::Done),
+        /// The stream's partitions changed: the engine plans the stream again.
+        #[prost(message, tag = "8")]
+        Replan(super::ReplanFrame),
+        /// How many records the read is behind its source's newest.
+        #[prost(message, tag = "9")]
+        Behind(super::BehindFrame),
     }
+}
+/// The stream's partitions changed.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplanFrame {}
+/// How many records the read is behind its source's newest, as the source measures it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BehindFrame {
+    /// The records.
+    #[prost(uint64, tag = "1")]
+    pub records: u64,
 }
 /// An Arrow schema: an IPC schema message.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

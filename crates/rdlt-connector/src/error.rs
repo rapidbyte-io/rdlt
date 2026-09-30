@@ -10,6 +10,10 @@ use std::time::Duration;
 /// A connector result.
 pub type Result<T, E = ConnectorError> = std::result::Result<T, E>;
 
+/// The code of the error a source reports where it no longer holds what a read would resume
+/// from: its retention dropped it.
+pub const RETENTION_LOST: &str = "retention_lost";
+
 /// What kind of failure a [`ConnectorError`] reports; the engine decides retries from it.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +101,12 @@ impl ConnectorError {
     /// The error a connector returns when a newer session has fenced this one.
     pub fn fenced(message: impl Into<String>) -> Self {
         Self::new(ConnectorErrorKind::Fenced, message)
+    }
+
+    /// A data error coded [`RETENTION_LOST`]: the source no longer holds what a read would resume
+    /// from, as a log whose retention dropped it.
+    pub fn retention_lost(message: impl Into<String>) -> Self {
+        Self::data(message).with_code(RETENTION_LOST)
     }
 
     /// The error emitting returns once the engine has asked the connector to stop.

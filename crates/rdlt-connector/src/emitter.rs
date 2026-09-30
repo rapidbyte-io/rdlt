@@ -121,6 +121,19 @@ impl<C: Serialize> Emitter<C> {
             })
             .await
     }
+
+    /// Tells the engine the stream's partitions changed, as a topic's whose partitions were
+    /// increased or a consumer's rebalanced: a run that follows its source plans the stream
+    /// again now, rather than at its next interval.
+    pub async fn replan(&mut self) -> Result<()> {
+        self.sink.send(SourceEvent::Replan).await
+    }
+
+    /// Tells the engine how many records this read is behind its source's newest, as the source
+    /// measures it: the engine reports the stream's lag from them.
+    pub async fn behind(&mut self, records: u64) -> Result<()> {
+        self.sink.send(SourceEvent::Behind { records }).await
+    }
 }
 
 fn check_batch(batch: &RecordBatch) -> Result<()> {

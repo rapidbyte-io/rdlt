@@ -108,6 +108,21 @@ async fn a_warning_and_a_metric_cross_the_wire_as_themselves() {
 }
 
 #[tokio::test]
+async fn a_lag_and_a_replan_signal_cross_the_wire_as_themselves() {
+    let source = ticks(serde_json::json!({ "rows": 3, "chatty": true })).await;
+    let (events, read) = events(&source).await;
+    read.unwrap();
+    let signals: Vec<&SourceEvent> = events
+        .iter()
+        .filter(|event| matches!(event, SourceEvent::Behind { .. } | SourceEvent::Replan))
+        .collect();
+    assert_eq!(
+        signals,
+        [&SourceEvent::Behind { records: 7 }, &SourceEvent::Replan]
+    );
+}
+
+#[tokio::test]
 async fn a_read_that_fails_fails_with_the_connectors_error() {
     let source = ticks(serde_json::json!({ "rows": 10, "fail_after": 4 })).await;
     let (_, read) = events(&source).await;

@@ -134,6 +134,10 @@ impl Outbox {
                 self.host.admit_string(&name).map_err(refused)?;
                 self.push(Frame::Metric(v1::MetricFrame { name, value }));
             }
+            SourceEvent::Replan => self.push(Frame::Replan(v1::ReplanFrame {})),
+            SourceEvent::Behind { records } => {
+                self.push(Frame::Behind(v1::BehindFrame { records }));
+            }
         }
         Ok(())
     }

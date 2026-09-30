@@ -53,7 +53,8 @@ pub(crate) struct TicksConfig {
     /// Whether rows go as Arrow batches, the second half with a column the first lacks.
     #[serde(default)]
     pub(crate) arrow: bool,
-    /// Whether the read starts with a warning and a metric.
+    /// Whether the read starts with a warning, a metric, how far behind it is and that its
+    /// partitions changed.
     #[serde(default)]
     pub(crate) chatty: bool,
     /// Rows after which the read fails with a data error.
@@ -160,6 +161,8 @@ impl ReadStream<Ticks> for TickStream {
         if config.chatty {
             out.log(rdlt_connector::LogLevel::Warn, "ticking").await?;
             out.metric("ticks.started", 1.5).await?;
+            out.behind(7).await?;
+            out.replan().await?;
         }
         let pace = Duration::from_millis(config.pace_ms);
         let mut next = cursor.next;

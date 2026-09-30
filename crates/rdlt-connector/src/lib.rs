@@ -100,7 +100,9 @@ pub use destination::{
     WriteStats, destination_factory, readable_destination_factory,
 };
 pub use emitter::Emitter;
-pub use error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result, ResultExt};
+pub use error::{
+    ConnectorError, ConnectorErrorKind, LimitExceeded, RETENTION_LOST, Result, ResultExt,
+};
 pub use factory::{RoleFactory, Serve};
 pub use id::{
     CommitSeq, ConnectorId, Epoch, GenerationId, IdError, LoadId, PartitionId, PipelineId,

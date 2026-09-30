@@ -110,7 +110,20 @@ message ReadFrame {
     MetricFrame metric = 6;
     // The end of the read.
     Done done = 7;
+    // The stream's partitions changed: the engine plans the stream again.
+    ReplanFrame replan = 8;
+    // How many records the read is behind its source's newest.
+    BehindFrame behind = 9;
   }
+}
+
+// The stream's partitions changed.
+message ReplanFrame {}
+
+// How many records the read is behind its source's newest, as the source measures it.
+message BehindFrame {
+  // The records.
+  uint64 records = 1;
 }
 
 // An Arrow schema: an IPC schema message.

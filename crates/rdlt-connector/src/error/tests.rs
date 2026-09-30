@@ -1,7 +1,7 @@
 use std::error::Error as _;
 use std::time::Duration;
 
-use super::{ConnectorError, ConnectorErrorKind, LimitExceeded, ResultExt};
+use super::{ConnectorError, ConnectorErrorKind, LimitExceeded, RETENTION_LOST, ResultExt};
 
 #[test]
 fn only_transient_and_rate_limited_errors_are_retryable() {
@@ -83,4 +83,12 @@ fn rate_limits_carry_the_requested_wait() {
         ConnectorError::internal("x").with_code("a.b").code(),
         Some("a.b")
     );
+}
+
+#[test]
+fn a_lost_retention_is_a_data_error_no_retry_finds() {
+    let error = ConnectorError::retention_lost("offset 4 is gone");
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert_eq!(error.code(), Some(RETENTION_LOST));
+    assert!(!error.is_retryable());
 }

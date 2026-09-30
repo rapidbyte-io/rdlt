@@ -82,6 +82,13 @@ pub enum SourceEvent {
         /// The sample.
         value: f64,
     },
+    /// The stream's partitions changed: the engine plans the stream again.
+    Replan,
+    /// How many records the read is behind its source's newest, as the source measures it.
+    Behind {
+        /// The records.
+        records: u64,
+    },
 }
 
 /// Holds a push's bytes against a memory budget until it is dropped.
