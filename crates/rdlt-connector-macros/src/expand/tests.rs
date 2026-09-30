@@ -76,6 +76,34 @@ fn serves_a_destination_that_reads_back_through_the_readable_factory() {
 }
 
 #[test]
+fn declares_a_source_that_tells_where_it_stands() {
+    let expanded = expand(
+        quote!(id = "io.example.queue", acknowledged),
+        quote!(impl SourceConnector for Queue {}),
+        Role::Source,
+    );
+    assert!(
+        expanded.contains("const ACKNOWLEDGES : bool = true ;"),
+        "{expanded}"
+    );
+    let silent = expand(
+        quote!(id = "io.example.queue"),
+        quote!(impl SourceConnector for Queue {}),
+        Role::Source,
+    );
+    assert!(!silent.contains("ACKNOWLEDGES"), "{silent}");
+    let refused = expand(
+        quote!(id = "io.x", acknowledged),
+        quote!(impl DestinationConnector for T {}),
+        Role::Destination,
+    );
+    assert!(
+        refused.starts_with("error:") && refused.contains("only a source tells"),
+        "{refused}"
+    );
+}
+
+#[test]
 fn accepts_a_path_qualified_trait() {
     let expanded = expand(
         quote!(id = "io.example.sink"),
