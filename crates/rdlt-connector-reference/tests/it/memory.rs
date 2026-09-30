@@ -473,11 +473,16 @@ async fn the_memory_source_pushes_a_hundred_rows_a_page_by_default() {
         partition: Partition::single(),
         cursor: None,
     };
-    source.read(request, sink).await.expect("the read ends");
-    let mut pages = 0;
-    while let Some(event) = feed.recv().await {
-        pages += usize::from(matches!(event, SourceEvent::Push(_)));
-    }
+    // Drained while read, so a source pushing more pages than the channel holds fails, not hangs.
+    let count = async {
+        let mut pages = 0;
+        while let Some(event) = feed.recv().await {
+            pages += usize::from(matches!(event, SourceEvent::Push(_)));
+        }
+        pages
+    };
+    let (read, pages) = tokio::join!(source.read(request, sink), count);
+    read.expect("the read ends");
     assert_eq!(pages, 3);
 }
 
