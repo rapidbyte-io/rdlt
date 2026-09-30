@@ -352,3 +352,79 @@ async fn a_deadline_that_finds_the_run_failing_ends_it_failed() {
         "the run retried until its deadline"
     );
 }
+
+/// The log source, offering its streams to full reads too.
+struct Replaced(Arc<dyn Source>);
+
+impl Source for Replaced {
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.0.check()
+    }
+
+    fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<Catalog>> {
+        Box::pin(async {
+            let catalog = self.0.discover().await?;
+            let streams = catalog
+                .iter()
+                .map(|stream| {
+                    stream
+                        .clone()
+                        .with_read_modes([ReadMode::Incremental, ReadMode::Full])
+                })
+                .collect();
+            Ok(Catalog::new(streams).expect("the log's streams are distinct"))
+        })
+    }
+
+    fn plan<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        state: &'a StreamState,
+    ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
+        self.0.plan(stream, state)
+    }
+
+    fn committed<'a>(
+        &'a self,
+        stream: &'a StreamName,
+        cursors: &'a [(PartitionId, rdlt_connector::Cursor)],
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
+        self.0.committed(stream, cursors)
+    }
+
+    fn read(
+        &self,
+        request: ReadRequest,
+        sink: PartitionSink,
+    ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.0.read(request, sink)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_run_reads_a_full_stream_to_its_end_and_swaps_it_in() {
+    let source = log(
+        "replaced",
+        json!({
+            "name": "events", "partitions": 2, "messages": 5, "per_second": 4,
+        }),
+    )
+    .await;
+    let full = stream("events")
+        .read(ReadMode::Full)
+        .write(rdlt_engine::WriteMode::Replace);
+    let plan = pipeline("replaced", [full]).with_until(Until::For(Duration::from_secs(3)));
+    let outcome = engine(following())
+        .run(plan, Arc::new(Replaced(source)), memory("replaced").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    // A full read ends at the head it started at, however long the run follows, and is published.
+    let published = offsets("replaced");
+    assert_eq!(published.values().map(Vec::len).collect::<Vec<_>>(), [5, 5]);
+    assert_eq!(outcome.report.streams["events"].generations_swapped, 1);
+}

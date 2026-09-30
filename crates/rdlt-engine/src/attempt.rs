@@ -58,6 +58,9 @@ struct Planned {
     on_demand: bool,
     /// How a change stream's pushes load; `None` for other streams.
     changes: Option<ChangeMode>,
+    /// Whether its reads follow their unbounded partitions: in a following run, for a stream it
+    /// plans again as it reads.
+    follow: bool,
     partitions: Vec<(Partition, Option<Cursor>)>,
 }
 
@@ -184,7 +187,6 @@ async fn launch(
         env: Arc::clone(&context.env),
         batch: *context.config.batch(),
         wal: wal.clone(),
-        follow: context.plan.until().follows(),
     };
     let (tasks, spawned) = mpsc::unbounded_channel();
     let launcher = launcher(partition_context.clone(), tasks);
@@ -275,6 +277,7 @@ fn spawn_partitions(
                 on_demand: stream.on_demand,
                 changes: stream.changes,
                 stop: context.stop.child_token(),
+                follow: stream.follow,
             };
             if let Some(phases) = stream.stream.phases.as_mut() {
                 phases.reading.push(partitions.len());
