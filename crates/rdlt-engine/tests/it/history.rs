@@ -499,3 +499,56 @@ async fn a_history_read_again_after_a_reset_holds_the_versions_its_changes_make(
         assert_eq!(published, history(11, &spec, false), "{scope:?}");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn json_the_source_renders_again_differently_opens_no_version() {
+    // The same object, its keys in another order and spaced otherwise, as JSON text.
+    let texts = [
+        r#"{"a": 1, "b": [2, 3]}"#,
+        r#"{"b":[2,3],"a":1}"#,
+        r#"{"a": 1, "b": [3, 2]}"#,
+    ];
+    for text in texts {
+        let json = arrow_schema::Field::new("j", DataType::Utf8, true).with_metadata(
+            [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())]
+                .into_iter()
+                .collect(),
+        );
+        let schema = arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", DataType::Int64, false),
+            json,
+        ]);
+        let columns: Vec<ArrayRef> = vec![ints(&[1]), text_array(text)];
+        let rows = RecordBatch::try_new(Arc::new(schema), columns).expect("a valid batch");
+        let events = BatchStream::new("events", vec![rows]).primary_key(&["id"]);
+        let outcome = engine(commit_every(10))
+            .run(
+                pipeline("json-history", [stream("events").write(WriteMode::History)]),
+                batches("json_history", vec![events]).await,
+                memory("json_history").await,
+            )
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            outcome.error
+        );
+    }
+    let current: Vec<bool> = rdlt_connector_reference::published("json_history", "events")
+        .iter()
+        .flat_map(|batch| {
+            let current = batch
+                .column_by_name("_rdlt_is_current")
+                .expect("a history column");
+            current.as_boolean().iter().flatten().collect::<Vec<_>>()
+        })
+        .collect();
+    // Only the third changed the object: two versions, the second current.
+    assert_eq!(current.len(), 2, "{current:?}");
+    assert_eq!(current.iter().filter(|current| **current).count(), 1);
+}
+
+fn text_array(text: &str) -> ArrayRef {
+    Arc::new(arrow_array::StringArray::from(vec![text]))
+}

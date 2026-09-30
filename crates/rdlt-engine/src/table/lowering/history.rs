@@ -97,20 +97,22 @@ impl LoweringPlan {
                 .is_some_and(|field| Some(field.name()) == change_time),
             Source::Nulls => false,
         };
+        // Each column keeps its field's metadata, which says, for one, that its text is JSON.
         let data: Vec<_> = self
             .view
-            .model
-            .columns
+            .schema
+            .fields()
             .iter()
             .zip(columns)
             .zip(&self.sources)
             .filter(|(_, source)| !timed(source))
-            .map(|((column, array), _)| (column, array))
+            .map(|((field, array), _)| (field, array))
             .collect();
         let fields: Vec<_> = data
             .iter()
-            .map(|(column, array)| {
-                arrow_schema::Field::new(column.name(), array.data_type().clone(), true)
+            .map(|(field, array)| {
+                arrow_schema::Field::new(field.name(), array.data_type().clone(), true)
+                    .with_metadata(field.metadata().clone())
             })
             .collect();
         let arrays = data.iter().map(|(_, array)| Arc::clone(array)).collect();
