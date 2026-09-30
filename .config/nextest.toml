@@ -38,6 +38,13 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 filter = "package(rdlt-host) & test(/^process::/)"
 slow-timeout = { period = "10s", terminate-after = 2 }
 
+# The SQLite differential tests run hundreds of cases, each syncing a database to disk: on a shared
+# runner beside the rest of the suite one took over a minute unmutated, failing a shard's baseline.
+# They wait long enough that only a hang times out; cargo-mutants' own timeout scales with it.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-connector-reference) & test(/as_the_reference_does$/)"
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # The reference connectors' tests sync files and SQLite to disk, and four mutants tested at once
 # contend for the disk: a test that takes a second alone can take ten. A timeout there would count a
 # mutant as caught by no assertion, so these wait long enough that only a hang times out.
