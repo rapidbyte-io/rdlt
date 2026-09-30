@@ -169,6 +169,8 @@ fn small(name: &str) -> ChangedStream {
         truncates: Vec::new(),
         captured: 0,
         replayable: true,
+        changed_at: false,
+        partial: true,
     }
 }
 

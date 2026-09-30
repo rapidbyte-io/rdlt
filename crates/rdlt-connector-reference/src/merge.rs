@@ -1,6 +1,7 @@
 //! Merging published rows by key, as the memory and files destinations publish a merge table.
 
 mod changes;
+mod history;
 #[cfg(test)]
 mod tests;
 mod tombstones;
@@ -14,7 +15,22 @@ use arrow_array::cast::AsArray;
 use arrow_array::{ArrayRef, BooleanArray, RecordBatch, UInt32Array, new_null_array};
 use arrow_row::{RowConverter, SortField};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
-use rdlt_connector::{ChangeColumns, MergeKey, RootKey};
+use rdlt_connector::{ChangeColumns, ConnectorError, MergeKey, RootKey, TableRef};
+
+/// Refuses a writer of `table` where it is a replace generation of a history table, which merges
+/// into its table only.
+pub(crate) fn refuse_history_generation(table: &TableRef) -> rdlt_connector::Result<()> {
+    let history = table
+        .merge
+        .as_ref()
+        .is_some_and(|key| key.history.is_some());
+    if history && table.generation.is_some() {
+        return Err(ConnectorError::internal(
+            "a history table merges into its table, never a generation",
+        ));
+    }
+    Ok(())
+}
 
 /// `batch` under `schema`: columns found by name and cast to the schema's types, missing columns
 /// null.
@@ -55,9 +71,10 @@ pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> Sch
     Arc::new(Schema::new(fields))
 }
 
-/// The published rows once `incoming` is merged into `published` by `key`: for a change stream's
-/// table, each row applies in sequence order as its op says; otherwise an incoming row replaces
-/// the published row with its key, and among incoming rows of one key the greatest sequence wins.
+/// The published rows once `incoming` is merged into `published` by `key`: for a history table,
+/// each row versions its key in sequence order; for a change stream's table, each row applies in
+/// sequence order as its op says; otherwise an incoming row replaces the published row with its
+/// key, and among incoming rows of one key the greatest sequence wins.
 pub(crate) fn merge(
     schema: &SchemaRef,
     published: &[RecordBatch],
@@ -65,21 +82,25 @@ pub(crate) fn merge(
     incoming: &[RecordBatch],
     key: &MergeKey,
 ) -> Result<Merged, ArrowError> {
-    match &key.changes {
-        Some(changes) => {
-            let (rows, tombstones) =
-                changes::merge_changes(schema, published, buried, incoming, key, changes)?;
-            let tombstones = [tombstones]
-                .into_iter()
-                .filter(|batch| batch.num_rows() != 0)
-                .collect();
-            Ok(Merged { rows, tombstones })
+    let (rows, tombstones) = match (&key.history, &key.changes) {
+        (Some(history), _) => {
+            history::merge_history(schema, published, buried, incoming, key, history)?
         }
-        None => Ok(Merged {
-            rows: upsert(schema, published, incoming, key)?,
-            tombstones: Vec::new(),
-        }),
-    }
+        (None, Some(changes)) => {
+            changes::merge_changes(schema, published, buried, incoming, key, changes)?
+        }
+        (None, None) => {
+            return Ok(Merged {
+                rows: upsert(schema, published, incoming, key)?,
+                tombstones: Vec::new(),
+            });
+        }
+    };
+    let tombstones = [tombstones]
+        .into_iter()
+        .filter(|batch| batch.num_rows() != 0)
+        .collect();
+    Ok(Merged { rows, tombstones })
 }
 
 /// A merge table's rows once merged, and for a change stream's, the tombstones of the rows it

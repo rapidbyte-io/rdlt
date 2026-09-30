@@ -98,6 +98,7 @@ impl Session for FilesSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<FilesWriter> {
+        crate::merge::refuse_history_generation(table)?;
         let (location, name) = (self.location.clone(), table.name.clone());
         blocking(move || tables::locked(&location.root, &name, || claim(&location, &name))).await?;
         self.learn(table);

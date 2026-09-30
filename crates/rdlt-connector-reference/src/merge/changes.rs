@@ -307,7 +307,7 @@ pub(crate) fn merge_changes(
 }
 
 /// `schema` with every column nullable, as incoming rows align to it: a truncate names no key.
-fn nullable(schema: &SchemaRef) -> SchemaRef {
+pub(super) fn nullable(schema: &SchemaRef) -> SchemaRef {
     Arc::new(Schema::new(
         schema
             .fields()
