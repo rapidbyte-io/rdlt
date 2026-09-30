@@ -185,6 +185,10 @@ impl ReadStream<SimSource> for SimStreamReader {
                 break;
             }
             out.checkpoint(&SimCursor { next: next as u64 }).await?;
+            // As a log does, it says how far behind its newest rows it is; and it asks for the
+            // stream to be planned again, which, its partitions unchanged, must change nothing.
+            out.behind(arrived.saturating_sub(next) as u64).await?;
+            out.replan().await?;
             if !self.arrival(source, out, index, rows.len(), next).await? {
                 return Ok(());
             }
