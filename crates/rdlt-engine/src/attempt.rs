@@ -184,6 +184,7 @@ async fn launch(
         env: Arc::clone(&context.env),
         batch: *context.config.batch(),
         wal: wal.clone(),
+        follow: context.plan.until().follows(),
     };
     let (tasks, spawned) = mpsc::unbounded_channel();
     let launcher = launcher(partition_context.clone(), tasks);
@@ -192,7 +193,7 @@ async fn launch(
     drop(partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
         env: Arc::clone(&context.env),
-        policy: *context.config.commit(),
+        policy: context.config.commit_for(context.plan.commits_as_stream()),
         barrier_wait: context.config.barrier_wait(),
         tables,
         source: Arc::clone(&context.source),
@@ -210,6 +211,8 @@ async fn launch(
         launcher,
         wal,
         positions: Positions::of(&opened.state),
+        follow: context.plan.until().follows(),
+        replan: context.config.replan(),
     });
     scope.spawn(coordinator.run());
     // The coordinator starts the partitions of streams' next phases as it runs.
@@ -271,11 +274,13 @@ fn spawn_partitions(
                 cursor,
                 on_demand: stream.on_demand,
                 changes: stream.changes,
+                stop: context.stop.child_token(),
             };
             if let Some(phases) = stream.stream.phases.as_mut() {
                 phases.reading.push(partitions.len());
             }
-            partitions.push(PartitionRun::new(index, id, stream.on_demand));
+            let stop = job.stop.clone();
+            partitions.push(PartitionRun::new(index, id, stream.on_demand, stop));
             scope.spawn(partition::run(job, context.clone()));
         }
         streams.push(stream.stream);

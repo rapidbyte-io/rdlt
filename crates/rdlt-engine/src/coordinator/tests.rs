@@ -254,6 +254,8 @@ impl Setup {
             launcher: Box::new(|_| Err(Error::internal("the tests start no phases"))),
             wal,
             positions: crate::wal::Positions::default(),
+            follow: false,
+            replan: Duration::from_secs(60),
         });
         (tokio::spawn(coordinator.run()), harness)
     }
@@ -371,7 +373,8 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
 }
 
 fn partition(id: &str, on_demand: bool) -> PartitionRun {
-    PartitionRun::new(0, PartitionId::parse(id).unwrap(), on_demand)
+    let stop = CancellationToken::new();
+    PartitionRun::new(0, PartitionId::parse(id).unwrap(), on_demand, stop)
 }
 
 fn cursor(next: u64) -> Cursor {
@@ -441,8 +444,8 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
     );
     let log = harness.log.lock();
     assert_eq!(log.end, Some(AttemptEnd::Exhausted));
-    assert_eq!(log.commits.len(), 1);
-    assert_eq!(log.commits[0].streams[&name()].rows, 5);
+    assert_eq!(log.committed.commits, 1);
+    assert_eq!(log.committed.streams[&name()].rows, 5);
     assert!(harness.closed.load(Ordering::SeqCst));
 }
 
@@ -671,7 +674,7 @@ async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
     harness.end(0, false);
     task.await.unwrap().unwrap();
     let log = harness.log.lock();
-    let report = &log.commits[0].streams[&name()];
+    let report = &log.committed.streams[&name()];
     assert_eq!(
         (report.rows, report.discarded_rows, report.discarded_values),
         (2, 2, 3)
@@ -737,7 +740,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
         [(TablePath::new(["orders"]).unwrap(), GenerationId(7))]
     );
     let log = harness.log.lock();
-    assert_eq!(log.commits[1].streams[&name()].generations_swapped, 1);
+    assert_eq!(log.committed.streams[&name()].generations_swapped, 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -763,7 +766,7 @@ async fn a_full_append_completes_without_swapping_a_generation() {
             .contains(&StateChange::Put(completed.to_record()))
     );
     assert_eq!(
-        harness.log.lock().commits[0].streams[&name()].generations_swapped,
+        harness.log.lock().committed.streams[&name()].generations_swapped,
         0
     );
 }
@@ -859,7 +862,7 @@ async fn a_failed_commit_ends_the_coordinator_and_acknowledges_nothing() {
         ErrorKind::Destination
     );
     assert!(harness.acks.lock().is_empty());
-    assert!(harness.log.lock().commits.is_empty());
+    assert_eq!(harness.log.lock().committed.commits, 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -968,11 +971,11 @@ async fn a_seal_without_rows_or_discards_reports_no_stream() {
     harness.end(0, false);
     task.await.unwrap().unwrap();
     let log = harness.log.lock();
-    assert_eq!(log.commits.len(), 1, "the position still commits");
+    assert_eq!(log.committed.commits, 1, "the position still commits");
     assert!(
-        log.commits[0].streams.is_empty(),
+        log.committed.streams.is_empty(),
         "{:?}",
-        log.commits[0].streams
+        log.committed.streams
     );
 }
 

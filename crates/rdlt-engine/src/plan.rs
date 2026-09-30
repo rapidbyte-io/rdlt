@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests;
+mod until;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -9,6 +10,8 @@ use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 
 use crate::error::Error;
 use crate::policy::{Nested, SchemaSettings};
+
+pub use until::Until;
 
 /// How a stream's rows reach its table.
 #[non_exhaustive]
@@ -218,6 +221,7 @@ pub struct PipelinePlan {
     streams: Vec<StreamPlan>,
     schema: SchemaSettings,
     wal: bool,
+    until: Until,
 }
 
 impl PipelinePlan {
@@ -265,6 +269,7 @@ impl PipelinePlan {
             streams,
             schema: SchemaSettings::default(),
             wal: false,
+            until: Until::default(),
         })
     }
 
@@ -281,6 +286,28 @@ impl PipelinePlan {
     pub fn with_wal(mut self, enabled: bool) -> Self {
         self.wal = enabled;
         self
+    }
+
+    /// Reads as `until` says: until the source has caught up (the default), forever, or for a
+    /// while (spec §9.6).
+    #[must_use]
+    pub fn with_until(mut self, until: Until) -> Self {
+        self.until = until;
+        self
+    }
+
+    /// How long a run of the pipeline reads.
+    pub fn until(&self) -> Until {
+        self.until
+    }
+
+    /// Whether a run follows its source or reads changes, so it commits as a stream does.
+    pub(crate) fn commits_as_stream(&self) -> bool {
+        self.until.follows()
+            || self
+                .streams
+                .iter()
+                .any(|stream| stream.read_mode() == ReadMode::Cdc)
     }
 
     /// Whether the pipeline asks for a write-ahead log.

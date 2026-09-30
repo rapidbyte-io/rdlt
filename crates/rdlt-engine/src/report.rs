@@ -35,8 +35,11 @@ pub struct Report {
     pub pipeline: PipelineId,
     /// How the run ended.
     pub status: RunStatus,
-    /// Every attempt, in order.
+    /// The latest attempts, in order: at most [`REPORTED_ATTEMPTS`], so a run that retries for
+    /// ever keeps a bounded report.
     pub attempts: Vec<AttemptReport>,
+    /// Every attempt the run made, those the report no longer lists included.
+    pub attempted: u64,
     /// Wall-clock time from the run's start to its end.
     pub elapsed: Duration,
     /// Rows committed, from receipts.
@@ -50,6 +53,9 @@ pub struct Report {
     /// What each stream committed, by stream name.
     pub streams: BTreeMap<String, StreamReport>,
 }
+
+/// How many of a run's latest attempts its report lists.
+pub const REPORTED_ATTEMPTS: usize = 128;
 
 /// One attempt of a run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -107,10 +113,46 @@ pub(crate) struct CommitRecord {
     pub(crate) streams: BTreeMap<StreamName, StreamReport>,
 }
 
+/// What an attempt committed, folded as each commit lands: an attempt that commits for ever
+/// keeps its totals, not every commit.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Committed {
+    pub(crate) commits: u64,
+    pub(crate) rows: u64,
+    pub(crate) bytes: u64,
+    pub(crate) streams: BTreeMap<StreamName, StreamReport>,
+}
+
+impl Committed {
+    /// Folds `commit` in.
+    pub(crate) fn add(&mut self, commit: CommitRecord) {
+        self.commits += 1;
+        self.rows += commit.receipt.rows;
+        self.bytes += commit.receipt.bytes;
+        for (stream, counts) in commit.streams {
+            self.streams.entry(stream).or_default().absorb(&counts);
+        }
+    }
+}
+
+impl StreamReport {
+    /// Adds what `other` counts.
+    fn absorb(&mut self, other: &Self) {
+        self.rows += other.rows;
+        self.bytes += other.bytes;
+        self.commits += other.commits;
+        self.generations_swapped += other.generations_swapped;
+        self.discarded_rows += other.discarded_rows;
+        self.discarded_values += other.discarded_values;
+        self.deletes_ignored += other.deletes_ignored;
+        self.truncates_ignored += other.truncates_ignored;
+    }
+}
+
 /// What an attempt did, recorded as it happens so a failed attempt still reports its commits.
 #[derive(Debug, Default)]
 pub(crate) struct AttemptLog {
-    pub(crate) commits: Vec<CommitRecord>,
+    pub(crate) committed: Committed,
     pub(crate) end: Option<AttemptEnd>,
     /// The commit in flight, whose response has not arrived.
     pub(crate) pending: Option<CommitRecord>,
@@ -129,7 +171,75 @@ pub(crate) struct AttemptRecord {
 }
 
 impl Report {
+    /// A report of `pipeline` that has folded no attempt yet.
+    pub(crate) fn new(pipeline: PipelineId) -> Self {
+        Self {
+            pipeline,
+            status: RunStatus::Succeeded,
+            attempts: Vec::new(),
+            attempted: 0,
+            elapsed: Duration::ZERO,
+            rows: 0,
+            bytes: 0,
+            commits: 0,
+            peak_memory: 0,
+            streams: BTreeMap::new(),
+        }
+    }
+
+    /// Folds `attempt` in, listing it among the latest [`REPORTED_ATTEMPTS`].
+    pub(crate) fn absorb(&mut self, attempt: AttemptRecord) {
+        let committed = attempt.log.committed;
+        for (stream, counts) in &committed.streams {
+            let total = self.streams.entry(stream.to_string()).or_default();
+            total.absorb(counts);
+        }
+        self.rows += committed.rows;
+        self.bytes += committed.bytes;
+        self.commits += committed.commits;
+        self.attempted += 1;
+        self.attempts.push(AttemptReport {
+            load_id: attempt.load_id,
+            started_at: attempt.started_at,
+            ended_at: attempt.ended_at,
+            commits: committed.commits,
+            rows: committed.rows,
+            bytes: committed.bytes,
+            error: attempt.error,
+        });
+        if self.attempts.len() > REPORTED_ATTEMPTS {
+            self.attempts.remove(0);
+        }
+    }
+
+    /// Credits `commit` to the folded attempt whose load its receipt names, once a later attempt
+    /// found it landed.
+    pub(crate) fn credit(&mut self, commit: CommitRecord) {
+        let load = commit.receipt.load_id;
+        let mut committed = Committed::default();
+        committed.add(commit);
+        for (stream, counts) in &committed.streams {
+            self.streams
+                .entry(stream.to_string())
+                .or_default()
+                .absorb(counts);
+        }
+        self.rows += committed.rows;
+        self.bytes += committed.bytes;
+        self.commits += committed.commits;
+        if let Some(listed) = self
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.load_id == load)
+        {
+            listed.commits += committed.commits;
+            listed.rows += committed.rows;
+            listed.bytes += committed.bytes;
+        }
+    }
+
     /// Folds `attempts` into the run's report.
+    #[cfg(test)]
     pub(crate) fn fold(
         pipeline: PipelineId,
         status: RunStatus,
@@ -137,48 +247,13 @@ impl Report {
         elapsed: Duration,
         peak_memory: u64,
     ) -> Self {
-        let mut report = Self {
-            pipeline,
-            status,
-            attempts: Vec::with_capacity(attempts.len()),
-            elapsed,
-            rows: 0,
-            bytes: 0,
-            commits: 0,
-            peak_memory,
-            streams: BTreeMap::new(),
-        };
+        let mut report = Self::new(pipeline);
         for attempt in attempts {
-            let mut summary = AttemptReport {
-                load_id: attempt.load_id,
-                started_at: attempt.started_at,
-                ended_at: attempt.ended_at,
-                commits: 0,
-                rows: 0,
-                bytes: 0,
-                error: attempt.error,
-            };
-            for commit in attempt.log.commits {
-                summary.commits += 1;
-                summary.rows += commit.receipt.rows;
-                summary.bytes += commit.receipt.bytes;
-                for (stream, counts) in commit.streams {
-                    let total = report.streams.entry(stream.to_string()).or_default();
-                    total.rows += counts.rows;
-                    total.bytes += counts.bytes;
-                    total.commits += counts.commits;
-                    total.generations_swapped += counts.generations_swapped;
-                    total.discarded_rows += counts.discarded_rows;
-                    total.discarded_values += counts.discarded_values;
-                    total.deletes_ignored += counts.deletes_ignored;
-                    total.truncates_ignored += counts.truncates_ignored;
-                }
-            }
-            report.rows += summary.rows;
-            report.bytes += summary.bytes;
-            report.commits += summary.commits;
-            report.attempts.push(summary);
+            report.absorb(attempt);
         }
+        report.status = status;
+        report.elapsed = elapsed;
+        report.peak_memory = peak_memory;
         report
     }
 }

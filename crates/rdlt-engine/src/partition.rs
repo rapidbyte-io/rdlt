@@ -98,6 +98,9 @@ pub(crate) struct PartitionJob {
     pub(crate) on_demand: bool,
     /// How a change stream's pushes load; `None` for a stream not read as changes.
     pub(crate) changes: Option<ChangeMode>,
+    /// Fires when this partition must stop reading: as every partition does when the attempt
+    /// stops, or alone when a plan no longer names it.
+    pub(crate) stop: CancellationToken,
 }
 
 /// How a change stream's pushes load.
@@ -138,6 +141,8 @@ pub(crate) struct PartitionContext {
     pub(crate) batch: BatchPolicy,
     /// The load's write-ahead log, where it keeps one.
     pub(crate) wal: Option<LoadLog>,
+    /// Whether reads of unbounded partitions follow them once caught up (spec §9.6).
+    pub(crate) follow: bool,
 }
 
 impl PartitionContext {
@@ -154,15 +159,19 @@ impl PartitionContext {
 
 /// Reads `job` to its end, or until the attempt stops or is cancelled.
 pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<(), Error> {
+    // A followed unbounded partition reads for as long as the run, mostly waiting: it holds no
+    // slot, or a stream with more of them than slots would never read the rest.
+    let slotless = context.follow && job.partition.is_unbounded();
     let _slot = tokio::select! {
         biased;
         // Cancellation wins: a partition that has not started never needs to.
         () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
         // A stop request comes next: a partition still waiting for a slot ends without reading.
-        () = context.stop.cancelled() => None,
+        () = job.stop.cancelled() => None,
+        () = std::future::ready(()), if slotless => None,
         slot = context.slots.acquire() => Some(slot.map_err(|_| Error::internal("partition slots closed"))?),
     };
-    if context.stop.is_cancelled() {
+    if job.stop.is_cancelled() {
         return context.report(Progress::Ended {
             partition: job.index,
             stopped: true,
@@ -196,7 +205,8 @@ async fn read_and_ingest(
         job.stream.clone(),
         job.partition.clone(),
         job.cursor.clone(),
-    );
+    )
+    .following(context.follow);
     // An ingest failure ends the read rather than waiting for a source that may not emit again
     // for a long time. A read failure lets ingest drain what the source already sent.
     let ingest_failed = CancellationToken::new();
@@ -362,7 +372,7 @@ async fn ingest(
         let event = tokio::select! {
             biased;
             // A stop request goes to the read first, even while events keep arriving.
-            () = context.stop.cancelled(), if !ingested.stopped => {
+            () = job.stop.cancelled(), if !ingested.stopped => {
                 feed.stop();
                 ingested.stopped = true;
                 continue;

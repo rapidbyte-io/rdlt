@@ -3,7 +3,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use rdlt_connector::{CommitSeq, LoadId, PipelineId, Receipt, StreamName};
 
-use super::{AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus, StreamReport};
+use super::{
+    AttemptLog, AttemptRecord, CommitRecord, Committed, REPORTED_ATTEMPTS, Report, RunStatus,
+    StreamReport,
+};
 use crate::error::{Error, ErrorKind};
 
 fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord {
@@ -40,7 +43,12 @@ fn attempt(load: LoadId, commits: Vec<CommitRecord>, error: Option<&Error>) -> A
         started_at: UNIX_EPOCH,
         ended_at: UNIX_EPOCH + Duration::from_secs(1),
         log: AttemptLog {
-            commits,
+            committed: commits
+                .into_iter()
+                .fold(Committed::default(), |mut committed, commit| {
+                    committed.add(commit);
+                    committed
+                }),
             ..AttemptLog::default()
         },
         error: error.map(Error::report),
@@ -105,4 +113,38 @@ fn a_report_folds_every_attempt_from_receipts() {
     );
     let b = &report.streams["b"];
     assert_eq!((b.rows, b.commits, b.generations_swapped), (6, 2, 1));
+}
+
+#[test]
+fn a_report_lists_the_latest_attempts_and_counts_every_one() {
+    let attempts: Vec<AttemptRecord> = (0..REPORTED_ATTEMPTS as u128 + 5)
+        .map(|load| {
+            let load = LoadId::from_parts(UNIX_EPOCH, load);
+            attempt(load, vec![commit(load, 2, &[("orders", 2, 16)])], None)
+        })
+        .collect();
+    let first_listed = attempts[5].load_id;
+    let pipeline = PipelineId::parse("orders").unwrap();
+    let report = Report::fold(pipeline, RunStatus::Stopped, attempts, Duration::ZERO, 0);
+    assert_eq!(report.attempts.len(), REPORTED_ATTEMPTS);
+    assert_eq!(report.attempts[0].load_id, first_listed);
+    assert_eq!(report.attempted, REPORTED_ATTEMPTS as u64 + 5);
+    // What each attempt committed still counts, listed or not.
+    assert_eq!(report.commits, REPORTED_ATTEMPTS as u64 + 5);
+    assert_eq!(report.rows, 2 * (REPORTED_ATTEMPTS as u64 + 5));
+}
+
+#[test]
+fn a_commit_credited_to_a_folded_attempt_counts_toward_it_and_the_run() {
+    let pipeline = PipelineId::parse("orders").unwrap();
+    let failed = LoadId::from_parts(UNIX_EPOCH, 1);
+    let mut report = Report::new(pipeline);
+    report.absorb(attempt(failed, vec![], None));
+    report.credit(commit(failed, 3, &[("orders", 3, 24)]));
+    assert_eq!((report.commits, report.rows), (1, 3));
+    assert_eq!(report.streams["orders"].rows, 3);
+    assert_eq!(
+        (report.attempts[0].commits, report.attempts[0].rows),
+        (1, 3)
+    );
 }
