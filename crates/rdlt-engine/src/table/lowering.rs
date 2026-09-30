@@ -37,6 +37,9 @@ pub(crate) struct Stamp {
     pub(crate) load_id: LoadId,
     /// When the load started.
     pub(crate) loaded_at: SystemTime,
+    /// When the batch was received: where a history stream's versions begin without a change
+    /// time, so a run that follows its source for days keeps each version's span.
+    pub(crate) received_at: SystemTime,
     /// The batch's segment, and the position of its first row among the rows written to it.
     pub(crate) segment: SegmentId,
     pub(crate) first_row: u64,

@@ -218,6 +218,7 @@ fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> S
     let stamp = Stamp {
         load_id: context.load_id,
         loaded_at: context.loaded_at,
+        received_at: context.env.now(),
         segment: open.id,
         first_row: open.received,
     };

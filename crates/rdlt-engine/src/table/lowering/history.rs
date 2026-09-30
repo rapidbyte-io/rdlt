@@ -60,7 +60,7 @@ impl LoweringPlan {
                 )
             })
         };
-        let history = history_columns(stream, &data, from, stamp.loaded_at, &deleting)?;
+        let history = history_columns(stream, &data, from, stamp.received_at, &deleting)?;
         let first = columns.len();
         let logical = [
             loaded_at_type(),
@@ -123,8 +123,8 @@ impl LoweringPlan {
 }
 
 /// The history columns of rows holding `data`, the table's data columns as stored: when each
-/// version begins, from `from`, the stream's change time, or when its load started where the
-/// stream names none; no end; current; and the xxh3-128 of its data, null where `deleting` says
+/// version begins, from `from`, the stream's change time, or `received`, when its batch arrived,
+/// where the stream names none; no end; current; and the xxh3-128 of its data, null where `deleting` says
 /// the row deletes.
 ///
 /// A row's hash encodes its data as one object of its non-null columns by name, so a column
@@ -140,7 +140,7 @@ pub(super) fn history_columns(
     stream: &StreamName,
     data: &RecordBatch,
     from: Option<&ArrayRef>,
-    loaded_at: SystemTime,
+    received: SystemTime,
     deleting: &dyn Fn(usize) -> bool,
 ) -> Result<[ArrayRef; 4], Error> {
     let rows = data.num_rows();
@@ -153,7 +153,7 @@ pub(super) fn history_columns(
     let valid_from: ArrayRef = if let Some(from) = from {
         begins(stream, from, &micros)?
     } else {
-        let since = loaded_at.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let since = received.duration_since(UNIX_EPOCH).unwrap_or_default();
         let at = i64::try_from(since.as_micros()).unwrap_or(i64::MAX);
         Arc::new(TimestampMicrosecondArray::from(vec![at; rows]).with_timezone("UTC"))
     };

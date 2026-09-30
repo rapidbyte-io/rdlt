@@ -12,7 +12,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -72,17 +72,33 @@ pub(crate) fn logging_engine(config: EngineConfigBuilder, store: Arc<dyn WalStor
 fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc<AtomicUsize>) {
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
-    let env = InlineEnv(system, Inline(Arc::clone(&jobs)));
+    let env = InlineEnv(system, Inline(Arc::clone(&jobs)), None);
     (TestEngine(Engine::new(config, Arc::new(env))), jobs)
 }
 
+/// An engine as [`engine`] makes it, whose clock moves a millisecond on every reading, so no two
+/// readings of it are alike.
+pub(crate) fn ticking_engine(config: EngineConfigBuilder) -> TestEngine {
+    let pool = RayonPool::new(NonZeroUsize::MIN).expect("a one-thread pool starts");
+    let config = config.build().expect("the test configuration is valid");
+    let jobs = Arc::new(AtomicUsize::new(0));
+    let ticks = Some(Arc::new(AtomicU64::new(0)));
+    let env = InlineEnv(SystemEnv::new(pool), Inline(jobs), ticks);
+    TestEngine(Engine::new(config, Arc::new(env)))
+}
+
 /// The system's clock and randomness, with compute jobs run on the calling thread: the paused
-/// test runtime would otherwise advance its clock while a job runs on another thread.
-struct InlineEnv(SystemEnv, Inline);
+/// test runtime would otherwise advance its clock while a job runs on another thread. With ticks,
+/// the clock moves a millisecond more on each reading.
+struct InlineEnv(SystemEnv, Inline, Option<Arc<AtomicU64>>);
 
 impl Env for InlineEnv {
     fn now(&self) -> std::time::SystemTime {
-        self.0.now()
+        let ticked = self
+            .2
+            .as_ref()
+            .map_or(0, |ticks| ticks.fetch_add(1, Ordering::SeqCst));
+        self.0.now() + Duration::from_millis(ticked)
     }
 
     fn instant(&self) -> std::time::Instant {

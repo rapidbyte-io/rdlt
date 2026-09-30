@@ -87,7 +87,7 @@ dropped and released to any pipeline, so a merge table can become a change table
 change hands; a load the reset fenced lands nothing of the stream after it, and `D-DROP`
 certifies a destination's drops.
 A stream can keep every version of each key (SCD2): a change closes its key's version where the
-next begins, at the source's change time or the load's start, a change equal to the current
+next begins, at the source's change time or when its batch arrived, a change equal to the current
 version opens none, deletes close versions or open deleted ones, and replays change nothing;
 `D-HIST` certifies a destination's history against versions worked out by hand.
 
