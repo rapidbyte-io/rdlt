@@ -117,6 +117,7 @@ fn capabilities() -> Capabilities {
     };
     capabilities.partial_updates = true;
     capabilities.merge_changes = true;
+    capabilities.drop_tables = true;
     capabilities.identifiers = IdentifierRules {
         case: IdentifierCase::Lower,
         max_len: NonZeroU16::new(128).expect("128 is non-zero"),

@@ -74,6 +74,43 @@ pub(super) fn claim(root: &Path, name: &str, pipeline: &PipelineId) -> Result<()
 /// The file in a table's catalog naming the pipeline that owns it.
 const OWNER: &str = "owner";
 
+/// The pipeline that owns the table `name`, once one does.
+pub(super) fn owner(root: &Path, name: &str) -> Result<Option<String>> {
+    let path = catalog(root, name).join(OWNER);
+    match fs::read_to_string(&path) {
+        Ok(owner) => Ok(Some(owner)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::failed("reading", &path)(error)),
+    }
+}
+
+/// Removes the catalog of the table `name`, which `pipeline` dropped: its columns and its owner,
+/// so any pipeline may create a table of that name again.
+///
+/// A catalog another pipeline owns by now is left alone. The catalog is first renamed out of
+/// place, so a claim never meets it half removed.
+pub(super) fn release(root: &Path, name: &str, pipeline: &PipelineId) -> Result<()> {
+    static RELEASES: AtomicU64 = AtomicU64::new(0);
+    if owner(root, name)?.is_some_and(|owner| owner != pipeline.as_str()) {
+        return Ok(());
+    }
+    let dir = catalog(root, name);
+    let trash = root.join("_rdlt").join("trash");
+    io::create_dirs(&trash)?;
+    let moved = trash.join(format!(
+        "{name}-{}-{}",
+        std::process::id(),
+        RELEASES.fetch_add(1, Ordering::Relaxed)
+    ));
+    match fs::rename(&dir, &moved) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io::failed("moving", &dir)(error)),
+    }
+    io::sync_dir(&root.join("_rdlt").join("tables"))?;
+    fs::remove_dir_all(&moved).map_err(io::failed("removing", &moved))
+}
+
 /// The newest catalog version of the table `name` and its columns.
 fn latest(root: &Path, name: &str) -> Result<Option<(u64, TableSchema)>> {
     let dir = catalog(root, name);

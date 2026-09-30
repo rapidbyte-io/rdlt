@@ -4,6 +4,7 @@ mod changes;
 mod checks;
 mod children;
 mod clauses;
+mod dropped;
 mod encoding;
 mod evolving;
 mod fence;
@@ -15,9 +16,7 @@ mod tables;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow_array::cast::AsArray;
-use arrow_array::types::Int64Type;
-use arrow_array::{Array, RecordBatch};
+use arrow_array::RecordBatch;
 use bytes::Bytes;
 
 pub use clauses::DESTINATION_CLAUSES;
@@ -32,7 +31,7 @@ use crate::error::{ConnectorErrorKind, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord};
-use rows::{Row, STALE, expect_rows, rows, schema};
+use rows::{STALE, expect_rows, rows, schema};
 
 /// Reads what a destination has published, so clauses can compare it with what was committed.
 pub trait Probe: Send + Sync {
@@ -171,6 +170,7 @@ impl Bench<'_> {
             "D-NAMES" => self.names_are_kept().await,
             "D-LANES" => self.writers_stage_at_once().await,
             "D-OWNED" => self.tables_belong_to_their_pipeline().await,
+            "D-DROP" => self.drops_release_tables().await,
             _ => self.stale_sessions_are_fenced().await,
         }
     }
@@ -276,38 +276,6 @@ impl Bench<'_> {
             .writer(table)
             .await
             .map_err(|error| Violation::from(format!("writer: {error}")))
-    }
-
-    /// The rows the clause's table publishes, in order.
-    async fn published_rows(&self) -> Result<Vec<Row>, Violation> {
-        self.rows_of(&self.table()).await
-    }
-
-    /// The `(id, name)` rows `table` publishes, in order.
-    async fn rows_of(&self, table: &TableRef) -> Result<Vec<Row>, Violation> {
-        let batches = bounded_call("probe", self.probe.published(table)).await?;
-        let mut rows = Vec::new();
-        for batch in &batches {
-            let column = |name: &str, logical: &arrow_schema::DataType| {
-                let column = batch.column_by_name(name).ok_or_else(|| {
-                    Violation::from(format!("a published batch has no {name} column"))
-                })?;
-                arrow_cast::cast(column, logical)
-                    .map_err(|error| Violation::from(format!("the {name}s read back as {error}")))
-            };
-            let ids = column("id", &arrow_schema::DataType::Int64)?;
-            let names = column("name", &arrow_schema::DataType::Utf8)?;
-            let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
-            for row in 0..batch.num_rows() {
-                if ids.is_null(row) {
-                    return Err("a published row has no id".into());
-                }
-                let name = names.is_valid(row).then(|| names.value(row).to_owned());
-                rows.push((ids.value(row), name));
-            }
-        }
-        rows.sort_unstable();
-        Ok(rows)
     }
 
     /// Opens through both connections, so an epoch kept in one connection's memory is caught.

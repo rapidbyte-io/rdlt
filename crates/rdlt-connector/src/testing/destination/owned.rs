@@ -2,14 +2,15 @@
 
 use super::{Bench, commit, expect_rows, meta};
 use crate::error::{ConnectorError, ConnectorErrorKind};
-use crate::id::PipelineId;
+use crate::id::{GenerationId, PipelineId};
 use crate::testing::{Violation, bounded};
-use crate::{OpenContext, TableChange};
+use crate::{CommitMeta, OpenContext, TableChange};
 
 impl Bench<'_> {
     /// Another pipeline's schema change and writer for the clause's table are refused as
-    /// `table_owned`, and the owner keeps loading it: it creates the table again, writes and
-    /// commits, and, where the probe reads them, both its commits' rows are published.
+    /// `table_owned`, its generation swap too unless it changes nothing, and the owner keeps
+    /// loading it: it creates the table again, writes and commits, and, where the probe reads
+    /// them, both its commits' rows are published.
     pub(super) async fn tables_belong_to_their_pipeline(&self) -> Result<(), Violation> {
         let mut owner = self.staged(self.destination, 1, &[1]).await?;
         commit(
@@ -35,6 +36,16 @@ impl Bench<'_> {
             "writer",
             intruder.session.writer(&self.table()).await.map(drop),
         )?;
+        // A generation of the table swapped in by another pipeline would replace the owner's
+        // rows: refused, or leaving them as they were.
+        let swap = CommitMeta {
+            finish_generations: vec![(self.table().path, GenerationId(1))],
+            ..meta(self.load_id(2), intruder.epoch, &[], Vec::new())
+        };
+        match bounded("commit", intruder.session.commit(&swap)).await? {
+            Ok(_) => {}
+            refused => owned("generation swap", refused.map(drop))?,
+        }
         let mut again = self.staged(self.destination, 3, &[2]).await?;
         commit(
             &mut again.session,

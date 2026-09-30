@@ -307,6 +307,7 @@ pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'stati
         "D-PARTIAL" if !capabilities.partial_updates => {
             Some("the destination keeps no column an update leaves unchanged")
         }
+        "D-DROP" if !capabilities.drop_tables => Some("the destination drops no tables"),
         "D-LANES" if capabilities.max_parallel_writers.get() < 2 => {
             Some("the destination runs one writer at a time")
         }

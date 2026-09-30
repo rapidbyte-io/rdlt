@@ -1,5 +1,6 @@
 //! A transactional destination that keeps tables and state in process memory.
 
+mod owners;
 mod table;
 
 use std::collections::BTreeMap;
@@ -108,6 +109,7 @@ impl Store {
         epoch: Epoch,
         meta: &CommitMeta,
     ) -> Result<(u64, u64)> {
+        self.owned(pipeline, meta)?;
         let plans = self.plans(pipeline, epoch, meta)?;
         let (mut rows, mut bytes) = (0, 0);
         for table in self.tables.values_mut() {
@@ -142,6 +144,9 @@ impl Store {
             table.published = table.generations.remove(generation).unwrap_or_default();
             table.generations.clear();
             table.tombstones.clear();
+        }
+        for dropped in &meta.drop_tables {
+            self.tables.remove(&*dropped.name);
         }
         Ok((rows, bytes))
     }
@@ -206,20 +211,6 @@ impl Store {
             .map(|(_, batch)| batch.clone())
             .collect()
     }
-
-    /// The table `table` refers to, claimed for `pipeline` where no pipeline owns it yet,
-    /// recording its name for its path and how it merges; another pipeline's table is refused.
-    fn table(&mut self, pipeline: &PipelineId, table: &TableRef) -> Result<&mut Table> {
-        let entry = self.tables.entry(table.name.to_string()).or_default();
-        let owner = entry.owner.get_or_insert_with(|| pipeline.clone());
-        if owner != pipeline {
-            return Err(ConnectorError::table_owned(&table.name, owner.as_str()));
-        }
-        entry.merge.clone_from(&table.merge);
-        self.names
-            .insert(table.path.clone(), table.name.to_string());
-        Ok(entry)
-    }
 }
 
 #[derive(Debug, Default)]
@@ -244,6 +235,7 @@ impl DestinationConnector for MemoryDestination {
         };
         capabilities.partial_updates = true;
         capabilities.merge_changes = true;
+        capabilities.drop_tables = true;
         capabilities.schema_changes = SchemaChanges::all();
         capabilities.nested.structs = true;
         capabilities.nested.lists = true;
@@ -299,13 +291,13 @@ impl Session for MemorySession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let mut store = self.store.lock();
-        let entry = store.table(&self.pipeline, change.table())?;
+        let entry = store.table(&self.pipeline, self.epoch, change.table())?;
         entry.schema = Some(changed(entry.schema.as_ref(), change)?);
         Ok(())
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
-        self.store.lock().table(&self.pipeline, table)?;
+        self.store.lock().table(&self.pipeline, self.epoch, table)?;
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),
             pipeline: self.pipeline.clone(),

@@ -6,6 +6,7 @@ use super::upsert::Row;
 use super::{SqlDialect, SqlPlanner, SqlValue, Statement, integer};
 use crate::commit::Receipt;
 use crate::destination::TableRef;
+use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, TablePath};
 use crate::state::StateChange;
 
@@ -225,6 +226,43 @@ impl<D: SqlDialect> SqlPlanner<D> {
             values: &values,
         };
         self.upsert(&row, false)
+    }
+
+    /// The statements dropping the table `name` with its generation tables `generations`, its
+    /// staging and its tombstones, and forgetting its registration, generations, staged segments
+    /// and owner, so any pipeline may create a table of that name again.
+    ///
+    /// Where the dialect's schema changes do not commit with its transactions the drop could not
+    /// land with its commit, so it is `Unsupported`.
+    pub fn drop_table(&self, name: &str, generations: &[String]) -> Result<Vec<Statement>> {
+        if !self.swaps_atomically() {
+            return Err(ConnectorError::new(
+                ConnectorErrorKind::Unsupported,
+                "the dialect's schema changes do not commit with its transactions, so a table \
+                 cannot be dropped with a commit",
+            ));
+        }
+        let data = std::iter::once(name.to_owned()).chain(generations.iter().cloned());
+        let kept = [self.staging_table(name), self.tombstone_table(name)];
+        let mut plan: Vec<Statement> = data
+            .clone()
+            .chain(kept)
+            .map(|table| Statement {
+                sql: format!("DROP TABLE IF EXISTS {}", self.quote(&table)),
+                params: Vec::new(),
+            })
+            .collect();
+        let forgotten = [(GENERATIONS, "base"), (TABLES, "name"), (OWNERS, "name")]
+            .into_iter()
+            .map(|(catalog, column)| (catalog, column, name.to_owned()))
+            .chain(data.map(|table| (SEGMENTS, "name", table)));
+        for (catalog, column, value) in forgotten {
+            let mut forget = self.sql();
+            let bound = forget.bind(SqlValue::Text(value));
+            forget.push(&format!("DELETE FROM {catalog} WHERE {column} = {bound}"));
+            plan.push(forget.finish());
+        }
+        Ok(plan)
     }
 
     /// The query returning the pipeline that owns the table `name`: the first to claim it.

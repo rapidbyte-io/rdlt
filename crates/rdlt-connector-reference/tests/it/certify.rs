@@ -67,7 +67,7 @@ async fn a_destination_whose_published_data_cannot_be_read_skips_the_clauses_tha
             .await;
     report.assert_passed();
     // Ownership is checked by the refusals, which need nothing read back.
-    let unread = ["D-CHECK", "D-EPOCH", "D-STATE", "D-OWNED"];
+    let unread = ["D-CHECK", "D-EPOCH", "D-STATE", "D-OWNED", "D-DROP"];
     for id in unread {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{report}");
     }
