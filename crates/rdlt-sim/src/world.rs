@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -80,6 +80,9 @@ pub struct World {
     /// The furthest offset acknowledged to each partition of a stream that cannot read again,
     /// by stream and partition: what it no longer holds.
     pub(crate) acknowledged: Mutex<BTreeMap<(String, String), u64>>,
+    /// The streams a reset cleared, whose committed positions moved back: an acknowledgement of
+    /// a commit that landed before the reset may reach the source after it.
+    pub(crate) reset: Mutex<BTreeSet<String>>,
     /// How many rows of each followed partition have arrived, by stream and partition index,
     /// while a streaming phase produces them; every row has arrived when there is none.
     produced: Mutex<Option<BTreeMap<(usize, usize), usize>>>,
@@ -105,6 +108,7 @@ impl World {
             violations: Mutex::new(Vec::new()),
             wal: Arc::default(),
             acknowledged: Mutex::default(),
+            reset: Mutex::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
         });
@@ -123,6 +127,7 @@ impl World {
         capabilities.delete_modes.soft = true;
         capabilities.partial_updates = true;
         capabilities.merge_changes = true;
+        capabilities.drop_tables = true;
         capabilities.max_parallel_writers =
             std::num::NonZeroU16::new(u16::try_from(1 + rng.below(4)).unwrap_or(1))
                 .expect("writer counts are positive");
@@ -138,6 +143,7 @@ impl World {
             violations: Mutex::new(Vec::new()),
             wal: Arc::default(),
             acknowledged: Mutex::default(),
+            reset: Mutex::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
         });
@@ -288,6 +294,7 @@ fn capabilities(rng: &mut SplitMix64, features: Features) -> Capabilities {
     }
     capabilities.write_modes.replace = true;
     capabilities.write_modes.merge = true;
+    capabilities.drop_tables = true;
     if rng.chance(700) {
         capabilities.nested.json = true;
         capabilities.types.insert(TypeKind::Json);
@@ -306,7 +313,7 @@ fn capabilities(rng: &mut SplitMix64, features: Features) -> Capabilities {
     let all = SchemaChanges::all();
     capabilities.schema_changes.widenings = match rng.below(3) {
         0 => all.widenings,
-        1 => std::collections::BTreeSet::new(),
+        1 => BTreeSet::new(),
         _ => all
             .widenings
             .into_iter()

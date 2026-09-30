@@ -303,7 +303,8 @@ fn committed(
             continue;
         }
         let committed = committed_next(world, &name, partition);
-        if committed.is_none_or(|committed| cursor.next > committed) {
+        let reset = world.reset.lock().contains(&stream.name);
+        if !reset && committed.is_none_or(|committed| cursor.next > committed) {
             world.violation(format!(
                 "stream {name} partition {partition}: acknowledged offset {} beyond the \
                  committed {committed:?}",

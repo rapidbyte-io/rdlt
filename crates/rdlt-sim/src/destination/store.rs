@@ -100,9 +100,25 @@ impl Store {
             .is_some_and(|name| self.tables.contains_key(name))
     }
 
-    /// The table `table` refers to, claimed for `pipeline` where no pipeline owns it yet, its
-    /// name recorded for its path; another pipeline's table is refused as `table_owned`.
-    pub(super) fn claim(&mut self, pipeline: &PipelineId, table: &TableRef) -> Result<&mut Table> {
+    /// The table `table` refers to, claimed for `pipeline`'s session at `epoch` where no pipeline
+    /// owns it yet, its name recorded for its path; another pipeline's table is refused as
+    /// `table_owned`, and a claim by a session a newer one fenced as fenced, since a drop may
+    /// have released the table from it.
+    pub(super) fn claim(
+        &mut self,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        table: &TableRef,
+    ) -> Result<&mut Table> {
+        let unclaimed = self
+            .tables
+            .get(&*table.name)
+            .is_none_or(|table| table.owner.is_none());
+        if unclaimed && self.epoch(pipeline) != epoch {
+            return Err(ConnectorError::fenced(format!(
+                "pipeline {pipeline} has a session newer than epoch {epoch}"
+            )));
+        }
         let entry = self.tables.entry(table.name.to_string()).or_default();
         let owner = entry.owner.get_or_insert_with(|| pipeline.clone());
         if owner != pipeline {
@@ -197,7 +213,8 @@ impl Store {
         published
     }
 
-    /// Swaps in the generations `meta` finishes, each table's rows replaced whole.
+    /// Swaps in the generations `meta` finishes, each table's rows replaced whole, and drops the
+    /// tables it drops.
     fn finish(&mut self, meta: &CommitMeta) {
         for (path, generation) in &meta.finish_generations {
             let Some(name) = self.names.get(path).cloned() else {
@@ -208,6 +225,30 @@ impl Store {
             table.generations.clear();
             table.tombstones = Tombstones::default();
         }
+        for dropped in &meta.drop_tables {
+            self.tables.remove(&*dropped.name);
+            if self.names.get(&dropped.path).map(String::as_str) == Some(&*dropped.name) {
+                self.names.remove(&dropped.path);
+            }
+        }
+    }
+
+    /// Refuses `meta` where a table whose generation it swaps in, or which it drops, belongs to a
+    /// pipeline other than `pipeline`.
+    pub(super) fn owned(&self, pipeline: &PipelineId, meta: &CommitMeta) -> Result<()> {
+        let swapped = meta
+            .finish_generations
+            .iter()
+            .filter_map(|(path, _)| self.names.get(path).map(String::as_str));
+        let dropped = meta.drop_tables.iter().map(|dropped| &*dropped.name);
+        for name in swapped.chain(dropped) {
+            if let Some(owner) = self.tables.get(name).and_then(|table| table.owner.as_ref())
+                && owner != pipeline
+            {
+                return Err(ConnectorError::table_owned(name, owner.as_str()));
+            }
+        }
+        Ok(())
     }
 
     /// Applies the state changes of `meta` to `pipeline`'s state, checking that no partition's

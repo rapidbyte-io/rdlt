@@ -103,7 +103,7 @@ impl Session for SimSession {
         let table = change.table();
         {
             let mut store = self.world.store.lock();
-            let entry = store.claim(&self.pipeline, table)?;
+            let entry = store.claim(&self.pipeline, self.epoch, table)?;
             columns::apply(&mut entry.columns, change)?;
         }
         match self.world.fault(FaultPoint::ApplyAfter) {
@@ -116,7 +116,10 @@ impl Session for SimSession {
         if let Some(fault) = self.world.fault(FaultPoint::Writer) {
             return Err(fault);
         }
-        self.world.store.lock().claim(&self.pipeline, table)?;
+        self.world
+            .store
+            .lock()
+            .claim(&self.pipeline, self.epoch, table)?;
         Ok(SimWriter {
             world: Arc::clone(&self.world),
             pipeline: self.pipeline.clone(),
@@ -158,6 +161,7 @@ impl Session for SimSession {
             if let Some(receipt) = store.receipts.get(&key) {
                 return Ok(receipt.clone());
             }
+            store.owned(&self.pipeline, meta)?;
             let published = store.publish(&self.pipeline, meta);
             store.apply(&self.world, &self.pipeline, meta);
             store.check_cursors(&self.world, &self.pipeline, &published);
@@ -210,6 +214,13 @@ impl TableWriter for SimWriter {
         let unfit = {
             let store = self.world.store.lock();
             let held = store.tables.get(&self.table).map(|table| &table.columns);
+            // A newer session of the pipeline dropped the table: this session is fenced.
+            if held.is_none() && store.epoch(&self.pipeline) != self.epoch {
+                return Err(ConnectorError::fenced(format!(
+                    "table {} was dropped by a newer session",
+                    self.table
+                )));
+            }
             columns::unfit(held.unwrap_or(&columns::Columns::new()), &batch)
         };
         let first = self.schema.get_or_insert_with(|| batch.schema());

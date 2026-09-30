@@ -15,6 +15,9 @@ const WAL: u64 = 0x0077_616c;
 /// What streaming's draw mixes into the seed's generator: "stream" in ASCII.
 const STREAMING: u64 = 0x7374_7265_616d;
 
+/// What resetting's draw mixes into the seed's generator: "reset" in ASCII.
+pub(crate) const RESET: u64 = 0x0072_6573_6574;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -65,6 +68,9 @@ pub struct Features {
     /// while before a run reads them to their end; every other one's partitions never end, and
     /// the rest are read again as they grow.
     pub streaming: bool,
+    /// Once every phase converged, a stream the source can read again is reset, from its
+    /// beginning or with its tables, while runs of every pipeline load, and they converge again.
+    pub reset: bool,
 }
 
 impl Features {
@@ -87,25 +93,28 @@ impl Features {
         network: true,
         wal: true,
         streaming: true,
+        reset: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
-    /// a coin, drift more often than not, and the network, the write-ahead log and streaming one
-    /// time in four each.
+    /// a coin, drift more often than not, and the network, the write-ahead log, streaming and
+    /// resetting one time in four each.
     ///
-    /// The network, the log and streaming are drawn apart from the rest, from the value the next
-    /// draw takes but without taking it, so a seed's workload is the same over either transport,
-    /// logged or not, streamed or not.
+    /// The network, the log, streaming and resetting are drawn apart from the rest, from the
+    /// value the next draw takes but without taking it, so a seed's workload is the same over
+    /// either transport, logged or not, streamed or not, reset or not.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
         let wal = SplitMix64::new(next ^ WAL).chance(250);
         let streaming = SplitMix64::new(next ^ STREAMING).chance(250);
+        let reset = SplitMix64::new(next ^ RESET).chance(250);
         if rng.chance(125) {
             return Self {
                 network,
                 wal,
                 streaming,
+                reset,
                 ..Self::ALL
             };
         }
@@ -127,6 +136,7 @@ impl Features {
             network,
             wal,
             streaming,
+            reset,
         }
     }
 

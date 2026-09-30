@@ -7,6 +7,7 @@ mod expected;
 mod intruder;
 mod names;
 mod refusals;
+mod reset;
 mod rows;
 mod scenario;
 mod streaming;
@@ -82,8 +83,10 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
         world,
         name,
     };
+    let mut stopped = false;
     for phase in 0..PHASES {
-        let (reports, stopped) = simulation.converge(phase, &mut rng).await;
+        let (reports, stopped_short) = simulation.converge(phase, &mut rng).await;
+        stopped = stopped_short;
         settle(seed).await;
         let world = &simulation.world;
         check_contents(world, phase, stopped, seed);
@@ -94,6 +97,13 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
         }
         simulation.intrude(seed, phase).await;
         settle(seed).await;
+    }
+    let last = PHASES - 1;
+    if !stopped && simulation.reset(seed, last).await {
+        let (_, stopped) = simulation.converge(last, &mut rng).await;
+        settle(seed).await;
+        check_contents(&simulation.world, last, stopped, seed);
+        check_acknowledged(&simulation.world, stopped, seed);
     }
     let violations = simulation.world.violations();
     let digest = simulation.world.store.lock().digest();
