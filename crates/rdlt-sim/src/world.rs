@@ -116,13 +116,18 @@ impl World {
         world
     }
 
-    /// A world whose change workload and faults derive from `rng`, registered as `name`: its
-    /// destination merges changes, removing rows or marking them deleted, and keeps columns
-    /// updates leave unchanged.
-    pub(crate) fn register_changes(name: &str, rng: &mut SplitMix64) -> Arc<Self> {
+    /// A world whose change workload and faults derive from `rng`, and which of its merge streams
+    /// keep history from `apart`, registered as `name`: its destination merges changes, removing
+    /// rows or marking them deleted, keeps columns updates leave unchanged, and keeps history.
+    pub(crate) fn register_changes(
+        name: &str,
+        rng: &mut SplitMix64,
+        apart: &mut SplitMix64,
+    ) -> Arc<Self> {
         let features = Features::draw(rng);
         let mut capabilities = Capabilities::minimal();
         capabilities.write_modes.merge = true;
+        capabilities.write_modes.history = true;
         capabilities.delete_modes.hard = true;
         capabilities.delete_modes.soft = true;
         capabilities.partial_updates = true;
@@ -133,7 +138,7 @@ impl World {
                 .expect("writer counts are positive");
         let world = Arc::new(Self {
             workload: Workload::empty(features),
-            changes: ChangeWorkload::generate(rng, features),
+            changes: ChangeWorkload::generate(rng, features, apart),
             capabilities,
             granted: AtomicBool::new(false),
             phase: AtomicUsize::new(0),

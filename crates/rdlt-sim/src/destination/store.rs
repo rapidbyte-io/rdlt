@@ -12,7 +12,7 @@ use rdlt_connector::{
 
 use super::read::{names, next_offset};
 use super::tombstones::Tombstones;
-use super::{Stored, cells, columns};
+use super::{Stored, cells, columns, history};
 use crate::world::World;
 
 /// The destination's contents, kept in its world: tables every pipeline shares, and each
@@ -197,6 +197,10 @@ impl Store {
             let table = self.tables.entry(name).or_default();
             let published = &mut table.published;
             match (&key.root, &key.changes) {
+                (None, _) if key.history.is_some() => {
+                    let history = key.history.as_ref().expect("a history table's key");
+                    history::merge_history(published, &mut table.tombstones, rows, &key, history);
+                }
                 (None, Some(changes)) => {
                     cells::merge_changes(published, &mut table.tombstones, rows, &key, changes);
                 }
