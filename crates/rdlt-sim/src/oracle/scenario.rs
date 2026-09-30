@@ -128,7 +128,7 @@ async fn execute(
                 // Dropping the run is the crash, which takes what its disk had not made durable.
                 () = tokio::time::sleep(after) => {
                     if let Some(world) = World::named(world) {
-                        world.crash_logs();
+                        world.crash_logs(plan.pipeline());
                     }
                     (Vec::new(), true)
                 }
