@@ -69,9 +69,10 @@ partition inside a run; the second is an operator's command between runs. So the
     position, or else from its beginning, as initial planning starts it: a plan's starts place
     only a new phase's partitions. New partitions start this way, and so do bounded partitions
     that ended, so an incremental table is polled;
-  - a running partition the plan no longer names is stopped through a token of its own. It seals
-    its last checkpoint, and its end is committed. Its state entry stays, as initial planning keeps
-    the entries of partitions a plan drops;
+  - a running partition the plan no longer names is stopped through a token of its own. What it
+    sealed up to its last checkpoint commits; what it read after (for an on-demand stream,
+    everything since its last barrier) is read again should a plan name it again. Its state entry
+    stays, as initial planning keeps the entries of partitions a plan drops;
   - an ended partition whose end is not yet committed waits for a later plan. Read again from its
     committed position, it would read again what its end seals;
   - a partition read again takes the place its ended read had, so a run that reads for ever
