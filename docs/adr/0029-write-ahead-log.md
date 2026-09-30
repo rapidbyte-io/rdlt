@@ -110,4 +110,4 @@ its data from the source again, so an object store backend is not built.
   removes the log: the price of acknowledging before the commit.
 - A load that keeps a log writes each batch twice, once to the log, and makes one sync per commit.
 - `S-ACK`, a certification clause checking that a source advances only once acknowledged, and its
-  probe of what a source acknowledged, move to M5c2.
+  probe of what a source acknowledged, move to M5c2 (ADR 0030).
