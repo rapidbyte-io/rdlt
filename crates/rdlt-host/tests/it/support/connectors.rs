@@ -59,6 +59,9 @@ pub(crate) struct TicksConfig {
     /// Rows after which the read fails with a data error.
     #[serde(default)]
     pub(crate) fail_after: Option<u64>,
+    /// Whether the read, its rows sent, waits for more that never come.
+    #[serde(default)]
+    pub(crate) idle: bool,
 }
 
 /// A source of numbered rows in one stream, `ticks`, that checkpoints only when the engine asks.
@@ -69,6 +72,25 @@ pub(crate) struct Ticks {
 
 /// Whether each read of [`Ticks`] was of a partition that never ends, in order.
 pub(crate) static UNBOUNDED: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+
+/// How many reads of [`Ticks`] are running.
+pub(crate) static READING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts a read of [`Ticks`] as running until it is dropped.
+struct Running;
+
+impl Running {
+    fn start() -> Self {
+        READING.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        READING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 /// The next ticks each committed report said were committed, in order.
 pub(crate) static COMMITTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
@@ -127,6 +149,7 @@ impl ReadStream<Ticks> for TickStream {
         cursor: Tick,
         out: &mut Emitter<Tick>,
     ) -> Result<()> {
+        let _running = Running::start();
         UNBOUNDED
             .lock()
             .expect("the lock is not poisoned")
@@ -154,6 +177,9 @@ impl ReadStream<Ticks> for TickStream {
             }
             // Paces the read, and yields, so a read without end still lets the engine stop it.
             tokio::time::sleep(pace).await;
+        }
+        if config.idle {
+            std::future::pending::<()>().await;
         }
         out.checkpoint(&Tick { next }).await
     }

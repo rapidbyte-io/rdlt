@@ -10,7 +10,7 @@ use rdlt_connector_reference::{GeneratorSource, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteSource};
 
-use crate::support::connectors::{COMMITTED, Ticks, UNBOUNDED};
+use crate::support::connectors::{COMMITTED, READING, Ticks, UNBOUNDED};
 use crate::support::{Fake, Fault, engine, memory_destination, serve_fake, served};
 
 /// The ticks source, served, with `config`.
@@ -123,6 +123,27 @@ async fn a_read_the_engine_stops_ends_as_the_source_returns() {
     while feed.recv().await.is_some() {}
     // As in process, a read the engine stops ends as its source's read returned: cleanly.
     reading.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_read_the_host_abandons_ends_on_the_connector() {
+    use std::sync::atomic::Ordering;
+    let source = ticks(serde_json::json!({ "rows": 1, "idle": true })).await;
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+    let reading = tokio::spawn(async move { source.read(request(), sink).await });
+    feed.recv().await.expect("the read sends");
+    assert_eq!(READING.load(Ordering::SeqCst), 1);
+    // The host gives up on a read that waits for data, as S-ACK does, and drops its connection.
+    reading.abort();
+    drop(feed);
+    let ended = async {
+        while READING.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), ended)
+        .await
+        .expect("the connector's read ends once its host is gone");
 }
 
 #[tokio::test]
