@@ -31,8 +31,9 @@ takes the rest of what a streaming source must be able to tell a run:
 - **The lag hook.** `Emitter::behind(records)` sends `SourceEvent::Behind { records }`, on the
   wire a `BehindFrame` (9): how many records the read is behind its source's newest, as the
   source measures it. The coordinator keeps, per stream, the latest count of each partition by
-  id, so a partition read again keeps its place. It forgets a partition a re-plan retires, and
-  every partition when the stream begins a new phase; a read asked to stop no longer moves it.
+  id, so a partition read again keeps its place. It forgets a partition a re-plan retires,
+  whether its read was running or had ended, and every partition when the stream begins a new
+  phase; a read asked to stop no longer moves it.
   `StreamReport::behind` is the total, `None` where no partition that still lags said. Freshness
   (time since the last commit) is the engine's own measure and lands with M7's metrics.
 - **Retention loss.**
@@ -40,13 +41,21 @@ takes the rest of what a streaming source must be able to tell a run:
     `retention_lost` (`RETENTION_LOST`).
   - `StreamPlan::on_retention_loss(RetentionLoss::{Fail, Reset})`, `Fail` by default: the run
     fails with the source's typed error.
-  - `Reset`: a partition whose read from a committed cursor fails as `retention_lost` reads again
-    from its beginning, which a log serves from its earliest offset. The rows in between are
-    lost; `StreamReport::retention_resets` counts each reset. A read from the beginning that
-    fails so fails the run: there is nothing earlier to reset to.
+  - `Reset`: a partition whose read had a place to lose, resuming from a cursor or having
+    checkpointed since, and fails as `retention_lost` reads again from its beginning, which a log
+    serves from its earliest offset. So a consumer overtaken mid-read, months into a following
+    run, resets too. The rows in between are lost; `StreamReport::retention_resets` counts each
+    reset. A read from the beginning that fails so before any checkpoint fails the run: there is
+    nothing earlier to reset to.
+  - Only a stream read incrementally, from a source that can read it again, may reset; any
+    other is refused before the run reads, as `retention_reset_unsupported`. A full read would
+    load its rows twice into its cycle, a change stream would miss changes its table needs (a
+    re-snapshot is M5d3's `reset(streams)`), and a source that cannot read again has no earliest
+    to serve.
   - The failed read's open segment is abandoned, as a stopped partition's is: no checkpoint
     seals its rows, and the write-ahead log must not hold them for the rest of a load that may
-    run for months.
+    run for months. An abandoned segment's rows no longer count toward the commit policy's
+    thresholds (`Progress::Abandoned`), so a long run's abandoned rows never keep a commit due.
 - **The reference offset-log source** gains `retention` (messages each partition keeps). A read
   from before its earliest offset fails as `retention_lost`; a read with no cursor starts at the
   earliest. It reports `behind` after each checkpoint, and partition p0's following read signals
@@ -56,7 +65,8 @@ takes the rest of what a streaming source must be able to tell a run:
   - The truth is one uninterrupted read of every partition the stream's first plan names.
   - The clause reads each partition to its first checkpoint, plans the stream again from that
     state, as the engine does after a commit, and reads what the plan names from there. The two
-    reads' rows must be equal as multisets, rendered alike whether pushed as JSON or Arrow.
+    reads' rows must be equal as multisets: a JSON row rendered as its text, an Arrow row as
+    each column's name and value.
   - Partitions are placed as the engine places them: a plan beginning a new phase at its starts,
     any other from each partition's recorded cursor, or else its beginning.
   - A stream with unbounded partitions in its first plan is skipped (no single read covers one),
