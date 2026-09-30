@@ -9,18 +9,19 @@ repository.workspace = true
 
 [features]
 # Internals for the benchmarks and fuzz targets (spec §21.2); not a public API.
-bench = ["dep:arrow-ipc", "dep:schemars"]
+bench = ["dep:schemars"]
 
 [dependencies]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
-arrow-ipc = { workspace = true, optional = true }
+arrow-ipc.workspace = true
 arrow-json.workspace = true
 arrow-row.workspace = true
 arrow-schema.workspace = true
 arrow-select.workspace = true
 bytes.workspace = true
+crc32c.workspace = true
 chrono.workspace = true
 getrandom.workspace = true
 memchr.workspace = true
@@ -36,6 +37,9 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 xxhash-rust.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
 criterion.workspace = true

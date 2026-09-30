@@ -1,0 +1,178 @@
+use std::sync::Arc;
+use std::time::UNIX_EPOCH;
+
+use arrow_array::RecordBatch;
+use arrow_schema::Schema;
+use proptest::prelude::*;
+use rdlt_connector::{
+    CommitMeta, CommitSeq, Cursor, Epoch, Field, LoadId, LogicalType, PartitionId, PartitionState,
+    PipelineId, Receipt, SchemaVersion, SegmentId, StateChange, StateRecord, StreamName, TablePath,
+    TableRef, TableSchema,
+};
+use rdlt_testkit::drawn::{self, Drawn};
+
+use super::{Batch, Frame, Frames, Header, Seal, Table, VERSION};
+
+fn load() -> LoadId {
+    LoadId::from_parts(UNIX_EPOCH, 7)
+}
+
+fn table() -> TableRef {
+    TableRef {
+        path: TablePath::new(["orders"]).expect("a valid path"),
+        name: "orders".into(),
+        version: SchemaVersion(2),
+        generation: None,
+        merge: None,
+    }
+}
+
+/// One frame of every kind but a batch's.
+fn metadata() -> Vec<Frame> {
+    let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+        .expect("a valid schema");
+    let meta = CommitMeta {
+        load_id: load(),
+        commit_seq: CommitSeq::FIRST.next(),
+        epoch: Epoch(3),
+        segments: [SegmentId(1), SegmentId(4)].into_iter().collect(),
+        state_delta: vec![StateChange::Put(StateRecord {
+            key: "k".to_owned(),
+            value: bytes::Bytes::from_static(b"\x00\xffvalue"),
+        })],
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+    };
+    vec![
+        Frame::Header(Header {
+            version: VERSION,
+            pipeline: PipelineId::parse("orders").expect("a valid pipeline"),
+            load: load(),
+            opened: Some((load(), CommitSeq::FIRST)),
+        }),
+        Frame::Schema(Table {
+            index: 0,
+            table: table(),
+            schema,
+        }),
+        Frame::Seal(Seal {
+            segment: SegmentId(4),
+            stream: StreamName::new("orders").expect("a valid stream"),
+            partition: PartitionId::parse("p0").expect("a valid partition"),
+            replayable: true,
+            from: Some(PartitionState::Done),
+            state: PartitionState::Cursor(
+                Cursor::new(1, bytes::Bytes::from_static(b"{}")).expect("a cursor"),
+            ),
+        }),
+        Frame::Commit(Box::new(meta)),
+        Frame::Committed(Receipt {
+            load_id: load(),
+            commit_seq: CommitSeq::FIRST,
+            committed_at: UNIX_EPOCH,
+            rows: 3,
+            bytes: 40,
+        }),
+        Frame::Closed,
+    ]
+}
+
+/// The drawn batch as Arrow data.
+fn arrow(drawn: &Drawn) -> RecordBatch {
+    let (columns, rows) = drawn;
+    let arrays: Vec<_> = columns
+        .iter()
+        .enumerate()
+        .map(|(index, (_, shape))| {
+            let values: Vec<_> = rows.iter().map(|row| &row[index]).collect();
+            drawn::array(shape, &values)
+        })
+        .collect();
+    let fields: Vec<_> = columns
+        .iter()
+        .zip(&arrays)
+        .map(|((name, shape), array)| drawn::field(name, shape, array, true))
+        .collect();
+    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(rows.len()));
+    RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options)
+        .expect("a drawn batch is valid")
+}
+
+fn decoded(bytes: &[u8]) -> Vec<Frame> {
+    Frames::new(bytes)
+        .map(|frame| frame.expect("the frame decodes").1)
+        .collect()
+}
+
+#[test]
+fn every_metadata_frame_decodes_as_it_was_written() {
+    for frame in metadata() {
+        let bytes = frame.encode().expect("the frame encodes");
+        assert_eq!(decoded(&bytes), [frame]);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(128)))]
+
+    #[test]
+    fn a_batch_of_every_type_and_encoding_decodes_as_it_was_written(
+        drawn in drawn::neighbors::batches(),
+        segment in any::<u64>(),
+    ) {
+        for batch in &drawn {
+            let frame = Frame::Batch(Batch { segment: SegmentId(segment), table: 3, batch: arrow(batch) });
+            let bytes = frame.encode().expect("the frame encodes");
+            prop_assert_eq!(decoded(&bytes), vec![frame]);
+        }
+    }
+}
+
+#[test]
+fn a_torn_log_keeps_the_frames_before_the_tear() {
+    let frames = metadata();
+    let mut log = Vec::new();
+    let mut ends = Vec::new();
+    for frame in &frames {
+        log.extend_from_slice(&frame.encode().expect("the frame encodes"));
+        ends.push(log.len());
+    }
+    // Cut anywhere, the log keeps exactly the frames that end before the cut.
+    for cut in 0..=log.len() {
+        let whole = ends.iter().filter(|end| **end <= cut).count();
+        let mut read = Frames::new(&log[..cut]);
+        let kept: Vec<Frame> = read
+            .by_ref()
+            .map(|frame| frame.expect("decodes").1)
+            .collect();
+        assert_eq!(kept, frames[..whole], "cut at {cut}");
+        assert_eq!(
+            read.end(),
+            if whole == 0 { 0 } else { ends[whole - 1] },
+            "cut at {cut}"
+        );
+    }
+    // A flipped byte in a frame's payload ends the log before that frame.
+    for (index, end) in ends.iter().enumerate() {
+        let start = if index == 0 { 0 } else { ends[index - 1] };
+        if end - start <= 9 {
+            continue;
+        }
+        let mut flipped = log.clone();
+        flipped[end - 1] ^= 0x40;
+        assert_eq!(decoded(&flipped), frames[..index], "frame {index}");
+    }
+}
+
+#[test]
+fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error() {
+    let payload = b"not json";
+    let mut frame = vec![2_u8];
+    frame.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+    frame.extend_from_slice(&crc32c::crc32c(payload).to_le_bytes());
+    frame.extend_from_slice(payload);
+    assert!(Frames::new(&frame).next().expect("a frame").is_err());
+    // An unknown kind is refused too.
+    frame[0] = 99;
+    assert!(Frames::new(&frame).next().expect("a frame").is_err());
+}

@@ -47,5 +47,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "wal_log"
+path = "fuzz_targets/wal_log.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 members = ["."]

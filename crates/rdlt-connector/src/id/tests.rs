@@ -183,3 +183,16 @@ fn load_ids_differ_when_their_random_bits_differ() {
         LoadId::from_parts(UNIX_EPOCH, 2 << 64)
     );
 }
+
+#[test]
+fn a_load_id_reads_back_from_its_written_form_and_nothing_else() {
+    let id = LoadId::from_parts(UNIX_EPOCH + Duration::from_millis(1_234), 0xfeed);
+    assert_eq!(id.to_string().parse::<LoadId>(), Ok(id));
+    for malformed in ["", "load", "00000000-0000-7000-8000-00000000000g"] {
+        assert_eq!(
+            malformed.parse::<LoadId>(),
+            Err(IdError::Malformed { kind: "load id" }),
+            "{malformed}"
+        );
+    }
+}

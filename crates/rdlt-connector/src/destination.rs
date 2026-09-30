@@ -46,7 +46,7 @@ pub struct Opened<S> {
 }
 
 /// A destination table, as the engine names it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TableRef {
     /// The logical table.
     pub path: TablePath,

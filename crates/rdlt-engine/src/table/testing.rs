@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use rdlt_connector::{Capabilities, StreamName};
+use rdlt_connector::{Capabilities, SchemaVersion, StreamName, TablePath, TableRef};
 
-use super::{LineageColumns, MetaNames, Resolver, Settings};
+use super::{LineageColumns, MetaNames, Model, Resolver, Settings, TableView};
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
 use crate::policy::SchemaSettings;
@@ -27,4 +27,16 @@ pub(crate) fn resolver(stream: &str) -> Resolver {
         capabilities: Arc::new(capabilities),
         root: None,
     }
+}
+
+/// The view of the table `name`, not created yet: no columns, at schema version 0.
+pub(crate) fn view(name: &str) -> Arc<TableView> {
+    let table = TableRef {
+        path: TablePath::new([name]).expect("test table names are valid"),
+        name: name.into(),
+        version: SchemaVersion(0),
+        generation: None,
+        merge: None,
+    };
+    Arc::new(TableView::new(&table, Model::default(), &resolver(name)))
 }
