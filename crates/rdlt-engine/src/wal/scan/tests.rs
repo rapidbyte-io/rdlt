@@ -315,3 +315,21 @@ async fn a_scan_indexes_batches_without_decoding_them_and_a_read_refuses_a_garbl
         .expect_err("the batch does not decode");
     assert_eq!(error.code(), Some("wal_unreadable"));
 }
+
+#[tokio::test]
+async fn a_batch_read_past_its_frame_is_refused() {
+    let store = logged(false).await;
+    let scanned = scan(store.as_ref(), &pipeline(), load())
+        .await
+        .expect("the log reads");
+    let mut located = scanned.batches[&SegmentId(1)][0];
+    batch(store.as_ref(), &pipeline(), located)
+        .await
+        .expect("the batch reads where the scan found it");
+    // A location that runs on into the next frame is not the frame the scan found.
+    located.len += 9;
+    let error = batch(store.as_ref(), &pipeline(), located)
+        .await
+        .expect_err("more than the batch's frame");
+    assert_eq!(error.code(), Some("wal_unreadable"));
+}
