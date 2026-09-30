@@ -19,8 +19,14 @@ use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Strea
 use crate::spec::ConnectContext;
 use crate::state::{PartitionState, StreamState};
 
+/// The phase a catch-up is read in, between the snapshot and the changes, where there is one.
+const CATCH_UP: u16 = 1;
+
 /// The phase the changes are read in.
-const CHANGES: u16 = 1;
+const CHANGES: u16 = 2;
+
+/// How many rows the catch-up holds.
+const CATCH_UP_ROWS: u64 = 2;
 
 /// How many rows the snapshot holds.
 const SNAPSHOT_ROWS: u64 = 3;
@@ -53,6 +59,8 @@ struct LogConfig {
     snapshot_keeps: bool,
     /// Reads the snapshot without checkpoints, so only its end moves the stream on.
     uncheckpointed: bool,
+    /// Reads a catch-up between the snapshot and the changes, kept in the slot too.
+    catch_up: bool,
 }
 
 /// A table's snapshot, then its changes, with a slot that keeps where they were acknowledged.
@@ -93,10 +101,25 @@ fn changes() -> PartitionId {
     PartitionId::parse("changes").expect("a valid partition")
 }
 
+fn catch_up() -> PartitionId {
+    PartitionId::parse("catch-up").expect("a valid partition")
+}
+
+/// Whether `state` records `partition` read to its end, `rows` rows.
+fn ended(state: &StreamState, partition: &PartitionId, rows: u64) -> bool {
+    match state.partitions.get(partition) {
+        Some(PartitionState::Done) => true,
+        Some(PartitionState::Cursor(cursor)) => {
+            cursor.decode::<u64>(1).is_ok_and(|read| read == rows)
+        }
+        _ => false,
+    }
+}
+
 impl Log {
     /// Whether the slot keeps `partition`'s position.
     fn keeps(&self, partition: &PartitionId) -> bool {
-        partition == &changes() || self.config.snapshot_keeps
+        partition == &changes() || partition == &catch_up() || self.config.snapshot_keeps
     }
 
     /// Reads the changes from `next` for as long as the read runs.
@@ -142,16 +165,17 @@ impl ReadStream<Log> for Rows {
             .with_checkpointing(checkpointing)
     }
 
-    async fn plan(&self, _source: &Log, state: &StreamState) -> Result<PartitionPlan> {
-        let read = match state.partitions.get(&snapshot()) {
-            Some(PartitionState::Done) => true,
-            Some(PartitionState::Cursor(cursor)) => cursor
-                .decode::<u64>(1)
-                .is_ok_and(|read| read == SNAPSHOT_ROWS),
-            _ => false,
+    async fn plan(&self, source: &Log, state: &StreamState) -> Result<PartitionPlan> {
+        let catching_up = match state.phase {
+            CHANGES => false,
+            CATCH_UP => !ended(state, &catch_up(), CATCH_UP_ROWS),
+            _ if !ended(state, &snapshot(), SNAPSHOT_ROWS) => {
+                return Ok(PartitionPlan::new(vec![Partition::new(snapshot())]));
+            }
+            _ => source.config.catch_up,
         };
-        if state.phase != CHANGES && !read {
-            return Ok(PartitionPlan::new(vec![Partition::new(snapshot())]));
+        if catching_up {
+            return Ok(PartitionPlan::new(vec![Partition::new(catch_up())]).phase(CATCH_UP));
         }
         Ok(
             PartitionPlan::new(vec![Partition::new(changes()).unbounded()])
@@ -167,6 +191,13 @@ impl ReadStream<Log> for Rows {
         cursor: u64,
         out: &mut Emitter<u64>,
     ) -> Result<()> {
+        if partition.id() == &catch_up() {
+            for row in cursor..CATCH_UP_ROWS {
+                out.rows(&[json!({ "row": row })]).await?;
+                out.checkpoint(&(row + 1)).await?;
+            }
+            return Ok(());
+        }
         if partition.id() != &snapshot() {
             return source.changes(cursor, out).await;
         }
@@ -206,6 +237,7 @@ async fn a_change_log_whose_slot_moves_only_when_committed_passes_s_ack() {
         json!({ "name": "log_on_demand", "on_demand": true }),
         json!({ "name": "log_snapshot_keeps", "snapshot_keeps": true }),
         json!({ "name": "log_uncheckpointed", "uncheckpointed": true }),
+        json!({ "name": "log_catching_up", "catch_up": true }),
     ];
     for config in shapes {
         let report = certify_source::<Log>(config.clone()).await;
@@ -220,6 +252,7 @@ async fn a_change_log_whose_slot_moves_but_where_it_was_told_fails_s_ack() {
         // Its checkpoints come a second apart, well within the clause's patience.
         json!({ "name": "log_acks_late", "late_ack": true }),
         json!({ "name": "log_stuck", "stuck": true }),
+        json!({ "name": "log_stuck_behind_a_catch_up", "stuck": true, "catch_up": true }),
         json!({ "name": "log_stuck_behind_a_kept_snapshot", "stuck": true, "snapshot_keeps": true }),
         json!({ "name": "log_stuck_behind_a_whole_snapshot", "stuck": true, "uncheckpointed": true }),
     ];
