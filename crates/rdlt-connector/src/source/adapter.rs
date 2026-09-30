@@ -239,10 +239,13 @@ impl<C: SourceConnector> SourceFactory for Factory<C> {
                 )
                 .with_code(ACKNOWLEDGED_CODE));
             }
-            let adapter = Arc::new(adapted::<C>(config, &context).await?);
+            // The reader is connected apart from the source it tells of, so it answers what the
+            // source keeps beyond a connection, not what one connection was told.
+            let source = adapted::<C>(config.clone(), &context).await?;
+            let reader = adapted::<C>(config, &context).await?;
             Ok((
-                Arc::clone(&adapter) as Arc<dyn Source>,
-                adapter as Arc<dyn AcknowledgedReader>,
+                Arc::new(source) as Arc<dyn Source>,
+                Arc::new(reader) as Arc<dyn AcknowledgedReader>,
             ))
         })
     }

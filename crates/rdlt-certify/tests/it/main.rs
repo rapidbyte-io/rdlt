@@ -4,6 +4,7 @@ mod cli;
 mod faults;
 mod killed;
 mod listening;
+mod probing;
 mod read_back;
 mod served;
 mod spawned;

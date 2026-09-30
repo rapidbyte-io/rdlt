@@ -125,7 +125,9 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     ///
     /// Only certification asks, where the connector says it tells
     /// ([`SourceConnector::ACKNOWLEDGES`]), to check that the position moves only in
-    /// [`committed`](Self::committed).
+    /// [`committed`](Self::committed), and asks from a connection of its own. A stream that tells
+    /// answers the cursor `committed` was told as soon as that call returns: one that
+    /// acknowledges in the background waits there until the position has moved.
     fn acknowledged(
         &self,
         _source: &S,
@@ -343,8 +345,8 @@ pub trait SourceFactory: Send + Sync {
     }
 }
 
-/// The code of the error a source that does not tell where it stands refuses to.
-pub(crate) const ACKNOWLEDGED_CODE: &str = "acknowledged";
+/// The code of the error a source refuses to tell where it stands with, where it does not.
+pub const ACKNOWLEDGED_CODE: &str = "acknowledged";
 
 fn duplicate_stream(error: &DuplicateStream) -> ConnectorError {
     ConnectorError::new(ConnectorErrorKind::Internal, error.to_string())

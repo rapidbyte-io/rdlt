@@ -121,8 +121,8 @@ pub use sink::{
     admitted_partition_channel, decoded_bytes, decoded_rows, partition_channel,
 };
 pub use source::{
-    AcknowledgedReader, Acknowledging, Partition, PartitionPlan, ReadRequest, ReadStream, Source,
-    SourceConnector, SourceFactory, Streams, source_factory,
+    ACKNOWLEDGED_CODE, AcknowledgedReader, Acknowledging, Partition, PartitionPlan, ReadRequest,
+    ReadStream, Source, SourceConnector, SourceFactory, Streams, source_factory,
 };
 pub use spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 pub use state::{
