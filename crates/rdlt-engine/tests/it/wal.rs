@@ -58,6 +58,17 @@ async fn a_load_that_must_log_ahead_fails_where_the_engine_keeps_no_logs() {
         )
         .await;
     refused(required, "wal_required");
+    let changes = engine
+        .run(
+            pipeline(
+                "wal-required-changes",
+                [stream("events").read(ReadMode::Cdc)],
+            ),
+            forgetful("wal_required_changes").await,
+            memory("wal_required_changes").await,
+        )
+        .await;
+    refused(changes, "wal_required");
     let asked = engine
         .run(
             pipeline("wal-asked", incremental()).with_wal(true),
@@ -69,7 +80,7 @@ async fn a_load_that_must_log_ahead_fails_where_the_engine_keeps_no_logs() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_source_that_cannot_read_again_is_read_only_incrementally() {
+async fn a_source_that_cannot_read_again_is_never_read_in_full() {
     let base = tempfile::tempdir().expect("a temporary directory");
     let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
     let engine = logging_engine(commit_every(5), store);
@@ -82,15 +93,6 @@ async fn a_source_that_cannot_read_again_is_read_only_incrementally() {
         )
         .await;
     refused(full, "full_read_unreplayable");
-    // A change stream's phases drop their partitions' positions, which replay goes by.
-    let changes = engine
-        .run(
-            pipeline("wal-changes", [stream("events").read(ReadMode::Cdc)]),
-            forgetful("wal_changes").await,
-            memory("wal_changes").await,
-        )
-        .await;
-    refused(changes, "change_read_unreplayable");
 }
 
 #[tokio::test(start_paused = true)]

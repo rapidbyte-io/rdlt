@@ -2,6 +2,7 @@
 
 pub(crate) mod batches;
 pub(crate) mod destinations;
+pub(crate) mod faults;
 pub(crate) mod listening;
 pub(crate) mod logs;
 pub(crate) mod script;

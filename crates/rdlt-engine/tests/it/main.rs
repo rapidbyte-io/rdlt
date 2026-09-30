@@ -29,6 +29,7 @@ mod signals;
 mod support;
 mod unbounded;
 mod wal;
+mod wal_changes;
 
 /// Tracks the heap's peak, for the memory bound.
 #[global_allocator]
