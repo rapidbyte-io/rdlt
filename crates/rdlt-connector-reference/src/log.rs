@@ -165,7 +165,11 @@ impl Logged {
         } else {
             0
         };
-        (self.0.partitions + later).saturating_sub(retired).max(1)
+        self.0
+            .partitions
+            .saturating_add(later)
+            .saturating_sub(retired)
+            .max(1)
     }
 
     /// The offset past the last message each partition holds `elapsed` after the logs began.
@@ -277,7 +281,7 @@ impl ReadStream<LogSource> for Logged {
                 head_at_start
             };
             while next < head {
-                let end = head.min(next + self.0.batch_rows);
+                let end = head.min(next.saturating_add(self.0.batch_rows));
                 out.rows(&self.messages(source.seed, id, next..end)).await?;
                 next = end;
                 out.checkpoint(&Offset { next }).await?;

@@ -7,7 +7,7 @@ use rdlt_connector::{
 };
 use serde_json::{Value, json};
 
-use super::{LogSource, Offset, message};
+use super::{LogSource, Logged, LoggedStream, Offset, message};
 
 fn events() -> StreamName {
     StreamName::new("events").expect("a valid stream")
@@ -204,4 +204,24 @@ async fn a_stream_without_partitions_or_rows_to_a_batch_is_refused() {
             .expect("the configuration is refused");
         assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{stream}");
     }
+}
+
+#[test]
+fn a_partition_count_at_its_limit_neither_wraps_nor_panics() {
+    let stream: LoggedStream = serde_json::from_value(json!({
+        "name": "events", "partitions": u32::MAX, "messages": 3,
+        "partitions_later": u32::MAX, "partitions_retired": 1,
+    }))
+    .expect("a valid stream");
+    assert_eq!(Logged(stream).partitions(Duration::ZERO), u32::MAX - 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_at_its_limit_neither_wraps_nor_panics() {
+    let stream =
+        json!({ "name": "events", "partitions": 1, "messages": 3, "batch_rows": u64::MAX });
+    let source = connect(&stream, "a_whole_batch").await;
+    let (read, sent) = read(source.as_ref(), Some(offset(1)), None).await;
+    read.expect("the read ends");
+    assert_eq!(sent.offsets, [1, 2]);
 }
