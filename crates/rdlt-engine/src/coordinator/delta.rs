@@ -11,12 +11,16 @@ use rdlt_connector::{
 use super::{Coordinator, KEPT_COMPLETIONS};
 use crate::plan::WriteMode;
 use crate::report::StreamReport;
+use crate::wal::Sealed;
 
 /// What the sealed segments of a commit add up to.
 pub(super) struct Collected {
     pub(super) segments: SegmentSet,
     pub(super) positions: BTreeMap<usize, PartitionState>,
     pub(super) streams: BTreeMap<usize, StreamReport>,
+    /// Every seal, as the load's log records them before their commit: empty segments move
+    /// their partitions too.
+    pub(super) sealed: Vec<Sealed>,
 }
 
 impl Coordinator {
@@ -27,9 +31,25 @@ impl Coordinator {
             segments: SegmentSet::new(),
             positions: BTreeMap::new(),
             streams: BTreeMap::new(),
+            sealed: Vec::new(),
         };
+        // Where each partition stands before each seal, as the commit's changes reach it.
+        let mut positions = self.parts.positions.clone();
         for seal in std::mem::take(&mut self.sealed) {
             let stream = self.parts.partitions[seal.partition].stream;
+            let (name, id) = (
+                &self.parts.streams[stream].name,
+                &self.parts.partitions[seal.partition].id,
+            );
+            collected.sealed.push(Sealed {
+                segment: seal.segment,
+                stream: name.clone(),
+                partition: id.clone(),
+                replayable: self.parts.streams[stream].replayable,
+                from: positions.get(name, id).cloned(),
+                state: seal.state.clone(),
+            });
+            positions.set(name.clone(), id.clone(), seal.state.clone());
             if seal.rows > 0 {
                 collected.segments.insert(seal.segment);
                 let counts = collected.streams.entry(stream).or_default();

@@ -10,13 +10,14 @@ use rdlt_connector::{
     TablePath, TableRef,
 };
 
+use super::check::check_stream;
 use super::{Planned, RunContext, sequences};
 use crate::coordinator::{Begun, Cycle, Phases, StreamRun, Template};
 use crate::error::{Error, ErrorKind, Side};
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
 use crate::partition::ChangeMode;
-use crate::plan::{DeleteMode, OnTruncate, StreamPlan, WriteMode};
+use crate::plan::{DeleteMode, StreamPlan, WriteMode};
 use crate::policy::Nested;
 use crate::table::{
     ChangeLayout, Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables,
@@ -90,6 +91,7 @@ impl Planning<'_> {
         let partial_updates = self.capabilities.partial_updates;
         let mut planned = planned(plan, index, on_demand, partial_updates, cycle, partitioned);
         planned.stream.sequences = sequences;
+        planned.stream.replayable = spec.is_replayable();
         Ok(planned)
     }
 
@@ -184,6 +186,7 @@ fn planned(
             stopped: false,
             phases,
             sequences: None,
+            replayable: true,
         },
         on_demand,
         changes,
@@ -229,59 +232,6 @@ fn normalized(context: &RunContext, plan: &StreamPlan, spec: &StreamSpec) -> Opt
     })
 }
 
-/// The stream's catalog entry, once the source can read it as planned and the destination can
-/// write it as planned.
-fn check_stream<'a>(
-    context: &RunContext,
-    plan: &StreamPlan,
-    catalog: &'a Catalog,
-) -> Result<&'a StreamSpec, Error> {
-    let name = plan.name();
-    let refuse = |code: &str, detail: &str| {
-        Error::config(format!("stream {name}: {detail}"))
-            .with_code(code)
-            .with_stream(name)
-    };
-    let spec = catalog.get(name).ok_or_else(|| {
-        refuse(
-            "stream_not_found",
-            "the source's catalog has no such stream",
-        )
-    })?;
-    if !spec.supports(plan.read_mode()) {
-        let detail = format!("the source cannot read it as {:?}", plan.read_mode());
-        return Err(refuse("read_mode_unsupported", &detail));
-    }
-    let modes = context.destination.capabilities().write_modes;
-    let writable = match plan.write_mode() {
-        WriteMode::Append => modes.append,
-        WriteMode::Replace => modes.replace,
-        WriteMode::Merge => modes.merge,
-    };
-    if !writable {
-        let detail = format!("the destination cannot write {:?}", plan.write_mode());
-        return Err(refuse("write_mode_unsupported", &detail));
-    }
-    if plan.merges_changes() {
-        let capabilities = context.destination.capabilities();
-        if !capabilities.merge_changes {
-            let detail = "the destination does not merge change streams";
-            return Err(refuse("change_merge_unsupported", detail));
-        }
-        let deletes = capabilities.delete_modes;
-        let (hard, soft) = removals(plan);
-        if (hard && !deletes.hard) || (soft && !deletes.soft) {
-            let detail = format!(
-                "the destination cannot remove rows as its deletes ({:?}) and truncates ({:?}) do",
-                plan.delete_mode(),
-                plan.truncate_mode()
-            );
-            return Err(refuse("delete_mode_unsupported", &detail));
-        }
-    }
-    Ok(spec)
-}
-
 /// How a change stream's table holds its changes: merged by key for a merge stream, as a log
 /// otherwise; `None` for a stream not read as changes.
 fn layout(plan: &StreamPlan) -> Option<ChangeLayout> {
@@ -291,18 +241,6 @@ fn layout(plan: &StreamPlan) -> Option<ChangeLayout> {
         }),
         (ReadMode::Cdc, _) => Some(ChangeLayout::Log),
         _ => None,
-    }
-}
-
-/// Whether a change stream merged by key removes rows outright, and whether it marks them
-/// deleted: its deletes as their mode says, and its truncates as its deletes do (outright when
-/// deletes are ignored).
-fn removals(plan: &StreamPlan) -> (bool, bool) {
-    let truncates = plan.truncate_mode() == OnTruncate::Apply;
-    match plan.delete_mode() {
-        DeleteMode::Soft => (false, true),
-        DeleteMode::Ignore => (truncates, false),
-        _ => (true, false),
     }
 }
 

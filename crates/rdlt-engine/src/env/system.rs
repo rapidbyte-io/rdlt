@@ -1,19 +1,32 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::compute::{ComputePool, RayonPool};
 use crate::env::{Env, Sleep};
+use crate::wal::WalStore;
 
-/// The production [`Env`]: the operating system's clock and random source, tokio's timers and a
-/// rayon compute pool.
+/// The production [`Env`]: the operating system's clock and random source, tokio's timers, a
+/// rayon compute pool and, where given one, a write-ahead log store.
 #[derive(Debug)]
 pub struct SystemEnv {
     compute: RayonPool,
+    wal: Option<Arc<dyn WalStore>>,
 }
 
 impl SystemEnv {
-    /// Creates an environment that runs CPU-bound work on `compute`.
+    /// Creates an environment that runs CPU-bound work on `compute` and keeps no write-ahead logs.
     pub fn new(compute: RayonPool) -> Self {
-        Self { compute }
+        Self { compute, wal: None }
+    }
+
+    /// The environment keeping write-ahead logs in `store`, usually a
+    /// [`LocalWal`](crate::LocalWal).
+    #[must_use]
+    pub fn with_wal(self, store: Arc<dyn WalStore>) -> Self {
+        Self {
+            wal: Some(store),
+            ..self
+        }
     }
 }
 
@@ -52,5 +65,9 @@ impl Env for SystemEnv {
 
     fn compute(&self) -> &dyn ComputePool {
         &self.compute
+    }
+
+    fn wal(&self) -> Option<Arc<dyn WalStore>> {
+        self.wal.clone()
     }
 }

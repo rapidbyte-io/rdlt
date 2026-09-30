@@ -39,6 +39,10 @@ pub(crate) struct Fault {
 }
 
 /// One scripted stream.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each behavior is scripted on or off, independently"
+)]
 pub(crate) struct ScriptStream {
     pub(crate) name: String,
     /// Rows each partition holds; tests grow them between runs.
@@ -56,6 +60,8 @@ pub(crate) struct ScriptStream {
     idle_flag: AtomicBool,
     /// Where reads wait forever without emitting anything, ignoring stop requests.
     pub(crate) hang: Hang,
+    /// Whether the stream can read again what it acknowledged.
+    pub(crate) replayable: bool,
 }
 
 /// Where a scripted read waits forever.
@@ -84,6 +90,7 @@ impl ScriptStream {
             idle: false,
             idle_flag: AtomicBool::new(true),
             hang: Hang::Never,
+            replayable: true,
         }
     }
 
@@ -121,6 +128,8 @@ pub(crate) struct Script {
     reading: AtomicUsize,
     /// Reads started.
     pub(crate) reads: AtomicUsize,
+    /// Reads of a stream that cannot read again, from before where it acknowledged.
+    pub(crate) early_reads: AtomicUsize,
     /// The most partitions ever read at once.
     pub(crate) peak_reading: AtomicUsize,
 }
@@ -211,6 +220,7 @@ impl SourceConnector for ScriptSource {
                 name: stream.name.clone(),
                 checkpointing: stream.checkpointing,
                 declares_schema: stream.declares_schema,
+                replayable: stream.replayable,
             })
         })
     }
@@ -221,6 +231,7 @@ struct Scripted {
     name: String,
     checkpointing: Checkpointing,
     declares_schema: bool,
+    replayable: bool,
 }
 
 /// The schema every scripted stream declares: one non-null `id`.
@@ -236,7 +247,8 @@ impl ReadStream<ScriptSource> for Scripted {
         let spec = StreamSpec::new(StreamName::new(&self.name).expect("valid stream name"))
             .with_read_modes([ReadMode::Full, ReadMode::Incremental])
             .with_partitioning(Partitioning::Planned)
-            .with_checkpointing(self.checkpointing);
+            .with_checkpointing(self.checkpointing)
+            .with_replayable(self.replayable);
         if self.declares_schema {
             spec.with_schema(schema())
         } else {
@@ -318,6 +330,9 @@ impl Scripted {
         if stream.hang == Hang::Partition(index) {
             std::future::pending::<()>().await;
         }
+        if !stream.replayable {
+            self.forgotten(script, partition, cursor)?;
+        }
         let mut next = cursor.next;
         let mut batches = 0;
         loop {
@@ -363,6 +378,27 @@ impl Scripted {
         }
         if stream.final_checkpoint {
             out.checkpoint(&Offset { next }).await?;
+        }
+        Ok(())
+    }
+
+    /// Refuses a read of a stream that cannot read again from before where it acknowledged:
+    /// those rows are gone, until the read moves past them.
+    fn forgotten(&self, script: &Script, partition: &Partition, cursor: Offset) -> Result<()> {
+        let id = partition.id().to_string();
+        let acknowledged = script
+            .acks
+            .lock()
+            .iter()
+            .filter(|(name, acked, _)| *name == self.name && *acked == id)
+            .map(|(_, _, next)| *next)
+            .max();
+        if acknowledged.is_some_and(|acknowledged| cursor.next < acknowledged) {
+            script.early_reads.fetch_add(1, Ordering::SeqCst);
+            return Err(ConnectorError::new(
+                ConnectorErrorKind::Transient,
+                "the rows before the acknowledged position are gone",
+            ));
         }
         Ok(())
     }

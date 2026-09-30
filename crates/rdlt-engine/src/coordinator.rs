@@ -5,6 +5,7 @@
 //! state, and acknowledges the committed cursors to the source. At most one commit is in flight;
 //! partitions keep reading while it runs.
 
+mod acks;
 mod delta;
 mod phases;
 #[cfg(test)]
@@ -16,8 +17,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Cursor, Epoch, GenerationId, LoadId, PartitionId, PartitionState,
-    Sequences, Source, StateChange, StateEntry, StreamName, TablePath,
+    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, Sequences, Source,
+    StateChange, StateEntry, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -30,6 +31,7 @@ use crate::partition::{Progress, Seal};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
 use crate::table::Tables;
+use crate::wal::{LoadLog, Positions};
 use crate::watch;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher};
 
@@ -51,6 +53,9 @@ pub(crate) struct StreamRun {
     /// Who made the sequences of the stream's table, where state records otherwise; the next
     /// commit records them.
     pub(crate) sequences: Option<(TablePath, Sequences)>,
+    /// Whether the stream's source can read again what it acknowledged; one that cannot learns
+    /// its position once the load's log holds it, before the destination commits.
+    pub(crate) replayable: bool,
 }
 
 /// A full read of a stream, from its first partition to its last; a replace stream fills the
@@ -135,6 +140,10 @@ pub(crate) struct CoordinatorParts {
     pub(crate) log: Arc<Mutex<AttemptLog>>,
     /// Starts the partitions of a stream's next phase.
     pub(crate) launcher: Launcher,
+    /// The load's write-ahead log, where it keeps one.
+    pub(crate) wal: Option<LoadLog>,
+    /// The partitions' positions as the destination holds them, through the commits that landed.
+    pub(crate) positions: Positions,
 }
 
 pub(crate) struct Coordinator {
@@ -180,6 +189,9 @@ impl Coordinator {
         // Writes of rows no commit took, as an unbounded partition's after its last checkpoint,
         // finish before the session closes; the next session discards them.
         self.parts.lanes.flush().await?;
+        if let Some(log) = &self.parts.wal {
+            log.close().await?;
+        }
         self.parts.tables.session().close().await?;
         self.parts.log.lock().end = Some(end);
         Ok(())
@@ -322,6 +334,12 @@ impl Coordinator {
             finish_generations,
             child_tables: self.parts.tables.child_tables(),
         };
+        if let Some(log) = &self.parts.wal {
+            // Every batch of the commit's segments was queued for the log before its partition
+            // sealed it: the commit's frame, queued now, follows them all.
+            log.commit(collected.sealed, &meta).await?;
+            self.acknowledge(&collected.positions, false).await?;
+        }
         let receipt = self
             .parts
             .tables
@@ -329,10 +347,14 @@ impl Coordinator {
             .commit(&meta)
             .await?
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
+        if let Some(log) = &self.parts.wal {
+            log.committed(&receipt).await?;
+        }
+        self.parts.positions.apply(&meta.state_delta);
         self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing);
         self.record_positions(&collected.positions);
-        self.acknowledge(collected.positions).await
+        self.acknowledge(&collected.positions, true).await
     }
 
     /// Advances past a landed commit: what state now records, and the commit in the log.
@@ -362,35 +384,6 @@ impl Coordinator {
         let mut log = self.parts.log.lock();
         log.pending = None;
         log.commits.push(CommitRecord { receipt, streams });
-    }
-
-    /// Tells the source which cursors are committed, per stream.
-    async fn acknowledge(
-        &mut self,
-        positions: BTreeMap<usize, PartitionState>,
-    ) -> Result<(), Error> {
-        let mut cursors: BTreeMap<usize, Vec<(PartitionId, Cursor)>> = BTreeMap::new();
-        for (partition, state) in positions {
-            if let PartitionState::Cursor(cursor) = state {
-                let partition = &self.parts.partitions[partition];
-                cursors
-                    .entry(partition.stream)
-                    .or_default()
-                    .push((partition.id.clone(), cursor));
-            }
-        }
-        for (stream, cursors) in cursors {
-            let name = &self.parts.streams[stream].name;
-            self.parts
-                .source
-                .committed(name, &cursors)
-                .await
-                .map_err(|error| {
-                    Error::connector(Side::Source, format!("acknowledging stream {name}"), error)
-                        .with_stream(name)
-                })?;
-        }
-        Ok(())
     }
 }
 

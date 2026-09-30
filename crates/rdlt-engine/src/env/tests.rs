@@ -1,11 +1,12 @@
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rdlt_connector::LoadId;
 
 use super::{Env, Sleep, SystemEnv};
 use crate::compute::{ComputePool, RayonPool};
+use crate::wal::{LocalWal, WalStore};
 
 fn system_env() -> SystemEnv {
     SystemEnv::new(RayonPool::new(NonZeroUsize::MIN).unwrap())
@@ -23,6 +24,15 @@ async fn system_env_sleeps_and_measures_on_the_runtime_clock() {
 fn system_env_reads_the_real_wall_clock() {
     let first_of_2026 = UNIX_EPOCH + Duration::from_hours(490_896);
     assert!(system_env().now() > first_of_2026);
+}
+
+#[test]
+fn system_env_keeps_write_ahead_logs_only_where_given_a_store() {
+    assert!(system_env().wal().is_none());
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new("unused"));
+    let env = system_env().with_wal(Arc::clone(&store));
+    let kept = env.wal().expect("the store it was given");
+    assert!(Arc::ptr_eq(&kept, &store));
 }
 
 #[test]

@@ -19,7 +19,7 @@ use arrow_array::{
     TimestampMicrosecondArray, new_null_array,
 };
 use parking_lot::Mutex;
-use rdlt_connector::{Field, LoadId, LogicalType, SchemaVersion, SegmentId, StreamName};
+use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName};
 
 use super::TableView;
 use super::convert::{convert, text};
@@ -45,8 +45,8 @@ pub(crate) struct Stamp {
 #[derive(Debug)]
 pub(crate) struct Prepared {
     pub(crate) batch: RecordBatch,
-    /// The schema version of the view the batch was lowered for.
-    pub(crate) version: SchemaVersion,
+    /// The view the batch was lowered for, which names its schema version.
+    pub(crate) view: Arc<TableView>,
     /// Rows dropped because they carried a discarded change.
     pub(crate) discarded_rows: u64,
     /// Values nulled because they carried a discarded change.
@@ -166,7 +166,7 @@ impl LoweringPlan {
         if batch.num_rows() == 0 {
             return Ok(Prepared {
                 batch: RecordBatch::new_empty(Arc::clone(&view.schema)),
-                version: view.table.version,
+                view: Arc::clone(view),
                 discarded_rows,
                 discarded_values: 0,
             });
@@ -208,7 +208,7 @@ impl LoweringPlan {
         let prepared = self.compacted(prepared).map_err(failed)?;
         Ok(Prepared {
             batch: prepared,
-            version: view.table.version,
+            view: Arc::clone(view),
             discarded_rows,
             discarded_values,
         })

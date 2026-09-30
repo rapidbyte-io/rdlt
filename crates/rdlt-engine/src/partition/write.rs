@@ -344,6 +344,20 @@ async fn queue(
         return Ok(());
     }
     let bytes = slices::held_bytes(&prepared.batch);
+    if let Some(log) = &context.wal {
+        // Queued for the log before the partition can seal the segment, so the frame of the
+        // commit that takes the segment, queued after the seal, follows this batch's.
+        let compute = context.env.compute();
+        log.batch(
+            compute,
+            &context.budget,
+            table,
+            &prepared.view,
+            open.id,
+            &prepared.batch,
+        )
+        .await?;
+    }
     let lane = context.lanes.route(table, job.partition.id());
     context
         .lanes
@@ -351,7 +365,7 @@ async fn queue(
             lane,
             Write {
                 table,
-                version: prepared.version,
+                version: prepared.view.table.version,
                 segment: open.id,
                 batch: prepared.batch,
                 reservation,

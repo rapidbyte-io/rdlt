@@ -193,6 +193,8 @@ pub(crate) enum Step {
     LoseResponseThenOpen,
     /// Opening panics, as a connector with a bug may.
     PanicOnOpen,
+    /// The first commit fails before it lands; the others land.
+    CommitOnce,
 }
 
 /// `inner`, failing with a transient error at `step`, or panicking there.
@@ -275,7 +277,8 @@ impl DestinationSession for FailingSession {
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
-        if self.step == Step::Commit {
+        let once = self.step == Step::CommitOnce && !self.lost.swap(true, Ordering::SeqCst);
+        if self.step == Step::Commit || once {
             return Box::pin(async { Err(injected()) });
         }
         Box::pin(async move {
