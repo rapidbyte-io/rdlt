@@ -88,8 +88,9 @@ pub(crate) fn ticking_engine(config: EngineConfigBuilder) -> TestEngine {
 }
 
 /// The system's clock and randomness, with compute jobs run on the calling thread: the paused
-/// test runtime would otherwise advance its clock while a job runs on another thread. With ticks,
-/// the clock moves a millisecond more on each reading.
+/// test runtime would otherwise advance its clock while a job runs on another thread.
+///
+/// With ticks, the clock moves a millisecond more on each reading.
 struct InlineEnv(SystemEnv, Inline, Option<Arc<AtomicU64>>);
 
 impl Env for InlineEnv {

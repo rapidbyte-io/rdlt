@@ -63,7 +63,7 @@ pub(super) struct Version {
     pub(super) current: bool,
     /// The last byte of the sequence of the row that opened it.
     pub(super) seq: u8,
-    /// Whether its hash is the one its data's writer gave.
+    /// Whether its hash is what its data's writer gave it.
     pub(super) hashed: bool,
 }
 
