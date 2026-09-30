@@ -1,5 +1,6 @@
 //! A source of seeded change streams: a snapshot of a keyed table, then the changes made to it.
 
+mod slot;
 #[cfg(test)]
 mod tests;
 
@@ -18,6 +19,8 @@ use rdlt_connector::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use slot::Slot;
+
 use crate::generator::mix;
 
 /// Configuration of [`ChangesSource`].
@@ -28,6 +31,11 @@ pub struct ChangesConfig {
     pub seed: u64,
     /// The streams.
     pub streams: Vec<ChangedStream>,
+    /// The slot the source keeps its acknowledged positions in, by name, which every source of
+    /// this process naming it shares, as a replication slot outlives a connection; the default
+    /// slot where none is named.
+    #[serde(default)]
+    pub slot: Option<String>,
 }
 
 /// One change stream: a table of `keys` rows, snapshotted, then changed `changes` times.
@@ -82,9 +90,10 @@ const CHANGES_PARTITION: &str = "changes";
 pub struct ChangesSource {
     seed: u64,
     streams: Vec<ChangedStream>,
+    slot: Arc<Slot>,
 }
 
-#[source(id = "io.rapidbyte.changes")]
+#[source(id = "io.rapidbyte.changes", acknowledged)]
 impl SourceConnector for ChangesSource {
     type Config = ChangesConfig;
 
@@ -101,6 +110,7 @@ impl SourceConnector for ChangesSource {
         Ok(Self {
             seed: config.seed,
             streams: config.streams,
+            slot: Slot::named(config.slot.as_deref()),
         })
     }
 
@@ -119,7 +129,7 @@ struct Changed(ChangedStream);
 
 /// Where a partition resumes: the next key of a snapshot partition, or the next change; `done`
 /// once a snapshot partition has read its last key.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct Position {
     next: u64,
     done: bool,
@@ -296,6 +306,26 @@ impl ReadStream<ChangesSource> for Changed {
         Ok(PartitionPlan::new(Self::changes()?)
             .phase(CHANGES)
             .start(id, start))
+    }
+
+    /// Acknowledges each partition's position in the source's slot.
+    async fn committed(
+        &self,
+        source: &ChangesSource,
+        cursors: &[(PartitionId, Position)],
+    ) -> Result<()> {
+        for (partition, position) in cursors {
+            source.slot.advance(&self.0.name, partition, *position);
+        }
+        Ok(())
+    }
+
+    async fn acknowledged(
+        &self,
+        source: &ChangesSource,
+        partition: &PartitionId,
+    ) -> Result<Option<Position>> {
+        Ok(source.slot.position(&self.0.name, partition))
     }
 
     async fn read(

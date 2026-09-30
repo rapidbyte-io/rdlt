@@ -2,7 +2,7 @@ use arrow_array::RecordBatch;
 use rdlt_connector::testing::{Outcome, Probe, Unprobed, certify_destination, certify_source};
 use rdlt_connector::{BoxFuture, Result, TableRef};
 use rdlt_connector_reference::{
-    FilesDestination, FilesSource, GeneratorSource, MemoryDestination, MemorySource,
+    ChangesSource, FilesDestination, FilesSource, GeneratorSource, MemoryDestination, MemorySource,
     SqliteDestination, files, published, sqlite,
 };
 use serde_json::json;
@@ -152,4 +152,41 @@ async fn the_files_source_is_certified() {
     let report = certify_source::<FilesSource>(config).await;
     report.assert_passed();
     assert_eq!(report.outcome("S-BARRIER"), Some(&Outcome::Passed));
+}
+
+#[tokio::test]
+async fn the_change_source_is_certified_and_moves_its_slot_only_when_committed() {
+    for slot in [None, Some("certified")] {
+        let config = json!({
+            "seed": 11,
+            "streams": [{
+                "name": "accounts",
+                "keys": 12,
+                "snapshot_partitions": 2,
+                "changes": 9,
+                "batch_rows": 3,
+            }],
+            "slot": slot,
+        });
+        let report = certify_source::<ChangesSource>(config).await;
+        report.assert_passed();
+        assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
+    }
+}
+
+#[tokio::test]
+async fn the_change_source_is_certified_again_against_the_slot_an_earlier_run_moved() {
+    let config = json!({
+        "seed": 13,
+        "streams": [{ "name": "accounts", "keys": 6, "changes": 9, "batch_rows": 3 }],
+        "slot": "certified_twice",
+    });
+    for run in 1..=2 {
+        let report = certify_source::<ChangesSource>(config.clone()).await;
+        assert_eq!(
+            report.outcome("S-ACK"),
+            Some(&Outcome::Passed),
+            "run {run}: {report}"
+        );
+    }
 }
