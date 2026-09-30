@@ -48,3 +48,7 @@ pub const PROTOCOL_MINOR: u32 = 0;
 /// The handshake's feature a host offers to read back what a destination published, and a
 /// destination that can accepts: then it serves `ReadPublished`.
 pub const PUBLISHED: &str = "published";
+
+/// The handshake's feature a host offers to ask where a source stands outside the engine, and a
+/// source that tells accepts: then it serves `ReadAcknowledged`.
+pub const ACKNOWLEDGED: &str = "acknowledged";

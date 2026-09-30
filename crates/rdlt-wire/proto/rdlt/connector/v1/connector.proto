@@ -40,6 +40,9 @@ service Connector {
   // Reads back every row a destination published to a table, for certification; served when
   // the handshake accepted the "published" feature. The engine never calls it.
   rpc ReadPublished(ReadPublishedRequest) returns (stream ReadFrame);
+  // Tells where a source stands for a partition outside the engine, for certification; served
+  // when the handshake accepted the "acknowledged" feature. The engine never calls it.
+  rpc ReadAcknowledged(ReadAcknowledgedRequest) returns (ReadAcknowledgedResponse);
 }
 
 // The side of a connection a connector serves.
