@@ -95,12 +95,12 @@ async fn the_sqlite_destination_is_certified() {
     let path = directory.path().join("certify.db");
     let config = json!({ "path": path });
     let probe = SqliteProbe(path.clone());
-    certify_destination::<SqliteDestination>(config.clone(), &probe)
-        .await
-        .assert_passed();
-    certify_destination::<SqliteDestination>(config, &probe)
-        .await
-        .assert_passed();
+    // Certified again, the database it certified before passes alike.
+    for config in [config.clone(), config] {
+        let report = certify_destination::<SqliteDestination>(config, &probe).await;
+        report.assert_passed();
+        assert_eq!(report.outcome("D-HIST"), Some(&Outcome::Passed), "{report}");
+    }
 }
 
 #[tokio::test]

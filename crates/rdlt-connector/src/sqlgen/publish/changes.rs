@@ -60,20 +60,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 "a change stream merges into its table, never a generation",
             ));
         }
-        let quote = |name: &str| self.quote(name);
-        let merging = Changed {
-            of,
-            columns: columns.iter().map(|column| quote(&column.name)).collect(),
-            target: quote(target),
-            staging: quote(&self.staging_table(&of.staged.name)),
-            tombstones: quote(&self.tombstone_table(&of.staged.name)),
-            keys: key.columns.iter().map(|column| quote(column)).collect(),
-            seq: quote(&key.seq),
-            op: quote(&changes.op),
-            unchanged: changes.unchanged.as_deref().map(quote),
-            q: quote(&unused("_rdlt_q", columns)),
-            rank: quote(&unused("_rdlt_rank", columns)),
-        };
+        let merging = Changed::new(self, target, (key, changes), columns, of);
         let computed = match &changes.deletion {
             Deletion::Hard => self.hard(&merging),
             Deletion::Soft { at } => self.soft(&merging, at)?,
@@ -100,9 +87,25 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// The start of the statement computing rows into staging: the insert, then the common table
-    /// expressions every mode reads: the commit's staged rows once each, the tombstones' bound,
-    /// and the rows past the bound, their key's tombstone and its row.
+    /// expressions [`SqlPlanner::admitting`] writes.
     fn computing<'a>(&'a self, changed: &Changed<'_>) -> Sql<'a, D> {
+        let mut sql = self.sql();
+        let staging_columns: Vec<String> = STAGING_COLUMNS.iter().map(|c| self.quote(c)).collect();
+        sql.push(&format!(
+            "INSERT INTO {} ({}, {}, {}) WITH ",
+            changed.staging,
+            staging_columns.join(", "),
+            changed.names(""),
+            changed.op,
+        ));
+        self.admitting(&mut sql, changed);
+        sql
+    }
+
+    /// Writes into `sql` the common table expressions every change stream's commit reads: the
+    /// commit's staged rows once each, the tombstones' bound, and as `_rdlt_admitted` the rows
+    /// past the bound, their key's tombstone and every row the table holds with their key.
+    pub(super) fn admitting(&self, sql: &mut Sql<'_, D>, changed: &Changed<'_>) {
         let Changed {
             staging,
             op,
@@ -113,19 +116,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
             target,
             ..
         } = changed;
-        let mut sql = self.sql();
         let staged = changed.staged_names();
-        let staging_columns: Vec<String> = STAGING_COLUMNS.iter().map(|c| self.quote(c)).collect();
         sql.push(&format!(
-            "INSERT INTO {staging} ({}, {}, {op}) WITH _rdlt_staged AS (SELECT {staged} FROM \
-             (SELECT {staged}, ROW_NUMBER() OVER (PARTITION BY {}, {seq} ORDER BY {op}) AS {rank} \
-             FROM {staging} WHERE ",
-            staging_columns.join(", "),
-            changed.names(""),
+            "_rdlt_staged AS (SELECT {staged} FROM (SELECT {staged}, ROW_NUMBER() OVER (PARTITION \
+             BY {}, {seq} ORDER BY {op}) AS {rank} FROM {staging} WHERE ",
             changed.keys.join(", "),
         ));
         self.rows_of(
-            &mut sql,
+            sql,
             changed.of.staged,
             changed.of.pipeline,
             changed.of.epoch,
@@ -143,7 +141,6 @@ impl<D: SqlDialect> SqlPlanner<D> {
             changed.on("_rdlt_t", "_rdlt_s"),
             changed.on("_rdlt_p", "_rdlt_s"),
         ));
-        sql
     }
 
     /// The statement deleting from `table` the rows of each key the commit computed a row coded
@@ -218,6 +215,33 @@ impl<D: SqlDialect> SqlPlanner<D> {
     fn computed_rows(&self, sql: &mut Sql<'_, D>, changed: &Changed<'_>) {
         let of = changed.of;
         self.rows_of(sql, of.staged, of.pipeline, of.epoch, of.segments);
+    }
+}
+
+impl<'a> Changed<'a> {
+    /// The names `of`'s commit into the change stream's table `target`, whose columns are
+    /// `columns`, shares, quoted by `planner`.
+    pub(super) fn new<D: SqlDialect>(
+        planner: &SqlPlanner<D>,
+        target: &str,
+        (key, changes): (&MergeKey, &ChangeColumns),
+        columns: &[Column],
+        of: &'a Of<'a>,
+    ) -> Self {
+        let quote = |name: &str| planner.quote(name);
+        Self {
+            of,
+            columns: columns.iter().map(|column| quote(&column.name)).collect(),
+            target: quote(target),
+            staging: quote(&planner.staging_table(&of.staged.name)),
+            tombstones: quote(&planner.tombstone_table(&of.staged.name)),
+            keys: key.columns.iter().map(|column| quote(column)).collect(),
+            seq: quote(&key.seq),
+            op: quote(&changes.op),
+            unchanged: changes.unchanged.as_deref().map(quote),
+            q: quote(&unused("_rdlt_q", columns)),
+            rank: quote(&unused("_rdlt_rank", columns)),
+        }
     }
 }
 

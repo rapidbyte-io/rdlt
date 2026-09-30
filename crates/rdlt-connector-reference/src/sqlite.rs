@@ -94,7 +94,7 @@ fn capabilities() -> Capabilities {
         append: true,
         replace: true,
         merge: true,
-        history: false,
+        history: true,
     };
     capabilities.types = BTreeSet::from([
         K::Bool,
