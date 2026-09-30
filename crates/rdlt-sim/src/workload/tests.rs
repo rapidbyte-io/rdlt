@@ -497,6 +497,7 @@ const NONE: Features = Features {
     shared: false,
     perturb: false,
     network: false,
+    wal: false,
 };
 
 #[test]

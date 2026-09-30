@@ -6,9 +6,9 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchOptions, StringA
 use arrow_schema::{DataType, Field as ArrowField, Schema};
 use bytes::Bytes;
 use rdlt_connector::{
-    Checkpointing, ConnectContext, ConnectorError, Emitter, Field, LogicalType, Partition,
-    PartitionId, Partitioning, ReadMode, ReadStream, Result, SourceConnector, StreamName,
-    StreamSpec, StreamState, Streams, TableSchema,
+    Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, Field, LogicalType,
+    Partition, PartitionId, Partitioning, ReadMode, ReadStream, Result, SourceConnector,
+    StreamName, StreamSpec, StreamState, Streams, TableSchema,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,7 @@ impl SourceConnector for SimSource {
                 checkpointing: stream.checkpointing,
                 schema: schema(stream),
                 key: (stream.keys > 0 && !stream.plan_key).then(|| stream.key_columns()),
+                replayable: stream.replayable,
             })
         })
     }
@@ -105,6 +106,7 @@ struct SimStreamReader {
     schema: TableSchema,
     /// The primary key the catalog names.
     key: Option<Vec<&'static str>>,
+    replayable: bool,
 }
 
 impl SimStreamReader {
@@ -123,7 +125,8 @@ impl ReadStream<SimSource> for SimStreamReader {
                 .with_schema(self.schema.clone())
                 .with_read_modes([ReadMode::Full, ReadMode::Incremental])
                 .with_partitioning(Partitioning::Planned)
-                .with_checkpointing(self.checkpointing);
+                .with_checkpointing(self.checkpointing)
+                .with_replayable(self.replayable);
         match &self.key {
             Some(key) => spec.with_primary_key(key.iter().copied()),
             None => spec,
@@ -152,6 +155,17 @@ impl ReadStream<SimSource> for SimStreamReader {
         let world = &source.world;
         let stream = self.stream(source);
         let index = partition_index(partition)?;
+        if !stream.replayable {
+            let key = (stream.name.clone(), partition.id().to_string());
+            let forgotten = world.acknowledged.lock().get(&key).copied();
+            // Rows it acknowledged are gone; a read from before them waits for them to land.
+            if forgotten.is_some_and(|forgotten| cursor.next < forgotten) {
+                return Err(ConnectorError::new(
+                    ConnectorErrorKind::Transient,
+                    "the rows before the acknowledged offset are gone",
+                ));
+            }
+        }
         let rows = stream.rows(index, world.phase());
         let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
         let mut batches = 0;
@@ -190,7 +204,17 @@ impl ReadStream<SimSource> for SimStreamReader {
     ) -> Result<()> {
         let world = &source.world;
         let name = StreamName::new(&self.stream(source).name).expect("valid stream name");
+        let stream = self.stream(source);
         for (partition, cursor) in cursors {
+            if !stream.replayable {
+                // It hears once the engine's log holds the rows, before they land; the oracle
+                // checks they did once the phase is over.
+                let key = (stream.name.clone(), partition.to_string());
+                let mut acknowledged = world.acknowledged.lock();
+                let furthest = acknowledged.entry(key).or_default();
+                *furthest = (*furthest).max(cursor.next);
+                continue;
+            }
             let committed = committed_next(world, &name, partition);
             if committed.is_none_or(|committed| cursor.next > committed) {
                 world.violation(format!(

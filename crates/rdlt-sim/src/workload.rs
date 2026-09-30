@@ -105,6 +105,10 @@ pub struct SimStream {
     /// Whether a JSON stream pushes floats JSON cannot hold, by name; otherwise its floats are
     /// finite, so a column of them keeps its inferred type.
     pub named_floats: bool,
+    /// Whether the source can read again what it acknowledged; one that cannot forgets it.
+    ///
+    /// Chosen by the stream's place, not drawn, so logging leaves a seed's workload as it was.
+    pub replayable: bool,
     /// Each partition's rows in each phase.
     rows: Vec<[Vec<Row>; PHASES]>,
 }
@@ -230,12 +234,13 @@ impl SimStream {
             plan_key: rng.chance(500),
             shared_keys: false,
             composite: false,
-            key_types: Vec::new(),
+            key_types: vec![std::array::from_fn(|_| LogicalType::Int64); partitions.len()],
             schema,
             pipeline,
             json,
             sliced: features.sliced && rng.chance(500),
             named_floats: json && rng.chance(250),
+            replayable: !(features.wal && read == ReadMode::Incremental && index.is_multiple_of(2)),
             drift,
             partitions,
             rows: Vec::new(),
@@ -243,8 +248,6 @@ impl SimStream {
         if features.settings {
             stream.draw_columns(rng, features);
         }
-        stream.key_types =
-            vec![std::array::from_fn(|_| LogicalType::Int64); stream.partitions.len()];
         if write == WriteMode::Merge && features.keys {
             stream.draw_keys(rng);
         }

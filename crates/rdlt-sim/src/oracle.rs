@@ -14,12 +14,12 @@ mod tables;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{ColumnPath, PipelineId, ReadMode, StreamName};
+use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, StreamPlan,
+    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, StreamPlan, WalStore,
 };
 
-use crate::destination::{Digest, completions, reads_in_progress};
+use crate::destination::{Digest, committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::network::{self, Net, Placing, run_networked};
 use crate::rng::SplitMix64;
@@ -68,6 +68,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
     let name = format!("oracle-{seed}");
     let world = World::register(&name, &mut rng);
     env.perturb(world.workload.features.perturb);
+    env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
     let engine = Engine::new(config(&mut rng), env);
     let placing = net.map(|net| Placing::new(net, network::options(&mut rng)));
     let mut simulation = Simulation {
@@ -83,6 +84,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
         settle(seed).await;
         let world = &simulation.world;
         check_contents(world, phase, stopped, seed);
+        check_acknowledged(world, stopped, seed);
         check_discards(world, phase, &reports, stopped, seed);
         if stopped {
             break;
@@ -113,15 +115,19 @@ impl Simulation {
     /// Runs `phase` until it converges, or a refusal no operator can relax stops it short; the
     /// reports of its runs that ended, and whether it stopped.
     ///
-    /// A phase converges once a run of each pipeline has succeeded and no full read is left half
-    /// done, so each full read the model counts is complete.
+    /// A phase converges once a run of each pipeline has succeeded, no full read is left half
+    /// done, and no write-ahead log is left to replay, so each full read the model counts is
+    /// complete and none lands in a later phase.
     async fn converge(&mut self, phase: usize, rng: &mut SplitMix64) -> (Vec<Report>, bool) {
         let (seed, features) = (self.seed, self.world.workload.features);
         self.world.set_phase(phase);
         let (mut runs, mut failure) = (0, None);
         let mut succeeded = vec![false; self.world.workload.pipelines];
         let mut reports = Vec::new();
-        while succeeded.contains(&false) || reads_in_progress(&self.world) {
+        while succeeded.contains(&false)
+            || reads_in_progress(&self.world)
+            || self.world.wal.holds_logs()
+        {
             let faulty = runs < FAULTY_RUNS;
             self.world.set_faulty(faulty && features.faults);
             let scenario = if faulty && features.disruptions {
@@ -309,6 +315,7 @@ fn plan(workload: &Workload, relaxed: &[Relaxed], pipeline: usize) -> PipelinePl
     PipelinePlan::new(id, streams)
         .expect("the simulated plan is valid")
         .schema(workload.pipeline.engine())
+        .with_wal(workload.features.wal)
 }
 
 /// Lets aborted tasks finish, then checks that no task outlived its run.
@@ -321,6 +328,24 @@ async fn settle(seed: Seed) {
         .metrics()
         .num_alive_tasks();
     assert_eq!(alive, 0, "seed {seed}: {alive} tasks outlived their runs");
+}
+
+/// Checks that every offset acknowledged to a stream that cannot read again landed: it was
+/// heard before its commit, so only the write-ahead log could see it through a failure.
+fn check_acknowledged(world: &World, stopped: bool, seed: Seed) {
+    if stopped {
+        return;
+    }
+    for ((stream, partition), acknowledged) in world.acknowledged.lock().iter() {
+        let name = StreamName::new(stream).expect("valid stream name");
+        let id = PartitionId::parse(partition).expect("valid partition id");
+        let committed = committed_next(world, &name, &id);
+        assert!(
+            committed.is_some_and(|committed| committed >= *acknowledged),
+            "seed {seed}: stream {stream} partition {partition} acknowledged offset \
+             {acknowledged}, but committed {committed:?}"
+        );
+    }
 }
 
 /// Checks every stream's tables against the reference model after `phase`: where the phase
