@@ -3,6 +3,8 @@
     reason = "tests drive tokio's paused clock and tasks directly"
 )]
 
+mod lag;
+
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -205,6 +207,12 @@ impl Setup {
     }
 
     async fn start(self) -> (tokio::task::JoinHandle<Result<(), Error>>, Harness) {
+        let (coordinator, harness) = self.coordinator().await;
+        (tokio::spawn(coordinator.run()), harness)
+    }
+
+    /// The coordinator, not yet running, and the handles a test drives it through.
+    async fn coordinator(self) -> (Coordinator, Harness) {
         let commits = Commits::default();
         let acks = Acks::default();
         let closed = Arc::new(AtomicBool::new(false));
@@ -257,7 +265,7 @@ impl Setup {
             follow: false,
             replan: Duration::from_secs(60),
         });
-        (tokio::spawn(coordinator.run()), harness)
+        (coordinator, harness)
     }
 }
 

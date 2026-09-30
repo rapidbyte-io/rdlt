@@ -17,7 +17,7 @@ use crate::error::{Error, ErrorKind, Side};
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
 use crate::partition::ChangeMode;
-use crate::plan::{DeleteMode, StreamPlan, WriteMode};
+use crate::plan::{DeleteMode, RetentionLoss, StreamPlan, WriteMode};
 use crate::policy::Nested;
 use crate::table::{
     ChangeLayout, Incoming, LineageColumns, MetaNames, Model, Resolver, Settings, Tables,
@@ -166,6 +166,7 @@ fn planned(
     partitioned: Partitioned,
 ) -> Planned {
     let cdc = plan.read_mode() == ReadMode::Cdc;
+    let reset_retention = plan.retention_loss() == RetentionLoss::Reset;
     let changes = cdc.then(|| ChangeMode {
         merge: plan.write_mode() == WriteMode::Merge,
         deletes: plan.delete_mode(),
@@ -184,6 +185,7 @@ fn planned(
             table: index,
             on_demand,
             changes,
+            reset_retention,
         },
     });
     Planned {
@@ -201,6 +203,7 @@ fn planned(
         on_demand,
         changes,
         follow: follow && tracked,
+        reset_retention,
         partitions: partitioned.partitions,
     }
 }

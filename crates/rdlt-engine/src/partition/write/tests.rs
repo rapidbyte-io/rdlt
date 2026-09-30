@@ -22,6 +22,7 @@ fn job() -> PartitionJob {
         changes: None,
         stop: tokio_util::sync::CancellationToken::new(),
         follow: false,
+        reset_retention: false,
     }
 }
 

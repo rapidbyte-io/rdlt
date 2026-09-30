@@ -95,6 +95,12 @@ pub struct StreamReport {
     pub deletes_ignored: u64,
     /// Truncates a change stream ignores, dropped from committed segments.
     pub truncates_ignored: u64,
+    /// How many records the stream's reads were last behind its source's newest, over its
+    /// partitions, as its source measures it; none where it never said.
+    pub behind: Option<u64>,
+    /// Reads of the stream's partitions that started again from their earliest, where the
+    /// source's retention had dropped where they would resume.
+    pub retention_resets: u64,
 }
 
 /// How an attempt that did not fail ended.
@@ -158,6 +164,10 @@ pub(crate) struct AttemptLog {
     pub(crate) pending: Option<CommitRecord>,
     /// The receipt state recorded when the attempt opened, naming the last commit that landed.
     pub(crate) opened: Option<(LoadId, CommitSeq)>,
+    /// How many records each stream's reads were last behind their source's newest.
+    pub(crate) behind: BTreeMap<StreamName, u64>,
+    /// Each stream's reads that started again from their earliest after a retention loss.
+    pub(crate) retention_resets: BTreeMap<StreamName, u64>,
 }
 
 /// A finished attempt.
@@ -189,6 +199,15 @@ impl Report {
 
     /// Folds `attempt` in, listing it among the latest [`REPORTED_ATTEMPTS`].
     pub(crate) fn absorb(&mut self, attempt: AttemptRecord) {
+        for (stream, behind) in &attempt.log.behind {
+            self.streams.entry(stream.to_string()).or_default().behind = Some(*behind);
+        }
+        for (stream, resets) in &attempt.log.retention_resets {
+            self.streams
+                .entry(stream.to_string())
+                .or_default()
+                .retention_resets += resets;
+        }
         let committed = attempt.log.committed;
         for (stream, counts) in &committed.streams {
             let total = self.streams.entry(stream.to_string()).or_default();

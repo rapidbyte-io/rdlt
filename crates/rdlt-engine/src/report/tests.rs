@@ -30,6 +30,8 @@ fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
                     discarded_values: 2,
                     deletes_ignored: 0,
                     truncates_ignored: 0,
+                    behind: None,
+                    retention_resets: 0,
                 };
                 (StreamName::new(name).unwrap(), report)
             })
@@ -145,4 +147,28 @@ fn a_commit_credited_to_a_folded_attempt_counts_toward_it_and_the_run() {
     assert_eq!(report.streams["orders"].rows, 3);
     let listed = &report.attempts[0];
     assert_eq!((listed.commits, listed.rows, listed.bytes), (1, 3, 30));
+}
+
+#[test]
+fn a_report_totals_each_stream_s_resets_and_keeps_its_latest_known_lag() {
+    let pipeline = PipelineId::parse("orders").unwrap();
+    let mut report = Report::new(pipeline);
+    let orders = || StreamName::new("orders").unwrap();
+    let signalled = |load, behind: Option<u64>, resets: u64| {
+        let mut signalled = attempt(LoadId::from_parts(UNIX_EPOCH, load), vec![], None);
+        signalled
+            .log
+            .behind
+            .extend(behind.map(|behind| (orders(), behind)));
+        signalled.log.retention_resets.insert(orders(), resets);
+        signalled
+    };
+    report.absorb(signalled(1, Some(100), 1));
+    // An attempt whose reads never said how far behind they were leaves the last it knew.
+    report.absorb(signalled(2, None, 2));
+    assert_eq!(report.streams["orders"].behind, Some(100));
+    assert_eq!(report.streams["orders"].retention_resets, 3);
+    report.absorb(signalled(3, Some(7), 0));
+    assert_eq!(report.streams["orders"].behind, Some(7));
+    assert_eq!(report.streams["orders"].retention_resets, 3);
 }

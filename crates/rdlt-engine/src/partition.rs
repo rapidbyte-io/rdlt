@@ -1,6 +1,7 @@
 //! One partition's pipeline: read, coalesce pushes, shred JSON, fit each batch to its table,
 //! prepare it, and hand it to a lane.
 
+mod barriers;
 mod coalesce;
 #[cfg(test)]
 mod tests;
@@ -12,8 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use rdlt_connector::{
-    Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId,
-    Source, SourceEvent, StreamName, admitted_partition_channel,
+    Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, RETENTION_LOST,
+    ReadRequest, SegmentId, Source, SourceEvent, StreamName, admitted_partition_channel,
 };
 use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,7 @@ use crate::table::Tables;
 use crate::wal::LoadLog;
 use crate::watch;
 
+use barriers::Barriers;
 use coalesce::{Coalescer, Pushed};
 use write::write_flushed;
 
@@ -47,6 +49,23 @@ pub(crate) enum Progress {
     },
     /// A segment was sealed.
     Sealed(Seal),
+    /// The stream's source said its partitions changed.
+    Replan {
+        /// The partition's index in the attempt.
+        partition: usize,
+    },
+    /// The partition's read is `records` behind its source's newest.
+    Behind {
+        /// The partition's index in the attempt.
+        partition: usize,
+        records: u64,
+    },
+    /// The partition's source had dropped where its read would resume, and it read again from
+    /// its earliest.
+    RetentionReset {
+        /// The partition's index in the attempt.
+        partition: usize,
+    },
     /// The partition stopped reading; a partition that was not stopped sealed its end first.
     Ended {
         /// The partition's index in the attempt.
@@ -104,6 +123,9 @@ pub(crate) struct PartitionJob {
     /// Whether a read of the unbounded partition follows it once caught up: in a following run,
     /// for a stream the run plans again as it reads; a full read ends at its head.
     pub(crate) follow: bool,
+    /// Whether the partition reads again from its source's earliest where the source's retention
+    /// dropped where it would resume, rather than failing.
+    pub(crate) reset_retention: bool,
 }
 
 /// How a change stream's pushes load.
@@ -159,7 +181,7 @@ impl PartitionContext {
 }
 
 /// Reads `job` to its end, or until the attempt stops or is cancelled.
-pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<(), Error> {
+pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Result<(), Error> {
     // A followed unbounded partition reads for as long as the run, mostly waiting: it holds no
     // slot, or a stream with more of them than slots would never read the rest.
     let slotless = job.follow && job.partition.is_unbounded();
@@ -181,7 +203,7 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
     context.report(Progress::Started {
         partition: job.index,
     })?;
-    let ingested = read_and_ingest(&job, &context).await?;
+    let ingested = read_resetting(&mut job, &context).await?;
     let end = (!ingested.stopped)
         .then(|| end_state(&ingested, job.partition.is_unbounded()))
         .flatten();
@@ -199,11 +221,47 @@ pub(crate) async fn run(job: PartitionJob, context: PartitionContext) -> Result<
     })
 }
 
-/// Reads `job` while ingesting what the read emits, until both end or the attempt is cancelled.
+/// Reads `job` as [`read_and_ingest`] does; where the source's retention dropped where the read
+/// would resume and the stream says to reset, reads again from the source's earliest, counted.
+///
+/// The failed read's open segment is abandoned: no checkpoint seals the rows it holds, and the
+/// write-ahead log must not keep them for the rest of the load.
+async fn read_resetting(
+    job: &mut PartitionJob,
+    context: &PartitionContext,
+) -> Result<Ingested, Error> {
+    loop {
+        let (ingested, read) = read_and_ingest(job, context).await?;
+        let error = match read {
+            Ok(()) => return Ok(ingested),
+            Err(error) => error,
+        };
+        let resets =
+            job.reset_retention && job.cursor.is_some() && error.code() == Some(RETENTION_LOST);
+        if !resets {
+            return Err(Error::connector(
+                Side::Source,
+                format!("reading stream {}", job.stream),
+                error,
+            )
+            .with_stream(&job.stream));
+        }
+        if let Some(log) = &context.wal {
+            log.abandon(ingested.open.id).await?;
+        }
+        context.report(Progress::RetentionReset {
+            partition: job.index,
+        })?;
+        job.cursor = None;
+    }
+}
+
+/// Reads `job` while ingesting what the read emits, until both end or the attempt is cancelled:
+/// what was ingested, and how the read ended.
 async fn read_and_ingest(
     job: &PartitionJob,
     context: &PartitionContext,
-) -> Result<Ingested, Error> {
+) -> Result<(Ingested, rdlt_connector::Result<()>), Error> {
     // Each push reserves its bytes before it enters the channel, so a source buffers nothing
     // outside the budget (spec §7.5).
     let admission = Arc::new(context.budget.clone());
@@ -239,16 +297,7 @@ async fn read_and_ingest(
         both = both => both,
     };
     // An ingest failure ends the read, so it is the cause when both fail.
-    let ingested = ingested?;
-    read.map_err(|error| {
-        Error::connector(
-            Side::Source,
-            format!("reading stream {}", job.stream),
-            error,
-        )
-        .with_stream(&job.stream)
-    })?;
-    Ok(ingested)
+    Ok((ingested?, read))
 }
 
 /// Where a partition that read to its end resumes, if anywhere new.
@@ -315,38 +364,6 @@ impl OpenSegment {
             discarded_values: self.discarded_values,
             deletes_ignored: self.deletes_ignored,
             truncates_ignored: self.truncates_ignored,
-        }
-    }
-}
-
-/// The barriers the coordinator raises, forwarded to an on-demand partition's read.
-struct Barriers {
-    receiver: watch::Receiver<u64>,
-    open: bool,
-}
-
-impl Barriers {
-    /// Barriers for a partition, forwarding one already raised to `feed` at once.
-    fn new(mut receiver: watch::Receiver<u64>, on_demand: bool, feed: &PartitionFeed) -> Self {
-        if on_demand {
-            let raised = receiver.borrow_and_update();
-            if raised > 0 {
-                feed.request_checkpoint(raised);
-            }
-        }
-        Self {
-            receiver,
-            open: on_demand,
-        }
-    }
-
-    /// The next barrier raised; `None` once the coordinator has gone.
-    async fn next(&mut self) -> Option<u64> {
-        if self.receiver.changed().await.is_ok() {
-            Some(self.receiver.borrow_and_update())
-        } else {
-            self.open = false;
-            None
         }
     }
 }
@@ -451,10 +468,18 @@ impl Ingested {
                 self.last_cursor = Some(cursor);
                 return context.report(Progress::Sealed(sealed.seal(job.index, state, answers)));
             }
-            SourceEvent::Log { .. }
-            | SourceEvent::Metric { .. }
-            | SourceEvent::Replan
-            | SourceEvent::Behind { .. } => return Ok(()),
+            SourceEvent::Log { .. } | SourceEvent::Metric { .. } => return Ok(()),
+            SourceEvent::Replan => {
+                return context.report(Progress::Replan {
+                    partition: job.index,
+                });
+            }
+            SourceEvent::Behind { records } => {
+                return context.report(Progress::Behind {
+                    partition: job.index,
+                    records,
+                });
+            }
         };
         // Every push on an admitted channel carries the permit that reserved its bytes.
         let permit = permit.ok_or_else(|| Error::internal("a push arrived without its permit"))?;
