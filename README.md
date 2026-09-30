@@ -75,6 +75,11 @@ wait for more data, streams are planned again as the run goes, so partitions add
 retired ones stop and tables are polled as they grow, and everything commits every ten seconds.
 The reference connectors include an offset-log source, as a message queue keeps, and the
 simulation follows streams whose rows arrive as time passes, through crashes and faults.
+A source can tell a following run that its partitions changed, so they are planned again at
+once, and how far behind its newest data each read is, which the report totals per stream. A read
+whose place the source's retention dropped fails the run as `retention_lost`, or, where the stream
+says so, reads again from the earliest data kept and is counted. `S-PARTITION` certifies that a
+stream's partitions, planned again from where they stood, cover what is left exactly once.
 
 ## Development
 
