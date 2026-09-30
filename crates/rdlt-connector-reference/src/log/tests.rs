@@ -190,3 +190,18 @@ fn each_message_is_its_seed_stream_partition_and_offset_alone() {
         assert_ne!(value, other);
     }
 }
+
+#[tokio::test]
+async fn a_stream_without_partitions_or_rows_to_a_batch_is_refused() {
+    for (partitions, batch_rows) in [(0, 10), (1, 0)] {
+        let stream = json!({
+            "name": "events", "partitions": partitions, "messages": 1, "batch_rows": batch_rows,
+        });
+        let refused = source_factory::<LogSource>()
+            .connect(config(&stream, "refused"), ConnectContext::new())
+            .await
+            .err()
+            .expect("the configuration is refused");
+        assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{stream}");
+    }
+}

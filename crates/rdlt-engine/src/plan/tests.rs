@@ -1,6 +1,6 @@
 use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 
-use super::{DeleteMode, OnTruncate, PipelinePlan, StreamPlan, WriteMode};
+use super::{DeleteMode, OnTruncate, PipelinePlan, StreamPlan, Until, WriteMode};
 use crate::error::ErrorKind;
 use crate::policy::{Nested, SchemaPolicy, SchemaSettings};
 
@@ -199,4 +199,36 @@ fn a_pipeline_keeps_a_write_ahead_log_only_when_asked() {
     assert!(!plan.logs_ahead());
     assert!(plan.clone().with_wal(true).logs_ahead());
     assert!(!plan.with_wal(true).with_wal(false).logs_ahead());
+}
+
+#[test]
+fn a_run_commits_as_a_stream_where_it_follows_its_source_or_reads_changes() {
+    let plan = |read: ReadMode, until: Until| {
+        let write = if read == ReadMode::Cdc {
+            WriteMode::Merge
+        } else {
+            WriteMode::Append
+        };
+        PipelinePlan::new(pipeline(), [stream("orders").read(read).write(write)])
+            .unwrap()
+            .with_until(until)
+    };
+    let cases = [
+        (ReadMode::Incremental, Until::Exhausted, false),
+        (ReadMode::Full, Until::Exhausted, false),
+        (ReadMode::Cdc, Until::Exhausted, true),
+        (ReadMode::Incremental, Until::Forever, true),
+        (
+            ReadMode::Full,
+            Until::For(std::time::Duration::from_secs(1)),
+            true,
+        ),
+    ];
+    for (read, until, streams) in cases {
+        assert_eq!(
+            plan(read, until).commits_as_stream(),
+            streams,
+            "{read:?} {until:?}"
+        );
+    }
 }
