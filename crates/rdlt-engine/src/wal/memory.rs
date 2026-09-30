@@ -23,6 +23,8 @@ pub(crate) struct Stored {
 pub(crate) struct MemoryWal {
     pub(crate) chunks: Mutex<BTreeMap<(PipelineId, Chunk), Stored>>,
     pub(crate) failing: Mutex<bool>,
+    /// Whether every call is interrupted, as a transient failure a retry may not meet.
+    pub(crate) interrupted: Mutex<bool>,
     pub(crate) unsyncable: Mutex<bool>,
     /// The logs claimed, each until its claim is dropped.
     pub(crate) claimed: Arc<Mutex<BTreeSet<(PipelineId, LoadId)>>>,
@@ -48,6 +50,8 @@ impl MemoryWal {
     fn check(&self) -> io::Result<()> {
         if *self.failing.lock() {
             Err(io::Error::other("the disk is full"))
+        } else if *self.interrupted.lock() {
+            Err(io::Error::from(io::ErrorKind::Interrupted))
         } else {
             Ok(())
         }

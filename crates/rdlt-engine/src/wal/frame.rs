@@ -2,9 +2,10 @@
 //! LE][payload]`.
 //!
 //! Metadata frames carry their payload as JSON. A batch frame carries its segment and table as a
-//! JSON header, then the batch as an Arrow IPC stream, which names its own schema. A frame that
-//! ends early, or whose checksum does not match, ends the log: a crash tore it.
+//! JSON header, then the batch in the wire's Arrow framing, which names its own schema. A frame
+//! that ends early, or whose checksum does not match, ends the log: a crash tore it.
 
+mod arrow;
 #[cfg(test)]
 mod tests;
 
@@ -142,17 +143,7 @@ fn batch_payload(batch: &Batch) -> Result<Vec<u8>, Error> {
         segment: batch.segment,
         table: batch.table,
     })?;
-    let failed = |error: arrow_schema::ArrowError| {
-        Error::internal(format!("encoding a write-ahead log batch: {error}"))
-    };
-    let mut ipc = Vec::new();
-    {
-        let mut writer =
-            arrow_ipc::writer::StreamWriter::try_new(&mut ipc, batch.batch.schema_ref())
-                .map_err(failed)?;
-        writer.write(&batch.batch).map_err(failed)?;
-        writer.finish().map_err(failed)?;
-    }
+    let ipc = arrow::encode(&batch.batch)?;
     let len = u32::try_from(header.len()).unwrap_or(u32::MAX);
     let mut payload = Vec::with_capacity(4 + header.len() + ipc.len());
     payload.extend_from_slice(&len.to_le_bytes());
@@ -210,6 +201,51 @@ impl Iterator for Frames<'_> {
     }
 }
 
+/// A frame as a scan reads it: a batch's segment and table, without its batch, or any other
+/// frame whole.
+pub(crate) enum Skimmed {
+    Batch { segment: SegmentId, table: u32 },
+    Other(Box<Frame>),
+}
+
+/// The frame `bytes` holds whole, as [`Frames`] reads it but for a batch's data, which is left
+/// undecoded; none where it is torn.
+pub(crate) fn skim(bytes: &[u8]) -> Option<Result<Skimmed, Error>> {
+    let head = bytes.get(..HEAD)?;
+    let payload = bytes.get(HEAD..)?;
+    if crc32c::crc32c(payload) != u32::from_le_bytes([head[5], head[6], head[7], head[8]]) {
+        return None;
+    }
+    Some(match head[0] {
+        3 => batch_head(payload).map(|head| Skimmed::Batch {
+            segment: head.segment,
+            table: head.table,
+        }),
+        kind => decode(kind, payload).map(|frame| Skimmed::Other(Box::new(frame))),
+    })
+}
+
+/// The header a batch frame's payload starts with, and where its batch begins.
+fn batch_header(payload: &[u8]) -> Result<(BatchHeader, usize), Error> {
+    let corrupt = |what: &dyn std::fmt::Display| {
+        Error::internal(format!("a write-ahead log batch does not decode: {what}"))
+    };
+    let len = payload
+        .get(..4)
+        .map(|len| u32::from_le_bytes([len[0], len[1], len[2], len[3]]))
+        .ok_or_else(|| corrupt(&"it has no header"))?;
+    let end = 4 + usize::try_from(len).unwrap_or(usize::MAX);
+    let header = payload
+        .get(4..end)
+        .ok_or_else(|| corrupt(&"its header ends early"))?;
+    let header = serde_json::from_slice(header).map_err(|error| corrupt(&error))?;
+    Ok((header, end))
+}
+
+fn batch_head(payload: &[u8]) -> Result<BatchHeader, Error> {
+    batch_header(payload).map(|(header, _)| header)
+}
+
 fn decode(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
     match kind {
         1 => parse(payload).map(Frame::Header),
@@ -232,24 +268,8 @@ fn parse<T: DeserializeOwned>(payload: &[u8]) -> Result<T, Error> {
 }
 
 fn decode_batch(payload: &[u8]) -> Result<Batch, Error> {
-    let corrupt = |what: &dyn std::fmt::Display| {
-        Error::internal(format!("a write-ahead log batch does not decode: {what}"))
-    };
-    let len = payload
-        .get(..4)
-        .map(|len| u32::from_le_bytes([len[0], len[1], len[2], len[3]]))
-        .ok_or_else(|| corrupt(&"it has no header"))?;
-    let end = 4 + usize::try_from(len).unwrap_or(usize::MAX);
-    let header = payload
-        .get(4..end)
-        .ok_or_else(|| corrupt(&"its header ends early"))?;
-    let header: BatchHeader = serde_json::from_slice(header).map_err(|error| corrupt(&error))?;
-    let mut reader = arrow_ipc::reader::StreamReader::try_new(&payload[end..], None)
-        .map_err(|error| corrupt(&error))?;
-    let batch = reader
-        .next()
-        .ok_or_else(|| corrupt(&"it holds no batch"))?
-        .map_err(|error| corrupt(&error))?;
+    let (header, end) = batch_header(payload)?;
+    let batch = arrow::decode(&payload[end..])?;
     Ok(Batch {
         segment: header.segment,
         table: header.table,

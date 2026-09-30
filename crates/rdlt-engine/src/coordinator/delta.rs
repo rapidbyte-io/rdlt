@@ -9,6 +9,7 @@ use rdlt_connector::{
 };
 
 use super::{Coordinator, KEPT_COMPLETIONS};
+use crate::partition::Seal;
 use crate::plan::WriteMode;
 use crate::report::StreamReport;
 use crate::wal::Sealed;
@@ -33,23 +34,12 @@ impl Coordinator {
             streams: BTreeMap::new(),
             sealed: Vec::new(),
         };
-        // Where each partition stands before each seal, as the commit's changes reach it.
-        let mut positions = self.parts.positions.clone();
-        for seal in std::mem::take(&mut self.sealed) {
+        let seals = std::mem::take(&mut self.sealed);
+        if self.parts.wal.is_some() {
+            collected.sealed = self.logged(&seals);
+        }
+        for seal in seals {
             let stream = self.parts.partitions[seal.partition].stream;
-            let (name, id) = (
-                &self.parts.streams[stream].name,
-                &self.parts.partitions[seal.partition].id,
-            );
-            collected.sealed.push(Sealed {
-                segment: seal.segment,
-                stream: name.clone(),
-                partition: id.clone(),
-                replayable: self.parts.streams[stream].replayable,
-                from: positions.get(name, id).cloned(),
-                state: seal.state.clone(),
-            });
-            positions.set(name.clone(), id.clone(), seal.state.clone());
             if seal.rows > 0 {
                 collected.segments.insert(seal.segment);
                 let counts = collected.streams.entry(stream).or_default();
@@ -70,6 +60,33 @@ impl Coordinator {
             collected.positions.insert(seal.partition, seal.state);
         }
         collected
+    }
+
+    /// `seals` as the load's log records them: each with where its partition stood before it, as
+    /// the commit's changes reach it.
+    fn logged(&self, seals: &[Seal]) -> Vec<Sealed> {
+        let mut positions = self.parts.positions.clone();
+        seals
+            .iter()
+            .map(|seal| {
+                let partition = &self.parts.partitions[seal.partition];
+                let stream = &self.parts.streams[partition.stream];
+                let from = positions.get(&stream.name, &partition.id).cloned();
+                positions.set(
+                    stream.name.clone(),
+                    partition.id.clone(),
+                    seal.state.clone(),
+                );
+                Sealed {
+                    segment: seal.segment,
+                    stream: stream.name.clone(),
+                    partition: partition.id.clone(),
+                    replayable: stream.replayable,
+                    from,
+                    state: seal.state.clone(),
+                }
+            })
+            .collect()
     }
 
     /// What each stream contributes to a commit that ends the cycles of `completing`, by name.

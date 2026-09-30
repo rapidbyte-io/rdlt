@@ -47,7 +47,7 @@ pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>>;
 
-    /// The loads of `pipeline` that have a log.
+    /// The loads of `pipeline` that have a log, or a claim's mark left behind.
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>>;
 
     /// The chunks of `load`'s log, in order, each with its length.
@@ -74,7 +74,8 @@ pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
         bytes: Bytes,
     ) -> BoxFuture<'a, io::Result<()>>;
 
-    /// Makes everything appended to chunk `chunk` of `load`'s log durable.
+    /// Makes everything appended to chunk `chunk` of `load`'s log durable; a chunk once synced is
+    /// finished, and appended to again only after a failure left it unknown.
     fn sync<'a>(&'a self, pipeline: &'a PipelineId, chunk: Chunk) -> BoxFuture<'a, io::Result<()>>;
 
     /// Removes chunk `chunk` of `load`'s log; the log goes with its last chunk.
@@ -161,7 +162,19 @@ fn private_dir(dir: &Path) -> io::Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
+    // The directories missing now, whose names their parents make durable once created: a
+    // commit's frame synced in a directory a power loss forgets is lost with it.
+    let missing: Vec<PathBuf> = dir
+        .ancestors()
+        .take_while(|ancestor| !ancestor.exists())
+        .map(Path::to_path_buf)
+        .collect();
     builder.create(dir)?;
+    for created in missing.iter().rev() {
+        if let Some(parent) = created.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
@@ -237,11 +250,16 @@ impl WalStore for LocalWal {
             };
             for entry in entries {
                 let name = entry?.file_name();
-                if let Some(load) = name.to_str().and_then(|name| name.parse().ok()) {
-                    loads.push(load);
-                }
+                // A load's directory, or the mark of its claim alone, where it failed before its
+                // first frame.
+                let load: Option<LoadId> = name
+                    .to_str()
+                    .map(|name| name.strip_suffix(".lock").unwrap_or(name))
+                    .and_then(|name| name.parse().ok());
+                loads.extend(load);
             }
             loads.sort();
+            loads.dedup();
             Ok(loads)
         })
     }
@@ -323,7 +341,8 @@ impl WalStore for LocalWal {
 
     fn sync<'a>(&'a self, pipeline: &'a PipelineId, chunk: Chunk) -> BoxFuture<'a, io::Result<()>> {
         let path = self.chunk_path(pipeline, chunk);
-        let file = self.open.lock().get(&path).cloned();
+        // A synced chunk is finished: its file goes, and an append after a failure opens it again.
+        let file = self.open.lock().remove(&path);
         blocking(move || match file {
             Some(file) => file.lock().sync_data(),
             None => Ok(()),

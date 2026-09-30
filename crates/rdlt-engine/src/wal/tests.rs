@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use rdlt_connector::{ConnectContext, PipelineId, SegmentId, destination_factory, source_factory};
+use rdlt_connector::{ConnectContext, PipelineId, destination_factory, source_factory};
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
 use serde_json::json;
 
@@ -59,12 +59,27 @@ async fn a_commit_s_frame_follows_every_batch_of_its_segments_however_slow_the_d
         "{:?}",
         outcome.error
     );
-    let mut logged: BTreeSet<SegmentId> = BTreeSet::new();
-    let mut commits = 0;
+    let (commits, rows) = logged_in_order(&store);
+    // Every row the load published was logged before the commit that published it.
+    assert_eq!(u64::try_from(rows).expect("few rows"), outcome.report.rows);
+    assert!(commits >= 2, "{commits} commits");
+}
+
+/// The commits and the rows `store`'s appends logged, checking each batch was logged before the
+/// commit that took its segment, and none after.
+fn logged_in_order(store: &MemoryWal) -> (usize, usize) {
+    let (mut logged, mut committed) = (BTreeSet::new(), BTreeSet::new());
+    let (mut commits, mut rows) = (0, 0);
     for frame in store.appended.lock().iter() {
         match Frames::new(frame).next() {
             Some(Ok((_, Frame::Batch(batch)))) => {
+                assert!(
+                    !committed.contains(&batch.segment),
+                    "a batch of segment {:?} after the commit that took it",
+                    batch.segment
+                );
                 logged.insert(batch.segment);
+                rows += batch.batch.num_rows();
             }
             Some(Ok((_, Frame::Commit(meta)))) => {
                 commits += 1;
@@ -73,10 +88,11 @@ async fn a_commit_s_frame_follows_every_batch_of_its_segments_however_slow_the_d
                         logged.contains(&segment),
                         "segment {segment:?} after its commit"
                     );
+                    committed.insert(segment);
                 }
             }
             _ => {}
         }
     }
-    assert!(commits >= 2, "{commits} commits");
+    (commits, rows)
 }

@@ -246,3 +246,72 @@ async fn a_whole_frame_that_does_not_decode_makes_the_log_unreadable() {
         assert!(!error.is_retryable());
     }
 }
+
+#[tokio::test]
+async fn a_chunk_before_the_last_that_ends_early_or_garbled_makes_the_log_unreadable() {
+    // Every chunk but the last ends with a commit's frame, made durable: no crash tears it.
+    let whole = logged(false).await;
+    let stored = whole.stored(&pipeline());
+    assert_eq!(stored.len(), 2);
+    let first = stored[0].1.bytes.clone();
+    for damage in ["cut", "garbled"] {
+        let damaged = MemoryWal::default();
+        for (chunk, stored) in whole.stored(&pipeline()) {
+            let mut bytes = stored.bytes;
+            if chunk.number == 0 {
+                match damage {
+                    "cut" => bytes.truncate(first.len() - 1),
+                    _ => bytes[first.len() / 2] ^= 0x5a,
+                }
+            }
+            damaged
+                .append(&pipeline(), chunk, Bytes::from(bytes))
+                .await
+                .expect("appends");
+        }
+        let error = scan(&damaged, &pipeline(), load())
+            .await
+            .expect_err("a durable chunk damaged is not a crash");
+        assert_eq!(error.code(), Some("wal_unreadable"), "{damage}");
+    }
+}
+
+#[tokio::test]
+async fn a_scan_indexes_batches_without_decoding_them_and_a_read_refuses_a_garbled_one() {
+    let header = serde_json::json!({
+        "version": 1,
+        "pipeline": "orders",
+        "load": load().to_string(),
+        "opened": null,
+    });
+    let head = br#"{"segment":1,"table":0}"#;
+    let mut payload = u32::try_from(head.len())
+        .expect("short")
+        .to_le_bytes()
+        .to_vec();
+    payload.extend_from_slice(head);
+    payload.extend_from_slice(b"not an arrow stream");
+    let chunk = Chunk {
+        load: load(),
+        number: 0,
+    };
+    let store = MemoryWal::default();
+    for frame in [
+        framed(1, header.to_string().as_bytes()),
+        framed(3, &payload),
+    ] {
+        store
+            .append(&pipeline(), chunk, frame)
+            .await
+            .expect("appends");
+    }
+    let scanned = scan(&store, &pipeline(), load())
+        .await
+        .expect("the scan reads only the batch's head");
+    let located = scanned.batches[&SegmentId(1)][0];
+    assert_eq!(located.table, 0);
+    let error = batch(&store, &pipeline(), located)
+        .await
+        .expect_err("the batch does not decode");
+    assert_eq!(error.code(), Some("wal_unreadable"));
+}

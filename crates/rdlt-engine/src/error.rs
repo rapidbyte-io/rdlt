@@ -103,6 +103,14 @@ impl Error {
         wal
     }
 
+    /// The error for a write-ahead log an earlier failure, `failure`, left unknown: retryable as
+    /// that failure was, since the next attempt writes a log of its own.
+    pub(crate) fn wal_failed_before(failure: &str, retryable: bool) -> Self {
+        let mut wal = Self::wal(format!("the write-ahead log failed before: {failure}"));
+        wal.retryable = retryable;
+        wal
+    }
+
     /// Classifies a connector's `error` from `side`, keeping it as the cause.
     ///
     /// Configuration, credential and capability failures are [`ErrorKind::Config`]; a fenced

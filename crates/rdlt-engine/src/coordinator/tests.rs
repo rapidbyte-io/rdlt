@@ -1068,3 +1068,52 @@ async fn each_logged_seal_names_where_its_partition_stood_before_its_commit() {
         ]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_log_that_fails_to_close_after_every_commit_landed_fails_no_attempt() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    let store = Arc::new(MemoryWal::default());
+    setup.wal = Some(Arc::clone(&store));
+    setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
+    let (task, harness) = setup.start().await;
+    harness.send(Progress::Written { rows: 3, bytes: 24 });
+    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
+    until(|| harness.commit_count() == 1).await;
+    // Every commit landed; the disk fails only as the log closes, which a replay finds received.
+    *store.failing.lock() = true;
+    harness.end(0, false);
+    task.await
+        .unwrap()
+        .expect("the attempt ends as its commits did");
+    assert_eq!(harness.log.lock().end, Some(AttemptEnd::Exhausted));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_that_cannot_read_again_hears_nothing_of_a_commit_its_log_failed_to_hold() {
+    let mut forgetful = stream(WriteMode::Append, None, 1);
+    forgetful.replayable = false;
+    let mut setup = Setup::new(vec![forgetful], vec![partition("p0", false)]);
+    let store = Arc::new(MemoryWal::default());
+    *store.unsyncable.lock() = true;
+    setup.wal = Some(Arc::clone(&store));
+    let (task, harness) = setup.start().await;
+    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
+    harness.end(0, false);
+    let error = task
+        .await
+        .unwrap()
+        .expect_err("the commit's frame is not durable");
+    assert_eq!(error.kind(), ErrorKind::Wal);
+    assert!(
+        harness.acks.lock().is_empty(),
+        "the source still holds the rows"
+    );
+    assert_eq!(
+        harness.commit_count(),
+        0,
+        "the destination saw nothing either"
+    );
+}

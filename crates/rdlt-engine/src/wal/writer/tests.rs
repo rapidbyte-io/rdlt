@@ -386,3 +386,39 @@ async fn a_failed_sync_fails_its_commit_and_every_one_after() {
     .await
     .expect("the writer ends");
 }
+
+#[tokio::test]
+async fn a_commit_after_a_failed_append_fails_as_retryably_as_the_append_did() {
+    for transient in [true, false] {
+        let store = Arc::new(MemoryWal::default());
+        let failing = Arc::clone(&store);
+        drive(Arc::clone(&store), |writer| async move {
+            send(&writer, table(0)).await;
+            *(if transient {
+                &failing.interrupted
+            } else {
+                &failing.failing
+            })
+            .lock() = true;
+            send(&writer, batch(1, 0)).await;
+            let (command, answer) = commit(1, &[1]);
+            send(&writer, command).await;
+            answer
+                .await
+                .expect("the writer answers")
+                .expect_err("the store fails");
+            *failing.interrupted.lock() = false;
+            *failing.failing.lock() = false;
+            // The log is lost for this load either way; a new attempt writes a new one.
+            let (command, answer) = commit(2, &[1]);
+            send(&writer, command).await;
+            let error = answer
+                .await
+                .expect("the writer answers")
+                .expect_err("failed before");
+            assert_eq!(error.is_retryable(), transient);
+        })
+        .await
+        .expect("the writer ends");
+    }
+}
