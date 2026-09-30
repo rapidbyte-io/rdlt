@@ -6,7 +6,7 @@ mod tests;
 use super::{SqlDialect, SqlPlanner, SqlValue, Statement};
 
 /// How a dialect writes a row whose key a row may already hold.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Upserts {
     /// `INSERT … ON CONFLICT (key) DO NOTHING`, or `DO UPDATE`, as SQLite and PostgreSQL write it:
     /// one statement, whatever other transactions write.
@@ -15,7 +15,6 @@ pub enum Upserts {
     ///
     /// A transaction writing the key at the same time as another may fail on the key's
     /// constraint, which the destination reports as any write that failed.
-    #[default]
     Guarded,
 }
 
