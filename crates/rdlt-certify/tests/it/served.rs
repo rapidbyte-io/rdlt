@@ -3,7 +3,9 @@
 use rdlt_certify::{Outcome, Probe, Target, certify_destination, certify_source};
 use rdlt_connector::serve::Served;
 use rdlt_connector::{BoxFuture, TableRef, destination_factory, source_factory};
-use rdlt_connector_reference::{GeneratorSource, MemoryDestination, MemorySource, published};
+use rdlt_connector_reference::{
+    ChangesSource, GeneratorSource, MemoryDestination, MemorySource, published,
+};
 use serde_json::json;
 
 use crate::killed::SETTLED_LATE;
@@ -142,6 +144,33 @@ async fn a_kill_timeout_bounds_the_kill_clauses_alone() {
     assert_eq!(
         report.outcome("D-COMMIT"),
         Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+#[tokio::test]
+async fn a_change_source_served_in_process_tells_where_it_stands_through_the_protocol() {
+    let target = Target::served(Served::new().with_source(source_factory::<ChangesSource>()));
+    let config = json!({
+        "seed": 5,
+        "streams": [{ "name": "accounts", "keys": 9, "changes": 6, "batch_rows": 2 }],
+        "slot": "certified_over_the_wire",
+    });
+    let report = certify_source(&target, config).await;
+    report.assert_passed();
+    assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
+}
+
+#[tokio::test]
+async fn a_source_that_tells_nothing_skips_s_ack_through_the_protocol() {
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
+    let config = json!({
+        "seed": 7,
+        "streams": [{ "name": "events", "rows": 5, "partitions": 1, "batch_rows": 5 }],
+    });
+    let report = certify_source(&target, config).await;
+    assert!(
+        matches!(report.outcome("S-ACK"), Some(Outcome::Skipped(_))),
         "{report}"
     );
 }
