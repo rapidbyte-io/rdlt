@@ -3,8 +3,12 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
 
-use rdlt_connector::{CommitMeta, ConnectContext, PipelineId, ReadMode, Source, source_factory};
+use rdlt_connector::{
+    CommitMeta, CommitSeq, ConnectContext, LoadId, OpenContext, PipelineId, ReadMode, Receipt,
+    SegmentSet, Source, StateChange, StateEntry, source_factory,
+};
 use rdlt_connector_reference::ChangesSource;
 use rdlt_connector_reference::changes::{ChangedStream, expected};
 use rdlt_engine::{LocalWal, RunStatus, WalStore, WriteMode};
@@ -57,6 +61,19 @@ fn forgetful(truncates: &[u64]) -> ChangedStream {
     }
 }
 
+/// The change source of `stream_spec` under `seed`, acknowledging in a slot named `name`, which
+/// no other test's runs acknowledged positions in.
+async fn forgetting(name: &str, seed: u64, stream_spec: &ChangedStream) -> Arc<dyn Source> {
+    let mut config = config(seed, std::slice::from_ref(stream_spec));
+    config["slot"] = json!(name);
+    Arc::from(
+        source_factory::<ChangesSource>()
+            .connect(config, ConnectContext::new())
+            .await
+            .expect("the source connects"),
+    )
+}
+
 /// Runs `stream_spec` under `seed` as `name`, written as `mode`, with commits failing at
 /// `places`; returns how many attempts the run took.
 async fn run(
@@ -74,17 +91,8 @@ async fn run(
         [stream("orders").read(ReadMode::Cdc).write(mode)],
     );
     let destination = failing_commits(memory(name).await, rule);
-    // A slot of its own, which no other run acknowledged positions in.
-    let mut config = config(seed, std::slice::from_ref(stream_spec));
-    config["slot"] = json!(name);
-    let source: Arc<dyn Source> = Arc::from(
-        source_factory::<ChangesSource>()
-            .connect(config, ConnectContext::new())
-            .await
-            .expect("the source connects"),
-    );
     let outcome = logging_engine(retrying(8), Arc::clone(&store))
-        .run(plan, source, destination)
+        .run(plan, forgetting(name, seed, stream_spec).await, destination)
         .await;
     assert_eq!(
         outcome.report.status,
@@ -156,4 +164,71 @@ async fn a_forgetting_change_source_needs_every_commit_it_acknowledged_from_the_
     // The transition lands once, from the log, and is not begun again by the next attempt.
     assert_eq!(begun.load(Ordering::SeqCst), 2);
     assert_eq!(logged("wal_changes_begun", "orders"), log(7, &stream_spec));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_transition_a_newer_load_committed_past_lands_from_the_log() {
+    let name = "wal_changes_newer";
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let plan = || pipeline("wal-changes-newer", [stream("orders").read(ReadMode::Cdc)]);
+    let stream_spec = forgetful(&[]);
+    // The first run's transition fails before it lands, after the source acknowledged its changes,
+    // and the run gives up: only its log holds them.
+    let rule: Arc<Rule> = Arc::new(|_, meta: &CommitMeta| {
+        if begins(meta) == Some(1) {
+            Fault::Before
+        } else {
+            Fault::None
+        }
+    });
+    let failed = logging_engine(retrying(1), Arc::clone(&store))
+        .run(
+            plan(),
+            forgetting(name, 8, &stream_spec).await,
+            failing_commits(memory(name).await, rule),
+        )
+        .await;
+    assert_eq!(failed.report.status, RunStatus::Failed);
+    // A newer load commits meanwhile, so the destination no longer stands where the log's load
+    // left it, and replay lands only what still matches: the transition among it.
+    let destination = memory(name).await;
+    let context = OpenContext {
+        pipeline: PipelineId::parse("wal-changes-newer").expect("a valid pipeline"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 99),
+    };
+    let mut newer = destination.open(&context).await.expect("a session opens");
+    // Its commit records its receipt, as every commit of the engine's does.
+    let receipt = Receipt {
+        load_id: context.load_id,
+        commit_seq: CommitSeq::FIRST,
+        committed_at: UNIX_EPOCH,
+        rows: 0,
+        bytes: 0,
+    };
+    let meta = CommitMeta {
+        load_id: context.load_id,
+        commit_seq: CommitSeq::FIRST,
+        epoch: newer.epoch,
+        segments: SegmentSet::new(),
+        state_delta: vec![StateChange::Put(StateEntry::Receipt(receipt).to_record())],
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    newer
+        .session
+        .commit(&meta)
+        .await
+        .expect("the newer load commits");
+    let outcome = logging_engine(retrying(1), Arc::clone(&store))
+        .run(plan(), forgetting(name, 8, &stream_spec).await, destination)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(logged(name, "orders"), log(8, &stream_spec));
 }
