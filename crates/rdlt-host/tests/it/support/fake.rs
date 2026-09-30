@@ -159,6 +159,13 @@ impl Connector for Fake {
         Ok(Response::new(Box::pin(frames)))
     }
 
+    async fn read_acknowledged(
+        &self,
+        _: Request<v1::ReadAcknowledgedRequest>,
+    ) -> Result<Response<v1::ReadAcknowledgedResponse>, Status> {
+        Err(Status::unimplemented("read_acknowledged"))
+    }
+
     type ReadPublishedStream = Answer<v1::ReadFrame>;
 
     async fn read_published(

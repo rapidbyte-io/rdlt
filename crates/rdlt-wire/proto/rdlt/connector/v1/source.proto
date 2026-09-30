@@ -209,3 +209,17 @@ message CommittedCursor {
 
 // The answer to a committed report.
 message CommittedResponse {}
+
+// Asks a source where it stands for a partition outside the engine.
+message ReadAcknowledgedRequest {
+  // The stream.
+  StreamName stream = 1;
+  // The partition's id.
+  string partition = 2;
+}
+
+// Where a source stands for a partition outside the engine.
+message ReadAcknowledgedResponse {
+  // The cursor it was last told is committed; absent where it keeps none, or was never told.
+  optional Cursor cursor = 1;
+}

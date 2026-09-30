@@ -8,22 +8,33 @@ use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use super::service::{Connected, Service};
 use crate::destination::{Destination, DestinationFactory};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
+use crate::source::{Source, SourceFactory};
 use crate::spec::ConnectContext;
 use crate::wire::v1;
 
-/// What a handshake agreed: the role to configure, and whether the destination reads back what it
-/// published.
+/// What a handshake agreed: the role to configure, and whether it accepted the role's probe for
+/// certification (a destination reading back what it published, a source telling where it
+/// stands).
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Agreed {
     role: v1::Role,
-    published: bool,
+    probed: bool,
 }
 
 impl Agreed {
-    /// Whether the handshake accepted reading back what the destination published.
-    pub(super) fn published(self) -> bool {
-        self.published
+    /// The feature the handshake accepted, where it accepted the role's probe.
+    pub(super) fn feature(self) -> Option<&'static str> {
+        match (self.probed, self.role) {
+            (true, v1::Role::Source) => Some(rdlt_wire::ACKNOWLEDGED),
+            (true, v1::Role::Destination) => Some(rdlt_wire::PUBLISHED),
+            _ => None,
+        }
     }
+}
+
+/// Whether `request` offers `feature`.
+fn offers(request: &v1::HandshakeRequest, feature: &str) -> bool {
+    request.features.iter().any(|offered| offered == feature)
 }
 
 impl Service {
@@ -44,14 +55,15 @@ impl Service {
             );
             return Err(unsupported(message, "protocol_version"));
         }
-        let (role, spec, published) = match v1::Role::try_from(request.role) {
+        let (role, spec, probed) = match v1::Role::try_from(request.role) {
             Ok(v1::Role::Source) => {
                 let factory = self
                     .served
                     .source
                     .as_ref()
                     .ok_or_else(|| unserved("source"))?;
-                (v1::Role::Source, factory.spec(), false)
+                let probed = offers(request, rdlt_wire::ACKNOWLEDGED) && factory.acknowledges();
+                (v1::Role::Source, factory.spec(), probed)
             }
             Ok(v1::Role::Destination) => {
                 let factory = self
@@ -59,18 +71,14 @@ impl Service {
                     .destination
                     .as_ref()
                     .ok_or_else(|| unserved("destination"))?;
-                let offered = request
-                    .features
-                    .iter()
-                    .any(|feature| feature == rdlt_wire::PUBLISHED);
-                let published = offered && factory.reads_back();
-                (v1::Role::Destination, factory.spec(), published)
+                let probed = offers(request, rdlt_wire::PUBLISHED) && factory.reads_back();
+                (v1::Role::Destination, factory.spec(), probed)
             }
             Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
         };
         let spec = self.spec(spec, None);
         // A handshake that ran beside this one agreed first.
-        if self.agreed.set(Agreed { role, published }).is_err() {
+        if self.agreed.set(Agreed { role, probed }).is_err() {
             return Err(repeated());
         }
         let _ = self
@@ -105,12 +113,14 @@ impl Service {
             })?;
         let (spec, connected) = match (agreed.role, &self.served.source, &self.served.destination) {
             (v1::Role::Source, Some(factory), _) => {
-                let source = factory.connect(config, ConnectContext::new()).await?;
-                (factory.spec(), Connected::Source(Arc::from(source)))
+                let source = self
+                    .connect_source(factory.as_ref(), agreed.probed, config)
+                    .await?;
+                (factory.spec(), Connected::Source(source))
             }
             (v1::Role::Destination, _, Some(factory)) => {
                 let destination = self
-                    .connect_destination(factory.as_ref(), agreed.published, config)
+                    .connect_destination(factory.as_ref(), agreed.probed, config)
                     .await?;
                 (factory.spec(), Connected::Destination(destination))
             }
@@ -122,6 +132,24 @@ impl Service {
             return Err(configured());
         }
         Ok(spec)
+    }
+
+    /// Connects `factory`'s source with `config`, telling where it stands when the handshake
+    /// accepted that.
+    async fn connect_source(
+        &self,
+        factory: &dyn SourceFactory,
+        accepted: bool,
+        config: serde_json::Value,
+    ) -> Result<Arc<dyn Source>, ConnectorError> {
+        let context = ConnectContext::new();
+        if !accepted {
+            return Ok(Arc::from(factory.connect(config, context).await?));
+        }
+        let (source, acknowledger) = factory.connect_acknowledging(config, context).await?;
+        // Set once: a handshake that ran beside this one is refused once connected.
+        self.acknowledger.set(acknowledger).ok();
+        Ok(source)
     }
 
     /// Connects `factory`'s destination with `config`, reading back what it published when the

@@ -1079,6 +1079,23 @@ pub struct CommittedCursor {
 /// The answer to a committed report.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CommittedResponse {}
+/// Asks a source where it stands for a partition outside the engine.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadAcknowledgedRequest {
+    /// The stream.
+    #[prost(message, optional, tag = "1")]
+    pub stream: ::core::option::Option<StreamName>,
+    /// The partition's id.
+    #[prost(string, tag = "2")]
+    pub partition: ::prost::alloc::string::String,
+}
+/// Where a source stands for a partition outside the engine.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadAcknowledgedResponse {
+    /// The cursor it was last told is committed; absent where it keeps none, or was never told.
+    #[prost(message, optional, tag = "1")]
+    pub cursor: ::core::option::Option<Cursor>,
+}
 /// How a read should stop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -2006,6 +2023,27 @@ pub mod connector_client {
             ));
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Tells where a source stands for a partition outside the engine, for certification; served
+        /// when the handshake accepted the "acknowledged" feature. The engine never calls it.
+        pub async fn read_acknowledged(
+            &mut self,
+            request: impl tonic::IntoRequest<super::ReadAcknowledgedRequest>,
+        ) -> std::result::Result<tonic::Response<super::ReadAcknowledgedResponse>, tonic::Status>
+        {
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/rdlt.connector.v1.Connector/ReadAcknowledged",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut().insert(GrpcMethod::new(
+                "rdlt.connector.v1.Connector",
+                "ReadAcknowledged",
+            ));
+            self.inner.unary(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -2114,6 +2152,12 @@ pub mod connector_server {
             &self,
             request: tonic::Request<super::ReadPublishedRequest>,
         ) -> std::result::Result<tonic::Response<Self::ReadPublishedStream>, tonic::Status>;
+        /// Tells where a source stands for a partition outside the engine, for certification; served
+        /// when the handshake accepted the "acknowledged" feature. The engine never calls it.
+        async fn read_acknowledged(
+            &self,
+            request: tonic::Request<super::ReadAcknowledgedRequest>,
+        ) -> std::result::Result<tonic::Response<super::ReadAcknowledgedResponse>, tonic::Status>;
     }
     /// A connector, serving every role it supports.
     #[derive(Debug)]
@@ -2724,6 +2768,47 @@ pub mod connector_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.server_streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/rdlt.connector.v1.Connector/ReadAcknowledged" => {
+                    #[allow(non_camel_case_types)]
+                    struct ReadAcknowledgedSvc<T: Connector>(pub Arc<T>);
+                    impl<T: Connector> tonic::server::UnaryService<super::ReadAcknowledgedRequest>
+                        for ReadAcknowledgedSvc<T>
+                    {
+                        type Response = super::ReadAcknowledgedResponse;
+                        type Future = BoxFuture<tonic::Response<Self::Response>, tonic::Status>;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::ReadAcknowledgedRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Connector>::read_acknowledged(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = ReadAcknowledgedSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)
