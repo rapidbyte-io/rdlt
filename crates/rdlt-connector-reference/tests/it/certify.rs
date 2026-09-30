@@ -157,7 +157,12 @@ async fn the_files_source_is_certified() {
 
 #[tokio::test]
 async fn the_change_source_is_certified_and_moves_its_slot_only_when_committed() {
-    for slot in [None, Some("certified")] {
+    let slots = [
+        (None, true),
+        (Some("certified"), true),
+        (Some("forgets"), false),
+    ];
+    for (slot, replayable) in slots {
         let config = json!({
             "seed": 11,
             "streams": [{
@@ -166,6 +171,7 @@ async fn the_change_source_is_certified_and_moves_its_slot_only_when_committed()
                 "snapshot_partitions": 2,
                 "changes": 9,
                 "batch_rows": 3,
+                "replayable": replayable,
             }],
             "slot": slot,
         });

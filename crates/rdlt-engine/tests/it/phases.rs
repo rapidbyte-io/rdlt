@@ -168,6 +168,7 @@ fn small(name: &str) -> ChangedStream {
         batch_rows: 3,
         truncates: Vec::new(),
         captured: 0,
+        replayable: true,
     }
 }
 

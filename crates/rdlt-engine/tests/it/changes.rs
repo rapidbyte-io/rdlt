@@ -24,11 +24,12 @@ pub(crate) fn orders(truncates: &[u64]) -> ChangedStream {
         batch_rows: 7,
         truncates: truncates.to_vec(),
         captured: 0,
+        replayable: true,
     }
 }
 
 /// The source's configuration of `streams` under `seed`.
-fn config(seed: u64, streams: &[ChangedStream]) -> serde_json::Value {
+pub(crate) fn config(seed: u64, streams: &[ChangedStream]) -> serde_json::Value {
     let streams: Vec<serde_json::Value> = streams
         .iter()
         .map(|stream| {
@@ -36,7 +37,7 @@ fn config(seed: u64, streams: &[ChangedStream]) -> serde_json::Value {
                 "name": stream.name, "keys": stream.keys,
                 "snapshot_partitions": stream.snapshot_partitions, "changes": stream.changes,
                 "batch_rows": stream.batch_rows, "truncates": stream.truncates,
-                "captured": stream.captured,
+                "captured": stream.captured, "replayable": stream.replayable,
             })
         })
         .collect();
