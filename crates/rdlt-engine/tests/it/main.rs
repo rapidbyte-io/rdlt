@@ -23,6 +23,7 @@ mod owned;
 mod phases;
 mod placement;
 mod replanning;
+mod reset;
 mod schema;
 mod signals;
 mod support;

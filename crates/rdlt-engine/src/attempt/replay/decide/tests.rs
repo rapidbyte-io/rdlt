@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::UNIX_EPOCH;
 
 use rdlt_connector::{
@@ -80,13 +81,24 @@ fn standing(p0: u64, p1: u64) -> Positions {
     positions
 }
 
+/// No stream reset.
+fn unreset() -> BTreeMap<StreamName, Epoch> {
+    BTreeMap::new()
+}
+
 fn segments(ids: &[u64]) -> rdlt_connector::SegmentSet {
     ids.iter().copied().map(SegmentId).collect()
 }
 
 #[test]
 fn a_commit_the_destination_never_saw_replays_whole_where_nothing_moved_since() {
-    let decision = decide(&standing(10, 5), Some((load(2), 1)), None, &logged());
+    let decision = decide(
+        &standing(10, 5),
+        &unreset(),
+        Some((load(2), 1)),
+        None,
+        &logged(),
+    );
     assert_eq!(
         decision,
         Decision {
@@ -102,19 +114,19 @@ fn a_load_s_first_commit_follows_what_it_opened_on() {
     let mut first = logged();
     first.meta.commit_seq = CommitSeq::FIRST;
     let opened = Some((load(1), CommitSeq::FIRST.next()));
-    let decided = |last| decide(&standing(10, 5), last, opened, &first).whole;
+    let decided = |last| decide(&standing(10, 5), &unreset(), last, opened, &first).whole;
     assert!(decided(Some((load(1), 2))));
     assert!(!decided(Some((load(1), 1))));
     assert!(!decided(None));
     // A pipeline's first load, on a destination that had received nothing.
-    assert!(decide(&standing(10, 5), None, None, &first).whole);
+    assert!(decide(&standing(10, 5), &unreset(), None, None, &first).whole);
 }
 
 #[test]
 fn a_commit_that_landed_without_its_receipt_stages_nothing() {
     let mut landed = standing(30, 6);
     landed.set(stream(), partition("p2"), at(1));
-    let decision = decide(&landed, Some((load(2), 2)), None, &logged());
+    let decision = decide(&landed, &unreset(), Some((load(2), 2)), None, &logged());
     assert_eq!(
         decision,
         Decision {
@@ -128,7 +140,13 @@ fn a_commit_that_landed_without_its_receipt_stages_nothing() {
 #[test]
 fn partitions_a_newer_load_moved_are_left_to_it() {
     // A newer load committed p0 past 10 meanwhile; p1 and p2 are where this load left them.
-    let decision = decide(&standing(25, 5), Some((load(3), 1)), None, &logged());
+    let decision = decide(
+        &standing(25, 5),
+        &unreset(),
+        Some((load(3), 1)),
+        None,
+        &logged(),
+    );
     assert_eq!(
         decision,
         Decision {
@@ -148,7 +166,7 @@ fn a_stream_that_reads_again_is_left_to_the_next_load_where_a_newer_one_committe
         seal.replayable = true;
     }
     let cleared = Positions::of(&PipelineState::default());
-    let decision = decide(&cleared, Some((load(3), 1)), None, &replayable);
+    let decision = decide(&cleared, &unreset(), Some((load(3), 1)), None, &replayable);
     assert_eq!(
         decision,
         Decision {
@@ -158,11 +176,23 @@ fn a_stream_that_reads_again_is_left_to_the_next_load_where_a_newer_one_committe
         }
     );
     // Where nothing moved since, the whole commit replays, whether its streams read again or not.
-    let untouched = decide(&standing(10, 5), Some((load(2), 1)), None, &replayable);
+    let untouched = decide(
+        &standing(10, 5),
+        &unreset(),
+        Some((load(2), 1)),
+        None,
+        &replayable,
+    );
     assert!(untouched.whole);
     assert_eq!(untouched.staged, segments(&[3, 4, 6]));
     // Where the load's own partition moved but no newer load committed, what still matches stages.
-    let moved = decide(&standing(25, 5), Some((load(2), 1)), None, &replayable);
+    let moved = decide(
+        &standing(25, 5),
+        &unreset(),
+        Some((load(2), 1)),
+        None,
+        &replayable,
+    );
     assert!(!moved.whole);
     assert_eq!(moved.staged, segments(&[6]));
 }
@@ -174,7 +204,13 @@ fn a_whole_replay_commits_the_logged_commit_under_the_replaying_epoch() {
         rdlt_connector::TablePath::new(["orders"]).expect("a valid path"),
         rdlt_connector::GenerationId(4),
     )];
-    let decision = decide(&standing(10, 5), Some((load(2), 1)), None, &logged);
+    let decision = decide(
+        &standing(10, 5),
+        &unreset(),
+        Some((load(2), 1)),
+        None,
+        &logged,
+    );
     let replayed = decision.replayed(&logged.meta, Epoch(9));
     assert_eq!(
         replayed,
@@ -192,7 +228,13 @@ fn a_partial_replay_commits_only_what_it_staged_and_the_positions_it_moves() {
         rdlt_connector::TablePath::new(["orders"]).expect("a valid path"),
         rdlt_connector::GenerationId(4),
     )];
-    let decision = decide(&standing(25, 5), Some((load(3), 1)), None, &logged);
+    let decision = decide(
+        &standing(25, 5),
+        &unreset(),
+        Some((load(3), 1)),
+        None,
+        &logged,
+    );
     let replayed = decision.replayed(&logged.meta, Epoch(9));
     assert_eq!(
         replayed,
@@ -204,4 +246,29 @@ fn a_partial_replay_commits_only_what_it_staged_and_the_positions_it_moves() {
             ..logged.meta.clone()
         }
     );
+}
+
+#[test]
+fn seals_of_a_stream_reset_after_their_session_opened_never_apply() {
+    // A reset at epoch 5 cleared the stream's positions: p2's first seal, from nowhere, would
+    // otherwise match and stage its rows into the cleared stream.
+    let reset = BTreeMap::from([(stream(), Epoch(5))]);
+    let cleared = Positions::of(&PipelineState::default());
+    let decision = decide(&cleared, &reset, Some((load(9), 1)), None, &logged());
+    assert_eq!(
+        decision,
+        Decision {
+            staged: segments(&[]),
+            moved: Vec::new(),
+            whole: false,
+        }
+    );
+    // A load that opened after the reset replays as any other; the reset's own epoch is not
+    // older than itself.
+    for epoch in [5, 6] {
+        let mut later = logged();
+        later.meta.epoch = Epoch(epoch);
+        let decision = decide(&cleared, &reset, Some((load(9), 1)), None, &later);
+        assert_eq!(decision.staged, segments(&[6]), "epoch {epoch}");
+    }
 }

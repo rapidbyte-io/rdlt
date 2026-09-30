@@ -50,5 +50,5 @@ pub use error::{Error, ErrorKind, ErrorReport};
 pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, Until, WriteMode};
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{AttemptReport, REPORTED_ATTEMPTS, Report, RunStatus, StreamReport};
-pub use run::{Engine, RunControl, RunHandle, RunOutcome, StopMode};
+pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
 pub use wal::{Chunk, Claim, LocalWal, WalStore};

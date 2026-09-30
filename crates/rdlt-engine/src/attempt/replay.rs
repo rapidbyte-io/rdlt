@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::sync::Arc;
 
-use rdlt_connector::{DestinationWriter, LoadId, PipelineId, SegmentSet, TableChange};
+use rdlt_connector::{
+    DestinationWriter, Epoch, LoadId, PipelineId, SegmentSet, StreamName, TableChange,
+};
 
 use super::{RunContext, open};
 use crate::error::{Error, Side};
@@ -23,8 +25,10 @@ use decide::decide;
 /// The session replay commits through, and where the destination stands as it goes.
 struct Replaying {
     session: Arc<SharedSession>,
-    epoch: rdlt_connector::Epoch,
+    epoch: Epoch,
     positions: Positions,
+    /// The epoch of each stream's last reset.
+    resets: BTreeMap<StreamName, Epoch>,
     /// The last commit the destination received.
     last: Option<(LoadId, u64)>,
 }
@@ -69,6 +73,7 @@ async fn begin(context: &RunContext, load_id: LoadId) -> Result<Replaying, Error
     let opened = open(context, load_id).await?;
     Ok(Replaying {
         positions: Positions::of(&opened.state),
+        resets: opened.state.resets.clone(),
         last: opened
             .state
             .last_receipt
@@ -90,7 +95,7 @@ impl Replaying {
     ) -> Result<(), Error> {
         let meta = &logged.meta;
         let opened = scanned.header.as_ref().and_then(|header| header.opened);
-        let decision = decide(&self.positions, self.last, opened, logged);
+        let decision = decide(&self.positions, &self.resets, self.last, opened, logged);
         self.stage(store, pipeline, scanned, &decision.staged)
             .await?;
         let whole = decision.whole;
