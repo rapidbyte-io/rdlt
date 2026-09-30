@@ -168,6 +168,13 @@ pub struct Capabilities {
     /// merge a change stream into it.
     #[serde(default)]
     pub merge_changes: bool,
+    /// Whether it drops the tables a commit's
+    /// [`drop_tables`](crate::CommitMeta::drop_tables) names, atomically with the commit.
+    ///
+    /// A destination that does not would leave them in place, so the engine refuses to reset a
+    /// stream's tables into it.
+    #[serde(default)]
+    pub drop_tables: bool,
     /// Nested values stored natively.
     pub nested: NestedSupport,
     /// Logical types stored natively; others are lowered by the engine.
@@ -196,6 +203,7 @@ impl Capabilities {
             delete_modes: DeleteModes::default(),
             partial_updates: false,
             merge_changes: false,
+            drop_tables: false,
             nested: NestedSupport::default(),
             types: BTreeSet::from([
                 K::Bool,

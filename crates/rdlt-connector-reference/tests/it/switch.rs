@@ -46,6 +46,16 @@ fn rows(values: &[&str], first: u8) -> RecordBatch {
         .expect("the batch is valid")
 }
 
+/// The switched table's columns: a key, a value and a sequence.
+fn schema() -> TableSchema {
+    TableSchema::new(vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("v", LogicalType::Utf8, true),
+        Field::new("seq", LogicalType::Binary, true),
+    ])
+    .expect("the schema is valid")
+}
+
 /// Commits two appended rows of key 1, then a merged row, then another appended row.
 async fn switch<C: DestinationConnector>(config: serde_json::Value) {
     let destination = C::connect(
@@ -59,15 +69,9 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
         load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let mut opened = destination.open(&context).await.expect("the session opens");
-    let schema = TableSchema::new(vec![
-        Field::new("id", LogicalType::Int64, false),
-        Field::new("v", LogicalType::Utf8, true),
-        Field::new("seq", LogicalType::Binary, true),
-    ])
-    .expect("the schema is valid");
     let create = TableChange::Create {
         table: table(false),
-        schema,
+        schema: schema(),
     };
     opened
         .session
@@ -98,6 +102,7 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
             state_delta: Vec::new(),
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
+            drop_tables: Vec::new(),
         };
         opened
             .session

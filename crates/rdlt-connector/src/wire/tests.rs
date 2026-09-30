@@ -12,7 +12,7 @@ use crate::capabilities::{
     NestedSupport, SchemaChanges, WriteModes,
 };
 use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec};
-use crate::commit::{ChildTable, CommitMeta, Receipt, SegmentSet};
+use crate::commit::{ChildTable, CommitMeta, DroppedTable, Receipt, SegmentSet};
 use crate::cursor::Cursor;
 use crate::destination::{
     ChangeColumns, Deletion, MergeKey, RootKey, TableChange, TableRef, WriteStats,
@@ -144,7 +144,7 @@ fn identifier_rules() -> impl Strategy<Value = IdentifierRules> {
 }
 
 fn capabilities() -> impl Strategy<Value = Capabilities> {
-    let flags = proptest::collection::vec(any::<bool>(), 12);
+    let flags = proptest::collection::vec(any::<bool>(), 13);
     (
         flags,
         proptest::collection::btree_set(kind(), 0..5),
@@ -172,6 +172,7 @@ fn capabilities() -> impl Strategy<Value = Capabilities> {
                 },
                 partial_updates: flags[7],
                 merge_changes: flags[11],
+                drop_tables: flags[12],
                 nested: NestedSupport {
                     structs: flags[8],
                     lists: flags[9],
@@ -310,9 +311,10 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
             0..2,
         ),
         proptest::collection::vec((name(), merge_key()), 0..2),
+        proptest::collection::vec((proptest::collection::vec(name(), 1..3), name()), 0..2),
     )
         .prop_map(
-            |(load_id, seq, epoch, segments, state_delta, finish, children)| {
+            |(load_id, seq, epoch, segments, state_delta, finish, children, dropped)| {
                 let mut set = SegmentSet::new();
                 for segment in segments {
                     set.insert(SegmentId(segment));
@@ -334,6 +336,13 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
                         .map(|(table, merge)| ChildTable {
                             table: Arc::from(table),
                             merge,
+                        })
+                        .collect(),
+                    drop_tables: dropped
+                        .into_iter()
+                        .map(|(path, name)| DroppedTable {
+                            path: TablePath::new(path).unwrap(),
+                            name: Arc::from(name),
                         })
                         .collect(),
                 }
@@ -595,6 +604,7 @@ fn values_that_break_their_types_rules_are_rejected() {
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     });
     meta.segments = vec![
         v1::SegmentRange { first: 5, last: 6 },

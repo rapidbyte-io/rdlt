@@ -70,6 +70,7 @@ async fn read_back<C: DestinationConnector + ReadBack>(config: serde_json::Value
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     };
     opened
         .session

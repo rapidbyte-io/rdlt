@@ -172,5 +172,6 @@ fn sample_commit(load: rdlt_connector::LoadId) -> rdlt_connector::CommitMeta {
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     }
 }

@@ -43,6 +43,7 @@ fn meta(number: u64, segments: &[u64]) -> CommitMeta {
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     }
 }
 

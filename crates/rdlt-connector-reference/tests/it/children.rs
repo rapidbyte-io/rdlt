@@ -133,6 +133,7 @@ fn meta(opened: &OpenedSession, seq: CommitSeq, segment: u64, items: &TableRef) 
             table: Arc::clone(&items.name),
             merge: items.merge.clone().expect("a merge key"),
         }],
+        drop_tables: Vec::new(),
     }
 }
 

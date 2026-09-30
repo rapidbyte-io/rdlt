@@ -103,6 +103,7 @@ async fn opening_one_pipeline_keeps_another_pipelines_staging() {
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     };
     assert_eq!(first.session.commit(&meta).await.unwrap().rows, 2);
     assert_eq!(
@@ -152,6 +153,7 @@ fn commit_meta(session: &OpenedSession, seq: CommitSeq, segments: &[u64]) -> Com
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     }
 }
 
@@ -190,6 +192,7 @@ async fn a_replace_generation_stays_hidden_until_its_finishing_commit_swaps_it_i
     let finish = CommitMeta {
         finish_generations: vec![(path, GenerationId(9))],
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
         ..commit_meta(&opened, CommitSeq::FIRST.next().next(), &[3])
     };
     opened.session.commit(&finish).await.unwrap();
@@ -517,6 +520,7 @@ async fn a_memory_writer_s_flush_and_its_commit_count_the_bytes_it_staged() {
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     };
     let receipt = session
         .session

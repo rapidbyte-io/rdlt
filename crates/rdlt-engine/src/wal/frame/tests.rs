@@ -42,6 +42,7 @@ fn metadata() -> Vec<Frame> {
         })],
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     };
     vec![
         Frame::Header(Header {

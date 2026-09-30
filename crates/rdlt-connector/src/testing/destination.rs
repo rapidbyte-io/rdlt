@@ -459,6 +459,7 @@ fn meta(load: LoadId, epoch: Epoch, segments: &[u64], state_delta: Vec<StateChan
         state_delta,
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     }
 }
 

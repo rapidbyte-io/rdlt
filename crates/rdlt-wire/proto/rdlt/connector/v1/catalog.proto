@@ -187,6 +187,8 @@ message Capabilities {
   optional uint64 preferred_batch_bytes = 10;
   // Whether it merges change streams: each row in sequence order, only past the row it holds.
   bool merge_changes = 11;
+  // Whether it drops the tables a commit names, atomically with the commit.
+  bool drop_tables = 12;
 }
 
 // What a source declares about itself; it declares nothing yet.

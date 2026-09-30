@@ -109,6 +109,7 @@ async fn commit_as(
         state_delta: Vec::new(),
         finish_generations: finish,
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     };
     opened
         .session

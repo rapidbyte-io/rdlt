@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::types::{instant, system_time};
 use super::{Invalid, required, v1};
-use crate::commit::{ChildTable, CommitMeta, Receipt, SegmentRange, SegmentSet};
+use crate::commit::{ChildTable, CommitMeta, DroppedTable, Receipt, SegmentRange, SegmentSet};
 use crate::destination::{
     ChangeColumns, Deletion, MergeKey, RootKey, TableChange, TableRef, WriteStats,
 };
@@ -196,6 +196,14 @@ impl From<&CommitMeta> for v1::CommitMeta {
                     merge: Some(v1::MergeKey::from(&child.merge)),
                 })
                 .collect(),
+            drop_tables: meta
+                .drop_tables
+                .iter()
+                .map(|dropped| v1::DroppedTable {
+                    path: Some(v1::TablePath::from(&dropped.path)),
+                    name: dropped.name.to_string(),
+                })
+                .collect(),
         }
     }
 }
@@ -231,6 +239,17 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
                 })
             })
             .collect::<Result<_, Invalid>>()?;
+        let drop_tables = meta
+            .drop_tables
+            .into_iter()
+            .map(|dropped| {
+                let path = TablePath::try_from(required("dropped table's path", dropped.path)?)?;
+                Ok(DroppedTable {
+                    path,
+                    name: Arc::from(dropped.name),
+                })
+            })
+            .collect::<Result<_, Invalid>>()?;
         Ok(Self {
             load_id: load_id(&meta.load_id)?,
             commit_seq: CommitSeq::new(meta.commit_seq).ok_or(Invalid::OutOfRange("commit seq"))?,
@@ -244,6 +263,7 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
                 .collect::<Result<_, _>>()?,
             finish_generations,
             child_tables,
+            drop_tables,
         })
     }
 }

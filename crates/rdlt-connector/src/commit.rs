@@ -155,6 +155,22 @@ pub struct CommitMeta {
     /// [`RootKey`]: crate::RootKey
     #[serde(default)]
     pub child_tables: Vec<ChildTable>,
+    /// Tables to drop with this commit, as a reset of their streams asks: each with its
+    /// generations and tombstones, releasing its owner record.
+    ///
+    /// Only a destination that declares
+    /// [`Capabilities::drop_tables`](crate::Capabilities::drop_tables) receives them.
+    #[serde(default)]
+    pub drop_tables: Vec<DroppedTable>,
+}
+
+/// A table a commit drops.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DroppedTable {
+    /// The table's path, as the pipeline's state names it.
+    pub path: TablePath,
+    /// The table's identifier in the destination, as the pipeline's state records it.
+    pub name: Arc<str>,
 }
 
 /// A child table of a merge table, as a commit lists it.

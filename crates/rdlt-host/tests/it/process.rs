@@ -494,6 +494,7 @@ async fn a_destination_crashing_in_a_session_carries_its_last_words() {
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
+        drop_tables: Vec::new(),
     };
     let error = opened.session.commit(&meta).await.unwrap_err();
     let words = std::error::Error::source(&error)
