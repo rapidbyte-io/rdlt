@@ -32,11 +32,14 @@ fn offset(next: u64) -> Cursor {
     Cursor::encode(1, &Offset { next }).expect("an offset encodes")
 }
 
-/// What a read sent: the offsets it pushed and its checkpoints.
+/// What a read sent: the offsets it pushed, its checkpoints, how far behind it said it was, and
+/// how often it asked for a new plan.
 #[derive(Debug, Default)]
 struct Sent {
     offsets: Vec<u64>,
     checkpoints: Vec<u64>,
+    behind: Vec<u64>,
+    replans: usize,
 }
 
 /// A read of partition 0 from `cursor`, which follows the log until `stop_after` has passed where
@@ -68,6 +71,8 @@ async fn read(
                         let next = cursor.decode::<Offset>(1).expect("an offset").next;
                         sent.checkpoints.push(next);
                     }
+                    Some(SourceEvent::Behind { records }) => sent.behind.push(records),
+                    Some(SourceEvent::Replan) => sent.replans += 1,
                     Some(_) => {}
                     None => break,
                 },
@@ -224,4 +229,43 @@ async fn a_batch_at_its_limit_neither_wraps_nor_panics() {
     let (read, sent) = read(source.as_ref(), Some(offset(1)), None).await;
     read.expect("the read ends");
     assert_eq!(sent.offsets, [1, 2]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_log_keeps_its_newest_messages_and_refuses_to_resume_from_one_it_dropped() {
+    let stream = json!({ "name": "events", "partitions": 1, "messages": 10, "retention": 4 });
+    let source = connect(&stream, "retained").await;
+    let (from_the_start, sent) = read(source.as_ref(), None, None).await;
+    from_the_start.expect("a read from the start reads what the log keeps");
+    assert_eq!(sent.offsets, [6, 7, 8, 9]);
+    let (kept, sent) = read(source.as_ref(), Some(offset(7)), None).await;
+    kept.expect("a read from a kept offset succeeds");
+    assert_eq!(sent.offsets, [7, 8, 9]);
+    let (earliest, sent) = read(source.as_ref(), Some(offset(6)), None).await;
+    earliest.expect("a read from the earliest kept offset succeeds");
+    assert_eq!(sent.offsets, [6, 7, 8, 9]);
+    let (dropped, _) = read(source.as_ref(), Some(offset(3)), None).await;
+    let lost = dropped.expect_err("a read from a dropped offset fails");
+    assert_eq!(lost.code(), Some(rdlt_connector::RETENTION_LOST));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_says_how_far_behind_the_head_it_is_at_each_checkpoint() {
+    let stream = json!({ "name": "events", "partitions": 1, "messages": 25 });
+    let source = connect(&stream, "behind").await;
+    let (read, sent) = read(source.as_ref(), None, None).await;
+    read.expect("the read ends");
+    assert_eq!(sent.behind, [15, 5, 0]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_read_of_the_first_partition_asks_for_a_plan_as_partitions_are_added() {
+    let stream = json!({
+        "name": "events", "partitions": 1, "messages": 1,
+        "partitions_later": 1, "later_after_ms": 500,
+    });
+    let source = connect(&stream, "signalled").await;
+    let (read, sent) = read(source.as_ref(), None, Some(Duration::from_secs(2))).await;
+    read.expect("a stopped read ends cleanly");
+    assert_eq!(sent.replans, 1);
 }
