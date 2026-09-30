@@ -221,6 +221,7 @@ impl Coordinator {
             on_demand: template.on_demand,
             changes: template.changes,
             stop,
+            follow: self.parts.follow,
         };
         (self.parts.launcher)(job)
     }

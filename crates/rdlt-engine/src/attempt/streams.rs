@@ -200,6 +200,7 @@ fn planned(
         },
         on_demand,
         changes,
+        follow: follow && tracked,
         partitions: partitioned.partitions,
     }
 }

@@ -21,6 +21,7 @@ fn job() -> PartitionJob {
         on_demand: false,
         changes: None,
         stop: tokio_util::sync::CancellationToken::new(),
+        follow: false,
     }
 }
 
