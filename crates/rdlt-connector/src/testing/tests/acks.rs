@@ -59,6 +59,8 @@ struct QueueConfig {
     per_connection: bool,
     /// Keeps every committed cursor as the first partition's.
     misroute: bool,
+    /// Keeps each committed cursor one message on from where it was told.
+    off_by_one: bool,
 }
 
 /// A queue of four messages a partition, a checkpoint after each, that keeps where it was
@@ -178,7 +180,7 @@ impl ReadStream<Queue> for Messages {
                 partition
             };
             if !source.config.stuck {
-                source.set(partition, *cursor);
+                source.set(partition, cursor + u64::from(source.config.off_by_one));
             }
         }
         Ok(())
@@ -216,6 +218,8 @@ async fn a_queue_that_moves_but_where_it_was_told_fails_s_ack() {
         json!({ "name": "stuck", "stuck": true }),
         json!({ "name": "per_connection", "per_connection": true }),
         json!({ "name": "misroutes", "misroute": true, "partitions": 2 }),
+        // One message ahead: a single commit, which lands elsewhere, decides.
+        json!({ "name": "off_by_one", "off_by_one": true, "at": 3 }),
     ];
     for config in flawed {
         // A violation stops the read rather than waiting out the clause's bound.

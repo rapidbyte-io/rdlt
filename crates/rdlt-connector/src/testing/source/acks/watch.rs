@@ -32,18 +32,17 @@ pub(super) struct Read {
 }
 
 impl Read {
-    /// Where the engine records the end of this read of `partition`, which started at `from`, as
-    /// it does once a partition reads to its end: rows after the last checkpoint leave a bounded
-    /// partition done, and a read that sent nothing leaves it where it started.
-    pub(super) fn end(
-        &self,
-        partition: &Partition,
-        from: Option<&Cursor>,
-    ) -> Option<PartitionState> {
+    /// Where the engine records the end of this read, which started at `from`, as it does once a
+    /// bounded partition reads to its end: rows after the last checkpoint leave it done, and a
+    /// read that sent nothing leaves it where it started.
+    ///
+    /// The clause reads no phase after one with an unbounded partition, so what such a partition
+    /// would record never matters.
+    pub(super) fn end(&self, from: Option<&Cursor>) -> Option<PartitionState> {
         match (self.checkpoints.last(), self.tail) {
-            (_, true) if !partition.is_unbounded() => Some(PartitionState::Done),
-            (Some(last), _) => Some(PartitionState::Cursor(last.clone())),
-            (None, _) => from.cloned().map(PartitionState::Cursor),
+            (_, true) => Some(PartitionState::Done),
+            (Some(last), false) => Some(PartitionState::Cursor(last.clone())),
+            (None, false) => from.cloned().map(PartitionState::Cursor),
         }
     }
 }
