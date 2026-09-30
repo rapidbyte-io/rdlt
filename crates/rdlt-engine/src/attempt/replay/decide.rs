@@ -5,7 +5,9 @@ mod tests;
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::{CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry};
+use rdlt_connector::{
+    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry, StreamName,
+};
 
 use crate::wal::Positions;
 use crate::wal::scan::Logged;
@@ -43,9 +45,9 @@ impl Decision {
     }
 }
 
-/// What replaying `logged` does where the destination holds `positions` and last received
-/// `last`, a load and commit number; `opened` is what the load's log says it last received when
-/// it opened.
+/// What replaying `logged` does where the destination holds `positions` and `resets`, and last
+/// received `last`, a load and commit number; `opened` is what the load's log says it last
+/// received when it opened.
 ///
 /// Where the destination stands as the commit's load left it, the whole commit applies. Where a
 /// newer load committed since, only seals of streams that cannot read again apply, each where
@@ -53,8 +55,12 @@ impl Decision {
 /// partition, or the commit itself landed and only its receipt was lost. A stream that reads again
 /// is left to the next load, which reads whatever is not committed: its positions cannot tell
 /// whether its segments landed, as a completed full read leaves every partition without one.
+///
+/// A seal of a stream reset after the commit's session opened, which the reset's epoch marks,
+/// never applies: the reset cleared what the load read of it.
 pub(super) fn decide(
     positions: &Positions,
+    resets: &BTreeMap<StreamName, Epoch>,
     last: Option<(LoadId, u64)>,
     opened: Option<(LoadId, CommitSeq)>,
     logged: &Logged,
@@ -72,7 +78,10 @@ pub(super) fn decide(
     let mut matched = true;
     for seal in &logged.seals {
         let stale = !untouched && seal.replayable;
-        if stale || positions.get(&seal.stream, &seal.partition) != seal.from.as_ref() {
+        let reset = resets
+            .get(&seal.stream)
+            .is_some_and(|marker| meta.epoch < *marker);
+        if stale || reset || positions.get(&seal.stream, &seal.partition) != seal.from.as_ref() {
             matched = false;
             continue;
         }

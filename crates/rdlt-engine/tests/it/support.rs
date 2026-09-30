@@ -23,7 +23,8 @@ use rdlt_connector::{
 use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
 use rdlt_engine::{
     CommitPolicy, ComputePool, Engine, EngineConfig, EngineConfigBuilder, Env, Job, PipelinePlan,
-    RayonPool, RunControl, RunOutcome, Sleep, StreamPlan, SystemEnv, WalStore,
+    RayonPool, ResetReport, ResetScope, RunControl, RunOutcome, Sleep, StreamPlan, SystemEnv,
+    WalStore,
 };
 use serde_json::{Value, json};
 
@@ -140,6 +141,31 @@ impl TestEngine {
             control,
             future: Box::pin(future),
         }
+    }
+}
+
+impl TestEngine {
+    /// Resets `streams` of `pipeline`, read from `source`, in `destination` as `scope` says,
+    /// failing the test if it has not ended within [`LIMIT`].
+    pub(crate) async fn reset(
+        &self,
+        pipeline: &str,
+        streams: &[&str],
+        scope: ResetScope,
+        source: Arc<dyn Source>,
+        destination: Arc<dyn Destination>,
+    ) -> Result<ResetReport, rdlt_engine::Error> {
+        let pipeline = PipelineId::parse(pipeline).expect("a valid pipeline id");
+        let streams: Vec<StreamName> = streams
+            .iter()
+            .map(|name| StreamName::new(name).expect("a valid stream name"))
+            .collect();
+        let reset = self
+            .0
+            .reset(&pipeline, &streams, scope, source, destination);
+        tokio::time::timeout(LIMIT, reset)
+            .await
+            .expect("the reset ends within the test's limit")
     }
 }
 

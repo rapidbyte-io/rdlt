@@ -1,5 +1,6 @@
 //! Runs: attempts, retries, stopping, and the handle an embedder awaits.
 
+mod reset;
 #[cfg(test)]
 mod tests;
 
@@ -26,6 +27,8 @@ use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus};
 use crate::scope::contained;
 
+pub use reset::{ResetReport, ResetScope};
+
 /// Moves data from sources to destinations, exactly once.
 ///
 /// ```
@@ -38,6 +41,7 @@ use crate::scope::contained;
 /// let engine = Engine::new(EngineConfig::builder().build()?, env);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+#[derive(Clone)]
 pub struct Engine {
     config: Arc<EngineConfig>,
     env: Arc<dyn Env>,
