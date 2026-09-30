@@ -83,3 +83,37 @@ fn positions_follow_the_state_they_start_from_and_the_commits_after_it() {
         Some(&at(1))
     );
 }
+
+#[test]
+fn phases_follow_the_state_they_start_from_and_the_commits_after_it() {
+    let phased = |phase| StreamState {
+        phase,
+        ..StreamState::default()
+    };
+    let streams = [(stream("orders"), phased(1)), (stream("users"), phased(0))];
+    let state = PipelineState {
+        streams: streams.into_iter().collect(),
+        ..PipelineState::default()
+    };
+    let mut positions = Positions::of(&state);
+    assert_eq!(positions.phase(&stream("orders")), 1);
+    assert_eq!(positions.phase(&stream("users")), 0);
+    let begun = |name, phase| {
+        StateChange::Put(
+            StateEntry::Phase {
+                stream: stream(name),
+                phase,
+            }
+            .to_record(),
+        )
+    };
+    positions.apply(&[begun("orders", 2), begun("users", 1)]);
+    assert_eq!(positions.phase(&stream("orders")), 2);
+    assert_eq!(positions.phase(&stream("users")), 1);
+    // A reset deletes a stream's phase: it reads from its first again.
+    positions.apply(&[StateChange::Delete(
+        StateKey::Phase(stream("orders")).encode(),
+    )]);
+    assert_eq!(positions.phase(&stream("orders")), 0);
+    assert_eq!(positions.phase(&stream("users")), 1);
+}

@@ -137,6 +137,7 @@ fn kind(frame: &Frame) -> String {
         Frame::Schema(table) => format!("schema {}", table.index),
         Frame::Batch(batch) => format!("batch {} of {}", batch.segment.0, batch.table),
         Frame::Seal(seal) => format!("seal {}", seal.segment.0),
+        Frame::Begun(begun) => format!("phase {} of {}", begun.phase, begun.stream),
         Frame::Commit(meta) => format!("commit of {:?}", meta.segments),
         Frame::Committed(_) => "committed".to_owned(),
         Frame::Closed => "closed".to_owned(),

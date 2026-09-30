@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use arrow_array::RecordBatch;
 use rdlt_connector::{CommitMeta, CommitSeq, LoadId, PipelineId, SegmentId};
 
-use super::frame::{self, Frame, Frames, HEAD, Header, Seal, Skimmed, Table};
+use super::frame::{self, BegunPhase, Frame, Frames, HEAD, Header, Seal, Skimmed, Table};
 use super::store::{Chunk, WalStore};
 use crate::error::Error;
 
@@ -22,12 +22,13 @@ pub(crate) struct Located {
     pub(crate) table: u32,
 }
 
-/// A commit frame, and the seal frames its load logged just before it: every partition it moves,
-/// empty segments' included.
+/// A commit frame, and the seal and phase frames its load logged just before it: every partition
+/// it moves, empty segments' included, and every phase it begins.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Logged {
     pub(crate) meta: CommitMeta,
     pub(crate) seals: Vec<Seal>,
+    pub(crate) begun: Vec<BegunPhase>,
 }
 
 /// What a log holds, up to where each of its chunks ends or a crash tore it.
@@ -42,6 +43,8 @@ pub(crate) struct Scanned {
     pub(crate) commits: Vec<Logged>,
     /// Seal frames no commit frame has followed yet.
     sealing: Vec<Seal>,
+    /// Phase frames no commit frame has followed yet.
+    beginning: Vec<BegunPhase>,
     /// The commits whose receipts it holds.
     pub(crate) received: BTreeSet<CommitSeq>,
     /// Whether its load closed it.
@@ -170,9 +173,15 @@ fn note(
         // A skim leaves batches to the arm above.
         Frame::Batch(_) => {}
         Frame::Seal(seal) => scanned.sealing.push(seal),
+        Frame::Begun(begun) => scanned.beginning.push(begun),
         Frame::Commit(meta) => {
             let seals = std::mem::take(&mut scanned.sealing);
-            scanned.commits.push(Logged { meta: *meta, seals });
+            let begun = std::mem::take(&mut scanned.beginning);
+            scanned.commits.push(Logged {
+                meta: *meta,
+                seals,
+                begun,
+            });
         }
         Frame::Committed(receipt) => {
             scanned.received.insert(receipt.commit_seq);

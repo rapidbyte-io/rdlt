@@ -89,7 +89,7 @@ async fn each_table_version_is_described_once_before_its_first_batch() {
         log.batch(&Inline, &budget, 1, &at(&items, 1), SegmentId(4), &ids(20))
             .await
             .expect("the batch is logged");
-        log.commit(Vec::new(), &meta(&[0, 1, 2, 3, 4]))
+        log.commit(Vec::new(), Vec::new(), &meta(&[0, 1, 2, 3, 4]))
             .await
             .expect("the commit is durable");
         drop(log);
@@ -156,10 +156,13 @@ async fn a_logged_load_reads_back_as_it_was_written() {
             stream: StreamName::new("orders").expect("a valid stream"),
             partition: PartitionId::parse("p0").expect("a valid partition"),
             replayable: true,
+            phase: 0,
             from: None,
             state: state.clone(),
         }];
-        log.commit(sealed, &meta(&[1])).await.expect("durable");
+        log.commit(sealed, Vec::new(), &meta(&[1]))
+            .await
+            .expect("durable");
         let kinds: Vec<_> = frames(&observed).into_iter().skip(2).collect();
         let [
             Frame::Batch(batch),
@@ -209,6 +212,7 @@ fn sealed_at(segment: u64) -> Sealed {
         stream: StreamName::new("orders").expect("a valid stream"),
         partition: PartitionId::parse("p0").expect("a valid partition"),
         replayable: false,
+        phase: 0,
         from: None,
         state: PartitionState::Done,
     }
@@ -234,7 +238,7 @@ async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segme
             // An idle partition seals an empty segment, which no commit publishes.
             let mut commit = meta(&[full]);
             commit.commit_seq = seq;
-            log.commit(vec![sealed_at(full), sealed_at(empty)], &commit)
+            log.commit(vec![sealed_at(full), sealed_at(empty)], Vec::new(), &commit)
                 .await
                 .expect("durable");
             let receipt = Receipt {

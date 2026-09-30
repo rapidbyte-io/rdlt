@@ -6,10 +6,11 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry, StreamName,
+    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateEntry, StateKey, StreamName,
 };
 
 use crate::wal::Positions;
+use crate::wal::frame::BegunPhase;
 use crate::wal::scan::Logged;
 
 /// What replaying a logged commit does.
@@ -58,6 +59,10 @@ impl Decision {
 ///
 /// A seal of a stream reset after the commit's session opened, which the reset's epoch marks,
 /// never applies: the reset cleared what the load read of it.
+///
+/// A phase the commit began applies first, where the destination still stands before it with
+/// every entry the phase deletes: a destination that moved on, or was reset, keeps its own. A
+/// seal then applies only in the phase the destination stands at.
 pub(super) fn decide(
     positions: &Positions,
     resets: &BTreeMap<StreamName, Epoch>,
@@ -72,16 +77,29 @@ pub(super) fn decide(
         Some((meta.load_id, meta.commit_seq.get() - 1))
     };
     let untouched = last == previous;
+    let reset = |stream: &StreamName| {
+        resets
+            .get(stream)
+            .is_some_and(|marker| meta.epoch < *marker)
+    };
     let mut positions = positions.clone();
+    let mut transitions = Vec::new();
+    let mut matched = true;
+    for begun in &logged.begun {
+        if reset(&begun.stream) || !begins(&positions, begun) {
+            matched = false;
+            continue;
+        }
+        positions.apply(&begun.changes);
+        transitions.extend(begun.changes.iter().cloned());
+    }
     let mut staged = SegmentSet::new();
     let mut moved = BTreeMap::new();
-    let mut matched = true;
     for seal in &logged.seals {
         let stale = !untouched && seal.replayable;
-        let reset = resets
-            .get(&seal.stream)
-            .is_some_and(|marker| meta.epoch < *marker);
-        if stale || reset || positions.get(&seal.stream, &seal.partition) != seal.from.as_ref() {
+        let elsewhere = seal.phase != positions.phase(&seal.stream)
+            || positions.get(&seal.stream, &seal.partition) != seal.from.as_ref();
+        if stale || reset(&seal.stream) || elsewhere {
             matched = false;
             continue;
         }
@@ -92,20 +110,36 @@ pub(super) fn decide(
             staged.insert(seal.segment);
         }
     }
-    let moved = moved
+    let moved = transitions
         .into_iter()
-        .map(|((stream, partition), state)| {
+        .chain(moved.into_iter().map(|((stream, partition), state)| {
             let entry = StateEntry::Partition {
                 stream,
                 partition,
                 state,
             };
             StateChange::Put(entry.to_record())
-        })
+        }))
         .collect();
     Decision {
         staged,
         moved,
         whole: matched && untouched,
     }
+}
+
+/// Whether `begun`, a phase a logged commit began, applies where the destination holds
+/// `positions`: the destination stands before the phase, with every entry of the phase before it
+/// the commit deletes.
+fn begins(positions: &Positions, begun: &BegunPhase) -> bool {
+    let stale = begun.changes.iter().all(|change| match change {
+        StateChange::Delete(key) => match StateKey::parse(key) {
+            Ok(StateKey::Partition(stream, partition)) => {
+                positions.get(&stream, &partition).is_some()
+            }
+            _ => true,
+        },
+        StateChange::Put(_) => true,
+    });
+    positions.phase(&begun.stream) < begun.phase && stale
 }

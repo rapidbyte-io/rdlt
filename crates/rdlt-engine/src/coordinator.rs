@@ -351,13 +351,18 @@ impl Coordinator {
     ///
     /// Commits nothing when there is nothing to publish or record.
     async fn commit(&mut self) -> Result<(), Error> {
-        let collected = self.collect();
+        // A new phase's stale entries go before its partitions' positions, which may reuse ids;
+        // the log records its partitions' seals from where the phase starts them.
+        let begun = self.phase_delta();
+        let mut delta: Vec<StateChange> = begun
+            .iter()
+            .flat_map(|begun| begun.changes.iter().cloned())
+            .collect();
+        let collected = self.collect(&delta);
         let completing: Vec<usize> = (0..self.parts.streams.len())
             .filter(|index| self.parts.streams[*index].completes())
             .collect();
         let tables = self.parts.tables.delta();
-        // A new phase's stale entries go before its partitions' positions, which may reuse ids.
-        let mut delta = self.phase_delta();
         delta.extend(self.sequences_delta());
         delta.extend(self.state_delta(&collected.positions, &completing));
         delta.extend(tables.changes);
@@ -390,7 +395,7 @@ impl Coordinator {
         if let Some(log) = &self.parts.wal {
             // Every batch of the commit's segments was queued for the log before its partition
             // sealed it: the commit's frame, queued now, follows them all.
-            log.commit(collected.sealed, &meta).await?;
+            log.commit(collected.sealed, begun, &meta).await?;
             self.acknowledge(&collected.positions, false).await?;
         }
         let receipt = self

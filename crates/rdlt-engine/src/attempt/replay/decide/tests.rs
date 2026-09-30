@@ -1,3 +1,5 @@
+mod phases;
+
 use std::collections::BTreeMap;
 use std::time::UNIX_EPOCH;
 
@@ -34,6 +36,7 @@ fn seal(segment: u64, id: &str, from: Option<u64>, to: u64) -> Seal {
         stream: stream(),
         partition: partition(id),
         replayable: false,
+        phase: 0,
         from: from.map(at),
         state: at(to),
     }
@@ -59,6 +62,7 @@ fn logged() -> Logged {
             seal(5, "p1", Some(5), 6),
             seal(6, "p2", None, 1),
         ],
+        begun: Vec::new(),
     }
 }
 
