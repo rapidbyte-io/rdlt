@@ -8,7 +8,7 @@
 mod cascade;
 #[cfg(test)]
 mod encodings;
-mod identity;
+pub(crate) mod identity;
 #[cfg(test)]
 mod reference;
 #[cfg(test)]

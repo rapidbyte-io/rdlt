@@ -167,12 +167,17 @@ pub enum StateEntry {
         /// The columns' identifiers.
         names: NameMap,
     },
-    /// Who made the sequences of the rows a table holds.
+    /// Who made the sequences of the rows a table holds, and whether it keeps every version of
+    /// each key.
     Sequences {
         /// The table.
         table: TablePath,
         /// Who made them.
         sequences: Sequences,
+        /// Whether the table is a history table (spec §9.5); records written before tables kept
+        /// history hold no flag, as no table did.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        history: bool,
     },
     /// The last commit's receipt.
     Receipt(Receipt),
@@ -292,6 +297,8 @@ pub struct TableState {
     pub names: NameMap,
     /// Who made the sequences of the rows the table holds, once a load recorded it.
     pub sequences: Option<Sequences>,
+    /// Whether the table keeps every version of each key, as its sequences' record says.
+    pub history: bool,
     /// The columns of 64-bit integers every stored value of which a 64-bit float holds exactly.
     pub exact: BTreeSet<Arc<str>>,
 }
@@ -379,6 +386,7 @@ impl PipelineState {
                 entries.push(StateEntry::Sequences {
                     table: path.clone(),
                     sequences,
+                    history: table.history,
                 });
             }
         }
@@ -445,8 +453,14 @@ impl PipelineState {
                 state.physical = Some(physical);
                 state.names = names;
             }
-            StateEntry::Sequences { table, sequences } => {
-                self.tables.entry(table).or_default().sequences = Some(sequences);
+            StateEntry::Sequences {
+                table,
+                sequences,
+                history,
+            } => {
+                let state = self.tables.entry(table).or_default();
+                state.sequences = Some(sequences);
+                state.history = history;
             }
             StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
         }
@@ -493,6 +507,7 @@ impl PipelineState {
             StateKey::Sequences(table) => {
                 if let Some(state) = self.tables.get_mut(table) {
                     state.sequences = None;
+                    state.history = false;
                 }
             }
             StateKey::Receipt => self.last_receipt = None,

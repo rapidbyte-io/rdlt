@@ -78,6 +78,7 @@ fn resolver() -> Resolver {
             id: None,
             parent: None,
             changes: None,
+            history: None,
         },
         root: None,
     }
@@ -560,6 +561,7 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
         names,
         sequences: None,
         exact: BTreeSet::new(),
+        history: false,
     };
     let state = rdlt_connector::PipelineState {
         tables: BTreeMap::from([(path, recorded)]),

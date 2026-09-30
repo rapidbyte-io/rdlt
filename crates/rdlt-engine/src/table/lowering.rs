@@ -5,6 +5,7 @@
 mod changes;
 #[cfg(test)]
 mod differential;
+mod history;
 mod merge;
 #[cfg(test)]
 mod reference;
@@ -196,14 +197,10 @@ impl LoweringPlan {
             self.stored_changes(changes, stamp, &mut columns)
                 .map_err(failed)?;
         }
+        columns.extend(self.history(&batch, &columns, stamp, changes.as_ref())?);
         let first = columns.len();
         columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
-        if let (Some(names), Some(changes)) = (&view.meta.changes, &changes)
-            && !names.stored
-        {
-            columns.push(Arc::new(changes.op.clone()));
-            columns.push(changes.unchanged_over(&self.written_ordinals()));
-        }
+        columns.extend(self.directives(changes.as_ref()));
         let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
         let prepared = self.compacted(prepared).map_err(failed)?;
         Ok(Prepared {
@@ -212,6 +209,23 @@ impl LoweringPlan {
             discarded_rows,
             discarded_values,
         })
+    }
+
+    /// The columns that only direct a change stream's merge, after its stored ones: its op, and
+    /// its unchanged flags but in a history table, whose hashes need whole rows.
+    fn directives(&self, changes: Option<&ChangeRows>) -> Vec<ArrayRef> {
+        let view = &self.view;
+        let (Some(names), Some(changes)) = (&view.meta.changes, changes) else {
+            return Vec::new();
+        };
+        if names.stored {
+            return Vec::new();
+        }
+        let mut columns: Vec<ArrayRef> = vec![Arc::new(changes.op.clone())];
+        if view.meta.history.is_none() {
+            columns.push(changes.unchanged_over(&self.written_ordinals()));
+        }
+        columns
     }
 
     /// The model's columns of `batch`, each from where the plan routes it, converted and lowered

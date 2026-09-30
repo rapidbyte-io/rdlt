@@ -192,6 +192,7 @@ impl Setup {
                     id: None,
                     parent: None,
                     changes: None,
+                    history: None,
                 },
                 root: None,
             };

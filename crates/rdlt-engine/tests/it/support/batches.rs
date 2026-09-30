@@ -26,6 +26,8 @@ pub(crate) struct BatchStream {
     pub(crate) one_segment: bool,
     /// Whether the stream never checkpoints, so its partition ends with rows after no cursor.
     pub(crate) unchecked: bool,
+    /// The column saying when each row changed, which a history table's versions begin at.
+    pub(crate) change_time: Option<String>,
 }
 
 impl BatchStream {
@@ -38,6 +40,7 @@ impl BatchStream {
             schema: None,
             one_segment: false,
             unchecked: false,
+            change_time: None,
         }
     }
 
@@ -67,6 +70,12 @@ impl BatchStream {
     /// Never checkpoints.
     pub(crate) fn unchecked(mut self) -> Self {
         self.unchecked = true;
+        self
+    }
+
+    /// Names `column` the stream's change time.
+    pub(crate) fn change_time(mut self, column: &str) -> Self {
+        self.change_time = Some(column.to_owned());
         self
     }
 
@@ -144,6 +153,9 @@ impl ReadStream<BatchSource> for Pushing {
         }
         if let Some(schema) = &self.stream.schema {
             spec = spec.with_schema(schema.clone());
+        }
+        if let Some(column) = &self.stream.change_time {
+            spec = spec.with_change_time(column.as_str());
         }
         spec
     }

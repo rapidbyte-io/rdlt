@@ -31,6 +31,11 @@ fn supported_mode_combinations_are_accepted() {
             .read(ReadMode::Incremental)
             .write(WriteMode::Merge)
             .key(["id"]),
+        stream("f").write(WriteMode::History),
+        stream("g")
+            .read(ReadMode::Incremental)
+            .write(WriteMode::History)
+            .key(["id"]),
     ];
     let plan = PipelinePlan::new(pipeline(), streams.clone()).unwrap();
     assert_eq!(plan.pipeline(), &pipeline());
@@ -149,14 +154,23 @@ fn change_streams_append_as_a_log_or_merge_with_their_deletes_and_truncates() {
             stream("defaults")
                 .read(ReadMode::Cdc)
                 .write(WriteMode::Merge),
+            stream("history")
+                .read(ReadMode::Cdc)
+                .write(WriteMode::History)
+                .key(["id"])
+                .deletes(DeleteMode::Soft),
         ],
     )
     .expect("change streams plan");
-    let [log, merged, defaults] = plan.streams() else {
-        panic!("three streams");
+    let [log, merged, defaults, history] = plan.streams() else {
+        panic!("four streams");
     };
     assert!(!log.merges_changes());
     assert!(merged.merges_changes());
+    // A change stream kept as history applies its deletes and truncates as a merged one does.
+    assert!(history.merges_changes());
+    assert_eq!(history.delete_mode(), DeleteMode::Soft);
+    assert!(history.keeps_history() && !merged.keeps_history());
     assert_eq!(
         (merged.delete_mode(), merged.truncate_mode()),
         (DeleteMode::Soft, OnTruncate::Ignore)
@@ -183,6 +197,13 @@ fn change_streams_replace_nothing_and_only_merged_ones_take_delete_modes() {
                 .read(ReadMode::Incremental)
                 .write(WriteMode::Merge)
                 .on_truncate(OnTruncate::Ignore),
+            "plan_deletes_unused",
+        ),
+        (
+            stream("a")
+                .read(ReadMode::Incremental)
+                .write(WriteMode::History)
+                .deletes(DeleteMode::Soft),
             "plan_deletes_unused",
         ),
     ];

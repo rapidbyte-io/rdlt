@@ -52,9 +52,9 @@ pub(crate) struct StreamRun {
     pub(crate) stopped: bool,
     /// For a stream read in phases, its place in them.
     pub(crate) phases: Option<Phases>,
-    /// Who made the sequences of the stream's table, where state records otherwise; the next
-    /// commit records them.
-    pub(crate) sequences: Option<(TablePath, Sequences)>,
+    /// Who made the sequences of the stream's table, and whether it keeps history, where state
+    /// records otherwise; the next commit records them.
+    pub(crate) sequences: Option<(TablePath, Sequences, bool)>,
     /// Whether the stream's source can read again what it acknowledged; one that cannot learns
     /// its position once the load's log holds it, before the destination commits.
     pub(crate) replayable: bool,
