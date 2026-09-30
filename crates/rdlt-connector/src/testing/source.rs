@@ -1,6 +1,7 @@
 //! Source clauses.
 
 mod acks;
+mod partition;
 mod stop;
 
 use std::collections::BTreeSet;
@@ -46,6 +47,11 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
     Clause {
         id: "S-RESUME",
         statement: "a read resumed from a checkpoint yields exactly the data after it",
+    },
+    Clause {
+        id: "S-PARTITION",
+        statement: "a stream's planned partitions cover it exactly once, and those planned again \
+                    from where they stood cover what is left exactly once",
     },
     Clause {
         id: "S-STOP",
@@ -148,6 +154,9 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
             (Err(Violation(reason)), _) => Outcome::Failed(format!("discover failed: {reason}")),
             (Ok(catalog), "S-PLAN") => outcome(timed(plans_are_valid(source, catalog)).await),
             (Ok(catalog), "S-RESUME") => outcome(timed(resumes_are_exact(source, catalog)).await),
+            (Ok(catalog), "S-PARTITION") => {
+                within(partition::partitions_cover_exactly_once(source, catalog)).await
+            }
             (Ok(catalog), "S-STOP") => {
                 outcome(timed(stop::stops_are_prompt(source, catalog)).await)
             }
