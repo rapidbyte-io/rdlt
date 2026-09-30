@@ -84,7 +84,7 @@ fn removals(plan: &StreamPlan) -> (bool, bool) {
 }
 
 /// Why a stream whose source cannot read again what it acknowledged cannot load as planned: replay
-/// goes by partitions' positions, which only a stream read incrementally keeps, and needs a log.
+/// goes by partitions' positions, which a full read does not keep, and needs a log.
 fn unreplayable(
     context: &RunContext,
     plan: &StreamPlan,
@@ -99,16 +99,11 @@ fn unreplayable(
             "a full read starts again from the beginning, which its source cannot read again once \
              it acknowledged it",
         )),
-        ReadMode::Cdc => Some((
-            "change_read_unreplayable",
-            "a change stream's phases drop its partitions' positions, which replaying what its \
-             source cannot read again goes by",
-        )),
-        ReadMode::Incremental if context.env.wal().is_none() => Some((
+        ReadMode::Incremental | ReadMode::Cdc if context.env.wal().is_none() => Some((
             "wal_required",
             "its source cannot read again what it acknowledged, so its loads keep a write-ahead \
              log, and the engine has nowhere to keep one",
         )),
-        ReadMode::Incremental => None,
+        ReadMode::Incremental | ReadMode::Cdc => None,
     }
 }
