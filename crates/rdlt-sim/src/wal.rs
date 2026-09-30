@@ -49,10 +49,16 @@ impl Drop for Held {
 }
 
 impl SimWal {
-    /// Keeps of each chunk what was made durable, then, as `rng` draws, a part of the rest, whose
-    /// last byte may be garbled, as a crash that tore a write leaves it.
-    pub(crate) fn crash(&self, rng: &mut SplitMix64) {
-        for stored in self.chunks.lock().values_mut() {
+    /// Keeps of each chunk of `pipeline`'s logs what was made durable, then, as `rng` draws, a
+    /// part of the rest, whose last byte may be garbled, as a crash of the worker running it
+    /// leaves them; other pipelines' logs run on.
+    pub(crate) fn crash(&self, pipeline: &PipelineId, rng: &mut SplitMix64) {
+        let mut chunks = self.chunks.lock();
+        let crashed = chunks
+            .iter_mut()
+            .filter(|((owner, _), _)| owner == pipeline)
+            .map(|(_, stored)| stored);
+        for stored in crashed {
             let unsynced = stored.bytes.len() - stored.synced;
             let kept = stored.synced + usize::try_from(rng.below(unsynced as u64 + 1)).unwrap_or(0);
             stored.bytes.truncate(kept);

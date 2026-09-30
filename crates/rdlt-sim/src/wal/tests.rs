@@ -29,7 +29,7 @@ async fn a_crash_keeps_what_was_durable_and_at_most_the_rest() {
         wal.append(&pipeline(), chunk(0), Bytes::from_static(b" pending"))
             .await
             .expect("appends");
-        wal.crash(&mut SplitMix64::new(seed));
+        wal.crash(&pipeline(), &mut SplitMix64::new(seed));
         let kept = wal
             .read(&pipeline(), chunk(0), 0, 100)
             .await
@@ -87,4 +87,20 @@ async fn it_holds_logs_until_every_one_is_removed() {
         .await
         .expect("removes");
     assert!(!wal.holds_logs());
+}
+
+#[tokio::test]
+async fn a_crash_leaves_every_other_pipeline_s_logs_as_they_were() {
+    let wal = SimWal::default();
+    let other = PipelineId::parse("users").expect("a valid pipeline");
+    for owner in [pipeline(), other.clone()] {
+        wal.append(&owner, chunk(0), Bytes::from_static(b"never synced"))
+            .await
+            .expect("appends");
+    }
+    for seed in 0..50 {
+        wal.crash(&pipeline(), &mut SplitMix64::new(seed));
+    }
+    let kept = wal.read(&other, chunk(0), 0, 100).await.expect("reads");
+    assert_eq!(&kept[..], b"never synced");
 }

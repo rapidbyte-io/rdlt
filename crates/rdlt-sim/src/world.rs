@@ -176,11 +176,11 @@ impl World {
         self.wal.set_faults(draws);
     }
 
-    /// Crashes the write-ahead log's disk: what was not made durable is lost, but for a part the
-    /// draw keeps, which may be torn.
-    pub(crate) fn crash_logs(&self) {
+    /// Crashes the worker running `pipeline`: what its logs had not made durable is lost, but for
+    /// a part the draw keeps, which may be torn.
+    pub(crate) fn crash_logs(&self, pipeline: &rdlt_connector::PipelineId) {
         let mut rng = self.rng.lock();
-        self.wal.crash(&mut rng);
+        self.wal.crash(pipeline, &mut rng);
     }
 
     /// A failure at `point`, when faults are on and the draw says so: mostly transient or

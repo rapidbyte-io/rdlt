@@ -1,7 +1,7 @@
 use rdlt_sim::{Seed, check_exactly_once, seeds};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 7] = [
+const FOUND: [u64; 8] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -21,6 +21,9 @@ const FOUND: [u64; 7] = [
     // Logged: a failed load's commit of a new full read, replayed in the next phase, landed rows
     // the model had not counted, until a phase waited for every log to be replayed.
     8_746,
+    // Logged, shared: one pipeline's crash tore the other's live log, which then wrote on after
+    // the tear, until a crash took only its own worker's logs.
+    7_331,
 ];
 
 #[test]

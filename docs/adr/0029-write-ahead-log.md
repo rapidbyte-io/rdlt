@@ -71,8 +71,9 @@ its data from the source again, so an object store backend is not built.
     forward, since its full reads are refused;
   - the staged segments' batch frames are written again through writers of the logged tables,
     created first, and the log is removed.
-- **The simulation** keeps logs in a store of the world that outlives runs, whose crash keeps
-  what was made durable and a drawn part of the rest, torn or garbled. A swarm feature, drawn apart
+- **The simulation** keeps logs in a store of the world that outlives runs; a run's crash keeps
+  what its worker's logs made durable and a drawn part of the rest, torn or garbled, and leaves
+  other pipelines' logs to their own workers (seed 7331 found a crash tearing another's live log). A swarm feature, drawn apart
   from the seed's generator, has the pipelines log and every other incremental stream forget what it
   acknowledged: a read from before it fails, retryably, until the rows land. A phase converges only
   once no log is left to replay, and then every offset such a stream acknowledged is committed.
