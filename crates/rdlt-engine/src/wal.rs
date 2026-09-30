@@ -3,6 +3,7 @@
 
 pub(crate) mod frame;
 pub(crate) mod load;
+mod local;
 #[cfg(any(test, feature = "bench"))]
 pub(crate) mod memory;
 mod positions;
@@ -14,5 +15,6 @@ mod writer;
 mod tests;
 
 pub(crate) use load::{LoadLog, Sealed};
+pub use local::LocalWal;
 pub(crate) use positions::Positions;
-pub use store::{Chunk, Claim, LocalWal, WalStore};
+pub use store::{Chunk, Claim, WalStore};
