@@ -14,6 +14,7 @@ certification of io.rapidbyte.memory
   pass S-DISCOVER
   pass S-PLAN
   pass S-RESUME
+  pass S-PARTITION
   pass S-STOP
   skip S-BARRIER: no stream checkpoints on demand
   skip S-ACK: the source does not tell where it stands

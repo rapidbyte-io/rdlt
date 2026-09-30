@@ -57,6 +57,7 @@ async fn the_generator_is_certified() {
     let report = certify_source::<GeneratorSource>(config).await;
     report.assert_passed();
     assert_eq!(report.outcome("S-BARRIER"), Some(&Outcome::Passed));
+    assert_eq!(report.outcome("S-PARTITION"), Some(&Outcome::Passed));
 }
 
 #[tokio::test]
@@ -171,6 +172,8 @@ async fn the_change_source_is_certified_and_moves_its_slot_only_when_committed()
         let report = certify_source::<ChangesSource>(config).await;
         report.assert_passed();
         assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
+        let partition = report.outcome("S-PARTITION");
+        assert_eq!(partition, Some(&Outcome::Passed), "{report}");
     }
 }
 
@@ -208,7 +211,27 @@ async fn the_log_source_is_certified_and_commits_offsets_only_when_told() {
         let report = certify_source::<LogSource>(config).await;
         report.assert_passed();
         assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
+        // A log's partitions never end: no single read covers one.
+        assert!(
+            matches!(report.outcome("S-PARTITION"), Some(Outcome::Skipped(_))),
+            "{report}"
+        );
     }
+}
+
+#[tokio::test]
+async fn a_log_whose_partitions_end_covers_each_once_however_it_is_planned() {
+    let config = json!({
+        "seed": 23,
+        "group": "certified_bounded",
+        "streams": [{
+            "name": "events", "partitions": 3, "messages": 12, "batch_rows": 4, "bounded": true,
+        }],
+    });
+    let report = certify_source::<LogSource>(config).await;
+    report.assert_passed();
+    let partition = report.outcome("S-PARTITION");
+    assert_eq!(partition, Some(&Outcome::Passed), "{report}");
 }
 
 #[tokio::test(start_paused = true)]

@@ -28,10 +28,11 @@ use crate::destination::{
 use crate::emitter::Emitter;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{
-    CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentId, StreamName, TablePath,
+    CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, SegmentId, StreamName,
+    TablePath,
 };
 use crate::sink::Push;
-use crate::source::{Partition, ReadStream, SourceConnector, Streams};
+use crate::source::{Partition, PartitionPlan, ReadStream, SourceConnector, Streams};
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::{StateChange, StateRecord, StreamState};
 use crate::types::LogicalType;
@@ -50,6 +51,9 @@ fn failed(report: &Report) -> Vec<&'static str> {
 struct PagesConfig {
     pages: u32,
     ignore_cursor: bool,
+    /// A read from a cursor starts a page before it and ends a page short: as many rows as it
+    /// owes, not the ones.
+    shifted: bool,
     ignore_barriers: bool,
     natural: bool,
     unstable_discover: bool,
@@ -65,6 +69,11 @@ struct PagesConfig {
     idle: bool,
     /// The call that never returns: `connect`, `check`, `discover` or `plan`.
     hang: String,
+    /// How a plan from a state naming a partition breaks: `renamed` names the partition anew, so
+    /// it is read again from its start; `forgotten` names none, so the rest is never read.
+    replanned: String,
+    /// The phase its plans name, as a stream read in phases does; 0 names none.
+    phase: u16,
 }
 
 impl Default for PagesConfig {
@@ -72,6 +81,7 @@ impl Default for PagesConfig {
         Self {
             pages: 4,
             ignore_cursor: false,
+            shifted: false,
             ignore_barriers: false,
             natural: false,
             unstable_discover: false,
@@ -83,6 +93,8 @@ impl Default for PagesConfig {
             refuse_reads: false,
             idle: false,
             hang: String::new(),
+            replanned: String::new(),
+            phase: 0,
         }
     }
 }
@@ -163,14 +175,29 @@ impl ReadStream<Pages> for Page {
         StreamSpec::new(StreamName::new("pages").unwrap()).with_checkpointing(checkpointing)
     }
 
-    async fn partitions(&self, source: &Pages, _state: &StreamState) -> Result<Vec<Partition>> {
+    async fn partitions(&self, source: &Pages, state: &StreamState) -> Result<Vec<Partition>> {
         source.config.hang_in("plan").await;
+        if !state.partitions.is_empty() {
+            match source.config.replanned.as_str() {
+                "renamed" => return Ok(vec![Partition::new(PartitionId::parse("again").unwrap())]),
+                "forgotten" => return Ok(Vec::new()),
+                _ => {}
+            }
+        }
         let copies = if source.config.repeat_partitions {
             2
         } else {
             1
         };
         Ok(vec![Partition::single(); copies])
+    }
+
+    async fn plan(&self, source: &Pages, state: &StreamState) -> Result<PartitionPlan> {
+        let plan = PartitionPlan::from(self.partitions(source, state).await?);
+        Ok(match source.config.phase {
+            0 => plan,
+            phase => plan.phase(phase),
+        })
     }
 
     async fn read(
@@ -189,12 +216,12 @@ impl ReadStream<Pages> for Page {
         if source.config.idle {
             std::future::pending::<()>().await;
         }
-        let start = if source.config.ignore_cursor {
-            0
-        } else {
-            cursor
+        let (start, end) = match (source.config.ignore_cursor, source.config.shifted) {
+            (true, _) => (0, source.config.pages),
+            (false, true) if cursor > 0 => (cursor - 1, source.config.pages - 1),
+            (false, _) => (cursor, source.config.pages),
         };
-        for page in start..source.config.pages {
+        for page in start..end {
             let pushed = out.rows(&[json!({ "page": page })]).await;
             if source.config.fail_on_stop && pushed.is_err() {
                 return Err(ConnectorError::data("gave up"));
@@ -218,6 +245,17 @@ async fn a_correct_source_passes_every_clause() {
         Some(&Outcome::Passed),
         "a source with no data owes no answer"
     );
+    assert!(
+        matches!(empty.outcome("S-PARTITION"), Some(Outcome::Skipped(_))),
+        "a stream that never checkpoints leaves nothing to plan again from: {empty}"
+    );
+}
+
+#[tokio::test]
+async fn a_source_whose_plans_name_their_phase_is_planned_again_within_it() {
+    let report = certify_source::<Pages>(json!({ "phase": 2 })).await;
+    report.assert_passed();
+    assert_eq!(report.outcome("S-PARTITION"), Some(&Outcome::Passed));
 }
 
 #[test]
@@ -251,18 +289,29 @@ async fn natural_checkpointing_skips_the_barrier_clause() {
 
 #[tokio::test]
 async fn each_broken_source_behavior_fails_exactly_its_clause() {
-    let cases = [
-        ("ignore_cursor", "S-RESUME"),
-        ("ignore_barriers", "S-BARRIER"),
-        ("unstable_discover", "S-DISCOVER"),
-        ("empty_catalog", "S-DISCOVER"),
-        ("repeat_partitions", "S-PLAN"),
-        ("fail_on_stop", "S-STOP"),
-        ("refuse_check", "S-CHECK"),
+    let cases: [(&str, &[&str]); 8] = [
+        // A read from a cursor that starts over, or elsewhere, reads the wrong rows however it
+        // is planned.
+        ("ignore_cursor", &["S-RESUME", "S-PARTITION"]),
+        ("shifted", &["S-RESUME", "S-PARTITION"]),
+        ("ignore_barriers", &["S-BARRIER"]),
+        ("unstable_discover", &["S-DISCOVER"]),
+        ("empty_catalog", &["S-DISCOVER"]),
+        ("repeat_partitions", &["S-PLAN"]),
+        ("fail_on_stop", &["S-STOP"]),
+        ("refuse_check", &["S-CHECK"]),
     ];
-    for (flag, clause) in cases {
+    for (flag, clauses) in cases {
         let report = certify_source::<Pages>(json!({ flag: true })).await;
-        assert_eq!(failed(&report), [clause], "{flag}: {report}");
+        assert_eq!(failed(&report), clauses, "{flag}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn a_source_planned_again_with_a_gap_or_an_overlap_fails_its_partition_clause() {
+    for replanned in ["renamed", "forgotten"] {
+        let report = certify_source::<Pages>(json!({ "replanned": replanned })).await;
+        assert_eq!(failed(&report), ["S-PARTITION"], "{replanned}: {report}");
     }
 }
 
@@ -296,7 +345,7 @@ async fn a_source_call_that_never_returns_fails_instead_of_hanging() {
         ("connect", SOURCE_CLAUSES.len()),
         ("check", 1),
         ("discover", SOURCE_CLAUSES.len()),
-        ("plan", 5),
+        ("plan", 6),
     ];
     for (call, failures) in cases {
         let report = within_a_day(certify_source::<Pages>(json!({ "hang": call }))).await;
