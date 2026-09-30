@@ -50,6 +50,11 @@ impl Engine {
     /// `stream_not_found`, and one whose source cannot read again as `reset_unreplayable`; one
     /// reset before is not, so a reset retried is harmless.
     ///
+    /// A reset of no streams, of a stream the source cannot read again, or of tables the
+    /// destination cannot drop is refused before the destination is opened, fencing nothing. A
+    /// stream the pipeline recorded nothing of is known only once it is: that refusal has fenced
+    /// the pipeline's older sessions, as any reset does.
+    ///
     /// A connector that panics fails the reset as an internal error, as it fails an attempt.
     pub async fn reset(
         &self,
@@ -74,6 +79,9 @@ impl Engine {
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
     ) -> Result<ResetReport, Error> {
+        if streams.is_empty() {
+            return Err(Error::config("a reset names no streams").with_code("no_streams"));
+        }
         if scope == ResetScope::Tables && !destination.capabilities().drop_tables {
             return Err(Error::config(
                 "the destination cannot drop tables, so a stream's tables cannot be reset",

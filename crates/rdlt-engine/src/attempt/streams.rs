@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rdlt_connector::{
-    Capabilities, Catalog, Checkpointing, ColumnKey, ColumnPath, Cursor, GenerationId, Partition,
-    PartitionId, PartitionState, PipelineState, ReadMode, SchemaVersion, StreamSpec, StreamState,
-    TablePath, TableRef,
+    Capabilities, Catalog, Checkpointing, ColumnKey, ColumnPath, Cursor, Epoch, GenerationId,
+    Partition, PartitionId, PartitionState, PipelineState, ReadMode, SchemaVersion, StreamSpec,
+    StreamState, TablePath, TableRef,
 };
 
 use super::check::check_stream;
@@ -46,7 +46,8 @@ impl Planning<'_> {
     ) -> Result<Planned, Error> {
         let name = plan.name();
         let spec = check_stream(self.context, plan, self.catalog)?;
-        let read = read(self.context, plan, self.state.streams.get(name));
+        let reset = self.state.resets.get(name).copied();
+        let read = read(self.context, plan, self.state.streams.get(name), reset);
         let generation = match (plan.write_mode(), &read) {
             (WriteMode::Replace, Read::Cycle(cycle, _)) => Some(cycle.generation),
             _ => None,
@@ -296,19 +297,26 @@ enum Read {
     Completed,
 }
 
-/// How an attempt reads `plan`, given its committed state.
+/// How an attempt reads `plan`, given its committed state and the epoch of its last reset.
 ///
 /// A full read resumes the read state records as in progress, whichever run started it. Without
 /// one, it starts a new read from the beginning, whose first commit deletes the previous read's
-/// partition entries, unless this run already completed a full read of the stream.
-fn read(context: &RunContext, plan: &StreamPlan, committed: Option<&StreamState>) -> Read {
+/// partition entries, unless this run already completed a full read of the stream. A read this run
+/// began before the stream was reset is over: what it published of its generation was the
+/// stream's before the reset, so the next read fills a generation of its own.
+fn read(
+    context: &RunContext,
+    plan: &StreamPlan,
+    committed: Option<&StreamState>,
+    reset: Option<Epoch>,
+) -> Read {
     let committed = committed.cloned().unwrap_or_default();
     if plan.read_mode() != ReadMode::Full {
         return Read::Incremental(committed);
     }
     let mut cycles = context.cycles.lock();
     if let Some(generation) = committed.generation {
-        cycles.insert(plan.name().clone(), generation);
+        cycles.insert(plan.name().clone(), (generation, reset));
         let cycle = Cycle {
             generation,
             recorded: true,
@@ -318,9 +326,14 @@ fn read(context: &RunContext, plan: &StreamPlan, committed: Option<&StreamState>
         };
         return Read::Cycle(cycle, committed);
     }
-    let generation = *cycles
-        .entry(plan.name().clone())
-        .or_insert_with(|| GenerationId(context.env.random()));
+    let generation = cycles
+        .get(plan.name())
+        .filter(|(_, began)| *began == reset)
+        .map_or_else(
+            || GenerationId(context.env.random()),
+            |(generation, _)| *generation,
+        );
+    cycles.insert(plan.name().clone(), (generation, reset));
     if committed.completed.contains(&generation) {
         return Read::Completed;
     }
