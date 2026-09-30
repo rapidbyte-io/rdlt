@@ -1,6 +1,7 @@
 //! Source clauses.
 
 mod acks;
+mod stop;
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -48,7 +49,8 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "S-STOP",
-        statement: "a read asked to stop ends promptly and cleanly",
+        statement: "a read asked to stop ends promptly and cleanly, a following read of a \
+                    partition that never ends too, while it waits for data",
     },
     Clause {
         id: "S-BARRIER",
@@ -146,7 +148,9 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
             (Err(Violation(reason)), _) => Outcome::Failed(format!("discover failed: {reason}")),
             (Ok(catalog), "S-PLAN") => outcome(timed(plans_are_valid(source, catalog)).await),
             (Ok(catalog), "S-RESUME") => outcome(timed(resumes_are_exact(source, catalog)).await),
-            (Ok(catalog), "S-STOP") => outcome(timed(stops_are_prompt(source, catalog)).await),
+            (Ok(catalog), "S-STOP") => {
+                outcome(timed(stop::stops_are_prompt(source, catalog)).await)
+            }
             (Ok(catalog), "S-ACK") => {
                 // Boxed: its reads' state would otherwise weigh on every certification's future.
                 within(Box::pin(acks::acknowledged_only_when_committed(
@@ -365,25 +369,6 @@ const START_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How long a read asked to stop has to end, or fail, before it counts as started.
 const STOP_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
-
-async fn stops_are_prompt(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {
-    for stream in catalog.iter() {
-        for partition in plan(source, stream.name()).await? {
-            let (sink, feed) = partition_channel(NonZeroUsize::MIN);
-            feed.stop();
-            let request = ReadRequest::new(stream.name().clone(), partition.clone(), None);
-            let what = format!(
-                "a stopped read of {} partition {}",
-                stream.name(),
-                partition.id()
-            );
-            bounded(&what, source.read(request, sink))
-                .await?
-                .map_err(|error| Violation::from(format!("{what}: {error}")))?;
-        }
-    }
-    Ok(())
-}
 
 async fn barriers_are_answered(source: &dyn Source, catalog: &Catalog) -> Outcome {
     let on_demand: Vec<&StreamSpec> = catalog
