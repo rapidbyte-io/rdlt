@@ -23,12 +23,13 @@ pub(crate) async fn resumed(
     id: &ConnectorId,
     config: &serde_json::Value,
 ) -> Loaded {
-    let run = super::run();
-    let seed = super::drawn(target.chosen_seed(), run);
-    match compared(target, id, config, run, seed).await {
-        Ok(loaded) => loaded,
-        Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
-    }
+    super::proven(target.chosen_seed(), super::run(), |run, seed| async move {
+        match compared(target, id, config, run, seed).await {
+            Ok(loaded) => loaded,
+            Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
+        }
+    })
+    .await
 }
 
 async fn compared(

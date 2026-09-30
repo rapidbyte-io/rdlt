@@ -35,12 +35,13 @@ pub(crate) async fn exactly_once(
         let reason = "nothing reads back what the destination published";
         return Loaded::Inapplicable(reason.to_owned());
     }
-    let run = super::run();
-    let seed = super::drawn(target.chosen_seed(), run);
-    match loaded(target, id, config, probe, run, seed).await {
-        Ok(loaded) => loaded,
-        Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
-    }
+    super::proven(target.chosen_seed(), super::run(), |run, seed| async move {
+        match loaded(target, id, config, probe, run, seed).await {
+            Ok(loaded) => loaded,
+            Err(Violation(reason)) => Loaded::Broken(format!("{reason} (kill seed {seed})")),
+        }
+    })
+    .await
 }
 
 async fn loaded(

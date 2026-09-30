@@ -111,8 +111,10 @@ pub(crate) async fn destination(
 #[cfg(not(feature = "kill"))]
 const UNBUILT: &str = "rdlt-certify was built without its `kill` feature";
 
+#[cfg(all(feature = "kill", test))]
+use running::{DRAWS, drawn};
 #[cfg(feature = "kill")]
-pub(crate) use running::{Loaded, converged, drawn, run, unproven, within};
+pub(crate) use running::{Loaded, converged, proven, run, unproven, within};
 
 #[cfg(feature = "kill")]
 mod running {
@@ -157,9 +159,35 @@ mod running {
         Kept,
         /// It broke the clause, for the stated reason.
         Broken(String),
-        /// The clause proves nothing of the connector, for the stated reason: no kill interrupted
-        /// the load, or nothing reads back what it published.
+        /// The clause proves nothing of the connector, for the stated reason: nothing reads back
+        /// what it published, or nothing it serves loads as the clause loads.
         Inapplicable(String),
+        /// No kill interrupted the load, which ended first, for the stated reason.
+        Uninterrupted(String),
+    }
+
+    /// The loads a clause runs until a kill interrupts one: its kill points count commits, and a
+    /// load on a busy machine makes fewer, larger ones, and may end first.
+    pub(crate) const DRAWS: u64 = 4;
+
+    /// The outcome of `load`, given the run naming its pipelines and stores and the seed of its
+    /// kill points, drawn again with another run and seed while no kill interrupted it, at most
+    /// [`DRAWS`] times; a `chosen` seed loads once, so its run can be repeated.
+    pub(crate) async fn proven<F, Loading>(chosen: Option<u64>, run: u64, mut load: F) -> Loaded
+    where
+        F: FnMut(u64, u64) -> Loading,
+        Loading: Future<Output = Loaded>,
+    {
+        let mut seed = drawn(chosen, run);
+        let mut draw = 0;
+        loop {
+            let loaded = load(run.wrapping_add(draw), seed).await;
+            draw += 1;
+            if !matches!(loaded, Loaded::Uninterrupted(_)) || chosen.is_some() || draw == DRAWS {
+                return loaded;
+            }
+            seed = mixed(seed);
+        }
     }
 
     /// `clause`'s outcome, or a failure once it takes longer than `chosen`, or [`KILL_TIME`].
@@ -171,7 +199,9 @@ mod running {
         match tokio::time::timeout(bound, clause).await {
             Ok(Loaded::Kept) => Outcome::Passed,
             Ok(Loaded::Broken(reason)) => Outcome::Failed(reason),
-            Ok(Loaded::Inapplicable(reason)) => Outcome::Skipped(reason),
+            Ok(Loaded::Inapplicable(reason) | Loaded::Uninterrupted(reason)) => {
+                Outcome::Skipped(reason)
+            }
             Err(_) => Outcome::Failed(format!(
                 "the loads took longer than {bound:?}; a connector this slow needs a longer \
                  --kill-timeout"
@@ -209,7 +239,7 @@ mod running {
     pub(crate) fn unproven(kills: &Kills, interrupted: bool, seed: u64) -> Option<Loaded> {
         (kills.count() == 0 || !interrupted).then(|| {
             let reason = format!("no kill interrupted the load (kill seed {seed}): it ended first");
-            Loaded::Inapplicable(reason)
+            Loaded::Uninterrupted(reason)
         })
     }
 

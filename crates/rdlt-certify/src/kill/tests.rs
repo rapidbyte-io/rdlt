@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -5,7 +6,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
 use super::rows::{Parted, parted, rendered};
-use super::{Loaded, drawn, unproven};
+use super::{DRAWS, Loaded, drawn, proven, unproven};
 
 fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     RecordBatch::try_from_iter(columns).expect("a valid batch")
@@ -188,10 +189,58 @@ fn a_load_proves_something_only_once_a_kill_interrupted_it() {
     killed.kill();
     for (kills, interrupted) in [(&unkilled, false), (&unkilled, true), (&killed, false)] {
         assert!(
-            matches!(unproven(kills, interrupted, 9), Some(Loaded::Inapplicable(reason)) if reason.contains("kill seed 9")),
+            matches!(unproven(kills, interrupted, 9), Some(Loaded::Uninterrupted(reason)) if reason.contains("kill seed 9")),
             "{} kills, interrupted: {interrupted}",
             kills.count()
         );
     }
     assert!(unproven(&killed, true, 9).is_none());
+}
+
+/// Runs [`proven`] over loads that `interrupts` says each draw interrupts, returning its outcome and
+/// the runs and seeds of the loads it ran.
+fn drew(chosen: Option<u64>, interrupts: impl Fn(usize) -> bool) -> (Loaded, Vec<(u64, u64)>) {
+    let loads = std::sync::Mutex::new(Vec::new());
+    let outcome = ready(proven(chosen, 100, |run, seed| {
+        let mut loads = loads.lock().expect("unpoisoned");
+        loads.push((run, seed));
+        let interrupted = interrupts(loads.len());
+        async move {
+            if interrupted {
+                Loaded::Kept
+            } else {
+                Loaded::Uninterrupted(format!("kill seed {seed}"))
+            }
+        }
+    }));
+    (outcome, loads.into_inner().expect("unpoisoned"))
+}
+
+/// The output of `future`, which never waits.
+fn ready<F: Future>(future: F) -> F::Output {
+    let waker = std::task::Waker::noop();
+    match std::pin::pin!(future).poll(&mut std::task::Context::from_waker(waker)) {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => panic!("the loads never wait"),
+    }
+}
+
+#[test]
+fn a_clause_loads_again_with_new_kill_points_until_a_kill_interrupts_a_load() {
+    // The third load is the first a kill interrupts: each is named and killed apart.
+    let (outcome, loads) = drew(None, |load| load == 3);
+    assert!(matches!(outcome, Loaded::Kept));
+    assert_eq!(loads.len(), 3);
+    let runs: std::collections::BTreeSet<_> = loads.iter().map(|(run, _)| *run).collect();
+    let seeds: std::collections::BTreeSet<_> = loads.iter().map(|(_, seed)| *seed).collect();
+    assert_eq!((runs.len(), seeds.len()), (3, 3));
+    assert_eq!(loads[0], (100, drawn(None, 100)));
+    // A load no kill ever interrupts proves nothing after the last draw.
+    let (outcome, loads) = drew(None, |_| false);
+    assert!(matches!(outcome, Loaded::Uninterrupted(_)));
+    assert_eq!(loads.len(), usize::try_from(DRAWS).expect("few draws"));
+    // A chosen seed loads once, as chosen, so its run can be repeated.
+    let (outcome, loads) = drew(Some(7), |_| false);
+    assert!(matches!(outcome, Loaded::Uninterrupted(_)));
+    assert_eq!(loads, [(100, 7)]);
 }
