@@ -70,6 +70,11 @@ A source that keeps its position outside the engine, as a replication slot or a 
 does, says where it stands when certification asks, in process and through the protocol, and
 `S-ACK` checks that the position moves only to the cursors the engine says are committed, through
 a change stream's phases, reads that never end and the other clauses' reads.
+A run can follow its source (`until: forever` or for a while): reads of partitions that never end
+wait for more data, streams are planned again as the run goes, so partitions added mid-run start,
+retired ones stop and tables are polled as they grow, and everything commits every ten seconds.
+The reference connectors include an offset-log source, as a message queue keeps, and the
+simulation follows streams whose rows arrive as time passes, through crashes and faults.
 
 ## Development
 
