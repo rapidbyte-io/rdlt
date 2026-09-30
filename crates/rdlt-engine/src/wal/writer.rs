@@ -42,6 +42,9 @@ pub(crate) enum Command {
     },
     /// The receipt frame of commit `seq`.
     Committed { seq: CommitSeq, frame: Bytes },
+    /// A segment its partition ended without sealing, which no commit takes: settled as a
+    /// committed one is, so it holds no chunk back.
+    Abandon { segment: SegmentId },
     /// The closing frame: appended and made durable, then the log is removed where every commit
     /// in it has a receipt.
     Close {
@@ -81,7 +84,7 @@ impl WalWriter {
             tables: BTreeMap::new(),
             written: BTreeMap::new(),
             pending: BTreeMap::new(),
-            committed: BTreeSet::new(),
+            settled: Settled::default(),
             failed: None,
             _claim: claim,
         };
@@ -94,6 +97,32 @@ impl WalWriter {
             .send(command)
             .await
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))
+    }
+}
+
+/// The segments whose frames no replay needs: committed, or abandoned by their partition.
+///
+/// A settled segment is forgotten once no chunk holds its frames, so a load that commits for ever
+/// keeps only those of the chunks it has not removed.
+#[derive(Default)]
+struct Settled(BTreeSet<SegmentId>);
+
+impl Settled {
+    fn settle(&mut self, segments: impl IntoIterator<Item = SegmentId>) {
+        self.0.extend(segments);
+    }
+
+    fn contains(&self, segment: SegmentId) -> bool {
+        self.0.contains(&segment)
+    }
+
+    /// Forgets each segment no chunk in `written` holds: sealed, it never gains a frame again.
+    fn forget_unwritten(&mut self, written: &BTreeMap<u64, Written>) {
+        self.0.retain(|segment| {
+            written
+                .values()
+                .any(|chunk| chunk.segments.contains(segment))
+        });
     }
 }
 
@@ -120,8 +149,8 @@ struct Log {
     written: BTreeMap<u64, Written>,
     /// The segments of each commit without a receipt.
     pending: BTreeMap<CommitSeq, SegmentSet>,
-    /// The segments of commits with receipts.
-    committed: BTreeSet<SegmentId>,
+    /// The segments of commits with receipts, and those abandoned, still in a chunk.
+    settled: Settled,
     /// The first failure, which every later command answers with: after a failed append or sync,
     /// what the chunk holds is unknown, and no later frame may be trusted to follow it.
     failed: Option<(String, bool)>,
@@ -175,6 +204,7 @@ impl Log {
                 let result = self.committed(seq, frame).await;
                 self.note(&result);
             }
+            Command::Abandon { segment } => self.settled.settle([segment]),
             Command::Close { frame, done } => {
                 let result = self.close(frame).await;
                 self.note(&result);
@@ -247,9 +277,11 @@ impl Log {
     async fn committed(&mut self, seq: CommitSeq, frame: Bytes) -> Result<(), Error> {
         self.append(frame).await?;
         if let Some(segments) = self.pending.remove(&seq) {
-            self.committed.extend(segments.iter());
+            self.settled.settle(segments.iter());
         }
-        self.remove_done().await
+        self.remove_done().await?;
+        self.settled.forget_unwritten(&self.written);
+        Ok(())
     }
 
     /// Removes each chunk before the current one whose segments and commits are all committed.
@@ -262,7 +294,7 @@ impl Log {
                 written
                     .segments
                     .iter()
-                    .all(|segment| self.committed.contains(segment))
+                    .all(|segment| self.settled.contains(*segment))
                     && written
                         .commits
                         .iter()
