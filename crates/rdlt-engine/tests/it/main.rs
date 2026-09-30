@@ -24,6 +24,7 @@ mod phases;
 mod placement;
 mod replanning;
 mod schema;
+mod signals;
 mod support;
 mod unbounded;
 mod wal;

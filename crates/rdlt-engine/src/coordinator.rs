@@ -9,10 +9,11 @@ mod acks;
 mod delta;
 mod phases;
 mod replan;
+mod signals;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -168,6 +169,10 @@ pub(crate) struct Coordinator {
     pending_bytes: u64,
     barrier: u64,
     stopping: bool,
+    /// Streams whose sources said their partitions changed, to plan again.
+    replans: BTreeSet<usize>,
+    /// How many records each stream's partitions last said their reads are behind, by stream.
+    lag: BTreeMap<usize, BTreeMap<PartitionId, u64>>,
 }
 
 impl Coordinator {
@@ -180,6 +185,8 @@ impl Coordinator {
             pending_bytes: 0,
             barrier: 0,
             stopping: false,
+            replans: BTreeSet::new(),
+            lag: BTreeMap::new(),
         }
     }
 
@@ -243,6 +250,7 @@ impl Coordinator {
                 }
                 progress = self.parts.progress.recv() => {
                     self.observe(progress.ok_or_else(cancelled)?);
+                    self.replan_signalled().await?;
                     if self.parts.policy.is_due(self.pending_rows, self.pending_bytes) {
                         self.raise_barrier().await?;
                         self.commit().await?;
@@ -297,6 +305,9 @@ impl Coordinator {
                 }
                 self.sealed.push(seal);
             }
+            Progress::Replan { partition } => self.signalled(partition),
+            Progress::Behind { partition, records } => self.behind(partition, records),
+            Progress::RetentionReset { partition } => self.reset(partition),
             Progress::Ended { partition, stopped } => {
                 let partition = &mut self.parts.partitions[partition];
                 partition.ended = true;

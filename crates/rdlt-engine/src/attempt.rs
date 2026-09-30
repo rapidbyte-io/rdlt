@@ -61,6 +61,8 @@ struct Planned {
     /// Whether its reads follow their unbounded partitions: in a following run, for a stream it
     /// plans again as it reads.
     follow: bool,
+    /// Whether its partitions read again from their source's earliest after a retention loss.
+    reset_retention: bool,
     partitions: Vec<(Partition, Option<Cursor>)>,
 }
 
@@ -278,6 +280,7 @@ fn spawn_partitions(
                 changes: stream.changes,
                 stop: context.stop.child_token(),
                 follow: stream.follow,
+                reset_retention: stream.reset_retention,
             };
             if let Some(phases) = stream.stream.phases.as_mut() {
                 phases.reading.push(partitions.len());

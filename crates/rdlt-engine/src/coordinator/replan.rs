@@ -29,7 +29,7 @@ impl Coordinator {
     /// Phases begin only after a commit, which takes every seal the coordinator has seen: a phase
     /// begun here could leave a seal of the last one to commit after it, recording a position of
     /// the phase before.
-    async fn replan_stream(&mut self, stream: usize) -> Result<(), Error> {
+    pub(super) async fn replan_stream(&mut self, stream: usize) -> Result<(), Error> {
         let planned = self.plan_stream(stream).await?;
         let Some(phases) = self.parts.streams[stream].phases.as_mut() else {
             return Ok(());
@@ -56,10 +56,12 @@ impl Coordinator {
         let reading = phases.reading.clone();
         let template = phases.template;
         let committed = phases.committed.clone();
+        let mut dropped = Vec::new();
         for index in &reading {
             let run = &self.parts.partitions[*index];
             if !run.ended && !named.contains(&run.id) {
                 run.stop.cancel();
+                dropped.push(run.id.clone());
             }
         }
         let unsettled: BTreeSet<&PartitionId> = reading
@@ -88,6 +90,7 @@ impl Coordinator {
         for (partition, cursor) in starts {
             self.launch(stream, template, partition, cursor)?;
         }
+        self.forget_lag(stream, Some(&dropped));
         Ok(())
     }
 }

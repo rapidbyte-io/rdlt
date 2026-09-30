@@ -1,5 +1,6 @@
 //! What a run loads: the pipeline, its streams and how each one is read and written.
 
+mod retention;
 #[cfg(test)]
 mod tests;
 mod until;
@@ -11,6 +12,7 @@ use rdlt_connector::{ColumnPath, LogicalType, PipelineId, ReadMode, StreamName};
 use crate::error::Error;
 use crate::policy::{Nested, SchemaSettings};
 
+pub use retention::RetentionLoss;
 pub use until::Until;
 
 /// How a stream's rows reach its table.
@@ -62,6 +64,7 @@ pub struct StreamPlan {
     schema: SchemaSettings,
     columns: BTreeMap<ColumnPath, SchemaSettings>,
     hints: BTreeMap<ColumnPath, LogicalType>,
+    retention: RetentionLoss,
 }
 
 impl StreamPlan {
@@ -77,7 +80,21 @@ impl StreamPlan {
             schema: SchemaSettings::default(),
             columns: BTreeMap::new(),
             hints: BTreeMap::new(),
+            retention: RetentionLoss::default(),
         }
+    }
+
+    /// Sets what the stream does when its source's retention dropped where a read would resume
+    /// (default: the run fails).
+    #[must_use]
+    pub fn on_retention_loss(mut self, retention: RetentionLoss) -> Self {
+        self.retention = retention;
+        self
+    }
+
+    /// What the stream does when its source's retention dropped where a read would resume.
+    pub fn retention_loss(&self) -> RetentionLoss {
+        self.retention
     }
 
     /// Sets how the stream is read.

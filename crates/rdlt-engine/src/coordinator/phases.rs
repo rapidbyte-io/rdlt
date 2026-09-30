@@ -46,6 +46,8 @@ pub(crate) struct Template {
     pub(crate) table: usize,
     pub(crate) on_demand: bool,
     pub(crate) changes: Option<ChangeMode>,
+    /// Whether its partitions read again from their source's earliest after a retention loss.
+    pub(crate) reset_retention: bool,
 }
 
 /// Starts the partitions the coordinator plans.
@@ -171,6 +173,7 @@ impl Coordinator {
         phases.phase = next;
         phases.reading.clear();
         let template = phases.template;
+        self.forget_lag(stream, None);
         for partition in planned.partitions {
             let cursor = planned.starts.get(partition.id()).cloned();
             self.launch(stream, template, partition, cursor)?;
@@ -222,6 +225,7 @@ impl Coordinator {
             changes: template.changes,
             stop,
             follow: self.parts.follow,
+            reset_retention: template.reset_retention,
         };
         (self.parts.launcher)(job)
     }
