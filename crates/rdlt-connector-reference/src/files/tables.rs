@@ -84,12 +84,38 @@ pub(super) fn owner(root: &Path, name: &str) -> Result<Option<String>> {
     }
 }
 
+/// Runs `work` holding the lock of the table `name`'s catalog, which claims and releases take, so
+/// a release never removes a catalog another pipeline claimed after it looked at the owner.
+///
+/// The lock file stays in place, outside the catalog, so every process locks the same file.
+pub(super) fn locked<T>(root: &Path, name: &str, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let dir = root.join("_rdlt").join("locks");
+    io::create_dirs(&dir)?;
+    let path = dir.join(name);
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(io::failed("opening", &path))?;
+    file.lock().map_err(io::failed("locking", &path))?;
+    let done = work();
+    drop(file);
+    done
+}
+
+/// Removes the catalog of the table `name`, which `pipeline` dropped, as [`release_held`] does,
+/// holding the catalog's lock.
+pub(super) fn release(root: &Path, name: &str, pipeline: &PipelineId) -> Result<()> {
+    locked(root, name, || release_held(root, name, pipeline))
+}
+
 /// Removes the catalog of the table `name`, which `pipeline` dropped: its columns and its owner,
-/// so any pipeline may create a table of that name again.
+/// so any pipeline may create a table of that name again; the caller holds the catalog's lock.
 ///
 /// A catalog another pipeline owns by now is left alone. The catalog is first renamed out of
-/// place, so a claim never meets it half removed.
-pub(super) fn release(root: &Path, name: &str, pipeline: &PipelineId) -> Result<()> {
+/// place, so a reader never meets it half removed.
+pub(super) fn release_held(root: &Path, name: &str, pipeline: &PipelineId) -> Result<()> {
     static RELEASES: AtomicU64 = AtomicU64::new(0);
     if owner(root, name)?.is_some_and(|owner| owner != pipeline.as_str()) {
         return Ok(());

@@ -1,6 +1,6 @@
 use rdlt_connector::{Field, LogicalType, PipelineId, TableSchema};
 
-use super::{claim, owner, read, release, update};
+use super::{claim, locked, owner, read, release, update};
 
 /// `current` with a nullable Int64 column `name` added.
 fn with(current: Option<&TableSchema>, name: &str) -> TableSchema {
@@ -110,4 +110,31 @@ fn a_catalog_that_cannot_be_moved_away_is_not_released() {
     std::fs::set_permissions(&tables, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(released.is_err(), "{released:?}");
     assert_eq!(owner(root.path(), "t").unwrap().as_deref(), Some("a"));
+}
+
+#[test]
+fn a_release_waits_for_a_claim_under_way() {
+    let root = tempfile::tempdir().unwrap();
+    claim(root.path(), "t", &pipeline("a")).unwrap();
+    let (released, heard) = std::sync::mpsc::channel();
+    let releasing = locked(root.path(), "t", || {
+        let path = root.path().to_owned();
+        let releasing = std::thread::spawn(move || {
+            release(&path, "t", &pipeline("a")).unwrap();
+            released.send(()).unwrap();
+        });
+        let waited = heard.recv_timeout(std::time::Duration::from_millis(200));
+        assert!(
+            waited.is_err(),
+            "the release ran while a claim held the table"
+        );
+        assert_eq!(owner(root.path(), "t").unwrap().as_deref(), Some("a"));
+        Ok(releasing)
+    })
+    .unwrap();
+    releasing.join().unwrap();
+    heard
+        .recv()
+        .expect("the release ran once the claim was done");
+    assert_eq!(owner(root.path(), "t").unwrap(), None);
 }
