@@ -195,6 +195,9 @@ enum Shape {
     /// Every read, where `signal` holds, first says its stream's partitions changed; plans are
     /// counted here.
     Signalling { plans: AtomicUsize, signal: bool },
+    /// Its first read, counted here, reads on until the log has grown by 20, then fails as
+    /// though the log had dropped where the read stood, as a consumer overtaken mid-read is.
+    Overtaken(AtomicUsize),
 }
 
 impl Reshaped {
@@ -283,6 +286,14 @@ impl Source for Reshaped {
                 Shape::Lost(ref reads) if reads.fetch_add(1, Ordering::SeqCst) < 3 => Err(
                     ConnectorError::retention_lost("the log dropped every message"),
                 ),
+                Shape::Overtaken(ref reads) if reads.fetch_add(1, Ordering::SeqCst) == 0 => {
+                    let every = |_: &SourceEvent| true;
+                    self.forwarding(request, sink, None, every).await?;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    Err(ConnectorError::retention_lost(
+                        "the log dropped where the read stood",
+                    ))
+                }
                 Shape::Signalling { signal: true, .. } => {
                     let every = |_: &SourceEvent| true;
                     self.forwarding(request, sink, Some(SourceEvent::Replan), every)
@@ -456,4 +467,102 @@ async fn a_run_that_does_not_follow_its_source_plans_only_at_its_phases_whatever
     let quiet = plans(false).await;
     assert!(quiet >= 2, "the snapshot and the changes are planned");
     assert_eq!(plans(true).await, quiet);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_overtaken_mid_read_resets_though_it_began_from_the_start() {
+    let logged = json!({
+        "name": "events", "partitions": 1, "messages": 10, "per_second": 10, "retention": 4,
+    });
+    let source = Arc::new(Reshaped {
+        inner: log("overtaken", &logged).await,
+        shape: Shape::Overtaken(AtomicUsize::new(0)),
+    });
+    let events = stream_plan().on_retention_loss(RetentionLoss::Reset);
+    let outcome = engine(config())
+        .run(
+            pipeline("overtaken", [events]),
+            source,
+            memory("overtaken").await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.streams["events"].retention_resets, 1);
+    // What it read before it was overtaken, then what the log kept 20 messages on: none twice.
+    assert_eq!(offsets("overtaken", "p0"), [6, 7, 8, 9, 26, 27, 28, 29]);
+}
+
+/// The outcome of loading `stream`, read as `read`, with the policy to reset on retention loss.
+async fn resetting(
+    group: &str,
+    source: Arc<dyn Source>,
+    stream: rdlt_engine::StreamPlan,
+) -> rdlt_engine::RunOutcome {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let plan = pipeline(group, [stream.on_retention_loss(RetentionLoss::Reset)]);
+    logging_engine(config(), store)
+        .run(plan, source, memory(group).await)
+        .await
+}
+
+#[tokio::test(start_paused = true)]
+async fn only_a_replayable_stream_read_incrementally_may_reset_on_retention_loss() {
+    let changes = crate::changes::changes(8, &crate::changes::orders(&[])).await;
+    let cdc = stream("orders")
+        .read(ReadMode::Cdc)
+        .write(rdlt_engine::WriteMode::Merge);
+    let logged = json!({ "name": "events", "partitions": 1, "messages": 4 });
+    let full = stream("events").read(ReadMode::Full);
+    let forgetful =
+        json!({ "name": "events", "partitions": 1, "messages": 4, "replayable": false });
+    let refused = [
+        resetting("reset_cdc", changes, cdc).await,
+        resetting("reset_full", log("reset_full", &logged).await, full).await,
+        resetting(
+            "reset_forgetful",
+            log("reset_forgetful", &forgetful).await,
+            stream_plan(),
+        )
+        .await,
+    ];
+    for outcome in refused {
+        assert_eq!(outcome.report.status, RunStatus::Failed);
+        let error = outcome.error.expect("the run is refused");
+        assert_eq!(error.kind(), rdlt_engine::ErrorKind::Config);
+        assert_eq!(error.code(), Some("retention_reset_unsupported"));
+    }
+    assert!(published_json("reset_full", "events").is_empty());
+    let replayable = resetting("reset_log", log("reset_log", &logged).await, stream_plan()).await;
+    assert_eq!(replayable.report.status, RunStatus::Succeeded);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_s_lag_leaves_out_ended_partitions_its_source_then_retired() {
+    let logged = json!({
+        "name": "events", "partitions": 3, "messages": 2, "per_second": 20, "bounded": true,
+        "partitions_retired": 1, "retired_after_ms": 1000,
+    });
+    let source = Arc::new(Reshaped {
+        inner: log("retired_ended_lag", &logged).await,
+        shape: Shape::Lagging("p2"),
+    });
+    let plan = pipeline("retired_ended_lag", [stream_plan()])
+        .with_until(Until::For(Duration::from_secs(2)));
+    let outcome = engine(config().replan(Duration::from_millis(200)))
+        .run(plan, source, memory("retired_ended_lag").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    // p2's reads each ended at its head saying it was 100 behind, until its source retired it.
+    assert_eq!(outcome.report.streams["events"].behind, Some(0));
 }

@@ -4,7 +4,7 @@ use rdlt_connector::{Catalog, ReadMode, StreamSpec};
 
 use super::RunContext;
 use crate::error::Error;
-use crate::plan::{DeleteMode, OnTruncate, StreamPlan, WriteMode};
+use crate::plan::{DeleteMode, OnTruncate, RetentionLoss, StreamPlan, WriteMode};
 
 /// The stream's catalog entry, once the source can read it as planned and the destination can
 /// write it as planned.
@@ -27,6 +27,15 @@ pub(super) fn check_stream<'a>(
     })?;
     if let Some((code, detail)) = unreplayable(context, plan, spec) {
         return Err(refuse(code, detail));
+    }
+    if plan.retention_loss() == RetentionLoss::Reset
+        && (plan.read_mode() != ReadMode::Incremental || !spec.is_replayable())
+    {
+        let detail = "only a stream read incrementally, from a source that can read it again, \
+                      reads a partition again from its earliest after a retention loss: a full \
+                      read would load its rows twice, a change stream would miss changes, and a \
+                      source that cannot read again has no earliest to serve";
+        return Err(refuse("retention_reset_unsupported", detail));
     }
     if !spec.supports(plan.read_mode()) {
         let detail = format!("the source cannot read it as {:?}", plan.read_mode());

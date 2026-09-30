@@ -66,6 +66,13 @@ pub(crate) enum Progress {
         /// The partition's index in the attempt.
         partition: usize,
     },
+    /// Rows were staged to a segment no commit will take: no checkpoint sealed them.
+    Abandoned {
+        /// Rows abandoned.
+        rows: u64,
+        /// Their bytes in memory.
+        bytes: u64,
+    },
     /// The partition stopped reading; a partition that was not stopped sealed its end first.
     Ended {
         /// The partition's index in the attempt.
@@ -207,13 +214,11 @@ pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Res
     let end = (!ingested.stopped)
         .then(|| end_state(&ingested, job.partition.is_unbounded()))
         .flatten();
-    match (end, &context.wal) {
-        (Some(state), _) => {
+    match end {
+        Some(state) => {
             context.report(Progress::Sealed(ingested.open.seal(job.index, state, None)))?;
         }
-        // The open segment is never committed: the log may drop what it holds of it.
-        (None, Some(log)) => log.abandon(ingested.open.id).await?,
-        (None, None) => {}
+        None => abandon(&ingested.open, &context).await?,
     }
     context.report(Progress::Ended {
         partition: job.index,
@@ -222,10 +227,11 @@ pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Res
 }
 
 /// Reads `job` as [`read_and_ingest`] does; where the source's retention dropped where the read
-/// would resume and the stream says to reset, reads again from the source's earliest, counted.
+/// stood and the stream says to reset, reads again from the source's earliest, counted.
 ///
-/// The failed read's open segment is abandoned: no checkpoint seals the rows it holds, and the
-/// write-ahead log must not keep them for the rest of the load.
+/// A read had a place to lose where it resumed from a cursor or checkpointed since; one from the
+/// beginning that never checkpointed fails instead, as nothing earlier is left to reset to. The
+/// failed read's open segment is abandoned: no checkpoint seals the rows it holds.
 async fn read_resetting(
     job: &mut PartitionJob,
     context: &PartitionContext,
@@ -236,8 +242,9 @@ async fn read_resetting(
             Ok(()) => return Ok(ingested),
             Err(error) => error,
         };
-        let resets =
-            job.reset_retention && job.cursor.is_some() && error.code() == Some(RETENTION_LOST);
+        let resets = job.reset_retention
+            && ingested.last_cursor.is_some()
+            && error.code() == Some(RETENTION_LOST);
         if !resets {
             return Err(Error::connector(
                 Side::Source,
@@ -246,14 +253,25 @@ async fn read_resetting(
             )
             .with_stream(&job.stream));
         }
-        if let Some(log) = &context.wal {
-            log.abandon(ingested.open.id).await?;
-        }
+        abandon(&ingested.open, context).await?;
         context.report(Progress::RetentionReset {
             partition: job.index,
         })?;
         job.cursor = None;
     }
+}
+
+/// Lets `open` go uncommitted: its rows no longer make a commit due, and the write-ahead log may
+/// drop what it holds of it.
+async fn abandon(open: &OpenSegment, context: &PartitionContext) -> Result<(), Error> {
+    context.report(Progress::Abandoned {
+        rows: open.rows,
+        bytes: open.bytes,
+    })?;
+    if let Some(log) = &context.wal {
+        log.abandon(open.id).await?;
+    }
+    Ok(())
 }
 
 /// Reads `job` while ingesting what the read emits, until both end or the attempt is cancelled:

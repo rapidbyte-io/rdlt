@@ -59,9 +59,13 @@ impl Coordinator {
         let mut dropped = Vec::new();
         for index in &reading {
             let run = &self.parts.partitions[*index];
-            if !run.ended && !named.contains(&run.id) {
+            if named.contains(&run.id) {
+                continue;
+            }
+            // Ended or not, a partition the plan no longer names lags no more.
+            dropped.push(run.id.clone());
+            if !run.ended {
                 run.stop.cancel();
-                dropped.push(run.id.clone());
             }
         }
         let unsettled: BTreeSet<&PartitionId> = reading
