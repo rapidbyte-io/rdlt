@@ -19,7 +19,8 @@ use crate::meta::{
 };
 use crate::testing::{Violation, bounded_call};
 use rows::{
-    Kind, Row, Version, closed, current, delete, deleted, hash, stored, truncate, upsert, written,
+    Kind, Row, Version, changed_commits, closed, current, delete, deleted, hash, stored, truncate,
+    upsert, written,
 };
 
 impl Bench<'_> {
@@ -195,36 +196,8 @@ impl Bench<'_> {
     /// tombstone and the bound, and a truncate closes every version sequenced before it, those its
     /// own commit opened too.
     async fn changed_histories_chain(&self) -> Result<(), Violation> {
-        let commits: [&[Row]; 5] = [
-            &[
-                upsert(1, "a", 1, 10),
-                upsert(2, "b", 2, 20),
-                upsert(1, "a", 3, 30),
-                upsert(1, "a2", 4, 40),
-            ],
-            &[
-                upsert(2, "b", 5, 50),
-                delete(2, 6, 60),
-                upsert(3, "c", 7, 70),
-                delete(3, 8, 80),
-                upsert(3, "c", 9, 90),
-                delete(9, 10, 95),
-            ],
-            // Changes sent again from before each key's newest version or tombstone change
-            // nothing; later ones apply.
-            &[
-                upsert(1, "old", 2, 5),
-                upsert(2, "b", 5, 50),
-                upsert(9, "i", 9, 94),
-                upsert(2, "back", 11, 100),
-            ],
-            &[
-                upsert(5, "e", 12, 105),
-                truncate(13, 110),
-                upsert(4, "d", 14, 120),
-            ],
-            &[upsert(1, "a2", 11, 105), upsert(1, "a3", 15, 130)],
-        ];
+        let commits = changed_commits();
+        let commits: Vec<&[Row]> = commits.iter().map(Vec::as_slice).collect();
         let published = self
             .versioned(("changes", 3), Kind::Changes { soft: false }, &commits)
             .await?;

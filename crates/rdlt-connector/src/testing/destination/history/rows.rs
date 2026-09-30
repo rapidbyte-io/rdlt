@@ -192,3 +192,39 @@ pub(super) fn stored(kind: Kind) -> TableSchema {
     ]);
     TableSchema::new(fields).expect("the certification schema is valid")
 }
+
+/// The commits of a change stream's history with hard deletes: equal changes, deletes and
+/// re-inserts, changes sent again from before each key's newest version or tombstone, and a
+/// truncate between keyed rows of its commit.
+pub(super) fn changed_commits() -> [Vec<Row>; 5] {
+    [
+        vec![
+            upsert(1, "a", 1, 10),
+            upsert(2, "b", 2, 20),
+            upsert(1, "a", 3, 30),
+            upsert(1, "a2", 4, 40),
+        ],
+        vec![
+            upsert(2, "b", 5, 50),
+            delete(2, 6, 60),
+            upsert(3, "c", 7, 70),
+            delete(3, 8, 80),
+            upsert(3, "c", 9, 90),
+            delete(9, 10, 95),
+        ],
+        // Changes sent again from before each key's newest version or tombstone change
+        // nothing; later ones apply.
+        vec![
+            upsert(1, "old", 2, 5),
+            upsert(2, "b", 5, 50),
+            upsert(9, "i", 9, 94),
+            upsert(2, "back", 11, 100),
+        ],
+        vec![
+            upsert(5, "e", 12, 105),
+            truncate(13, 110),
+            upsert(4, "d", 14, 120),
+        ],
+        vec![upsert(1, "a2", 11, 105), upsert(1, "a3", 15, 130)],
+    ]
+}
