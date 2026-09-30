@@ -51,6 +51,8 @@ struct LogConfig {
     stuck: bool,
     /// Waits for changes that never come after the first it reads.
     idle: bool,
+    /// Waits as `idle` does, without hearing a stop.
+    deaf: bool,
     /// Waits as `idle` does, logging as it waits.
     chatty: bool,
     /// Checkpoints the changes only when asked.
@@ -139,6 +141,10 @@ impl Log {
                 out.checkpoint(&next).await?;
             }
             if self.config.idle {
+                out.stopped().await;
+                return Ok(());
+            }
+            if self.config.deaf {
                 std::future::pending::<()>().await;
             }
             if self.config.chatty {
@@ -242,6 +248,11 @@ async fn a_change_log_whose_slot_moves_only_when_committed_passes_s_ack() {
     for config in shapes {
         let report = certify_source::<Log>(config.clone()).await;
         assert_eq!(outcome(&report), &Outcome::Passed, "{config}: {report}");
+        assert_eq!(
+            report.outcome("S-STOP"),
+            Some(&Outcome::Passed),
+            "{config}: {report}"
+        );
     }
 }
 
@@ -264,4 +275,13 @@ async fn a_change_log_whose_slot_moves_but_where_it_was_told_fails_s_ack() {
             outcome(&report)
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_change_log_that_waits_for_changes_deaf_to_a_stop_fails_s_stop() {
+    let report = certify_source::<Log>(json!({ "name": "log_deaf", "deaf": true })).await;
+    assert!(
+        matches!(report.outcome("S-STOP"), Some(Outcome::Failed(_))),
+        "{report}"
+    );
 }
