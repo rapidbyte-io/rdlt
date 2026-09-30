@@ -8,6 +8,10 @@ use rdlt_connector::ChangeOp;
 use rdlt_engine::{DeleteMode, OnTruncate, WriteMode};
 
 use crate::rng::SplitMix64;
+use crate::swarm::Features;
+
+#[cfg(test)]
+mod tests;
 
 /// How many rounds a change simulation runs; the source holds more changes each round.
 pub(crate) const ROUNDS: usize = 2;
@@ -49,8 +53,11 @@ pub struct ChangeStream {
     pub reads_ahead: bool,
     /// The changes, by index, the source sends again whenever it resumes past them, as a source
     /// delivering at least once may; a merged stream's only, since a log keeps whatever it is
-    /// sent.
+    /// sent, and one whose source can read it again.
     pub replay: Option<Range<usize>>,
+    /// Whether the source can read again what it acknowledged; one that cannot forgets it, as a
+    /// replication slot does, and its pipeline's write-ahead log holds what it has not landed.
+    pub replayable: bool,
 }
 
 /// One change.
@@ -114,17 +121,21 @@ impl Event {
 
 impl ChangeWorkload {
     /// A workload drawn from `rng`: one to three streams, merged or logged, with every delete and
-    /// truncate mode.
-    pub(crate) fn generate(rng: &mut SplitMix64) -> Self {
+    /// truncate mode; where pipelines keep write-ahead logs, every other one's source cannot read
+    /// again what it acknowledged.
+    pub(crate) fn generate(rng: &mut SplitMix64, features: Features) -> Self {
         let streams = (0..=rng.below(3))
-            .map(|index| ChangeStream::generate(rng, format!("c{index}")))
+            .map(|index| {
+                let replayable = !(features.wal && index.is_multiple_of(2));
+                ChangeStream::generate(rng, format!("c{index}"), replayable)
+            })
             .collect();
         Self { streams }
     }
 }
 
 impl ChangeStream {
-    fn generate(rng: &mut SplitMix64, name: String) -> Self {
+    fn generate(rng: &mut SplitMix64, name: String, replayable: bool) -> Self {
         let keys = 1 + rng.below(40);
         let write = if rng.chance(750) {
             WriteMode::Merge
@@ -158,6 +169,8 @@ impl ChangeStream {
                     start + 1 + to_usize(rng.below(u64::try_from(first - start).unwrap_or(0)));
                 start..end
             });
+        // Drawn either way, so every other draw falls as it did.
+        let replay = replay.filter(|_| replayable);
         Self {
             name,
             keys,
@@ -171,6 +184,7 @@ impl ChangeStream {
             rounds: [first, total],
             reads_ahead,
             replay,
+            replayable,
         }
     }
 

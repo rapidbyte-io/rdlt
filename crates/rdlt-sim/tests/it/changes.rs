@@ -19,3 +19,11 @@ fn a_change_simulation_replays_exactly_from_its_seed() {
 fn a_seed_that_once_found_a_defect_passes() {
     let _ = check_changes(Seed::new(22));
 }
+
+/// A seed whose source forgets what it acknowledged and whose transition to the changes only the
+/// write-ahead log held: without the log's transition, the changes are read again from their
+/// start, which the source no longer serves.
+#[test]
+fn a_seed_whose_transition_only_the_log_held_passes() {
+    let _ = check_changes(Seed::new(130));
+}

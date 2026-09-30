@@ -5,13 +5,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rdlt_connector::{PipelineId, ReadMode, StreamName};
-use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WriteMode};
+use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName};
+use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WalStore, WriteMode};
 use rdlt_testkit::canon::Canon;
 
 use super::scenario::{Scenario, execute_all, pick};
 use super::{FAULTY_RUNS, config, settle};
-use crate::changes::{ChangeStream, Logged, Merged, ROUNDS};
+use crate::changes::{
+    CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS,
+};
 use crate::destination::{Digest, Stored};
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
@@ -39,8 +41,9 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let world = World::register_changes(&name, &mut rng);
     let features = world.workload.features;
     env.perturb(features.perturb);
+    env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
     let engine = Engine::new(config(&mut rng, false), env);
-    let plan = plan(&world.changes.streams);
+    let plan = plan(&world.changes.streams).with_wal(features.wal);
     for round in 0..ROUNDS {
         world.set_phase(round);
         converge(&engine, &plan, &world, &name, round, seed, &mut rng).await;
@@ -48,6 +51,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
         for stream in &world.changes.streams {
             check(&world, stream, round, seed);
         }
+        check_acknowledged(&world, round, seed);
     }
     let violations = world.violations();
     let digest = world.store.lock().digest();
@@ -72,8 +76,8 @@ fn plan(streams: &[ChangeStream]) -> PipelinePlan {
         .expect("the change plan is valid")
 }
 
-/// Runs `round` until a run succeeds: the first few runs with faults and disruptions where the
-/// seed has them, the rest without.
+/// Runs `round` until a run succeeds and no write-ahead log is left to replay: the first few runs
+/// with faults and disruptions where the seed has them, the rest without.
 async fn converge(
     engine: &Engine,
     plan: &PipelinePlan,
@@ -102,7 +106,7 @@ async fn converge(
                 );
             }
         }
-        if executed.iter().all(|executed| executed.succeeded) {
+        if executed.iter().all(|executed| executed.succeeded) && !world.wal.holds_logs() {
             return;
         }
         assert!(runs < 32, "seed {seed}: round {round} did not converge");
@@ -143,6 +147,46 @@ fn check(world: &World, stream: &ChangeStream, round: usize, seed: Seed) {
         "{}: the merged table",
         context()
     );
+}
+
+/// Checks that every position acknowledged to a stream that cannot read again landed after
+/// `round`.
+///
+/// It was heard before its commit, so only the write-ahead log could see it through a failure. A
+/// snapshot partition's position is gone once its stream reads its changes, which counts as
+/// landed.
+fn check_acknowledged(world: &World, round: usize, seed: Seed) {
+    let entries: Vec<StateEntry> = world
+        .store
+        .lock()
+        .states()
+        .flat_map(|records| records.values())
+        .filter_map(|record| StateEntry::from_record(record).ok())
+        .collect();
+    for ((stream, partition), acknowledged) in world.acknowledged.lock().iter() {
+        let reads_changes = entries.iter().any(|entry| {
+            matches!(entry, StateEntry::Phase { stream: named, phase }
+                if named.name() == stream && *phase == CHANGES_PHASE)
+        });
+        let committed = entries.iter().find_map(|entry| match entry {
+            StateEntry::Partition {
+                stream: named,
+                partition: id,
+                state: PartitionState::Cursor(cursor),
+            } if named.name() == stream && id.as_str() == partition => cursor
+                .decode::<Position>(1)
+                .ok()
+                .map(|position| position.next),
+            _ => None,
+        });
+        let landed = committed.is_some_and(|committed| committed >= *acknowledged)
+            || (partition != CHANGES_PARTITION && reads_changes);
+        assert!(
+            landed,
+            "seed {seed}: round {round}: stream {stream} partition {partition} acknowledged \
+             position {acknowledged}, but committed {committed:?}"
+        );
+    }
 }
 
 /// A row of a log: its op, key, value and counter.
