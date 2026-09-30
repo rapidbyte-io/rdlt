@@ -53,6 +53,8 @@ struct LogConfig {
     idle: bool,
     /// Waits as `idle` does, without hearing a stop.
     deaf: bool,
+    /// Waits half a second before its first change.
+    slow_start: bool,
     /// Waits as `idle` does, logging as it waits.
     chatty: bool,
     /// Checkpoints the changes only when asked.
@@ -126,6 +128,9 @@ impl Log {
 
     /// Reads the changes from `next` for as long as the read runs.
     async fn changes(&self, mut next: u64, out: &mut Emitter<u64>) -> Result<()> {
+        if self.config.slow_start {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
         let mut handed = 0;
         loop {
             if self.config.late_ack && handed > 0 {
@@ -279,9 +284,18 @@ async fn a_change_log_whose_slot_moves_but_where_it_was_told_fails_s_ack() {
 
 #[tokio::test(start_paused = true)]
 async fn a_change_log_that_waits_for_changes_deaf_to_a_stop_fails_s_stop() {
-    let report = certify_source::<Log>(json!({ "name": "log_deaf", "deaf": true })).await;
-    assert!(
-        matches!(report.outcome("S-STOP"), Some(Outcome::Failed(_))),
-        "{report}"
-    );
+    let deaf = [
+        json!({ "name": "log_deaf", "deaf": true }),
+        // Its changes follow a snapshot and a catch-up.
+        json!({ "name": "log_deaf_later", "deaf": true, "catch_up": true }),
+        // Its first change comes a while after the read starts.
+        json!({ "name": "log_deaf_slow", "deaf": true, "slow_start": true }),
+    ];
+    for config in deaf {
+        let report = certify_source::<Log>(config.clone()).await;
+        assert!(
+            matches!(report.outcome("S-STOP"), Some(Outcome::Failed(_))),
+            "{config}: {report}"
+        );
+    }
 }

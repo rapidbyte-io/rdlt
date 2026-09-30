@@ -162,10 +162,6 @@ impl Future for RunHandle {
     }
 }
 
-/// How many of the latest attempts a run keeps unfolded: a failed attempt's commit in flight is
-/// credited to it once the next one opens.
-const UNFOLDED: usize = 2;
-
 /// How long to wait before the next attempt: as long as the failure asked, up to the policy's
 /// longest delay, or the policy's backoff after `failures` consecutive failures.
 fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> Duration {
@@ -176,11 +172,9 @@ fn backoff(retry: &RetryPolicy, error: &Error, failures: u32, env: &dyn Env) -> 
     )
 }
 
-/// A run's attempts as it makes them: the latest, which a later one may still credit a commit
-/// to, and the report the earlier ones are folded into, so a run that retries for ever stays
-/// bounded.
+/// A run's attempts as it makes them, each folded into its report as it ends, so a run that
+/// retries for ever stays bounded.
 struct Ledger {
-    attempts: Vec<AttemptRecord>,
     report: Report,
     /// A failed attempt's commit in flight, credited to it once a later attempt reads it back.
     unresolved: Option<CommitRecord>,
@@ -189,7 +183,6 @@ struct Ledger {
 impl Ledger {
     fn new(pipeline: PipelineId) -> Self {
         Self {
-            attempts: Vec::new(),
             report: Report::new(pipeline),
             unresolved: None,
         }
@@ -198,39 +191,26 @@ impl Ledger {
     /// Records `attempt`, which `failed` or not, and whether it committed anything.
     ///
     /// A failed attempt's commit in flight is credited once a later attempt opened and found it
-    /// landed: to the attempt whose load its receipt names, among the latest or already folded.
-    /// An attempt that never opened read nothing back, so the commit stays in flight for the next.
+    /// landed, to the attempt whose load its receipt names. An attempt that never opened read
+    /// nothing back, so the commit stays in flight for the next.
     fn record(&mut self, mut attempt: AttemptRecord, failed: bool) -> bool {
         let log = &mut attempt.log;
         if let Some(opened) = log.opened
             && let Some(pending) = self.unresolved.take()
             && opened == (pending.receipt.load_id, pending.receipt.commit_seq)
         {
-            let owner = self
-                .attempts
-                .iter_mut()
-                .find(|earlier| earlier.load_id == pending.receipt.load_id);
-            match owner {
-                Some(earlier) => earlier.log.committed.add(pending),
-                None => self.report.credit(pending),
-            }
+            self.report.credit(pending);
         }
         if failed && let Some(pending) = log.pending.take() {
             self.unresolved = Some(pending);
         }
         let progressed = log.committed.commits > 0;
-        self.attempts.push(attempt);
-        if self.attempts.len() > UNFOLDED {
-            self.report.absorb(self.attempts.remove(0));
-        }
+        self.report.absorb(attempt);
         progressed
     }
 
-    /// The run's report, every attempt folded in.
-    fn report(mut self) -> Report {
-        for attempt in self.attempts {
-            self.report.absorb(attempt);
-        }
+    /// The run's report.
+    fn report(self) -> Report {
         self.report
     }
 }

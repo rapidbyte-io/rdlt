@@ -10,10 +10,10 @@ use rdlt_connector::{
     BoxFuture, Catalog, PartitionId, PartitionPlan, PartitionSink, ReadMode, ReadRequest, Source,
     SourceEvent, StreamName, StreamState,
 };
-use rdlt_connector_reference::changes::expected;
+use rdlt_connector_reference::changes::{ChangedStream, expected};
 use rdlt_engine::{CommitPolicy, EngineConfig, RunStatus, Until, WriteMode};
 
-use crate::changes::{changes, orders, rows};
+use crate::changes::{changes, log, logged, orders, rows};
 use crate::support::{engine, memory, pipeline, stream};
 
 /// A configuration that commits every second and plans again every 200 ms.
@@ -110,29 +110,47 @@ impl Source for Late {
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_following_run_begins_the_changes_only_once_the_snapshot_s_end_is_committed() {
+/// Loads a stream whose snapshot captured 50 changes, written as `write`, from the late source, in
+/// two runs that follow it; the store it loads, and the states the source was planned from.
+async fn late(write: WriteMode) -> (String, Vec<StreamState>) {
     let late = Arc::new(Late {
-        inner: changes(8, &orders(&[90])).await,
+        inner: changes(8, &captured()).await,
         started: AtomicBool::new(false),
         planned: Mutex::default(),
     });
+    let store = format!("late_{write:?}");
     for run in 0..2 {
-        let plan = pipeline("late", [merged()]).with_until(Until::For(Duration::from_secs(6)));
+        let read = stream("orders").read(ReadMode::Cdc).write(write);
+        let plan = pipeline("late", [read]).with_until(Until::For(Duration::from_secs(6)));
         let source = Arc::clone(&late) as Arc<dyn Source>;
         let outcome = engine(following())
-            .run(plan, source, memory("late_changes").await)
+            .run(plan, source, memory(&store).await)
             .await;
+        let status = outcome.report.status;
         assert_eq!(
-            outcome.report.status,
+            status,
             RunStatus::Succeeded,
             "run {run}: {:?}",
             outcome.error
         );
     }
+    let planned = late.planned.lock().clone();
+    (store, planned)
+}
+
+/// The orders stream, whose snapshot captured 50 changes: those after it start at 51.
+fn captured() -> ChangedStream {
+    ChangedStream {
+        captured: 50,
+        ..orders(&[90])
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_run_begins_the_changes_only_once_the_snapshot_s_end_is_committed() {
+    let (store, planned) = late(WriteMode::Merge).await;
     // The changes phase's state names its own partitions alone: no snapshot position was
     // recorded after it began.
-    let planned = late.planned.lock();
     let changing: Vec<&StreamState> = planned.iter().filter(|state| state.phase == 1).collect();
     assert!(!changing.is_empty(), "the second run planned the changes");
     for state in changing {
@@ -142,5 +160,36 @@ async fn a_following_run_begins_the_changes_only_once_the_snapshot_s_end_is_comm
             .any(|id| id.as_str().starts_with("snapshot-"));
         assert!(!stale, "{state:?}");
     }
-    assert_eq!(rows("late_changes", "orders"), expected(8, &orders(&[90])));
+    assert_eq!(rows(&store, "orders"), expected(8, &captured()));
+    // Logged rather than merged, every change lands once: none read from before the snapshot.
+    let (store, _) = late(WriteMode::Append).await;
+    let mut positions = logged(&store, "orders");
+    positions.sort_unstable();
+    assert_eq!(positions, log(8, &captured()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_run_logs_every_change_once() {
+    // The snapshot captures 50 changes: those after it start at 51.
+    let captured = ChangedStream {
+        captured: 50,
+        ..orders(&[90])
+    };
+    let source = changes(8, &captured).await;
+    let appended = stream("orders")
+        .read(ReadMode::Cdc)
+        .write(WriteMode::Append);
+    let plan = pipeline("logged", [appended]).with_until(Until::For(Duration::from_secs(5)));
+    let outcome = engine(following())
+        .run(plan, source, memory("followed_log").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let mut positions = logged("followed_log", "orders");
+    positions.sort_unstable();
+    assert_eq!(positions, log(8, &captured));
 }

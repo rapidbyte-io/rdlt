@@ -141,10 +141,8 @@ fn a_commit_credited_to_a_folded_attempt_counts_toward_it_and_the_run() {
     let mut report = Report::new(pipeline);
     report.absorb(attempt(failed, vec![], None));
     report.credit(commit(failed, 3, &[("orders", 3, 24)]));
-    assert_eq!((report.commits, report.rows), (1, 3));
+    assert_eq!((report.commits, report.rows, report.bytes), (1, 3, 30));
     assert_eq!(report.streams["orders"].rows, 3);
-    assert_eq!(
-        (report.attempts[0].commits, report.attempts[0].rows),
-        (1, 3)
-    );
+    let listed = &report.attempts[0];
+    assert_eq!((listed.commits, listed.rows, listed.bytes), (1, 3, 30));
 }
