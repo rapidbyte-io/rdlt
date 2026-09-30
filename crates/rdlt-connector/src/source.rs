@@ -1,5 +1,6 @@
 //! Source connectors: the traits authors implement and the engine-facing form the SDK builds.
 
+mod acknowledged;
 mod adapter;
 #[cfg(test)]
 mod tests;
@@ -19,6 +20,7 @@ use crate::sink::PartitionSink;
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::StreamState;
 
+pub use acknowledged::{AcknowledgedReader, Acknowledging};
 pub use adapter::source_factory;
 
 /// A source connector, as its author writes it.
@@ -31,6 +33,14 @@ pub trait SourceConnector: Sized + Send + Sync + 'static {
     const VERSION: &'static str;
     /// The configuration the connector accepts; its JSON Schema is published.
     type Config: DeserializeOwned + schemars::JsonSchema + Send;
+
+    /// Whether the connector's streams tell where they stand outside the engine
+    /// ([`ReadStream::acknowledged`]), which certification checks moves only in
+    /// [`ReadStream::committed`]; `#[source(..., acknowledged)]` sets it.
+    ///
+    /// Certification tells such a source that a few checkpoints are committed, so it runs against
+    /// a slot or consumer group of its own.
+    const ACKNOWLEDGES: bool = false;
 
     /// Builds the connector's clients from its configuration.
     fn connect(
@@ -107,6 +117,21 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
         _cursors: &[(PartitionId, Self::Cursor)],
     ) -> impl Future<Output = Result<()>> + Send {
         async { Ok(()) }
+    }
+
+    /// Where the stream stands for `partition` outside the engine: the cursor it was last told
+    /// is committed, as it keeps it beyond a connection (a replication slot's confirmed position,
+    /// a consumer group's committed offset); none where it keeps none, or was never told.
+    ///
+    /// Only certification asks, where the connector says it tells
+    /// ([`SourceConnector::ACKNOWLEDGES`]), to check that the position moves only in
+    /// [`committed`](Self::committed).
+    fn acknowledged(
+        &self,
+        _source: &S,
+        _partition: &PartitionId,
+    ) -> impl Future<Output = Result<Option<Self::Cursor>>> + Send {
+        async { Ok(None) }
     }
 }
 
@@ -290,7 +315,36 @@ pub trait SourceFactory: Send + Sync {
         config: serde_json::Value,
         context: ConnectContext,
     ) -> BoxFuture<'_, Result<Box<dyn Source>>>;
+
+    /// Whether the source tells where it stands outside the engine, for certification.
+    fn acknowledges(&self) -> bool {
+        false
+    }
+
+    /// Validates `config` and connects, with a reader of where the source stands outside the
+    /// engine.
+    ///
+    /// # Errors
+    ///
+    /// An unsupported error when the source does not tell where it stands.
+    fn connect_acknowledging(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, Result<Acknowledging>> {
+        drop((config, context));
+        Box::pin(async {
+            Err(ConnectorError::new(
+                ConnectorErrorKind::Unsupported,
+                "this source does not tell where it stands outside the engine",
+            )
+            .with_code(ACKNOWLEDGED_CODE))
+        })
+    }
 }
+
+/// The code of the error a source that does not tell where it stands refuses to.
+pub(crate) const ACKNOWLEDGED_CODE: &str = "acknowledged";
 
 fn duplicate_stream(error: &DuplicateStream) -> ConnectorError {
     ConnectorError::new(ConnectorErrorKind::Internal, error.to_string())

@@ -1,7 +1,11 @@
 //! Source clauses.
 
+mod acks;
+
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use bytes::Bytes;
 
@@ -14,7 +18,8 @@ use crate::cursor::Cursor;
 use crate::id::StreamName;
 use crate::sink::{Push, SourceEvent, partition_channel};
 use crate::source::{
-    Partition, ReadRequest, Source, SourceConnector, SourceFactory, source_factory,
+    AcknowledgedReader, Partition, ReadRequest, Source, SourceConnector, SourceFactory,
+    source_factory,
 };
 use crate::spec::ConnectContext;
 use crate::state::StreamState;
@@ -49,9 +54,15 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
         id: "S-BARRIER",
         statement: "an on-demand stream answers a pending barrier with a checkpoint",
     },
+    Clause {
+        id: "S-ACK",
+        statement: "a change stream's position outside the engine moves only when the engine \
+                    tells it a cursor is committed, and then to that cursor",
+    },
 ];
 
-/// Certifies source connector `C` with `config`.
+/// Certifies source connector `C` with `config`; where it tells where it stands
+/// ([`SourceConnector::ACKNOWLEDGES`]), `S-ACK` checks that too.
 pub async fn certify_source<C: SourceConnector>(config: serde_json::Value) -> Report {
     certify_source_factory(source_factory::<C>().as_ref(), config).await
 }
@@ -62,22 +73,46 @@ pub async fn certify_source_factory(
     config: serde_json::Value,
 ) -> Report {
     let connector = factory.spec().id.to_string();
-    let results =
-        match bounded_call("connect", factory.connect(config, ConnectContext::new())).await {
-            Ok(source) => check_all(source.as_ref()).await,
-            Err(Violation(reason)) => SOURCE_CLAUSES
-                .iter()
-                .map(|clause| ClauseResult {
-                    clause: *clause,
-                    outcome: Outcome::Failed(format!("connect failed: {reason}")),
-                })
-                .collect(),
-        };
+    let results = match connected(factory, config).await {
+        Ok((source, reader)) => check_all(source.as_ref(), reader.as_deref()).await,
+        Err(Violation(reason)) => SOURCE_CLAUSES
+            .iter()
+            .map(|clause| ClauseResult {
+                clause: *clause,
+                outcome: Outcome::Failed(format!("connect failed: {reason}")),
+            })
+            .collect(),
+    };
     Report { connector, results }
 }
 
-async fn check_all(source: &dyn Source) -> Vec<ClauseResult> {
+/// The source `factory` connects with `config`, and what tells where it stands, where it can.
+async fn connected(
+    factory: &dyn SourceFactory,
+    config: serde_json::Value,
+) -> Result<(Arc<dyn Source>, Option<Arc<dyn AcknowledgedReader>>), Violation> {
+    let context = ConnectContext::new();
+    if factory.acknowledges() {
+        let (source, reader) =
+            bounded_call("connect", factory.connect_acknowledging(config, context)).await?;
+        return Ok((source, Some(reader)));
+    }
+    let source = bounded_call("connect", factory.connect(config, context)).await?;
+    Ok((Arc::from(source), None))
+}
+
+async fn check_all(
+    source: &dyn Source,
+    reader: Option<&dyn AcknowledgedReader>,
+) -> Vec<ClauseResult> {
     let catalog = bounded_call("discover", source.discover()).await;
+    // Where the source stands before any clause reads it, which S-ACK, last, checks.
+    let mut told = match (reader, &catalog) {
+        (Some(reader), Ok(catalog)) => {
+            Some((reader, acks::standing(source, reader, catalog).await))
+        }
+        _ => None,
+    };
     let mut results = Vec::new();
     for clause in SOURCE_CLAUSES {
         let outcome = match (&catalog, clause.id) {
@@ -91,13 +126,16 @@ async fn check_all(source: &dyn Source) -> Vec<ClauseResult> {
             (Ok(catalog), "S-PLAN") => outcome(timed(plans_are_valid(source, catalog)).await),
             (Ok(catalog), "S-RESUME") => outcome(timed(resumes_are_exact(source, catalog)).await),
             (Ok(catalog), "S-STOP") => outcome(timed(stops_are_prompt(source, catalog)).await),
-            (Ok(catalog), _) => {
-                tokio::time::timeout(CLAUSE_TIMEOUT, barriers_are_answered(source, catalog))
-                    .await
-                    .unwrap_or_else(|_| {
-                        Outcome::Failed(format!("the clause took longer than {CLAUSE_TIMEOUT:?}"))
-                    })
+            (Ok(catalog), "S-ACK") => {
+                // Boxed: its reads' state would otherwise weigh on every certification's future.
+                within(Box::pin(acks::acknowledged_only_when_committed(
+                    source,
+                    told.take(),
+                    catalog,
+                )))
+                .await
             }
+            (Ok(catalog), _) => within(barriers_are_answered(source, catalog)).await,
         };
         results.push(ClauseResult {
             clause: *clause,
@@ -105,6 +143,15 @@ async fn check_all(source: &dyn Source) -> Vec<ClauseResult> {
         });
     }
     results
+}
+
+/// `clause`'s outcome, or a failure once it takes longer than [`CLAUSE_TIMEOUT`].
+async fn within(clause: impl Future<Output = Outcome>) -> Outcome {
+    tokio::time::timeout(CLAUSE_TIMEOUT, clause)
+        .await
+        .unwrap_or_else(|_| {
+            Outcome::Failed(format!("the clause took longer than {CLAUSE_TIMEOUT:?}"))
+        })
 }
 
 async fn discover_is_stable(source: &dyn Source, first: Option<&Catalog>) -> Result<(), Violation> {

@@ -16,4 +16,5 @@ certification of io.rapidbyte.memory
   pass S-RESUME
   pass S-STOP
   skip S-BARRIER: no stream checkpoints on demand
+  skip S-ACK: the source does not tell where it stands
   skip K-SOURCE: no kill interrupted the load (kill seed 515): it ended first

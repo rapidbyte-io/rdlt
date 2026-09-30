@@ -1,3 +1,4 @@
+mod acks;
 mod changes;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1620,4 +1621,10 @@ async fn the_schema_clause_is_skipped_for_a_destination_that_changes_no_schema()
         matches!(report.outcome("D-SCHEMA"), Some(Outcome::Skipped(_))),
         "{report}"
     );
+}
+
+#[tokio::test]
+async fn a_source_that_tells_nothing_of_where_it_stands_skips_s_ack() {
+    let report = certify_source::<Pages>(json!({})).await;
+    assert!(matches!(report.outcome("S-ACK"), Some(Outcome::Skipped(_))));
 }
