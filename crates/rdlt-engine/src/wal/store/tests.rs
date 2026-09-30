@@ -297,3 +297,19 @@ async fn removing_a_log_lets_its_files_go_and_keeps_every_other_log_s() {
     assert_eq!(open.len(), 1, "{open:?}");
     assert!(open[0].starts_with(wal.pipeline_dir(&orders).join(chunk(2, 0).load.to_string())));
 }
+
+#[test]
+fn a_private_directory_under_a_relative_base_is_created_the_first_time() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    // Each test runs in a process of its own, whose working directory this one may move.
+    std::env::set_current_dir(base.path()).expect("moves");
+    let created = super::private_dir(std::path::Path::new(".rdlt/orders")).expect("creates");
+    assert_eq!(
+        created,
+        [
+            std::path::PathBuf::from(".rdlt/orders"),
+            std::path::PathBuf::from(".rdlt")
+        ]
+    );
+    assert!(base.path().join(".rdlt/orders").is_dir());
+}
