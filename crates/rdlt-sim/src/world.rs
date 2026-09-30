@@ -18,6 +18,7 @@ use crate::changes::ChangeWorkload;
 use crate::destination::Store;
 use crate::rng::SplitMix64;
 use crate::swarm::Features;
+use crate::wal::SimWal;
 use crate::workload::Workload;
 
 /// Where a connector can fail, and how often, in failures per thousand calls.
@@ -73,6 +74,11 @@ pub struct World {
     rng: Mutex<SplitMix64>,
     pub(crate) store: Mutex<Store>,
     violations: Mutex<Vec<String>>,
+    /// Where the engine keeps its write-ahead logs, which outlive runs as a disk does.
+    pub(crate) wal: Arc<SimWal>,
+    /// The furthest offset acknowledged to each partition of a stream that cannot read again,
+    /// by stream and partition: what it no longer holds.
+    pub(crate) acknowledged: Mutex<BTreeMap<(String, String), u64>>,
 }
 
 static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mutex::default);
@@ -91,6 +97,8 @@ impl World {
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
+            wal: Arc::default(),
+            acknowledged: Mutex::default(),
         });
         WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
         world
@@ -120,6 +128,8 @@ impl World {
             rng: Mutex::new(SplitMix64::new(rng.next_u64())),
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
+            wal: Arc::default(),
+            acknowledged: Mutex::default(),
         });
         WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
         world
@@ -157,9 +167,20 @@ impl World {
         self.phase.store(phase, Ordering::SeqCst);
     }
 
-    /// Turns fault injection on or off.
+    /// Turns fault injection on or off, the write-ahead log's disk's included.
     pub fn set_faulty(&self, faulty: bool) {
         self.faulty.store(faulty, Ordering::SeqCst);
+        // Drawn only where logs are kept, so every other seed's faults fall as they did.
+        let logged = faulty && self.workload.features.wal;
+        let draws = logged.then(|| SplitMix64::new(self.rng.lock().next_u64()));
+        self.wal.set_faults(draws);
+    }
+
+    /// Crashes the write-ahead log's disk: what was not made durable is lost, but for a part the
+    /// draw keeps, which may be torn.
+    pub(crate) fn crash_logs(&self) {
+        let mut rng = self.rng.lock();
+        self.wal.crash(&mut rng);
     }
 
     /// A failure at `point`, when faults are on and the draw says so: mostly transient or

@@ -9,6 +9,9 @@ use crate::rng::SplitMix64;
 /// What the network's draw mixes into the seed's generator: "network" in ASCII.
 const NETWORK: u64 = 0x006e_6574_776f_726b;
 
+/// What the write-ahead log's draw mixes into the seed's generator: "wal" in ASCII.
+const WAL: u64 = 0x0077_616c;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -52,6 +55,9 @@ pub struct Features {
     /// mutual TLS rather than run in the engine's process; with faults, the network partitions
     /// and holds messages, and the connectors crash and stop.
     pub network: bool,
+    /// Pipelines that keep write-ahead logs, whose incremental streams, every other one, cannot
+    /// read again what they acknowledged; crashes tear the logs' unsynced tails.
+    pub wal: bool,
 }
 
 impl Features {
@@ -72,18 +78,24 @@ impl Features {
         shared: true,
         perturb: true,
         network: true,
+        wal: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
-    /// a coin, drift more often than not, and the network one time in four.
+    /// a coin, drift more often than not, and the network and the write-ahead log one time in
+    /// four each.
     ///
-    /// The network is drawn apart from the rest, from the value the next draw takes but without
-    /// taking it, so a seed's workload is the same over either transport.
+    /// The network and the log are drawn apart from the rest, from the value the next draw takes
+    /// but without taking it, so a seed's workload is the same over either transport, logged or
+    /// not.
     pub fn draw(rng: &mut SplitMix64) -> Self {
-        let network = SplitMix64::new(rng.clone().next_u64() ^ NETWORK).chance(250);
+        let next = rng.clone().next_u64();
+        let network = SplitMix64::new(next ^ NETWORK).chance(250);
+        let wal = SplitMix64::new(next ^ WAL).chance(250);
         if rng.chance(125) {
             return Self {
                 network,
+                wal,
                 ..Self::ALL
             };
         }
@@ -103,6 +115,7 @@ impl Features {
             shared: rng.chance(500),
             perturb: rng.chance(500),
             network,
+            wal,
         }
     }
 
