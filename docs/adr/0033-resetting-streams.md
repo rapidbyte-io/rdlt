@@ -38,7 +38,15 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
     starting such a read where it last acknowledged instead is unsafe: a commit it acknowledged
     may still wait in a crashed load's log, and a racing run would move past it for good.
   - A destination that does not declare `drop_tables` refuses a `Tables` reset as
-    `drop_unsupported`, before anything commits.
+    `drop_unsupported`, and a reset naming no streams is refused as `no_streams`.
+  - These refusals, and `reset_unreplayable`, come before the destination opens, fencing nothing.
+    `stream_not_found` can only come after: the pipeline's state is read by opening the
+    destination, which fences its older sessions as any reset does. A state read that fences
+    nothing lands with M7.
+  - A full read a run began before the stream was reset is over: a retry of that run, which the
+    reset fenced, starts a new read in a generation of its own rather than resuming the one it
+    remembered, whose rows were the stream's before the reset. The run keeps each read's
+    generation with the epoch of the stream's last reset when it began.
   - A connector that panics fails the reset as an internal error, as it fails an attempt.
 - **The reset marker.** The reset commit puts `StateKey::Reset(stream)`, the epoch of its session.
   Replay skips every logged seal of a reset stream whose commit's session is older than the
@@ -59,7 +67,9 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
   - SQLite drops in the commit's transaction, refused as `Unsupported` where schema changes do not
     commit with transactions. The files destination makes the manifest the truth: the commit
     records the dropped names, removes their catalogs after it lands, and the next open removes
-    any it left, before the session can create one again.
+    any it left, before the session can create one again. A lock per table name, outside the
+    catalog, is held across each claim, schema change and release, so a release never removes a
+    catalog another pipeline claimed after it looked at the owner.
 - **Ownership holds through commits and drops.**
   - A generation swapped into another pipeline's table is refused as `table_owned`, in every
     destination: memory, the simulation and SQLite resolve a path to a table through store-wide
