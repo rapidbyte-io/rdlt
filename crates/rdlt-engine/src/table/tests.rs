@@ -373,6 +373,7 @@ fn stamp() -> Stamp {
     Stamp {
         load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(1_000), 5),
         loaded_at: UNIX_EPOCH + Duration::from_secs(1_000),
+        received_at: UNIX_EPOCH + Duration::from_secs(1_000),
         segment: SegmentId(7),
         first_row: 10,
     }

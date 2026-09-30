@@ -367,12 +367,13 @@ async fn an_update_leaving_columns_unchanged_is_refused_in_a_history_stream() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn versions_begin_when_their_load_started_where_the_stream_names_no_change_time() {
+async fn versions_begin_when_their_batch_arrived_where_the_stream_names_no_change_time() {
     let spec = ChangedStream {
         changed_at: false,
         ..timed()
     };
-    let outcome = engine(commit_every(1_000))
+    // A clock that moves on every reading: a run lasting as long as a following one's does.
+    let outcome = crate::support::ticking_engine(commit_every(1_000))
         .run(
             pipeline("history-untimed", [history_of("orders", DeleteMode::Hard)]),
             changes(8, &spec).await,
@@ -389,13 +390,31 @@ async fn versions_begin_when_their_load_started_where_the_stream_names_no_change
     let loaded = published
         .iter()
         .flat_map(|batch| micros(batch, "_rdlt_loaded_at"))
-        .collect::<Vec<_>>();
-    let from = published
+        .min()
+        .flatten()
+        .expect("rows were loaded");
+    let spans: Vec<(i64, Option<i64>)> = published
         .iter()
-        .flat_map(|batch| micros(batch, "_rdlt_valid_from"))
-        .collect::<Vec<_>>();
-    assert!(!from.is_empty());
-    assert_eq!(from, loaded);
+        .flat_map(|batch| {
+            let from = micros(batch, "_rdlt_valid_from");
+            let to = micros(batch, "_rdlt_valid_to");
+            from.into_iter().zip(to)
+        })
+        .map(|(from, to)| (from.expect("every version begins"), to))
+        .collect();
+    // Versions begin as their batches arrive, after the load started, so a version one batch
+    // opens and a later one closes spans the time between.
+    assert!(
+        spans
+            .iter()
+            .all(|(from, to)| *from >= loaded && to.is_none_or(|to| to >= *from))
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|(from, to)| to.is_some_and(|to| to > *from)),
+        "{spans:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]

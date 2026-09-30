@@ -32,12 +32,15 @@ never sees.
 - **The engine writes whole versions**: every row carries `valid_from`, a null `valid_to`, a true
   `is_current` and its `row_hash`; batches are not compacted, since every version counts.
   - `valid_from` is the stream's change time (`StreamSpec::with_change_time`), a top-level date or
-    timestamp column, or else when the load started. A change time of another type is
+    timestamp column, or else when its batch arrived. The spec's `_rdlt_loaded_at` would begin
+    every version of a run at its start, so a run following its source for days would leave each
+    version an empty span. A change time of another type, or beyond what microseconds hold, is
     `change_time_invalid`, refused where the catalog declares it and else at the batch; a null one
     is `change_time_null`. Versions follow the sequence, whatever their times.
   - `row_hash` is the xxh3-128 of the row's data columns as one object of its non-null columns by
-    name, the encoding row ids use (ADR 0009): an added null column, a wider type or another
-    encoding changes no hash, so schema changes open no versions. The change time is left out:
+    name, the encoding row ids use (ADR 0009), JSON by the values its text says: an added null
+    column, a wider type, another encoding or JSON rendered again changes no hash, so schema
+    changes open no versions. The change time is left out:
     when a change happened is not what it changed. It is 16 bytes of `Binary`, as the sequence and
     lineage ids are, not the spec's `FixedSizeBinary(16)`; a delete's row carries none.
   - A table records whether it keeps history with its sequences' state record. A history stream
