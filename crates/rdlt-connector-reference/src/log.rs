@@ -64,6 +64,11 @@ pub struct LoggedStream {
     /// following run reads it again as it grows.
     #[serde(default)]
     pub bounded: bool,
+    /// How many of its newest messages each partition keeps, every one where none is set.
+    ///
+    /// A read that would resume from a message it dropped fails with `retention_lost`.
+    #[serde(default)]
+    pub retention: Option<u64>,
     /// Whether the log serves again what its group committed; a queue that forgets it refuses
     /// to read from before its committed offset.
     #[serde(default = "replayable")]
@@ -180,6 +185,24 @@ impl Logged {
             .saturating_add(u64::try_from(grown).unwrap_or(u64::MAX))
     }
 
+    /// The earliest offset a partition whose head is `head` still holds: all of them, or the
+    /// last `retention`.
+    fn earliest(&self, head: u64) -> u64 {
+        self.0
+            .retention
+            .map_or(0, |retention| head.saturating_sub(retention))
+    }
+
+    /// How long after `elapsed` the stream's partitions may next change; none once they never
+    /// will.
+    fn changes(&self, elapsed: Duration) -> Option<Duration> {
+        [self.0.later_after_ms, self.0.retired_after_ms]
+            .into_iter()
+            .map(Duration::from_millis)
+            .filter_map(|at| at.checked_sub(elapsed).filter(|left| !left.is_zero()))
+            .min()
+    }
+
     /// How long after `elapsed` the message at `offset` arrives; none where the log never grows.
     fn arrives(&self, offset: u64, elapsed: Duration) -> Option<Duration> {
         if self.0.per_second == 0 {
@@ -273,7 +296,17 @@ impl ReadStream<LogSource> for Logged {
         }
         // A read that does not follow returns at the head as it stood when the read started.
         let head_at_start = self.head(elapsed());
-        let mut next = cursor.next;
+        let earliest = self.earliest(head_at_start);
+        // A read from the start reads from the earliest message the log holds; one that would
+        // resume from before it finds its place dropped.
+        if cursor.next > 0 && cursor.next < earliest {
+            return Err(ConnectorError::retention_lost(format!(
+                "partition {id} holds offsets from {earliest}, not {}",
+                cursor.next
+            )));
+        }
+        let mut next = cursor.next.max(earliest);
+        let mut partitions = self.partitions(elapsed());
         loop {
             let head = if out.follows() {
                 self.head(elapsed())
@@ -285,11 +318,24 @@ impl ReadStream<LogSource> for Logged {
                 out.rows(&self.messages(source.seed, id, next..end)).await?;
                 next = end;
                 out.checkpoint(&Offset { next }).await?;
+                out.behind(self.head(elapsed()).saturating_sub(next))
+                    .await?;
             }
             if self.0.bounded || !out.follows() {
                 return Ok(());
             }
-            match self.arrives(next, elapsed()) {
+            // The first partition says when the stream's partitions change, as a consumer that
+            // sees a topic's partitions increased does.
+            let now = self.partitions(elapsed());
+            if id.as_str() == "p0" && now != partitions {
+                partitions = now;
+                out.replan().await?;
+            }
+            let wake = [self.arrives(next, elapsed()), self.changes(elapsed())]
+                .into_iter()
+                .flatten()
+                .min();
+            match wake {
                 None => {
                     out.stopped().await;
                     return Ok(());
