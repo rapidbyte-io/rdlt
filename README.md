@@ -66,6 +66,10 @@ write-ahead log: each load logs its batches and commits to a local directory, th
 a commit's frame is durable, and the next attempt commits again whatever the destination missed,
 leaving to newer loads the partitions they moved since. The simulation crashes loads mid-write and
 tears their logs, with sources that refuse to serve again what they acknowledged.
+A source that keeps its position outside the engine, as a replication slot or a consumer group
+does, says where it stands when certification asks, in process and through the protocol, and
+`S-ACK` checks that the position moves only to the cursors the engine says are committed, through
+a change stream's phases, reads that never end and the other clauses' reads.
 
 ## Development
 
