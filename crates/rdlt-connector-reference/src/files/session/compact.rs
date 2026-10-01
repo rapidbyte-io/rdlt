@@ -1,12 +1,17 @@
 //! Merging the files at the end of a table's list into one, so the list stays short however
 //! small the batches a table is written in.
 //!
-//! A file is merged with those after it while it holds at most twice their rows, so the files
-//! of a list at least halve in rows from each to the next: their number grows with the
-//! logarithm of the table's rows, and each row is rewritten as often. Row order is kept.
+//! The files a commit adds are merged with each other, and a file listed before them with those
+//! after it while it holds at most twice their rows. The files of a list then at least halve
+//! in rows from each to the next, unless two of them together would be larger than a full file:
+//! a table smaller than a full file lists as many files as the logarithm of its rows, and a row
+//! is rewritten about as often, since a merge leaves it in a file half as large again. Row
+//! order is kept.
 
 #[cfg(test)]
 mod tests;
+
+use std::ops::Range;
 
 use arrow_schema::{DataType, SchemaRef};
 use rdlt_connector::prelude::*;
@@ -19,30 +24,33 @@ use crate::files::io;
 use crate::files::manifest::{self, Listed};
 use crate::limits::COMPACT_BYTES;
 
-/// Merges the files at the end of `files`, the list of the table `name` or of its `generation`,
-/// into one file of commit `meta` where the list's rule asks for it; `created` gains the file.
+/// Merges runs of the files at the end of `files`, the list of the table `name` or of its
+/// `generation`, each into one file of commit `meta`, where the list's rule asks for it.
 ///
-/// A merge that fails changes nothing and leaves nothing: the list stays as it is, the commit
+/// The last `added` files are those the commit adds; `created` gains each file written. A merge
+/// that fails changes nothing and leaves nothing: its files stay listed as they are, the commit
 /// goes on, and the next commit tries again.
 pub(super) fn compact(
     location: &Location,
     name: &str,
     generation: Option<GenerationId>,
     files: &mut Vec<Listed>,
+    added: usize,
     meta: &CommitMeta,
     created: &mut Vec<String>,
 ) {
-    let Some(from) = tail(location, files) else {
-        return;
-    };
-    let written = created.len();
-    if let Ok(merged) = merged(location, name, generation, &files[from..], meta, created) {
-        files.truncate(from);
-        files.push(merged);
-    } else {
-        // Nothing of the try stays: neither a part of its file nor the directories made for it.
-        super::commit::remove(&location.dir, created[written..].iter());
-        created.truncate(written);
+    // The runs come latest first, so merging one moves no run still to merge.
+    for run in runs(location, files, added) {
+        let written = created.len();
+        let merging = &files[run.clone()];
+        if let Ok(merged) = merged(location, name, generation, merging, meta, created) {
+            files.splice(run, [merged]);
+        } else {
+            // Nothing of the try stays: neither a part of its file nor the directories made
+            // for it.
+            super::commit::remove(&location.dir, created[written..].iter());
+            created.truncate(written);
+        }
     }
 }
 
@@ -84,25 +92,50 @@ fn merged(
     })
 }
 
-/// Where the files to merge start in `files`, if more than the last is to be merged.
+/// The runs of `files` to merge, each into one file, the latest first; the last `added` files
+/// are those the commit adds.
+///
+/// The files a commit adds merge with each other whatever rows they hold, since a writer's
+/// batches come in any order of sizes; a file listed before them joins the run that reaches it
+/// while it holds at most twice the run's rows. Every two files next to each other then either
+/// at least halve in rows or are together larger than [`COMPACT_BYTES`].
+pub(super) fn runs(location: &Location, files: &[Listed], added: usize) -> Vec<Range<usize>> {
+    let fresh = files.len().saturating_sub(added);
+    let mut runs = Vec::new();
+    let mut end = files.len();
+    while end > 0 {
+        let start = run(location, files, end, fresh);
+        if end - start > 1 {
+            runs.push(start..end);
+        }
+        if start <= fresh {
+            break;
+        }
+        end = start;
+    }
+    runs
+}
+
+/// Where the run of files to merge that ends before `end` starts in `files`, of which those
+/// from `fresh` on are the commit's own.
 ///
 /// Only files of the session's format merge, an Arrow file only with files of its schema, a
 /// dictionary column counting as the values it stands for, and never into a file larger than
 /// [`COMPACT_BYTES`]. A file whose schema cannot be read merges with none.
-fn tail(location: &Location, files: &[Listed]) -> Option<usize> {
-    let last = files.len().checked_sub(1)?;
+fn run(location: &Location, files: &[Listed], end: usize, fresh: usize) -> usize {
+    let last = end - 1;
     let format = location.format;
     let formatted = |file: &Listed| FileFormat::named(&file.path) == Some(format);
     if !formatted(&files[last]) {
-        return None;
+        return last;
     }
     let (mut from, mut rows, mut bytes) = (last, files[last].rows, files[last].bytes);
     let mut schema = None;
     while from > 0 {
         let before = &files[from - 1];
-        let sized = before.rows <= rows.saturating_mul(2)
-            && before.bytes.saturating_add(bytes) <= COMPACT_BYTES;
-        if !sized || !formatted(before) {
+        let joins = from > fresh || before.rows <= rows.saturating_mul(2);
+        let sized = before.bytes.saturating_add(bytes) <= COMPACT_BYTES;
+        if !joins || !sized || !formatted(before) {
             break;
         }
         if format == FileFormat::Arrow {
@@ -118,7 +151,7 @@ fn tail(location: &Location, files: &[Listed]) -> Option<usize> {
         bytes = bytes.saturating_add(before.bytes);
         from -= 1;
     }
-    (from < last).then_some(from)
+    from
 }
 
 /// The schema the Arrow file `file` lists holds its batches in, its dictionaries as the values

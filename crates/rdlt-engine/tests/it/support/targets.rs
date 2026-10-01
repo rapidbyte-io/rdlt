@@ -131,22 +131,24 @@ impl Target {
         }
     }
 
-    /// How many data files a files destination keeps for `store`, published or staged.
-    pub(crate) fn data_files(self, store: &str) -> usize {
+    /// The data files a files destination keeps for `store`, published or staged, each with
+    /// its size in bytes.
+    pub(crate) fn data_files(self, store: &str) -> Vec<(PathBuf, u64)> {
         let extension = match self.kind() {
             Self::Jsonl => "jsonl",
             Self::Arrow => "arrow",
-            _ => return 0,
+            _ => return Vec::new(),
         };
         let mut pending = vec![self.path(store).join("_rdlt").join("pipelines")];
-        let mut found = 0;
+        let mut found = Vec::new();
         while let Some(dir) = pending.pop() {
             for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 let path = entry.path();
                 if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                     pending.push(path);
                 } else if path.extension().is_some_and(|found| found == extension) {
-                    found += 1;
+                    let bytes = entry.metadata().map_or(0, |metadata| metadata.len());
+                    found.push((path, bytes));
                 }
             }
         }
