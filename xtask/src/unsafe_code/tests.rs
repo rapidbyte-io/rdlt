@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::{AUDITED_CRATE, check, check_file, check_tree, target_roots};
+use super::{AUDITED_CRATE, check, check_file, check_tree, target_roots, unchecked};
 use crate::rules::Rule;
 
 const FORBIDS: &str = "//! A crate.\n\n#![forbid(unsafe_code)]\n\nfn f() {}\n";
@@ -433,4 +433,16 @@ fn this_repository_has_its_audited_crate() {
             .join("src/lib.rs")
             .is_file()
     );
+}
+
+#[test]
+fn a_workspace_that_is_not_listed_is_reported_by_its_manifest() {
+    let unlisted = vec![PathBuf::from("tools/Cargo.toml")];
+    let found: Vec<_> = unchecked(unlisted)
+        .into_iter()
+        .map(|(path, finding)| (path.display().to_string(), finding.rule, finding.line))
+        .collect();
+    let expected = vec![("tools/Cargo.toml".to_owned(), Rule::UnlistedWorkspace, 1)];
+    assert_eq!(found, expected);
+    assert!(unchecked(Vec::new()).is_empty());
 }
