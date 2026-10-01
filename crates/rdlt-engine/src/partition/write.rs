@@ -81,7 +81,10 @@ fn hold(
     let held = batches
         .iter()
         .map(|batch| {
-            let bytes = rendering.cost(batch, budget.capacity()).charge();
+            // What the batch keeps alive, or what it becomes where that is more, as far as the
+            // budget goes: it is lowered a slice at a time.
+            let cost = rendering.cost(batch, budget.capacity());
+            let bytes = cost.held.max(cost.expanded.min(budget.capacity()));
             let permit: Permit = Box::new(budget.charge(bytes));
             Held::of(vec![permit], bytes, std::slice::from_ref(batch))
         })

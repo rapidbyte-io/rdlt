@@ -164,6 +164,43 @@ fn bytes_reserved_before_a_unit_grows_pay_for_its_growth() {
 }
 
 #[test]
+fn a_shredded_batch_expanding_beyond_the_budget_is_charged_the_budget_or_what_it_holds() {
+    // Nested values cost their JSON text: far more than these lists of small integers hold.
+    let items: ArrayRef = Arc::new(arrow_array::Int8Array::from(vec![1; 10_000]));
+    let lists: ArrayRef = Arc::new(arrow_array::ListArray::new(
+        Arc::new(arrow_schema::Field::new(
+            "item",
+            arrow_schema::DataType::Int8,
+            true,
+        )),
+        arrow_buffer::OffsetBuffer::from_lengths([10_000]),
+        items,
+        None,
+    ));
+    let batch = RecordBatch::try_from_iter([("l", lists)]).unwrap();
+    let held = allocated(&batch);
+    assert!(charge(&batch) > 4 * held);
+    // A budget between the two: the expansion is charged as far as the budget goes.
+    let budget = MemoryBudget::new(2 * held);
+    drop(hold(
+        &budget,
+        &native(),
+        std::slice::from_ref(&batch),
+        Vec::new(),
+    ));
+    assert_eq!(budget.peak(), 2 * held);
+    // A budget below what the batch keeps alive: that is charged whole.
+    let small = MemoryBudget::new(held / 2);
+    drop(hold(
+        &small,
+        &native(),
+        std::slice::from_ref(&batch),
+        Vec::new(),
+    ));
+    assert_eq!(small.peak(), held);
+}
+
+#[test]
 fn the_loads_constant_columns_count_for_no_growth() {
     let rows = ids(100);
     let constant = ids(100);

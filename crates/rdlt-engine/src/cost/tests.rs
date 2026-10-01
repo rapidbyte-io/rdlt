@@ -488,3 +488,17 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
     assert_eq!(budget.reserved(), 0);
     assert!(Admitted::of(Box::new(7_u8)).is_none());
 }
+
+#[tokio::test]
+async fn a_push_expanding_beyond_the_budget_holds_the_budget_and_no_more() {
+    let (budget, admission) = charging(1_000);
+    // A million rows of a wide value: far more than the budget, measured in one step.
+    let wide = arrow_array::new_null_array(&DataType::FixedSizeBinary(64), 1_000_000);
+    let batch = RecordBatch::try_from_iter([("w", wide)]).unwrap();
+    let permit = admission
+        .admit(&SourceEvent::Push(Push::Arrow(batch)))
+        .await;
+    assert_eq!(budget.reserved(), 1_000);
+    // What it says it holds is what the budget reserved, so nothing later counts as paid for.
+    assert_eq!(Admitted::of(permit.unwrap()).unwrap().bytes, 1_000);
+}
