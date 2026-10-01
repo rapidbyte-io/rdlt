@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use rdlt_connector::testing::{Outcome, Report};
+use rdlt_connector::testing::{Outcome, Reason, Report};
 use serde_json::{Value, json};
 
 /// `report` as text for a terminal: what the connector said is shown, not obeyed, and on its own
@@ -29,6 +29,11 @@ pub fn plain(report: &Report) -> String {
         .chain(lines)
         .chain(std::iter::once(format!("{}\n", report.summary())))
         .collect()
+}
+
+/// `text` as one line for a terminal: cut where a clause's reason is, then shown, not obeyed.
+pub fn line(text: impl std::fmt::Display) -> String {
+    shown(Reason::new(text).as_str())
 }
 
 /// `text` with each character a terminal would act on escaped: controls, line breaks among them,
@@ -75,7 +80,7 @@ pub fn json(report: &Report) -> Value {
                 "statement": result.clause.statement,
                 "outcome": outcome,
                 "reason": reason,
-                "note": result.note.as_ref().map(rdlt_connector::testing::Reason::as_str),
+                "note": result.note.as_ref().map(Reason::as_str),
             })
         })
         .collect();

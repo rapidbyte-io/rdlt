@@ -1,6 +1,7 @@
 //! The command line: which connector, how to reach it and with what configuration, and how to
 //! print what it met.
 
+mod panics;
 #[cfg(test)]
 mod tests;
 
@@ -111,6 +112,7 @@ struct Ended(u8, String);
 
 /// Runs the command line.
 pub(crate) fn main() -> ExitCode {
+    panics::contain();
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(error) => {
