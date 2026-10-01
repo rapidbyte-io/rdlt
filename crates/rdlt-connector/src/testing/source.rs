@@ -12,7 +12,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use super::limits::CLAUSE_TIMEOUT;
+use super::limits::{CLAUSE_TIMEOUT, HELD_BYTES};
 use super::{
     Clause, ClauseResult, Observed, Outcome, Reason, Report, Violation, bounded_call, outcome,
     timed,
@@ -98,10 +98,32 @@ pub async fn certify_source_factory_observed(
     config: serde_json::Value,
     observed: &Observed,
 ) -> Report {
+    certified(factory, config, observed, HELD_BYTES).await
+}
+
+/// Certifies source connector `C` with `config`, each clause holding `held` bytes of what its
+/// reads send in place of [`HELD_BYTES`]: what holds too little is then a short read.
+#[cfg(test)]
+pub(super) async fn certify_source_holding<C: SourceConnector>(
+    config: serde_json::Value,
+    held: usize,
+) -> Report {
+    let factory = source_factory::<C>();
+    certified(factory.as_ref(), config, &Observed::new(), held).await
+}
+
+/// Certifies the source `factory` creates from `config`, each clause holding `held` bytes,
+/// telling `observed` each clause's result as its check ends.
+async fn certified(
+    factory: &dyn SourceFactory,
+    config: serde_json::Value,
+    observed: &Observed,
+    held: usize,
+) -> Report {
     let connector = factory.spec().id.to_string();
     observed.named(&connector);
     let results = match connected(factory, config).await {
-        Ok((source, told)) => check_all(source.as_ref(), told, observed).await,
+        Ok((source, told)) => check_all(source.as_ref(), told, observed, held).await,
         Err(violation) => {
             let outcome = violation.of("connect failed").outcome();
             let failed = |clause: &Clause| ClauseResult {
@@ -181,13 +203,18 @@ async fn stood(
     }
 }
 
-async fn check_all(source: &dyn Source, told: Told, observed: &Observed) -> Vec<ClauseResult> {
+async fn check_all(
+    source: &dyn Source,
+    told: Told,
+    observed: &Observed,
+    held: usize,
+) -> Vec<ClauseResult> {
     let catalog = bounded_call("discover", source.discover()).await;
     let mut told = stood(source, told, catalog.as_ref().ok()).await;
     let mut results = Vec::new();
     for clause in SOURCE_CLAUSES {
         // What a clause holds of the source's reads, all of them together.
-        let budget = Budget::new();
+        let budget = Budget::holding(held);
         let outcome = match (&catalog, clause.id) {
             (_, "S-CHECK") => {
                 outcome(timed(check_agrees_with_read(source, catalog.as_ref())).await)

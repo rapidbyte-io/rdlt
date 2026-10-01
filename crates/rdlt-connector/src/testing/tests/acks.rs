@@ -288,11 +288,14 @@ async fn asking_where_many_slow_partitions_stand_is_bounded_and_fails_s_ack_alon
 
 #[tokio::test(start_paused = true)]
 async fn a_queue_that_checkpoints_more_than_a_clause_holds_leaves_s_ack_unobserved() {
-    use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES};
-    // More checkpoints than a clause holds, were each no more than what holds it.
-    let messages = HELD_BYTES / HELD_EVENT_BYTES + 1;
+    use crate::testing::limits::HELD_EVENT_BYTES;
+    use crate::testing::source::certify_source_holding;
+    // More checkpoints than a clause holds, were each no more than what holds it: of a clause
+    // that holds little, so the queue need not be long.
+    let held = 64 * HELD_EVENT_BYTES;
+    let messages = held / HELD_EVENT_BYTES + 1;
     let config = json!({ "name": "long", "messages": messages });
-    let report = certify_source::<Queue>(config).await;
+    let report = certify_source_holding::<Queue>(config, held).await;
     assert!(
         matches!(outcome(&report), Outcome::Unobserved(_)),
         "{report}"
