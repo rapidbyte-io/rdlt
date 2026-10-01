@@ -22,7 +22,9 @@ complete, run only connectors you trust. The mechanisms in place today:
 ## Build and supply chain
 
 - `unsafe` code is in one audited crate, `rdlt-adopt`. Every other crate, test, example, bench
-  and fuzz target forbids it, which the compiler enforces.
+  and fuzz target forbids it, which the compiler enforces for the code it compiles there; the
+  lint rejects the keyword everywhere else it is a token, macro bodies included, which the
+  compiler does not check.
 - Dependencies are locked, and every lockfile is checked against the RustSec advisory database
   on each change and each night.
 - Development and CI tools are locked to a release archive and its checksum; GitHub Actions are

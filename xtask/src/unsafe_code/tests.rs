@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{AUDITED_CRATE, check, check_tree, target_roots};
+use super::{AUDITED_CRATE, check, check_file, check_tree, target_roots};
 use crate::rules::Rule;
 
 const FORBIDS: &str = "//! A crate.\n\n#![forbid(unsafe_code)]\n\nfn f() {}\n";
@@ -178,6 +178,13 @@ fn a_tree_without_the_audited_crate_is_clean() {
     assert_eq!(found(root.path(), &[]), Vec::new());
 }
 
+fn in_file(path: &str, source: &str) -> Vec<(Rule, usize)> {
+    check_file(Path::new(path), source)
+        .into_iter()
+        .map(|finding| (finding.rule, finding.line))
+        .collect()
+}
+
 // Code the audited files would compile from another file is code nobody audited.
 #[test]
 fn the_audited_files_bring_in_no_other_file() {
@@ -187,6 +194,7 @@ fn the_audited_files_bring_in_no_other_file() {
         ("const A: &str = include_str!(\"x\");\n", 1),
         ("const A: &[u8] = include_bytes!(\"x\");\n", 1),
         ("#[path = \"../../other.rs\"]\nmod other;\n", 1),
+        ("#[path = \"other.rs\"]\nmod other;\n", 1),
         ("\n\n#[cfg_attr(unix, path = \"x.rs\")]\nmod other;\n", 3),
         ("mod other {\n    #![path = \"x\"]\n}\n", 2),
         ("r#include!(\"x.inc\");\n", 1),
@@ -203,23 +211,20 @@ fn the_audited_files_bring_in_no_other_file() {
     ];
     for file in ["src/lib.rs", "src/tests.rs"] {
         for (source, line) in sources {
-            let root = tree();
-            let path = format!("{AUDITED_CRATE}/{file}");
-            write(root.path(), &path, source);
-            let findings = check_tree(root.path(), &[]).unwrap();
-            let found: Vec<_> = findings
-                .iter()
-                .map(|(path, finding)| (path.display().to_string(), finding.rule, finding.line))
-                .collect();
-            let expected = vec![(path, Rule::IncludedCode, line)];
-            assert_eq!(found, expected, "source: {source:?}");
+            let found = in_file(&format!("{AUDITED_CRATE}/{file}"), source);
+            assert_eq!(
+                found,
+                vec![(Rule::IncludedCode, line)],
+                "source: {source:?}"
+            );
         }
     }
 }
 
 #[test]
-fn the_audited_files_may_name_paths_and_inclusion_in_prose_and_text() {
+fn the_audited_files_may_hold_unsafe_code_and_name_inclusion_in_prose_and_text() {
     let sources = [
+        "// SAFETY: audited\nfn f(p: *const u8) -> u8 {\n    unsafe { *p }\n}\n",
         "// include!(\"x\")\n/// #[path = \"x\"]\nfn f() {}\n",
         "const A: &str = \"include!(x) #[path = y]\";\n",
         "fn f(path: &str) -> &str {\n    path\n}\n",
@@ -229,18 +234,131 @@ fn the_audited_files_may_name_paths_and_inclusion_in_prose_and_text() {
         "#[derive(path::Trait)]\n#[cfg(feature = \"path\")]\nstruct A;\n",
     ];
     for source in sources {
-        let root = tree();
-        write(root.path(), &format!("{AUDITED_CRATE}/src/lib.rs"), source);
-        assert_eq!(found(root.path(), &[]), Vec::new(), "source: {source:?}");
+        let found = in_file(&format!("{AUDITED_CRATE}/src/lib.rs"), source);
+        assert_eq!(found, Vec::new(), "source: {source:?}");
     }
 }
 
 #[test]
 fn an_audited_file_that_cannot_be_read_as_rust_is_reported() {
-    let root = tree();
-    let path = format!("{AUDITED_CRATE}/src/lib.rs");
-    write(root.path(), &path, "const A: &str = \"open;\n");
-    assert_eq!(found(root.path(), &[]), vec![(path, Rule::IncludedCode)]);
+    let found = in_file(
+        &format!("{AUDITED_CRATE}/src/lib.rs"),
+        "const A: &str = \"open;\n",
+    );
+    assert_eq!(found, vec![(Rule::IncludedCode, 1)]);
+}
+
+// The compiler's forbid does not reach the body of a macro's definition, nor what another
+// crate's macro expands to: the keyword is reported wherever it is a token.
+#[test]
+fn unsafe_is_reported_wherever_it_is_a_token() {
+    let sources = [
+        ("fn f(p: *const u8) -> u8 {\n    unsafe { *p }\n}\n", 2),
+        ("unsafe fn f() {}\n", 1),
+        ("struct A;\nunsafe impl Send for A {}\n", 2),
+        ("#[unsafe(no_mangle)]\nfn f() {}\n", 1),
+        (
+            "#[macro_export]\nmacro_rules! read {\n    ($p:expr) => {\n        unsafe { *$p }\n    };\n}\n",
+            4,
+        ),
+        (
+            "macro_rules! link {\n    () => {\n        unsafe extern \"C\" {\n            fn f();\n        }\n    };\n}\n",
+            3,
+        ),
+        (
+            "fn expand() -> TokenStream {\n    quote! {\n        unsafe { *pointer }\n    }\n}\n",
+            3,
+        ),
+        ("fn f() {\n    let r#unsafe = 1;\n}\n", 2),
+        ("m!(unsafe);\n", 1),
+    ];
+    for path in [
+        "crates/a/src/lib.rs",
+        "crates/a/src/deep/module.rs",
+        "crates/a/tests/it/main.rs",
+        "crates/rdlt-wire/src/generated/rdlt.connector.v1.rs",
+        "fuzz/fuzz_targets/t.rs",
+        "xtask/src/main.rs",
+    ] {
+        for (source, line) in sources {
+            let found = in_file(path, source);
+            assert_eq!(found, vec![(Rule::Unsafe, line)], "{path}: {source:?}");
+        }
+    }
+}
+
+#[test]
+fn unsafe_in_text_prose_and_longer_names_is_not_code() {
+    let sources = [
+        "#![forbid(unsafe_code)]\n",
+        "const A: &str = \"unsafe { *p }\";\n",
+        "const A: &str = r#\"unsafe\"#;\n",
+        "const A: &core::ffi::CStr = c\"unsafe\";\n",
+        "// unsafe { *p }\n/* unsafe */\nfn f() {}\n",
+        "/// unsafe { *p }\nfn f() {}\n",
+        "//! unsafe\n",
+        "fn unsafe_code() {}\nfn not_unsafe() {}\n",
+    ];
+    for source in sources {
+        assert_eq!(
+            in_file("crates/a/src/lib.rs", source),
+            Vec::new(),
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn a_file_that_cannot_be_read_as_rust_is_reported() {
+    let found = in_file("crates/a/src/lib.rs", "const A: &str = \"open;\n");
+    assert_eq!(found, vec![(Rule::Unsafe, 1)]);
+}
+
+// A module or an included file from outside the linted sources is code no rule read.
+#[test]
+fn code_comes_only_from_rust_files_beneath_the_crate() {
+    let sources = [
+        ("include!(\"x.rs\");\n", 1),
+        ("r#include!(\"x.rs\");\n", 1),
+        ("m!(include);\n", 1),
+        ("#[path = \"x.inc\"]\nmod x;\n", 1),
+        ("#[path = \"x\"]\nmod x;\n", 1),
+        ("#[path = \"../x.rs\"]\nmod x;\n", 1),
+        ("#[path = \"a/../../x.rs\"]\nmod x;\n", 1),
+        ("#[path = \"/tmp/x.rs\"]\nmod x;\n", 1),
+        ("\n#[cfg_attr(unix, path = \"x.inc\")]\nmod x;\n", 2),
+        ("#[path = concat!(\"x\", \".rs\")]\nmod x;\n", 1),
+        ("#[path = b\"x.rs\"]\nmod x;\n", 1),
+        ("#[r#path = \"x.inc\"]\nmod x;\n", 1),
+        ("#[path =]\nmod x;\n", 1),
+    ];
+    for (source, line) in sources {
+        let found = in_file("crates/a/src/lib.rs", source);
+        assert_eq!(
+            found,
+            vec![(Rule::IncludedCode, line)],
+            "source: {source:?}"
+        );
+    }
+}
+
+#[test]
+fn a_module_may_live_in_a_rust_file_beneath_the_crate_and_data_may_be_included() {
+    let sources = [
+        "#[path = \"generated/rdlt.connector.v1.rs\"]\nmod generated;\n",
+        "#[path = \"x.rs\"]\nmod x;\n",
+        "#[cfg_attr(unix, path = \"unix.rs\")]\nmod x;\n",
+        "#[path = r\"a/x.rs\"]\nmod x;\n",
+        "const A: &[u8] = include_bytes!(\"a.bin\");\nconst B: &str = include_str!(\"b.txt\");\n",
+        "fn f(path: &str, included: bool) {}\n",
+    ];
+    for source in sources {
+        assert_eq!(
+            in_file("crates/a/src/lib.rs", source),
+            Vec::new(),
+            "{source:?}"
+        );
+    }
 }
 
 #[test]

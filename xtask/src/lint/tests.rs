@@ -49,10 +49,34 @@ fn a_tree_without_source_roots_is_clean() {
 }
 
 #[test]
-fn the_generated_file_is_not_linted() {
+fn the_generated_file_is_held_to_no_comment_or_style_rule() {
     let root = tempfile::tempdir().unwrap();
     write(root.path(), GENERATED, "// TODO: later\nfn f() {}\n");
     assert!(lint_tree(root.path()).unwrap().is_empty());
+}
+
+// Generated code is compiled like any other: only what is about its prose is skipped.
+#[test]
+fn unsafe_code_is_reported_in_every_file_the_generated_one_included() {
+    for path in [
+        GENERATED,
+        "crates/a/src/x.rs",
+        "crates/a/tests/it/x.rs",
+        "fuzz/fuzz_targets/t.rs",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        write(
+            root.path(),
+            path,
+            "macro_rules! m {\n    () => {\n        unsafe {}\n    };\n}\n",
+        );
+        let found: Vec<(String, Rule, usize)> = lint_tree(root.path())
+            .unwrap()
+            .into_iter()
+            .map(|(path, finding)| (path.display().to_string(), finding.rule, finding.line))
+            .collect();
+        assert_eq!(found, vec![(path.to_owned(), Rule::Unsafe, 3)]);
+    }
 }
 
 // Only the fuzzing build's output and the generated file are skipped, by their paths: a directory

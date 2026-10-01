@@ -9,7 +9,7 @@ mod tests;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context as _;
 use cargo_metadata::MetadataCommand;
@@ -67,6 +67,38 @@ pub(crate) fn target_roots(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(roots.into_iter().collect())
 }
 
+/// Every finding in the tokens of the Rust file at `path`, relative to the repository root.
+///
+/// Outside the audited crate, `unsafe` is reported wherever it is a token, a macro's body
+/// included, and so is code brought in from a file the lint does not read. In the audited crate,
+/// any file brought in is.
+pub(crate) fn check_file(path: &Path, source: &str) -> Vec<Finding> {
+    let audited = path.starts_with(AUDITED_CRATE);
+    let mut findings = Vec::new();
+    match source.parse::<TokenStream>() {
+        Ok(tokens) => {
+            let held = Held {
+                audited,
+                in_attribute: false,
+            };
+            find_tokens(tokens, held, &mut findings);
+        }
+        Err(error) => {
+            let rule = if audited {
+                Rule::IncludedCode
+            } else {
+                Rule::Unsafe
+            };
+            findings.push(finding(
+                1,
+                rule,
+                format!("a linted file is Rust source: {error}"),
+            ));
+        }
+    }
+    findings
+}
+
 /// Every finding in the tree under `root`, whose targets' root files are `roots`.
 pub(crate) fn check_tree(
     root: &Path,
@@ -97,11 +129,6 @@ pub(crate) fn check_tree(
         if !AUDITED_FILES.iter().any(|file| path == dir.join(file)) {
             let message = format!("{AUDITED_CRATE} holds only its audited files");
             all.push((relative, finding(1, Rule::UnauditedFile, message)));
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            let source =
-                fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-            let found = inclusions(&source);
-            all.extend(found.into_iter().map(|found| (relative.clone(), found)));
         }
     }
     Ok(all)
@@ -140,20 +167,16 @@ fn forbids_unsafe(source: &str) -> bool {
     })
 }
 
-/// Every place the audited file `source` would compile another file's contents.
-fn inclusions(source: &str) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    match source.parse::<TokenStream>() {
-        Ok(tokens) => find_inclusions(tokens, false, &mut findings),
-        Err(error) => {
-            let message = format!("an audited file is Rust source: {error}");
-            findings.push(finding(1, Rule::IncludedCode, message));
-        }
-    }
-    findings
+/// What a file's tokens are held to.
+#[derive(Clone, Copy)]
+struct Held {
+    /// The file is the audited crate's: it may hold `unsafe` code, and bring in no other file.
+    audited: bool,
+    /// The tokens are inside an attribute.
+    in_attribute: bool,
 }
 
-fn find_inclusions(tokens: TokenStream, in_attribute: bool, findings: &mut Vec<Finding>) {
+fn find_tokens(tokens: TokenStream, held: Held, findings: &mut Vec<Finding>) {
     let mut after_hash = false;
     let mut tokens = tokens.into_iter().peekable();
     while let Some(token) = tokens.next() {
@@ -161,16 +184,36 @@ fn find_inclusions(tokens: TokenStream, in_attribute: bool, findings: &mut Vec<F
         match token {
             TokenTree::Group(group) => {
                 let attribute = after_hash && group.delimiter() == Delimiter::Bracket;
-                find_inclusions(group.stream(), in_attribute || attribute, findings);
+                let in_attribute = held.in_attribute || attribute;
+                find_tokens(
+                    group.stream(),
+                    Held {
+                        in_attribute,
+                        ..held
+                    },
+                    findings,
+                );
             }
             TokenTree::Ident(ident) => {
                 let name = ident.unraw();
-                let included = INCLUDES.iter().any(|include| name == include);
-                let path = in_attribute && name == "path" && punct(tokens.peek(), '=');
+                let line = ident.span().start().line;
+                if name == "unsafe" && !held.audited {
+                    let message = format!("`unsafe` code lives only in {AUDITED_CRATE}");
+                    findings.push(finding(line, Rule::Unsafe, message));
+                }
+                let included = if held.audited {
+                    INCLUDES.iter().any(|banned| name == banned)
+                } else {
+                    name == "include"
+                };
+                let assigned = held.in_attribute && name == "path" && punct(tokens.peek(), '=');
+                let path = assigned && {
+                    tokens.next();
+                    held.audited || !tokens.peek().is_some_and(beneath_the_crate)
+                };
                 if included || path {
-                    let line = ident.span().start().line;
-                    let message =
-                        "audited code is in its audited files: no `include!`, no `#[path]`";
+                    let message = "code comes from linted Rust files: no `include!`, and \
+                                   `#[path]` only to a `.rs` file beneath the crate";
                     findings.push(finding(line, Rule::IncludedCode, message));
                 }
             }
@@ -178,6 +221,23 @@ fn find_inclusions(tokens: TokenStream, in_attribute: bool, findings: &mut Vec<F
         }
         after_hash = hash;
     }
+}
+
+/// Whether `token` is a string literal naming a Rust file at or beneath the directory it is
+/// resolved from.
+fn beneath_the_crate(token: &TokenTree) -> bool {
+    let TokenTree::Literal(literal) = token else {
+        return false;
+    };
+    let syn::Lit::Str(path) = syn::Lit::new(literal.clone()) else {
+        return false;
+    };
+    let path = path.value();
+    let path = Path::new(&path);
+    path.extension().is_some_and(|extension| extension == "rs")
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 /// Whether `token` is the punctuation character `c`.

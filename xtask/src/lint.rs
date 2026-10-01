@@ -16,14 +16,16 @@ use crate::lexer::scan;
 use crate::rules::{self, FileRole, Finding, Severity};
 use crate::unsafe_code;
 
-/// Paths never scanned, relative to the repository root: the fuzzing build's output, and the code
-/// generated from the protocol's definitions.
-const SKIPPED: &[&str] = &["fuzz/target", GENERATED];
+/// Build output, never scanned, relative to the repository root.
+const BUILD_OUTPUT: &str = "fuzz/target";
 
 /// Directories scanned for Rust sources, relative to the repository root.
 const SOURCE_ROOTS: &[&str] = &["crates", "fuzz", "xtask"];
 
 /// Every finding in the tree under `root`, with paths relative to `root`.
+///
+/// The code generated from the protocol's definitions is held to no comment or style rule, and
+/// to every rule about `unsafe` code.
 pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> {
     let mut all = Vec::new();
     for dir in SOURCE_ROOTS
@@ -32,8 +34,7 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
         .filter(|dir| dir.exists())
     {
         let walk = WalkDir::new(&dir).sort_by_file_name().into_iter();
-        let skipped = |path: &Path| SKIPPED.iter().any(|skipped| path == root.join(skipped));
-        for entry in walk.filter_entry(|entry| !skipped(entry.path())) {
+        for entry in walk.filter_entry(|entry| entry.path() != root.join(BUILD_OUTPUT)) {
             let entry = entry.with_context(|| format!("walking {}", dir.display()))?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "rs") {
@@ -42,9 +43,16 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
             let source =
                 fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
             let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-            for finding in rules::check(FileRole::of(&relative), &scan(&source)) {
-                all.push((relative.clone(), finding));
+            let mut findings = Vec::new();
+            if relative != Path::new(GENERATED) {
+                findings = rules::check(FileRole::of(&relative), &scan(&source));
             }
+            findings.extend(unsafe_code::check_file(&relative, &source));
+            all.extend(
+                findings
+                    .into_iter()
+                    .map(|finding| (relative.clone(), finding)),
+            );
         }
     }
     Ok(all)

@@ -31,6 +31,7 @@ pub(crate) enum Rule {
     FileLength,
     StringlyError,
     UnbiasedSelect,
+    Unsafe,
     UnforbiddenUnsafe,
     UnauditedFile,
     IncludedCode,
