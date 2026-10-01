@@ -8,13 +8,14 @@
 
 use std::collections::BTreeMap;
 
+use super::json::Records;
 use super::placed;
 use super::recording::{Budget, Recording, record};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::sink::Push;
 use crate::source::{Partition, PartitionPlan, Source};
 use crate::state::{PartitionState, StreamState};
-use crate::testing::limits::RENDERED_BYTES;
+use crate::testing::limits::{RENDERED_BYTES, YIELD_BYTES};
 use crate::testing::render::Rendering;
 use crate::testing::{Outcome, Violation, bounded_call, outcome};
 
@@ -139,22 +140,34 @@ impl Rows {
         pushes: impl Iterator<Item = &'a Push>,
     ) -> Result<(), Violation> {
         for push in pushes {
-            let rows = match push {
-                Push::Json(bytes) => {
-                    let rows: Vec<serde_json::Value> =
-                        serde_json::from_slice(bytes).unwrap_or_default();
-                    let rows: Vec<String> = rows.iter().map(ToString::to_string).collect();
-                    rows.iter()
-                        .try_for_each(|row| rendering.charge(row))
-                        .map(|()| rows)
-                }
-                Push::Arrow(batch) | Push::Changes(batch) => rendering.rows(batch, |_| true).await,
-            };
             // Rows that cannot be compared leave the clause unobserved: they break nothing.
-            for row in rows.map_err(Violation::unobserved)? {
-                *self.0.entry(row).or_default() += 1;
+            match push {
+                Push::Json(text) => self.json(rendering, text).await?,
+                Push::Arrow(batch) | Push::Changes(batch) => {
+                    let rows = rendering.rows(batch, |_| true).await;
+                    for row in rows.map_err(Violation::unobserved)? {
+                        *self.0.entry(row).or_default() += 1;
+                    }
+                }
             }
             tokio::task::yield_now().await;
+        }
+        Ok(())
+    }
+
+    /// Counts each row of `text`, a JSON push made canonical: each record is its row's text,
+    /// charged before it is kept.
+    async fn json(&mut self, rendering: &mut Rendering, text: &[u8]) -> Result<(), Violation> {
+        let mut yielded = 0;
+        for record in Records::new(text) {
+            let end = record.end;
+            let row = String::from_utf8_lossy(&text[record]);
+            rendering.charge(&row).map_err(Violation::unobserved)?;
+            *self.0.entry(row.into_owned()).or_default() += 1;
+            if end - yielded >= YIELD_BYTES {
+                yielded = end;
+                tokio::task::yield_now().await;
+            }
         }
         Ok(())
     }

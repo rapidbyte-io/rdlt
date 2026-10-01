@@ -6,8 +6,7 @@ mod tests;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use bytes::Bytes;
-
+use super::json;
 use crate::catalog::StreamSpec;
 use crate::cursor::Cursor;
 use crate::sink::{Push, SourceEvent, partition_channel};
@@ -31,11 +30,11 @@ impl Budget {
         }
     }
 
-    /// Charges a push the clause holds.
-    fn push(&self, push: &Push) -> Result<(), Violation> {
+    /// Charges a push the clause holds, a JSON push for the records its text holds.
+    async fn push(&self, push: &Push) -> Result<(), Violation> {
         let rows = match push {
             Push::Arrow(batch) | Push::Changes(batch) => batch.num_rows(),
-            Push::Json(_) => 0,
+            Push::Json(text) => json::counted(text).await?,
         };
         let bytes = usize::try_from(push.bytes()).unwrap_or(usize::MAX);
         self.charge(bytes, rows)
@@ -84,12 +83,12 @@ pub(super) struct Recording {
 }
 
 impl Recording {
-    /// Holds `event`, charged to `budget` before it is held.
-    fn hold(&mut self, event: SourceEvent, budget: &Budget) -> Result<(), Violation> {
+    /// Holds `event`, charged to `budget` before it is held, or parsed.
+    async fn hold(&mut self, event: SourceEvent, budget: &Budget) -> Result<(), Violation> {
         match event {
             SourceEvent::Push(push) => {
-                budget.push(&push)?;
-                self.tail.push(normalize(push));
+                budget.push(&push).await?;
+                self.tail.push(normalize(push).await);
             }
             SourceEvent::Checkpoint { cursor, answers } => {
                 budget.cursor(&cursor)?;
@@ -123,7 +122,7 @@ pub(super) async fn record(
     let collect = async {
         let mut recording = Recording::default();
         while let Some(event) = feed.recv().await {
-            if let Err(beyond) = recording.hold(event, budget) {
+            if let Err(beyond) = recording.hold(event, budget).await {
                 feed.stop();
                 while feed.recv().await.is_some() {}
                 return Err(beyond);
@@ -142,22 +141,10 @@ pub(super) async fn record(
     Ok(recording)
 }
 
-/// Rewrites JSON pushes canonically, so equal rows compare equal whatever their formatting.
-pub(in crate::testing) fn normalize(push: Push) -> Push {
+/// Rewrites a JSON push canonically, so equal rows compare equal whatever their formatting.
+pub(in crate::testing) async fn normalize(push: Push) -> Push {
     match push {
-        Push::Json(bytes) => {
-            let rows: Vec<serde_json::Value> =
-                match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    Ok(serde_json::Value::Array(rows)) => rows,
-                    _ => serde_json::Deserializer::from_slice(&bytes)
-                        .into_iter()
-                        .filter_map(Result::ok)
-                        .collect(),
-                };
-            Push::Json(Bytes::from(
-                serde_json::to_vec(&rows).expect("JSON values serialize"),
-            ))
-        }
+        Push::Json(text) => Push::Json(json::canonical(&text).await),
         other => other,
     }
 }

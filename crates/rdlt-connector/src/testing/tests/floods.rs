@@ -93,6 +93,14 @@ impl ReadStream<Flood> for Pushes {
         cursor: u64,
         out: &mut Emitter<u64>,
     ) -> Result<()> {
+        if let Some(text) = json(&source.0.pushes, source.0.count) {
+            if cursor == 0 {
+                out.json(text).await?;
+                took(&source.0.name, 1);
+                out.checkpoint(&1).await?;
+            }
+            return Ok(());
+        }
         let column: ArrayRef = match source.0.pushes.as_str() {
             "wide" => Arc::new(BinaryArray::from_iter_values([vec![7_u8; 1 << 20]])),
             "nulls" => Arc::new(NullArray::new(1 << 20)),
@@ -110,6 +118,40 @@ impl ReadStream<Flood> for Pushes {
         }
         Ok(())
     }
+}
+
+/// One JSON push of `mebibytes`: for `json`, an array of rows of a byte each; for `nested`, an
+/// array of one row holding as many; none for pushes that are no JSON.
+fn json(pushes: &str, mebibytes: u64) -> Option<bytes::Bytes> {
+    let (open, close): (&[u8], &[u8]) = match pushes {
+        "json" => (b"[", b"]"),
+        "nested" => (b"[[", b"]]"),
+        _ => return None,
+    };
+    let rows = usize::try_from(mebibytes).unwrap() << 19;
+    let mut text = Vec::with_capacity(rows * 2 + 4);
+    text.extend_from_slice(open);
+    for row in 0..rows {
+        text.extend_from_slice(if row == 0 { b"0" } else { b",0" });
+    }
+    text.extend_from_slice(close);
+    Some(text.into())
+}
+
+/// The most memory this process has held, in mebibytes.
+#[cfg(target_os = "linux")]
+fn peak() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let peak = status
+        .lines()
+        .find(|line| line.starts_with("VmHWM"))
+        .unwrap();
+    peak.split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        / 1024
 }
 
 /// The events a read may run ahead of the clause that reads it: the channel between them.
@@ -193,6 +235,53 @@ async fn an_instant_no_calendar_holds_is_compared_instead_of_panicking() {
     assert!(failed(&report).is_empty(), "{report}");
     assert_eq!(
         report.outcome("S-PARTITION"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_json_push_is_charged_for_its_rows_before_it_is_parsed_and_expands_to_no_more() {
+    // Sixteen mebibytes of rows of a byte each, and of one row holding as many values: within
+    // the bytes a clause holds, and many times them once parsed into a tree.
+    for pushes in ["json", "nested"] {
+        let before = peak();
+        let began = Instant::now();
+        let config = json!({ "name": pushes, "pushes": pushes, "count": 16 });
+        let report = certify_source::<Flood>(config).await;
+        assert!(failed(&report).is_empty(), "{pushes}: {report}");
+        for clause in ["S-RESUME", "S-PARTITION", "S-STOP"] {
+            let outcome = report.outcome(clause);
+            assert!(
+                matches!(outcome, Some(Outcome::Unobserved(_))),
+                "{pushes} {clause}: {report}"
+            );
+        }
+        // The push itself, where it was made and where it was held, and little else.
+        let grown = peak().saturating_sub(before);
+        assert!(grown < 128, "{pushes}: {grown} MiB more were held");
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "{pushes}: {:?}",
+            began.elapsed()
+        );
+    }
+}
+
+#[tokio::test]
+async fn json_rows_within_what_a_clause_holds_are_compared_row_by_row() {
+    // Half a million rows: within the rows a clause holds, and compared as Arrow rows are.
+    let config = json!({ "name": "rows", "pushes": "json", "count": 1 });
+    let report = certify_source::<Flood>(config).await;
+    assert!(failed(&report).is_empty(), "{report}");
+    assert_eq!(
+        report.outcome("S-PARTITION"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+    assert_eq!(
+        report.outcome("S-RESUME"),
         Some(&Outcome::Passed),
         "{report}"
     );
