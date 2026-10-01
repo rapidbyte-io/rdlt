@@ -1,7 +1,9 @@
 use rusqlite::types::Value;
 use rusqlite::{Connection, StatementStatus};
 
-use super::super::super::tests::{apply, columns, create, database, pipeline, query, run_all};
+use super::super::super::tests::{
+    apply, columns, counting, create, database, digits, pipeline, planned, query, run_all,
+};
 use super::super::super::tests::{segments, seq, stage_values, table, value};
 use super::super::super::{SqlPlanner, Sqlite, Statement};
 use super::super::Staged;
@@ -724,4 +726,64 @@ fn a_commit_reads_only_the_versions_and_tombstones_of_its_keys() {
     assert!(published.contains(&current(1, "c", 4, 40)));
     assert!(published.contains(&closed(2, "b", 2, 20, 50)));
     assert_eq!(history.tombstones().len(), 101);
+}
+
+#[test]
+fn truncates_cost_their_count_and_the_keys_not_their_product() {
+    const KEYS: u32 = 3_000;
+    const TRUNCATES: u32 = 300;
+    for kind in [Kind::Hard, Kind::Soft] {
+        let history = History::new(kind);
+        let (soft, at) = match kind {
+            Kind::Soft => ("deleted_at, ", "NULL, "),
+            _ => ("", ""),
+        };
+        let filled = format!(
+            "{} INSERT INTO orders (id, name, seq, {soft}valid_from, valid_to, is_current, \
+             row_hash) SELECT i, 'a', {}, {at}10, NULL, 1, x'00' FROM _n",
+            counting(KEYS),
+            digits("1000000 + i")
+        );
+        history.connection.execute_batch(&filled).unwrap();
+        let staging = history.planner.staging_table("orders");
+        // One truncate in segments 1 and 3, many in 2 and 4; the first two before every version,
+        // the last two past each.
+        for (segment, count, first) in [
+            (1, 1, 0),
+            (2, TRUNCATES, 0),
+            (3, 1, 2_000_000),
+            (4, TRUNCATES, 2_000_000),
+        ] {
+            let deleted = if kind == Kind::Soft { "i, " } else { "" };
+            let staged = format!(
+                "{} INSERT INTO \"{staging}\" (_rdlt_pipeline, _rdlt_epoch, _rdlt_segment, seq, \
+                 {soft}valid_from, is_current, op) SELECT 'mine', 1, {segment}, {}, {deleted}50, \
+                 1, 3 FROM _n",
+                counting(count),
+                digits(&format!("{first} + i"))
+            );
+            history.connection.execute_batch(&staged).unwrap();
+        }
+        let columns = columns(&history.connection, &history.planner, "orders");
+        let committing = |segment: u64| {
+            let plan = history
+                .planner
+                .publish_as(
+                    &history.staged(None),
+                    &columns,
+                    &pipeline("mine"),
+                    Epoch(1),
+                    &segments(&[segment]),
+                )
+                .unwrap();
+            planned(&history.connection, &plan)
+        };
+        for (one, many) in [(1, 2), (3, 4)] {
+            let (one, many) = (committing(one), committing(many));
+            assert!(
+                many < one * 15,
+                "one truncate took {one:?}, {TRUNCATES} took {many:?}"
+            );
+        }
+    }
 }

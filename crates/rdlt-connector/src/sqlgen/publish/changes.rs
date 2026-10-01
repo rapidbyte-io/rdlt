@@ -41,6 +41,21 @@ pub(super) struct Changed<'a> {
     /// The alias of a computed sequence, and of a staged row's rank, which no column is named.
     q: String,
     rank: String,
+    /// The aliases of what the ordered pass over keys and truncates computes of each key.
+    pass: Pass,
+}
+
+/// Names no column of the table has, for what a commit computes of each key it meets truncates
+/// with.
+pub(super) struct Pass {
+    /// The least sequence the key has a row at.
+    pub(super) low: String,
+    /// The sequence past which a truncate may give the key its deletion time.
+    pub(super) past: String,
+    /// Whether a row of the pass is a key's, or a truncate's.
+    pub(super) kind: String,
+    /// The first truncate past a key that says when it deleted.
+    pub(super) next: String,
 }
 
 impl<D: SqlDialect> SqlPlanner<D> {
@@ -65,10 +80,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
             Deletion::Hard => self.hard(&merging),
             Deletion::Soft { at } => self.soft(&merging, at)?,
         };
-        Ok(vec![
+        let mut plan = vec![
             computed.finish(),
             self.keyed(&merging, &merging.target, &[MERGED, MARKED, BURIED]),
-            self.bounded(&merging, &merging.target, false),
+        ];
+        plan.extend(self.bounded(&merging, &merging.target, false));
+        plan.extend([
             self.moved(
                 &merging,
                 &merging.target,
@@ -76,14 +93,15 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 &[MERGED, MARKED],
             ),
             self.keyed(&merging, &merging.tombstones, &[MERGED, BURIED]),
-            self.bounded(&merging, &merging.tombstones, true),
-            self.moved(
-                &merging,
-                &merging.tombstones,
-                &merging.tombstone_names(),
-                &[BURIED, BOUND],
-            ),
-        ])
+        ]);
+        plan.extend(self.bounded(&merging, &merging.tombstones, true));
+        plan.push(self.moved(
+            &merging,
+            &merging.tombstones,
+            &merging.tombstone_names(),
+            &[BURIED, BOUND],
+        ));
+        Ok(plan)
     }
 
     /// The start of the statement computing rows into staging: the insert, then the common table
@@ -170,32 +188,53 @@ impl<D: SqlDialect> SqlPlanner<D> {
         sql.finish()
     }
 
-    /// The statement deleting from `table`, where the commit raised the bound, its rows sequenced
-    /// before it, and with `bound_too`, the rows naming no key: the old bound, never above a new
-    /// one.
+    /// The statements deleting from `table`, where the commit raised the bound, its rows
+    /// sequenced before it, and with `bound_too`, the rows naming no key: the old bound, never
+    /// above a new one.
     ///
-    /// Without a new bound, the table is not read.
-    fn bounded(&self, changed: &Changed<'_>, table: &str, bound_too: bool) -> Statement {
-        let (op, seq) = (&changed.op, &changed.seq);
-        let mut sql = self.sql();
-        sql.push(&format!(
-            "DELETE FROM {table} WHERE EXISTS (SELECT 1 FROM {} _rdlt_s WHERE ",
-            changed.staging
-        ));
-        self.computed_rows(&mut sql, changed);
-        sql.push(&format!(
-            " AND _rdlt_s.{op} = {BOUND}) AND ({table}.{seq} < (SELECT MAX(_rdlt_s.{seq}) FROM {} \
-             _rdlt_s WHERE ",
-            changed.staging
-        ));
-        self.computed_rows(&mut sql, changed);
-        let old = if bound_too {
-            format!(" OR {table}.{} IS NULL", changed.keys[0])
-        } else {
-            String::new()
+    /// Without a new bound, the table is not read: its rows before the bound are listed by a
+    /// join from the bound, which then has no row, and found by their first key column through
+    /// the key's index, as the rows without one are.
+    fn bounded(&self, changed: &Changed<'_>, table: &str, bound_too: bool) -> [Statement; 2] {
+        let Changed {
+            op,
+            seq,
+            q,
+            staging,
+            ..
+        } = changed;
+        let first = &changed.keys[0];
+        // The commit's bound, as a query of one row, and with `raised` only where there is one.
+        let bound = |sql: &mut Sql<'_, D>, column: &str, raised: &str| {
+            sql.push(&format!("(SELECT {column} FROM {staging} _rdlt_s WHERE "));
+            self.computed_rows(sql, changed);
+            sql.push(&format!(" AND _rdlt_s.{op} = {BOUND}{raised})"));
         };
-        sql.push(&format!(" AND _rdlt_s.{op} = {BOUND}){old})"));
-        sql.finish()
+        let newest = format!("MAX(_rdlt_s.{seq})");
+        let mut keyed = self.sql();
+        // The derived table keeps the delete from reading the table it changes, which some
+        // databases refuse.
+        keyed.push(&format!(
+            "DELETE FROM {table} WHERE {table}.{first} IN (SELECT {first} FROM (SELECT \
+             _rdlt_p.{first} FROM "
+        ));
+        let raised = format!(" HAVING {newest} IS NOT NULL");
+        bound(&mut keyed, &format!("{newest} AS {q}"), &raised);
+        keyed.push(&format!(
+            " _rdlt_c CROSS JOIN {table} _rdlt_p WHERE _rdlt_p.{seq} < _rdlt_c.{q}) _rdlt_d) AND \
+             {table}.{seq} < "
+        ));
+        bound(&mut keyed, &newest, "");
+        let mut keyless = self.sql();
+        keyless.push(&format!(
+            "DELETE FROM {table} WHERE {table}.{first} IS NULL AND EXISTS "
+        ));
+        bound(&mut keyless, "1", "");
+        if !bound_too {
+            keyless.push(&format!(" AND {table}.{seq} < "));
+            bound(&mut keyless, &newest, "");
+        }
+        [keyed.finish(), keyless.finish()]
     }
 
     /// The statement inserting into `into` the `names` of the rows the commit computed as `codes`.
@@ -241,6 +280,12 @@ impl<'a> Changed<'a> {
             unchanged: changes.unchanged.as_deref().map(quote),
             q: quote(&unused("_rdlt_q", columns)),
             rank: quote(&unused("_rdlt_rank", columns)),
+            pass: Pass {
+                low: quote(&unused("_rdlt_low", columns)),
+                past: quote(&unused("_rdlt_past", columns)),
+                kind: quote(&unused("_rdlt_kind", columns)),
+                next: quote(&unused("_rdlt_next", columns)),
+            },
         }
     }
 }

@@ -2338,3 +2338,29 @@ fn a_merge_finds_the_rows_its_keys_replace_through_the_key_s_indexes() {
         }
     }
 }
+
+/// How long `plan` takes on `connection`, the least of three runs, each rolled back so the next
+/// finds what the last did.
+pub(super) fn planned(connection: &Connection, plan: &[Statement]) -> std::time::Duration {
+    (0..3)
+        .map(|_| {
+            connection.execute_batch("BEGIN").unwrap();
+            let started = std::time::Instant::now();
+            run_all(connection, plan);
+            let elapsed = started.elapsed();
+            connection.execute_batch("ROLLBACK").unwrap();
+            elapsed
+        })
+        .min()
+        .expect("three timings")
+}
+
+/// A sequence as `sqlgen`'s tests fill tables in SQL: sixteen digits, which order as numbers do.
+pub(super) fn digits(number: &str) -> String {
+    format!("CAST(printf('%016d', {number}) AS BLOB)")
+}
+
+/// The numbers from 1 to `count`, as a table `_n` of one column `i`.
+pub(super) fn counting(count: u32) -> String {
+    format!("WITH RECURSIVE _n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM _n WHERE i < {count})")
+}

@@ -36,15 +36,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// the commit's rows that apply, `_rdlt_truncates` among them for a change stream, and
     /// `_rdlt_events`, with each event's kind.
     fn events(&self, sql: &mut Sql<'_, D>, versioned: &Versioned<'_>) {
-        let Versioned {
-            target,
-            seq,
-            is_current,
-            aliases,
-            ..
-        } = versioned;
         let (names, keys) = (versioned.names(), versioned.keys.join(", "));
-        let kind = &aliases.kind;
+        let kind = &versioned.aliases.kind;
         let Some((changed, op)) = versioned.changed.as_ref().zip(versioned.op.as_ref()) else {
             let of = versioned.of;
             sql.push(&format!(
@@ -61,43 +54,71 @@ impl<D: SqlDialect> SqlPlanner<D> {
             return;
         };
         self.admitting(sql, changed);
-        // A truncate's delete of each key takes its sequence, validity and deletion time.
-        let truncated: Vec<&str> = [seq, &versioned.valid_from]
-            .into_iter()
-            .chain(&versioned.at)
-            .map(String::as_str)
-            .collect();
-        let kept_keys: Vec<String> = versioned
-            .keys
-            .iter()
-            .map(|key| format!("_rdlt_p.{key}"))
-            .collect();
-        sql.push(&format!(
-            ", _rdlt_truncates AS (SELECT {} FROM _rdlt_admitted WHERE {op} = 3), \
-             _rdlt_keys AS (SELECT {keys} FROM _rdlt_admitted WHERE {op} <> 3 UNION SELECT {} FROM \
-             _rdlt_truncates _rdlt_t CROSS JOIN {target} _rdlt_p WHERE _rdlt_p.{is_current} AND \
-             _rdlt_p.{seq} < _rdlt_t.{seq}), {}, \
-             _rdlt_events AS (SELECT {names}, 0 AS {kind} FROM _rdlt_anchors UNION ALL SELECT \
-             {names}, CASE WHEN {op} = 2 THEN 2 ELSE 1 END FROM _rdlt_admitted WHERE {op} <> 3 \
-             UNION ALL SELECT {}, 3 FROM _rdlt_keys _rdlt_k CROSS JOIN _rdlt_truncates _rdlt_t \
-             WHERE EXISTS (SELECT 1 FROM _rdlt_anchors _rdlt_a WHERE {on_ak} AND _rdlt_a.{seq} < \
-             _rdlt_t.{seq}) OR EXISTS (SELECT 1 FROM _rdlt_admitted _rdlt_a WHERE {on_ak} AND \
-             _rdlt_a.{op} IN (0, 1) AND _rdlt_a.{seq} < _rdlt_t.{seq}))",
-            truncated.join(", "),
-            kept_keys.join(", "),
-            anchors(versioned),
-            versioned.projected(|column| {
-                if truncated.contains(&column) {
-                    format!("_rdlt_t.{column}")
-                } else if versioned.keys.iter().any(|key| key == column) {
-                    format!("_rdlt_k.{column}")
-                } else {
-                    "NULL".to_owned()
-                }
-            }),
-            on_ak = versioned.on("_rdlt_a", "_rdlt_k"),
-        ));
+        sql.push(&truncating(versioned, op));
     }
+}
+
+/// The common table expressions of a change stream's events: its truncates, the keys the commit
+/// touches, their current versions, and each key's events, a truncate among them where it is the
+/// first past a version or an upsert of the key.
+fn truncating(versioned: &Versioned<'_>, op: &str) -> String {
+    let Versioned {
+        target,
+        seq,
+        is_current,
+        aliases,
+        ..
+    } = versioned;
+    let (names, keys) = (versioned.names(), versioned.keys.join(", "));
+    let kind = &aliases.kind;
+    // A truncate's delete of each key takes its sequence, validity and deletion time.
+    let truncated: Vec<&str> = [seq, &versioned.valid_from]
+        .into_iter()
+        .chain(&versioned.at)
+        .map(String::as_str)
+        .collect();
+    let kept_keys: Vec<String> = versioned
+        .keys
+        .iter()
+        .map(|key| format!("_rdlt_p.{key}"))
+        .collect();
+    // Each anchor and upsert of a key meets the truncates in one ordered pass, which finds the
+    // first truncate past it: the only one that can act on what it left. The table is read
+    // whole only where the commit truncates: `_rdlt_latest` then holds a row to join from.
+    let (mark, first, q) = (&aliases.gone, &aliases.next, &aliases.q);
+    let nulls: Vec<&str> = versioned.keys.iter().map(|_| "NULL").collect();
+    format!(
+        ", _rdlt_truncates AS (SELECT {} FROM _rdlt_admitted WHERE {op} = 3), \
+         _rdlt_latest AS (SELECT MAX({seq}) AS {q} FROM _rdlt_truncates HAVING MAX({seq}) IS \
+         NOT NULL), \
+         _rdlt_keys AS (SELECT {keys} FROM _rdlt_admitted WHERE {op} <> 3 UNION SELECT {} FROM \
+         _rdlt_latest _rdlt_c CROSS JOIN {target} _rdlt_p WHERE _rdlt_p.{is_current} AND \
+         _rdlt_p.{seq} < _rdlt_c.{q}), {}, \
+         _rdlt_marks AS (SELECT {keys}, {seq} AS {q}, 1 AS {mark} FROM _rdlt_anchors UNION ALL \
+         SELECT {keys}, {seq}, 1 FROM _rdlt_admitted WHERE {op} IN (0, 1) UNION ALL SELECT \
+         {nulls}, {seq}, 0 FROM _rdlt_truncates), \
+         _rdlt_after AS (SELECT {keys}, {mark}, MIN(CASE WHEN {mark} = 0 THEN {q} END) OVER \
+         (ORDER BY {q} DESC, {mark} DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS \
+         {first} FROM _rdlt_marks), \
+         _rdlt_events AS (SELECT {names}, 0 AS {kind} FROM _rdlt_anchors UNION ALL SELECT \
+         {names}, CASE WHEN {op} = 2 THEN 2 ELSE 1 END FROM _rdlt_admitted WHERE {op} <> 3 \
+         UNION ALL SELECT {}, 3 FROM (SELECT DISTINCT {keys}, {first} FROM _rdlt_after WHERE \
+         {mark} = 1 AND {first} IS NOT NULL) _rdlt_k JOIN _rdlt_truncates _rdlt_t ON \
+         _rdlt_t.{seq} = _rdlt_k.{first})",
+        truncated.join(", "),
+        kept_keys.join(", "),
+        anchors(versioned),
+        versioned.projected(|column| {
+            if truncated.contains(&column) {
+                format!("_rdlt_t.{column}")
+            } else if versioned.keys.iter().any(|key| key == column) {
+                format!("_rdlt_k.{column}")
+            } else {
+                "NULL".to_owned()
+            }
+        }),
+        nulls = nulls.join(", "),
+    )
 }
 
 /// Writes the rows the commit computes into `sql`: each version an upsert or a soft delete
@@ -141,8 +162,8 @@ fn outcomes<D: SqlDialect>(sql: &mut Sql<'_, D>, versioned: &Versioned<'_>) {
         " UNION ALL SELECT {staged}, {} FROM (SELECT {keys}, MAX({seq}) AS {q} FROM \
          _rdlt_admitted _rdlt_x WHERE _rdlt_x.{op} = 2 AND NOT EXISTS (SELECT 1 FROM \
          _rdlt_admitted _rdlt_u WHERE {} AND _rdlt_u.{op} IN (0, 1) AND _rdlt_u.{seq} > \
-         _rdlt_x.{seq}) AND NOT EXISTS (SELECT 1 FROM _rdlt_truncates _rdlt_t WHERE \
-         _rdlt_x.{seq} < _rdlt_t.{seq}) GROUP BY {keys}) _rdlt_d",
+         _rdlt_x.{seq}) AND NOT _rdlt_x.{seq} < COALESCE((SELECT MAX(_rdlt_t.{seq}) FROM \
+         _rdlt_truncates _rdlt_t), _rdlt_x.{seq}) GROUP BY {keys}) _rdlt_d",
         versioned.removal(Some("_rdlt_d")),
         versioned.on("_rdlt_u", "_rdlt_x"),
     ));
