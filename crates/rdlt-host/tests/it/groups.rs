@@ -123,13 +123,9 @@ fn connectors_of_a_runtime_that_is_dropped_are_stopped_with_their_groups() {
     drop(runtime);
     rdlt_host::stop_spawned(ENDING).expect("every group is stopped and empty");
     assert!(rdlt_host::spawned().is_empty());
-    for member in members {
-        let member = nix::unistd::Pid::from_raw(member);
-        assert!(
-            nix::sys::signal::kill(member, None).is_err(),
-            "{member} lives"
-        );
-    }
+    // Ended already: what is waited for is whatever adopted them reaping them.
+    let reaped = tokio::runtime::Runtime::new().expect("a runtime");
+    assert!(reaped.block_on(all_gone(&members)), "a member lives");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -186,15 +182,12 @@ async fn an_interrupted_or_terminated_host_stops_its_connectors_groups_before_it
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).expect("it is signalled");
         let status = host.wait().await.expect("the host ends");
         assert_eq!(status.code(), Some(code), "{signal}");
-        // Stopped before the host exited: nothing is left to wait for.
-        let alive = |member: &i32| {
-            let member = nix::unistd::Pid::from_raw(*member);
-            let alive = nix::sys::signal::kill(member, None).is_ok();
-            nix::sys::signal::kill(member, Signal::SIGKILL).ok();
-            alive
-        };
-        let left: Vec<i32> = members.into_iter().filter(alive).collect();
-        assert!(left.is_empty(), "{signal}: {left:?} outlived the host");
+        // Stopped before the host exited: what is waited for is whatever adopted them
+        // reaping them.
+        assert!(
+            all_gone(&members).await,
+            "{signal}: a member outlived the host"
+        );
     }
 }
 
