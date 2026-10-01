@@ -1,2 +1,6 @@
 [files]
 extend-exclude = ["target/"]
+
+[default.extend-identifiers]
+# The open flag O_WRONLY, as rustix names it.
+WRONLY = "WRONLY"
