@@ -1,7 +1,6 @@
 //! Decodes one receiver's frames: a schema, validated once, then batches in it.
 
 use std::collections::HashMap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, RecordBatch};
@@ -11,6 +10,7 @@ use arrow_schema::{DataType, Field, SchemaRef};
 use bytes::Bytes;
 
 use super::IpcFrame;
+use super::contain::contained;
 use super::precheck::{framing, kind};
 use crate::error::{Frame, Problem, WireError};
 use crate::limits::Limits;
@@ -152,29 +152,6 @@ fn message(frame: Frame, header: &[u8], depth: u64) -> Result<Message<'_>, WireE
     };
     arrow_ipc::root_as_message_with_opts(&options, header)
         .map_err(|_| WireError::malformed(frame, Problem::NotAMessage))
-}
-
-/// Runs `decode`, turning an Arrow error or a panic into a [`WireError`].
-fn contained<T>(
-    frame: Frame,
-    decode: impl FnOnce() -> Result<T, arrow_schema::ArrowError>,
-) -> Result<T, WireError> {
-    match catch_unwind(AssertUnwindSafe(decode)) {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(source)) => Err(WireError::Arrow {
-            frame,
-            encoding: false,
-            source,
-        }),
-        Err(payload) => {
-            let message = payload
-                .downcast_ref::<&str>()
-                .map(|message| (*message).to_owned())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_default();
-            Err(WireError::Panicked { frame, message })
-        }
-    }
 }
 
 /// How many columns `fields` hold, nested ones included, and how deep they nest.

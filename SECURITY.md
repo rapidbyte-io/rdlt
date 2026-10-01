@@ -75,6 +75,13 @@ ADR 0050 records this.
 
 ADR 0044 records these.
 
+## Building rdlt
+
+rdlt turns a panic, of the Arrow library on a corrupt frame or of a connector's task, into a
+typed error by unwinding. Build every binary that embeds rdlt with `panic = "unwind"`, Rust's
+default: `rdlt-wire`, `rdlt-engine` and a served `rdlt-connector` refuse to compile with
+`panic = "abort"`, under which one such panic would end the whole process.
+
 ## Reporting a vulnerability
 
 Report vulnerabilities privately through GitHub: open the repository's **Security** tab and choose

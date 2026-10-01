@@ -30,6 +30,9 @@ pub const CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 /// Bytes: bounds one string field of a control message.
 pub const CONTROL_STRING_BYTES: u64 = 64 * 1024;
 
+/// Bytes: bounds the text of a panic the decoder contained, as its error carries it.
+pub const PANIC_TEXT_BYTES: u64 = 256;
+
 /// Bytes: the credit a receiver grants a sender by default, before the sender's frames spend it.
 pub const CREDIT_WINDOW: u64 = 4 * 1024 * 1024;
 

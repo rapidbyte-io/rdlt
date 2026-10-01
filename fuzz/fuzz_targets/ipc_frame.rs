@@ -1,5 +1,5 @@
 //! Decoding corrupted Arrow frames never panics past the decoder: Arrow's own panics are
-//! contained and refused, and nothing allocates beyond the limits.
+//! contained, quietly, and refused, and nothing allocates beyond the limits.
 //!
 //! The frames are real encodings of a few batches, corrupted by the fuzzer's bytes, so the
 //! corruption reaches the framing checks and Arrow's readers rather than stopping at the header.
@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 #![no_main]
 
-use std::sync::{Arc, Once, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use arrow_array::types::Int8Type;
 use arrow_array::{
@@ -18,7 +18,6 @@ use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
 use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
 
-static QUIET: Once = Once::new();
 static FIXTURES: OnceLock<Vec<(Bytes, Vec<IpcFrame>)>> = OnceLock::new();
 
 /// A few batches, each encoded as its schema message and frames.
@@ -62,9 +61,8 @@ fn corrupted(bytes: &Bytes, mask: &[u8]) -> Bytes {
 }
 
 fuzz_target!(|input: (u8, Vec<u8>, Vec<u8>, Vec<u8>)| {
-    // libfuzzer aborts on any panic, even one the decoder contains; the decoder's containment is
-    // what this target checks, so panics unwind quietly here and only an escaping one fails.
-    QUIET.call_once(|| std::panic::set_hook(Box::new(|_| {})));
+    // libfuzzer aborts in its panic hook; a panic the decoder contains skips the hook, so only one
+    // that escapes it fails the target.
     let (which, schema_mask, header_mask, body_mask) = input;
     let fixtures = FIXTURES.get_or_init(fixtures);
     let (schema, frames) = &fixtures[usize::from(which) % fixtures.len()];
