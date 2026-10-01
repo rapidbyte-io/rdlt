@@ -3,13 +3,15 @@
 
 use std::sync::Arc;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use arrow_array::types::Int32Type;
+use arrow_array::{ArrayRef, DictionaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use rdlt_wire::{Decoder, Encoder, Limits};
 
 use crate::cost::Allocations;
 
-/// What `batch` holds once decoded, as the decoder measures it and as its allocations count.
-fn decoded(batch: &RecordBatch) -> (u64, u64) {
+/// What `batch` holds once decoded, as the decoder measures it and as its allocations count:
+/// the batch's own allocation, the dictionaries the decoder holds, and the allocations.
+fn decoded(batch: &RecordBatch) -> (u64, u64, u64) {
     let mut encoder = Encoder::default();
     let mut decoder = Decoder::new(Limits::default());
     let schema = encoder.schema(&batch.schema()).unwrap();
@@ -22,7 +24,8 @@ fn decoded(batch: &RecordBatch) -> (u64, u64) {
             held = Some((shape.held_bytes, Allocations::of(&read).bytes()));
         }
     }
-    held.unwrap()
+    let (own, allocations) = held.unwrap();
+    (own, decoder.dictionary_bytes(), allocations)
 }
 
 #[test]
@@ -33,7 +36,20 @@ fn a_decoded_batch_holds_the_one_allocation_its_frame_was_copied_into() {
         (format!("c{column}"), ids)
     });
     let plain = RecordBatch::try_from_iter(columns).unwrap();
-    let (own, allocations) = decoded(&plain);
-    assert_eq!(allocations, own);
+    let (own, dictionaries, allocations) = decoded(&plain);
+    assert_eq!((dictionaries, allocations), (0, own));
     assert!(own >= 80_000);
+}
+
+#[test]
+fn a_decoded_batch_holds_the_dictionaries_its_keys_name() {
+    let words = StringArray::from(vec!["x".repeat(10_000)]);
+    let keyed =
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0; 100]), Arc::new(words));
+    let column: ArrayRef = Arc::new(keyed.unwrap());
+    let batch = RecordBatch::try_from_iter([("tag", column)]).unwrap();
+    let (own, dictionaries, allocations) = decoded(&batch);
+    assert!(dictionaries >= 10_000);
+    // The decoder's count of a batch leaves its dictionaries out; a batch keeps them alive.
+    assert_eq!(allocations, own + dictionaries);
 }

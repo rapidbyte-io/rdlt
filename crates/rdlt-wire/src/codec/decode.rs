@@ -24,6 +24,8 @@ pub struct Decoder {
     limits: Limits,
     columns: Option<Columns>,
     dictionaries: HashMap<i64, ArrayRef>,
+    /// The bytes of the allocation each dictionary held was decoded into, by its id.
+    held: HashMap<i64, u64>,
 }
 
 impl Decoder {
@@ -33,7 +35,14 @@ impl Decoder {
             limits,
             columns: None,
             dictionaries: HashMap::new(),
+            held: HashMap::new(),
         }
+    }
+
+    /// Bytes: the allocations of the dictionaries held, which batches decoded from now on share
+    /// and whoever charges a budget charges while the decoder lives.
+    pub fn dictionary_bytes(&self) -> u64 {
+        self.held.values().copied().fold(0, u64::saturating_add)
     }
 
     /// The schema the frames that follow are in, from its IPC schema message; the schema and
@@ -46,6 +55,7 @@ impl Decoder {
         // A refused schema ends the schema before it too: no batch is read under either.
         self.columns = None;
         self.dictionaries.clear();
+        self.held.clear();
         self.limits.admit_schema(ipc_schema.len())?;
         let message = message(Frame::Schema, ipc_schema, self.limits.nesting_depth)?;
         let Some(fb) = message.header_as_schema() else {
@@ -60,6 +70,9 @@ impl Decoder {
 
     /// Decodes `frame`: a record batch in the current schema, or `None` for a dictionary batch,
     /// which later batches use.
+    ///
+    /// A dictionary replaces any of its id, and is held until the next schema: the
+    /// dictionaries held together are within [`Limits::dictionary_bytes`].
     ///
     /// # Errors
     ///
@@ -83,6 +96,14 @@ impl Decoder {
             view_bytes: measured.walked.view_bytes,
             held_bytes: u64::try_from(relocated.body.capacity()).unwrap_or(u64::MAX),
         };
+        if let Some(id) = measured.dictionary {
+            // Counted before Arrow builds it: a dictionary replaces any of its id.
+            let others = self
+                .dictionary_bytes()
+                .saturating_sub(self.held.get(&id).copied().unwrap_or(0));
+            self.limits
+                .admit_dictionaries(others.saturating_add(shape.held_bytes))?;
+        }
         let batch = relocated
             .batch()
             .ok_or_else(|| malformed(Problem::NotAMessage))?;
@@ -103,6 +124,7 @@ impl Decoder {
         };
         if let Some(values) = decoded.columns().first() {
             self.dictionaries.insert(id, Arc::clone(values));
+            self.held.insert(id, shape.held_bytes);
         }
         Ok((None, shape))
     }

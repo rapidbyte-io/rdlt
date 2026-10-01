@@ -627,3 +627,99 @@ fn a_refusal_names_the_part_a_message_lacks_or_does_not_need() {
         "the message holds a count of data buffers its schema does not need"
     );
 }
+
+/// A batch of `columns` dictionary columns of one row, each dictionary one value of `bytes`
+/// bytes holding `fill`.
+fn keyed(columns: usize, bytes: usize, fill: &str) -> RecordBatch {
+    let value = fill.repeat(bytes);
+    let arrays = (0..columns).map(|column| {
+        let dictionary = DictionaryArray::<Int8Type>::try_new(
+            vec![0].into(),
+            Arc::new(StringArray::from(vec![value.as_str()])),
+        )
+        .unwrap();
+        (format!("c{column}"), Arc::new(dictionary) as ArrayRef)
+    });
+    RecordBatch::try_from_iter(arrays).unwrap()
+}
+
+/// What the first dictionary of `frames`, sent after `schema`, holds once decoded.
+fn dictionary_held(schema: &Bytes, frames: &[IpcFrame]) -> u64 {
+    let mut measuring = Decoder::new(Limits::default());
+    measuring.schema(schema).unwrap();
+    assert_eq!(measuring.dictionary_bytes(), 0);
+    let (_, shape) = measuring.shaped(&frames[0]).unwrap();
+    assert_eq!(measuring.dictionary_bytes(), shape.held_bytes);
+    shape.held_bytes
+}
+
+#[test]
+fn the_dictionaries_a_decoder_holds_are_bounded_together() {
+    let batch = keyed(3, 1_000, "x");
+    let mut encoder = Encoder::default();
+    let schema = encoder.schema(&batch.schema()).unwrap();
+    let frames = encoder.batch(&batch).unwrap();
+    assert_eq!(frames.len(), 4, "three dictionaries, then the batch");
+    let each = dictionary_held(&schema, &frames);
+    assert!(each >= 1_000);
+    // A frame limit, and so a dictionary limit, of two such dictionaries and of a byte less
+    // than three.
+    for limit in [2 * each, 3 * each - 1] {
+        let limits = Limits {
+            frame_bytes: limit,
+            ..Limits::default()
+        };
+        let mut decoder = Decoder::new(limits);
+        decoder.schema(&schema).unwrap();
+        assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
+        assert_eq!(decoder.frame(&frames[1]).unwrap(), None);
+        assert_eq!(decoder.dictionary_bytes(), 2 * each);
+        let WireError::Refused(refusal) = decoder.frame(&frames[2]).unwrap_err() else {
+            panic!("a third dictionary beyond the limit was no refusal");
+        };
+        assert_eq!(
+            (refusal.field, refusal.limit, refusal.actual),
+            ("dictionary bytes", limit, 3 * each)
+        );
+        // The dictionary refused is not held.
+        assert_eq!(decoder.dictionary_bytes(), 2 * each);
+    }
+    let limits = Limits {
+        frame_bytes: 3 * each,
+        ..Limits::default()
+    };
+    let mut decoder = Decoder::new(limits);
+    decoder.schema(&schema).unwrap();
+    for frame in &frames[..3] {
+        assert_eq!(decoder.frame(frame).unwrap(), None);
+    }
+    assert_eq!(decoder.frame(&frames[3]).unwrap(), Some(batch));
+}
+
+#[test]
+fn a_dictionary_replaces_the_one_of_its_id_and_a_schema_forgets_them_all() {
+    let (first, second) = (keyed(1, 1_000, "x"), keyed(1, 1_000, "y"));
+    let mut encoder = Encoder::default();
+    let schema = encoder.schema(&first.schema()).unwrap();
+    let frames = encoder.batch(&first).unwrap();
+    let each = dictionary_held(&schema, &frames);
+    // A limit two such dictionaries exceed holds each that replaces the last.
+    let limits = Limits {
+        frame_bytes: 2 * each - 1,
+        ..Limits::default()
+    };
+    let mut decoder = Decoder::new(limits);
+    decoder.schema(&schema).unwrap();
+    assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
+    assert_eq!(decoder.frame(&frames[1]).unwrap(), Some(first));
+    // The same column with other values sends its dictionary again, under the same id.
+    let replaced = encoder.batch(&second).unwrap();
+    assert_eq!(replaced.len(), 2, "the new dictionary, then the batch");
+    assert_eq!(decoder.frame(&replaced[0]).unwrap(), None);
+    assert_eq!(decoder.dictionary_bytes(), each);
+    assert_eq!(decoder.frame(&replaced[1]).unwrap(), Some(second.clone()));
+    decoder
+        .schema(&encoder.schema(&second.schema()).unwrap())
+        .unwrap();
+    assert_eq!(decoder.dictionary_bytes(), 0);
+}
