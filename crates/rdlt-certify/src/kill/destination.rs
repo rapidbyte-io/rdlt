@@ -14,7 +14,7 @@ use rdlt_engine::{PipelinePlan, StreamPlan, WriteMode};
 use rdlt_host::Kills;
 
 use super::killing::{Killing, Schedule};
-use super::{Loaded, converged};
+use super::{Loaded, Proof, converged};
 use crate::protocol::Violation;
 use crate::target::Target;
 
@@ -97,7 +97,7 @@ async fn loaded(
         .await
         .map_err(|error| format!("reading back table `{}` failed: {error}", table.name))?;
     every_row_once(&batches).map_err(|fault| Violation(fault.to_string()))?;
-    Ok(Loaded::Kept)
+    Ok(Loaded::Kept(Proof::of(&kills)))
 }
 
 /// The write mode the clause loads in: the first the destination declares of append, merge and

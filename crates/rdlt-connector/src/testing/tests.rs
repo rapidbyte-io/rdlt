@@ -304,6 +304,7 @@ fn a_report_passes_only_when_every_clause_that_applies_was_seen_to_be_met() {
             unless: "",
         },
         outcome: outcome.clone(),
+        note: None,
     };
     let (passed, failed) = (Outcome::Passed, Outcome::Failed("broken".into()));
     let inapplicable = Outcome::Inapplicable("not served".into());
@@ -351,6 +352,7 @@ fn a_report_ends_with_its_verdict_and_how_many_clauses_fared_each_way() {
             unless: "",
         },
         outcome,
+        note: None,
     };
     let mut results = vec![result(Outcome::Passed), result(Outcome::Passed)];
     results.extend((0..3).map(|_| result(Outcome::Unobserved("unseen".into()))));

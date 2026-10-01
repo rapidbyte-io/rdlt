@@ -109,6 +109,7 @@ pub fn unfinished(target: &Target, role: Role, observed: &Observed, reason: &str
         results.push(ClauseResult {
             clause: *clause,
             outcome,
+            note: None,
         });
     }
     Report {

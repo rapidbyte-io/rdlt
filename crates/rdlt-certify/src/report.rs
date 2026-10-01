@@ -13,7 +13,10 @@ pub fn plain(report: &Report) -> String {
     let lines = report.results.iter().map(|result| {
         let id = result.clause.id;
         match &result.outcome {
-            Outcome::Passed => format!("  pass {id}\n"),
+            Outcome::Passed => match &result.note {
+                Some(note) => format!("  pass {id} ({})\n", shown(note)),
+                None => format!("  pass {id}\n"),
+            },
             Outcome::Failed(reason) => {
                 let statement = result.clause.statement;
                 format!("  FAIL {id}: {statement} ({})\n", shown(reason))
@@ -72,6 +75,7 @@ pub fn json(report: &Report) -> Value {
                 "statement": result.clause.statement,
                 "outcome": outcome,
                 "reason": reason,
+                "note": result.note.as_ref().map(rdlt_connector::testing::Reason::as_str),
             })
         })
         .collect();

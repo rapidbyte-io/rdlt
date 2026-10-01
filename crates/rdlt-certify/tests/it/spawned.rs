@@ -76,6 +76,17 @@ async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
         Some(&Outcome::Passed),
         "{report}"
     );
+    let note = report.note("K-SOURCE").expect("a note");
+    assert!(note.starts_with("killed: "), "{report}");
+    // No other clause is noted.
+    assert_eq!(
+        report
+            .results
+            .iter()
+            .filter(|result| result.note.is_some())
+            .count(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -169,6 +180,8 @@ async fn a_kill_clause_passes_only_when_a_kill_reached_the_connector() {
         if reached {
             // Killed with its launcher, the connector is started again, and loses nothing.
             assert_eq!(killed, Some(&Outcome::Passed), "{report}");
+            let note = report.note("K-DESTINATION").expect("a note");
+            assert!(note.starts_with("killed: "), "{report}");
         } else {
             // The connector outlives each kill of its launcher: the answer the clause loses
             // by itself is no evidence of a kill.

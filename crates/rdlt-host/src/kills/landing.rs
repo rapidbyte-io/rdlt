@@ -19,14 +19,17 @@ pub(crate) struct Landing<IO> {
     killed: CancellationToken,
     /// What counts the kill as landed, until it has.
     kills: Option<Kills>,
+    /// Whether the kill cuts this connection itself, rather than what holds its other end.
+    cut: bool,
 }
 
 impl<IO> Landing<IO> {
-    pub(crate) fn new(io: IO, killed: CancellationToken, kills: Kills) -> Self {
+    pub(crate) fn new(io: IO, killed: CancellationToken, kills: Kills, cut: bool) -> Self {
         Self {
             io,
             killed,
             kills: Some(kills),
+            cut,
         }
     }
 
@@ -39,7 +42,7 @@ impl<IO> Landing<IO> {
         if let Some(kills) = self.kills.take()
             && self.killed.is_cancelled()
         {
-            kills.land();
+            kills.land(self.cut);
         }
     }
 }

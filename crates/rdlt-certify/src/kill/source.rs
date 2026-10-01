@@ -14,7 +14,7 @@ use rdlt_host::Kills;
 use super::bounded::{Beyond, Bounded};
 use super::killing::{Killing, Schedule};
 use super::rows::{Parted, parted, rendered};
-use super::{Loaded, converged};
+use super::{Loaded, Proof, converged};
 use crate::protocol::Violation;
 use crate::target::Target;
 use rdlt_connector::testing::RENDERED_BYTES;
@@ -75,7 +75,7 @@ async fn compared(
     if let Some(unproven) = super::unproven(&kills, interrupted?, seed) {
         return Ok(unproven);
     }
-    same(&clean, &killed).await
+    same(&clean, &killed, Proof::of(&kills)).await
 }
 
 /// The source `target` reaches, placed as an engine's placement places it, killed by `kills`.
@@ -130,9 +130,9 @@ async fn memory(store: &str) -> Result<(Arc<dyn Destination>, Beyond), Violation
     Ok((Arc::new(bounded), beyond))
 }
 
-/// Whether the stores `clean` and `killed` hold the same tables, with the same rows: kept when
-/// they do, and not observed when their rows cannot be rendered to compare.
-async fn same(clean: &str, killed: &str) -> Result<Loaded, Violation> {
+/// Whether the stores `clean` and `killed` hold the same tables, with the same rows: kept on
+/// `proof` when they do, and not observed when their rows cannot be rendered to compare.
+async fn same(clean: &str, killed: &str, proof: Proof) -> Result<Loaded, Violation> {
     let mut rendering = Rendering::new(RENDERED_BYTES);
     let names = tables(clean);
     let killed_names = tables(killed);
@@ -163,7 +163,7 @@ async fn same(clean: &str, killed: &str) -> Result<Loaded, Violation> {
             )));
         }
     }
-    Ok(Loaded::Kept)
+    Ok(Loaded::Kept(proof))
 }
 
 /// Why the clause is not observed when `table`'s rows cannot be rendered to compare.

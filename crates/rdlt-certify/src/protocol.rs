@@ -147,6 +147,7 @@ pub(crate) async fn check(
         let result = ClauseResult {
             clause: *clause,
             outcome,
+            note: None,
         };
         observed.tell(result.clone());
         results.push(result);

@@ -135,6 +135,7 @@ pub async fn certify_destination_factory_observed(
                 let result = ClauseResult {
                     clause: *clause,
                     outcome,
+                    note: None,
                 };
                 observed.tell(result.clone());
                 results.push(result);
@@ -146,6 +147,7 @@ pub async fn certify_destination_factory_observed(
             let failed = |clause: &Clause| ClauseResult {
                 clause: *clause,
                 outcome: outcome.clone(),
+                note: None,
             };
             let failed: Vec<ClauseResult> = DESTINATION_CLAUSES.iter().map(failed).collect();
             failed

@@ -86,6 +86,12 @@ async fn a_source_served_in_process_killed_as_it_loads_resumes_where_it_was() {
         Some(&Outcome::Passed),
         "{report}"
     );
+    // Served in this process, the source is cut off, not killed, and the report says so.
+    assert!(
+        report
+            .note("K-SOURCE")
+            .is_some_and(|note| note.starts_with("cut: "))
+    );
 }
 
 #[tokio::test]

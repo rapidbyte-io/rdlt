@@ -68,15 +68,17 @@ pub(crate) async fn source(
     config: &serde_json::Value,
 ) -> ClauseResult {
     #[cfg(feature = "kill")]
-    let outcome = within(source::resumed(target, id, config), target.chosen_timeout()).await;
+    let (outcome, note) =
+        within(source::resumed(target, id, config), target.chosen_timeout()).await;
     #[cfg(not(feature = "kill"))]
-    let outcome = {
+    let (outcome, note) = {
         let _ = (target, id, config);
-        Outcome::Unobserved(UNBUILT.into())
+        (Outcome::Unobserved(UNBUILT.into()), None)
     };
     ClauseResult {
         clause: KILL_CLAUSES[0],
         outcome,
+        note,
     }
 }
 
@@ -96,18 +98,19 @@ pub(crate) async fn destination(
     probe: &dyn Probe,
 ) -> ClauseResult {
     #[cfg(feature = "kill")]
-    let outcome = {
+    let (outcome, note) = {
         let checking = destination::exactly_once(target, id, config, probe);
         within(checking, target.chosen_timeout()).await
     };
     #[cfg(not(feature = "kill"))]
-    let outcome = {
+    let (outcome, note) = {
         let _ = (target, id, config, probe);
-        Outcome::Unobserved(UNBUILT.into())
+        (Outcome::Unobserved(UNBUILT.into()), None)
     };
     ClauseResult {
         clause: KILL_CLAUSES[1],
         outcome,
+        note,
     }
 }
 
@@ -118,7 +121,7 @@ const UNBUILT: &str = "rdlt-certify was built without its `kill` feature";
 #[cfg(all(feature = "kill", test))]
 use running::{DRAWS, drawn};
 #[cfg(feature = "kill")]
-pub(crate) use running::{Loaded, converged, proven, run, unproven, within};
+pub(crate) use running::{Loaded, Proof, converged, proven, run, unproven, within};
 
 #[cfg(feature = "kill")]
 mod running {
@@ -157,10 +160,42 @@ mod running {
     /// The attempts a load makes: each kill costs one.
     const ATTEMPTS: u32 = 20;
 
+    /// What a kill that landed was seen to end.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Proof {
+        /// A connection to the connector ended after a kill that did not cut it: the process this
+        /// host started was killed, and its end of the connection closed with it.
+        Ended,
+        /// Every connection a kill ended this host cut itself, which is all a kill does to a
+        /// connector it did not start: the connector was not seen to stop.
+        Cut,
+    }
+
+    impl Proof {
+        /// What `kills` were seen to end.
+        pub(crate) fn of(kills: &Kills) -> Self {
+            Self::seen(kills.landed(), kills.cut())
+        }
+
+        /// What kills were seen to end, of which `landed` ended a connection and `cut` of those
+        /// by cutting it.
+        pub(crate) fn seen(landed: u64, cut: u64) -> Self {
+            if landed > cut { Self::Ended } else { Self::Cut }
+        }
+
+        /// What a report says beside a clause passed on this.
+        pub(crate) fn note(self) -> &'static str {
+            match self {
+                Self::Ended => "killed: its connection ended with a process a kill ended",
+                Self::Cut => "cut: kills cut its connection, and no process was seen to stop",
+            }
+        }
+    }
+
     /// What a clause found.
     pub(crate) enum Loaded {
-        /// The connector kept the clause.
-        Kept,
+        /// The connector kept the clause, on the stated proof that kills reached it.
+        Kept(Proof),
         /// It broke the clause, for the stated reason.
         Broken(String),
         /// The clause does not apply to what the connector declares, for the stated reason:
@@ -201,10 +236,10 @@ mod running {
     pub(crate) async fn within(
         clause: impl Future<Output = Loaded>,
         chosen: Option<Duration>,
-    ) -> Outcome {
+    ) -> (Outcome, Option<Reason>) {
         let bound = chosen.unwrap_or(KILL_TIME);
-        match tokio::time::timeout(bound, clause).await {
-            Ok(Loaded::Kept) => Outcome::Passed,
+        let outcome = match tokio::time::timeout(bound, clause).await {
+            Ok(Loaded::Kept(proof)) => return (Outcome::Passed, Some(proof.note().into())),
             Ok(Loaded::Broken(reason)) => Outcome::Failed(reason.into()),
             Ok(Loaded::Inapplicable(reason)) => Outcome::Inapplicable(reason.into()),
             Ok(Loaded::Unobserved(reason) | Loaded::Unseen(reason)) => {
@@ -214,7 +249,8 @@ mod running {
                 "the loads took longer than {bound:?}; a connector this slow needs a longer \
                  --kill-timeout"
             ))),
-        }
+        };
+        (outcome, None)
     }
 
     /// This run of a clause: the time, which names its pipelines, tables and stores apart from

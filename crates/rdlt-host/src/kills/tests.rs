@@ -176,3 +176,24 @@ async fn a_severed_stream_lands_its_kill_when_the_cut_is_met() {
         .expect_err("the stream is cut");
     assert_eq!(kills.landed(), 1);
 }
+
+#[tokio::test]
+async fn a_kill_says_whether_it_landed_on_a_process_or_on_a_connection_it_cut() {
+    let kills = Kills::new();
+    let (_peer, stream) = tokio::io::duplex(64);
+    let mut severed = kills.sever(stream);
+    let (peer, stream) = tokio::io::duplex(64);
+    let mut watched = kills.watch(stream, kills.next());
+    kills.kill();
+    assert_eq!((kills.landed(), kills.cut()), (0, 0));
+    drop(peer);
+    assert_eq!(watched.read(&mut [0; 1]).await.expect("the end"), 0);
+    // A connection that ended by itself after the kill: what held its other end is gone.
+    assert_eq!((kills.landed(), kills.cut()), (1, 0));
+    severed
+        .write_all(b"x")
+        .await
+        .expect_err("the stream is cut");
+    // A connection this host cut: it says nothing of what held its other end.
+    assert_eq!((kills.landed(), kills.cut()), (2, 1));
+}
