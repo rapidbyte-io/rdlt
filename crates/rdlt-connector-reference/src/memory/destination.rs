@@ -25,11 +25,16 @@ use table::{Plan, Staged, Table};
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryDestinationConfig {
-    /// The store to write to; connections naming the same store share its data.
+    /// The store to write to; connections naming the same store share its data, those of one
+    /// host where the connector listens for hosts.
     pub store: String,
 }
 
 /// Keeps published tables, staging and pipeline state in a named in-process store.
+///
+/// A store is its host's: where the connector listens for hosts, each host named to it has stores
+/// of its own, whatever their names, and reaches no other host's. In its host's own process, or
+/// spawned by it, the stores are that host's alone.
 ///
 /// A replace generation's rows stay hidden until the commit that finishes the generation swaps
 /// them in for the table's rows. A merge table keeps one row per key: the newest commit's, and
@@ -43,8 +48,11 @@ pub struct MemoryDestination {
 }
 
 /// Every published batch of `table` in `store`, in commit order.
+///
+/// This and the functions beside it read the stores of this process's own host, not those a
+/// listening connector keeps for the hosts named to it.
 pub fn published(store: &str, table: &str) -> Vec<RecordBatch> {
-    let store = named(store);
+    let store = named(None, store);
     let store = store.lock();
     store
         .tables
@@ -55,14 +63,14 @@ pub fn published(store: &str, table: &str) -> Vec<RecordBatch> {
 
 /// The tables of `store`, by name.
 pub fn tables(store: &str) -> Vec<String> {
-    let store = named(store);
+    let store = named(None, store);
     let store = store.lock();
     store.tables.keys().cloned().collect()
 }
 
 /// The rows staged in `table` of `store` and not yet published, whichever session staged them.
 pub fn staged(store: &str, table: &str) -> usize {
-    let store = named(store);
+    let store = named(None, store);
     let store = store.lock();
     store.tables.get(table).map_or(0, |table| {
         table
@@ -76,7 +84,7 @@ pub fn staged(store: &str, table: &str) -> usize {
 
 /// The columns of `table` in `store`, once it exists.
 pub fn schema(store: &str, table: &str) -> Option<TableSchema> {
-    let store = named(store);
+    let store = named(None, store);
     let store = store.lock();
     store
         .tables
@@ -84,10 +92,15 @@ pub fn schema(store: &str, table: &str) -> Option<TableSchema> {
         .and_then(|table| table.schema.clone())
 }
 
-static STORES: LazyLock<Mutex<BTreeMap<String, Arc<Mutex<Store>>>>> = LazyLock::new(Mutex::default);
+/// The stores, each by the host it is kept for and its name.
+type Stores = BTreeMap<(Option<String>, String), Arc<Mutex<Store>>>;
 
-fn named(name: &str) -> Arc<Mutex<Store>> {
-    Arc::clone(STORES.lock().entry(name.to_owned()).or_default())
+static STORES: LazyLock<Mutex<Stores>> = LazyLock::new(Mutex::default);
+
+/// The store `name` of `host`: of this process's own host, where none is named.
+fn named(host: Option<&str>, name: &str) -> Arc<Mutex<Store>> {
+    let key = (host.map(str::to_owned), name.to_owned());
+    Arc::clone(STORES.lock().entry(key).or_default())
 }
 
 #[derive(Debug, Default)]
@@ -251,9 +264,9 @@ impl DestinationConnector for MemoryDestination {
         capabilities
     }
 
-    async fn connect(config: MemoryDestinationConfig, _context: &ConnectContext) -> Result<Self> {
+    async fn connect(config: MemoryDestinationConfig, context: &ConnectContext) -> Result<Self> {
         Ok(Self {
-            store: named(&config.store),
+            store: named(context.host(), &config.store),
         })
     }
 

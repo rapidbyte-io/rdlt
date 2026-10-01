@@ -42,6 +42,8 @@ pub(super) struct Service {
     /// What the handshake agreed.
     pub(super) agreed: OnceCell<Agreed>,
     pub(super) connected: OnceCell<Connected>,
+    /// The host served, where a listening connector accepted it by name.
+    pub(super) host_name: Option<Arc<str>>,
     /// Certification's probes, where the handshake accepted them.
     pub(super) probes: Probes,
     /// The host's limits, which what this end sends must keep within.
@@ -53,10 +55,16 @@ pub(super) struct Service {
 }
 
 impl Service {
-    pub(super) fn new(served: Arc<Served>, limits: Limits, stopping: CancellationToken) -> Self {
+    pub(super) fn new(
+        served: Arc<Served>,
+        limits: Limits,
+        host_name: Option<Arc<str>>,
+        stopping: CancellationToken,
+    ) -> Self {
         Self {
             served,
             limits,
+            host_name,
             agreed: OnceCell::new(),
             connected: OnceCell::new(),
             probes: Probes::default(),

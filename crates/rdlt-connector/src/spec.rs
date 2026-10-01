@@ -33,14 +33,32 @@ pub struct ConnectorSpec {
     pub config_schema: serde_json::Value,
 }
 
-/// What the host tells a connector when it connects.
+/// What a connector is told when it connects.
 #[non_exhaustive]
 #[derive(Clone, Debug, Default)]
-pub struct ConnectContext {}
+pub struct ConnectContext {
+    host: Option<std::sync::Arc<str>>,
+}
 
 impl ConnectContext {
     /// A context with nothing to report.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The context of a connector serving the host named `host`.
+    pub fn serving(host: impl Into<std::sync::Arc<str>>) -> Self {
+        Self {
+            host: Some(host.into()),
+        }
+    }
+
+    /// The host the connector serves, as a listening connector accepted it: the name in the
+    /// host's certificate that was named to the connector.
+    ///
+    /// None in the host's own process, and for a connector its host spawned. What a connector
+    /// keeps in its own process, it keeps apart for each host.
+    pub fn host(&self) -> Option<&str> {
+        self.host.as_deref()
     }
 }

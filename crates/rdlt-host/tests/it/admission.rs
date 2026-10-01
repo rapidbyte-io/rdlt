@@ -10,8 +10,15 @@ use std::time::Duration;
 
 use rdlt_connector::limits::ListenLimits;
 use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
-use rdlt_connector::{ConnectorId, source_factory};
-use rdlt_connector_reference::MemorySource;
+use rdlt_connector::wire::v1;
+use rdlt_connector::{
+    Acknowledging, BoxFuture, ConnectContext, ConnectorId, ConnectorSpec, Destination,
+    DestinationFactory, Epoch, LoadId, OpenContext, PipelineId, Reading, Source, SourceFactory,
+    acknowledging_source_factory, destination_factory, readable_destination_factory,
+    source_factory,
+};
+use rdlt_connector_reference::{ChangesSource, MemoryDestination, MemorySource};
+use rdlt_host::remote::client;
 use rdlt_host::{ConnectorRef, Provider as _, ProviderError, Remote};
 use rdlt_testkit::tls::Pki;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, DuplexStream, ReadBuf};
@@ -137,14 +144,20 @@ struct Connector {
 
 impl Connector {
     fn listening(hosts: &[&str], limits: ListenLimits) -> Self {
+        let source = Served::new().with_source(source_factory::<MemorySource>());
+        Self::serving(source, hosts, limits)
+    }
+
+    /// As [`Connector::listening`], serving `served`.
+    fn serving(served: Served, hosts: &[&str], limits: ListenLimits) -> Self {
         let pki = Pki::new("ca");
-        let server = pki.server("server", &["connector"]);
+        let certificate = pki.server("server", &["connector"]);
         let accepted = rdlt_wire::tls::Accepted {
             ca: pki.ca(),
             hosts: rdlt_wire::tls::Hosts::new(hosts.iter().copied()).expect("hosts are named"),
             crl: None,
         };
-        let tls = rdlt_wire::tls::server_config(&identity(&server), &accepted)
+        let tls = rdlt_wire::tls::server_config(&identity(&certificate), &accepted)
             .expect("the server's configuration builds");
         let lines = Arc::new(Mutex::new(Vec::new()));
         let written = Arc::clone(&lines);
@@ -160,9 +173,8 @@ impl Connector {
             live: Arc::clone(&live),
             most: Arc::clone(&most),
         };
-        let source = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
         tokio::spawn(serve_listener(
-            source,
+            Arc::new(served),
             held,
             listening,
             rdlt_wire::Limits::default(),
@@ -466,4 +478,173 @@ async fn a_certificate_the_listener_cannot_name_a_host_by_is_refused_and_counted
     let lines = lines.lock().expect("no panic").clone();
     assert_eq!((lines.len(), self::refused(&lines)), (1, 1), "{lines:?}");
     drop(connections);
+}
+
+#[tokio::test(start_paused = true)]
+async fn hosts_of_a_listening_memory_destination_each_have_stores_of_their_own() {
+    let memory = Served::new().with_destination(destination_factory::<MemoryDestination>());
+    let connector = Connector::serving(memory, &["host", "other"], ListenLimits::default());
+    let id = ConnectorId::parse("io.rapidbyte.memory").expect("a valid id");
+    let reference = ConnectorRef::new(id).endpoint("grpcs://connector:7443");
+    let config = serde_json::json!({ "store": "shared" });
+    let context = OpenContext {
+        pipeline: PipelineId::parse("pipeline").expect("a valid id"),
+        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let mut epochs = Vec::new();
+    // Each host opens the same pipeline of the same store twice, over a connection each time.
+    for host in ["host", "other", "host", "other"] {
+        let placed = connector
+            .remote(host)
+            .destination(&reference, &config)
+            .await;
+        let placed = placed.expect("the connector is placed");
+        let opened = placed.connector.open(&context).await.expect("it opens");
+        epochs.push(opened.epoch);
+    }
+    // A host's second open follows its first, and no other host's.
+    assert_eq!(epochs, [Epoch(1), Epoch(1), Epoch(2), Epoch(2)]);
+}
+
+/// The hosts a factory was asked to connect for, in order.
+type Asked = Arc<Mutex<Vec<Option<String>>>>;
+
+/// The memory factories, noting the host each connect is told it serves.
+struct Noting {
+    source: Box<dyn SourceFactory>,
+    destination: Box<dyn DestinationFactory>,
+    asked: Asked,
+}
+
+impl Noting {
+    fn new(asked: &Asked) -> Self {
+        Self {
+            source: acknowledging_source_factory::<ChangesSource>(),
+            destination: readable_destination_factory::<MemoryDestination>(),
+            asked: Arc::clone(asked),
+        }
+    }
+
+    fn note(&self, context: &ConnectContext) {
+        let host = context.host().map(str::to_owned);
+        self.asked.lock().expect("no panic").push(host);
+    }
+}
+
+impl SourceFactory for Noting {
+    fn spec(&self) -> &ConnectorSpec {
+        self.source.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Source>>> {
+        self.note(&context);
+        self.source.connect(config, context)
+    }
+
+    fn acknowledges(&self) -> bool {
+        true
+    }
+
+    fn connect_acknowledging(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Acknowledging>> {
+        self.note(&context);
+        self.source.connect_acknowledging(config, context)
+    }
+}
+
+impl DestinationFactory for Noting {
+    fn spec(&self) -> &ConnectorSpec {
+        self.destination.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Destination>>> {
+        self.note(&context);
+        self.destination.connect(config, context)
+    }
+
+    fn reads_back(&self) -> bool {
+        true
+    }
+
+    fn connect_reading(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Reading>> {
+        self.note(&context);
+        self.destination.connect_reading(config, context)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connector_is_told_which_host_it_serves_in_either_role_and_with_either_probe() {
+    let asked = Asked::default();
+    let both = Served::new()
+        .with_source(Box::new(Noting::new(&asked)))
+        .with_destination(Box::new(Noting::new(&asked)));
+    let connector = Connector::serving(both, &["host", "other"], ListenLimits::default());
+    let changes = ConnectorId::parse("io.rapidbyte.changes").expect("a valid id");
+    let memory = ConnectorId::parse("io.rapidbyte.memory").expect("a valid id");
+    let source = ConnectorRef::new(changes).endpoint("grpcs://connector:7443");
+    let destination = ConnectorRef::new(memory).endpoint("grpcs://connector:7443");
+    let streams = serde_json::json!({ "seed": 1, "streams": [] });
+    let store = serde_json::json!({ "store": "noted" });
+    // A host's own connections, which offer no probe.
+    let host = connector.remote("host");
+    host.source(&source, &streams).await.expect("placed");
+    host.destination(&destination, &store)
+        .await
+        .expect("placed");
+    // Certification's, which offer each role's probe.
+    let other = connector.remote("other");
+    for (reference, role, feature, config) in [
+        (&source, v1::Role::Source, rdlt_wire::ACKNOWLEDGED, &streams),
+        (
+            &destination,
+            v1::Role::Destination,
+            rdlt_wire::PUBLISHED,
+            &store,
+        ),
+    ] {
+        let wire = other
+            .wire(reference)
+            .await
+            .expect("the connector is dialed");
+        let mut client = client(wire, rdlt_host::Options::default())
+            .await
+            .expect("it connects");
+        let offered = v1::HandshakeRequest {
+            protocol_major: rdlt_wire::PROTOCOL_MAJOR,
+            protocol_minor: rdlt_wire::PROTOCOL_MINOR,
+            features: vec![feature.to_owned()],
+            role: role as i32,
+            traceparent: String::new(),
+            limits: None,
+        };
+        let agreed = client.handshake(offered).await.expect("it agrees");
+        assert_eq!(agreed.into_inner().accepted_features, [feature]);
+        let config_json = config.to_string();
+        let configured = client.configure(v1::ConfigureRequest { config_json });
+        configured.await.expect("it is configured");
+    }
+    let asked = asked.lock().expect("no panic").clone();
+    let hosts: Vec<Option<&str>> = asked.iter().map(Option::as_deref).collect();
+    assert_eq!(
+        hosts,
+        [Some("host"), Some("host"), Some("other"), Some("other")]
+    );
+    // In a host's own process, and spawned by it, a connector is told of no host.
+    assert_eq!(ConnectContext::new().host(), None);
+    assert_eq!(ConnectContext::serving("named").host(), Some("named"));
 }
