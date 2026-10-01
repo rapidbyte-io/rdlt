@@ -1,6 +1,6 @@
 //! Cuts a batch by rows into frames its receiver's limits admit, a frame at a time: the rows
-//! are weighed once, in order, and each piece is narrowed to what its rows name and encoded
-//! once, so nothing but the batch and the frame being sent is held.
+//! are weighed in stretches, in order, and each piece is narrowed to what its rows name and
+//! encoded once, so nothing but the batch and the frame being sent is held.
 
 #[cfg(test)]
 mod tests;
@@ -33,7 +33,7 @@ pub struct Cut {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct Probe {
-    /// Rows weighed.
+    /// Rows weighed, those of a stretch that did not fit too.
     pub(super) weighed: usize,
     /// Pieces handed to the narrower.
     pub(super) compactions: usize,
@@ -47,7 +47,7 @@ impl Cut {
     /// `batch`, to be sent within `limits`: the lesser of its receiver's and its sender's own.
     pub fn new(batch: RecordBatch, limits: Limits) -> Self {
         Self {
-            weigher: Weigher::new(&batch),
+            weigher: Weigher::within(&batch, limits.batch_values),
             narrower: Narrower::default(),
             batch,
             limits,
@@ -72,34 +72,56 @@ impl Cut {
         self.weigher.overhead()
     }
 
+    /// What `rows` rows from `start` add to the piece being weighed.
+    fn weighed(&mut self, start: usize, rows: usize) -> Weight {
+        #[cfg(test)]
+        {
+            self.probe.weighed += rows;
+        }
+        self.weigher.weigh_rows(start..start + rows)
+    }
+
     /// How many of the rows left make the longest piece their weights say the limits admit,
     /// and what they weigh: at least one row, whatever it weighs in bytes.
+    ///
+    /// Stretches of rows are weighed, each twice as long as the last while they fit and half
+    /// as long once one did not: a piece costs a few times the weighing of its own rows.
     fn longest(&mut self) -> Result<(usize, Weight), Refusal> {
         let limits = self.limits;
         Limits::admit("batch rows", limits.batch_rows, 1)?;
         let most = usize::try_from(limits.batch_rows).unwrap_or(usize::MAX);
         let most = most.min(self.batch.num_rows() - self.sent);
         let overhead = self.overhead();
+        let fits = |weight: &Weight| {
+            weight.values <= limits.batch_values
+                && weight.view_bytes <= limits.frame_bytes
+                && weight.frame_bytes().saturating_add(overhead) <= limits.frame_bytes
+        };
         self.weigher.begin();
-        let (mut taken, mut weight) = (0, Weight::default());
+        // A row's values and view bytes are weighed as its receiver counts them.
+        let mut weight = self.weighed(self.sent, 1);
+        Limits::admit("batch values", limits.batch_values, weight.values)?;
+        Limits::admit("view bytes", limits.frame_bytes, weight.view_bytes)?;
+        // How many more rows are tried while every stretch fitted, and once one did not, how
+        // many are known not to fit.
+        let (mut taken, mut step, mut unfit) = (1, 1_usize, None);
         while taken < most {
+            let rows = match unfit {
+                None => step.min(most - taken),
+                Some(unfit) if unfit > 1 => unfit / 2,
+                Some(_) => break,
+            };
+            self.weigher.mark();
             let mut longer = weight;
-            longer += self.weigher.weigh(self.sent + taken);
-            #[cfg(test)]
-            {
-                self.probe.weighed += 1;
+            longer += self.weighed(self.sent + taken, rows);
+            if fits(&longer) {
+                (taken, weight) = (taken + rows, longer);
+                step = step.saturating_mul(2);
+                unfit = unfit.map(|unfit| unfit - rows);
+            } else {
+                self.weigher.rewind();
+                unfit = Some(rows);
             }
-            if taken == 0 {
-                // A row's values and view bytes are weighed as its receiver counts them.
-                Limits::admit("batch values", limits.batch_values, longer.values)?;
-                Limits::admit("view bytes", limits.frame_bytes, longer.view_bytes)?;
-            } else if longer.values > limits.batch_values
-                || longer.view_bytes > limits.frame_bytes
-                || longer.frame_bytes().saturating_add(overhead) > limits.frame_bytes
-            {
-                break;
-            }
-            (taken, weight) = (taken + 1, longer);
         }
         Ok((taken, weight))
     }

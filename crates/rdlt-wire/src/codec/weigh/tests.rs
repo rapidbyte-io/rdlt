@@ -136,3 +136,27 @@ fn a_dictionary_key_is_weighed_in_its_frame_and_its_value_expanded() {
     let expanded: Vec<_> = rows.iter().map(|row| row.expanded_bits).collect();
     assert_eq!(expanded, [33 + 8 * 17, 0, 33 + 8, 33 + 8 * 17]);
 }
+
+#[test]
+fn a_stretch_of_rows_weighs_what_its_rows_weigh_one_at_a_time() {
+    for (name, column) in crate::codec::tests::nested::columns() {
+        let batch = batch_of(column);
+        let (mut stretches, mut rows) = (Weigher::new(&batch), Weigher::new(&batch));
+        for start in 0..=batch.num_rows() {
+            for length in 0..=batch.num_rows() - start {
+                stretches.begin();
+                let stretch = stretches.weigh_rows(start..start + length);
+                assert_eq!(
+                    stretch,
+                    piece(&mut rows, start, length),
+                    "{name} {start}+{length}"
+                );
+                // Two stretches of one piece weigh what the piece does.
+                stretches.begin();
+                let mut halves = stretches.weigh_rows(start..start + length / 2);
+                halves += stretches.weigh_rows(start + length / 2..start + length);
+                assert_eq!(halves, stretch, "{name} {start}+{length} in halves");
+            }
+        }
+    }
+}
