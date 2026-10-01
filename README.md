@@ -90,6 +90,9 @@ A stream can keep every version of each key (SCD2): a change closes its key's ve
 next begins, at the source's change time or when its batch arrived, a change equal to the current
 version opens none, deletes close versions or open deleted ones, and replays change nothing;
 `D-HIST` certifies a destination's history against versions worked out by hand.
+Real crashes test the whole: a pipeline run in a process of its own is crashed at every
+durability step through the engine's `failpoints`, and killed with its spawned connectors as it
+loads, then run again; every row lands once and no connector outlives its run (`just crashes`).
 
 ## Development
 
