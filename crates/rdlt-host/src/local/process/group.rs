@@ -5,6 +5,9 @@
 //! the id is still its own, and only then reaps. Once the leader is reaped the group is never
 //! signalled again: it is only asked, with the null signal, whether any member is left.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::process::{Child, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +15,8 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use rustix::process::{
-    Pid, Signal, WaitId, WaitIdOptions, kill_process_group, test_kill_process_group, waitid,
+    Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process_group, test_kill_process_group,
+    waitid,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -144,7 +148,16 @@ impl Owned {
         let mut stdin = self.child.stdin.take();
         let mut killing: Option<Instant> = None;
         // Until the leader has exited, a kill has come, or a stop's grace has passed.
-        while !exited(group) {
+        loop {
+            match Leader::of(&asked(group)) {
+                Leader::Running => {}
+                Leader::Exited => break,
+                // Its id may be another's by now: nothing is signalled, and nothing waited for.
+                Leader::Lost => {
+                    tracing::error!(group = self.child.id(), "a connector was reaped elsewhere");
+                    return (None, emptied(group));
+                }
+            }
             if self
                 .killed
                 .as_ref()
@@ -171,11 +184,32 @@ impl Owned {
     }
 }
 
-/// Whether the leader `group` names has exited, seen without reaping it.
-fn exited(group: Pid) -> bool {
+/// What a leader is to this process, asked without reaping it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Leader {
+    /// A child of this process that has not exited: its id is its own.
+    Running,
+    /// A child of this process that exited and is unreaped: its id is still its own.
+    Exited,
+    /// No child of this process any longer: something else reaped it, as a process that
+    /// ignores `SIGCHLD` or waits for any child does, and its id may be another's.
+    Lost,
+}
+
+impl Leader {
+    fn of(answer: &rustix::io::Result<Option<WaitIdStatus>>) -> Self {
+        match answer {
+            Ok(None) => Self::Running,
+            Ok(Some(_)) => Self::Exited,
+            Err(_) => Self::Lost,
+        }
+    }
+}
+
+/// Asks whether the leader `group` names has exited, without reaping it.
+fn asked(group: Pid) -> rustix::io::Result<Option<WaitIdStatus>> {
     let unreaped = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
-    // A leader that cannot be asked of is no child of this process any longer.
-    !matches!(waitid(WaitId::Pid(group), unreaped), Ok(None))
+    waitid(WaitId::Pid(group), unreaped)
 }
 
 /// Whether `group`, killed and its leader reaped, is seen empty within [`EMPTYING`].
