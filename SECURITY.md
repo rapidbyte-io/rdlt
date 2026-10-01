@@ -14,7 +14,15 @@
 
 ADR 0037 records this model. It is being put in place by a hardening program, and until that is
 complete, run only connectors you trust. The mechanisms in place today:
-- connectors listening on the network are reached over TLS 1.3 with mutual authentication;
+- connectors listening on the network are reached over TLS 1.3 with mutual authentication, in a
+  full handshake each time. A connector accepts only the hosts named to it, by a name in their
+  certificates, and a private key is read only from a file of its user's alone;
+- a listening connector holds a bounded number of connections at each stage, so peers that never
+  authenticate neither delay a host nor take the file descriptors of a session, and it reports
+  the connections it refused in one line an interval;
+- a connector's own binary serves no certification probe, and a source hears a host report
+  committed only the checkpoints it sent that host;
+- an endpoint that is refused is never repeated in an error;
 - a connector's process starts with a cleared environment, and receives its configuration only
   after the host has checked its identity and, where one is named, its binary's digest;
 - frames from a connector are checked against size limits before they are decoded.
@@ -49,6 +57,18 @@ holds against an untrusted connector is the trust model above: the engine's limi
 confinement.
 
 ADR 0050 records this.
+
+## Listening connectors
+
+- The hosts named to one listening connector are one trust domain: each can open any pipeline
+  through it, and two that use one pipeline id fence each other. Hosts that must not trust each
+  other get a connector each.
+- A lost host key is bounded by its certificate's lifetime: issue short-lived certificates. A
+  connector can also be given revocation lists, which it reads when it starts.
+- The reference connectors are examples and test connectors. Their generator and memory binaries
+  are built only on request, and none is hardened for hosts it does not trust.
+
+ADR 0044 records these.
 
 ## Reporting a vulnerability
 

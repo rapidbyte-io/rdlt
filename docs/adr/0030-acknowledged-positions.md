@@ -18,7 +18,8 @@ because the source keeps it outside the engine. ADR 0029 moved the clause and it
   cursor beyond a connection (a slot's confirmed position, a group's committed offset). It
   answers none where it keeps nothing, or was never told. A connector says it answers with
   `SourceConnector::ACKNOWLEDGES`, which `#[source(id = .., acknowledged)]` sets. Only
-  certification asks: `SourceFactory::connect_acknowledging` connects the source together with an
+  certification asks, of `acknowledging_source_factory`, which `rdlt-connector`'s `certify`
+  feature adds (ADR 0044): `SourceFactory::connect_acknowledging` connects the source together with an
   `AcknowledgedReader`, connected apart from it, and a source that does not answer refuses with
   the `acknowledged` code. Certification then treats it as a source that says nothing. A reader
   that fails to connect fails `S-ACK` alone.
@@ -31,7 +32,8 @@ because the source keeps it outside the engine. ADR 0029 moved the clause and it
   cursor, or keeps the rest itself. A partition that keeps no position, as a snapshot partition
   of a database's change stream does, answers none before and after it is told.
 - **The wire.** The handshake feature `acknowledged` is accepted where the client offers it and the
-  source answers. `ReadAcknowledged(stream, partition)` answers the encoded cursor, or none, and
+  source is served by the factory that answers. A report that a position is committed is heard
+  only for a checkpoint a read sent the reporting host (ADR 0044). `ReadAcknowledged(stream, partition)` answers the encoded cursor, or none, and
   is refused as unsupported on a connection whose handshake did not accept the feature.
   `rdlt-certify` asks every question over one connection of its own, which never reads or
   commits, as a slot's position is read apart from the connection that moved it. What it answers

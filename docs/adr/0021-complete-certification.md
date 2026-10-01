@@ -30,10 +30,12 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
     re-plans partitions for streaming, and settles it.
 - **A destination reads back what it published, for certification only.**
   - A connector opts in, type-checked: it implements `ReadBack`, and is served through
-    `readable_destination_factory`, or `#[destination(id = "...", read_back)]`.
-  - The host offers the handshake's `published` feature (§12.7); a destination that reads back
-    accepts it, and then serves `ReadPublished`, which streams a table's published rows as a
-    read's frames. Without the feature accepted, the call is refused as unsupported.
+    `readable_destination_factory`. Both exist only with `rdlt-connector`'s `certify` feature,
+    and a binary serves the read-back only where its `main` names that factory (ADR 0044).
+  - The host offers the handshake's `published` feature (§12.7); a destination served reading
+    back accepts it, and then serves `ReadPublished`, which sends a table's published rows as a
+    read's frames, a batch at a time as its host takes them. Without the feature accepted, the
+    call is refused as unsupported.
   - The engine never calls it: the reader is kept beside the served destination, not on the
     engine-facing `Destination`, and only `rdlt-certify`'s raw client calls it.
   - `rdlt-certify` reads back through its `ReadBackProbe` when the destination accepts the
@@ -43,9 +45,9 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
   - Every handshake of certification also offers a feature no host defines: a connector ignores
     the features it does not know (§12.7), and `P-HANDSHAKE` fails one that accepts or refuses
     it.
-  - The reference destinations (memory, SQLite, files) read back. The memory destination's store
-    lives in its process, so its binary, spawned for each connection, serves no read-back; it is
-    certified in process, or through its store's own probe.
+  - The reference destinations (memory, SQLite, files) read back, with the reference crate's
+    `certify` feature. Their own binaries serve no read-back: they are certified in process, or
+    served by a binary built for certification.
   - A read-back certifies a destination against its own account of what it published. A probe
     that reads the store itself, as in-process tests use, remains the stronger check.
 - **New and stronger clauses.**
