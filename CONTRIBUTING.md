@@ -33,13 +33,17 @@ To add or update a tool:
 4. Run `cargo xtask tools`, which fails on a tool with no download or checksum for a platform,
    then `mise install --locked`, and commit both files.
 
-To update mise in CI, set `SETUP_MISE_VERSION` in both workflows and the two checksums to those
-of the `mise-v<version>-linux-x64` and `mise-v<version>-macos-arm64` binaries in the release's
-`SHASUMS256.txt`.
+To update mise in CI, set `SETUP_MISE_VERSION` in both workflows, which Renovate proposes, and
+the two checksums to those of the `mise-v<version>-linux-x64` and `mise-v<version>-macos-arm64`
+binaries in the release's `SHASUMS256.txt`.
 
-Actions are pinned to commit SHAs with their version in a comment; `just lint` checks with
-`pinact` that each SHA is the commit of the version beside it, which needs a GitHub token in
-`GITHUB_TOKEN` to stay within the API's rate limit.
+Actions are pinned to commit SHAs with their version in a comment; `just pins`, part of
+`just lint`, checks with `pinact` that each SHA is the commit of the version beside it. A GitHub
+token in `GITHUB_TOKEN` keeps it within the API's rate limit.
+
+Renovate proposes each update seven days after its release. It does not update transitive
+crates: run `cargo update` for those, and when the nightly advisory check names one. A lockfile
+behind its manifests fails `just lint`, so commit the lockfile cargo resolves with the change.
 
 ## Vocabulary
 
