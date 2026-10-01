@@ -69,6 +69,7 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
     (ADR 0038 replaces the check of each buffer with one of the frame's whole shape.)
   - Delta dictionaries are refused: no end negotiates them, and a peer sending one delta after
     another would grow a dictionary without bound, copying it whole each time.
+    (ADR 0039 bounds the dictionaries a decoder holds together.)
   - No node may declare more values than the larger of the row limit and eight per byte of body.
     Every value but a null or a run needs at least a bit, so a tiny frame cannot declare a child
     of 2^40 values for whatever reads the batch next to iterate.

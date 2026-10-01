@@ -28,6 +28,8 @@ takes the rest of what a streaming source must be able to tell a run:
   end's commit. Signals heard together plan each stream once. Elsewhere the signal is ignored: a
   run that does not follow plans only at its phases. A source signals when its partitions
   change; each signal costs one `plan` call.
+  (ADR 0039 keeps a signal as its partition's state: signals a partition sends before the
+  coordinator hears them cost one `plan` call together.)
 - **The lag hook.** `Emitter::behind(records)` sends `SourceEvent::Behind { records }`, on the
   wire a `BehindFrame` (9): how many records the read is behind its source's newest, as the
   source measures it. The coordinator keeps, per stream, the latest count of each partition by

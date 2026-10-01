@@ -59,7 +59,8 @@ Change streams load through the engine: a CDC source reads a snapshot, then its 
 the engine advances within a run. Its inserts, updates, partial updates and deletes merge by key
 under the seq guard, with deletes hard, soft or ignored; a truncate, which names no key, removes or
 marks deleted every row sequenced before it. A change log appends every change instead.
-Encoded Arrow columns are admitted and lowered at their decoded size, within the memory budget;
+A push is charged the larger of what it keeps alive and what its rows become once decoded and
+rendered, and is lowered a slice at a time within the memory budget;
 JSON integers load exactly at any width, as decimals within 76 digits and as JSON text beyond; a
 merge key keeps matching its stored rows or refuses to change type; and an unbounded partition, as
 a change stream's, resumes from its last checkpoint rather than ending.
