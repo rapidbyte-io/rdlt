@@ -69,45 +69,78 @@ log.
     views name, and the bytes of that allocation, for whoever charges the batch to a budget.
     `held_bytes` is the batch's own allocation only: the dictionaries its keys name were decoded
     from frames of their own and are held by the decoder, and by each batch that names them.
-- **A sender cuts a batch to its receiver's limits, a frame at a time.** A served connector does
-  so for what its source pushes, to the host's limits, and the host for what the engine writes,
-  to the connector's; the write-ahead log, whose limits are lifted, encodes a batch whole.
-  - `Encoder::piece` hands over the frames of the next rows of a `Cut`: the dictionaries they
-    need, then one batch. A sender encodes the next piece only once the last was sent, and yields
-    to its runtime between them, so beyond the batch itself it holds one frame, of at most the
-    receiver's frame limit.
-  - A batch that fits goes as it is, encoded once. Otherwise each piece is first narrowed to what
-    its rows name, since Arrow's writer sends the data buffers of views and the children of list
-    views, dense unions and run-end columns whole however few rows name them: views keep copies
-    of their bytes, list views and unions the items they name, run-end columns the runs reaching
-    into their rows, at every nesting. The pieces of a batch then take about the bytes of the
-    batch, and a batch whose shared buffers exceed a frame can be cut.
-  - What a narrowed piece's frame will hold is counted from its columns, with the counts the
-    receiver's walk makes of the frame, and without encoding it; a property test over every drawn
-    type and encoding holds the two counts equal. Narrowing a prefix to count it copies what its
-    views, list views and unions name, so for such columns a count costs about what an encoding
-    does; for the others it copies nothing. The longest prefix within the receiver's rows,
-    values and view bytes is found by that count, and encoded once: a batch cut by those limits
-    costs one encoding a piece, and has the fewest pieces they admit.
-  - The bytes of a frame are known only once it is encoded: its padding and header are Arrow's
-    writer's. Where they bind, a batch is encoded whole once to learn its size, each piece is
-    first tried at the rows the last size predicts, and a piece is taken as full when its size
-    leaves room for no more rows of its average size, or for fewer than a sixty-fourth as many
-    again. Rows of like size cost one encoding a piece. Rows of very unlike sizes cost more:
-    once a try does not fit, the rows left to try are halved each time, so a piece costs at most
-    about twice the logarithm of its rows in encodings, each of at most a frame.
+- **A sender cuts a batch a frame at a time, to the lesser of its receiver's limits and its
+  own.** A served connector does so for what its source pushes, and the host for what the engine
+  writes; the write-ahead log, whose limits are lifted, encodes a batch whole.
+  - Each end cuts to the lesser, limit by limit (`Limits::lesser`), of what its peer advertised
+    at the handshake and what it was configured with. A peer advertising more than a sender's
+    transport carries, or than the sender may hold, then gets frames the sender can send.
+  - **A piece is self-contained: it holds what its rows name and nothing else.** Arrow's writer
+    sends the data buffers of views and the children of list views, dense unions and run-end
+    columns whole however few rows name them, so a piece is first narrowed: views keep copies of
+    their bytes, list views and unions the items they name, run-end columns the runs reaching
+    into their rows, at every nesting and under the column's own type. Bytes that rows share are
+    therefore sent once for each piece naming them, and for each row naming them where list
+    views overlap: the pieces of a batch take about the logical bytes of the batch, not the
+    bytes it holds, and a batch whose rows alias one buffer crosses at its logical size. A
+    dictionary is the exception: it goes whole, in a frame of its own, ahead of the first piece
+    that needs it, and is not sent again while it is unchanged.
+  - **Cuts come from one weighing of the rows.** `Weigher` walks the batch's own buffers once,
+    in order, copying nothing, and gives for each row what it adds to a narrowed frame: its
+    values and view bytes exactly as the receiver's walk counts them, and its bytes before
+    padding. A piece is the longest run of rows within the limit on rows, on values, on view
+    bytes, and whose bytes with a bound on the frame's overhead (each buffer's padding, an
+    offset more than rows, the header: computed from the schema) fit a frame.
+  - **Each piece then costs one narrowing and one encoding**, of at most a frame, and the batch
+    is never encoded or narrowed whole to learn its size. A batch of n rows cut into p pieces
+    costs n rows weighed, p narrowings and p encodings; tests count all three, for plain columns
+    and for views, list views and dense unions. The limit on rows is applied before anything is
+    encoded.
+  - The weight in bytes is an upper bound, so the encoded piece fits. Were it ever to fall
+    short, the piece is encoded again with half its rows, at most the logarithm of its rows
+    times, and one row that still does not fit is refused; a test forces this by leaving the
+    overhead out.
+  - A batch that goes as one piece is narrowed too when its buffers hold more than twice what
+    its rows weigh, or more than a frame, as a slice of a larger batch does; a batch holding
+    little else goes as it is, uncopied.
+  - A batch of no rows goes as one frame of empty columns of its schema, whatever it was sliced
+    from: Arrow's writer and reader disagree on empty slices of some layouts.
+  - `Encoder::piece` hands over the frames of the next rows of a `Cut`. A sender encodes the
+    next piece only once the last was sent, and yields to its runtime between them, so beyond
+    the batch itself it holds one piece, of at most the frame limit it cuts to.
   - Every frame is then measured by the receiver's own walk before it is sent, so no frame a
     sender cut is refused by its receiver.
   - The pieces are consecutive rows in order. On a read they are pushes of the segment the batch
     was in, and nothing else the source sends, a checkpoint included, is taken until the last
-    piece went; on a write they are writes of the batch's segment. Neither a push nor a write is
-    a unit to a checkpoint or a commit: a segment is. A write that fails, a connection lost or a
-    run stopped between pieces ends the attempt, whose staging the next attempt discards; a
-    logged batch is logged uncut, and cut again when its commit is replayed.
+    piece went; the host's controls wait for the credit window or the batch's end, both bounded.
+    On a write they are writes of the batch's segment. Neither a push nor a write is a unit to a
+    checkpoint or a commit: a segment is. A write that fails, a connection lost or a run stopped
+    between pieces ends the attempt, whose staging the next attempt discards; a logged batch is
+    logged uncut, and cut again when its commit is replayed.
   - One row beyond a limit, or a dictionary beyond one, cannot be cut: its sender refuses it with
     `limit_exceeded` naming the limit, where the cut reaches it, after the pieces before it went.
-    A write goes on with the batches after it, in a schema epoch of its own. A read ends there:
-    the rows already pushed are in a segment no checkpoint closes, and go with the attempt.
+    - A refused write leaves the rows of the pieces before it staged under the batch's segment.
+      The writer itself stays usable, in a schema epoch of its own, but its caller must not
+      commit that segment: the engine ends the attempt, and the next discards its staging.
+    - A read ends there: the rows already pushed are in a segment no checkpoint closes, and go
+      with the attempt.
+    - A batch the sender itself cannot narrow or encode fails with `unencodable_batch`, which
+      blames the sender's batch and no peer.
+  - `Weigher` and `Weight` are public, for whoever must charge a batch by what it will take
+    without copying it. Beside values, view bytes and frame bytes a weight carries the rows'
+    expanded bytes: what they take once each dictionary key and run is replaced by the value it
+    names.
+  - Certification's read-back queues every piece of the table it already holds whole; the
+    minimums below bound that to about twice the table.
+- **What the engine writes is plain.** Lowering stores every column as the Arrow type of its
+  logical type: fixed-width values, `Utf8`, `Binary`, structs and lists, with list views cast to
+  lists, views to offsets, and dictionaries and run-end encodings decoded. Its two constant
+  metadata columns are dictionaries of one entry under sliced keys. Batches of no rows are
+  dropped before they are queued or logged. So the host's writer meets no view, list view,
+  union or run-end column and no empty batch from the engine, though it does meet slices that
+  share their parent's buffers. The writer is a public trait all the same, and a served
+  connector and read-back send whatever a source built, so the cut is correct for every layout
+  and for empty slices, and is tested on each.
 - **A peer's limits have minimums.** A sender cuts to the limits its peer advertised at the
   handshake, and every frame costs it each buffer's padding whatever its rows hold, so a peer
   asking for tiny frames would have it send mostly padding, many times the batch. A peer's
@@ -115,7 +148,8 @@ log.
   least 1,048,576: one row of a schema at the column limit fits such a frame, and a hundred of
   its rows by their values. The host refuses a connector whose limits are below them, and a
   served connector such a host, at the handshake, with `limit_below_minimum` naming the limit.
-  The other limits have no minimum: one too low only refuses what exceeds it.
+  The other limits have no minimum: one too low only refuses what exceeds it. Certification
+  fails a connector that declares a limit below a minimum.
 - **Only what both ends speak is decoded**: metadata version V5, little-endian schemas, no
   compression, no delta dictionaries, and a dictionary batch whose id a field of the schema
   names.
@@ -157,7 +191,9 @@ larger of the row limit and eight values a byte, has contained panics printed, a
     columns and rows;
   - views that name more than a frame's bytes between them;
   - buffers out of order or padded to less than eight bytes, and messages of metadata version 4.
-- rdlt's senders never send the first two: they cut a batch to its receiver's limits (below).
+- rdlt's senders never send the first two: they cut a batch to its receiver's limits (above).
+- A cut batch crosses at its logical size: bytes its rows share are sent for each piece that
+  names them.
 - Each frame costs one copy of its buffers. The body is not kept: a decoded batch holds its own
   allocation, of at most the body's size.
 - The wire does not bound what a dictionary or a run-end encoding multiplies: keys or runs that
