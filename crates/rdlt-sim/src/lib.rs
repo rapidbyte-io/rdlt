@@ -20,6 +20,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(panic = "abort")]
+compile_error!(
+    "rdlt-sim reports a seed whose run panics by unwinding: build with panic = \"unwind\""
+);
+
 mod changes;
 mod destination;
 mod env;
