@@ -459,3 +459,56 @@ fn naming_hosts_changes_nothing_else_of_how_a_certificate_is_verified() {
     );
     assert!(named.offer_client_auth() && named.client_auth_mandatory());
 }
+
+#[test]
+fn a_file_that_is_no_regular_file_is_refused_without_waiting_for_it() {
+    let pki = Pki::new("ca");
+    let server = identity(&pki.server("server", &["localhost"]));
+    // A pipe nothing writes to: opening it to read would wait for a writer for ever.
+    let pipe = pki.dir().join("pipe");
+    nix::unistd::mkfifo(
+        &pipe,
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .expect("a pipe is made");
+    let (answered, answers) = std::sync::mpsc::channel();
+    let (accepted, key_in_pipe) = (accepted(&pki, &["client"]), pipe.clone());
+    std::thread::spawn(move || {
+        let keyed = Identity {
+            key: key_in_pipe.clone(),
+            ..server.clone()
+        };
+        let certified = Identity {
+            cert: key_in_pipe.clone(),
+            ..server.clone()
+        };
+        let trusting = Accepted {
+            ca: key_in_pipe.clone(),
+            ..accepted.clone()
+        };
+        let revoking = Accepted {
+            crl: Some(key_in_pipe),
+            ..accepted.clone()
+        };
+        let refused = [
+            server_config(&keyed, &accepted).err(),
+            server_config(&certified, &accepted).err(),
+            server_config(&server, &trusting).err(),
+            server_config(&server, &revoking).err(),
+            client_config(&keyed, &accepted.ca).err(),
+        ];
+        answered.send(refused).ok();
+    });
+    let refused = answers
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("each configuration is refused, not waited for");
+    let [key, certificate, ca, crl, client] = refused;
+    assert!(matches!(key, Some(TlsError::KeyOwner { path }) if path == pipe));
+    assert!(matches!(client, Some(TlsError::KeyOwner { path }) if path == pipe));
+    for other in [certificate, ca, crl] {
+        assert!(
+            matches!(other, Some(TlsError::NotAFile { ref path }) if *path == pipe),
+            "{other:?}"
+        );
+    }
+}

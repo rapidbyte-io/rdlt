@@ -851,7 +851,7 @@ async fn a_session_that_panics_gives_its_host_its_place_back() {
     again.expect("the host is served again");
     settle(limits.report_every).await;
     let lines = lines.lock().expect("no panic").clone();
-    assert_eq!(self::refused(&lines), 1, "{lines:?}");
+    assert_eq!(refused(&lines), 1, "{lines:?}");
     drop(connections);
 }
 
