@@ -10,7 +10,7 @@ use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
 
 use super::args::{Args, Failure, parse};
-use super::{Served, listen, serve_until};
+use super::{Hosted, Served, listen, serve_until};
 use crate::factory::{RoleFactory, Serve};
 
 /// Serves `C` as a whole binary's `main` does: `fn main() -> ExitCode { serve::<C>() }`.
@@ -96,12 +96,18 @@ fn inherited_socket(served: Served, fd: i32) -> Result<(), Failure> {
         let io = tokio::net::UnixStream::from_std(socket)
             .map_err(|error| format!("the host's socket failed: {error}"))?;
         let stop = told_to_stop().map_err(|error| format!("watching for stops failed: {error}"))?;
-        serve_until(Arc::new(served), io, Limits::default(), None, stop)
-            .await
-            .map_err(|error| match std::error::Error::source(&error) {
-                Some(source) => format!("{error}: {source}"),
-                None => error.to_string(),
-            })
+        serve_until(
+            Arc::new(served),
+            io,
+            Limits::default(),
+            Hosted::spawning(),
+            stop,
+        )
+        .await
+        .map_err(|error| match std::error::Error::source(&error) {
+            Some(source) => format!("{error}: {source}"),
+            None => error.to_string(),
+        })
     });
     // Reading standard input blocks a thread the runtime would otherwise wait for.
     runtime.shutdown_background();

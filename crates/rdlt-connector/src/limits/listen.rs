@@ -132,6 +132,14 @@ impl ListenLimits {
             .saturating_add(wide(self.own_descriptors))
     }
 
+    /// Sessions: how many destination sessions one connection holds open at once, which is as
+    /// many as its descriptors allow beside its socket, and one at least.
+    ///
+    /// A further session opened on the connection closes its oldest.
+    pub fn connection_sessions(&self) -> usize {
+        self.session_descriptors.saturating_sub(1).max(1)
+    }
+
     /// Checks that a process that may open `limit` file descriptors can listen within these
     /// limits.
     ///

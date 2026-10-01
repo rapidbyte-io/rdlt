@@ -96,3 +96,16 @@ fn named_hosts_share_the_sessions_so_that_none_is_left_without_one() {
     };
     assert_eq!(restored, limits);
 }
+
+#[test]
+fn a_connection_holds_the_sessions_its_descriptors_allow_beside_its_socket() {
+    let holding = |session_descriptors| {
+        let limits = ListenLimits {
+            session_descriptors,
+            ..ListenLimits::default()
+        };
+        limits.connection_sessions()
+    };
+    assert_eq!(ListenLimits::default().connection_sessions(), 3);
+    assert_eq!([0, 1, 2, 3, 9].map(holding), [1, 1, 1, 2, 8]);
+}

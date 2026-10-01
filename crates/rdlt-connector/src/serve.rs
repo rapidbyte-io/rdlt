@@ -14,6 +14,7 @@ mod probes;
 mod published;
 mod read;
 mod service;
+mod sessions;
 mod until;
 mod write;
 
@@ -79,6 +80,23 @@ impl Served {
     }
 }
 
+/// Whom a connection serves: the host, where a listening connector accepted it by name, and
+/// how many destination sessions it may hold open at once.
+struct Hosted {
+    name: Option<Arc<str>>,
+    sessions: usize,
+}
+
+impl Hosted {
+    /// The host that spawned the connector, or serves it in its own process: it has no name.
+    fn spawning() -> Self {
+        Self {
+            name: None,
+            sessions: crate::limits::ListenLimits::default().connection_sessions(),
+        }
+    }
+}
+
 /// Serving a connection failed in its transport.
 #[derive(Debug, thiserror::Error)]
 #[error("serving the connection failed")]
@@ -104,7 +122,8 @@ pub async fn serve_connection<IO>(
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    serve_until(served, io, limits, None, std::future::pending()).await
+    let host = Hosted::spawning();
+    serve_until(served, io, limits, host, std::future::pending()).await
 }
 
 /// Serves as [`serve_connection`] does, the host named `host` where a listening connector
@@ -114,7 +133,7 @@ async fn serve_until<IO>(
     served: Arc<Served>,
     io: IO,
     limits: Limits,
-    host: Option<Arc<str>>,
+    host: Hosted,
     stop: impl Future<Output = ()>,
 ) -> Result<(), ServeError>
 where
@@ -122,7 +141,7 @@ where
 {
     let bytes = limits.message_bytes();
     let stopping = tokio_util::sync::CancellationToken::new();
-    let service = service::Service::new(served, limits, host, stopping.clone());
+    let service = service::Service::new(served, limits, host.name, host.sessions, stopping.clone());
     let service = ConnectorServer::new(service)
         .max_decoding_message_size(bytes)
         .max_encoding_message_size(bytes);
