@@ -269,6 +269,10 @@ where
             Ok(handshaken) => handshaken,
             Err(why) => return self.refusals.count(why),
         };
+        // A handshake that asked for no protocol agreed on none: only HTTP/2 is spoken here.
+        if tls.get_ref().1.alpn_protocol() != Some(rdlt_wire::tls::ALPN) {
+            return self.refusals.count(Refused::Handshake);
+        }
         let chain = tls.get_ref().1.peer_certificates().unwrap_or_default();
         let named = chain.first().and_then(|leaf| self.shared.hosts.named(leaf));
         let Some(host) = named.map(Arc::<str>::from) else {
