@@ -38,7 +38,9 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     its garbage collection keeps; a SQL destination in the table `_rdlt_tombstones__{name}`, whose
     bound is a row naming no key.
   - Tombstones are kept for as long as the table is merged, one per key a hard delete removed:
-    that is the cost of hard deletes, and a hard truncate prunes them. A table replaced whole, by a
+    that is the cost of hard deletes, and a hard truncate prunes them. Amended 2026-10-01: no
+    rule prunes them by age or count, and a delete of a key the table never held leaves one too
+    (ADR 0049). A table replaced whole, by a
     generation, forgets them.
   - Changes the snapshot holds are never sent again: a source resumes past its position, so
     tombstones start with the changes, not the snapshot.
@@ -55,7 +57,8 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     `LIMIT`, no DDL, so it runs on any SQL database the planner targets.
   - A change table, its staging and its tombstones are indexed by the key, where rows are
     staged, and a commit finds every row its changes touch by the key: it reads the table whole
-    only to apply a truncate. A commit of a thousand changes to a table of a million rows takes
+    only to apply a truncate. Amended 2026-10-01: that holds where deletes are soft too, and a
+    commit meets its truncates in one ordered pass, not once a row (ADR 0049). A commit of a thousand changes to a table of a million rows takes
     about 50 ms in SQLite, as it does at a hundred thousand rows; without the indexes it took 28 s
     at a hundred thousand.
   - A staged row whose op is none of a change stream's is refused where it is staged: the codes

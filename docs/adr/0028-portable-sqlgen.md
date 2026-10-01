@@ -62,6 +62,8 @@ Status: accepted, 2026-09-29.
   `table_name_clash`, a configuration error renaming either resolves (`SqlPlanner::distinct`):
   their staging, tombstones, root index or key indexes, cut to the dialect's identifiers. A generation table's
   name holds its generation, which two tables' generations rarely share, and is not checked.
+  Amended 2026-10-01: generation tables are compared as well, and a cut name is a SHA-256 of the
+  whole name under a prefix no table may take (ADR 0049).
 
 ## Consequences
 

@@ -44,7 +44,9 @@ follows H1c.
     table again, as a retry does, succeeds.
   - Each destination records the owner:
     - memory and the simulation in the table;
-    - sqlgen in a new catalog table, `_rdlt_owners`, keyed by the table's name;
+    - sqlgen in a new catalog table, `_rdlt_owners`, keyed by the table's name. Amended
+      2026-10-01: the planner takes the owner for every statement that changes a table, child
+      tables, swaps, drops and discarded staging included (ADR 0049);
     - the files destination in an `owner` file in the table's catalog, created exclusively.
   - The simulation's two pipelines never share a table. So once a phase converges, a third
     pipeline loads one of the first pipeline's tables. It must be refused as `table_owned` and
@@ -165,7 +167,8 @@ follows H1c.
   name. A generation table's name, whose generation id takes most of it at that limit, keeps its
   prefix, part of the id and the hash, so its distinctness rests on the 32-bit hash; widening
   that hash waits for a dialect that limits identifiers. `SqlPlanner::try_new` refuses a dialect
-  below 30 bytes as `Unsupported`.
+  below 30 bytes as `Unsupported`. Amended 2026-10-01: a cut name ends in no 32-bit hash: it is a
+  SHA-256 of the whole name, and identifiers hold at least 63 bytes to fit it (ADR 0049).
 
 ## Consequences
 

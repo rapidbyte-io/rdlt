@@ -34,7 +34,9 @@ processes, with real files, sockets and child processes.
 - **State outlives a process only on disk.** The reference change source keeps its slot, and the
   log source its group, in a file where configured (`slot_path`, `group_path`), written whole
   beside it and renamed over it, so a crash leaves it as it was or as it is; a damaged file is
-  refused at connect rather than read as empty. A source that forgets what it acknowledged can
+  refused at connect rather than read as empty. Amended 2026-10-01: the file is named from the
+  root as `*.slot` or `*.group`, and a source with a stream that forgets names its slot or
+  group (ADR 0049); how the file is opened and written is ADR 0047's. A source that forgets what it acknowledged can
   then be crashed, killed and spawned again as a replication slot or a consumer group would.
 - **The sweep** crashes four pipelines with a log: a log that forgets appended to SQLite, a
   change stream that forgets merged into JSON-lines files, a full read replacing a SQLite table,
