@@ -22,8 +22,8 @@ use crate::limits::COMPACT_BYTES;
 /// Merges the files at the end of `files`, the list of the table `name` or of its `generation`,
 /// into one file of commit `meta` where the list's rule asks for it; `created` gains the file.
 ///
-/// A merge that fails changes nothing: the list stays as it is, the commit goes on, and the
-/// next commit tries again.
+/// A merge that fails changes nothing and leaves nothing: the list stays as it is, the commit
+/// goes on, and the next commit tries again.
 pub(super) fn compact(
     location: &Location,
     name: &str,
@@ -35,9 +35,14 @@ pub(super) fn compact(
     let Some(from) = tail(location, files) else {
         return;
     };
+    let written = created.len();
     if let Ok(merged) = merged(location, name, generation, &files[from..], meta, created) {
         files.truncate(from);
         files.push(merged);
+    } else {
+        // Nothing of the try stays: neither a part of its file nor the directories made for it.
+        super::commit::remove(&location.dir, created[written..].iter());
+        created.truncate(written);
     }
 }
 
@@ -51,19 +56,25 @@ fn merged(
     meta: &CommitMeta,
     created: &mut Vec<String>,
 ) -> Result<Listed> {
-    let segment = Location::written_by("compacted", meta)?;
-    let (names, file) = location.staged(&segment, name, generation, 0);
-    let dir = location.staging(&names)?;
-    let path = format!("{}/{file}", names.join("/"));
-    created.push(path.clone());
-    let schema = schema_of(location, &files[0])?
-        .unwrap_or_else(|| SchemaRef::new(arrow_schema::Schema::empty()));
-    let mut writer = Writer::create(location.format, &dir, &file, &schema)?;
+    // Every file to merge is opened before anything is written: one that cannot be read costs
+    // the try nothing.
+    let mut opened = Vec::with_capacity(files.len());
     for merging in files {
         let (parent, name) = manifest::located(&location.dir, &merging.path)?;
         let reached = parent.at(name);
-        let opened = parent.file(name).map_err(io::listed("opening", &reached))?;
-        writer.append(opened, reached)?;
+        let file = parent.file(name).map_err(io::listed("opening", &reached))?;
+        opened.push((file, reached));
+    }
+    let schema = schema_of(location, &files[0])?
+        .unwrap_or_else(|| SchemaRef::new(arrow_schema::Schema::empty()));
+    let segment = Location::written_by("compacted", meta)?;
+    let (names, file) = location.staged(&segment, name, generation, 0);
+    let path = format!("{}/{file}", names.join("/"));
+    created.push(path.clone());
+    let dir = location.staging(&names)?;
+    let mut writer = Writer::create(location.format, &dir, &file, &schema)?;
+    for (file, reached) in opened {
+        writer.append(file, reached)?;
     }
     let written = writer.finish()?;
     Ok(Listed {

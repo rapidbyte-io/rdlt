@@ -198,7 +198,7 @@ const SHARED: usize = 3;
 /// Removes the files at `paths` under the pipeline's directory `dir`, and the directories of
 /// their own that leaves empty, as far as each goes: a path that cannot be removed is left for
 /// the next open.
-fn remove<'a>(dir: &Dir, paths: impl Iterator<Item = &'a String>) {
+pub(super) fn remove<'a>(dir: &Dir, paths: impl Iterator<Item = &'a String>) {
     for path in paths {
         let Ok(names) = manifest::staged(path) else {
             continue;
@@ -213,12 +213,15 @@ fn remove<'a>(dir: &Dir, paths: impl Iterator<Item = &'a String>) {
             let Ok(next) = parent.dir(name) else { break };
             reached.push(next);
         }
-        let holds = reached.len() == parents.len();
-        if !holds || reached[parents.len() - 1].remove_file(file).is_err() {
-            continue;
+        // The file goes where every directory leading to it was reached; a file already gone
+        // still leaves its directories to remove.
+        if let Some(holding) = reached.get(parents.len().wrapping_sub(1))
+            && reached.len() == parents.len()
+        {
+            drop(holding.remove_file(file));
         }
-        // Each directory the file left empty goes, deepest first, but those writers share.
-        for level in (SHARED..parents.len()).rev() {
+        // Each directory left empty goes, deepest first, but those writers share.
+        for level in (SHARED..reached.len()).rev() {
             if reached[level - 1].remove_dir(parents[level]).is_err() {
                 break;
             }
