@@ -94,38 +94,73 @@ when it is read and never written in a form its reader refuses.
   an open removes those older than an hour, and removes files only, never a directory. The write
   probe is one. A keeper's temporaries carry its file's name, and opening the keeper removes
   them.
-- **A commit's files are named for that commit alone.** Every file a commit stages, merges or
-  compacts carries its load, its sequence and 128 random bits in its name, and is created
-  exclusively. A commit that is retried writes new files, so cleaning up after an attempt never
-  removes, by name, a file another attempt published.
+- **A commit's files are named for that commit alone.** Every file a commit writes, merging a
+  table's rows, its tombstones or the files at the end of a list, carries the commit's load,
+  its sequence and 128 random bits in its name. A staged file is named by its session's epoch,
+  its load, its segment and a number the session counts. Every file is created exclusively. A
+  commit that is retried writes new files, so cleaning up after an attempt never removes, by
+  name, a file another attempt published.
 - **A commit removes what it supersedes.** Once its manifest is durable, a commit removes the
   files the manifest before it listed, or the commit read, that the latest manifest does not
   list, with the directories of their own that leaves empty. A commit that fails removes what it
   wrote that the latest manifest does not list. What a crash leaves is removed by the next open,
   as before. A reader that finds a listed file gone reads the latest manifest again, a bounded
   number of times, and fails with `file_missing` only when the manifest it read is still the
-  latest.
+  latest. A discard of what older sessions staged makes the latest manifest's name durable
+  before it removes anything: a manifest a power loss could take back decides nothing.
 - **Every durable step is ordered.** A file is synced before it is linked or renamed into
-  place, and its directory after; a commit answered from its receipt syncs the manifest and its
-  directory again before it answers, since the commit it repeats may have crashed between the
-  link and the sync.
+  place, and its directory after; a commit answered from its receipt syncs its manifests'
+  directory again before it answers, since the commit it repeats may have failed between the
+  link and the sync, and removes nothing where that sync fails. Tests record each step once it
+  has taken place and assert the order, and die at each step in turn of every kind of commit,
+  of an open, of a schema change and of a keeper's write. What they cannot see is whether a
+  sync that was called reached the disk: a call recorded and not made, or made on the wrong
+  descriptor, passes every test, and so does a file system that does not keep its promise. A
+  directory whose creation could not be made durable is taken as durable when the call is made
+  again: after a sync has failed, nothing a caller does makes what came before it certain.
+- **Nothing is written that its reader refuses.** An Arrow file is written as batches of about
+  8 MiB and of at most the rows a reader takes in one, each checked against every limit the
+  reader holds a batch to: its frame, the values of each dictionary, which a reader takes as a
+  batch of its own, and nested values that take no bytes. A batch no reader accepts, one row
+  larger than a frame among them, fails the write and leaves no file. JSON lines hold a
+  dictionary's rows as the values they stand for, null where the key is null or the value it
+  stands for is.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
   manifest keeps every receipt of each of its 16 latest loads: a commit repeated however far
   back in its load is answered with its receipt, and how many receipts a load may hold is the
   engine's to bound, not the destination's. An append table's commit merges the
-  files at the end of its list while each holds at most twice the rows after it, up to 64 MiB a
-  file, keeping row order: the list grows with the logarithm of the table's rows, plus one file
-  per 64 MiB. Only files of one format and one schema merge; dictionary columns merge as their
-  values, since each file carries dictionaries of its own. A merge that fails leaves the list
-  as it was and removes what it wrote; the commit goes on, and the next commit tries again, at
-  the cost of reading those files once more.
+  files it adds with each other, whatever rows each holds, and a file listed before them with
+  those after it while it holds at most twice their rows, never reading more than 64 MiB into
+  one file and keeping row order. Every two files next to each other in a list then either at
+  least halve in rows or were together more than 64 MiB when they were listed. So a table
+  whose files never reach that size lists at most as many files as the logarithm of its rows,
+  and one more; a larger table lists at most that many for each 32 MiB it holds. A row is
+  written again only into a file half as large again as the file it was in, so merges write a
+  table over at most twice and about 1.7 times the base-two logarithm of its rows, not once a
+  commit. Tests hold
+  both bounds for steady sources of several shapes and for random ones. The bound is on what a
+  merge reads: only files of one format and one schema merge, a change of schema starting a
+  run of its own, and dictionary columns merge as their values, since each file carries
+  dictionaries of its own, so a file merged from dictionaries of long values is larger than
+  what it was read from. A dictionary inside a map, a union, a run-end column or a list view
+  is not written as its values, and files that hold one merge with none. A merge that fails
+  leaves the list as it was and removes what it wrote; the commit goes on, and the next
+  commit tries again, at the cost of opening and reading those files once more. Each commit
+  opens the files it may merge to compare their schemas, and a commit answered from its
+  receipt walks its session's staged tree: both are bounded by the list.
 - **The keeper is bounded, private and durable before it moves.** A keeper holds 4096
   positions. An acknowledgement that moves a position writes the whole file through a temporary,
   synced and renamed, and the keeper stands at the position only once that write is durable: a
   write that fails leaves it where it stood. An acknowledgement at or behind the position
   writes nothing. The file's directory must exist and be private as a root is, and the file a
-  regular file of the user's that no other may write. Keepers of one process are told apart by
-  the directory itself and the file's name, so two spellings of one path are one keeper.
+  regular file of the user's that no other may write, named by text. Keepers of one process
+  are told apart by the directory itself and the file's name, so two spellings of one path are
+  one keeper. A keeper holds an exclusive lock on a file beside its own for as long as it
+  lives, so a second process naming the file is refused and never writes its positions back.
+- **A root stays where it was opened.** The destination holds its root from its first open, and
+  each call asks whether the root's path still leads to that directory: a root moved aside,
+  removed or replaced fails as a configuration error coded `root_replaced` and takes no write
+  where nobody looks for it.
 
 ## Consequences
 
@@ -141,12 +176,18 @@ What remains by design:
 - The manifest lists one file per 64 MiB of an append table, and is rewritten at each commit.
 - A reader holding one of the 8 older manifests finds the manifest but may find its files gone:
   older manifests are kept for their receipts and their lists, not their data.
-- The mount-point rule compares file systems, so a destination root may not hold a mount, and
-  a bind mount of the same file system is not seen.
+- The mount-point rule compares file systems, so a destination root may not hold a mount or a
+  subvolume, which has a device number of its own, and a bind mount of the same file system is
+  not seen.
+- The private rule holds for a source root too: a directory another user owns is refused even
+  where this user may only read it, so a source reads what its own user keeps.
+- An Arrow batch is cut by its rows' average size, so rows of very uneven size can make a batch
+  larger than a frame, which fails the write.
 - The default keeper of the log and change sources is shared by every source of a process that
   names none: certification reads a source's position through a second connection, which only
   a shared keeper serves.
-- A keeper file is one process's: two processes naming one file overwrite each other.
+- A keeper file is one process's, for as long as the process runs: a second process naming it
+  fails to connect until the first is gone.
 
 This amends ADR 0006: manifest paths are relative to the pipeline's directory, the destination's
 files are private, catalogs keep 9 versions, and JSON lines are no longer read with an inferred
