@@ -366,15 +366,40 @@ pub fn published(root: impl Into<PathBuf>, table: &str) -> Result<Vec<RecordBatc
             continue;
         }
         let dir = pipelines.dir(&name).map_err(&listing)?;
-        let Some(manifest) = manifest::latest(&dir)? else {
-            continue;
-        };
-        let Some(files) = manifest.tables.get(table) else {
-            continue;
-        };
-        for file in &files.files {
-            batches.extend(manifest::read(&dir, &file.path, &schema)?);
-        }
+        batches.extend(published_by(&dir, table, &schema, manifest::latest)?);
     }
     Ok(batches)
+}
+
+/// Every batch the pipeline whose directory `dir` is publishes of `table`, as the manifest
+/// `latest` reads lists them.
+///
+/// A commit removes the files it supersedes once its manifest is durable, so a file listed by
+/// the manifest just read may be gone: when a newer manifest exists by then, the table is read
+/// again from it, a bounded number of times. A file missing under the manifest that is still
+/// the latest is lost.
+fn published_by(
+    dir: &Dir,
+    table: &str,
+    schema: &arrow_schema::SchemaRef,
+    mut latest: impl FnMut(&Dir) -> Result<Option<Manifest>>,
+) -> Result<Vec<RecordBatch>> {
+    io::retried(&format!("reading table {table}"), || {
+        let Some(manifest) = latest(dir)? else {
+            return Ok(Some(Vec::new()));
+        };
+        let files = manifest.tables.get(table);
+        let mut batches = Vec::new();
+        for file in files.into_iter().flat_map(|files| &files.files) {
+            match manifest::read(dir, &file.path, schema) {
+                Ok(read) => batches.extend(read),
+                Err(error) if error.code() == Some(io::FILE_MISSING) => {
+                    let newer = latest(dir)?.is_some_and(|now| now.version != manifest.version);
+                    return if newer { Ok(None) } else { Err(error) };
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Some(batches))
+    })
 }

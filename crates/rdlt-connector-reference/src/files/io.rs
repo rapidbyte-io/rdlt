@@ -14,6 +14,9 @@ use crate::rooted::{self, Refusal};
 /// The code of an error for a name that is not one path component, or no table identifier.
 pub(super) const INVALID_NAME: &str = "invalid_name";
 
+/// The code of an error for a file a manifest or a session's staging lists that is not there.
+pub(super) const FILE_MISSING: &str = "file_missing";
+
 /// The code of an error for a link, a pipe, a device or a directory where a file belongs.
 pub(super) const NOT_A_REGULAR_FILE: &str = "not_a_regular_file";
 
@@ -66,7 +69,7 @@ pub(super) fn listed<'a>(
     move |error| {
         if error.kind() == ErrorKind::NotFound {
             ConnectorError::data(format!("{what} {}: the file is missing", path.display()))
-                .with_code("file_missing")
+                .with_code(FILE_MISSING)
                 .with_source(error)
         } else {
             failed(what, path)(error)
