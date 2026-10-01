@@ -756,3 +756,101 @@ async fn a_flood_from_other_addresses_never_closes_a_hosts_handshake_while_one_h
     placed.connector.check().await.expect("the check passes");
     drop(silent);
 }
+
+/// A listener whose connections panic when read once `broken` is set.
+struct Fragile(Piped, Arc<std::sync::atomic::AtomicBool>);
+
+struct Breaking(DuplexStream, Arc<std::sync::atomic::AtomicBool>);
+
+impl AsyncRead for Breaking {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        assert!(!self.1.load(Ordering::SeqCst), "the connection broke");
+        Pin::new(&mut self.0).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for Breaking {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(context)
+    }
+}
+
+impl Listener for Fragile {
+    type Stream = Breaking;
+
+    async fn accept(&mut self) -> std::io::Result<(Breaking, SocketAddr)> {
+        let (stream, peer) = self.0.accept().await?;
+        Ok((Breaking(stream, Arc::clone(&self.1)), peer))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_session_that_panics_gives_its_host_its_place_back() {
+    let pki = Pki::new("ca");
+    let certificate = pki.server("server", &["connector"]);
+    let limits = ListenLimits {
+        host_sessions: 1,
+        ..ListenLimits::default()
+    };
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let written = Arc::clone(&lines);
+    let listening = Listening {
+        limits,
+        log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
+        ..listening(&pki, &certificate)
+    };
+    let (connections, accepted) = mpsc::unbounded_channel();
+    let broken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let source = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+    tokio::spawn(serve_listener(
+        source,
+        Fragile(Piped(accepted), Arc::clone(&broken)),
+        listening,
+        rdlt_wire::Limits::default(),
+        std::future::pending(),
+    ));
+    let (reference, config) = memory();
+    let remote =
+        Remote::new(identity(&pki.client("host")), pki.ca()).network(Pipes(connections.clone()));
+    let first = remote.source(&reference, &config).await;
+    let first = first.expect("the connector is placed");
+    // The session's task panics at its next read.
+    broken.store(true, Ordering::SeqCst);
+    first
+        .connector
+        .check()
+        .await
+        .expect_err("the session is gone");
+    drop(first);
+    broken.store(false, Ordering::SeqCst);
+    settle(Duration::from_millis(10)).await;
+    // The host holds no connection, so its next is served, and the loss is counted.
+    let again = remote.source(&reference, &config).await;
+    again.expect("the host is served again");
+    settle(limits.report_every).await;
+    let lines = lines.lock().expect("no panic").clone();
+    assert_eq!(self::refused(&lines), 1, "{lines:?}");
+    drop(connections);
+}
