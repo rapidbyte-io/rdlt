@@ -12,7 +12,7 @@ use crate::capabilities::{IdentifierCase, IdentifierChars, IdentifierRules};
 use crate::destination::{TableChange, TableRef};
 use crate::id::{SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
-use crate::testing::{Violation, bounded_call};
+use crate::testing::Violation;
 use crate::types::{Field, LogicalType};
 
 /// The shortest identifiers the clause fits its names in.
@@ -63,15 +63,13 @@ impl Bench<'_> {
             &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
         )
         .await?;
-        let published = bounded_call("probe", self.probe.published(&table)).await?;
-        let rows: usize = published.iter().map(RecordBatch::num_rows).sum();
+        let published = self.read(&table).await?;
+        let rows = published.rows();
         if rows != 3 {
             return Err(format!("table {identifier} published {rows} rows, not 3").into());
         }
         for name in &names {
-            let kept = published
-                .iter()
-                .all(|batch| batch.schema().field_with_name(name).is_ok());
+            let kept = published.batches().all(|batch| batch.has(name));
             if !kept {
                 return Err(format!("column `{name}` was not published under its name").into());
             }

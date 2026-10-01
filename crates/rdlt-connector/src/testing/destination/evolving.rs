@@ -15,6 +15,7 @@ use crate::destination::{DestinationSession, DestinationWriter, MergeKey, TableC
 use crate::error::ConnectorErrorKind;
 use crate::id::{CommitSeq, GenerationId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
+use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded, bounded_call};
 use crate::types::{Field, LogicalType, TypeKind};
 
@@ -115,7 +116,10 @@ impl Bench<'_> {
         commit(&mut opened.session, &second).await?;
         let values = self.values(&table, "extra").await?;
         if values.iter().flatten().count() != 3 || values.len() != 6 {
-            return Err(format!("after adding a column, published {values:?}").into());
+            return Err(Violation::from(format_args!(
+                "after adding a column, published {}",
+                Listed(&values)
+            )));
         }
         let create = TableChange::Create {
             table: table.clone(),
@@ -206,7 +210,10 @@ impl Bench<'_> {
         if values == [Some(3), Some(7), Some(1 << 40)] {
             Ok(())
         } else {
-            Err(format!("after widening a column, published {values:?}").into())
+            Err(Violation::from(format_args!(
+                "after widening a column, published {}",
+                Listed(&values)
+            )))
         }
     }
 
@@ -259,22 +266,21 @@ impl Bench<'_> {
         if published == expected {
             Ok(())
         } else {
-            Err(format!("the merge table holds {published:?}, expected {expected:?}").into())
+            Err(Violation::from(format_args!(
+                "the merge table holds {}, expected {expected:?}",
+                Listed(&published)
+            )))
         }
     }
 
     /// The published values of the Int64 or Int32 `column` of `table`, null where a batch lacks it.
     async fn values(&self, table: &TableRef, column: &str) -> Result<Vec<Option<i64>>, Violation> {
-        let batches = bounded_call("probe", self.probe.published(table)).await?;
-        let mut values = Vec::new();
-        for batch in &batches {
-            match batch.column_by_name(column) {
-                Some(array) => {
-                    let array = arrow_cast::cast(array, &DataType::Int64)
-                        .map_err(|error| Violation::from(format!("reading {column}: {error}")))?;
-                    values.extend(array.as_primitive::<Int64Type>().iter());
-                }
-                None => values.extend(std::iter::repeat_n(None, batch.num_rows())),
+        let published = self.read(table).await?;
+        let mut values = Vec::with_capacity(published.rows());
+        for batch in published.batches() {
+            match batch.optional(column, &DataType::Int64)? {
+                Some(array) => values.extend(array.as_primitive::<Int64Type>().iter()),
+                None => values.extend(std::iter::repeat_n(None, batch.rows())),
             }
         }
         Ok(values)

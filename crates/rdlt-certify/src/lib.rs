@@ -19,6 +19,7 @@
 mod acknowledged;
 mod connect;
 mod kill;
+mod limits;
 mod protocol;
 mod published;
 mod registry;

@@ -12,16 +12,9 @@ use rdlt_host::remote::Client;
 use rdlt_wire::tonic::Streaming;
 use rdlt_wire::{Decoder, IpcFrame, Limits, PUBLISHED};
 
+use crate::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS, READ_BACK_TIME};
 use crate::protocol::{configure_request, request};
 use crate::target::Target;
-
-/// The longest a read-back of one table takes: one that takes longer fails the clause, rather
-/// than hold the certification.
-const READ_BACK_TIME: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// The most a read-back decodes of one table, in bytes: a destination that sends more fails the
-/// clause, rather than size this process's memory.
-const PUBLISHED_BYTES: usize = 64 << 20;
 
 /// What reads back what the destination `target` reaches published, with `config`.
 #[derive(Debug)]
@@ -120,12 +113,12 @@ async fn handshaken(target: &Target, config: &str) -> Result<(Client, bool)> {
     Ok((client, accepted))
 }
 
-/// The batches `frames` carry, decoded within `limits` and [`PUBLISHED_BYTES`], once the done
-/// frame ends them.
+/// The batches `frames` carry, decoded within `limits`, [`PUBLISHED_BYTES`] and
+/// [`PUBLISHED_ROWS`], once the done frame ends them.
 async fn decoded(mut frames: Streaming<v1::ReadFrame>, limits: Limits) -> Result<Vec<RecordBatch>> {
     use v1::read_frame::Frame;
     let mut decoder = Decoder::new(limits);
-    let (mut batches, mut bytes) = (Vec::new(), 0_usize);
+    let (mut batches, mut bytes, mut rows) = (Vec::new(), 0_usize, 0_usize);
     while let Some(frame) = frames.message().await.map_err(|status| error(&status))? {
         match frame.frame {
             Some(Frame::Schema(schema)) => {
@@ -138,7 +131,7 @@ async fn decoded(mut frames: Streaming<v1::ReadFrame>, limits: Limits) -> Result
                     .data_header
                     .len()
                     .saturating_add(batch.data_body.len());
-                let Some(read) = within_cap(bytes, frame) else {
+                let Some(read) = within(bytes, frame, PUBLISHED_BYTES) else {
                     let message = format!(
                         "the destination read back more than the {PUBLISHED_BYTES} bytes \
                          certification reads of a table"
@@ -151,6 +144,14 @@ async fn decoded(mut frames: Streaming<v1::ReadFrame>, limits: Limits) -> Result
                     body: batch.data_body,
                 };
                 if let Some(batch) = decoder.frame(&frame).map_err(|error| frame_error(&error))? {
+                    let Some(read) = within(rows, batch.num_rows(), PUBLISHED_ROWS) else {
+                        let message = format!(
+                            "the destination read back more than the {PUBLISHED_ROWS} rows \
+                             certification reads of a table"
+                        );
+                        return Err(ConnectorError::data(message).with_code("published_rows"));
+                    };
+                    rows = read;
                     batches.push(batch);
                 }
             }
@@ -166,9 +167,7 @@ async fn decoded(mut frames: Streaming<v1::ReadFrame>, limits: Limits) -> Result
     ))
 }
 
-/// The bytes read of a table once a `frame` of bytes more is, when they are within
-/// [`PUBLISHED_BYTES`].
-fn within_cap(read: usize, frame: usize) -> Option<usize> {
-    read.checked_add(frame)
-        .filter(|read| *read <= PUBLISHED_BYTES)
+/// What is read of a table once `more` is added to `read`, when that is within `limit`.
+fn within(read: usize, more: usize, limit: usize) -> Option<usize> {
+    read.checked_add(more).filter(|read| *read <= limit)
 }
