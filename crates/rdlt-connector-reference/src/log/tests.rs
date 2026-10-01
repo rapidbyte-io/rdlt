@@ -388,3 +388,36 @@ async fn a_group_is_kept_only_in_a_file_named_whole_and_as_a_group_s() {
         assert_eq!(refused.code(), Some("keeper_path_invalid"), "{refused}");
     }
 }
+
+#[tokio::test]
+async fn a_log_that_forgets_names_the_group_it_keeps_its_offsets_in() {
+    let forgets = json!({ "name": "events", "partitions": 1, "messages": 8, "replayable": false });
+    let serves_again = json!({ "name": "other", "partitions": 1, "messages": 8 });
+    let unnamed = json!({ "seed": 3, "streams": [serves_again, forgets] });
+    let refused = source_factory::<LogSource>()
+        .connect(unnamed.clone(), ConnectContext::new())
+        .await
+        .err()
+        .expect("no group is named");
+    assert_eq!(refused.kind(), ConnectorErrorKind::Config);
+    assert_eq!(refused.code(), Some("keeper_unnamed"));
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let named = [
+        ("group", json!("named")),
+        ("group_path", json!(dir.path().join("events.group"))),
+    ];
+    for (field, value) in named {
+        let mut config = unnamed.clone();
+        config[field] = value;
+        let connected = source_factory::<LogSource>()
+            .connect(config, ConnectContext::new())
+            .await;
+        connected.unwrap_or_else(|error| panic!("{field} names the group: {error}"));
+    }
+    // A log that serves its messages again may share the default group.
+    let config = json!({ "seed": 3, "streams": [serves_again] });
+    let connected = source_factory::<LogSource>()
+        .connect(config, ConnectContext::new())
+        .await;
+    connected.expect("the default group");
+}

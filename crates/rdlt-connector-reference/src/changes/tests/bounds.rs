@@ -117,3 +117,27 @@ async fn a_slot_is_kept_only_in_a_file_named_whole_and_as_a_slot_s() {
         assert_eq!(refused.code(), Some("keeper_path_invalid"), "{refused}");
     }
 }
+
+#[tokio::test]
+async fn a_source_that_forgets_names_the_slot_it_keeps_its_positions_in() {
+    let forgets = json!({ "name": "orders", "keys": 6, "changes": 40, "replayable": false });
+    let serves_again = json!({ "name": "other", "keys": 6, "changes": 40 });
+    let unnamed = json!({ "seed": 3, "streams": [serves_again, forgets] });
+    let refused = connect(unnamed.clone()).await.err().expect("no slot");
+    assert_eq!(refused.kind(), ConnectorErrorKind::Config);
+    assert_eq!(refused.code(), Some("keeper_unnamed"));
+    let dir = tempfile::tempdir().unwrap();
+    let named = [
+        ("slot", json!("named")),
+        ("slot_path", json!(dir.path().join("orders.slot"))),
+    ];
+    for (field, value) in named {
+        let mut config = unnamed.clone();
+        config[field] = value;
+        let connected = connect(config).await;
+        connected.unwrap_or_else(|error| panic!("{field} names the slot: {error}"));
+    }
+    // A source that serves its changes again may share the default slot.
+    let config = json!({ "seed": 3, "streams": [serves_again] });
+    connect(config).await.expect("the default slot");
+}
