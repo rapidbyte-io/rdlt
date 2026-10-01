@@ -115,9 +115,13 @@ fn crosses_as_weighed(part: &RecordBatch) -> Result<(), String> {
     if (weight.values, weight.view_bytes) != (shape.values, shape.view_bytes) {
         return Err(format!("weighed {weight:?}, walked {shape:?}"));
     }
-    let most = weight.frame_bytes() + overhead;
-    if bytes > most {
-        return Err(format!("a frame of {bytes} bytes, weighed at most {most}"));
+    // The weight in bytes is what the frame's buffers hold before padding: never more than
+    // the frame, and with the overhead never less.
+    let (least, most) = (weight.frame_bytes(), weight.frame_bytes() + overhead);
+    if !(least..=most).contains(&bytes) {
+        return Err(format!(
+            "a frame of {bytes} bytes, weighed {least} to {most}"
+        ));
     }
     Ok(())
 }
