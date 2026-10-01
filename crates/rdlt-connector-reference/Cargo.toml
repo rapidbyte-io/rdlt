@@ -23,12 +23,6 @@ required-features = ["test-connectors"]
 name = "rdlt-connector-memory"
 required-features = ["test-connectors"]
 
-# The suite serves the test connectors' binaries, and reads back what the destinations published.
-[[test]]
-name = "it"
-path = "tests/it/main.rs"
-required-features = ["certify", "test-connectors"]
-
 [dependencies]
 arrow-array.workspace = true
 arrow-cast.workspace = true
@@ -56,6 +50,9 @@ xxhash-rust.workspace = true
 [dev-dependencies]
 arrow-buffer.workspace = true
 proptest.workspace = true
+# The crate's own tests serve the test connectors' binaries and read back what the destinations
+# published: they turn both features on, whatever the command line asks for.
+rdlt-connector-reference = { workspace = true, features = ["certify", "test-connectors"] }
 rdlt-testkit.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen", "testing"] }
 rdlt-host.workspace = true

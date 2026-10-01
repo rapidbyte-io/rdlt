@@ -2080,6 +2080,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rdlt-connector",
+ "rdlt-connector-reference",
  "rdlt-host",
  "rdlt-testkit",
  "rdlt-wire",
