@@ -188,6 +188,16 @@ impl Location {
         (names, format!("{part}.{}", self.format.extension()))
     }
 
+    /// The names standing in a segment's place for a file commit `meta` writes as `kind`: the
+    /// commit's own load and number, and random bits no other try of the commit shares, so no
+    /// file a commit writes ever takes the name of another.
+    fn written_by(kind: &str, meta: &CommitMeta) -> Result<[String; 2]> {
+        let commit = format!("{}-{}-", meta.load_id, meta.commit_seq.get());
+        let unique = crate::rooted::unique(&commit)
+            .map_err(io::failed("naming a file of", std::path::Path::new(kind)))?;
+        Ok([kind.to_owned(), unique.to_string_lossy().into_owned()])
+    }
+
     /// Opens the directory the `names` lead to under the pipeline's, creating what is missing.
     fn staging(&self, names: &[String]) -> Result<Dir> {
         self.dir

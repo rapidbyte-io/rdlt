@@ -82,3 +82,28 @@ fn a_staged_file_s_directory_and_every_directory_made_for_it_are_synced() {
     ];
     assert_eq!(synced, expected);
 }
+
+#[test]
+fn a_file_a_commit_writes_is_named_for_its_own_load_and_number_and_for_no_other_try() {
+    use rdlt_connector::{CommitMeta, CommitSeq, SegmentSet};
+    let meta = CommitMeta {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 42),
+        commit_seq: CommitSeq::FIRST.next(),
+        epoch: Epoch(7),
+        segments: SegmentSet::default(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    let [kind, first] = Location::written_by("merged", &meta).unwrap();
+    let [_, second] = Location::written_by("merged", &meta).unwrap();
+    assert_eq!(kind, "merged");
+    let commit = format!("{}-2-", meta.load_id);
+    assert!(
+        first.starts_with(&commit) && first.len() == commit.len() + 32,
+        "{first}"
+    );
+    assert_ne!(first, second);
+    assert!(crate::rooted::component(first.as_ref()).is_ok());
+}

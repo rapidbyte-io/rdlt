@@ -338,3 +338,81 @@ async fn a_table_written_in_both_formats_reads_back_whole_and_is_merged_in_neith
     assert_eq!(data_files(root.path(), "jsonl").len(), 4);
     assert_eq!(data_files(root.path(), "arrow").len(), 2);
 }
+
+/// As a replay does: one session commits the pending commits of two dead loads, each its
+/// load's first commit, under the load and number each was logged with.
+#[tokio::test]
+async fn two_loads_commits_of_one_number_in_one_session_keep_every_row() {
+    for format in ["jsonl", "arrow"] {
+        let root = tempfile::tempdir().unwrap();
+        let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
+        let mut opened = open(destination.as_ref(), 9).await;
+        let rows = table("rows");
+        for (load, base) in [(1_u128, 0_i64), (2, 10)] {
+            let mut segments = Vec::new();
+            for part in 0..2_i64 {
+                let (schema, batch) = ids(&[base + part]);
+                let segment = u64::try_from(base + part).unwrap() + 1;
+                stage(&mut opened, &rows, &schema, batch, segment).await;
+                segments.push(segment);
+            }
+            opened
+                .session
+                .commit(&meta(&opened, load, CommitSeq::FIRST, &segments))
+                .await
+                .expect("the commit lands");
+        }
+        assert_eq!(
+            published_ids(reader.as_ref(), &rows).await,
+            [0, 1, 10, 11],
+            "{format}"
+        );
+        // A merge table's rewrite is named for its commit too.
+        let merged = merge_table("merged");
+        for (load, id) in [(3_u128, 1_i64), (4, 2)] {
+            let (schema, batch) = keyed(&[id], 1);
+            let segment = u64::try_from(id).unwrap() + 100;
+            stage(&mut opened, &merged, &schema, batch, segment).await;
+            opened
+                .session
+                .commit(&meta(&opened, load, CommitSeq::FIRST, &[segment]))
+                .await
+                .expect("the commit lands");
+        }
+        assert_eq!(
+            published_ids(reader.as_ref(), &merged).await,
+            [1, 2],
+            "{format}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_commit_of_a_reused_number_publishes_nothing() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().unwrap();
+    let (destination, reader) = connect_with(root.path(), json!({})).await;
+    let mut opened = open(destination.as_ref(), 9).await;
+    let rows = merge_table("rows");
+    let (schema, batch) = keyed(&[1, 2], 1);
+    stage(&mut opened, &rows, &schema, batch, 1).await;
+    opened
+        .session
+        .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+        .await
+        .unwrap();
+    assert_eq!(published_ids(reader.as_ref(), &rows).await, [1, 2]);
+    let (schema, batch) = keyed(&[3], 2);
+    stage(&mut opened, &rows, &schema, batch, 2).await;
+    let manifests = pipeline_dir(root.path()).join("manifests");
+    let mode = |mode| std::fs::set_permissions(&manifests, std::fs::Permissions::from_mode(mode));
+    mode(0o500).unwrap();
+    let failed = opened
+        .session
+        .commit(&meta(&opened, 2, CommitSeq::FIRST, &[2]))
+        .await;
+    mode(0o700).unwrap();
+    failed.expect_err("the manifest cannot be written");
+    // The commit failed: nothing of it is published.
+    assert_eq!(published_ids(reader.as_ref(), &rows).await, [1, 2]);
+}
