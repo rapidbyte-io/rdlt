@@ -171,7 +171,7 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
     // A seed's output is its failure alone: what the connectors would report is dropped.
     let listening = Listening {
         log: Log::new(|_| {}),
-        ..Listening::new(tls, accepted.hosts)
+        ..Listening::new(tls, accepted.hosts).map_err(|error| error.to_string())?
     };
     loop {
         net.connectors.up(side).await;
