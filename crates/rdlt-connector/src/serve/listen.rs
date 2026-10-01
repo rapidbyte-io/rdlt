@@ -34,7 +34,7 @@ pub use refusals::Log;
 
 use super::args::{Failure, Listen};
 use super::{Hosted, Served, serve_until};
-use crate::limits::ListenLimits;
+use crate::limits::{ListenLimits, UnfairSessions};
 use admission::{Admitted, Origin, Unauthenticated};
 use refusals::{Refusals, Refused};
 use speaking::Speaking;
@@ -82,16 +82,18 @@ pub struct Listening {
 impl Listening {
     /// Listens with `tls` for `hosts`, within the default limits, each host holding its share
     /// of the sessions, reporting on standard error.
-    pub fn new(tls: Arc<ServerConfig>, hosts: Hosts) -> Self {
-        let limits = ListenLimits::default();
-        // The default sessions outnumber any hosts a command line names.
-        let limits = limits.shared(hosts.count(), None, None).unwrap_or(limits);
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// [`UnfairSessions`] where more hosts are named than the default limits serve sessions.
+    pub fn new(tls: Arc<ServerConfig>, hosts: Hosts) -> Result<Self, UnfairSessions> {
+        let limits = ListenLimits::default().shared(hosts.count(), None, None)?;
+        Ok(Self {
             tls,
             hosts,
             limits,
             log: Log::stderr(),
-        }
+        })
     }
 }
 
@@ -113,8 +115,10 @@ pub(super) async fn listen(
         )
         .map_err(|error| failure("listening", &error))?;
     let listening = Listening {
+        tls: Arc::new(config),
+        hosts: listen.accepted.hosts.clone(),
         limits: shares,
-        ..Listening::new(Arc::new(config), listen.accepted.hosts.clone())
+        log: Log::stderr(),
     };
     descriptors::reserve(&listening.limits).map_err(|error| failure("listening", &error))?;
     let listener = TcpListener::bind(listen.address)

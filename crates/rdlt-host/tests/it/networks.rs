@@ -18,7 +18,7 @@ use crate::network::{accepted, identity};
 pub(crate) fn listening(pki: &Pki, server: &Files) -> Listening {
     let tls = rdlt_wire::tls::server_config(&identity(server), &accepted(pki))
         .expect("the server's configuration builds");
-    Listening::new(Arc::new(tls), accepted(pki).hosts)
+    Listening::new(Arc::new(tls), accepted(pki).hosts).expect("a host has its share")
 }
 
 /// `listening`, reporting to the lines returned.

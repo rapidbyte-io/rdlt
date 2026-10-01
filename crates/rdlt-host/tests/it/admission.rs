@@ -164,7 +164,7 @@ impl Connector {
         let listening = Listening {
             limits,
             log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
-            ..Listening::new(Arc::new(tls), accepted.hosts)
+            ..Listening::new(Arc::new(tls), accepted.hosts).expect("the hosts have their shares")
         };
         let (connections, accepted) = mpsc::unbounded_channel();
         let (live, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
@@ -900,7 +900,7 @@ async fn refusal_line(pki: &Pki, crl: Option<std::path::PathBuf>, host: &str) ->
     let written = Arc::clone(&lines);
     let listening = Listening {
         log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
-        ..Listening::new(Arc::new(tls), accepted.hosts)
+        ..Listening::new(Arc::new(tls), accepted.hosts).expect("the hosts have their shares")
     };
     let (connections, accepting) = mpsc::unbounded_channel();
     let source = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
