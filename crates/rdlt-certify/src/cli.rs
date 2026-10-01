@@ -178,9 +178,14 @@ fn certified(
 ) -> Result<Vec<Report>, Ended> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
-    // A timeout too far ahead for the clock to hold is none.
-    let until =
-        bound(args.timeout, args.no_timeout).and_then(|bound| Instant::now().checked_add(bound));
+    // Whoever asks for a bound gets one: a timeout the clock cannot hold is refused.
+    let until = match bound(args.timeout, args.no_timeout) {
+        Some(bound) => Some(Instant::now().checked_add(bound).ok_or_else(|| {
+            let message = "--timeout is further ahead than the clock holds; see --no-timeout";
+            Ended(USAGE, message.to_owned())
+        })?),
+        None => None,
+    };
     let overdue = |role| unfinished(target, role, OVERDUE);
     // Heard from here on: an interrupt ends the certification, which then stops what it spawned.
     let mut interrupts = {
