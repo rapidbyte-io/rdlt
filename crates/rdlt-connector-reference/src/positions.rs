@@ -30,3 +30,16 @@ pub(crate) fn keeper_path(path: &Path, extension: &str) -> Result<(), ConnectorE
     }
     Ok(())
 }
+
+/// The error of a stream that forgets what it acknowledged in a source naming no keeper, a
+/// `group` or a `slot` as `keeper` says.
+///
+/// Every source of a process that names no keeper shares the default one, so what another
+/// pipeline acknowledged there would be what this stream forgot.
+pub(crate) fn unnamed(stream: &str, keeper: &str) -> ConnectorError {
+    let message = format!(
+        "stream {stream} does not serve again what it acknowledged, so the source names its \
+         {keeper} or {keeper}_path"
+    );
+    ConnectorError::config(message).with_code("keeper_unnamed")
+}

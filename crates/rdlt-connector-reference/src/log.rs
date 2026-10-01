@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use crate::generator::mix;
 use crate::kept::{Kept, Registry};
 use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, within};
-use crate::positions::keeper_path;
+use crate::positions::{keeper_path, unnamed};
 
 /// Configuration of [`LogSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -78,7 +78,8 @@ pub struct LoggedStream {
     #[serde(default)]
     pub retention: Option<u64>,
     /// Whether the log serves again what its group committed; a queue that forgets it refuses
-    /// to read from before its committed offset.
+    /// to read from before its committed offset, and its source names its `group` or
+    /// `group_path`.
     #[serde(default = "replayable")]
     pub replayable: bool,
     /// Messages per pushed batch, at most 100000.
@@ -160,6 +161,12 @@ impl SourceConnector for LogSource {
         }
         if let Some(path) = &config.group_path {
             keeper_path(path, "group")?;
+        }
+        let shared = config.group.is_none() && config.group_path.is_none();
+        if let Some(forgets) = config.streams.iter().find(|stream| !stream.replayable)
+            && shared
+        {
+            return Err(unnamed(&forgets.name, "group"));
         }
         origin();
         Ok(Self {

@@ -26,7 +26,7 @@ pub use history::{Version, history};
 pub use model::{Change, Row, change, expected, snapshot};
 use slot::Slot;
 
-use crate::positions::keeper_path;
+use crate::positions::{keeper_path, unnamed};
 
 /// Configuration of [`ChangesSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -74,7 +74,8 @@ pub struct ChangedStream {
     #[serde(default)]
     pub captured: u64,
     /// Whether the source serves again the changes its slot acknowledged; one that does not
-    /// forgets them, as a replication slot does, and a read from before them waits.
+    /// forgets them, as a replication slot does, and a read from before them waits; its source
+    /// names its `slot` or `slot_path`.
     #[serde(default = "yes")]
     pub replayable: bool,
     /// Whether each row carries when its change happened in `changed_at`, a timestamp of its
@@ -135,6 +136,12 @@ impl SourceConnector for ChangesSource {
         }
         if let Some(path) = &config.slot_path {
             keeper_path(path, "slot")?;
+        }
+        let shared = config.slot.is_none() && config.slot_path.is_none();
+        if let Some(forgets) = config.streams.iter().find(|stream| !stream.replayable)
+            && shared
+        {
+            return Err(unnamed(&forgets.name, "slot"));
         }
         Ok(Self {
             seed: config.seed,
