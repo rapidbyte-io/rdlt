@@ -50,6 +50,11 @@ pub(super) enum Refused {
     Displaced,
     /// Its TLS handshake failed: no certificate, or one that is not accepted.
     Handshake,
+    /// Its certificate is revoked.
+    Revoked,
+    /// No current revocation list says whether its certificate is revoked: the connector has
+    /// none of its issuer, or one past its next update.
+    Unlisted,
     /// It did not complete its TLS handshake in time.
     Slow,
     /// Its host holds as many connections as one host may.
@@ -62,12 +67,34 @@ pub(super) enum Refused {
     Transport,
 }
 
+impl Refused {
+    /// Why a TLS handshake that failed with `error` was refused.
+    ///
+    /// Revocation is told apart: a connector whose lists have gone stale refuses every host, and
+    /// its operator must be able to see why.
+    pub(super) fn handshake(error: &std::io::Error) -> Self {
+        use tokio_rustls::rustls::{CertificateError, Error};
+        let tls = error.get_ref().and_then(|error| error.downcast_ref());
+        match tls {
+            Some(Error::InvalidCertificate(CertificateError::Revoked)) => Self::Revoked,
+            Some(Error::InvalidCertificate(
+                CertificateError::UnknownRevocationStatus
+                | CertificateError::ExpiredRevocationList
+                | CertificateError::ExpiredRevocationListContext { .. },
+            )) => Self::Unlisted,
+            _ => Self::Handshake,
+        }
+    }
+}
+
 /// How many connections were refused since the last report, by why.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Refusals {
     accept: u64,
     displaced: u64,
     handshake: u64,
+    revoked: u64,
+    unlisted: u64,
     slow: u64,
     host_full: u64,
     queue_full: u64,
@@ -81,6 +108,8 @@ impl Refusals {
             Refused::Accept => &mut self.accept,
             Refused::Displaced => &mut self.displaced,
             Refused::Handshake => &mut self.handshake,
+            Refused::Revoked => &mut self.revoked,
+            Refused::Unlisted => &mut self.unlisted,
             Refused::Slow => &mut self.slow,
             Refused::HostFull => &mut self.host_full,
             Refused::QueueFull => &mut self.queue_full,
@@ -98,6 +127,11 @@ impl Refusals {
             (self.accept, "could not be accepted"),
             (self.displaced, "closed unauthenticated for a newer one"),
             (self.handshake, "failed their TLS handshake"),
+            (self.revoked, "presented a revoked certificate"),
+            (
+                self.unlisted,
+                "presented a certificate no current revocation list covers",
+            ),
             (self.slow, "did not complete their TLS handshake in time"),
             (self.host_full, "over their host's sessions"),
             (self.queue_full, "over the connections that may wait"),
