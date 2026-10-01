@@ -171,3 +171,42 @@ fn a_peers_limits_are_admitted_from_the_protocols_minimums_up() {
     };
     assert_eq!(others.admit_peer(), Ok(()));
 }
+
+#[test]
+fn the_lesser_of_two_ends_limits_is_the_lesser_of_each() {
+    let low = Limits {
+        frame_bytes: 1,
+        batch_rows: 2,
+        schema_columns: 3,
+        nesting_depth: 4,
+        json_push_bytes: 5,
+        cursor_bytes: 6,
+        config_bytes: 7,
+        control_string_bytes: 8,
+        batch_values: 9,
+        schema_bytes: 10,
+    };
+    let high = Limits {
+        frame_bytes: 11,
+        batch_rows: 12,
+        schema_columns: 13,
+        nesting_depth: 14,
+        json_push_bytes: 15,
+        cursor_bytes: 16,
+        config_bytes: 17,
+        control_string_bytes: 18,
+        batch_values: 19,
+        schema_bytes: 20,
+    };
+    assert_eq!(low.lesser(&high), low);
+    assert_eq!(high.lesser(&low), low);
+    // Each limit on its own.
+    let mixed = Limits {
+        batch_rows: 12,
+        json_push_bytes: 15,
+        batch_values: 19,
+        ..low
+    };
+    assert_eq!(mixed.lesser(&high), mixed);
+    assert_eq!(high.lesser(&mixed), mixed);
+}

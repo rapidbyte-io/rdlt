@@ -41,9 +41,12 @@ pub(crate) struct BlobsConfig {
     /// The length of each string; zero for 256 KiB.
     #[serde(default)]
     bytes: usize,
-    /// Rows of one byte ahead of each string, in its batch.
+    /// Rows ahead of each string, in its batch.
     #[serde(default)]
     ahead: usize,
+    /// Whether the rows ahead are strings of the same length, not of one byte.
+    #[serde(default)]
+    alike: bool,
 }
 
 /// A source of one endless stream, `blobs`, of 256 KiB strings.
@@ -98,7 +101,12 @@ impl ReadStream<Blobs> for BlobStream {
         };
         let blob = "b".repeat(bytes);
         loop {
-            let mut rows = vec!["b".to_owned(); source.config.ahead];
+            let ahead = if source.config.alike {
+                blob.as_str()
+            } else {
+                "b"
+            };
+            let mut rows = vec![ahead.to_owned(); source.config.ahead];
             rows.push(blob.clone());
             let column: ArrayRef = Arc::new(StringArray::from(rows));
             let batch = RecordBatch::try_from_iter([("b", column)]).expect("a valid batch");
@@ -357,4 +365,62 @@ async fn a_row_beyond_the_hosts_frame_limit_ends_the_read_after_the_rows_before_
         (error.code(), error.limit().map(|limit| limit.name)),
         (Some("limit_exceeded"), Some("frame bytes"))
     );
+}
+
+#[tokio::test]
+async fn a_batch_is_cut_to_the_hosts_own_frames_for_a_connector_that_takes_larger() {
+    // A destination taking frames of 256 MiB, a host that sends none over 64 MiB, and a batch of
+    // 80 rows of a mebibyte: it goes as frames the host can send.
+    let limits = Limits {
+        frame_bytes: 256 << 20,
+        ..Limits::default()
+    };
+    let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
+    let mut writer = writer(served, limits, "flow_larger", Options::default()).await;
+    let rows: ArrayRef = Arc::new(StringArray::from(vec!["b".repeat(1 << 20); 80]));
+    let batch = RecordBatch::try_from_iter([("b", rows)]).expect("a valid batch");
+    writer
+        .write(SegmentId(1), batch)
+        .await
+        .expect("the batch is written");
+    let stats = writer.flush().await.expect("the batch is staged");
+    assert_eq!(stats.rows, 80);
+}
+
+#[tokio::test]
+async fn a_batch_is_cut_to_the_connectors_own_frames_for_a_host_that_takes_larger() {
+    // The mirror: a host taking frames of 256 MiB reads rows of five mebibytes, twenty to a
+    // batch, from a connector that sends no frame over 64 MiB.
+    let options = Options {
+        limits: Limits {
+            frame_bytes: 256 << 20,
+            ..Limits::default()
+        },
+        ..Options::default()
+    };
+    let config = serde_json::json!({ "bytes": 5 << 20, "ahead": 19, "alike": true });
+    let source = blobs(config, options).await;
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
+    let request = ReadRequest::new(
+        StreamName::new("blobs").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    );
+    let reading = tokio::spawn(async move { source.read(request, sink).await });
+    let mut rows = 0;
+    while rows < 40 {
+        let event = tokio::time::timeout(Duration::from_secs(30), feed.recv()).await;
+        match event.expect("rows arrive") {
+            Some(rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Arrow(batch))) => {
+                assert!(
+                    batch.num_rows() < 20,
+                    "a batch of {} rows",
+                    batch.num_rows()
+                );
+                rows += batch.num_rows();
+            }
+            other => panic!("the read ended or sent another event: {other:?}"),
+        }
+    }
+    reading.abort();
 }
