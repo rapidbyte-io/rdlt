@@ -53,6 +53,8 @@ pub(crate) enum Fault {
     Paced,
     /// Its reads send a frame for each credit it is granted, however little that is.
     Eager,
+    /// Its reads wait for credit, or for the fourth message that grants any, whichever is first.
+    Patient,
     /// It declares configuration and cursor limits beyond any this host sends, which breaks no
     /// clause.
     Vast,
@@ -81,7 +83,7 @@ pub(crate) enum Fault {
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 15] = [
+pub(crate) const BROKEN: [(Fault, &str); 16] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -94,6 +96,7 @@ pub(crate) const BROKEN: [(Fault, &str); 15] = [
     (Fault::Greedy, "P-CREDIT"),
     (Fault::Paced, "P-CREDIT"),
     (Fault::Eager, "P-CREDIT"),
+    (Fault::Patient, "P-CREDIT"),
     (Fault::LenientCursor, "P-LIMITS"),
     (Fault::AcceptsAnyFeature, "P-HANDSHAKE"),
     // Only the handshake clause offers a feature no host defines.
@@ -321,6 +324,7 @@ impl Connector for Fake {
         let paced = !self.keeps(Fault::Paced);
         let greedy = !self.keeps(Fault::Greedy) || paced;
         let eager = !self.keeps(Fault::Eager);
+        let patient = !self.keeps(Fault::Patient);
         let (frames, answer) = mpsc::channel(64);
         tokio::spawn(async move {
             let log = |line: usize| v1::ReadFrame {
@@ -329,7 +333,7 @@ impl Connector for Fake {
                     message: format!("line {line}"),
                 })),
             };
-            let mut credit: i64 = 0;
+            let (mut credit, mut granted_times): (i64, u32) = (0, 0);
             for line in 0..8 {
                 if paced && line > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -340,7 +344,8 @@ impl Connector for Fake {
                             control: Some(Control::Credit(granted)),
                         })) => {
                             credit += i64::try_from(granted.bytes).unwrap_or(i64::MAX);
-                            if eager {
+                            granted_times += 1;
+                            if eager || (patient && granted_times >= 4) {
                                 credit = credit.max(1);
                             }
                         }

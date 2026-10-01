@@ -2,8 +2,8 @@
 //! more is granted.
 //!
 //! The clause grants one byte and takes the frame it buys, which spends its own size. It then
-//! grants a byte more, several times over, each too little to bring the credit above nothing,
-//! and watches after each for a frame: a source that sends on any grant, or at its own pace,
+//! grants again, three times over, a byte or nothing, each too little to bring the credit above
+//! nothing, and watches after each for a frame: a source that sends on any grant, or at its own pace,
 //! sends one. Silence is watched for a bounded time, so a source slower than the whole watch is
 //! not told from one that waits.
 
@@ -28,8 +28,8 @@ use crate::target::Target;
 /// restore it, for frames it must not send.
 const QUIET: Duration = Duration::from_secs(1);
 
-/// How many grants of a byte, each too small to restore the credit, a read is watched after.
-const REGRANTS: u64 = 3;
+/// How many grants, each too small to restore the credit, a read is watched after.
+const REGRANTS: usize = 3;
 
 /// The credit granted once the read has shown it waits: enough for the rest of any partition.
 const PLENTY: u64 = 1 << 40;
@@ -85,11 +85,17 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
     checked.await.into()
 }
 
-/// How many grants of a byte leave the credit of a read spent, once one byte bought a frame of
-/// `spent` bytes: at most [`REGRANTS`].
-fn regrants(spent: u64) -> u64 {
+/// The bytes of each of the [`REGRANTS`] grants that leave the credit of a read spent, once
+/// one byte bought a frame of `spent` bytes: a byte while one more keeps the credit at nothing
+/// or below, and none after, so a read is granted as often however little its frame spent.
+fn regrants(spent: u64) -> [u64; REGRANTS] {
     // One byte was granted and `spent` taken: each byte more is one less below nothing.
-    spent.saturating_sub(1).min(REGRANTS)
+    let mut below = spent.saturating_sub(1);
+    std::array::from_fn(|_| {
+        let granted = u64::from(below > 0);
+        below -= granted;
+        granted
+    })
 }
 
 /// Watches `frames` for [`QUIET`]: a violation when the read, its credit spent, sends a frame.
@@ -105,18 +111,18 @@ async fn stays_quiet(frames: &mut Streaming<v1::ReadFrame>) -> Result<(), Violat
 }
 
 /// Checks that a read whose credit is spent sends nothing more, whatever it is granted that does
-/// not restore its credit, `regrants` times a byte, and goes on once granted more; then stops
-/// it, since the rest of the partition, however long, need not be read.
+/// not restore its credit, each of `regrants` in turn, and goes on once granted more; then
+/// stops it, since the rest of the partition, however long, need not be read.
 async fn waits_then_resumes(
     controls: &mpsc::Sender<v1::ReadControl>,
     frames: &mut Streaming<v1::ReadFrame>,
-    regrants: u64,
+    regrants: [u64; REGRANTS],
 ) -> Result<(), Violation> {
     stays_quiet(frames).await?;
-    for _ in 0..regrants {
+    for bytes in regrants {
         send(
             controls,
-            v1::read_control::Control::Credit(v1::Credit { bytes: 1 }),
+            v1::read_control::Control::Credit(v1::Credit { bytes }),
         )
         .await?;
         stays_quiet(frames).await?;
