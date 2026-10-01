@@ -93,8 +93,8 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     }
 }
 
-/// Writes `positions` to `path` through a file beside it, renamed over it once durable, so a
-/// crash leaves the file as it was or as it is now, never torn.
+/// Writes `positions` to `path` through a file beside it, renamed over it once durable and the
+/// rename made durable too, so a crash leaves the file as it was or as it is now, never torn.
 fn write<P: Serialize>(path: &Path, positions: &Positions<P>) -> std::io::Result<()> {
     let listed: Vec<(&String, &PartitionId, &P)> = positions
         .iter()
@@ -107,7 +107,13 @@ fn write<P: Serialize>(path: &Path, positions: &Positions<P>) -> std::io::Result
     let mut file = std::fs::File::create(&temporary)?;
     file.write_all(&bytes)?;
     file.sync_all()?;
-    std::fs::rename(&temporary, path)
+    std::fs::rename(&temporary, path)?;
+    // The rename outlives a power loss only once the directory holding it is synced.
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    std::fs::File::open(directory)?.sync_all()
 }
 
 /// Keepers by name, for as long as the process runs.

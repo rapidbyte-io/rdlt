@@ -67,3 +67,19 @@ fn a_keeper_reads_its_last_whole_file_beside_one_a_crash_left_half_written() {
     let files: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
     assert_eq!(files.len(), 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_keeper_whose_directory_cannot_be_synced_is_refused_its_advance() {
+    use std::os::unix::fs::PermissionsExt as _;
+    // A directory files can be renamed into but that cannot be opened, so its entry cannot be
+    // made durable.
+    let dir = tempfile::tempdir().unwrap();
+    let keeping = dir.path().join("keeping");
+    std::fs::create_dir(&keeping).unwrap();
+    let kept: Kept<u64> = Kept::at(&keeping.join("slot.json")).unwrap();
+    std::fs::set_permissions(&keeping, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let advanced = kept.advance("orders", &partition("p0"), 7);
+    std::fs::set_permissions(&keeping, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(advanced.is_err());
+}
