@@ -9,21 +9,24 @@
 use std::collections::BTreeMap;
 
 use super::placed;
-use super::recording::{Recording, record};
+use super::recording::{Budget, Recording, record};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::sink::Push;
 use crate::source::{Partition, PartitionPlan, Source};
 use crate::state::{PartitionState, StreamState};
+use crate::testing::limits::RENDERED_BYTES;
+use crate::testing::render::Rendering;
 use crate::testing::{Outcome, Violation, bounded_call, outcome};
 
 /// `S-PARTITION` against every stream of `catalog` that it can check.
 pub(super) async fn partitions_cover_exactly_once(
     source: &dyn Source,
     catalog: &Catalog,
+    budget: &Budget,
 ) -> Outcome {
     let (mut checked, mut uncheckpointed) = (false, false);
     for stream in catalog.iter() {
-        match covered(source, stream).await {
+        match covered(source, stream, budget).await {
             Ok(Covered::Checked) => checked = true,
             Ok(Covered::Uncheckpointed) => uncheckpointed = true,
             Ok(Covered::Unbounded) => {}
@@ -50,24 +53,26 @@ enum Covered {
 }
 
 /// Checks `stream`, where its partitions end and one checkpoints before its end.
-async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<Covered, Violation> {
+async fn covered(
+    source: &dyn Source,
+    stream: &StreamSpec,
+    budget: &Budget,
+) -> Result<Covered, Violation> {
     let fresh = StreamState::default();
     let first = planned(source, stream, &fresh).await?;
     if first.partitions.iter().any(Partition::is_unbounded) {
         return Ok(Covered::Unbounded);
     }
-    let (mut whole, mut read, mut stood) = (Rows::default(), Rows::default(), BTreeMap::new());
+    let (mut whole, mut stood) = (Vec::new(), BTreeMap::new());
     for (partition, cursor) in placed(&first, &fresh) {
-        let recording = record(source, stream, &partition, cursor, None).await?;
-        whole.add_all(&recording);
-        if let (Some(cursor), Some(segment)) =
-            (recording.checkpoints.first(), recording.segments.first())
-        {
-            read.add(segment);
+        let recording = record(source, (stream, &partition), cursor, None, budget).await?;
+        if let Some(cursor) = recording.checkpoints.first() {
             let state = PartitionState::Cursor(cursor.clone());
             stood.insert(partition.id().clone(), state);
         }
+        whole.push(recording);
     }
+    // Nothing is rendered of a stream the clause cannot check.
     if stood.is_empty() {
         return Ok(Covered::Uncheckpointed);
     }
@@ -77,10 +82,25 @@ async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<Covered, Vi
         ..StreamState::default()
     };
     let again = planned(source, stream, &state).await?;
+    let mut rest = Vec::new();
     for (partition, cursor) in placed(&again, &state) {
-        read.add_all(&record(source, stream, &partition, cursor, None).await?);
+        rest.push(record(source, (stream, &partition), cursor, None, budget).await?);
     }
-    match whole.difference(&read) {
+    let mut rendering = Rendering::new(RENDERED_BYTES);
+    let (mut once, mut read) = (Rows::default(), Rows::default());
+    for recording in &whole {
+        once.add(&mut rendering, pushes(recording)).await?;
+        let first = recording
+            .segments
+            .first()
+            .filter(|_| !recording.checkpoints.is_empty());
+        read.add(&mut rendering, first.into_iter().flatten())
+            .await?;
+    }
+    for recording in &rest {
+        read.add(&mut rendering, pushes(recording)).await?;
+    }
+    match once.difference(&read) {
         None => Ok(Covered::Checked),
         Some((missing, extra)) => Err(Violation::from(format!(
             "stream {}: planned again from its first checkpoints, its partitions read {missing} \
@@ -88,6 +108,11 @@ async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<Covered, Vi
             stream.name()
         ))),
     }
+}
+
+/// Every push of `recording`, in order.
+fn pushes(recording: &Recording) -> impl Iterator<Item = &Push> {
+    recording.segments.iter().flatten().chain(&recording.tail)
 }
 
 async fn planned(
@@ -106,22 +131,32 @@ async fn planned(
 struct Rows(BTreeMap<String, usize>);
 
 impl Rows {
-    fn add_all(&mut self, recording: &Recording) {
-        for push in recording.segments.iter().flatten().chain(&recording.tail) {
-            self.push(push);
+    /// Counts each row of `pushes`, rendered within `rendering`'s limit: a JSON row as its
+    /// text, an Arrow row as each column's name and value.
+    async fn add<'a>(
+        &mut self,
+        rendering: &mut Rendering,
+        pushes: impl Iterator<Item = &'a Push>,
+    ) -> Result<(), Violation> {
+        for push in pushes {
+            let rows = match push {
+                Push::Json(bytes) => {
+                    let rows: Vec<serde_json::Value> =
+                        serde_json::from_slice(bytes).unwrap_or_default();
+                    let rows: Vec<String> = rows.iter().map(ToString::to_string).collect();
+                    rows.iter()
+                        .try_for_each(|row| rendering.charge(row))
+                        .map(|()| rows)
+                }
+                Push::Arrow(batch) | Push::Changes(batch) => rendering.rows(batch, |_| true).await,
+            };
+            // Rows that cannot be compared leave the clause unobserved: they break nothing.
+            for row in rows.map_err(Violation::unobserved)? {
+                *self.0.entry(row).or_default() += 1;
+            }
+            tokio::task::yield_now().await;
         }
-    }
-
-    fn add(&mut self, segment: &[Push]) {
-        for push in segment {
-            self.push(push);
-        }
-    }
-
-    fn push(&mut self, push: &Push) {
-        for row in rendered(push) {
-            *self.0.entry(row).or_default() += 1;
-        }
+        Ok(())
     }
 
     /// How many rows `other` lacks and holds beyond these, where the two differ.
@@ -138,28 +173,5 @@ impl Rows {
             .map(|(row, times)| times.saturating_sub(count(self, row)))
             .sum();
         (missing + extra > 0).then_some((missing, extra))
-    }
-}
-
-/// Each row `push` holds, rendered: a JSON row as its text, an Arrow row as each column's name
-/// and value.
-fn rendered(push: &Push) -> Vec<String> {
-    match push {
-        Push::Json(bytes) => {
-            let rows: Vec<serde_json::Value> = serde_json::from_slice(bytes).unwrap_or_default();
-            rows.iter().map(ToString::to_string).collect()
-        }
-        Push::Arrow(batch) | Push::Changes(batch) => (0..batch.num_rows())
-            .map(|row| {
-                let schema = batch.schema();
-                schema
-                    .fields()
-                    .iter()
-                    .zip(batch.columns())
-                    .map(|(field, column)| format!("{}={:?}", field.name(), column.slice(row, 1)))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            })
-            .collect(),
     }
 }

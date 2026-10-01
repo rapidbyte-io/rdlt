@@ -6,6 +6,8 @@
 //! brings the engine; another build skips them.
 
 #[cfg(feature = "kill")]
+mod bounded;
+#[cfg(feature = "kill")]
 mod destination;
 #[cfg(feature = "kill")]
 mod killing;

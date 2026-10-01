@@ -7,6 +7,19 @@ use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
 use super::rows::{Parted, parted, rendered};
 use super::{DRAWS, Loaded, drawn, proven, unproven};
+use rdlt_connector::testing::render::Rendering;
+
+/// The rows of `batches`, rendered with no limit.
+fn rows(batches: &[RecordBatch]) -> Vec<String> {
+    let mut rendering = Rendering::new(usize::MAX);
+    let mut rendering = std::pin::pin!(rendered(batches, &mut rendering));
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    loop {
+        if let std::task::Poll::Ready(rows) = rendering.as_mut().poll(&mut context) {
+            return rows.expect("the rows render");
+        }
+    }
+}
 
 fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     RecordBatch::try_from_iter(columns).expect("a valid batch")
@@ -94,9 +107,20 @@ fn rows_render_by_column_name_without_metadata_whatever_their_batches() {
         ("name", Arc::new(StringArray::from(vec!["b"]))),
     ]);
     assert_eq!(
-        rendered(&[first, second]).expect("renders"),
+        rows(&[first, second]),
         ["id=1, name=null", "id=2, name=b", "id=2, name=b"]
     );
+}
+
+#[test]
+fn an_instant_no_calendar_holds_renders_as_its_integer_instead_of_panicking() {
+    // A second no calendar holds once its zone's offset is added.
+    let edge = arrow_array::TimestampSecondArray::from(vec![8_210_266_876_799_i64])
+        .with_timezone("+14:00");
+    let edge = [batch(vec![("at", Arc::new(edge))])];
+    let rows = rows(&edge);
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].contains("8210266876799"), "{rows:?}");
 }
 
 #[test]

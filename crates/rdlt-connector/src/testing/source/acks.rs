@@ -17,6 +17,7 @@ mod watch;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use super::recording::Budget;
 use crate::catalog::{Catalog, ReadMode, StreamSpec};
 use crate::cursor::Cursor;
 use crate::id::PartitionId;
@@ -50,7 +51,8 @@ pub(super) async fn standing(
     let Some(stream) = changes(catalog) else {
         return Ok(Vec::new());
     };
-    let probed = Probed::new(source, reader, stream);
+    let unread = Budget::new();
+    let probed = Probed::new(source, reader, stream, &unread);
     let mut standing = Vec::new();
     for partition in probed.plan(&StreamState::default()).await?.partitions {
         let position = probed.position(partition.id()).await?;
@@ -67,6 +69,7 @@ pub(super) async fn acknowledged_only_when_committed(
     source: &dyn Source,
     told: Option<Result<Told, Violation>>,
     catalog: &Catalog,
+    budget: &Budget,
 ) -> Outcome {
     let Some(told) = told else {
         return Outcome::Inapplicable("the source does not tell where it stands".into());
@@ -80,7 +83,7 @@ pub(super) async fn acknowledged_only_when_committed(
             "the source reads no stream as changes or incrementally".into(),
         );
     };
-    let mut probed = Probed::new(source, reader.as_ref(), stream);
+    let mut probed = Probed::new(source, reader.as_ref(), stream, budget);
     let checked = async {
         probed.unmoved_since(standing).await?;
         probed.walk().await
@@ -125,6 +128,8 @@ struct Probed<'a> {
     stream: &'a StreamSpec,
     /// Where each partition the clause has seen stands, as it last found it.
     seen: BTreeMap<PartitionId, Option<Cursor>>,
+    /// What the clause may still hold of the checkpoints its reads send.
+    budget: &'a Budget,
 }
 
 impl<'a> Probed<'a> {
@@ -132,12 +137,14 @@ impl<'a> Probed<'a> {
         source: &'a dyn Source,
         reader: &'a dyn AcknowledgedReader,
         stream: &'a StreamSpec,
+        budget: &'a Budget,
     ) -> Self {
         Self {
             source,
             reader,
             stream,
             seen: BTreeMap::new(),
+            budget,
         }
     }
 

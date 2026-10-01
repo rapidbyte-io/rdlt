@@ -6,7 +6,7 @@ use std::num::NonZeroUsize;
 
 use tokio_util::sync::CancellationToken;
 
-use super::recording::record;
+use super::recording::{Budget, record};
 use super::{START_WINDOW, STOP_WINDOW, plan};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::cursor::Cursor;
@@ -18,6 +18,7 @@ use crate::testing::{Violation, bounded, bounded_call};
 pub(super) async fn stops_are_prompt(
     source: &dyn Source,
     catalog: &Catalog,
+    budget: &Budget,
 ) -> Result<(), Violation> {
     for stream in catalog.iter() {
         for (partition, start) in plan(source, stream.name()).await? {
@@ -33,7 +34,7 @@ pub(super) async fn stops_are_prompt(
                 .await?
                 .map_err(|error| Violation::from(format!("{what}: {error}")))?;
         }
-        for (partition, start) in unbounded(source, stream).await? {
+        for (partition, start) in unbounded(source, stream, budget).await? {
             stops_following(source, stream, &partition, start).await?;
         }
     }
@@ -46,6 +47,7 @@ pub(super) async fn stops_are_prompt(
 async fn unbounded(
     source: &dyn Source,
     stream: &StreamSpec,
+    budget: &Budget,
 ) -> Result<Vec<(Partition, Option<Cursor>)>, Violation> {
     let name = stream.name();
     let mut state = StreamState::default();
@@ -72,7 +74,7 @@ async fn unbounded(
         let mut ended = BTreeMap::new();
         for partition in &planned.partitions {
             let start = planned.starts.get(partition.id()).cloned();
-            let read = record(source, stream, partition, start, None).await?;
+            let read = record(source, (stream, partition), start, None, budget).await?;
             let end = match (read.checkpoints.last(), read.tail.is_empty()) {
                 (_, false) => Some(PartitionState::Done),
                 (Some(last), true) => Some(PartitionState::Cursor(last.clone())),

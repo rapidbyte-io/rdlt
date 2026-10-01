@@ -19,6 +19,7 @@
 mod destination;
 mod limits;
 mod reason;
+pub mod render;
 mod source;
 #[cfg(test)]
 mod tests;
@@ -29,8 +30,8 @@ use std::future::Future;
 pub use destination::{
     DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
 };
-pub use limits::REASON_BYTES;
 use limits::{CALL_TIMEOUT, CLAUSE_TIMEOUT};
+pub use limits::{REASON_BYTES, RENDERED_BYTES};
 pub use reason::Reason;
 pub use source::{SOURCE_CLAUSES, certify_source, certify_source_factory};
 
