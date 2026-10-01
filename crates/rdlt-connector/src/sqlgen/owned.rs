@@ -213,13 +213,13 @@ fn unowned(name: &str, found: &str) -> ConnectorError {
 
 impl<D: SqlDialect> SqlPlanner<D> {
     /// Refuses `name` as a destination table's where the planner keeps it, as every name under
-    /// [`TABLE_PREFIX`] in any case, or the dialect does: a `Config` error coded
-    /// `table_name_reserved`.
+    /// [`TABLE_PREFIX`] in any case, where the dialect does, or where it holds a NUL, which no
+    /// statement's text carries: a `Config` error coded `table_name_reserved`.
     pub fn named(&self, name: &str) -> Result<()> {
         let kept = name
             .get(..TABLE_PREFIX.len())
             .is_some_and(|start| start.eq_ignore_ascii_case(TABLE_PREFIX));
-        if name.is_empty() || kept || self.dialect.reserves_table(name) {
+        if name.is_empty() || name.contains('\0') || kept || self.dialect.reserves_table(name) {
             return Err(ConnectorError::config(format!(
                 "{name:?} is a name the destination keeps for itself, which no table may take"
             ))

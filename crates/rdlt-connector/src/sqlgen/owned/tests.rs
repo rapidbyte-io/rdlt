@@ -309,3 +309,14 @@ fn a_standing_says_whether_any_pipeline_owns_its_table() {
     assert!(standing("orders", None, &["orders"]).unowned());
     assert!(!standing("orders", Some("theirs"), &[]).unowned());
 }
+
+#[test]
+fn a_name_holding_a_nul_is_no_table_s() {
+    let (_, planner) = database();
+    let plain = SqlPlanner::try_new(Widening).unwrap();
+    for name in ["a\0b", "\0", "orders\0", "\0orders"] {
+        let reserved = config("table_name_reserved");
+        assert_eq!(refusal(planner.check(name)), reserved, "{name:?}");
+        assert_eq!(refusal(plain.named(name)), reserved, "{name:?}");
+    }
+}

@@ -65,7 +65,8 @@ given:
     between tables folds names as the dialect does.
   - A name under `_rdlt_`, in any case, or one the dialect keeps (`SqlDialect::reserves_table`:
     for SQLite `sqlite_`, `pragma_`, and any name that is not its own lower case, since SQLite
-    matches names without case) is refused as `table_name_reserved`. A table that does not
+    matches names without case) is refused as `table_name_reserved`, and so is a name holding a
+    NUL, which no statement's text carries. A table that does not
     exist and no pipeline owns is no drop at all, as ADR 0033 has it.
   - A path resolves to a table per pipeline: `_rdlt_tables` is keyed by pipeline and path. A
     generation finished for a path swaps the pipeline's own table or nothing.

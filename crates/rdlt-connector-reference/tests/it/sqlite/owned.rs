@@ -89,6 +89,28 @@ async fn a_catalog_or_reserved_name_is_never_a_table() {
 }
 
 #[tokio::test]
+async fn a_name_holding_a_nul_is_refused_before_any_statement_names_it() {
+    let shared = Shared::new().await;
+    let mut session = shared.open("pipeline", 1).await;
+    let before = shared.objects();
+    for name in ["a\0b", "orders\0"] {
+        let named = table(name, "weird", true);
+        let created = session.create(&named).await;
+        assert_eq!(refusal(created), config("table_name_reserved"), "{name:?}");
+        let writer = session.session.session.writer(&named).await.map(drop);
+        assert_eq!(refusal(writer), config("table_name_reserved"), "{name:?}");
+        let mut drop = session.meta(&[]);
+        drop.drop_tables = vec![DroppedTable {
+            path: named.path.clone(),
+            name: name.into(),
+        }];
+        let outcome = session.commit(&drop).await;
+        assert_eq!(refusal(outcome), config("table_name_reserved"), "{name:?}");
+    }
+    assert_eq!(shared.objects(), before);
+}
+
+#[tokio::test]
 async fn a_table_without_an_owner_record_is_never_dropped() {
     let shared = Shared::new().await;
     let mut session = shared.open("pipeline", 1).await;
