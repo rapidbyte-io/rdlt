@@ -24,6 +24,7 @@ macro_rules! durable {
 }
 
 mod limited;
+mod locks;
 mod temporary;
 #[cfg(test)]
 mod tests;

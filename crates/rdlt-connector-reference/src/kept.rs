@@ -9,7 +9,8 @@
 mod tests;
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
 use std::io::{self, ErrorKind, Write as _};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
@@ -42,6 +43,8 @@ pub(crate) struct Kept<P> {
 struct KeptFile {
     dir: Dir,
     name: OsString,
+    /// The lock that makes the file this keeper's alone, held for as long as the keeper is.
+    _lock: File,
 }
 
 impl<P> Default for Kept<P> {
@@ -54,45 +57,49 @@ impl<P> Default for Kept<P> {
 }
 
 impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
+    /// What the keeper file at `path` holds, as its next process finds it, without becoming the
+    /// file's keeper: nothing acknowledged here is written.
+    ///
+    /// # Errors
+    ///
+    /// As [`Kept::keeping`].
+    #[cfg(test)]
+    pub(crate) fn at(path: &Path) -> io::Result<Self> {
+        let (dir, name) = place(path)?;
+        Ok(Self {
+            positions: Mutex::new(read(&dir, &name)?),
+            file: None,
+        })
+    }
+
     /// The keeper kept in the file at `path`: what the file holds, none where there is no file.
     ///
     /// The file's directory must be this user's alone, and so must the file: a regular file in
     /// the directory `path` names it in, of at most a keeper's size. A link there is refused,
-    /// read or written.
+    /// read or written, and so is a file another keeper holds.
     ///
     /// # Errors
     ///
     /// A file that cannot be read, or holds no keeper, as one a disk damaged would.
     #[cfg(test)]
-    pub(crate) fn at(path: &Path) -> io::Result<Self> {
+    pub(crate) fn keeping(path: &Path) -> io::Result<Self> {
         let (dir, name) = place(path)?;
         Self::open(dir, name)
     }
 
-    /// The keeper kept in the file `name` of `dir`, as [`Kept::at`] reads it.
+    /// The keeper kept in the file `name` of `dir`, as [`Kept::keeping`] reads it.
     fn open(dir: Dir, name: OsString) -> io::Result<Self> {
-        let positions = match dir.read_private(&name, LIMIT) {
-            Ok(bytes) => {
-                let listed: Vec<(String, PartitionId, P)> = serde_json::from_slice(&bytes)?;
-                if listed.len() > KEEPER_POSITIONS {
-                    return Err(io::Error::new(
-                        ErrorKind::InvalidData,
-                        format!("the file holds more than {KEEPER_POSITIONS} positions"),
-                    ));
-                }
-                listed
-                    .into_iter()
-                    .map(|(stream, partition, position)| ((stream, partition), position))
-                    .collect()
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => BTreeMap::new(),
-            Err(error) => return Err(error),
-        };
+        let lock = alone(&dir, &name)?;
+        let positions = read(&dir, &name)?;
         // No other writer shares the file: every temporary of it is one a crash left.
         dir.sweep_of(&name.to_string_lossy(), std::time::Duration::ZERO)?;
         Ok(Self {
             positions: Mutex::new(positions),
-            file: Some(KeptFile { dir, name }),
+            file: Some(KeptFile {
+                dir,
+                name,
+                _lock: lock,
+            }),
         })
     }
 
@@ -145,14 +152,63 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
 
 /// The directory of the keeper file at `path`, opened, and the file's name in it.
 fn place(path: &Path) -> io::Result<(Dir, OsString)> {
+    // The file's temporaries and its lock are named after it, as text.
     let name = path
         .file_name()
-        .ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        .filter(|name| name.to_str().is_some())
+        .ok_or_else(|| {
+            let message = format!("{} names no file by a name that is text", path.display());
+            io::Error::new(ErrorKind::InvalidInput, message)
+        })?;
     let directory = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     Ok((Dir::ambient(directory)?, name.to_owned()))
+}
+
+/// The positions the keeper file `name` of `dir` holds, none where there is no file.
+fn read<P: Ord + DeserializeOwned>(dir: &Dir, name: &OsStr) -> io::Result<Positions<P>> {
+    let bytes = match dir.read_private(name, LIMIT) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(error),
+    };
+    let listed: Vec<(String, PartitionId, P)> = serde_json::from_slice(&bytes)?;
+    if listed.len() > KEEPER_POSITIONS {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("the file holds more than {KEEPER_POSITIONS} positions"),
+        ));
+    }
+    Ok(listed
+        .into_iter()
+        .map(|(stream, partition, position)| ((stream, partition), position))
+        .collect())
+}
+
+/// Takes the lock that makes the keeper file `name` of `dir` one keeper's alone.
+///
+/// The lock is on a file beside the keeper's, since each write puts a new file in its place.
+/// Two keepers of one file would each write what it holds over what the other wrote, and move
+/// positions back: the second is refused for as long as the first is held, in this process or
+/// another.
+fn alone(dir: &Dir, name: &OsStr) -> io::Result<File> {
+    let mut lock = OsString::from(".");
+    lock.push(name);
+    lock.push(".lock");
+    let file = dir.lock_file(&lock)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(io::Error::new(
+            ErrorKind::ResourceBusy,
+            format!(
+                "another keeper holds {}: a keeper file is one process's",
+                dir.at(name).display()
+            ),
+        )),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
 }
 
 /// Writes `positions` to `file` through a temporary beside it, created under a name nobody can
@@ -169,8 +225,16 @@ fn write<P: Serialize>(file: &KeptFile, positions: &Positions<P>) -> io::Result<
     temporary.replace(&file.name)
 }
 
+/// What names a keeper of a process: a name sources share, or a file.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Named {
+    Group(String),
+    /// The file system and the directory on it that hold the file, and its name there.
+    File(u64, u64, OsString),
+}
+
 /// Keepers by name, for as long as the process runs.
-pub(crate) struct Registry<P>(LazyLock<Mutex<BTreeMap<String, Arc<Kept<P>>>>>);
+pub(crate) struct Registry<P>(LazyLock<Mutex<BTreeMap<Named, Arc<Kept<P>>>>>);
 
 impl<P> Registry<P> {
     pub(crate) const fn new() -> Self {
@@ -180,8 +244,8 @@ impl<P> Registry<P> {
     /// The keeper named `name`, shared by every source of this process that names it; the
     /// default keeper, which every source naming none shares, where `name` is none.
     pub(crate) fn named(&self, name: Option<&str>) -> Arc<Kept<P>> {
-        let name = name.unwrap_or_default();
-        Arc::clone(self.0.lock().entry(name.to_owned()).or_default())
+        let name = Named::Group(name.unwrap_or_default().to_owned());
+        Arc::clone(self.0.lock().entry(name).or_default())
     }
 }
 
@@ -197,7 +261,7 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Registry<P> {
         // keeper.
         let (dir, name) = place(path)?;
         let (device, file) = dir.identity()?;
-        let key = format!("file:{device}:{file}:{}", name.to_string_lossy());
+        let key = Named::File(device, file, name.clone());
         let mut keepers = self.0.lock();
         if let Some(kept) = keepers.get(&key) {
             return Ok(Arc::clone(kept));
