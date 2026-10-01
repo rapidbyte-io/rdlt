@@ -7,6 +7,8 @@
 //! runtime is dropped is stopped all the same.
 
 mod group;
+#[cfg(test)]
+mod tests;
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -123,49 +125,54 @@ impl Drop for Process {
     }
 }
 
+/// The steps of owning a spawned connector that can fail, each of which a test fails in turn.
+pub(crate) struct Steps {
+    stdout: fn(std::process::ChildStdout) -> std::io::Result<ChildStdout>,
+    stderr: fn(std::process::ChildStderr) -> std::io::Result<ChildStderr>,
+    thread: group::Threaded,
+}
+
+impl Steps {
+    const TAKEN: Self = Self {
+        stdout: ChildStdout::from_std,
+        stderr: ChildStderr::from_std,
+        thread: |thread, owning| thread.spawn(owning),
+    };
+}
+
 impl Process {
     /// Spawns `launch`'s binary serving the other end of `socket` at file descriptor 3.
     pub(crate) fn spawn(launch: &Launch, socket: OwnedFd) -> std::io::Result<Self> {
+        Self::spawn_by(launch, socket, &Steps::TAKEN)
+    }
+
+    /// Spawns `launch`'s binary as [`spawn`](Self::spawn) does, taking `steps`: a connector
+    /// that started and a step then fails is killed and reaped before the failure is returned.
+    fn spawn_by(launch: &Launch, socket: OwnedFd, steps: &Steps) -> std::io::Result<Self> {
         let mut command = command(launch, socket)?;
-        let mut child = command.spawn()?;
+        let child = command.spawn()?;
         // The command holds this process's copy of the connector's end: dropped, the connector's
         // exit closes the socket.
         drop(command);
-        let pid = child.id();
-        let tail = Arc::new(Tail::default());
-        let (closed, stderr_closed) = watch::channel(false);
-        if let Some(stdout) = child.stdout.take() {
-            let stdout = ChildStdout::from_std(stdout)?;
-            tokio::spawn(drain(
-                stdout,
-                launch.id.clone(),
-                Some(pid),
-                Stream::Stdout,
-                None,
-            ));
-        }
-        if let Some(stderr) = child.stderr.take() {
-            let stderr = ChildStderr::from_std(stderr)?;
-            let kept = Some((Arc::clone(&tail), closed));
-            tokio::spawn(drain(
-                stderr,
-                launch.id.clone(),
-                Some(pid),
-                Stream::Stderr,
-                kept,
-            ));
-        }
         let stop = Arc::new(AtomicBool::new(false));
         let (exit_sender, exit) = watch::channel(None);
         let killed = launch.kills.as_ref().map(Kills::next);
-        let owned = group::Owned {
+        // Owned from here on: whatever fails next, the connector does not outlive it.
+        let mut owned = group::Owned {
             child,
             grace: launch.grace,
             stop: Arc::clone(&stop),
             killed: killed.clone(),
             exit: exit_sender,
         };
-        owned.reaped()?;
+        let (tail, stderr_closed) = match drained(&mut owned.child, &launch.id, steps) {
+            Ok(drained) => drained,
+            Err(error) => {
+                owned.discarded();
+                return Err(error);
+            }
+        };
+        owned.reaped(steps.thread)?;
         Ok(Self {
             stop,
             killed,
@@ -256,6 +263,28 @@ impl fmt::Display for LastWords {
             write!(formatter, "; its standard error ends:\n{}", self.stderr)
         }
     }
+}
+
+/// Drains `child`'s standard output and error into `tracing`: the tail of its standard error,
+/// and what tells when that has closed.
+fn drained(
+    child: &mut std::process::Child,
+    connector: &ConnectorId,
+    steps: &Steps,
+) -> std::io::Result<(Arc<Tail>, watch::Receiver<bool>)> {
+    let pid = Some(child.id());
+    let tail = Arc::new(Tail::default());
+    let (closed, stderr_closed) = watch::channel(false);
+    let stdout = child.stdout.take().map(steps.stdout).transpose()?;
+    let stderr = child.stderr.take().map(steps.stderr).transpose()?;
+    if let Some(stdout) = stdout {
+        tokio::spawn(drain(stdout, connector.clone(), pid, Stream::Stdout, None));
+    }
+    if let Some(stderr) = stderr {
+        let kept = Some((Arc::clone(&tail), closed));
+        tokio::spawn(drain(stderr, connector.clone(), pid, Stream::Stderr, kept));
+    }
+    Ok((tail, stderr_closed))
 }
 
 #[derive(Clone, Copy, Debug)]
