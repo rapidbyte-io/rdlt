@@ -1,4 +1,4 @@
-//! A history table's columns (spec §9.5): when each version begins, its end, whether it is
+//! A history table's columns: when each version begins, its end, whether it is
 //! current, and the hash of its data.
 
 #[cfg(test)]
@@ -16,6 +16,7 @@ use rdlt_connector::StreamName;
 use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
 use crate::error::Error;
 use crate::normalize::identity::root_ids;
+use crate::table::convert::decoded;
 use crate::table::lower::loaded_at_type;
 
 impl LoweringPlan {
@@ -175,6 +176,13 @@ fn begins(stream: &StreamName, from: &ArrayRef, micros: &DataType) -> Result<Arr
             .with_code(code)
             .with_stream(stream))
     };
+    // A dictionary or run-end encoding holds its rows' times, and its rows' nulls, in its values.
+    let from = decoded(from).or_else(|error| {
+        refuse(
+            "change_time_invalid",
+            format!("its change time cannot be read: {error}"),
+        )
+    })?;
     let time = matches!(
         from.data_type(),
         DataType::Timestamp(..) | DataType::Date32 | DataType::Date64
@@ -195,7 +203,7 @@ fn begins(stream: &StreamName, from: &ArrayRef, micros: &DataType) -> Result<Arr
         safe: false,
         ..arrow_cast::CastOptions::default()
     };
-    arrow_cast::cast_with_options(from, micros, &strict).or_else(|error| {
+    arrow_cast::cast_with_options(&from, micros, &strict).or_else(|error| {
         refuse(
             "change_time_invalid",
             format!("its change time holds a time out of range: {error}"),
