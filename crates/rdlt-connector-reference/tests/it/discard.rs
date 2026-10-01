@@ -103,7 +103,7 @@ async fn a_late_discard_never_removes_a_newer_sessions_staging() {
         3
     );
     assert_eq!(rows(&published("late_discard", "late")), 3, "memory");
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::fixtures::tempdir().unwrap();
     let path = directory.path().join("late.db");
     assert_eq!(
         late_discard::<SqliteDestination>(json!({ "path": path })).await,

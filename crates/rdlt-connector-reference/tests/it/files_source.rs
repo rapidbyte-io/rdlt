@@ -98,7 +98,7 @@ fn cursors(events: &[SourceEvent]) -> Vec<Cursor> {
 
 #[tokio::test]
 async fn a_link_in_the_source_root_is_never_read() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let (root, outside) = (base.path().join("root"), base.path().join("outside"));
     std::fs::create_dir_all(outside.join("tenant")).unwrap();
     std::fs::create_dir_all(root.join("inner")).unwrap();
@@ -137,7 +137,7 @@ async fn a_link_in_the_source_root_is_never_read() {
 #[tokio::test]
 async fn a_source_root_or_a_stream_s_directory_others_may_write_is_refused() {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     std::fs::create_dir(root.path().join("inner")).unwrap();
     std::fs::write(root.path().join("inner").join("a.jsonl"), "{}\n").unwrap();
     let mode = |path: &Path, mode| {
@@ -174,7 +174,7 @@ async fn a_source_root_or_a_stream_s_directory_others_may_write_is_refused() {
 async fn a_file_in_a_private_root_is_read_whoever_else_names_it() {
     // A hard link is a name like any other: in a root only its operator may write, every name
     // is the operator's own, and a file with several is read, as snapshots and backups make them.
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let (root, elsewhere) = (base.path().join("root"), base.path().join("elsewhere"));
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&elsewhere).unwrap();
@@ -196,7 +196,7 @@ fn mkfifo(path: &Path) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_pipe_in_the_source_root_is_never_opened_to_wait_on() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     std::fs::write(root.path().join("good.jsonl"), "{\"id\":1}\n").unwrap();
     mkfifo(&root.path().join("orders.jsonl"));
     let source = connect(root.path()).await;
@@ -211,7 +211,7 @@ async fn a_pipe_in_the_source_root_is_never_opened_to_wait_on() {
 
 #[tokio::test]
 async fn a_file_the_source_cannot_name_is_skipped() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     std::fs::create_dir(root.path().join("inner")).unwrap();
     std::fs::write(root.path().join("orders.jsonl"), "{\"id\":1}\n").unwrap();
     std::fs::write(root.path().join("ev\u{1b}[31mil\n.jsonl"), "").unwrap();
@@ -226,7 +226,7 @@ async fn a_file_the_source_cannot_name_is_skipped() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_line_beyond_the_limit_is_refused_before_it_is_held() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     // One line of 64 GiB that never ends, as a sparse file holds it.
     std::fs::File::create(root.path().join("events.jsonl"))
         .unwrap()
@@ -260,7 +260,7 @@ async fn a_line_beyond_the_limit_is_refused_before_it_is_held() {
 
 #[tokio::test]
 async fn a_file_beyond_the_limit_is_refused_unread() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     std::fs::write(root.path().join("events.jsonl"), "{\"id\":1}\n{\"id\":2}\n").unwrap();
     for (limit, reads) in [(18, true), (17, false)] {
         let source = connect_with(root.path(), json!({ "max_file_bytes": limit }))
@@ -277,7 +277,7 @@ async fn a_file_beyond_the_limit_is_refused_unread() {
 
 #[tokio::test]
 async fn integers_beyond_64_bits_are_pushed_as_they_are_written() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let lines = "{\"id\":9007199254740993}\n{\"id\":9223372036854775807}\n\
                  {\"id\":18446744073709551615}\n{\"id\":18446744073709551614}\n{\"id\":1.5}\n";
     std::fs::write(root.path().join("ids.jsonl"), lines).unwrap();
@@ -295,7 +295,7 @@ async fn integers_beyond_64_bits_are_pushed_as_they_are_written() {
 
 #[tokio::test]
 async fn a_json_lines_read_pushes_bounded_records_and_resumes_after_them() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let lines = "{\"id\":1}\n\n{\"id\":2}\r\n   \n{\"id\":3}\n{\"id\":4}\n{\"id\":5}";
     std::fs::write(root.path().join("ids.ndjson"), lines).unwrap();
     let source = connect_with(root.path(), json!({ "batch_rows": 2 }))
@@ -320,7 +320,7 @@ async fn a_json_lines_read_pushes_bounded_records_and_resumes_after_them() {
 
 #[tokio::test]
 async fn a_json_lines_push_holds_at_most_the_bytes_one_push_may() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     // Three lines of 32 MiB, their endings counted: two fill one push of 64 MiB exactly, the
     // third starts the next.
     let line = format!("{{\"v\":\"{}\"}}\n", "x".repeat(32 * 1024 * 1024 - 9));
@@ -402,7 +402,7 @@ pub(crate) fn poisons() -> Vec<(&'static str, i64)> {
 #[tokio::test(flavor = "multi_thread")]
 async fn an_arrow_file_whose_block_lies_outside_it_is_refused() {
     for (field, value) in poisons() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         let path = root.path().join("orders.arrow");
         arrow_file(&path, 2);
         poison(&path, field, value);
@@ -416,7 +416,7 @@ async fn an_arrow_file_whose_block_lies_outside_it_is_refused() {
 
 #[tokio::test]
 async fn an_arrow_file_cut_short_or_with_a_footer_outside_it_is_refused() {
-    let whole = tempfile::tempdir().unwrap();
+    let whole = crate::fixtures::tempdir().unwrap();
     arrow_file(&whole.path().join("orders.arrow"), 2);
     let bytes = std::fs::read(whole.path().join("orders.arrow")).unwrap();
     let end = bytes.len() - 10;
@@ -430,7 +430,7 @@ async fn an_arrow_file_cut_short_or_with_a_footer_outside_it_is_refused() {
         cases.push(damaged);
     }
     for (case, damaged) in cases.into_iter().enumerate() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         std::fs::write(root.path().join("orders.arrow"), damaged).unwrap();
         let source = connect(root.path()).await;
         let (events, ended) = read(source.as_ref(), "orders", None).await;
@@ -442,7 +442,7 @@ async fn an_arrow_file_cut_short_or_with_a_footer_outside_it_is_refused() {
 
 #[tokio::test]
 async fn an_arrow_read_resumes_after_the_batches_read() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     arrow_file(&root.path().join("orders.arrow"), 3);
     let source = connect(root.path()).await;
     let (events, ended) = read(source.as_ref(), "orders", None).await;
@@ -463,7 +463,7 @@ async fn an_arrow_read_resumes_after_the_batches_read() {
 
 #[tokio::test]
 async fn a_line_limit_beyond_what_one_push_holds_is_a_configuration_error() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let push = rdlt_connector::limits::MAX_JSON_PUSH_BYTES;
     for (limit, connects) in [(push - 2, true), (push - 1, false), (push, false)] {
         let connected = connect_with(root.path(), json!({ "max_line_bytes": limit })).await;
@@ -481,7 +481,7 @@ async fn a_line_limit_beyond_what_one_push_holds_is_a_configuration_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_file_that_grows_beyond_the_limit_while_it_is_read_fails_the_read() {
     use std::io::Write as _;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let path = root.path().join("events.jsonl");
     std::fs::write(&path, "{\"id\":1}\n{\"id\":2}\n").unwrap();
     let settings = json!({ "max_file_bytes": 64, "batch_rows": 1 });
@@ -524,7 +524,7 @@ async fn a_file_that_grows_beyond_the_limit_while_it_is_read_fails_the_read() {
 
 #[tokio::test]
 async fn an_arrow_file_beyond_the_file_limit_is_refused_unread() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     arrow_file(&root.path().join("orders.arrow"), 2);
     let size = std::fs::metadata(root.path().join("orders.arrow"))
         .unwrap()
@@ -544,7 +544,7 @@ async fn an_arrow_file_beyond_the_file_limit_is_refused_unread() {
 
 #[tokio::test]
 async fn a_cursor_beyond_what_its_file_now_holds_is_refused() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let lines = root.path().join("ids.jsonl");
     std::fs::write(&lines, "{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n").unwrap();
     arrow_file(&root.path().join("orders.arrow"), 3);
@@ -584,7 +584,7 @@ async fn a_cursor_beyond_what_its_file_now_holds_is_refused() {
 #[tokio::test]
 async fn two_entries_that_name_the_same_stream_are_refused_by_both_names() {
     for other in ["orders.ndjson", "orders.arrow", "orders"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         std::fs::write(root.path().join("orders.jsonl"), "{\"id\":1}\n").unwrap();
         let other_path = root.path().join(other);
         if other == "orders" {

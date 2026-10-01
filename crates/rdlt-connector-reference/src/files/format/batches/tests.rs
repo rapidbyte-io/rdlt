@@ -29,7 +29,7 @@ fn single(column: ArrayRef) -> RecordBatch {
 /// What is written reads back, row for row, in batches a reader accepts; what is refused is
 /// refused for a limit, and leaves no file.
 fn written(batch: &RecordBatch) -> Result<Vec<RecordBatch>> {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     let outcome = FileFormat::Arrow.write(&dir, "rows.arrow", std::slice::from_ref(batch));
     match outcome {

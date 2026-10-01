@@ -7,7 +7,7 @@ use rdlt_connector_reference::{FilesDestination, SqliteDestination};
 use serde_json::json;
 
 async fn files(format: &str) -> BTreeSet<K> {
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::fixtures::tempdir().expect("a temporary directory");
     let destination: Box<dyn Destination> = destination_factory::<FilesDestination>()
         .connect(
             json!({ "root": root.path(), "format": format }),
@@ -20,7 +20,7 @@ async fn files(format: &str) -> BTreeSet<K> {
 
 #[tokio::test]
 async fn sqlite_widens_each_integer_to_every_wider_one_and_float32_to_float64() {
-    let directory = tempfile::tempdir().expect("a temporary directory");
+    let directory = crate::fixtures::tempdir().expect("a temporary directory");
     let destination: Box<dyn Destination> = destination_factory::<SqliteDestination>()
         .connect(
             json!({ "path": directory.path().join("widen.db") }),

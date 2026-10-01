@@ -25,7 +25,7 @@ fn staged(dir: &Path, epoch: u64) -> std::path::PathBuf {
 
 #[test]
 fn an_open_discards_what_older_sessions_staged_and_keeps_its_own_and_newer_ones() {
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::scratch::tempdir().expect("a temporary directory");
     let [older, own, newer] = [4, 5, 6].map(|epoch| staged(root.path(), epoch));
     let dir = Dir::ambient(root.path()).unwrap();
     discard(&dir, Epoch(5)).expect("the discard runs");
@@ -39,8 +39,8 @@ fn an_open_discards_what_older_sessions_staged_and_keeps_its_own_and_newer_ones(
 
 #[test]
 fn a_discard_keeps_what_the_latest_manifest_lists_and_enters_no_link() {
-    let root = tempfile::tempdir().expect("a temporary directory");
-    let outside = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::scratch::tempdir().expect("a temporary directory");
+    let outside = crate::scratch::tempdir().expect("a temporary directory");
     std::fs::write(outside.path().join("kept"), b"x").unwrap();
     let [listed, unlisted] = [1, 2].map(|epoch| staged(root.path(), epoch));
     let staging = root.path().join("staging");
@@ -79,13 +79,13 @@ fn a_discard_keeps_what_the_latest_manifest_lists_and_enters_no_link() {
     assert!(staging.join("notes").exists() && !staging.join("2").exists());
     assert!(outside.path().join("kept").exists());
     // A pipeline that staged nothing has nothing to discard.
-    let empty = tempfile::tempdir().unwrap();
+    let empty = crate::scratch::tempdir().unwrap();
     discard(&Dir::ambient(empty.path()).unwrap(), Epoch(9)).unwrap();
 }
 
 #[test]
 fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe() {
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::scratch::tempdir().expect("a temporary directory");
     trace::clear();
     let held = parking_lot::Mutex::new(None);
     let rdlt = super::held_or_opened(root.path(), &held).expect("the directory opens");
@@ -123,7 +123,7 @@ fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe()
 #[test]
 fn a_private_directory_is_read_only_where_it_exists_and_is_its_user_s() {
     use std::os::unix::fs::PermissionsExt as _;
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let root = base.path().join("root");
     assert!(existing(&root).unwrap().is_none(), "no root");
     std::fs::create_dir(&root).unwrap();
@@ -156,7 +156,7 @@ fn schema() -> TableSchema {
 #[test]
 fn an_open_removes_the_catalogs_of_tables_its_pipeline_dropped_before_anything_creates_them() {
     // A drop committed, but the catalogs outlived it: the process ended before removing them.
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::scratch::tempdir().expect("a temporary directory");
     let rdlt = Dir::ambient(root.path()).unwrap();
     let (owner, other) = (
         PipelineId::parse("a").unwrap(),
@@ -184,7 +184,7 @@ fn an_open_removes_the_catalogs_of_tables_its_pipeline_dropped_before_anything_c
 
 #[test]
 fn an_overtaken_session_s_release_leaves_a_table_a_newer_session_created_again() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let rdlt = Dir::ambient(root.path()).unwrap();
     let pipeline = PipelineId::parse("a").unwrap();
     let dir = rdlt.dir_created("pipeline").unwrap();
@@ -226,7 +226,7 @@ fn an_overtaken_session_s_release_leaves_a_table_a_newer_session_created_again()
 
 #[test]
 fn a_manifest_at_the_end_of_its_versions_or_epochs_is_followed_by_none() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let rdlt = Dir::ambient(root.path()).unwrap();
     let pipeline = PipelineId::parse("a").unwrap();
     for (version, epoch) in [(u64::MAX, 1), (1, u64::MAX)] {
@@ -235,7 +235,7 @@ fn a_manifest_at_the_end_of_its_versions_or_epochs_is_followed_by_none() {
             epoch: Epoch(epoch),
             ..Manifest::default()
         };
-        let ended = tempfile::tempdir().unwrap();
+        let ended = crate::scratch::tempdir().unwrap();
         let dir = Dir::ambient(ended.path()).unwrap();
         assert!(manifest::put(&dir, &last).unwrap());
         let error = next_epoch(&dir, &rdlt, &pipeline, WAIT).unwrap_err();
@@ -249,7 +249,7 @@ fn a_manifest_at_the_end_of_its_versions_or_epochs_is_followed_by_none() {
 
 #[test]
 fn a_table_is_still_dropped_only_while_the_latest_manifest_lists_nothing_for_it() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     assert!(!super::still_dropped(&dir, "t").unwrap(), "no manifest");
     let mut manifest = Manifest {
@@ -271,7 +271,7 @@ fn a_table_is_still_dropped_only_while_the_latest_manifest_lists_nothing_for_it(
 
 #[test]
 fn what_commits_wrote_and_no_manifest_lists_is_swept_and_what_writers_stage_is_not() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     let touch = |path: &str| {
         let path = root.path().join(path);
@@ -322,7 +322,7 @@ fn what_commits_wrote_and_no_manifest_lists_is_swept_and_what_writers_stage_is_n
     assert!(!root.path().join("staging/5/load/compacted").exists());
     assert!(root.path().join("staging/5/stray").exists());
     // A pipeline whose session staged nothing has nothing to sweep.
-    let empty = tempfile::tempdir().unwrap();
+    let empty = crate::scratch::tempdir().unwrap();
     super::discard_superseded(&Dir::ambient(empty.path()).unwrap(), Epoch(5)).unwrap();
 }
 
@@ -348,7 +348,7 @@ fn listing(version: u64, path: &str) -> Manifest {
 #[test]
 fn a_reader_that_finds_a_listed_file_gone_reads_the_newer_manifest_or_reports_it_lost() {
     use std::cell::Cell;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     let write = |path: &str, line: &str| {
         let path = root.path().join(path);

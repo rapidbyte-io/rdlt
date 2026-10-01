@@ -126,7 +126,7 @@ fn set_mode(dir: &Path, mode: u32) {
 
 #[tokio::test]
 async fn a_commit_failing_before_its_manifest_leaves_the_table_and_its_retry_publishes_once() {
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::fixtures::tempdir().expect("a temporary directory");
     let destination = destination_factory::<FilesDestination>()
         .connect(json!({ "root": root.path() }), ConnectContext::new())
         .await

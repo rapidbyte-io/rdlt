@@ -28,7 +28,7 @@ use crate::limits::{CHUNK_BYTES, LINE_BYTES};
 use crate::rooted::{Dir, Refusal, refusal};
 
 fn scratch() -> (tempfile::TempDir, Dir) {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     (root, dir)
 }

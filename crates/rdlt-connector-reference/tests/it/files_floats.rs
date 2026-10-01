@@ -87,7 +87,7 @@ async fn non_finite_floats_read_back_as_they_were_written() {
         for nullable in [true, false] {
             for merge in [false, true] {
                 let case = format!("{format} nullable={nullable} merge={merge}");
-                let root = tempfile::tempdir().unwrap();
+                let root = crate::fixtures::tempdir().unwrap();
                 let (destination, reader) =
                     connect_with(root.path(), json!({ "format": format })).await;
                 let mut opened = open(destination.as_ref(), 1).await;

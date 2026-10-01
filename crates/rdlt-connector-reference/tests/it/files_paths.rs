@@ -29,7 +29,7 @@ fn victim(base: &Path) -> std::path::PathBuf {
 
 #[tokio::test]
 async fn an_open_never_deletes_through_a_planted_staging_link() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let (root, victim) = (base.path().join("root"), victim(base.path()));
     let destination = connect(&root, "jsonl").await;
     let first = open(destination.as_ref(), 1).await;
@@ -48,7 +48,7 @@ async fn an_open_never_deletes_through_a_planted_staging_link() {
 
 #[tokio::test]
 async fn a_check_never_writes_through_a_planted_link() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let target = base.path().join("target");
     std::fs::write(&target, "precious").unwrap();
@@ -67,7 +67,7 @@ fn listed(path: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn a_manifest_path_outside_the_pipeline_is_refused() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let secret = base.path().join("secret.jsonl");
     std::fs::write(&secret, "{\"id\":7}\n").unwrap();
@@ -120,7 +120,7 @@ async fn a_manifest_path_outside_the_pipeline_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_manifest_named_for_another_version_is_refused_not_retried_forever() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
     drop(open(destination.as_ref(), 1).await);
     let (latest, _) = latest_manifest(root.path());
@@ -156,7 +156,7 @@ fn bad_names() -> Vec<String> {
 
 #[tokio::test]
 async fn a_dropped_name_that_is_no_identifier_is_refused() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("a").join("b").join("root");
     std::fs::create_dir_all(base.path().join("a").join("somedir")).unwrap();
     let destination = connect(&root, "jsonl").await;
@@ -188,7 +188,7 @@ async fn a_dropped_name_that_is_no_identifier_is_refused() {
 
 #[tokio::test]
 async fn a_dropped_name_a_manifest_was_tampered_to_hold_is_refused() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("a").join("b").join("root");
     let destination = connect(&root, "jsonl").await;
     drop(open(destination.as_ref(), 1).await);
@@ -207,7 +207,7 @@ async fn a_dropped_name_a_manifest_was_tampered_to_hold_is_refused() {
 
 #[tokio::test]
 async fn a_table_name_that_is_no_identifier_is_refused() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let destination = connect(&root, "jsonl").await;
     let mut opened = open(destination.as_ref(), 1).await;
@@ -240,7 +240,7 @@ async fn a_table_name_that_is_no_identifier_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_catalog_version_at_the_end_of_its_range_is_refused() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
     let mut opened = open(destination.as_ref(), 1).await;
     let (schema, batch) = ids(&[1]);
@@ -267,7 +267,7 @@ async fn a_catalog_version_at_the_end_of_its_range_is_refused() {
 
 #[tokio::test]
 async fn a_lock_file_that_is_a_link_is_refused() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let destination = connect(&root, "jsonl").await;
     let mut opened = open(destination.as_ref(), 1).await;
@@ -285,7 +285,7 @@ async fn a_lock_file_that_is_a_link_is_refused() {
 
 #[tokio::test]
 async fn stale_temporaries_are_swept_at_open_and_fresh_ones_left() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
     drop(open(destination.as_ref(), 1).await);
     let manifests = pipeline_dir(root.path()).join("manifests");
@@ -310,7 +310,7 @@ async fn stale_temporaries_are_swept_at_open_and_fresh_ones_left() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn control_files_that_are_not_regular_or_too_large_are_refused() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
     let mut opened = open(destination.as_ref(), 1).await;
     let (schema, batch) = ids(&[1]);
@@ -354,7 +354,7 @@ async fn control_files_that_are_not_regular_or_too_large_are_refused() {
 
 #[tokio::test]
 async fn everything_the_destination_creates_is_private() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("made").join("root");
     let destination = connect(&root, "arrow").await;
     destination.check().await.unwrap();
@@ -400,7 +400,7 @@ async fn everything_the_destination_creates_is_private() {
 async fn a_root_or_a_directory_beneath_it_that_others_may_write_is_refused() {
     // Only another user's directory can show the owner's half; a directory others may write is
     // refused as one others made, on the root and on every directory entered beneath it.
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::fixtures::tempdir().unwrap();
     let root = base.path().join("root");
     let destination = connect(&root, "jsonl").await;
     let mut opened = open(destination.as_ref(), 1).await;

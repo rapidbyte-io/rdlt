@@ -9,7 +9,7 @@ use crate::fixtures::{connect, connect_with, ids, open, stage, table};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lock_another_holds_is_waited_for_a_bounded_time() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, _) = connect_with(root.path(), json!({ "lock_wait_ms": 300 })).await;
     let mut opened = open(destination.as_ref(), 1).await;
     let (schema, batch) = ids(&[1]);
@@ -52,7 +52,7 @@ async fn a_lock_another_holds_is_waited_for_a_bounded_time() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_checks_never_fail_each_other() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
     for _ in 0..50 {
         let checks = (0..16).map(|_| {
