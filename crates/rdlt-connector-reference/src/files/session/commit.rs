@@ -10,7 +10,7 @@ use rdlt_connector::prelude::*;
 use super::merged::{follow_root, merged_rows, written};
 use super::{Location, Shared, StagedFile, path_key};
 use crate::files::manifest::{self, Manifest};
-use crate::files::tables;
+use crate::files::{destination, tables};
 
 /// The files a commit publishes, by table and generation.
 pub(super) type Staging<'a> = BTreeMap<(String, Option<GenerationId>), Vec<&'a StagedFile>>;
@@ -50,7 +50,9 @@ pub(super) fn commit(
         .retain(|file| !meta.segments.contains(file.segment));
     // The manifest is the truth: a catalog left behind here is removed by the next open.
     for name in &manifest.dropped {
-        drop(tables::release(&location.rdlt, name, &location.pipeline));
+        let still = || destination::still_dropped(&location.dir, name);
+        let (rdlt, wait) = (&location.rdlt, location.lock_wait);
+        drop(tables::release(rdlt, name, &location.pipeline, wait, still));
     }
     Ok(receipt)
 }

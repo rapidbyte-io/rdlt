@@ -35,6 +35,10 @@ pub(crate) const RECEIPT_LOADS: usize = 16;
 /// session's lands first.
 pub(crate) const PUBLISH_ATTEMPTS: u32 = 64;
 
+/// How long a schema change, a writer or a release waits for a table's lock, unless the
+/// destination's configuration sets another wait.
+pub(crate) const LOCK_WAIT: Duration = Duration::from_secs(30);
+
 /// How long ago a temporary file was last written for an open to remove it as one its writer
 /// left behind.
 pub(crate) const TEMPORARY_AGE: Duration = Duration::from_hours(1);

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use rdlt_connector::{Epoch, GenerationId, LoadId, PipelineId};
 
@@ -20,6 +20,7 @@ pub(crate) fn location(format: FileFormat) -> (tempfile::TempDir, Location) {
         format,
         epoch: Epoch(7),
         load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+        lock_wait: Duration::from_secs(20),
     };
     (root, location)
 }

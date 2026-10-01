@@ -8,6 +8,7 @@ pub(super) mod tests;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
@@ -33,6 +34,8 @@ pub(super) struct Location {
     pub(super) format: FileFormat,
     pub(super) epoch: Epoch,
     pub(super) load_id: LoadId,
+    /// How long the session waits for a table's lock.
+    pub(super) lock_wait: Duration,
 }
 
 /// A file a writer of this session staged.
@@ -84,7 +87,7 @@ impl Session for FilesSession {
         blocking(move || {
             let (rdlt, name) = (&location.rdlt, &change.table().name);
             // Claimed and changed under one lock, so no release lands between them.
-            tables::locked(rdlt, name, || {
+            tables::locked(rdlt, name, location.lock_wait, || {
                 claim(&location, name)?;
                 tables::update(rdlt, name, |current| {
                     let next = changed(current, &change)?;
@@ -100,7 +103,11 @@ impl Session for FilesSession {
     async fn writer(&mut self, table: &TableRef) -> Result<FilesWriter> {
         crate::merge::refuse_history_generation(table)?;
         let (location, name) = (self.location.clone(), table.name.clone());
-        blocking(move || tables::locked(&location.rdlt, &name, || claim(&location, &name))).await?;
+        blocking(move || {
+            let wait = location.lock_wait;
+            tables::locked(&location.rdlt, &name, wait, || claim(&location, &name))
+        })
+        .await?;
         self.learn(table);
         Ok(FilesWriter {
             location: self.location.clone(),

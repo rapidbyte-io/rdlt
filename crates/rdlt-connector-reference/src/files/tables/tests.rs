@@ -1,11 +1,14 @@
 use std::os::unix::fs::{PermissionsExt as _, symlink};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rdlt_connector::{ConnectorErrorKind, Field, LogicalType, PipelineId, TableSchema};
 
-use super::{claim, empty_trash, locked, named, owner, read, release, update};
+use super::{LOCK_TIMEOUT, claim, empty_trash, locked, named, owner, read, release, update};
 use crate::limits::{CATALOG_BYTES, OWNER_BYTES, TABLE_NAME_BYTES};
 use crate::rooted::Dir;
+
+/// How long these tests wait for a lock nobody holds for long.
+const WAIT: Duration = Duration::from_secs(20);
 
 /// A destination's private directory.
 fn private() -> (tempfile::TempDir, Dir) {
@@ -67,8 +70,8 @@ fn a_table_name_is_an_identifier_of_ascii_words() {
     assert!(update(&rdlt, bad, |current| Ok(Some(with(current, "a")))).is_err());
     assert!(claim(&rdlt, bad, &pipeline("a")).is_err());
     assert!(owner(&rdlt, bad).is_err());
-    assert!(locked(&rdlt, bad, || Ok(())).is_err());
-    assert!(release(&rdlt, bad, &pipeline("a")).is_err());
+    assert!(locked(&rdlt, bad, WAIT, || Ok(())).is_err());
+    assert!(release(&rdlt, bad, &pipeline("a"), WAIT, || Ok(true)).is_err());
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
 
@@ -165,9 +168,10 @@ fn a_catalog_that_cannot_be_listed_is_an_error_not_a_missing_table() {
 #[test]
 fn a_released_catalog_is_gone_and_any_pipeline_may_create_the_table_again() {
     let (root, rdlt) = private();
+    let dropped = || Ok(true);
     claim(&rdlt, "t", &pipeline("a")).unwrap();
     update(&rdlt, "t", |current| Ok(Some(with(current, "x")))).unwrap();
-    release(&rdlt, "t", &pipeline("a")).unwrap();
+    release(&rdlt, "t", &pipeline("a"), WAIT, dropped).unwrap();
     assert_eq!(read(&rdlt, "t").unwrap(), None);
     assert_eq!(owner(&rdlt, "t").unwrap(), None);
     assert_eq!(
@@ -179,11 +183,26 @@ fn a_released_catalog_is_gone_and_any_pipeline_may_create_the_table_again() {
     claim(&rdlt, "t", &pipeline("b")).unwrap();
     assert_eq!(owner(&rdlt, "t").unwrap().as_deref(), Some("b"));
     // Releasing what is not there, or what another pipeline now owns, changes nothing.
-    release(&rdlt, "u", &pipeline("a")).unwrap();
-    release(&rdlt, "t", &pipeline("a")).unwrap();
+    release(&rdlt, "u", &pipeline("a"), WAIT, dropped).unwrap();
+    release(&rdlt, "t", &pipeline("a"), WAIT, dropped).unwrap();
     assert_eq!(owner(&rdlt, "t").unwrap().as_deref(), Some("b"));
     let error = claim(&rdlt, "t", &pipeline("a")).unwrap_err();
     assert_eq!(error.code(), Some("table_owned"));
+}
+
+#[test]
+fn a_release_removes_nothing_once_the_table_is_no_longer_dropped() {
+    let (_root, rdlt) = private();
+    claim(&rdlt, "t", &pipeline("a")).unwrap();
+    update(&rdlt, "t", |current| Ok(Some(with(current, "x")))).unwrap();
+    // The session was overtaken: a newer one removed the catalog and created the table again.
+    release(&rdlt, "t", &pipeline("a"), WAIT, || Ok(false)).unwrap();
+    assert_eq!(owner(&rdlt, "t").unwrap().as_deref(), Some("a"));
+    assert_eq!(names(&rdlt), ["x"]);
+    // What cannot be told is not removed either.
+    let unknown = || Err(rdlt_connector::ConnectorError::data("no manifest reads"));
+    assert!(release(&rdlt, "t", &pipeline("a"), WAIT, unknown).is_err());
+    assert_eq!(names(&rdlt), ["x"]);
 }
 
 #[test]
@@ -194,7 +213,7 @@ fn an_owner_that_cannot_be_read_is_an_error_not_a_missing_owner() {
     std::fs::create_dir_all(&owner_path).unwrap();
     assert!(owner(&rdlt, "t").is_err());
     assert!(claim(&rdlt, "t", &pipeline("a")).is_err());
-    assert!(release(&rdlt, "t", &pipeline("a")).is_err());
+    assert!(release(&rdlt, "t", &pipeline("a"), WAIT, || Ok(true)).is_err());
     // So does a link, an owner longer than any pipeline's name, and one that is no text.
     std::fs::remove_dir(&owner_path).unwrap();
     symlink("/dev/zero", &owner_path).unwrap();
@@ -222,10 +241,10 @@ fn an_owner_that_cannot_be_read_is_an_error_not_a_missing_owner() {
 fn a_catalog_that_cannot_be_moved_away_is_not_released() {
     let (root, rdlt) = private();
     claim(&rdlt, "t", &pipeline("a")).unwrap();
-    locked(&rdlt, "t", || Ok(())).unwrap();
+    locked(&rdlt, "t", WAIT, || Ok(())).unwrap();
     let tables = root.path().join("tables");
     std::fs::set_permissions(&tables, std::fs::Permissions::from_mode(0o555)).unwrap();
-    let released = release(&rdlt, "t", &pipeline("a"));
+    let released = release(&rdlt, "t", &pipeline("a"), WAIT, || Ok(true));
     std::fs::set_permissions(&tables, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(released.is_err(), "{released:?}");
     assert_eq!(owner(&rdlt, "t").unwrap().as_deref(), Some("a"));
@@ -236,11 +255,11 @@ fn a_release_waits_for_a_claim_under_way() {
     let (root, rdlt) = private();
     claim(&rdlt, "t", &pipeline("a")).unwrap();
     let (released, heard) = std::sync::mpsc::channel();
-    let releasing = locked(&rdlt, "t", || {
+    let releasing = locked(&rdlt, "t", WAIT, || {
         let path = root.path().to_owned();
         let releasing = std::thread::spawn(move || {
             let rdlt = Dir::ambient(&path).unwrap();
-            release(&rdlt, "t", &pipeline("a")).unwrap();
+            release(&rdlt, "t", &pipeline("a"), WAIT, || Ok(true)).unwrap();
             released.send(()).unwrap();
         });
         let waited = heard.recv_timeout(Duration::from_millis(200));
@@ -260,24 +279,62 @@ fn a_release_waits_for_a_claim_under_way() {
 }
 
 #[test]
+fn a_lock_another_holds_is_waited_for_no_longer_than_its_wait() {
+    let (root, rdlt) = private();
+    locked(&rdlt, "orders", WAIT, || Ok(())).unwrap();
+    let path = root.path().join("locks").join("orders");
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    // Another holder of the lock, through a descriptor of its own that only reads.
+    let holder = std::fs::File::open(&path).unwrap();
+    holder.lock().unwrap();
+    for wait in [Duration::ZERO, Duration::from_millis(150)] {
+        let started = Instant::now();
+        let error = locked(&rdlt, "orders", wait, || Ok(())).unwrap_err();
+        let waited = started.elapsed();
+        assert_eq!(error.kind(), ConnectorErrorKind::Transient);
+        assert_eq!(error.code(), Some(LOCK_TIMEOUT));
+        assert!(
+            waited >= wait && waited < wait + Duration::from_secs(5),
+            "{waited:?}"
+        );
+    }
+    // A lock freed while it is waited for is taken.
+    let freeing = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(100));
+        drop(holder);
+    });
+    locked(&rdlt, "orders", WAIT, || Ok(())).unwrap();
+    freeing.join().unwrap();
+    // The work's own outcome is the call's.
+    let failed = locked(&rdlt, "orders", WAIT, || {
+        Err::<(), _>(rdlt_connector::ConnectorError::data("the work failed"))
+    });
+    assert_eq!(failed.unwrap_err().kind(), ConnectorErrorKind::Data);
+    assert_eq!(locked(&rdlt, "orders", WAIT, || Ok(7)).unwrap(), 7);
+}
+
+#[test]
 fn a_lock_file_is_this_user_s_regular_file_or_refused() {
     let (root, rdlt) = private();
     let base = tempfile::tempdir().unwrap();
-    locked(&rdlt, "made", || Ok(())).unwrap();
+    locked(&rdlt, "made", WAIT, || Ok(())).unwrap();
     let locks = root.path().join("locks");
     // A link, to a file or to nothing, is not opened and its target not created.
     std::fs::write(base.path().join("target"), b"").unwrap();
     symlink(base.path().join("target"), locks.join("linked")).unwrap();
     symlink(base.path().join("marker"), locks.join("dangling")).unwrap();
     for name in ["linked", "dangling"] {
-        let error = locked(&rdlt, name, || Ok(())).unwrap_err();
+        let error = locked(&rdlt, name, WAIT, || Ok(())).unwrap_err();
         assert_eq!(error.code(), Some("not_a_regular_file"), "{name}");
     }
     assert!(!base.path().join("marker").exists());
     // A lock file others may write is not this user's alone.
     std::fs::write(locks.join("shared"), b"").unwrap();
     std::fs::set_permissions(locks.join("shared"), std::fs::Permissions::from_mode(0o666)).unwrap();
-    let error = locked(&rdlt, "shared", || Ok(())).unwrap_err();
+    let error = locked(&rdlt, "shared", WAIT, || Ok(())).unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Config);
 }
 

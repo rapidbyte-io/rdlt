@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use rdlt_connector::{ConnectorErrorKind, Epoch, Field, LogicalType, PipelineId, TableSchema};
 
@@ -7,6 +8,8 @@ use super::super::{manifest, tables};
 use super::{checked, discard, existing, next_epoch, private};
 use crate::rooted::Dir;
 use crate::rooted::tests::SYNCED;
+
+const WAIT: Duration = Duration::from_secs(20);
 
 fn staged(dir: &Path, epoch: u64) -> std::path::PathBuf {
     let path = dir
@@ -146,7 +149,7 @@ fn an_open_removes_the_catalogs_of_tables_its_pipeline_dropped_before_anything_c
         ..Manifest::default()
     };
     assert!(manifest::put(&dir, &left).expect("the manifest is written"));
-    let opened = next_epoch(&dir, &rdlt, &owner).expect("the open succeeds");
+    let opened = next_epoch(&dir, &rdlt, &owner, WAIT).expect("the open succeeds");
     assert!(opened.dropped.is_empty());
     assert_eq!((opened.version, opened.epoch), (1, Epoch(1)));
     assert_eq!(tables::read(&rdlt, "dropped").unwrap(), None);
@@ -154,6 +157,48 @@ fn an_open_removes_the_catalogs_of_tables_its_pipeline_dropped_before_anything_c
     // A table another pipeline created since is its own.
     assert_eq!(tables::owner(&rdlt, "taken").unwrap().as_deref(), Some("b"));
     assert!(tables::read(&rdlt, "taken").unwrap().is_some());
+}
+
+#[test]
+fn an_overtaken_session_s_release_leaves_a_table_a_newer_session_created_again() {
+    let root = tempfile::tempdir().unwrap();
+    let rdlt = Dir::ambient(root.path()).unwrap();
+    let pipeline = PipelineId::parse("a").unwrap();
+    let dir = rdlt.dir_created("pipeline").unwrap();
+    let create = || {
+        tables::locked(&rdlt, "t", WAIT, || {
+            tables::claim(&rdlt, "t", &pipeline)?;
+            tables::update(&rdlt, "t", |_| Ok(Some(schema())))
+        })
+    };
+    // The older session committed its drop of the table: its manifest lists it as dropped.
+    create().unwrap();
+    let dropping = Manifest {
+        version: 1,
+        epoch: Epoch(1),
+        dropped: ["t".to_owned()].into(),
+        ..Manifest::default()
+    };
+    assert!(manifest::put(&dir, &dropping).unwrap());
+    // A newer session opens, removing the catalog, and creates the table again.
+    let opened = next_epoch(&dir, &rdlt, &pipeline, WAIT).unwrap();
+    assert_eq!(opened.epoch, Epoch(2));
+    create().unwrap();
+    // The older session's release lands only now, as its commit ends.
+    let still = || super::still_dropped(&dir, "t");
+    tables::release(&rdlt, "t", &pipeline, WAIT, still).unwrap();
+    assert_eq!(tables::owner(&rdlt, "t").unwrap().as_deref(), Some("a"));
+    assert_eq!(tables::read(&rdlt, "t").unwrap(), Some(schema()));
+    // While its own manifest is the latest, its release removes the catalog.
+    let again = Manifest {
+        version: 3,
+        epoch: Epoch(2),
+        dropped: ["t".to_owned()].into(),
+        ..Manifest::default()
+    };
+    assert!(manifest::put(&dir, &again).unwrap());
+    tables::release(&rdlt, "t", &pipeline, WAIT, still).unwrap();
+    assert_eq!(tables::owner(&rdlt, "t").unwrap(), None);
 }
 
 #[test]
@@ -170,11 +215,11 @@ fn a_manifest_at_the_end_of_its_versions_or_epochs_is_followed_by_none() {
         let ended = tempfile::tempdir().unwrap();
         let dir = Dir::ambient(ended.path()).unwrap();
         assert!(manifest::put(&dir, &last).unwrap());
-        let error = next_epoch(&dir, &rdlt, &pipeline).unwrap_err();
+        let error = next_epoch(&dir, &rdlt, &pipeline, WAIT).unwrap_err();
         assert_eq!(error.kind(), ConnectorErrorKind::Data);
         assert_eq!(manifest::latest(&dir).unwrap(), Some(last));
     }
     let fresh = rdlt.dir_created("pipeline").unwrap();
-    let first = next_epoch(&fresh, &rdlt, &pipeline).unwrap();
+    let first = next_epoch(&fresh, &rdlt, &pipeline, WAIT).unwrap();
     assert_eq!((first.version, first.epoch), (1, Epoch(1)));
 }

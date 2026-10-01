@@ -9,12 +9,16 @@ mod tests;
 
 use std::fs::File;
 use std::io::{self as stdio, ErrorKind, Write as _};
+use std::time::{Duration, Instant};
 
-use rdlt_connector::{ConnectorError, PipelineId, Result, TableSchema};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, PipelineId, Result, TableSchema};
 
 use super::{io, versions};
 use crate::limits::{CATALOG_BYTES, OWNER_BYTES, TABLE_NAME_BYTES, TEMPORARY_AGE};
 use crate::rooted::{self, Dir, Limit};
+
+/// The code of an error for a table's lock another holder kept for the whole wait.
+pub(super) const LOCK_TIMEOUT: &str = "lock_timeout";
 
 /// The directories of the catalog, in the destination's private directory.
 const TABLES: &str = "tables";
@@ -147,15 +151,28 @@ pub(super) fn owner(rdlt: &Dir, name: &str) -> Result<Option<String>> {
 /// Runs `work` holding the lock of the table `name`'s catalog, which claims and releases take, so
 /// a release never removes a catalog another pipeline claimed after it looked at the owner.
 ///
-/// The lock file stays in place, outside the catalog, so every process locks the same file.
-pub(super) fn locked<T>(rdlt: &Dir, name: &str, work: impl FnOnce() -> Result<T>) -> Result<T> {
+/// The lock file stays in place, outside the catalog, so every process locks the same file. A
+/// lock another holder keeps for all of `wait` is a transient error coded `lock_timeout`.
+pub(super) fn locked<T>(
+    rdlt: &Dir,
+    name: &str,
+    wait: Duration,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     named(name)?;
     let locks = rdlt
         .dir_created(LOCKS)
         .map_err(io::failed("creating", &rdlt.at(LOCKS)))?;
     let path = locks.at(name);
     let file = lock_file(&locks, name).map_err(io::failed("opening", &path))?;
-    file.lock().map_err(io::failed("locking", &path))?;
+    acquire(&file, wait).map_err(|error| match error {
+        Some(error) => io::failed("locking", &path)(error),
+        None => ConnectorError::new(
+            ConnectorErrorKind::Transient,
+            format!("locking {}: another holder kept the lock", path.display()),
+        )
+        .with_code(LOCK_TIMEOUT),
+    })?;
     let done = work();
     drop(file);
     done
@@ -187,10 +204,46 @@ fn lock_file(locks: &Dir, name: &str) -> stdio::Result<File> {
     Err(lost.unwrap_or_else(|| ErrorKind::AlreadyExists.into()))
 }
 
+/// Takes the exclusive lock on `file`, trying for at most `wait`; `None` is a lock that stayed
+/// held.
+fn acquire(file: &File, wait: Duration) -> Result<(), Option<stdio::Error>> {
+    let started = Instant::now();
+    let mut pause = Duration::from_millis(1);
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => return Err(Some(error)),
+        }
+        let left = wait.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Err(None);
+        }
+        std::thread::sleep(pause.min(left));
+        pause = (pause * 2).min(Duration::from_millis(50));
+    }
+}
+
 /// Removes the catalog of the table `name`, which `pipeline` dropped, as [`release_held`] does,
-/// holding the catalog's lock.
-pub(super) fn release(rdlt: &Dir, name: &str, pipeline: &PipelineId) -> Result<()> {
-    locked(rdlt, name, || release_held(rdlt, name, pipeline))
+/// holding the catalog's lock, once `dropped` says under the lock that the table is still
+/// dropped.
+///
+/// A session another has overtaken finds the table no longer dropped, and removes nothing: the
+/// newer session may have created the table again.
+pub(super) fn release(
+    rdlt: &Dir,
+    name: &str,
+    pipeline: &PipelineId,
+    wait: Duration,
+    dropped: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    locked(rdlt, name, wait, || {
+        if dropped()? {
+            release_held(rdlt, name, pipeline)
+        } else {
+            Ok(())
+        }
+    })
 }
 
 /// Removes the catalog of the table `name`, which `pipeline` dropped: its columns and its owner,
