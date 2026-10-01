@@ -28,14 +28,7 @@ pub(super) fn contained<T>(
     frame: Frame,
     decode: impl FnOnce() -> Result<T, arrow_schema::ArrowError>,
 ) -> Result<T, WireError> {
-    QUIET.call_once(|| {
-        let previous = panic::take_hook();
-        panic::set_hook(Box::new(move |info| {
-            if !CONTAINING.get() {
-                previous(info);
-            }
-        }));
-    });
+    QUIET.call_once(quieted);
     CONTAINING.set(true);
     let decoded = catch_unwind(AssertUnwindSafe(decode));
     CONTAINING.set(false);
@@ -51,6 +44,17 @@ pub(super) fn contained<T>(
             message: text(payload.as_ref()),
         }),
     }
+}
+
+/// Wraps the process's panic hook in one that skips it for a panic of a thread decoding inside
+/// [`contained`].
+fn quieted() {
+    let previous = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        if !CONTAINING.get() {
+            previous(info);
+        }
+    }));
 }
 
 /// The text of a panic's `payload`, cut to [`PANIC_TEXT_BYTES`]: its printable ASCII as it is, any
