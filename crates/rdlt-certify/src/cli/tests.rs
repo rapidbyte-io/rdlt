@@ -1,6 +1,6 @@
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
 
-use super::{FINDINGS, INCOMPLETE, PASSED, Require, code, ran, verdict, within};
+use super::{FINDINGS, INCOMPLETE, PASSED, Require, bound, code, ran, verdict, within};
 
 fn report(outcomes: &[Outcome]) -> Report {
     let clause = Clause {
@@ -116,4 +116,19 @@ async fn a_certification_is_cut_at_its_deadline_and_not_before() {
     assert!(within(until(10), slow(9)).await.is_some());
     assert!(within(until(10), slow(11)).await.is_none());
     assert!(within(until(0), slow(1)).await.is_none());
+}
+
+#[test]
+fn a_certification_is_bounded_unless_it_is_asked_not_to_be() {
+    use std::time::Duration;
+    // With no flag, a run ends within an hour, more than a connector that answers needs.
+    assert_eq!(bound(None, false), Some(rdlt_certify::RUN_TIMEOUT));
+    assert_eq!(rdlt_certify::RUN_TIMEOUT, Duration::from_secs(3600));
+    assert_eq!(bound(Some(7200), false), Some(Duration::from_secs(7200)));
+    assert_eq!(bound(Some(0), false), Some(Duration::ZERO));
+    assert_eq!(
+        bound(Some(u64::MAX), false),
+        Some(Duration::from_secs(u64::MAX))
+    );
+    assert_eq!(bound(None, true), None);
 }

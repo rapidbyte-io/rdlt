@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use rdlt_certify::{
-    Outcome, Probe, Report, Target, Unprobed, Verdict, certify_destination, certify_source, json,
-    markdown, plain, read_back, unfinished,
+    Outcome, Probe, RUN_TIMEOUT, Report, Target, Unprobed, Verdict, certify_destination,
+    certify_source, json, markdown, plain, read_back, unfinished,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote};
@@ -66,10 +66,13 @@ struct Args {
     /// slower than about two seconds a commit needs more.
     #[arg(long, value_name = "SECONDS")]
     kill_timeout: Option<u64>,
-    /// Ends the certification after this many seconds, failing every clause of a role still
-    /// certifying then; without it, each clause's own bound ends the certification.
-    #[arg(long, value_name = "SECONDS")]
+    /// Ends the certification after this many seconds, rather than 3600, failing every clause
+    /// of a role still certifying then.
+    #[arg(long, value_name = "SECONDS", conflicts_with = "no_timeout")]
     timeout: Option<u64>,
+    /// Lets the certification take as long as its clauses' own bounds allow.
+    #[arg(long)]
+    no_timeout: bool,
     /// What exits 0: `complete`, every clause that applies seen to be met; `partial`, none
     /// failed and one passed, whatever was not observed.
     #[arg(long, value_enum, default_value_t = Require::Complete)]
@@ -171,9 +174,8 @@ fn certified(
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
     // A timeout too far ahead for the clock to hold is none.
-    let until = args
-        .timeout
-        .and_then(|seconds| Instant::now().checked_add(Duration::from_secs(seconds)));
+    let until =
+        bound(args.timeout, args.no_timeout).and_then(|bound| Instant::now().checked_add(bound));
     let overdue = |role| unfinished(target, role, OVERDUE);
     let mut printed = Printed {
         output: args.output,
@@ -221,8 +223,17 @@ fn certified(
     Ok(reports)
 }
 
-/// Why a role's clauses fail when the certification's `--timeout` ends it.
-const OVERDUE: &str = "the certification took longer than its --timeout";
+/// Why a role's clauses fail when the certification's timeout ends it.
+const OVERDUE: &str = "the certification took longer than its timeout: see --timeout";
+
+/// How long the certification may take: the `timeout` chosen, in seconds, else
+/// [`RUN_TIMEOUT`]; no bound when `unbounded`.
+fn bound(timeout: Option<u64>, unbounded: bool) -> Option<Duration> {
+    if unbounded {
+        return None;
+    }
+    Some(timeout.map_or(RUN_TIMEOUT, Duration::from_secs))
+}
 
 /// `certifying`'s report, unless `until` comes first.
 async fn within(

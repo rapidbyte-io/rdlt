@@ -27,6 +27,7 @@ mod report;
 mod target;
 
 pub use kill::KILL_CLAUSES;
+pub use limits::RUN_TIMEOUT;
 pub use protocol::PROTOCOL_CLAUSES;
 pub use published::{ReadBackProbe, read_back};
 pub use rdlt_connector::testing::{
