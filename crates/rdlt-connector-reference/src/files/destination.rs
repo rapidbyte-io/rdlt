@@ -9,6 +9,7 @@ use std::io::ErrorKind;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
@@ -24,7 +25,7 @@ use super::manifest::{self, Manifest, STAGING};
 use super::session::{FilesSession, Location};
 use super::{io, tables};
 use crate::blocking::blocking;
-use crate::limits::TABLE_NAME_BYTES;
+use crate::limits::{LOCK_WAIT, TABLE_NAME_BYTES};
 use crate::rooted::{Dir, Kind};
 
 /// The destination's private directory under its root: catalogs, locks, manifests and files.
@@ -42,6 +43,14 @@ pub struct FilesDestinationConfig {
     /// How files store rows.
     #[serde(default)]
     pub format: FileFormat,
+    /// Milliseconds: how long a schema change, a writer or a release waits for a table's lock
+    /// before it fails as a transient error; 30 seconds where unset.
+    #[serde(default = "default_lock_wait_ms")]
+    pub lock_wait_ms: u64,
+}
+
+fn default_lock_wait_ms() -> u64 {
+    u64::try_from(LOCK_WAIT.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Writes each flushed batch to its own file and publishes a commit by creating the pipeline's
@@ -59,6 +68,7 @@ pub struct FilesDestinationConfig {
 pub struct FilesDestination {
     root: Arc<Path>,
     format: FileFormat,
+    lock_wait: Duration,
 }
 
 #[destination(id = "io.rapidbyte.files", read_back)]
@@ -74,6 +84,7 @@ impl DestinationConnector for FilesDestination {
         Ok(Self {
             root: config.root.into(),
             format: config.format,
+            lock_wait: Duration::from_millis(config.lock_wait_ms),
         })
     }
 
@@ -83,7 +94,11 @@ impl DestinationConnector for FilesDestination {
     }
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<FilesSession>> {
-        let (root, pipeline) = (Arc::clone(&self.root), context.pipeline.clone());
+        let (root, pipeline, wait) = (
+            Arc::clone(&self.root),
+            context.pipeline.clone(),
+            self.lock_wait,
+        );
         let (rdlt, dir, manifest) = blocking(move || {
             let rdlt = private(&root)?;
             tables::empty_trash(&rdlt)?;
@@ -92,7 +107,7 @@ impl DestinationConnector for FilesDestination {
                 .walk_created([PIPELINES, name.as_str()])
                 .map_err(io::failed("creating", &rdlt.at(PIPELINES).join(&name)))?;
             manifest::sweep(&dir)?;
-            let manifest = next_epoch(&dir, &rdlt, &pipeline)?;
+            let manifest = next_epoch(&dir, &rdlt, &pipeline, wait)?;
             Ok((rdlt, dir, manifest))
         })
         .await?;
@@ -103,6 +118,7 @@ impl DestinationConnector for FilesDestination {
             format: self.format,
             epoch: manifest.epoch,
             load_id: context.load_id,
+            lock_wait: self.lock_wait,
         };
         Ok(Opened {
             state: manifest.records()?,
@@ -147,11 +163,11 @@ fn existing(root: &Path) -> Result<Option<Dir>> {
 ///
 /// The catalogs of tables the pipeline dropped are removed first, before this session can create
 /// any of them again.
-fn next_epoch(dir: &Dir, rdlt: &Dir, pipeline: &PipelineId) -> Result<Manifest> {
+fn next_epoch(dir: &Dir, rdlt: &Dir, pipeline: &PipelineId, wait: Duration) -> Result<Manifest> {
     io::retried(&format!("opening pipeline {pipeline}"), || {
         let mut manifest = manifest::latest(dir)?.unwrap_or_default();
         for name in &manifest.dropped {
-            tables::release(rdlt, name, pipeline)?;
+            tables::release(rdlt, name, pipeline, wait, || still_dropped(dir, name))?;
         }
         manifest.dropped.clear();
         let (version, epoch) = (manifest.version.checked_add(1), manifest.epoch.next());
@@ -163,6 +179,12 @@ fn next_epoch(dir: &Dir, rdlt: &Dir, pipeline: &PipelineId) -> Result<Manifest> 
         (manifest.version, manifest.epoch) = (version, epoch);
         Ok(manifest::put(dir, &manifest)?.then_some(manifest))
     })
+}
+
+/// Whether the latest manifest of the pipeline whose directory `dir` is still lists the table
+/// `name` as dropped: a newer session that removed its catalog no longer does.
+pub(super) fn still_dropped(dir: &Dir, name: &str) -> Result<bool> {
+    Ok(manifest::latest(dir)?.is_some_and(|latest| latest.dropped.contains(name)))
 }
 
 /// Removes what sessions of the pipeline whose directory `dir` is, older than `epoch`, staged
