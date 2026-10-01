@@ -7,10 +7,10 @@ use rdlt_connector::{
     BoxFuture, Capabilities, Catalog, CommitMeta, ConnectContext, ConnectorSpec, Cursor,
     Destination, DestinationFactory, DestinationSession, DestinationWriter, OpenContext,
     OpenedSession, PartitionId, PartitionPlan, PartitionSink, ReadRequest, Receipt, SegmentSet,
-    Source, SourceFactory, StreamName, StreamState, TableChange, TableRef, destination_factory,
-    source_factory,
+    Source, SourceFactory, StreamName, StreamState, TableChange, TableRef, WriteModes,
+    destination_factory, source_factory,
 };
-use rdlt_connector_reference::{GeneratorSource, MemoryDestination, published};
+use rdlt_connector_reference::{ChangesSource, GeneratorSource, MemoryDestination, published};
 use serde_json::json;
 
 /// A seed whose kills land while a source of thousands of rows still reads.
@@ -185,6 +185,47 @@ impl DestinationSession for DeferringSession {
     }
 }
 
+/// A memory destination that declares only the write modes it is given.
+struct Declaring(Box<dyn DestinationFactory>, WriteModes);
+
+struct DeclaringDestination(Box<dyn Destination>, Capabilities);
+
+impl DestinationFactory for Declaring {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn Destination>>> {
+        Box::pin(async move {
+            let destination = self.0.connect(config, context).await?;
+            let mut capabilities = destination.capabilities().clone();
+            capabilities.write_modes = self.1;
+            Ok(Box::new(DeclaringDestination(destination, capabilities)) as Box<dyn Destination>)
+        })
+    }
+}
+
+impl Destination for DeclaringDestination {
+    fn capabilities(&self) -> &Capabilities {
+        &self.1
+    }
+
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.0.check()
+    }
+
+    fn open<'a>(
+        &'a self,
+        context: &'a OpenContext,
+    ) -> BoxFuture<'a, rdlt_connector::Result<OpenedSession>> {
+        self.0.open(context)
+    }
+}
+
 struct MemoryProbe(String);
 
 impl Probe for MemoryProbe {
@@ -277,4 +318,62 @@ async fn a_chosen_kill_seed_is_the_one_a_failure_reports() {
         panic!("K-DESTINATION did not fail: {report}");
     };
     assert!(reason.contains("kill seed 4242"), "{reason}");
+}
+
+#[tokio::test]
+async fn a_destination_is_killed_in_a_write_mode_it_declares_whichever_that_is() {
+    let none = WriteModes {
+        append: false,
+        replace: false,
+        merge: false,
+        history: false,
+    };
+    let declared = [
+        (
+            "merge",
+            WriteModes {
+                merge: true,
+                ..none
+            },
+        ),
+        (
+            "replace",
+            WriteModes {
+                replace: true,
+                ..none
+            },
+        ),
+        (
+            "both",
+            WriteModes {
+                replace: true,
+                merge: true,
+                ..none
+            },
+        ),
+    ];
+    for (name, modes) in declared {
+        let declaring = Declaring(destination_factory::<MemoryDestination>(), modes);
+        let target = Target::served(Served::new().with_destination(Box::new(declaring)));
+        let store = format!("certify_declaring_{name}");
+        let config = json!({ "store": store });
+        let report = certify_destination(&target, config, &MemoryProbe(store)).await;
+        // The engine loads it in that mode, so the clause does: it is not declared away.
+        let killed = report.outcome("K-DESTINATION");
+        assert_eq!(killed, Some(&Outcome::Passed), "{name}: {report}");
+    }
+}
+
+#[tokio::test]
+async fn a_change_source_is_killed_as_it_reads_its_changes() {
+    let target = Target::served(Served::new().with_source(source_factory::<ChangesSource>()))
+        .kill_seed(SETTLED_LATE);
+    let config = json!({
+        "seed": 5,
+        "streams": [{ "name": "accounts", "keys": 400, "changes": 4000, "batch_rows": 20 }],
+    });
+    let report = certify_source(&target, config).await;
+    // A stream read only as changes is loaded as the engine loads it, and killed as it is.
+    let killed = report.outcome("K-SOURCE");
+    assert_eq!(killed, Some(&Outcome::Passed), "{report}");
 }

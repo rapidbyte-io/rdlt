@@ -69,7 +69,7 @@ The clauses a connector must pass are therefore those its declarations leave app
 | `D-CHILDREN` | a child table of a merge table holds the children of each root's winning row only, whatever it held before | the destination cannot merge |
 | `D-ENCODING` | dictionary-encoded columns publish the values they encode | — |
 | `D-TABLES` | a segment may hold rows for several tables, and its commit publishes each table's rows | — |
-| `D-NAMES` | identifiers at the edges of the destination's own rules are published under their names | the destination's identifiers are shorter than 32 bytes |
+| `D-NAMES` | identifiers at the edges of the destination's own rules are published under their names | — |
 | `D-LANES` | writers of one table, as many as the destination runs at once, stage at the same time, and a commit publishes what each staged | the destination runs one writer at a time |
 | `D-OWNED` | a table belongs to the pipeline that created it: another pipeline's schema change or writer is refused as table_owned, its generation swap too unless it changes nothing, and the owner keeps loading it | — |
 | `D-DROP` | a commit drops the tables it names, leaving nothing of them, and releases them: dropping again changes nothing, a session fenced before cannot claim them again, another pipeline may create a table of the name, and dropping another pipeline's table is refused as table_owned | the destination drops no tables |
@@ -79,8 +79,8 @@ The clauses a connector must pass are therefore those its declarations leave app
 
 | Clause | Statement | Does not apply when |
 |---|---|---|
-| `K-SOURCE` | a source killed at random points of a load after it commits is started again and resumes from what was committed, so the engine converges on exactly the tables a load never killed publishes | no stream is read in full or incrementally |
-| `K-DESTINATION` | a destination killed at random points of a load, as it writes, before a commit, or after a commit before its answer, is started again and publishes every row exactly once when the engine converges | the destination does not append |
+| `K-SOURCE` | a source killed at random points of a load after it commits is started again and resumes from what was committed, so the engine converges on exactly the tables a load never killed publishes | the source has no stream that is read in any mode |
+| `K-DESTINATION` | a destination killed at random points of a load, as it writes, before a commit, or after a commit before its answer, is started again and publishes every row exactly once when the engine converges | the destination declares no write mode |
 
 ## What certification bounds
 

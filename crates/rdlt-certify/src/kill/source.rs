@@ -50,7 +50,7 @@ async fn compared(
         .map_err(|error| format!("the discovery failed: {error}"))?;
     let streams: Vec<StreamPlan> = catalog.iter().filter_map(planned).collect();
     if streams.is_empty() {
-        let reason = "the source has no stream a load reads in full or incrementally";
+        let reason = "the source has no stream that is read in any mode";
         return Ok(Loaded::Inapplicable(reason.to_owned()));
     }
     let name = format!("certify_{run:x}_k");
@@ -96,13 +96,23 @@ async fn placed(
 }
 
 /// How a load reads and writes `stream`: incrementally, appending, when it can; else in full,
-/// replacing.
-fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
+/// replacing; else as changes, merged by its key when it has one, and appended when not.
+///
+/// Every stream an engine reads is read in one of those, so none is left out of the load.
+pub(super) fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
     let plan = StreamPlan::new(stream.name().clone());
     if stream.supports(ReadMode::Incremental) {
         Some(plan.read(ReadMode::Incremental).write(WriteMode::Append))
     } else if stream.supports(ReadMode::Full) {
         Some(plan.read(ReadMode::Full).write(WriteMode::Replace))
+    } else if stream.supports(ReadMode::Cdc) {
+        let keyed = stream.primary_key().is_some_and(|key| !key.is_empty());
+        let write = if keyed {
+            WriteMode::Merge
+        } else {
+            WriteMode::Append
+        };
+        Some(plan.read(ReadMode::Cdc).write(write))
     } else {
         None
     }

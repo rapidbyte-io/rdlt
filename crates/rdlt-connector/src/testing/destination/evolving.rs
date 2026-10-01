@@ -287,8 +287,9 @@ impl Bench<'_> {
     }
 }
 
-/// Why the clause `id` does not apply to `destination`, if it does not.
-pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'static str> {
+/// Why the clause `id` does not apply to `destination`, if it does not: what it declares leaves
+/// the engine nothing of the clause to rely on.
+pub(super) fn inapplicable(destination: &dyn Destination, id: &str) -> Option<&'static str> {
     let capabilities = destination.capabilities();
     match id {
         "D-REPLACE" if !capabilities.write_modes.replace => Some("the destination cannot replace"),
@@ -319,11 +320,18 @@ pub(super) fn skipped(destination: &dyn Destination, id: &str) -> Option<&'stati
         "D-LANES" if capabilities.max_parallel_writers.get() < 2 => {
             Some("the destination runs one writer at a time")
         }
-        "D-NAMES" if capabilities.identifiers.max_len.get() < super::names::SHORTEST => {
-            Some("the destination's identifiers are shorter than certification's names")
-        }
         _ => None,
     }
+}
+
+/// Why the clause `id` cannot be observed of `destination`, though it applies, if it cannot.
+///
+/// The engine names tables and columns in a destination of any identifier length, so short
+/// identifiers do not make the names clause inapplicable: its names do not fit them.
+pub(super) fn unobserved(destination: &dyn Destination, id: &str) -> Option<&'static str> {
+    let longest = destination.capabilities().identifiers.max_len.get();
+    (id == "D-NAMES" && longest < super::names::SHORTEST)
+        .then_some("the destination's identifiers are shorter than the clause's names")
 }
 
 /// The generation the replace clause fills: beyond the signed range, as the engine's often are,

@@ -8,7 +8,8 @@ use arrow_cast::CastOptions;
 use arrow_schema::DataType;
 use rdlt_connector::testing::Probe;
 use rdlt_connector::{
-    ConnectContext, ConnectorId, Destination, PipelineId, Source, StreamName, source_factory,
+    ConnectContext, ConnectorId, Destination, PipelineId, Source, StreamName, WriteModes,
+    source_factory,
 };
 use rdlt_connector_reference::GeneratorSource;
 use rdlt_engine::{PipelinePlan, StreamPlan, WriteMode};
@@ -63,15 +64,15 @@ async fn loaded(
             format!("the destination could not be placed: {described}")
         })?;
     let destination: Arc<dyn Destination> = Arc::from(placed.connector);
-    if !destination.capabilities().write_modes.append {
-        let reason = "the destination does not append, as the load appends";
-        return Ok(Loaded::Inapplicable(reason.to_owned()));
-    }
+    let mode = match written(destination.capabilities().write_modes) {
+        Ok(mode) => mode,
+        Err(unloaded) => return Ok(unloaded),
+    };
     let name = format!("certify_{run:x}_k");
     let source = generator(&name, seed).await?;
     let stream = StreamName::new(&name).map_err(Violation::of)?;
     let pipeline = PipelineId::parse(&name).map_err(Violation::of)?;
-    let plan = PipelinePlan::new(pipeline, [StreamPlan::new(stream).write(WriteMode::Append)])
+    let plan = PipelinePlan::new(pipeline, [StreamPlan::new(stream).write(mode)])
         .map_err(Violation::of)?;
     let killing = Arc::new(Killing::new(
         destination,
@@ -100,6 +101,29 @@ async fn loaded(
         .map_err(|error| format!("reading back table `{}` failed: {error}", table.name))?;
     every_row_once(&batches).map_err(|fault| Violation(fault.to_string()))?;
     Ok(Loaded::Kept)
+}
+
+/// The write mode the clause loads in: the first the destination declares of append, merge and
+/// replace, each of which publishes every generated row once, the generated stream being keyed.
+///
+/// A destination that declares no write mode is one no engine loads, and the clause does not
+/// apply to it; one that declares history alone is loaded, in a mode the clause cannot check,
+/// and is not observed.
+pub(super) fn written(modes: WriteModes) -> Result<WriteMode, Loaded> {
+    if modes.append {
+        Ok(WriteMode::Append)
+    } else if modes.merge {
+        Ok(WriteMode::Merge)
+    } else if modes.replace {
+        Ok(WriteMode::Replace)
+    } else if modes.history {
+        let reason = "the destination keeps history alone, which the clause does not load";
+        Err(Loaded::Unobserved(reason.to_owned()))
+    } else {
+        Err(Loaded::Inapplicable(
+            "the destination declares no write mode".to_owned(),
+        ))
+    }
 }
 
 /// A generator of [`ROWS`] rows, drawn from `seed`, in the stream `name`.

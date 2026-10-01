@@ -312,3 +312,73 @@ fn a_table_read_back_beyond_the_rows_a_read_back_reads_is_refused_before_it_is_r
     );
     assert!(Fault::Beyond.to_string().contains(&limit.to_string()));
 }
+
+#[test]
+fn a_destination_is_loaded_in_the_first_mode_it_declares_that_publishes_each_row_once() {
+    use rdlt_connector::WriteModes;
+    use rdlt_engine::WriteMode;
+
+    use super::destination::written;
+    for bits in 0_u8..16 {
+        let modes = WriteModes {
+            append: bits & 1 != 0,
+            merge: bits & 2 != 0,
+            replace: bits & 4 != 0,
+            history: bits & 8 != 0,
+        };
+        let expected = match bits {
+            _ if modes.append => Some(WriteMode::Append),
+            _ if modes.merge => Some(WriteMode::Merge),
+            _ if modes.replace => Some(WriteMode::Replace),
+            _ => None,
+        };
+        match (written(modes), expected) {
+            (Ok(mode), Some(expected)) => assert_eq!(mode, expected, "{modes:?}"),
+            // History alone is loaded by an engine, in a mode the clause cannot check.
+            (Err(Loaded::Unobserved(_)), None) => assert!(modes.history, "{modes:?}"),
+            // Only a destination no engine loads is left out.
+            (Err(Loaded::Inapplicable(_)), None) => assert_eq!(bits, 0, "{modes:?}"),
+            _ => panic!("{modes:?}"),
+        }
+    }
+}
+
+#[test]
+fn every_stream_an_engine_reads_is_loaded_as_it_reads_it() {
+    use rdlt_connector::{ReadMode, StreamName, StreamSpec};
+    use rdlt_engine::WriteMode;
+
+    use super::source::planned;
+    let stream = |modes: &[ReadMode], keyed: bool| {
+        let spec = StreamSpec::new(StreamName::new("events").expect("a valid name"));
+        let spec = spec.with_read_modes(modes.iter().copied());
+        if keyed {
+            spec.with_primary_key(["id"])
+        } else {
+            spec
+        }
+    };
+    let (full, incremental, changes) = (ReadMode::Full, ReadMode::Incremental, ReadMode::Cdc);
+    let cases = [
+        (
+            stream(&[incremental, full, changes], true),
+            incremental,
+            WriteMode::Append,
+        ),
+        (
+            stream(&[incremental], false),
+            incremental,
+            WriteMode::Append,
+        ),
+        (stream(&[full, changes], true), full, WriteMode::Replace),
+        (stream(&[full], false), full, WriteMode::Replace),
+        // A stream read only as changes is merged by its key, and appended when it has none.
+        (stream(&[changes], true), changes, WriteMode::Merge),
+        (stream(&[changes], false), changes, WriteMode::Append),
+    ];
+    for (spec, read, write) in cases {
+        let planned = planned(&spec).expect("a stream that is read is loaded");
+        assert_eq!((planned.read_mode(), planned.write_mode()), (read, write));
+    }
+    assert!(planned(&stream(&[], true)).is_none());
+}

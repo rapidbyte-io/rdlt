@@ -192,7 +192,8 @@ async fn a_change_source_served_in_process_tells_where_it_stands_through_the_pro
         "slot": "certified_over_the_wire",
     });
     let report = certify_source(&target, config).await;
-    report.assert_passed();
+    // Its changes are few: they end before a kill lands.
+    assert_eq!(crate::unobserved(&report), ["K-SOURCE"], "{report}");
     assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
 }
 
