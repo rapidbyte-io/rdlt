@@ -48,7 +48,8 @@ impl Charging {
 impl Admission for Charging {
     fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>> {
         Box::pin(async move {
-            let bytes = self.cost(event)?;
+            // What the budget reserves: a request beyond it takes the whole of it.
+            let bytes = self.cost(event)?.min(self.budget.capacity());
             // A cursor waits with its seal for a commit, which alone releases it.
             let reservation = match event {
                 SourceEvent::Checkpoint { .. } => self.budget.acquire_kept(bytes).await,
