@@ -519,10 +519,7 @@ impl Dir {
     /// Makes the directory's entries durable, so a file created, linked or renamed in it
     /// survives a crash.
     pub(crate) fn sync(&self) -> io::Result<()> {
-        durable!(
-            trace::Step::SyncDir(self.path.clone()),
-            self.file.sync_all()
-        );
+        durable!(trace::Step::SyncDir(self.path.clone()), synced(&self.file));
         Ok(())
     }
 
@@ -550,11 +547,21 @@ impl Dir {
     }
 }
 
+/// Makes `file`, a file's bytes or a directory's entries, durable.
+fn synced(file: &File) -> io::Result<()> {
+    // A test that takes thousands of steps records its syncs without making them.
+    #[cfg(test)]
+    if trace::unsynced() {
+        return Ok(());
+    }
+    file.sync_all()
+}
+
 /// Makes the bytes of `file`, which `path` names in a test's record, durable.
 pub(crate) fn sync_file(file: &File, path: &Path) -> io::Result<()> {
     #[cfg(not(test))]
     let _ = path;
-    durable!(trace::Step::SyncFile(path.to_owned()), file.sync_all());
+    durable!(trace::Step::SyncFile(path.to_owned()), synced(file));
     Ok(())
 }
 

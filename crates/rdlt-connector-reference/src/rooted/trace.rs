@@ -40,6 +40,7 @@ thread_local! {
     static FAULT: Cell<Option<Fault>> = const { Cell::new(None) };
     static TAKEN: Cell<usize> = const { Cell::new(0) };
     static REFUSED: Cell<bool> = const { Cell::new(false) };
+    static UNSYNCED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Counts `step` as the next to take, and refuses it where a fault says so.
@@ -100,4 +101,18 @@ pub(crate) fn fail_at(at: usize) {
 pub(crate) fn crash_at(at: usize) {
     clear();
     FAULT.set(Some(Fault { at, crash: true }));
+}
+
+/// Has every sync that follows on this thread recorded and not made.
+///
+/// A test that dies at each step of an operation in turn takes thousands of them, and no test
+/// can see whether a sync reached the disk: such a test asks which steps are taken, in which
+/// order, and what a process that stops between two of them leaves.
+pub(crate) fn without_syncs() {
+    UNSYNCED.set(true);
+}
+
+/// Whether syncs are recorded and not made.
+pub(crate) fn unsynced() -> bool {
+    UNSYNCED.get()
 }
