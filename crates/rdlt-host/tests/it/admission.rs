@@ -854,3 +854,63 @@ async fn a_session_that_panics_gives_its_host_its_place_back() {
     assert_eq!(self::refused(&lines), 1, "{lines:?}");
     drop(connections);
 }
+
+/// The line a connector whose hosts' revocation lists are `crl` reports once its named host was
+/// refused.
+async fn refusal_line(pki: &Pki, crl: Option<std::path::PathBuf>, host: &str) -> String {
+    let certificate = pki.server("server", &["connector"]);
+    let accepted = rdlt_wire::tls::Accepted {
+        crl,
+        ..crate::network::accepted(pki)
+    };
+    let tls = rdlt_wire::tls::server_config(&identity(&certificate), &accepted)
+        .expect("the server's configuration builds");
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let written = Arc::clone(&lines);
+    let listening = Listening {
+        log: Log::new(move |line| written.lock().expect("no panic").push(line.to_owned())),
+        ..Listening::new(Arc::new(tls), accepted.hosts)
+    };
+    let (connections, accepting) = mpsc::unbounded_channel();
+    let source = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+    tokio::spawn(serve_listener(
+        source,
+        Piped(accepting),
+        listening,
+        rdlt_wire::Limits::default(),
+        std::future::pending(),
+    ));
+    let (reference, config) = memory();
+    let files = pki.dir().join(format!("{host}.pem"));
+    let host = if files.exists() {
+        rdlt_testkit::tls::Files {
+            cert: files,
+            key: pki.dir().join(format!("{host}.key")),
+        }
+    } else {
+        pki.client(host)
+    };
+    let refused = Remote::new(identity(&host), pki.ca())
+        .network(Pipes(connections.clone()))
+        .source(&reference, &config)
+        .await;
+    assert!(refused.is_err(), "the host was served");
+    settle(ListenLimits::default().report_every + Duration::from_millis(1)).await;
+    let lines = lines.lock().expect("no panic").clone();
+    assert_eq!((lines.len(), self::refused(&lines)), (1, 1), "{lines:?}");
+    drop(connections);
+    lines[0].clone()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_host_refused_for_revocation_is_reported_apart_from_one_refused_otherwise() {
+    let pki = Pki::new("ca");
+    let host = pki.client("host");
+    let unnamed = refusal_line(&pki, None, "another").await;
+    let revoked = refusal_line(&pki, Some(pki.revoking("revoked", &[&host])), "host").await;
+    let stale = refusal_line(&pki, Some(pki.revoking_stale("stale", &[])), "host").await;
+    // Three reasons, three lines: an operator sees a list gone stale for what it is.
+    assert_ne!(unnamed, revoked);
+    assert_ne!(unnamed, stale);
+    assert_ne!(revoked, stale);
+}

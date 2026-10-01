@@ -252,7 +252,7 @@ where
             let accepting = shared.acceptor.accept(stream);
             match tokio::time::timeout(shared.limits.handshake, accepting).await {
                 Ok(Ok(tls)) => Ok((tls, peer)),
-                Ok(Err(_)) => Err(Refused::Handshake),
+                Ok(Err(error)) => Err(Refused::handshake(&error)),
                 Err(_) => Err(Refused::Slow),
             }
         });
