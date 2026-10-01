@@ -41,6 +41,9 @@ pub(crate) struct BlobsConfig {
     /// The length of each string; zero for 256 KiB.
     #[serde(default)]
     bytes: usize,
+    /// Rows of one byte ahead of each string, in its batch.
+    #[serde(default)]
+    ahead: usize,
 }
 
 /// A source of one endless stream, `blobs`, of 256 KiB strings.
@@ -95,7 +98,9 @@ impl ReadStream<Blobs> for BlobStream {
         };
         let blob = "b".repeat(bytes);
         loop {
-            let column: ArrayRef = Arc::new(StringArray::from(vec![blob.clone()]));
+            let mut rows = vec!["b".to_owned(); source.config.ahead];
+            rows.push(blob.clone());
+            let column: ArrayRef = Arc::new(StringArray::from(rows));
             let batch = RecordBatch::try_from_iter([("b", column)]).expect("a valid batch");
             out.batch(batch).await?;
         }
@@ -311,5 +316,45 @@ async fn a_read_frame_beyond_the_hosts_limit_is_refused_typed() {
     assert_eq!(
         error.limit().map(|limit| (limit.name, limit.limit)),
         Some(("frame bytes", MIN_FRAME_BYTES))
+    );
+}
+
+#[tokio::test]
+async fn a_row_beyond_the_hosts_frame_limit_ends_the_read_after_the_rows_before_it() {
+    let options = Options {
+        limits: Limits {
+            frame_bytes: MIN_FRAME_BYTES,
+            ..Limits::default()
+        },
+        ..Options::default()
+    };
+    let source = blobs(
+        serde_json::json!({ "bytes": 5 << 20, "ahead": 100 }),
+        options,
+    )
+    .await;
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
+    let request = ReadRequest::new(
+        StreamName::new("blobs").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    );
+    let reading = tokio::spawn(async move { source.read(request, sink).await });
+    let mut pushed = Vec::new();
+    while let Some(event) = feed.recv().await {
+        match event {
+            rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Arrow(batch)) => {
+                pushed.push(batch.num_rows());
+            }
+            other => panic!("an event other than a push of rows: {other:?}"),
+        }
+    }
+    // The rows ahead of the row that fits no frame arrive, in a segment no checkpoint ends: the
+    // read fails with the limit, and the engine discards them with its attempt.
+    assert_eq!(pushed, [100]);
+    let error = reading.await.expect("the read ends").unwrap_err();
+    assert_eq!(
+        (error.code(), error.limit().map(|limit| limit.name)),
+        (Some("limit_exceeded"), Some("frame bytes"))
     );
 }
