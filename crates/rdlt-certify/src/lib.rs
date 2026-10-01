@@ -35,7 +35,7 @@ pub use rdlt_connector::testing::{
     Report, SOURCE_CLAUSES, Unprobed, Verdict,
 };
 pub use registry::{Family, clauses, markdown};
-pub use report::{json, plain};
+pub use report::{json, line, plain};
 pub use target::Target;
 
 use rdlt_connector::Role;
