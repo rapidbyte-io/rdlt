@@ -22,6 +22,10 @@ use crate::watch;
 /// batch already admitted is charged at once, beyond the budget if need be, and later requests
 /// wait until it is released. Reservations are released by dropping them, so every wait ends once
 /// earlier reservations drop.
+///
+/// Bytes only a commit releases, as the cursors of sealed segments, are kept apart: writing what
+/// is in flight cannot free them, so they neither keep a request larger than the budget out nor
+/// press writers to flush. They wait for room like any request, so they never exceed the budget.
 #[derive(Clone)]
 pub(crate) struct MemoryBudget {
     shared: Arc<Mutex<Ledger>>,
@@ -30,27 +34,58 @@ pub(crate) struct MemoryBudget {
 struct Ledger {
     capacity: u64,
     reserved: u64,
+    /// Of the reserved bytes, those only a commit releases.
+    kept: u64,
     peak: u64,
-    waiting: VecDeque<(u64, oneshot::Sender<Reservation>)>,
+    waiting: VecDeque<(Request, oneshot::Sender<Reservation>)>,
     /// Whether any request is waiting.
     pressed: watch::Sender<bool>,
 }
 
+/// Bytes asked of the budget, and whether only a commit releases them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Request {
+    bytes: u64,
+    kept: bool,
+}
+
 impl Ledger {
-    fn admits(&self, bytes: u64) -> bool {
-        self.reserved == 0 || self.reserved.saturating_add(bytes) <= self.capacity
+    /// The reserved bytes that writing what is in flight releases.
+    fn in_flight(&self) -> u64 {
+        self.reserved.saturating_sub(self.kept)
     }
 
-    fn reserve(&mut self, bytes: u64) {
-        self.reserved = self.reserved.saturating_add(bytes);
+    /// Whether `request` fits beside what is reserved, or nothing it could wait for is: bytes in
+    /// flight for an ordinary request, any bytes for one a commit releases.
+    fn admits(&self, request: Request) -> bool {
+        let nothing = if request.kept {
+            self.reserved == 0
+        } else {
+            self.in_flight() == 0
+        };
+        nothing || self.reserved.saturating_add(request.bytes) <= self.capacity
+    }
+
+    fn reserve(&mut self, request: Request) {
+        self.reserved = self.reserved.saturating_add(request.bytes);
+        if request.kept {
+            self.kept = self.kept.saturating_add(request.bytes);
+        }
         self.peak = self.peak.max(self.reserved);
         self.press();
     }
 
-    /// Signals pressure while a request waits or charges exceed the budget: either way, whoever
-    /// holds bytes it could release early should.
+    fn release(&mut self, request: Request) {
+        self.reserved = self.reserved.saturating_sub(request.bytes);
+        if request.kept {
+            self.kept = self.kept.saturating_sub(request.bytes);
+        }
+    }
+
+    /// Signals pressure while a request waits or the bytes in flight exceed the budget: either
+    /// way, whoever holds bytes it could release early should.
     fn press(&self) {
-        let pressed = !self.waiting.is_empty() || self.reserved > self.capacity;
+        let pressed = !self.waiting.is_empty() || self.in_flight() > self.capacity;
         self.pressed.send_replace(pressed);
     }
 }
@@ -62,6 +97,7 @@ impl MemoryBudget {
             shared: Arc::new(Mutex::new(Ledger {
                 capacity,
                 reserved: 0,
+                kept: 0,
                 peak: 0,
                 waiting: VecDeque::new(),
                 pressed: watch::Sender::new(false),
@@ -71,15 +107,28 @@ impl MemoryBudget {
 
     /// Reserves `bytes`, waiting until earlier requests are admitted and the bytes fit.
     pub(crate) async fn acquire(&self, bytes: u64) -> Reservation {
+        self.request(bytes, false).await
+    }
+
+    /// Reserves `bytes` only a commit releases, waiting until earlier requests are admitted and
+    /// the bytes fit.
+    pub(crate) async fn acquire_kept(&self, bytes: u64) -> Reservation {
+        self.request(bytes, true).await
+    }
+
+    async fn request(&self, bytes: u64, kept: bool) -> Reservation {
         let receiver = {
             let mut ledger = self.shared.lock();
-            let bytes = bytes.min(ledger.capacity);
-            if ledger.waiting.is_empty() && ledger.admits(bytes) {
-                ledger.reserve(bytes);
-                return self.reservation(bytes);
+            let request = Request {
+                bytes: bytes.min(ledger.capacity),
+                kept,
+            };
+            if ledger.waiting.is_empty() && ledger.admits(request) {
+                ledger.reserve(request);
+                return self.reservation(request);
             }
             let (sender, receiver) = oneshot::channel();
-            ledger.waiting.push_back((bytes, sender));
+            ledger.waiting.push_back((request, sender));
             ledger.press();
             receiver
         };
@@ -91,8 +140,17 @@ impl MemoryBudget {
     /// Charges `bytes` at once, without waiting and beyond the budget if need be: the growth of a
     /// batch already admitted, which later requests pay back by waiting.
     pub(crate) fn charge(&self, bytes: u64) -> Reservation {
-        self.shared.lock().reserve(bytes);
-        self.reservation(bytes)
+        let request = Request { bytes, kept: false };
+        self.shared.lock().reserve(request);
+        self.reservation(request)
+    }
+
+    /// Charges `bytes` no write releases at once, without waiting: what a read keeps beside its
+    /// events, as its decoder's dictionaries, bounded by a limit of its own.
+    pub(crate) fn keep(&self, bytes: u64) -> Reservation {
+        let request = Request { bytes, kept: true };
+        self.shared.lock().reserve(request);
+        self.reservation(request)
     }
 
     /// Completes once a request is waiting for bytes or charges exceed the budget: whoever holds
@@ -123,10 +181,10 @@ impl MemoryBudget {
         self.shared.lock().peak
     }
 
-    fn reservation(&self, bytes: u64) -> Reservation {
+    fn reservation(&self, request: Request) -> Reservation {
         Reservation {
             budget: Some(Arc::clone(&self.shared)),
-            bytes,
+            request,
         }
     }
 }
@@ -145,20 +203,22 @@ impl fmt::Debug for MemoryBudget {
 #[must_use = "dropping a reservation releases its bytes"]
 pub(crate) struct Reservation {
     budget: Option<Arc<Mutex<Ledger>>>,
-    bytes: u64,
+    request: Request,
 }
 
 impl Reservation {
     /// The bytes held.
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> u64 {
-        self.bytes
+        self.request.bytes
     }
 }
 
 impl fmt::Debug for Reservation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Reservation").field(&self.bytes).finish()
+        f.debug_tuple("Reservation")
+            .field(&self.request.bytes)
+            .finish()
     }
 }
 
@@ -168,34 +228,33 @@ impl Drop for Reservation {
             return;
         };
         let mut ledger = shared.lock();
-        ledger.reserved = ledger.reserved.saturating_sub(self.bytes);
+        ledger.release(self.request);
         admit_waiting(&shared, &mut ledger);
     }
 }
 
 /// Admits waiting requests in order while the front one fits.
 fn admit_waiting(shared: &Arc<Mutex<Ledger>>, ledger: &mut Ledger) {
-    while let Some(&(bytes, _)) = ledger.waiting.front() {
-        if !ledger.admits(bytes) {
+    while let Some(&(request, _)) = ledger.waiting.front() {
+        if !ledger.admits(request) {
             break;
         }
-        let (bytes, sender) = ledger
+        let (request, sender) = ledger
             .waiting
             .pop_front()
             .expect("the front request was just read");
-        ledger.reserved = ledger.reserved.saturating_add(bytes);
+        let peak = ledger.peak;
+        ledger.reserve(request);
         let reservation = Reservation {
             budget: Some(Arc::clone(shared)),
-            bytes,
+            request,
         };
-        match sender.send(reservation) {
+        if let Err(mut abandoned) = sender.send(reservation) {
+            // The waiter stopped waiting; release its bytes here, under the lock already held.
             // Only bytes a waiter receives count toward the peak.
-            Ok(()) => ledger.peak = ledger.peak.max(ledger.reserved),
-            Err(mut abandoned) => {
-                // The waiter stopped waiting; release its bytes here, under the lock already held.
-                abandoned.budget = None;
-                ledger.reserved = ledger.reserved.saturating_sub(bytes);
-            }
+            abandoned.budget = None;
+            ledger.release(request);
+            ledger.peak = peak;
         }
     }
     ledger.press();

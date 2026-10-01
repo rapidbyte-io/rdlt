@@ -2,6 +2,8 @@
 //! rows take, encodings that expand far beyond their bytes, and rows no budget fits.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use arrow_array::builder::BinaryViewBuilder;
 use arrow_array::types::{Int8Type, Int32Type};
@@ -15,7 +17,7 @@ use rdlt_connector::cost::Rendering;
 use rdlt_engine::RunStatus;
 
 use crate::HEAP;
-use crate::support::destinations::{buffering, null};
+use crate::support::destinations::{Gate, buffering, gated, null};
 use crate::support::making::{Step, making};
 use crate::support::{commit_every, engine, pipeline, stream};
 
@@ -132,7 +134,7 @@ async fn batches_keeping_large_buffers_alive_load_within_the_budget() {
         if step >= 2 * PUSHES {
             return None;
         }
-        if step % 2 == 1 {
+        if !step.is_multiple_of(2) {
             return Some(Step::Checkpoint(8));
         }
         // A type the destination stores as it is, so lowering passes the buffer through.
@@ -183,4 +185,126 @@ async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
     let error = outcome.error.expect("a failed run has its error");
     assert_eq!(error.code(), Some("row_exceeds_budget"));
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn checkpoints_with_large_cursors_load_within_the_budget() {
+    const BUDGET: u64 = 16 << 20;
+    // Three hundred megabytes of cursors and not one row, under a policy that commits by rows.
+    let steps = Arc::new(|step: usize| (step < 300).then_some(Step::Checkpoint(1 << 20)));
+    let source = making("budget_cursors", steps).await;
+    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(
+            pipeline("cursors", [stream("events")]),
+            source,
+            null().await,
+        )
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn rows_sealed_under_large_cursors_load_within_the_budget() {
+    const BUDGET: u64 = 16 << 20;
+    // A row then a megabyte of cursor, two hundred times: every seal has a row, so none
+    // replaces the seal before it.
+    let steps = Arc::new(|step: usize| {
+        if step >= 400 {
+            return None;
+        }
+        Some(if step.is_multiple_of(2) {
+            Step::Batch(batch(Arc::new(Int8Array::from(vec![1]))))
+        } else {
+            Step::Checkpoint(1 << 20)
+        })
+    });
+    let source = making("budget_sealed", steps).await;
+    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(pipeline("sealed", [stream("events")]), source, null().await)
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 200);
+    assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+}
+
+/// A future that completes once `ready` says so, looking again every millisecond.
+fn once(ready: impl Fn() -> bool + Send + 'static) -> Step {
+    Step::Wait(Box::pin(async move {
+        while !ready() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }))
+}
+
+#[tokio::test(start_paused = true)]
+async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
+    const SIGNALS: usize = 2_000_000;
+    let gate = Gate::closed();
+    let held = Arc::new(AtomicUsize::new(0));
+    let (commits, heap) = (Arc::clone(&gate), Arc::clone(&held));
+    // A row and a checkpoint make a commit due; while the destination holds it, the source says
+    // two million times how far behind it is and that its partitions changed.
+    let steps = Arc::new(move |step: usize| match step {
+        0 => Some(Step::Batch(batch(Arc::new(Int8Array::from(vec![1]))))),
+        1 => Some(Step::Checkpoint(8)),
+        2 => {
+            let commits = Arc::clone(&commits);
+            Some(once(move || commits.started.load(Ordering::SeqCst) > 0))
+        }
+        3 => {
+            HEAP.reset_peak_usage();
+            heap.store(HEAP.current_usage(), Ordering::SeqCst);
+            Some(Step::Replan)
+        }
+        step if step < SIGNALS => Some(if step.is_multiple_of(2) {
+            Step::Behind(u64::try_from(step).expect("a count"))
+        } else {
+            Step::Replan
+        }),
+        step if step == SIGNALS => {
+            let grown = HEAP
+                .peak_usage()
+                .saturating_sub(heap.load(Ordering::SeqCst));
+            heap.store(grown, Ordering::SeqCst);
+            commits.open();
+            Some(Step::Behind(0))
+        }
+        _ => None,
+    });
+    let source = making("budget_signals", steps).await;
+    let outcome = engine(commit_every(1).lanes(1))
+        .run(
+            pipeline("signals", [stream("events")]),
+            source,
+            gated(null().await, Arc::clone(&gate)),
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert!(gate.started.load(Ordering::SeqCst) >= 1);
+    let grown = held.load(Ordering::SeqCst);
+    assert!(grown < 1 << 20, "the signals held {grown} bytes");
 }

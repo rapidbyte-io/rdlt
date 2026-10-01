@@ -12,6 +12,7 @@ mod replan;
 mod signals;
 #[cfg(test)]
 mod tests;
+mod waiting;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -30,13 +31,14 @@ use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
 use crate::error::{Error, Side};
 use crate::lane::Lanes;
-use crate::partition::{Progress, Seal};
+use crate::partition::{CursorHold, Latest, Progress};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
 use crate::table::Tables;
 use crate::wal::{LoadLog, Positions};
 use crate::watch;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher};
+use waiting::WaitingSeals;
 
 /// A stream as one attempt loads it.
 #[derive(Debug)]
@@ -151,6 +153,11 @@ pub(crate) struct CoordinatorParts {
     pub(crate) streams: Vec<StreamRun>,
     pub(crate) partitions: Vec<PartitionRun>,
     pub(crate) progress: mpsc::UnboundedReceiver<Progress>,
+    /// What each partition last said of which only the newest matters.
+    pub(crate) latest: Arc<Latest>,
+    /// Bytes: the cursors of waiting seals that make a commit due, so cursors a source
+    /// checkpoints with never fill the budget they are charged to.
+    pub(crate) cursor_limit: u64,
     pub(crate) barrier: watch::Sender<u64>,
     /// Asks every partition to stop reading.
     pub(crate) stop_reads: CancellationToken,
@@ -174,7 +181,7 @@ pub(crate) struct CoordinatorParts {
 pub(crate) struct Coordinator {
     parts: CoordinatorParts,
     seq: CommitSeq,
-    sealed: Vec<Seal>,
+    sealed: WaitingSeals,
     /// Rows and bytes written but not yet committed.
     pending_rows: u64,
     pending_bytes: u64,
@@ -191,7 +198,7 @@ impl Coordinator {
         Self {
             parts,
             seq: CommitSeq::FIRST,
-            sealed: Vec::new(),
+            sealed: WaitingSeals::default(),
             pending_rows: 0,
             pending_bytes: 0,
             barrier: 0,
@@ -262,7 +269,7 @@ impl Coordinator {
                 progress = self.parts.progress.recv() => {
                     self.observe(progress.ok_or_else(cancelled)?);
                     self.replan_signalled().await?;
-                    if self.parts.policy.is_due(self.pending_rows, self.pending_bytes) {
+                    if self.due() {
                         self.raise_barrier().await?;
                         self.commit().await?;
                         self.advance_phases().await?;
@@ -272,6 +279,15 @@ impl Coordinator {
             }
         }
         Ok(())
+    }
+
+    /// Whether a commit is due: by the policy's rows and bytes, or by the cursors of the seals
+    /// waiting, which hold budget only a commit releases.
+    fn due(&self) -> bool {
+        self.parts
+            .policy
+            .is_due(self.pending_rows, self.pending_bytes)
+            || self.sealed.cursor_bytes() >= self.parts.cursor_limit.max(1)
     }
 
     fn timer(&self) -> Sleep {
@@ -313,15 +329,21 @@ impl Coordinator {
                 self.pending_rows = self.pending_rows.saturating_sub(rows);
                 self.pending_bytes = self.pending_bytes.saturating_sub(bytes);
             }
-            Progress::Sealed(seal) => {
-                if let Some(barrier) = seal.answers {
-                    let partition = &mut self.parts.partitions[seal.partition];
-                    partition.answered = partition.answered.max(barrier);
+            Progress::Sealed(seal) => self.seal(seal),
+            Progress::Moved { partition, epoch } => {
+                if let Some(seal) = self.parts.latest.seal(partition, epoch) {
+                    self.seal(seal);
                 }
-                self.sealed.push(seal);
             }
-            Progress::Replan { partition } => self.signalled(partition),
-            Progress::Behind { partition, records } => self.behind(partition, records),
+            Progress::Signalled { partition } => {
+                let (behind, replan) = self.parts.latest.signals(partition);
+                if replan {
+                    self.signalled(partition);
+                }
+                if let Some(records) = behind {
+                    self.behind(partition, records);
+                }
+            }
             Progress::RetentionReset { partition } => self.reset(partition),
             Progress::Ended { partition, stopped } => {
                 let partition = &mut self.parts.partitions[partition];
@@ -331,6 +353,15 @@ impl Coordinator {
                 stream.stopped |= stopped;
             }
         }
+    }
+
+    /// Keeps `seal` for the next commit, and notes the barrier it answers.
+    fn seal(&mut self, seal: crate::partition::Seal) {
+        if let Some(barrier) = seal.answers {
+            let partition = &mut self.parts.partitions[seal.partition];
+            partition.answered = partition.answered.max(barrier);
+        }
+        self.sealed.push(seal);
     }
 
     /// Asks every reading on-demand partition to checkpoint, and waits until each has answered,
@@ -369,7 +400,9 @@ impl Coordinator {
             .iter()
             .flat_map(|begun| begun.changes.iter().cloned())
             .collect();
-        let collected = self.collect(&delta);
+        let mut collected = self.collect(&delta);
+        // The seals' cursors stay charged until the commit that takes them has landed.
+        let _held: Vec<CursorHold> = std::mem::take(&mut collected.held);
         let completing: Vec<usize> = (0..self.parts.streams.len())
             .filter(|index| self.parts.streams[*index].completes())
             .collect();

@@ -4,6 +4,7 @@
 )]
 
 mod lag;
+mod seals;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Lanes;
 use crate::naming::Naming;
-use crate::partition::{Progress, Seal};
+use crate::partition::{CursorHold, Latest, Progress, Seal};
 use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog};
@@ -139,6 +140,7 @@ struct Harness {
     acks: Acks,
     log: Arc<Mutex<AttemptLog>>,
     closed: Arc<AtomicBool>,
+    latest: Arc<Latest>,
 }
 
 struct Setup {
@@ -151,6 +153,8 @@ struct Setup {
     schema: Option<TableSchema>,
     /// Where the load keeps its write-ahead log, if it keeps one.
     wal: Option<Arc<MemoryWal>>,
+    /// The cursor bytes of waiting seals that make a commit due.
+    cursor_limit: u64,
 }
 
 impl Setup {
@@ -167,6 +171,7 @@ impl Setup {
             fail_commit: false,
             schema: None,
             wal: None,
+            cursor_limit: u64::MAX,
         }
     }
 
@@ -229,6 +234,7 @@ impl Setup {
             acks: Arc::clone(&acks),
             log: Arc::default(),
             closed: Arc::clone(&closed),
+            latest: Arc::default(),
         };
         let pool = RayonPool::new(NonZeroUsize::MIN).unwrap();
         let session = SharedSession::new(Box::new(Recorder {
@@ -255,6 +261,8 @@ impl Setup {
             streams: self.streams,
             partitions: self.partitions,
             progress: progress_feed,
+            latest: Arc::clone(&harness.latest),
+            cursor_limit: self.cursor_limit,
             barrier: barrier_sender,
             stop_reads: harness.stop_reads.clone(),
             stop: harness.stop.clone(),
@@ -332,6 +340,7 @@ impl Harness {
             discarded_values: 0,
             deletes_ignored: 0,
             truncates_ignored: 0,
+            held: CursorHold::default(),
         }));
     }
 
@@ -704,6 +713,7 @@ async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
         discarded_values: 3,
         deletes_ignored: 0,
         truncates_ignored: 0,
+        held: CursorHold::default(),
     }));
     harness.end(0, false);
     task.await.unwrap().unwrap();

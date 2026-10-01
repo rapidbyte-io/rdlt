@@ -9,7 +9,7 @@ use rdlt_connector::{
 };
 
 use super::{Coordinator, KEPT_COMPLETIONS};
-use crate::partition::Seal;
+use crate::partition::{CursorHold, Seal};
 use crate::plan::WriteMode;
 use crate::report::StreamReport;
 use crate::wal::Sealed;
@@ -25,6 +25,8 @@ pub(super) struct Collected {
     /// Every seal, as the load's log records them before their commit: empty segments move
     /// their partitions too.
     pub(super) sealed: Vec<Sealed>,
+    /// What holds the seals' cursors in the budget.
+    pub(super) held: Vec<CursorHold>,
 }
 
 impl Coordinator {
@@ -37,8 +39,9 @@ impl Coordinator {
             reported: BTreeMap::new(),
             streams: BTreeMap::new(),
             sealed: Vec::new(),
+            held: Vec::new(),
         };
-        let seals = std::mem::take(&mut self.sealed);
+        let seals = self.sealed.take();
         if self.parts.wal.is_some() {
             collected.sealed = self.logged(&seals, begun);
         }
@@ -65,6 +68,7 @@ impl Coordinator {
                 collected.reported.insert(seal.partition, cursor.clone());
             }
             collected.positions.insert(seal.partition, seal.state);
+            collected.held.push(seal.held);
         }
         // A partition done with no cursor among the seals is told the cursor it stood at: a
         // report of it that failed is not made by any later attempt, which plans it no more.

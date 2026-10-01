@@ -1,9 +1,13 @@
 //! What a partition tells the commit coordinator as it reads.
 
-use rdlt_connector::{PartitionState, SegmentId};
+use std::fmt;
+
+use rdlt_connector::{PartitionState, Permit, SegmentId};
+
+use crate::cost::Admitted;
 
 /// What a partition tells the commit coordinator.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum Progress {
     /// The partition started reading.
     Started {
@@ -19,16 +23,18 @@ pub(crate) enum Progress {
     },
     /// A segment was sealed.
     Sealed(Seal),
-    /// The stream's source said its partitions changed.
-    Replan {
+    /// The partition has a seal of no rows waiting, queued in this epoch of its seals.
+    Moved {
         /// The partition's index in the attempt.
         partition: usize,
+        /// How many seals with rows the partition had sent.
+        epoch: u64,
     },
-    /// The partition's read is `records` behind its source's newest.
-    Behind {
+    /// The partition has a signal waiting: how far its read is behind, or that its stream's
+    /// partitions changed.
+    Signalled {
         /// The partition's index in the attempt.
         partition: usize,
-        records: u64,
     },
     /// The partition's source had dropped where its read would resume, and it read again from
     /// its earliest.
@@ -53,7 +59,7 @@ pub(crate) enum Progress {
 }
 
 /// A sealed segment: every row written to it, and where to resume after it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct Seal {
     /// The partition's index in the attempt.
     pub(crate) partition: usize,
@@ -75,4 +81,63 @@ pub(crate) struct Seal {
     pub(crate) deletes_ignored: u64,
     /// Truncates the stream ignores, dropped from the segment.
     pub(crate) truncates_ignored: u64,
+    /// What holds the cursor's bytes in the budget until the seal's commit lands.
+    pub(crate) held: CursorHold,
+}
+
+impl Seal {
+    /// Whether the seal moves its partition's position and nothing else: no row, discard or
+    /// ignored change is its segment's.
+    pub(crate) fn moves_only(&self) -> bool {
+        let counts = [
+            self.rows,
+            self.bytes,
+            self.discarded_rows,
+            self.discarded_values,
+            self.deletes_ignored,
+            self.truncates_ignored,
+        ];
+        counts == [0; 6]
+    }
+
+    /// The bytes of the cursor the seal resumes from.
+    pub(crate) fn cursor_bytes(&self) -> u64 {
+        match &self.state {
+            PartitionState::Cursor(cursor) => {
+                u64::try_from(cursor.bytes().len()).unwrap_or(u64::MAX)
+            }
+            PartitionState::Done => 0,
+        }
+    }
+}
+
+/// What holds a seal's cursor in the budget while the seal waits: the permit that admitted its
+/// checkpoint, or nothing for a seal the engine made itself.
+///
+/// It is no part of what a seal says, so every hold equals every other.
+#[derive(Default)]
+pub(crate) struct CursorHold(Option<Box<Admitted>>);
+
+impl CursorHold {
+    /// A hold of what `permit` holds, where the engine's admission issued it.
+    pub(crate) fn new(permit: Option<Permit>) -> Self {
+        Self(permit.and_then(Admitted::of))
+    }
+
+    /// The bytes held.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.0.as_ref().map_or(0, |admitted| admitted.bytes)
+    }
+}
+
+impl PartialEq for CursorHold {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl fmt::Debug for CursorHold {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("CursorHold").field(&self.bytes()).finish()
+    }
 }

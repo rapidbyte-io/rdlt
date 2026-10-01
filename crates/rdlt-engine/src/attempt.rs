@@ -26,8 +26,9 @@ use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun,
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
+use crate::limits::CURSOR_SHARE;
 use crate::naming::Naming;
-use crate::partition::{self, ChangeMode, PartitionContext, PartitionJob};
+use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob};
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
@@ -172,7 +173,7 @@ async fn launch(
     let wal = start_log(context, load_id, &opened.state, &planned, &mut scope).await?;
     let (progress, progress_feed) = mpsc::unbounded_channel();
     let (barrier, barrier_feed) = watch::channel(0);
-    let stop_reads = CancellationToken::new();
+    let (stop_reads, latest) = (CancellationToken::new(), Arc::new(Latest::default()));
     let partition_context = PartitionContext {
         source: Arc::clone(&context.source),
         lanes: lanes.clone(),
@@ -180,6 +181,7 @@ async fn launch(
         budget: context.budget.clone(),
         rendering: Arc::new(crate::cost::rendering(context.destination.capabilities())),
         progress,
+        latest: Arc::clone(&latest),
         barrier: barrier_feed,
         stop: stop_reads.clone(),
         cancel: cancel.clone(),
@@ -209,6 +211,8 @@ async fn launch(
         streams,
         partitions,
         progress: progress_feed,
+        latest,
+        cursor_limit: context.budget.capacity() / CURSOR_SHARE,
         barrier,
         stop_reads,
         stop: context.stop.clone(),

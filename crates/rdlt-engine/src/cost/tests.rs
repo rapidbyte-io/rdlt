@@ -16,9 +16,11 @@ use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field as ArrowField, Fields};
 use proptest::prelude::*;
 use rdlt_connector::cost::{Allocations, Rendering};
-use rdlt_connector::{Field, LogicalType, TypeKind};
+use rdlt_connector::{Admission, Field, LogicalType, Push, SourceEvent, TypeKind};
 use rdlt_testkit::drawn::{Drawn, KINDS, Scalar, array, field, values};
 
+use super::{Admitted, Charging};
+use crate::budget::MemoryBudget;
 use crate::normalize::as_list;
 use crate::table::convert::{convert, decoded, json, normalize, text};
 
@@ -404,4 +406,85 @@ fn only_what_rows_name_is_materialized() {
         consumed(&field, &named, &KINDS);
         assert!(expanded(&named, &KINDS) <= limit, "{}", named.data_type());
     }
+}
+
+/// A budget of `capacity` bytes and an admission charging it for a destination storing text.
+fn charging(capacity: u64) -> (MemoryBudget, Charging) {
+    let budget = MemoryBudget::new(capacity);
+    let admission = Charging::new(budget.clone(), Arc::new(Rendering::text()));
+    (budget, admission)
+}
+
+#[tokio::test]
+async fn a_push_is_admitted_for_the_larger_of_what_it_holds_and_what_it_becomes() {
+    let (budget, admission) = charging(1 << 30);
+    // A slice of three rows keeps its whole buffer alive.
+    let whole = Int64Array::from(vec![7; 100_000]);
+    let slice = RecordBatch::try_from_iter([("n", Arc::new(whole.slice(0, 3)) as ArrayRef)]);
+    let held = Push::Arrow(slice.unwrap());
+    let permit = admission.admit(&SourceEvent::Push(held)).await;
+    assert!(budget.reserved() >= 800_000, "{}", budget.reserved());
+    let admitted = Admitted::of(permit.unwrap()).unwrap();
+    assert_eq!(admitted.bytes, budget.reserved());
+    drop(admitted);
+    assert_eq!(budget.reserved(), 0);
+    // A dictionary of one long value named by every row becomes far more than it holds.
+    let long = "x".repeat(1_000);
+    let keyed = DictionaryArray::<Int32Type>::try_new(
+        Int32Array::from(vec![0; 10_000]),
+        Arc::new(arrow_array::StringArray::from(vec![long.as_str()])),
+    );
+    let expanding = RecordBatch::try_from_iter([("s", Arc::new(keyed.unwrap()) as ArrayRef)]);
+    let change = Push::Changes(expanding.unwrap());
+    let permit = admission.admit(&SourceEvent::Push(change)).await;
+    assert!(budget.reserved() >= 10_000_000, "{}", budget.reserved());
+    drop(permit);
+    let json = Push::Json(bytes::Bytes::from_static(b"[{}]"));
+    let permit = admission.admit(&SourceEvent::Push(json)).await;
+    assert_eq!(budget.reserved(), 4);
+    drop(permit);
+}
+
+#[tokio::test]
+async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
+    let (budget, admission) = charging(100);
+    let cursor = rdlt_connector::Cursor::new(1, &[7; 40]).unwrap();
+    let checkpoint = SourceEvent::Checkpoint {
+        cursor,
+        answers: None,
+    };
+    let held = admission.admit(&checkpoint).await;
+    assert_eq!(budget.reserved(), 40);
+    // Only a commit releases a cursor, so it keeps no push of the whole budget out.
+    let json = Push::Json(bytes::Bytes::from(vec![b' '; 100]));
+    let pushed = admission.admit(&SourceEvent::Push(json)).await;
+    assert_eq!(budget.reserved(), 140);
+    drop((held, pushed));
+    for event in [
+        SourceEvent::Replan,
+        SourceEvent::Behind { records: 3 },
+        SourceEvent::Log {
+            level: rdlt_connector::LogLevel::Info,
+            message: "line".to_owned(),
+        },
+        SourceEvent::Metric {
+            name: "rows".to_owned(),
+            value: 1.0,
+        },
+    ] {
+        assert!(admission.admit(&event).await.is_none());
+    }
+    assert_eq!(budget.reserved(), 0);
+    // What a read keeps beside its events is charged at once, apart from what is in flight.
+    let kept = admission.charge(500);
+    assert_eq!(budget.reserved(), 500);
+    let pushed = admission
+        .admit(&SourceEvent::Push(Push::Json(bytes::Bytes::from_static(
+            b"[]",
+        ))))
+        .await;
+    assert_eq!(budget.reserved(), 502);
+    drop((kept, pushed));
+    assert_eq!(budget.reserved(), 0);
+    assert!(Admitted::of(Box::new(7_u8)).is_none());
 }
