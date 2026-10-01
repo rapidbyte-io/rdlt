@@ -60,10 +60,13 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
   `TableChange`: schema changes take effect at once in every destination, so a drop there and a
   crash before the state commit would leave state naming a table that is gone. On the commit it
   lands with the state delta. The name comes from the engine's own recorded names, never from a
-  destination's path map, which is store-wide.
+  destination's path map, which is store-wide. Amended 2026-10-01: SQLite and the memory
+  destination keep a path map for each pipeline (ADR 0049).
   - A destination drops the table with its generations, staging, tombstones and owner record. A
     table another pipeline owns fails the whole commit as `table_owned`; one that does not exist is
-    no drop at all, so a reset retried after a crash is harmless.
+    no drop at all, so a reset retried after a crash is harmless. Amended 2026-10-01: a table
+    that exists and no pipeline owns is refused as `table_unowned`, and one named as the
+    destination's own as `table_name_reserved`, in SQLite and memory (ADR 0049).
   - SQLite drops in the commit's transaction, refused as `Unsupported` where schema changes do not
     commit with transactions. The files destination makes the manifest the truth: the commit
     records the dropped names, removes their catalogs after it lands, and the next open removes
@@ -73,7 +76,9 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
 - **Ownership holds through commits and drops.**
   - A generation swapped into another pipeline's table is refused as `table_owned`, in every
     destination: memory, the simulation and SQLite resolve a path to a table through store-wide
-    maps, where one pipeline's swap could empty another's table.
+    maps, where one pipeline's swap could empty another's table. Amended 2026-10-01: SQLite
+    and memory resolve the path among the pipeline's own tables, so a swap changes its own
+    table or none, and the owner is checked before it does (ADR 0049).
   - A session a newer one fenced may not claim a table no pipeline owns: its schema change or
     writer fails as fenced. Otherwise a load the reset fenced, still writing, claims the table
     the reset just released, and another pipeline stays shut out. The simulation found this.
