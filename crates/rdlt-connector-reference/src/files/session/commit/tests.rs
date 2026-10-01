@@ -97,3 +97,283 @@ fn only_what_the_latest_manifest_does_not_list_is_pruned() {
     prune(&Dir::ambient(fresh.path()).unwrap(), &paths);
     assert!(!fresh.path().join(&unlisted).exists());
 }
+
+mod steps {
+    //! A commit's durable steps: their order, and a crash at each of them.
+
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
+    use rdlt_connector::{
+        DroppedTable, Field, LogicalType, MergeKey, SchemaVersion, TablePath, TableRef, TableSchema,
+    };
+
+    use crate::files::FileFormat;
+    use crate::files::manifest;
+    use crate::files::session::tests::Sessions;
+    use crate::rooted::trace::{self, Step};
+
+    fn table(merge: bool) -> TableRef {
+        let merge = merge.then(|| MergeKey {
+            columns: vec!["id".into()],
+            seq: "seq".into(),
+            root: None,
+            changes: None,
+            history: None,
+        });
+        TableRef {
+            path: TablePath::new(["rows"]).unwrap(),
+            name: "rows".into(),
+            version: SchemaVersion(1),
+            generation: None,
+            merge,
+        }
+    }
+
+    fn schema() -> TableSchema {
+        TableSchema::new(vec![
+            Field::new("id", LogicalType::Int64, false),
+            Field::new("seq", LogicalType::Binary, false),
+        ])
+        .unwrap()
+    }
+
+    fn rows(ids: &[i64]) -> RecordBatch {
+        let seqs = BinaryArray::from_iter_values(ids.iter().map(|id| id.to_be_bytes().repeat(2)));
+        RecordBatch::try_from_iter([
+            ("id", Arc::new(Int64Array::from(ids.to_vec())) as ArrayRef),
+            ("seq", Arc::new(seqs) as ArrayRef),
+        ])
+        .unwrap()
+    }
+
+    /// Sessions whose first commit published ids 1 and 2 to the table, and whose second, of
+    /// id 3, is staged and not yet committed.
+    fn pending(format: FileFormat, merge: bool) -> Sessions {
+        let sessions = Sessions::new(format);
+        let table = table(merge);
+        sessions.create(&table, &schema());
+        sessions.stage(&table, 1, rows(&[1, 2]));
+        sessions.commit(&sessions.meta(1, 1, &[1])).unwrap();
+        sessions.stage(&table, 2, rows(&[3]));
+        sessions
+    }
+
+    fn at(steps: &[Step], wanted: impl Fn(&Step) -> bool) -> usize {
+        steps
+            .iter()
+            .position(wanted)
+            .unwrap_or_else(|| panic!("no such step in {steps:#?}"))
+    }
+
+    fn staged(path: &Path) -> bool {
+        path.components().any(|part| part.as_os_str() == "staging")
+    }
+
+    /// Checks the order of a commit's `steps`: every file it wrote is durable, with its name,
+    /// before the manifest is linked; the manifest's bytes are durable before its link and its
+    /// name after; and nothing is removed from staging before that. The staged files it removed.
+    fn ordered(steps: &[Step]) -> Vec<PathBuf> {
+        let link = at(steps, |step| matches!(step, Step::Link(_)));
+        let Step::Link(manifest) = &steps[link] else {
+            unreachable!()
+        };
+        let manifests = manifest.parent().unwrap().to_owned();
+        // The temporary the manifest was written to is synced just before it is linked.
+        assert!(
+            matches!(&steps[link - 1], Step::SyncFile(path) if path.parent() == Some(&manifests)),
+            "{steps:#?}"
+        );
+        assert_eq!(steps[link + 1], Step::SyncDir(manifests), "{steps:#?}");
+        for (index, step) in steps.iter().enumerate() {
+            match step {
+                Step::Create(path) if staged(path) => {
+                    let synced = at(steps, |step| *step == Step::SyncFile(path.clone()));
+                    let parent = path.parent().unwrap().to_owned();
+                    let named = at(&steps[synced..], |step| {
+                        *step == Step::SyncDir(parent.clone())
+                    });
+                    assert!(index < synced && synced + named < link, "{steps:#?}");
+                }
+                Step::Remove(path) | Step::RemoveDir(path) if staged(path) => {
+                    assert!(index > link + 1, "removed before the manifest: {steps:#?}");
+                }
+                _ => {}
+            }
+        }
+        steps
+            .iter()
+            .filter_map(|step| match step {
+                Step::Remove(path) if staged(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_commit_makes_what_it_wrote_durable_before_its_manifest_and_removes_only_after() {
+        for format in [FileFormat::Jsonl, FileFormat::Arrow] {
+            for merge in [true, false] {
+                let sessions = pending(format, merge);
+                let before = sessions.data_files();
+                trace::clear();
+                sessions.commit(&sessions.meta(1, 2, &[2])).unwrap();
+                let removed = ordered(&trace::steps());
+                // Both files the commit read went, and the file it wrote stays, alone.
+                let base = sessions.location.dir.path();
+                let mut removed: Vec<String> = removed
+                    .iter()
+                    .map(|path| {
+                        path.strip_prefix(base)
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned()
+                    })
+                    .collect();
+                removed.sort();
+                assert_eq!(removed, before, "{format:?} {merge}");
+                assert_eq!(sessions.data_files().len(), 1, "{format:?} {merge}");
+                assert_eq!(sessions.ids("rows"), [1, 2, 3], "{format:?} {merge}");
+            }
+        }
+    }
+
+    /// What the latest manifest lists, sorted.
+    fn listed(sessions: &Sessions) -> Vec<String> {
+        let manifest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
+        let mut listed: Vec<String> = manifest.files().map(|file| file.path.clone()).collect();
+        listed.sort();
+        listed
+    }
+
+    #[test]
+    fn a_commit_that_dies_at_any_step_publishes_all_of_it_or_none_and_lands_once_when_repeated() {
+        for format in [FileFormat::Jsonl, FileFormat::Arrow] {
+            for merge in [true, false] {
+                let mut died = 0;
+                for step in 0.. {
+                    let mut sessions = pending(format, merge);
+                    let meta = sessions.meta(1, 2, &[2]);
+                    trace::crash_at(step);
+                    drop(sessions.commit(&meta));
+                    let crashed = trace::refused();
+                    trace::clear();
+                    if !crashed {
+                        break;
+                    }
+                    died += 1;
+                    // The next attempt opens the pipeline and finds every published row.
+                    sessions.open(2);
+                    let found = sessions.ids("rows");
+                    assert!(
+                        found == [1, 2] || found == [1, 2, 3],
+                        "{format:?} {merge} step {step}: {found:?}"
+                    );
+                    // It stages the segment again and repeats the commit as it was logged.
+                    sessions.stage(&table(merge), 2, rows(&[3]));
+                    let mut again = sessions.meta(1, 2, &[2]);
+                    again.epoch = sessions.location.epoch;
+                    sessions.commit(&again).unwrap();
+                    assert_eq!(
+                        sessions.ids("rows"),
+                        [1, 2, 3],
+                        "{format:?} {merge} step {step}"
+                    );
+                    assert_eq!(sessions.data_files(), listed(&sessions), "step {step}");
+                }
+                assert!(died > 6, "{format:?} {merge}: only {died} steps");
+            }
+        }
+    }
+
+    #[test]
+    fn a_commit_whose_manifest_was_linked_and_not_synced_is_made_durable_when_repeated() {
+        let twin = pending(FileFormat::Jsonl, true);
+        trace::clear();
+        twin.commit(&twin.meta(1, 2, &[2])).unwrap();
+        let steps = trace::steps();
+        let link = at(&steps, |step| matches!(step, Step::Link(_)));
+        // The same commit, refused the sync that makes its manifest's name durable.
+        let sessions = pending(FileFormat::Jsonl, true);
+        let meta = sessions.meta(1, 2, &[2]);
+        trace::fail_at(link + 1);
+        sessions.commit(&meta).expect_err("the sync is refused");
+        trace::clear();
+        assert_eq!(sessions.ids("rows"), [1, 2, 3], "the manifest is there");
+        assert_eq!(sessions.data_files().len(), 3, "nothing is pruned yet");
+        let receipt = sessions.commit(&meta).expect("the commit is answered");
+        assert_eq!(receipt.rows, 1);
+        let manifests = sessions.location.dir.path().join("manifests");
+        let repeated = trace::steps();
+        assert_eq!(repeated[0], Step::SyncDir(manifests), "{repeated:#?}");
+        // And the commit's tail ran: what it superseded is gone, and its segment is held no more.
+        assert_eq!(sessions.data_files(), listed(&sessions));
+        assert!(sessions.shared.lock().staged.is_empty());
+    }
+
+    #[test]
+    fn a_drop_that_dies_at_any_step_leaves_the_table_whole_or_gone_once_the_pipeline_opens() {
+        let catalog = |sessions: &Sessions| sessions.root.path().join("tables").join("rows");
+        let mut died = 0;
+        for step in 0.. {
+            let mut sessions = pending(FileFormat::Jsonl, false);
+            let mut meta = sessions.meta(1, 2, &[]);
+            let table = table(false);
+            meta.drop_tables = vec![DroppedTable {
+                path: table.path.clone(),
+                name: table.name.clone(),
+            }];
+            trace::crash_at(step);
+            drop(sessions.commit(&meta));
+            let crashed = trace::refused();
+            trace::clear();
+            if !crashed {
+                assert!(!catalog(&sessions).exists());
+                break;
+            }
+            died += 1;
+            sessions.open(2);
+            let manifest = manifest::latest(&sessions.location.dir).unwrap().unwrap();
+            assert!(manifest.dropped.is_empty(), "step {step}");
+            if manifest.tables.contains_key("rows") {
+                assert!(catalog(&sessions).exists(), "step {step}");
+                assert_eq!(sessions.ids("rows"), [1, 2], "step {step}");
+            } else {
+                assert!(!catalog(&sessions).exists(), "step {step}");
+            }
+        }
+        assert!(died > 6, "only {died} steps");
+    }
+
+    #[test]
+    fn a_release_moves_the_catalog_away_durably_before_it_removes_it() {
+        let sessions = pending(FileFormat::Jsonl, false);
+        let mut meta = sessions.meta(1, 2, &[]);
+        let table = table(false);
+        meta.drop_tables = vec![DroppedTable {
+            path: table.path.clone(),
+            name: table.name.clone(),
+        }];
+        trace::clear();
+        sessions.commit(&meta).unwrap();
+        let steps = trace::steps();
+        let link = at(&steps, |step| matches!(step, Step::Link(_)));
+        let tables = sessions.root.path().join("tables");
+        let moved = at(
+            &steps,
+            |step| matches!(step, Step::Rename(to) if to.parent().is_some_and(|dir| dir.ends_with("trash"))),
+        );
+        let synced = at(&steps[moved..], |step| {
+            *step == Step::SyncDir(tables.clone())
+        });
+        let emptied = at(
+            &steps,
+            |step| matches!(step, Step::Remove(path) if path.components().any(|part| part.as_os_str() == "trash")),
+        );
+        assert!(
+            link + 1 < moved && synced > 0 && moved + synced < emptied,
+            "{steps:#?}"
+        );
+    }
+}

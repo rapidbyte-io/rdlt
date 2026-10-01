@@ -163,7 +163,12 @@ fn existing(root: &Path) -> Result<Option<Dir>> {
 ///
 /// The catalogs of tables the pipeline dropped are removed first, before this session can create
 /// any of them again.
-fn next_epoch(dir: &Dir, rdlt: &Dir, pipeline: &PipelineId, wait: Duration) -> Result<Manifest> {
+pub(super) fn next_epoch(
+    dir: &Dir,
+    rdlt: &Dir,
+    pipeline: &PipelineId,
+    wait: Duration,
+) -> Result<Manifest> {
     io::retried(&format!("opening pipeline {pipeline}"), || {
         let mut manifest = manifest::latest(dir)?.unwrap_or_default();
         for name in &manifest.dropped {
@@ -213,6 +218,41 @@ pub(super) fn discard(dir: &Dir, epoch: Epoch) -> Result<()> {
         if older {
             let path = format!("{STAGING}/{}", name.to_string_lossy());
             remove_unlisted(&staging, &name, kind, &path, &listed)?;
+        }
+    }
+    Ok(())
+}
+
+/// The directories, beside a load's segments, that hold what the load's commits wrote.
+const WRITTEN: [&str; 3] = ["merged", "compacted", "tombstones"];
+
+/// Removes what commits of the session at `epoch` of the pipeline whose directory `dir` is, and
+/// what older sessions, left that the latest manifest does not list.
+///
+/// Only commits write under those directories, one at a time, so nothing a writer is staging
+/// is among them.
+pub(super) fn discard_superseded(dir: &Dir, epoch: Epoch) -> Result<()> {
+    discard(dir, epoch)?;
+    let listed: BTreeSet<String> = manifest::latest(dir)?
+        .unwrap_or_default()
+        .files()
+        .map(|file| file.path.clone())
+        .collect();
+    let own = [STAGING.to_owned(), epoch.to_string()];
+    let Ok(staged) = dir.walk(&own) else {
+        return Ok(());
+    };
+    let listing = io::failed("listing", staged.path());
+    for (load, kind) in staged.entries().map_err(&listing)? {
+        let Some(load) = load.to_str().filter(|_| kind == Kind::Dir) else {
+            continue;
+        };
+        let loaded = staged.dir(load).map_err(&listing)?;
+        for written in WRITTEN {
+            if loaded.kind(written).map_err(&listing)? == Some(Kind::Dir) {
+                let path = format!("{}/{load}/{written}", own.join("/"));
+                remove_unlisted(&loaded, written.as_ref(), Kind::Dir, &path, &listed)?;
+            }
         }
     }
     Ok(())

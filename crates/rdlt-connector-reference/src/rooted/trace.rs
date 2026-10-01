@@ -34,6 +34,7 @@ thread_local! {
     static STEPS: RefCell<Vec<Step>> = const { RefCell::new(Vec::new()) };
     static FAULT: Cell<Option<Fault>> = const { Cell::new(None) };
     static TAKEN: Cell<usize> = const { Cell::new(0) };
+    static REFUSED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Records `step`, and refuses it where a fault says so.
@@ -44,6 +45,7 @@ pub(crate) fn step(step: Step) -> io::Result<()> {
         .get()
         .is_some_and(|fault| taken == fault.at || (fault.crash && taken > fault.at));
     if refused {
+        REFUSED.set(true);
         return Err(io::Error::other(format!("a fault refused {step:?}")));
     }
     STEPS.with(|steps| steps.borrow_mut().push(step));
@@ -55,6 +57,12 @@ pub(crate) fn clear() {
     STEPS.with(|steps| steps.borrow_mut().clear());
     FAULT.set(None);
     TAKEN.set(0);
+    REFUSED.set(false);
+}
+
+/// Whether a fault refused a step since the record was last cleared.
+pub(crate) fn refused() -> bool {
+    REFUSED.get()
 }
 
 /// The steps taken since the record was last cleared.
