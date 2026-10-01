@@ -13,6 +13,7 @@ use arrow_buffer::{ArrowNativeType as _, ScalarBuffer};
 use arrow_schema::{DataType, UnionMode};
 
 use super::Weight;
+use crate::codec::compact::plain;
 
 /// What a column's schema counts, nested columns included.
 #[derive(Clone, Copy, Debug, Default)]
@@ -94,8 +95,10 @@ impl fmt::Debug for Column {
 const VALID: u64 = 1;
 
 impl Column {
-    /// `array` as its rows are weighed, its nodes, buffers and run-end columns counted.
-    pub(super) fn of(array: &dyn Array, counts: &mut Counts) -> Self {
+    /// `array` as its rows are weighed, its nodes, buffers and run-end columns counted;
+    /// `rebuilt` where its piece is rebuilt from what its rows name, which drops what a null
+    /// list spans.
+    pub(super) fn of(array: &dyn Array, rebuilt: bool, counts: &mut Counts) -> Self {
         use DataType as T;
         counts.nodes += 1;
         counts.buffers += buffers(array.data_type());
@@ -110,39 +113,30 @@ impl Column {
             T::BinaryView => Self::Views {
                 views: array.as_binary_view().views().clone(),
             },
-            T::List(_) => lists(array.as_list::<i32>(), counts),
-            T::LargeList(_) => lists(array.as_list::<i64>(), counts),
+            T::List(_) => lists(array.as_list::<i32>(), rebuilt, counts),
+            T::LargeList(_) => lists(array.as_list::<i64>(), rebuilt, counts),
             T::Map(..) => {
                 let map = array.as_map();
-                listed(map.offsets(), map.entries(), counts)
+                listed(map.offsets(), map.nulls(), map.entries(), rebuilt, counts)
             }
-            T::ListView(_) => list_views(array.as_list_view::<i32>(), counts),
-            T::LargeListView(_) => list_views(array.as_list_view::<i64>(), counts),
-            T::FixedSizeList(_, size) => {
-                let size = usize::try_from(*size).unwrap_or(0);
-                let range = move |row: usize| (row * size, row * size + size);
-                let item = Self::of(array.as_fixed_size_list().values().as_ref(), counts);
-                Self::List {
-                    bits: VALID,
-                    range: Box::new(range),
-                    item: Box::new(item),
-                }
-            }
+            T::ListView(_) => list_views(array.as_list_view::<i32>(), rebuilt, counts),
+            T::LargeListView(_) => list_views(array.as_list_view::<i64>(), rebuilt, counts),
+            T::FixedSizeList(_, size) => fixed_lists(array, *size, rebuilt, counts),
             T::Struct(_) => {
                 let columns = array.as_struct().columns().iter();
                 let children = columns
-                    .map(|column| Self::of(column.as_ref(), counts))
+                    .map(|column| Self::of(column.as_ref(), rebuilt, counts))
                     .collect();
                 Self::Each {
                     bits: VALID,
                     children,
                 }
             }
-            T::Union(fields, mode) => union(array, fields, *mode, counts),
+            T::Union(fields, mode) => union(array, fields, *mode, rebuilt, counts),
             T::RunEndEncoded(ends, _) => match ends.data_type() {
-                T::Int16 => runs(array.as_run::<Int16Type>(), counts),
-                T::Int32 => runs(array.as_run::<Int32Type>(), counts),
-                _ => runs(array.as_run::<Int64Type>(), counts),
+                T::Int16 => runs(array.as_run::<Int16Type>(), rebuilt, counts),
+                T::Int32 => runs(array.as_run::<Int32Type>(), rebuilt, counts),
+                _ => runs(array.as_run::<Int64Type>(), rebuilt, counts),
             },
             T::Dictionary(keys, _) => match keys.as_ref() {
                 T::Int8 => keyed::<Int8Type>(array, counts),
@@ -315,30 +309,51 @@ fn bytes<O: OffsetSizeTrait>(offsets: &arrow_buffer::OffsetBuffer<O>) -> Column 
     }
 }
 
-fn lists<O: OffsetSizeTrait>(
-    lists: &arrow_array::GenericListArray<O>,
-    counts: &mut Counts,
-) -> Column {
-    listed(lists.offsets(), lists.values().as_ref(), counts)
+/// Fixed-size lists of `size` items a row.
+fn fixed_lists(array: &dyn Array, size: i32, rebuilt: bool, counts: &mut Counts) -> Column {
+    let size = usize::try_from(size).unwrap_or(0);
+    let range = move |row: usize| (row * size, row * size + size);
+    let items = array.as_fixed_size_list().values().as_ref();
+    Column::List {
+        bits: VALID,
+        range: Box::new(range),
+        item: Box::new(Column::of(items, rebuilt, counts)),
+    }
 }
 
-/// Lists of `items` by `offsets`.
+fn lists<O: OffsetSizeTrait>(
+    lists: &arrow_array::GenericListArray<O>,
+    rebuilt: bool,
+    counts: &mut Counts,
+) -> Column {
+    let items = lists.values().as_ref();
+    listed(lists.offsets(), lists.nulls(), items, rebuilt, counts)
+}
+
+/// Lists of `items` by `offsets`; where `rebuilt`, a row null by `nulls` spans none.
 fn listed<O: OffsetSizeTrait>(
     offsets: &arrow_buffer::OffsetBuffer<O>,
+    nulls: Option<&arrow_buffer::NullBuffer>,
     items: &dyn Array,
+    rebuilt: bool,
     counts: &mut Counts,
 ) -> Column {
     let (offsets, bits) = (offsets.clone(), 8 * wide(size_of::<O>()) + VALID);
-    let range = move |row: usize| span(&offsets, row);
+    let nulls = nulls.filter(|_| rebuilt).cloned();
+    let range = move |row: usize| match &nulls {
+        Some(nulls) if nulls.is_null(row) => (0, 0),
+        _ => span(&offsets, row),
+    };
     Column::List {
         bits,
         range: Box::new(range),
-        item: Box::new(Column::of(items, counts)),
+        item: Box::new(Column::of(items, rebuilt, counts)),
     }
 }
 
 fn list_views<O: OffsetSizeTrait>(
     lists: &arrow_array::GenericListViewArray<O>,
+    rebuilt: bool,
     counts: &mut Counts,
 ) -> Column {
     let (offsets, sizes, nulls) = (
@@ -357,7 +372,7 @@ fn list_views<O: OffsetSizeTrait>(
             _ => (0, 0),
         }
     };
-    let item = Column::of(lists.values().as_ref(), counts);
+    let item = Column::of(lists.values().as_ref(), rebuilt, counts);
     let bits = 16 * wide(size_of::<O>()) + VALID;
     Column::ListView {
         bits,
@@ -370,12 +385,13 @@ fn union(
     array: &dyn Array,
     fields: &arrow_schema::UnionFields,
     mode: UnionMode,
+    rebuilt: bool,
     counts: &mut Counts,
 ) -> Column {
     let union = array.as_union();
     let children = fields
         .iter()
-        .map(|(id, _)| Column::of(union.child(id).as_ref(), counts));
+        .map(|(id, _)| Column::of(union.child(id).as_ref(), rebuilt, counts));
     let children: Vec<_> = children.collect();
     let Some(offsets) = union
         .offsets()
@@ -399,7 +415,11 @@ fn union(
     }
 }
 
-fn runs<R: RunEndIndexType>(runs: &arrow_array::RunArray<R>, counts: &mut Counts) -> Column {
+fn runs<R: RunEndIndexType>(
+    runs: &arrow_array::RunArray<R>,
+    rebuilt: bool,
+    counts: &mut Counts,
+) -> Column {
     // The run ends are a column of their own in a frame.
     counts.nodes += 1;
     counts.buffers += 2;
@@ -407,7 +427,7 @@ fn runs<R: RunEndIndexType>(runs: &arrow_array::RunArray<R>, counts: &mut Counts
     counts.runs += 1;
     let ends = runs.run_ends().clone();
     let run = move |row: usize| ends.get_physical_index(row);
-    let values = Column::of(runs.values().as_ref(), counts);
+    let values = Column::of(runs.values().as_ref(), rebuilt, counts);
     let bits = 8 * wide(size_of::<R::Native>()) + VALID;
     Column::Runs {
         bits,
@@ -425,6 +445,7 @@ fn keyed<K: ArrowDictionaryKeyType>(array: &dyn Array, counts: &mut Counts) -> C
     // the batch's.
     let values = Column::of(
         keyed.values().as_ref(),
+        !plain(keyed.values().data_type()),
         &mut Counts {
             runs: counts.runs,
             ..Counts::default()

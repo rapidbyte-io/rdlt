@@ -4,11 +4,12 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
+use arrow_array::types::Int16Type;
 use arrow_array::{
-    Array, ArrayRef, DictionaryArray, Int8Array, Int32Array, Int64Array, ListArray, ListViewArray,
-    RecordBatch, StringArray, UnionArray,
+    Array, ArrayRef, DictionaryArray, Int8Array, Int16Array, Int32Array, Int64Array, ListArray,
+    ListViewArray, NullArray, RecordBatch, RunArray, StringArray, UnionArray,
 };
-use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, UnionFields};
 
 use super::least;
@@ -111,10 +112,7 @@ fn crosses_as_weighed(part: &RecordBatch) -> Result<(), String> {
         return Ok(());
     }
     let (weight, overhead) = weighed(part);
-    let exact = (weight.values, weight.view_bytes) == (shape.values, shape.view_bytes);
-    let over = weight.values >= shape.values && weight.view_bytes >= shape.view_bytes;
-    // A rebuilt column drops what a null list spans under a list view or a dense union.
-    if !exact && (plain(part.column(0).data_type()) || !over) {
+    if (weight.values, weight.view_bytes) != (shape.values, shape.view_bytes) {
         return Err(format!("weighed {weight:?}, walked {shape:?}"));
     }
     let most = weight.frame_bytes() + overhead;
@@ -345,4 +343,44 @@ fn a_batch_of_no_rows_sends_no_dictionary_that_the_next_batch_must_replace() {
         dictionaries.push(sent.dictionaries);
     }
     assert_eq!(dictionaries, [1, 0, 0, 0]);
+}
+
+#[test]
+fn a_row_naming_a_null_list_weighs_and_crosses_without_what_the_null_spans() {
+    // A list view naming one list that is null and spans two million nulls, and one of one.
+    let inner = ListArray::new(
+        item(&DataType::Null),
+        OffsetBuffer::from_lengths([2_000_000, 1]),
+        Arc::new(NullArray::new(2_000_001)),
+        Some(NullBuffer::from(vec![false, true])),
+    );
+    let field = item(inner.data_type());
+    let (offsets, sizes) = (vec![0, 1], vec![1, 1]);
+    let outer = ListViewArray::new(field, offsets.into(), sizes.into(), Arc::new(inner), None);
+    let batch = batch_of(Arc::new(outer));
+    assert_eq!(weighed(&batch).0.values, 2 + 2 + 2 + 1);
+    let whole = crossed(&batch, least()).unwrap();
+    assert_eq!(whole.rows, rendered(&batch));
+    assert_eq!(whole.frames[0].0.values, 7);
+}
+
+#[test]
+fn rows_naming_more_runs_than_a_run_end_columns_ends_count_are_refused_typed() {
+    // Two rows each naming every one of twenty thousand runs whose ends are 16 bits wide.
+    let ends = Int16Array::from_iter_values(1..=20_000);
+    let values = Int32Array::from_iter_values(0..20_000);
+    let runs = RunArray::<Int16Type>::try_new(&ends, &values).unwrap();
+    let field = item(runs.data_type());
+    let (offsets, sizes) = (vec![0, 0], vec![20_000, 20_000]);
+    let lists = ListViewArray::new(field, offsets.into(), sizes.into(), Arc::new(runs), None);
+    let batch = batch_of(Arc::new(lists));
+    let refused = crossed(&batch, Limits::default()).err().unwrap();
+    assert!(refused.contains("the sender refused"), "{refused}");
+    assert!(refused.contains("cannot encode"), "{refused}");
+    // A row at a time, each within the ends' type, they cross.
+    let limits = Limits {
+        batch_rows: 1,
+        ..Limits::default()
+    };
+    assert_eq!(crossed(&batch, limits).unwrap().frames.len(), 2);
 }
