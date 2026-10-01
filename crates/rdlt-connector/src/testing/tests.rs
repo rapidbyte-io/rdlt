@@ -1884,7 +1884,7 @@ async fn change_clauses_check_only_what_a_destination_declares_it_does() {
             &["D-DELETE", "D-TRUNCATE"],
         ),
     ];
-    for (flags, skipped) in cases {
+    for (flags, inapplicable) in cases {
         let name = flags.join("+");
         let mut config = json!({ "store": name });
         for flag in flags {
@@ -1898,7 +1898,7 @@ async fn change_clauses_check_only_what_a_destination_declares_it_does() {
             .filter(|result| matches!(result.outcome, Outcome::Inapplicable(_)))
             .map(|result| result.clause.id)
             .collect();
-        assert_eq!(actual, skipped, "{name}: {report}");
+        assert_eq!(actual, inapplicable, "{name}: {report}");
     }
 }
 
@@ -1990,7 +1990,7 @@ async fn a_destination_that_cannot_connect_fails_every_clause() {
 }
 
 #[tokio::test]
-async fn clauses_for_capabilities_a_destination_lacks_are_skipped() {
+async fn clauses_for_capabilities_a_destination_lacks_do_not_apply() {
     let report = certify_vault("minimal", Some("minimal")).await;
     report.assert_passed();
     for clause in ["D-REPLACE", "D-MERGE", "D-HIST"] {
@@ -2007,7 +2007,7 @@ async fn clauses_for_capabilities_a_destination_lacks_are_skipped() {
 }
 
 #[tokio::test]
-async fn the_schema_clause_is_skipped_for_a_destination_that_changes_no_schema() {
+async fn the_schema_clause_does_not_apply_to_a_destination_that_changes_no_schema() {
     let report = certify_vault("fixed_schema", Some("fixed_schema")).await;
     report.assert_passed();
     assert!(
