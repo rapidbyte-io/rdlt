@@ -64,7 +64,7 @@ fn a_leader_something_else_reaped_is_neither_signalled_nor_waited_for() {
     nix::sys::wait::waitpid(pid(&child), None).expect("it is reaped elsewhere");
     let mut owned = owned(child, Duration::ZERO);
     owned.held().stop();
-    let ended = owned.ended();
+    let ended = owned.ended(super::emptied);
     // Its group's id may be another's by now: the member it held was sent nothing.
     let alive = kill(member, None).is_ok();
     kill(member, Signal::SIGKILL).ok();
@@ -140,4 +140,22 @@ fn a_stop_has_asked_every_member_to_end_before_it_returns() {
     // Reaped elsewhere since, the leader is sent nothing more, however often it is stopped.
     owned.held().stop();
     owned.discarded();
+}
+
+#[test]
+fn a_connectors_exit_is_told_before_its_group_is_asked_whether_it_is_empty() {
+    let (child, _member) = leading("exit 3");
+    let (exit, told) = watch::channel(None);
+    let mut owned = Owned::new(child, Duration::ZERO, None, exit);
+    let asked = |_| {
+        // Whoever waits to say how the connector ended need not wait for its members.
+        let code = told.borrow().and_then(|status| status.code());
+        assert_eq!(code, Some(3));
+        false
+    };
+    let (status, emptied) = owned.ended(asked);
+    assert_eq!(
+        (status.and_then(|status| status.code()), emptied),
+        (Some(3), false)
+    );
 }
