@@ -52,13 +52,16 @@ processes, with real files, sockets and child processes.
   none written. A point that no longer crashes a run fails the sweep.
 - **The kill matrix** runs the harness in a process group of its own, holding a kilobyte of
   batches so its source waits for commits, its reads in flight across them.
-  - It kills the harness after a read or commit drawn from a seed (`RDLT_KILL_SEED`, else the
-    clock) among those a clean run tells, after a drawn delay of a few milliseconds, and checks
-    the run was still loading. A seed draws the same points again; their moments vary with
-    timing.
-  - It kills a spawned source through the host's `Kills` only while it reads, and a spawned
-    destination before a chosen commit or the one publishing a replace, waiting for it to die;
-    the kill must fail an attempt, which a later attempt rides out.
+  - It kills the harness where it waits after a read or commit drawn from a seed
+    (`RDLT_KILL_SEED`, else the clock) among those a clean run tells, a drawn delay after it began
+    to wait, while its other reads and commits go on; the run is never done before its kill. A
+    seed draws the same points and delays again; what the rest of the run did meanwhile varies.
+  - It kills a spawned source through the host's `Kills` only while it reads, with more to send
+    than its connection holds, and a spawned destination before a chosen commit or the one
+    publishing a replace, waiting for it to die; the kill must fail an attempt, which a later
+    attempt rides out.
+  - A run the test gives up on is killed with its process group, so a failure leaves nothing
+    running.
 
   After each, every row lands once and every process of the group is gone within ten seconds.
   Remote connectors are left to the `K` clauses, which sever their connections (ADR 0022).

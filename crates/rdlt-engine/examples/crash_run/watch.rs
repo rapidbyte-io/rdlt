@@ -19,10 +19,12 @@ use crate::config::{Before, Kill, Named, Victim};
 /// runs next, so a commit after the wait goes to a connector already dead.
 const DYING: Duration = Duration::from_millis(200);
 
-/// What a run's watch knows: the reads begun and in flight, the commits asked for and landed, and
-/// the kill to make.
+/// What a run's watch knows: the reads begun and in flight, the commits asked for and landed, the
+/// kill to make, and where the run waits to be killed.
 #[derive(Default)]
 pub(crate) struct Watch {
+    told: AtomicU64,
+    pause: Option<u64>,
     reads: AtomicU64,
     reading: AtomicU64,
     asked: AtomicU64,
@@ -32,19 +34,31 @@ pub(crate) struct Watch {
 }
 
 impl Watch {
-    /// A watch making `kill` through `kills`.
-    pub(crate) fn killing(kills: Kills, kill: Kill) -> Self {
+    /// A watch making `kill` through `kills` where given, and holding the run after the `pause`th
+    /// read or commit it tells, where given, until the run is killed.
+    pub(crate) fn new(kill: Option<(Kills, Kill)>, pause: Option<u64>) -> Self {
         Self {
-            kill: Some((kills, kill)),
+            pause,
+            kill,
             ..Self::default()
         }
     }
 
-    /// As a read begins: tells its number, and counts it in flight.
-    fn reads(&self) {
+    /// Tells `line`, a read begun or a commit landed, and holds what told it for good where the run
+    /// pauses after it, so a kill finds the run there.
+    async fn tell(&self, line: String) {
+        writeln!(std::io::stdout(), "{line}").ok();
+        let told = self.told.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.pause == Some(told) {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// As a read begins: counts it in flight, and tells its number.
+    async fn reads(&self) {
         let read = self.reads.fetch_add(1, Ordering::SeqCst) + 1;
         self.reading.fetch_add(1, Ordering::SeqCst);
-        writeln!(std::io::stdout(), "read {read}").ok();
+        self.tell(format!("read {read}")).await;
     }
 
     /// Before the commit `meta`: kills where it is the chosen one, telling the reads then in
@@ -72,9 +86,9 @@ impl Watch {
     }
 
     /// After a commit landed: tells its number.
-    fn committed(&self) {
+    async fn committed(&self) {
         let commit = self.commits.fetch_add(1, Ordering::SeqCst) + 1;
-        writeln!(std::io::stdout(), "commit {commit}").ok();
+        self.tell(format!("commit {commit}")).await;
     }
 }
 
@@ -112,7 +126,7 @@ impl Source for Watched<dyn Source> {
 
     fn read(&self, request: ReadRequest, sink: PartitionSink) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
-            self.watch.reads();
+            self.watch.reads().await;
             let read = self.inner.read(request, sink).await;
             self.watch.reading.fetch_sub(1, Ordering::SeqCst);
             read
@@ -172,7 +186,7 @@ impl DestinationSession for Session {
         Box::pin(async move {
             self.watch.committing(meta).await;
             let receipt = self.inner.commit(meta).await?;
-            self.watch.committed();
+            self.watch.committed().await;
             Ok(receipt)
         })
     }

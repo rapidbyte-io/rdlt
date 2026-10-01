@@ -5,7 +5,8 @@
 //! `crash_run <config.json>` runs the pipeline the file describes once, retrying, and exits 0
 //! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names. It
 //! tells each read as it begins (`read 2`), each commit as it lands (`commit 3`), a kill as it
-//! makes it (`killed reading 1`, the source's reads then in flight), and last its report, as JSON.
+//! makes it (`killed reading 1`, the source's reads then in flight), and last its report, as JSON;
+//! told to pause after a read or commit, it waits there to be killed.
 
 mod config;
 mod watch;
@@ -67,10 +68,8 @@ async fn run(config: &Config) -> Result<(), String> {
         (killed == Some(Victim::Destination)).then_some(&kills),
     )
     .await?;
-    let watch = Arc::new(match config.kill {
-        Some(kill) => Watch::killing(kills, kill),
-        None => Watch::default(),
-    });
+    let kill = config.kill.map(|kill| (kills, kill));
+    let watch = Arc::new(Watch::new(kill, config.pause));
     let source = watch::source(source, Arc::clone(&watch));
     let destination = watch::destination(destination, watch);
     let pool =

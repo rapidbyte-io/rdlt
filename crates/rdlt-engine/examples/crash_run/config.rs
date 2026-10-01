@@ -35,6 +35,10 @@ pub(crate) struct Config {
     /// default.
     #[serde(default)]
     pub(crate) partition_buffer: Option<usize>,
+    /// The read or commit, counted together as the run tells them, after which the run waits to
+    /// be killed, where one is.
+    #[serde(default)]
+    pub(crate) pause: Option<u64>,
     /// A connector killed before a commit, where one is.
     #[serde(default)]
     pub(crate) kill: Option<Kill>,

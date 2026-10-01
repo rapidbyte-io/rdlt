@@ -57,18 +57,18 @@ impl Scenario {
     }
 
     /// Writes the harness configuration into `dir` with its source and destination spawned in
-    /// processes of their own, and `kill` where given; its path.
+    /// processes of their own, and the keys of `extra`, a kill or a pause; its path.
     ///
     /// The run holds a kilobyte of batches at once, and an event a partition, so its source
     /// waits for commits, its reads in flight across them.
-    pub(crate) fn write_spawned(&self, dir: &Path, kill: Option<Value>) -> PathBuf {
+    pub(crate) fn write_spawned(&self, dir: &Path, extra: &Value) -> PathBuf {
         let mut config = self.configured(dir);
         config["source"]["spawned"] = json!(true);
         config["destination"]["spawned"] = json!(true);
         config["memory"] = json!(1024);
         config["partition_buffer"] = json!(1);
-        if let Some(kill) = kill {
-            config["kill"] = kill;
+        for (key, value) in extra.as_object().expect("extra keys") {
+            config[key] = value.clone();
         }
         let path = dir.join("run.json");
         let bytes = serde_json::to_vec(&config).expect("configurations serialize");
@@ -114,14 +114,26 @@ fn sqlite_at(dir: &Path) -> Value {
 
 /// A log of two partitions of fifty messages that forgets what it committed, appended to SQLite.
 pub(crate) fn forgetting_log() -> Scenario {
+    forgetting_log_of::<50>("a forgetting log")
+}
+
+/// The forgetting log with two hundred messages a partition: more than its source's connection
+/// holds, so a kill finds the source with messages still to send.
+pub(crate) fn long_forgetting_log() -> Scenario {
+    forgetting_log_of::<200>("a long forgetting log")
+}
+
+/// A log named `name` of two partitions of `MESSAGES` messages that forgets what it committed,
+/// appended to SQLite.
+fn forgetting_log_of<const MESSAGES: i64>(name: &'static str) -> Scenario {
     Scenario {
         logged: true,
         completes: false,
-        name: "a forgetting log",
+        name,
         config: |dir| {
             let source = json!({ "kind": "log", "config": {
                 "seed": 1, "group_path": dir.join("events.group"),
-                "streams": [{ "name": "events", "partitions": 2, "messages": 50,
+                "streams": [{ "name": "events", "partitions": 2, "messages": MESSAGES,
                               "batch_rows": 8, "replayable": false }],
             }});
             let stream = json!({ "name": "events", "read": "incremental", "write": "append" });
@@ -141,7 +153,7 @@ pub(crate) fn forgetting_log() -> Scenario {
             let every: Vec<(Option<String>, Option<i64>)> = ["p0", "p1"]
                 .into_iter()
                 .flat_map(|partition| {
-                    (0..50).map(move |offset| (Some(partition.to_owned()), Some(offset)))
+                    (0..MESSAGES).map(move |offset| (Some(partition.to_owned()), Some(offset)))
                 })
                 .collect();
             assert_eq!(messages, every, "{case}");
