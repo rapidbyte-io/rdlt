@@ -1,5 +1,8 @@
 //! Merging a commit's staged files into a merge table's published ones.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
