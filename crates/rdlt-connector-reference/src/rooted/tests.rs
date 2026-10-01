@@ -182,11 +182,11 @@ fn a_file_beyond_the_limit_is_refused_unread() {
     assert_eq!(refusal(&error), Some(too_large));
     // A sparse file larger than any memory is refused by its size alone.
     let huge = std::fs::File::create(base.path().join("root").join("huge")).unwrap();
-    huge.set_len(1 << 44).unwrap();
+    huge.set_len(1 << 40).unwrap();
     let error = dir.read("huge", LIMIT).unwrap_err();
     assert!(matches!(
         refusal(&error),
-        Some(Refusal::TooLarge { actual, .. }) if actual == 1 << 44
+        Some(Refusal::TooLarge { actual, .. }) if actual == 1 << 40
     ));
     assert_eq!(
         dir.read("inner", LIMIT).unwrap_err().kind(),
