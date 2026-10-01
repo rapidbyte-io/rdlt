@@ -1,6 +1,7 @@
 //! Killing what a host started, as a certification of crash recovery does: every connector
 //! process spawned with a [`Kills`], abruptly, and every stream it [severs](Kills::sever), cut.
 
+mod landing;
 #[cfg(test)]
 mod tests;
 
@@ -11,11 +12,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::network::{Network, Stream};
 use crate::remote::severed::Severed;
+use landing::Landing;
 
 /// Kills the connectors a host started with it, clones sharing one.
 ///
-/// A process spawned with it is killed with `SIGKILL`, and a stream it severs is cut. A kill
-/// reaches what was started before it; what starts after it lives on until the next.
+/// A process spawned with it is killed with `SIGKILL`, with every process of its group, and a
+/// stream it severs is cut. A kill reaches what was started before it; what starts after it
+/// lives on until the next. A kill has [landed](Self::landed) once this host sees a connection
+/// it was to end, end.
 #[derive(Clone, Debug, Default)]
 pub struct Kills {
     inner: Arc<Mutex<Generation>>,
@@ -25,6 +29,7 @@ pub struct Kills {
 #[derive(Debug, Default)]
 struct Generation {
     count: u64,
+    landed: u64,
     next: CancellationToken,
 }
 
@@ -47,9 +52,28 @@ impl Kills {
         self.lock().count
     }
 
+    /// How many connections a kill was to end have been seen to end, after it, from this
+    /// host's end: a connection to a spawned connector ends once no process holds its other
+    /// end, so one that outlives its kill was not reached by it.
+    pub fn landed(&self) -> u64 {
+        self.lock().landed
+    }
+
+    /// Counts a connection a kill ended.
+    fn land(&self) {
+        self.lock().landed += 1;
+    }
+
+    /// `stream`, the host's end of a connection to what `killed`, the next kill, kills, whose
+    /// end after that kill counts it as landed.
+    pub(crate) fn watch<S: Stream>(&self, stream: S, killed: CancellationToken) -> Box<dyn Stream> {
+        Box::new(Landing::new(stream, killed, self.clone()))
+    }
+
     /// `stream`, cut by the next kill.
     pub fn sever<S: Stream>(&self, stream: S) -> Box<dyn Stream> {
-        Box::new(Severed::new(stream, self.next()))
+        let killed = self.next();
+        self.watch(Severed::new(stream, killed.clone()), killed)
     }
 
     /// What the next kill cancels.

@@ -19,6 +19,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::kills::Kills;
+use nix::sys::signal::Signal;
 
 /// Bytes of a connector's standard error kept for the errors of its transport.
 pub(crate) const TAIL_BYTES: usize = 8 * 1024;
@@ -70,6 +71,8 @@ impl Tail {
 /// A running connector's process, which dropping stops.
 pub(crate) struct Process {
     stop: CancellationToken,
+    /// What the kill that kills it cancels, when one may.
+    killed: Option<CancellationToken>,
     /// The process's exit, once it has exited.
     exit: watch::Receiver<Option<ExitStatus>>,
     /// Whether its standard error has closed.
@@ -99,6 +102,8 @@ impl Process {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            // A group of its own, so what the connector starts is stopped and killed with it.
+            .process_group(0)
             .kill_on_drop(true);
         command
             .fd_mappings(vec![FdMapping {
@@ -128,11 +133,12 @@ impl Process {
             child,
             stdin,
             launch.grace,
-            (stop.clone(), killed),
+            (stop.clone(), killed.clone()),
             exit_sender,
         ));
         Ok(Self {
             stop,
+            killed,
             exit,
             stderr_closed,
             tail,
@@ -141,11 +147,21 @@ impl Process {
 
     /// Spawns `launch`'s binary serving one end of a new socket pair; the other end, and the
     /// process.
-    pub(crate) fn launched(launch: &Launch) -> std::io::Result<(tokio::net::UnixStream, Self)> {
+    ///
+    /// Where a kill may kill the process, the other end counts it as landed once it ends after
+    /// the kill: a socket ends when no process holds its other end.
+    pub(crate) fn launched(
+        launch: &Launch,
+    ) -> std::io::Result<(Box<dyn crate::network::Stream>, Self)> {
         let (host, connector) = std::os::unix::net::UnixStream::pair()?;
         let process = Self::spawn(launch, connector.into())?;
         host.set_nonblocking(true)?;
-        Ok((tokio::net::UnixStream::from_std(host)?, process))
+        let host = tokio::net::UnixStream::from_std(host)?;
+        let host = match (&launch.kills, &process.killed) {
+            (Some(kills), Some(killed)) => kills.watch(host, killed.clone()),
+            _ => Box::new(host) as Box<dyn crate::network::Stream>,
+        };
+        Ok((host, process))
     }
 
     /// What the connector left on its standard error, and how it exited, once it has: waits
@@ -274,7 +290,9 @@ fn forward(
 
 /// Waits for `child` to exit, reporting it through `exit`; once `stop` is cancelled, closes its
 /// standard input and sends `SIGTERM`, and after `grace`, `SIGKILL`; once `killed` is, `SIGKILL`
-/// at once, through the child's own handle, so no reused process id is signalled.
+/// at once.
+///
+/// Each signal goes to the child's whole process group, which the child leads.
 async fn reap(
     mut child: Child,
     stdin: Option<ChildStdin>,
@@ -292,16 +310,16 @@ async fn reap(
         biased;
         status = child.wait() => status,
         () = killing => {
-            child.start_kill().ok();
+            signal(&child, Signal::SIGKILL);
             child.wait().await
         }
         () = stop.cancelled() => {
             drop(stdin);
-            terminate(&child);
+            signal(&child, Signal::SIGTERM);
             if let Ok(status) = tokio::time::timeout(grace, child.wait()).await {
                 status
             } else {
-                child.start_kill().ok();
+                signal(&child, Signal::SIGKILL);
                 child.wait().await
             }
         }
@@ -309,13 +327,15 @@ async fn reap(
     exit.send_replace(status.ok());
 }
 
-/// Sends `SIGTERM` to `child`, if it is still running.
-fn terminate(child: &Child) {
+/// Sends `signal` to the process group `child` leads, while `child` is unreaped.
+///
+/// An unreaped child keeps its process id, and so its group's, from any other process: no
+/// reused id is signalled. Once it is reaped, nothing is sent.
+fn signal(child: &Child, signal: Signal) {
     let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) else {
         return;
     };
-    let pid = nix::unistd::Pid::from_raw(pid);
-    nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM).ok();
+    nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid), signal).ok();
 }
 
 /// Whether `path` is a file this process may execute.
