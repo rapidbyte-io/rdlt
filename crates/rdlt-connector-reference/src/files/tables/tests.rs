@@ -43,11 +43,13 @@ fn pipeline(name: &str) -> PipelineId {
 #[test]
 fn a_table_name_is_an_identifier_of_ascii_words() {
     let longest = "x".repeat(usize::from(TABLE_NAME_BYTES));
-    for name in ["t", "T_9", "_", "0", longest.as_str()] {
+    for name in ["t", "t_9", "_", "0", longest.as_str()] {
         named(name).expect(name);
     }
     let longer = "x".repeat(usize::from(TABLE_NAME_BYTES) + 1);
     for name in [
+        "T",
+        "Orders",
         "",
         ".",
         "..",

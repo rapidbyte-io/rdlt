@@ -43,9 +43,12 @@ const OWNER_LIMIT: Limit = Limit {
 };
 
 /// Checks that `name` is a table identifier of this destination, the only names that are ever
-/// part of a path: ASCII letters, digits and underscores, at most 128 bytes.
+/// part of a path: lower-case ASCII letters, digits and underscores, at most 128 bytes.
+///
+/// No two identifiers differ only in case, so none share a catalog on a file system that
+/// ignores case.
 pub(super) fn named(name: &str) -> Result<()> {
-    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let word = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_';
     let fits = !name.is_empty() && name.len() <= usize::from(TABLE_NAME_BYTES);
     if fits && name.bytes().all(word) {
         Ok(())
