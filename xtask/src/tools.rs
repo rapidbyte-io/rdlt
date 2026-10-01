@@ -62,17 +62,35 @@ pub(crate) fn check(config: &str, lock: &str) -> anyhow::Result<Vec<Unlocked>> {
         };
         let built = |platform: &&&str| !UNBUILT.contains(&(tool.as_str(), **platform));
         for platform in PLATFORMS.iter().filter(built) {
-            let (tool, platform) = (tool.clone(), (*platform).to_owned());
-            let download = entry.get(format!("platforms.{platform}"));
-            let text = |key: &str| download.and_then(|download| download.get(key)?.as_str());
-            if !text("url").is_some_and(|url| url.starts_with("https://")) {
-                all.push(Unlocked::Platform { tool, platform });
-            } else if !text("checksum").is_some_and(is_digest) {
-                all.push(Unlocked::Checksum { tool, platform });
-            }
+            all.extend(unlocked_on(tool, entry, platform));
+        }
+    }
+    // Whatever else the lockfile names, a locked install takes: it is held like the rest.
+    for (tool, entries) in locked {
+        let entries = entries.as_array().map_or(&[][..], Vec::as_slice);
+        let tables = entries.iter().filter_map(Value::as_table);
+        for (entry, key) in tables.flat_map(|entry| entry.keys().map(move |key| (entry, key))) {
+            let unlocked = key
+                .strip_prefix("platforms.")
+                .and_then(|platform| unlocked_on(tool, &Value::Table(entry.clone()), platform));
+            all.extend(unlocked.filter(|unlocked| !all.contains(unlocked)));
         }
     }
     Ok(all)
+}
+
+/// What the lockfile entry `entry` of `tool` lacks for `platform`: a download, or its digest.
+fn unlocked_on(tool: &str, entry: &Value, platform: &str) -> Option<Unlocked> {
+    let (tool, platform) = (tool.to_owned(), platform.to_owned());
+    let download = entry.get(format!("platforms.{platform}"));
+    let text = |key: &str| download.and_then(|download| download.get(key)?.as_str());
+    if !text("url").is_some_and(|url| url.starts_with("https://")) {
+        Some(Unlocked::Platform { tool, platform })
+    } else if !text("checksum").is_some_and(is_digest) {
+        Some(Unlocked::Checksum { tool, platform })
+    } else {
+        None
+    }
 }
 
 /// The `tools` table of a mise configuration or lockfile, when it has one.
