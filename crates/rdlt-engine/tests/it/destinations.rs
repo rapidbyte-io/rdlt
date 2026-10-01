@@ -405,3 +405,53 @@ pub(crate) async fn loads_streams_named_like_its_own_tables(target: Target) {
         );
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn the_files_destinations_keep_few_files_however_many_commits_append() {
+    each([Target::Jsonl, Target::Arrow], keeps_few_files).await;
+}
+
+/// One partition appended by hundreds of runs, each a session committing a few rows: the
+/// batches the engine writes, each with the dictionary columns of its load, are merged as they
+/// are published, so the table's files stay few and hold every row once, in the order it was
+/// read.
+async fn keeps_few_files(target: Target) {
+    let name = target.name("few_files");
+    let (script, source) = Script::new(vec![ScriptStream::new("events", 1, 3, 3)])
+        .connect(&name)
+        .await;
+    let plan = pipeline("few-files", [stream("events").read(ReadMode::Incremental)]);
+    let engine = engine(commit_every(1));
+    let mut source = Some(source);
+    let runs = 200;
+    for run in 0..runs {
+        let source = match source.take() {
+            Some(source) => source,
+            None => reconnect(&name).await,
+        };
+        let outcome = engine
+            .run(plan.clone(), source, target.destination("few_files").await)
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{target:?} {run}"
+        );
+        script.streams[0].grow(3);
+    }
+    let files = target.data_files("few_files");
+    assert!(files <= 16, "{target:?}: {files} files");
+    let read: Vec<i64> = target
+        .published("few_files", "events")
+        .iter()
+        .flat_map(|batch| {
+            let ids = batch.column_by_name("id").expect("an id column");
+            let ids = ids
+                .as_any()
+                .downcast_ref::<arrow_array::Int64Array>()
+                .expect("ids read back as Int64");
+            ids.values().to_vec()
+        })
+        .collect();
+    assert_eq!(read, ids(1, 3 * runs), "{target:?}");
+}

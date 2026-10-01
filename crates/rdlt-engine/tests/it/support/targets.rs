@@ -131,6 +131,28 @@ impl Target {
         }
     }
 
+    /// How many data files a files destination keeps for `store`, published or staged.
+    pub(crate) fn data_files(self, store: &str) -> usize {
+        let extension = match self.kind() {
+            Self::Jsonl => "jsonl",
+            Self::Arrow => "arrow",
+            _ => return 0,
+        };
+        let mut pending = vec![self.path(store).join("_rdlt").join("pipelines")];
+        let mut found = 0;
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|found| found == extension) {
+                    found += 1;
+                }
+            }
+        }
+        found
+    }
+
     /// The sorted ids published to `table` in `store`.
     pub(crate) fn ids(self, store: &str, table: &str) -> Vec<i64> {
         let mut ids: Vec<i64> = self
