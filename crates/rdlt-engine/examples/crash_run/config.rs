@@ -16,8 +16,9 @@ use serde_json::Value;
 pub(crate) struct Config {
     /// The pipeline's id.
     pub(crate) pipeline: String,
-    /// Where the engine keeps its write-ahead logs; every load keeps one.
-    pub(crate) wal: PathBuf,
+    /// Where the engine keeps its write-ahead logs, where its loads keep one.
+    #[serde(default)]
+    pub(crate) wal: Option<PathBuf>,
     /// The stream loaded.
     pub(crate) stream: Stream,
     /// Where its rows come from.
@@ -73,7 +74,7 @@ pub(crate) enum Victim {
 }
 
 impl Config {
-    /// The pipeline the run loads, keeping a write-ahead log.
+    /// The pipeline the run loads, keeping a write-ahead log where the configuration names one.
     pub(crate) fn plan(&self) -> Result<PipelinePlan, String> {
         let stream = &self.stream;
         let name = StreamName::new(&stream.name).map_err(|error| error.to_string())?;
@@ -99,7 +100,7 @@ impl Config {
         };
         let pipeline = PipelineId::parse(&self.pipeline).map_err(|error| error.to_string())?;
         let plan = PipelinePlan::new(pipeline, [plan]).map_err(|error| error.to_string())?;
-        Ok(plan.with_wal(true))
+        Ok(plan.with_wal(self.wal.is_some()))
     }
 
     /// The engine's configuration: commits of `commit_rows` rows, and retries enough to ride out
