@@ -870,3 +870,31 @@ fn a_run_end_column_of_no_values_decodes_as_arrows_writer_sends_it() {
         assert_eq!(got.unwrap(), Some(batch.clone()), "{}", batch.schema());
     }
 }
+
+#[test]
+fn list_views_beyond_a_columns_length_are_not_its_list_views() {
+    let lists = samples::columns().into_iter().filter(|column| {
+        matches!(
+            column.data_type(),
+            DataType::ListView(_) | DataType::LargeListView(_)
+        )
+    });
+    for column in lists {
+        let batch = batch_of(column);
+        let (mut decoder, frames) = received(&batch);
+        let parts = Parts::of(&frames[0].header);
+        let ((offsets, bytes), (sizes, _)) = (parts.buffers[1], parts.buffers[2]);
+        let width = bytes / i64::try_from(ROWS).unwrap();
+        // A sixth offset and size, naming items no child holds, in buffers a view longer than
+        // the column.
+        let beyond = overwritten(&frames[0], offsets + bytes, &[9]);
+        let beyond = overwritten(&beyond, sizes + bytes, &[9]);
+        let longer = changed(std::slice::from_ref(&beyond), |parts| {
+            parts.buffers[1].1 = bytes + width;
+            parts.buffers[2].1 = bytes + width;
+        });
+        let (got, shape) = decoder.shaped(&longer).unwrap();
+        assert_eq!(got, Some(batch.clone()), "{}", batch.schema());
+        assert_eq!(shape.values, 5 + 5 + 5);
+    }
+}
