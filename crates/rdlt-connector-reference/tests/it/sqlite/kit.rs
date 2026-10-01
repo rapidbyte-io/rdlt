@@ -9,7 +9,7 @@ use arrow_array::types::Int64Type;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{
     CommitMeta, CommitSeq, ConnectContext, ConnectorError, ConnectorErrorKind, Destination, Field,
-    GenerationId, LoadId, LogicalType, MergeKey, OpenContext, OpenedSession, PipelineId,
+    GenerationId, LoadId, LogicalType, MergeKey, OpenContext, OpenedSession, PipelineId, Receipt,
     SchemaVersion, SegmentId, TableChange, TablePath, TableRef, TableSchema, destination_factory,
 };
 use rdlt_connector_reference::{SqliteDestination, sqlite};
@@ -153,12 +153,8 @@ impl Opened {
         meta
     }
 
-    pub(super) async fn commit(&mut self, meta: &CommitMeta) -> Result<u64, ConnectorError> {
-        self.session
-            .session
-            .commit(meta)
-            .await
-            .map(|receipt| receipt.rows)
+    pub(super) async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt, ConnectorError> {
+        self.session.session.commit(meta).await
     }
 
     /// Stages `ids` for `table` in `segment` and commits them.
