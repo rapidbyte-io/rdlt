@@ -20,6 +20,12 @@ pub(crate) enum Step {
     Batch(RecordBatch),
     /// A checkpoint whose cursor is this many bytes.
     Checkpoint(usize),
+    /// How far behind the read is.
+    Behind(u64),
+    /// That the stream's partitions changed.
+    Replan,
+    /// Nothing, once the future completes: a point the test holds the read at.
+    Wait(rdlt_connector::BoxFuture<'static, ()>),
 }
 
 /// What a making source emits at each step of its read; `None` ends the read.
@@ -103,6 +109,9 @@ impl ReadStream<MakingSource> for Events {
                 Step::Checkpoint(bytes) => {
                     out.checkpoint(&"c".repeat(bytes.saturating_sub(2))).await?;
                 }
+                Step::Behind(records) => out.behind(records).await?,
+                Step::Replan => out.replan().await?,
+                Step::Wait(held) => held.await,
             }
             step += 1;
         }

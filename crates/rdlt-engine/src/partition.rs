@@ -3,6 +3,7 @@
 
 mod barriers;
 mod coalesce;
+mod latest;
 mod progress;
 #[cfg(test)]
 mod tests;
@@ -33,7 +34,8 @@ use crate::watch;
 
 use barriers::Barriers;
 use coalesce::{Coalescer, Pushed};
-pub(crate) use progress::{Progress, Seal};
+pub(crate) use latest::Latest;
+pub(crate) use progress::{CursorHold, Progress, Seal};
 use write::write_flushed;
 
 /// One partition to read.
@@ -85,6 +87,8 @@ pub(crate) struct PartitionContext {
     /// How the destination renders values, which decides what a batch costs.
     pub(crate) rendering: Arc<Rendering>,
     pub(crate) progress: mpsc::UnboundedSender<Progress>,
+    /// What each partition last said of which only the newest matters.
+    pub(crate) latest: Arc<Latest>,
     pub(crate) barrier: watch::Receiver<u64>,
     /// Fires when reads must stop; the partitions end without sealing their open segments.
     pub(crate) stop: CancellationToken,
@@ -111,6 +115,16 @@ impl PartitionContext {
         self.progress
             .send(progress)
             .map_err(|_| Error::cancelled("the commit coordinator stopped"))
+    }
+
+    /// Tells the coordinator `partition` has a signal waiting, where `tell` says no message in
+    /// its queue says so yet.
+    fn signalled(&self, partition: usize, tell: bool) -> Result<(), Error> {
+        if tell {
+            self.report(Progress::Signalled { partition })
+        } else {
+            Ok(())
+        }
     }
 
     fn next_segment(&self) -> SegmentId {
@@ -147,7 +161,10 @@ pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Res
         .flatten();
     match end {
         Some(state) => {
-            context.report(Progress::Sealed(ingested.open.seal(job.index, state, None)))?;
+            let seal = ingested
+                .open
+                .seal(job.index, state, None, CursorHold::default());
+            context.report(Progress::Sealed(seal))?;
         }
         None => abandon(&ingested.open, &context).await?,
     }
@@ -304,7 +321,13 @@ impl OpenSegment {
         }
     }
 
-    fn seal(self, partition: usize, state: PartitionState, answers: Option<u64>) -> Seal {
+    fn seal(
+        self,
+        partition: usize,
+        state: PartitionState,
+        answers: Option<u64>,
+        held: CursorHold,
+    ) -> Seal {
         Seal {
             partition,
             segment: self.id,
@@ -316,6 +339,7 @@ impl OpenSegment {
             discarded_values: self.discarded_values,
             deletes_ignored: self.deletes_ignored,
             truncates_ignored: self.truncates_ignored,
+            held,
         }
     }
 }
@@ -418,19 +442,16 @@ impl Ingested {
                 let sealed = std::mem::replace(&mut self.open, next);
                 let state = PartitionState::Cursor(cursor.clone());
                 self.last_cursor = Some(cursor);
-                return context.report(Progress::Sealed(sealed.seal(job.index, state, answers)));
+                // The permit that admitted the checkpoint holds its cursor until its commit.
+                let seal = sealed.seal(job.index, state, answers, CursorHold::new(permit));
+                return seal_segment(job, context, seal);
             }
             SourceEvent::Log { .. } | SourceEvent::Metric { .. } => return Ok(()),
             SourceEvent::Replan => {
-                return context.report(Progress::Replan {
-                    partition: job.index,
-                });
+                return context.signalled(job.index, context.latest.replan(job.index));
             }
             SourceEvent::Behind { records } => {
-                return context.report(Progress::Behind {
-                    partition: job.index,
-                    records,
-                });
+                return context.signalled(job.index, context.latest.behind(job.index, records));
             }
         };
         // Every push on an admitted channel carries the permit that reserved its bytes.
@@ -451,6 +472,25 @@ impl Ingested {
             None => Ok(()),
         }
     }
+}
+
+/// Reports `seal`, a checkpoint's: a seal of no rows waits as its partition's newest, in place
+/// of any before it, and a seal with rows follows whatever it sealed in the coordinator's queue.
+fn seal_segment(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    mut seal: Seal,
+) -> Result<(), Error> {
+    let partition = job.index;
+    if seal.moves_only() {
+        return match context.latest.moved(seal) {
+            Some(epoch) => context.report(Progress::Moved { partition, epoch }),
+            None => Ok(()),
+        };
+    }
+    // The position it carries is newer than a waiting seal's of no rows, which it replaces.
+    seal.answers = seal.answers.max(context.latest.superseded(partition));
+    context.report(Progress::Sealed(seal))
 }
 
 /// The error for a push the stream's read mode does not take: `what` it pushed, and why not.

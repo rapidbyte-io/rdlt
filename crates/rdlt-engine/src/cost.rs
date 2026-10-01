@@ -49,7 +49,11 @@ impl Admission for Charging {
     fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>> {
         Box::pin(async move {
             let bytes = self.cost(event)?;
-            let reservation = self.budget.acquire(bytes).await;
+            // A cursor waits with its seal for a commit, which alone releases it.
+            let reservation = match event {
+                SourceEvent::Checkpoint { .. } => self.budget.acquire_kept(bytes).await,
+                _ => self.budget.acquire(bytes).await,
+            };
             Some(Box::new(Admitted {
                 bytes,
                 _reservation: reservation,
@@ -58,7 +62,8 @@ impl Admission for Charging {
     }
 
     fn charge(&self, bytes: u64) -> Permit {
-        Box::new(self.budget.charge(bytes))
+        // What a read keeps beside its events, no write releases.
+        Box::new(self.budget.keep(bytes))
     }
 }
 

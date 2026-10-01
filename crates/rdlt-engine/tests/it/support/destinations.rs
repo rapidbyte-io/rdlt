@@ -1,9 +1,9 @@
-//! Destinations for tests: one that discards what it stages, one that hides a capability, and one
-//! that fails at a chosen step.
+//! Destinations for tests: one that discards what it stages, one that hides a capability, one
+//! that fails at a chosen step, and one whose commits wait until a test lets them go.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
@@ -288,6 +288,95 @@ impl DestinationSession for FailingSession {
                 return Err(injected());
             }
             Ok(receipt)
+        })
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        self.inner.close()
+    }
+}
+
+/// What holds a [`gated`] destination's commits: how many have started, and the permits they
+/// wait for.
+#[derive(Debug)]
+pub(crate) struct Gate {
+    /// Commits that reached the destination.
+    pub(crate) started: AtomicUsize,
+    release: tokio::sync::Semaphore,
+}
+
+impl Gate {
+    /// A gate no commit passes yet.
+    pub(crate) fn closed() -> Arc<Self> {
+        Arc::new(Self {
+            started: AtomicUsize::new(0),
+            release: tokio::sync::Semaphore::new(0),
+        })
+    }
+
+    /// Lets every commit through, those waiting and those to come.
+    pub(crate) fn open(&self) {
+        self.release
+            .add_permits(tokio::sync::Semaphore::MAX_PERMITS / 2);
+    }
+}
+
+/// `inner`, each of whose commits waits at `gate` before it reaches `inner`.
+pub(crate) fn gated(inner: Arc<dyn Destination>, gate: Arc<Gate>) -> Arc<dyn Destination> {
+    Arc::new(Gated { inner, gate })
+}
+
+struct Gated {
+    inner: Arc<dyn Destination>,
+    gate: Arc<Gate>,
+}
+
+impl Destination for Gated {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<()>> {
+        self.inner.check()
+    }
+
+    fn open<'a>(&'a self, context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
+        Box::pin(async move {
+            let opened = self.inner.open(context).await?;
+            Ok(OpenedSession {
+                session: Box::new(GatedSession {
+                    inner: opened.session,
+                    gate: Arc::clone(&self.gate),
+                }),
+                ..opened
+            })
+        })
+    }
+}
+
+struct GatedSession {
+    inner: Box<dyn DestinationSession>,
+    gate: Arc<Gate>,
+}
+
+impl DestinationSession for GatedSession {
+    fn apply_schema<'a>(&'a mut self, change: &'a TableChange) -> BoxFuture<'a, Result<()>> {
+        self.inner.apply_schema(change)
+    }
+
+    fn writer<'a>(
+        &'a mut self,
+        table: &'a TableRef,
+    ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        self.inner.writer(table)
+    }
+
+    fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
+        Box::pin(async move {
+            self.gate.started.fetch_add(1, Ordering::SeqCst);
+            let permit = self.gate.release.acquire().await;
+            drop(permit);
+            self.inner.commit(meta).await
         })
     }
 

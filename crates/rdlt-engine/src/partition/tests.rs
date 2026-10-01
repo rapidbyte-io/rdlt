@@ -1,7 +1,7 @@
 use rdlt_connector::{Cursor, PartitionState, SegmentId};
 
 use super::coalesce::Coalescer;
-use super::{Ingested, OpenSegment, end_state};
+use super::{CursorHold, Ingested, OpenSegment, end_state};
 use crate::config::BatchPolicy;
 
 /// A read that ended with `received` rows after its last cursor, `written` of them written.
@@ -81,7 +81,7 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
         deletes_ignored: 0,
         truncates_ignored: 0,
     };
-    let seal = open.seal(2, PartitionState::Done, Some(3));
+    let seal = open.seal(2, PartitionState::Done, Some(3), CursorHold::default());
     assert_eq!(
         (
             seal.partition,
