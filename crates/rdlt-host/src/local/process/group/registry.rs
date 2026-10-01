@@ -1,7 +1,11 @@
 //! Every group this process spawned and has not seen end, and what stops them all.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::{EMPTYING, Held, WATCH};
@@ -11,7 +15,69 @@ use super::{EMPTYING, Held, WATCH};
 #[derive(Default)]
 struct Groups {
     live: BTreeMap<u32, Arc<Held>>,
+    /// The thread that owns each group, until it is joined once the group has ended.
+    threads: BTreeMap<u32, JoinHandle<()>>,
     remaining: Vec<u32>,
+}
+
+/// The groups a process owns at once, at most: each has a thread, which wakes every few
+/// milliseconds for as long as its connector runs.
+pub(super) const OWNED: usize = 1024;
+
+/// The groups that ended with members remaining a process keeps to report, at most.
+const REMAINING: usize = 1024;
+
+/// Refuses a group more than a process owns, of the `owned` it does.
+fn room(owned: usize) -> std::io::Result<()> {
+    if owned < OWNED {
+        return Ok(());
+    }
+    Err(std::io::Error::other(format!(
+        "this process owns {owned} connectors, as many as it may at once"
+    )))
+}
+
+/// Keeps `id` among the `remaining`, the latest [`REMAINING`] of them.
+fn remember(remaining: &mut Vec<u32>, id: u32) {
+    if remaining.len() >= REMAINING {
+        remaining.remove(0);
+    }
+    remaining.push(id);
+}
+
+/// Whether this process may own a group more.
+///
+/// # Errors
+///
+/// It owns as many as it may: [`OWNED`].
+pub(in crate::local::process) fn has_room() -> std::io::Result<()> {
+    room(groups().get_or_insert_default().live.len())
+}
+
+/// Joins the threads of the groups that have ended, each of which is past its last use of
+/// what this holds.
+fn join(mut guard: MutexGuard<'static, Option<Groups>>) {
+    let groups = guard.get_or_insert_default();
+    let ended: Vec<u32> = groups
+        .threads
+        .keys()
+        .filter(|id| !groups.live.contains_key(id))
+        .copied()
+        .collect();
+    let threads: Vec<JoinHandle<()>> = ended
+        .iter()
+        .filter_map(|id| groups.threads.remove(id))
+        .collect();
+    drop(guard);
+    for thread in threads {
+        thread.join().ok();
+    }
+}
+
+/// How many threads own a group or are yet to be joined.
+#[cfg(test)]
+pub(in crate::local::process) fn threads() -> usize {
+    groups().get_or_insert_default().threads.len()
 }
 
 static GROUPS: Mutex<Option<Groups>> = Mutex::new(None);
@@ -23,20 +89,33 @@ fn groups() -> MutexGuard<'static, Option<Groups>> {
     GROUPS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Lists the group `id` names, which `held` stops, as one this process spawned.
-pub(super) fn enter(id: u32, held: Arc<Held>) {
-    groups().get_or_insert_default().live.insert(id, held);
+/// Lists the group `id` names, which `held` stops and `thread` owns, as one this process
+/// spawned; the threads of groups that have ended are joined.
+pub(super) fn enter(id: u32, held: Arc<Held>, thread: JoinHandle<()>) {
+    let mut guard = groups();
+    let groups = guard.get_or_insert_default();
+    groups.live.insert(id, held);
+    groups.threads.insert(id, thread);
+    join(guard);
 }
 
-/// Unlists the group `id` names, which ended, or was never owned: one that ended and was not
-/// seen `emptied` is kept as remaining.
+/// Unlists the group `id` names, whose thread never had it, and joins the thread.
+pub(super) fn disown(id: u32) {
+    let mut guard = groups();
+    guard.get_or_insert_default().live.remove(&id);
+    ENDED.notify_all();
+    join(guard);
+}
+
+/// Unlists the group `id` names, which ended: one that was not seen `emptied` is kept as
+/// remaining.
 pub(super) fn leave(id: u32, emptied: bool) {
     let mut groups = groups();
     let groups = groups.get_or_insert_default();
     groups.live.remove(&id);
     if !emptied {
         tracing::error!(group = id, "a connector's process group kept a member");
-        groups.remaining.push(id);
+        remember(&mut groups.remaining, id);
     }
     ENDED.notify_all();
 }
@@ -91,6 +170,7 @@ pub fn stop_spawned(patience: Duration) -> Result<(), Lingering> {
     let mut lingering: Vec<u32> = groups.live.keys().copied().collect();
     lingering.append(&mut groups.remaining);
     lingering.sort_unstable();
+    join(guard);
     if lingering.is_empty() {
         return Ok(());
     }
