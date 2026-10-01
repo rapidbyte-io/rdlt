@@ -5,7 +5,7 @@ use rdlt_certify::{Outcome, Probe, Target, certify_destination, read_back};
 use rdlt_connector::serve::Served;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, BooleanArray, NullArray, RecordBatch};
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorSpec, DestinationFactory,
     PublishedReader, Reading, SchemaVersion, TablePath, TableRef, destination_factory,
@@ -170,4 +170,119 @@ async fn a_read_back_whose_handshake_fails_fails_what_needs_it() {
             "{id}: {report}"
         );
     }
+}
+
+/// A memory destination whose read-backs are whatever its reader answers.
+struct Reads<R>(Box<dyn DestinationFactory>, R);
+
+impl<R: PublishedReader + Clone + 'static> DestinationFactory for Reads<R> {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn rdlt_connector::Destination>>> {
+        self.0.connect(config, context)
+    }
+
+    fn reads_back(&self) -> bool {
+        true
+    }
+
+    fn connect_reading(
+        &self,
+        config: serde_json::Value,
+        context: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Reading>> {
+        Box::pin(async move {
+            let destination = self.0.connect(config, context).await?;
+            let reader = Arc::new(self.1.clone()) as Arc<dyn PublishedReader>;
+            Ok((Arc::from(destination), reader))
+        })
+    }
+}
+
+/// Reads back batches of as many rows each, of a bit and of nothing: rows that cost no bytes.
+#[derive(Clone)]
+struct Bits(Vec<usize>);
+
+impl PublishedReader for Bits {
+    fn published<'a>(
+        &'a self,
+        _: &'a TableRef,
+    ) -> BoxFuture<'a, rdlt_connector::Result<Vec<RecordBatch>>> {
+        let batch = |rows: &usize| {
+            let ids: ArrayRef = Arc::new(BooleanArray::from(vec![true; *rows]));
+            let names: ArrayRef = Arc::new(NullArray::new(*rows));
+            RecordBatch::try_from_iter([("id", ids), ("name", names)]).expect("a valid batch")
+        };
+        let batches = self.0.iter().map(batch).collect();
+        Box::pin(async move { Ok(batches) })
+    }
+}
+
+#[tokio::test]
+async fn a_read_back_is_decoded_up_to_the_rows_certification_reads_and_no_further() {
+    // The most rows certification reads of a table.
+    let most = 100_000;
+    let cases = [
+        (vec![most], Some(most)),
+        (vec![most / 2, most / 2], Some(most)),
+        (vec![most + 1], None),
+        (vec![most, 1], None),
+        (vec![1, most], None),
+        // A megabyte of frames, read back within every limit of the wire.
+        (vec![1 << 20; 8], None),
+    ];
+    for (batches, read) in cases {
+        let factory = Reads(
+            destination_factory::<MemoryDestination>(),
+            Bits(batches.clone()),
+        );
+        let target = Target::served(Served::new().with_destination(Box::new(factory)));
+        let probe = read_back(&target, &json!({ "store": "certify_bits" }))
+            .await
+            .expect("the destination accepts the read-back");
+        let published = probe.published(&table()).await;
+        if let Some(rows) = read {
+            let batches = published.expect("a read-back within its rows is read");
+            let decoded: usize = batches.iter().map(RecordBatch::num_rows).sum();
+            assert_eq!(decoded, rows, "{batches:?}");
+        } else {
+            let error = published.expect_err("a read-back beyond its rows is refused");
+            assert_eq!(error.code(), Some("published_rows"), "{batches:?}: {error}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_read_back_of_rows_that_cost_no_bytes_fails_every_clause_that_reads_it() {
+    let factory = Reads(
+        destination_factory::<MemoryDestination>(),
+        Bits(vec![1 << 20; 8]),
+    );
+    let target = Target::served(Served::new().with_destination(Box::new(factory)));
+    let config = json!({ "store": "certify_flood" });
+    let probe = read_back(&target, &config)
+        .await
+        .expect("the destination accepts the read-back");
+    let report = certify_destination(&target, config, &probe).await;
+    for id in [
+        "D-STAGING",
+        "D-COMMIT",
+        "D-MERGE",
+        "D-HIST",
+        "D-NAMES",
+        "K-DESTINATION",
+    ] {
+        let Some(Outcome::Failed(reason)) = report.outcome(id) else {
+            panic!("{id} did not fail: {report}");
+        };
+        assert!(reason.len() <= rdlt_certify::REASON_BYTES, "{id}");
+    }
+    // The whole report is no larger than its clauses' statements and bounded reasons.
+    assert!(rdlt_certify::plain(&report).len() < 100_000);
 }

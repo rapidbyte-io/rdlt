@@ -17,6 +17,7 @@ use crate::id::SegmentId;
 use crate::meta::{
     DELETED_AT_COLUMN, IS_CURRENT_COLUMN, ROW_HASH_COLUMN, VALID_FROM_COLUMN, VALID_TO_COLUMN,
 };
+use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
 use rows::{
     Kind, Row, Version, changed_commits, closed, current, delete, deleted, hash, stored, truncate,
@@ -90,32 +91,19 @@ impl Bench<'_> {
 
     /// The versions `table` publishes, sorted.
     async fn versions(&self, table: &TableRef) -> Result<Vec<Version>, Violation> {
-        let batches = bounded_call("probe", self.probe.published(table)).await?;
-        let mut versions = Vec::new();
-        for batch in &batches {
-            let column = |name: &str, logical: &DataType| {
-                batch
-                    .column_by_name(name)
-                    .map(|column| arrow_cast::cast(column, logical))
-                    .transpose()
-                    .map_err(|error| Violation::from(format!("the {name}s read back as {error}")))
-            };
-            let int = |name: &str| column(name, &DataType::Int64);
-            let bytes = |name: &str| column(name, &DataType::Binary);
-            let (Some(ids), Some(names), Some(from), Some(to), Some(current)) = (
-                int("id")?,
-                column("name", &DataType::Utf8)?,
-                int(VALID_FROM_COLUMN)?,
-                int(VALID_TO_COLUMN)?,
-                column(IS_CURRENT_COLUMN, &DataType::Boolean)?,
-            ) else {
-                return Err("a published batch lacks its key, name or history columns".into());
-            };
-            let (Some(seqs), Some(hashes)) = (bytes(SEQ_COLUMN)?, bytes(ROW_HASH_COLUMN)?) else {
-                return Err("a published batch lacks its sequence or hash column".into());
-            };
+        let published = self.read(table).await?;
+        let mut versions = Vec::with_capacity(published.rows());
+        for batch in published.batches() {
+            // A history's key, start, current flag and sequence hold no null.
+            let ids = batch.required("id", &DataType::Int64)?;
+            let names = batch.nullable("name", &DataType::Utf8)?;
+            let from = batch.required(VALID_FROM_COLUMN, &DataType::Int64)?;
+            let to = batch.nullable(VALID_TO_COLUMN, &DataType::Int64)?;
+            let current = batch.required(IS_CURRENT_COLUMN, &DataType::Boolean)?;
+            let seqs = batch.required(SEQ_COLUMN, &DataType::Binary)?;
+            let hashes = batch.nullable(ROW_HASH_COLUMN, &DataType::Binary)?;
             let (seqs, hashes) = (seqs.as_binary::<i32>(), hashes.as_binary::<i32>());
-            let at = int(DELETED_AT_COLUMN)?;
+            let at = batch.optional(DELETED_AT_COLUMN, &DataType::Int64)?;
             let at = at.as_ref().map(AsArray::as_primitive::<Int64Type>);
             let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
             let (from, to) = (
@@ -123,7 +111,7 @@ impl Bench<'_> {
                 to.as_primitive::<Int64Type>(),
             );
             let current = current.as_boolean();
-            for row in 0..batch.num_rows() {
+            for row in 0..batch.rows() {
                 let valid = |array: &dyn Array| array.is_valid(row);
                 let name = valid(names).then(|| names.value(row).to_owned());
                 let written = name.as_deref().map(hash);
@@ -294,10 +282,10 @@ fn expect(
     if actual == sorted {
         Ok(())
     } else {
-        Err(format!(
-            "{what}: after commit {} the table holds {actual:?}, expected {sorted:?}",
-            index + 1
-        )
-        .into())
+        Err(Violation::from(format_args!(
+            "{what}: after commit {} the table holds {}, expected {sorted:?}",
+            index + 1,
+            Listed(actual)
+        )))
     }
 }

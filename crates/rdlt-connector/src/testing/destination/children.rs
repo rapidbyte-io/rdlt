@@ -12,6 +12,7 @@ use crate::destination::{
 };
 use crate::id::{CommitSeq, SegmentId};
 use crate::schema::TableSchema;
+use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
 use crate::types::{Field, LogicalType};
 
@@ -50,8 +51,7 @@ impl Bench<'_> {
             };
             commit(&mut opened.session, &commit_meta).await?;
         }
-        let roots = bounded_call("probe", self.probe.published(&roots)).await?;
-        let roots: usize = roots.iter().map(RecordBatch::num_rows).sum();
+        let roots = self.read(&roots).await?.rows();
         if roots != 4 {
             return Err(
                 format!("the root table holds {roots} rows, expected one per key: 4").into(),
@@ -66,10 +66,11 @@ impl Bench<'_> {
         if items == ["e", "g"] && tags == ["y"] {
             Ok(())
         } else {
-            Err(
-                format!("the child tables hold {items:?} and {tags:?}, expected [e, g] and [y]")
-                    .into(),
-            )
+            Err(Violation::from(format_args!(
+                "the child tables hold {} and {}, expected [e, g] and [y]",
+                Listed(&items),
+                Listed(&tags)
+            )))
         }
     }
 
@@ -105,21 +106,13 @@ impl Bench<'_> {
 
     /// The published `value`s of `table`.
     async fn child_values(&self, table: &TableRef) -> Result<Vec<String>, Violation> {
-        let batches = bounded_call("probe", self.probe.published(table)).await?;
-        let mut values = Vec::new();
-        for batch in &batches {
-            let column = batch
-                .column_by_name("value")
-                .ok_or_else(|| Violation::from("the child table has no value column"))?;
-            let column = arrow_cast::cast(column, &arrow_schema::DataType::Utf8)
-                .map_err(|error| Violation::from(format!("reading value: {error}")))?;
-            values.extend(
-                column
-                    .as_string::<i32>()
-                    .iter()
-                    .flatten()
-                    .map(str::to_owned),
-            );
+        let published = self.read(table).await?;
+        let mut values = Vec::with_capacity(published.rows());
+        for batch in published.batches() {
+            // A child's value holds no null: a row without one is a row too many.
+            let column = batch.required("value", &arrow_schema::DataType::Utf8)?;
+            let column = column.as_string::<i32>();
+            values.extend((0..batch.rows()).map(|row| column.value(row).to_owned()));
         }
         Ok(values)
     }

@@ -16,6 +16,7 @@ use crate::destination::{ChangeColumns, Deletion, MergeKey, TableChange, TableRe
 use crate::id::SegmentId;
 use crate::meta::DELETED_AT_COLUMN;
 use crate::schema::TableSchema;
+use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
 use crate::types::{Field, LogicalType};
 
@@ -211,26 +212,15 @@ impl Bench<'_> {
 
     /// The rows `table` publishes, in order, with their deletion times.
     async fn marked(&self, table: &TableRef) -> Result<Vec<Marked>, Violation> {
-        let batches = bounded_call("probe", self.probe.published(table)).await?;
-        let mut rows = Vec::new();
-        for batch in &batches {
-            let column = |name: &str, logical: &DataType| {
-                batch
-                    .column_by_name(name)
-                    .map(|column| arrow_cast::cast(column, logical))
-                    .transpose()
-                    .map_err(|error| Violation::from(format!("the {name}s read back as {error}")))
-            };
-            let (Some(ids), Some(names)) = (
-                column("id", &DataType::Int64)?,
-                column("name", &DataType::Utf8)?,
-            ) else {
-                return Err("a published batch lacks its id or name column".into());
-            };
-            let at = column(DELETED_AT_COLUMN, &DataType::Int64)?;
+        let published = self.read(table).await?;
+        let mut rows = Vec::with_capacity(published.rows());
+        for batch in published.batches() {
+            let ids = batch.required("id", &DataType::Int64)?;
+            let names = batch.nullable("name", &DataType::Utf8)?;
+            let at = batch.optional(DELETED_AT_COLUMN, &DataType::Int64)?;
             let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
             let at = at.as_ref().map(AsArray::as_primitive::<Int64Type>);
-            for row in 0..batch.num_rows() {
+            for row in 0..batch.rows() {
                 let name = names.is_valid(row).then(|| names.value(row).to_owned());
                 let deleted = at.and_then(|at| at.is_valid(row).then(|| at.value(row)));
                 rows.push((ids.value(row), name, deleted));
@@ -393,10 +383,10 @@ fn expect(
     if actual == expected {
         Ok(())
     } else {
-        Err(format!(
-            "{what}: after commit {} the table holds {actual:?}, expected {expected:?}",
-            index + 1
-        )
-        .into())
+        Err(Violation::from(format_args!(
+            "{what}: after commit {} the table holds {}, expected {expected:?}",
+            index + 1,
+            Listed(actual)
+        )))
     }
 }

@@ -17,3 +17,11 @@ pub(super) const SHOWN_ROWS: usize = 8;
 
 /// How many of a partition's checkpoints a resume is checked from, spread over its whole read.
 pub(super) const RESUME_SAMPLES: usize = 5;
+
+/// Rows a clause reads of one table a destination published, at most: a clause publishes tens,
+/// and a read-back of more fails it before any row is expanded.
+pub(super) const PUBLISHED_ROWS: usize = 10_000;
+
+/// Bytes the columns a clause reads of one read-back may take once each row holds its own value,
+/// whatever encoding shared it: the rows times each column's widest value, summed.
+pub(super) const PUBLISHED_BYTES: usize = 16 << 20;

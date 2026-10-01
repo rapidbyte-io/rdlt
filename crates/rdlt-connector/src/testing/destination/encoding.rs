@@ -10,11 +10,13 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema};
 
+use super::read::Read;
 use super::{Bench, commit, meta};
 use crate::destination::TableChange;
 use crate::id::SegmentId;
 use crate::schema::TableSchema;
-use crate::testing::{Violation, bounded, bounded_call};
+use crate::testing::reason::Listed;
+use crate::testing::{Violation, bounded};
 use crate::types::{Field, LogicalType, TimeUnit, TypeKind};
 
 /// The load start every row carries, in microseconds since the epoch.
@@ -63,9 +65,9 @@ impl Bench<'_> {
             &meta(self.load_id(1), opened.epoch, &[1], Vec::new()),
         )
         .await?;
-        let batches = bounded_call("probe", self.probe.published(&table)).await?;
-        let mut rows = batches
-            .iter()
+        let published = self.read(&table).await?;
+        let mut rows = published
+            .batches()
             .map(|batch| rows(batch, &fields))
             .collect::<Result<Vec<_>, _>>()?
             .concat();
@@ -74,7 +76,10 @@ impl Bench<'_> {
         if rows == expected {
             Ok(())
         } else {
-            Err(format!("published {rows:?}, expected {expected:?}").into())
+            Err(Violation::from(format_args!(
+                "published {}, expected {expected:?}",
+                Listed(&rows)
+            )))
         }
     }
 }
@@ -138,28 +143,24 @@ fn expected(fields: &[Field]) -> Vec<Row> {
 }
 
 /// The rows of a published `batch` of `fields`, whatever types the destination stores them as.
-fn rows(batch: &RecordBatch, fields: &[Field]) -> Result<Vec<Row>, Violation> {
+fn rows(batch: Read<'_>, fields: &[Field]) -> Result<Vec<Row>, Violation> {
     let column = |name: &str| -> Result<Option<ArrayRef>, Violation> {
         let Some(field) = fields.iter().find(|field| field.name() == name) else {
             return Ok(None);
         };
-        let array = batch
-            .column_by_name(name)
-            .ok_or_else(|| Violation::from(format!("no published column {name}")))?;
-        arrow_cast::cast(array, &field.logical_type().to_arrow())
+        batch
+            .nullable(name, &field.logical_type().to_arrow())
             .map(Some)
-            .map_err(|error| Violation::from(format!("reading {name}: {error}")))
     };
-    let ids = column("id")?.ok_or("no id field")?;
-    let names = column("name")?.ok_or("no name field")?;
+    let ids = batch.required("id", &DataType::Int64)?;
+    let names = batch.nullable("name", &DataType::Utf8)?;
     let (at, load) = (column("at")?, column("load")?);
     let (ids, names) = (ids.as_primitive::<Int64Type>(), names.as_string::<i32>());
     let at = at
         .as_ref()
         .map(AsArray::as_primitive::<TimestampMicrosecondType>);
     let load = load.as_ref().map(AsArray::as_fixed_size_binary);
-    Ok((0..batch.num_rows())
-        .filter(|&row| ids.is_valid(row))
+    Ok((0..batch.rows())
         .map(|row| {
             (
                 ids.value(row),
