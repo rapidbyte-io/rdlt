@@ -291,3 +291,24 @@ fn a_clause_loads_again_with_new_kill_points_until_a_kill_interrupts_a_load() {
     assert!(matches!(outcome, Loaded::Unseen(_)));
     assert_eq!(loads, [(100, 7)]);
 }
+
+#[test]
+fn a_table_read_back_beyond_the_rows_a_read_back_reads_is_refused_before_it_is_read() {
+    let limit = crate::limits::PUBLISHED_ROWS;
+    let nothing = |rows: usize| {
+        let nothing: ArrayRef = Arc::new(arrow_array::NullArray::new(rows));
+        batch(vec![("id", nothing)])
+    };
+    // Within its rows, a table of no ids is read, and found to hold none.
+    assert_eq!(every_row_once(&[nothing(limit)]), Err(Fault::Nulls));
+    assert_eq!(every_row_once(&[nothing(limit + 1)]), Err(Fault::Beyond));
+    assert_eq!(
+        every_row_once(&[nothing(limit), nothing(1)]),
+        Err(Fault::Beyond)
+    );
+    assert_eq!(
+        every_row_once(&[nothing(usize::MAX), nothing(1)]),
+        Err(Fault::Beyond)
+    );
+    assert!(Fault::Beyond.to_string().contains(&limit.to_string()));
+}
