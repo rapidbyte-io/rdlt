@@ -1,9 +1,8 @@
 //! Remote placement: connectors listening on the network, reached over mutual TLS at a `grpcs`
 //! endpoint, and redialed when they are lost.
 
+mod endpoint;
 mod rewound;
-#[cfg(test)]
-mod tests;
 
 use std::fmt;
 use std::path::PathBuf;
@@ -19,6 +18,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 
+pub use endpoint::{Endpoint, EndpointError};
 pub(crate) use rewound::Rewound;
 
 use crate::kills::{Kills, Severing};
@@ -143,9 +143,10 @@ impl Remote {
         config: &serde_json::Value,
     ) -> Result<Supervisor, ProviderError> {
         let dialing = self.dialing(reference, endpoint)?;
+        let at = dialing.endpoint.to_string();
         let gate = Gate {
             reference,
-            found_at: endpoint,
+            found_at: &at,
         };
         Supervisor::start(
             Start::Dial(dialing),
@@ -155,17 +156,22 @@ impl Remote {
             &gate,
         )
         .await
-        .map_err(|spawned| refused(reference, endpoint, spawned))
+        .map_err(|spawned| refused(reference, &at, spawned))
     }
 
     /// How to reach `endpoint`, for the connector `reference` names.
+    ///
+    /// An endpoint that is refused is not repeated in the error: what is wrong with it may be a
+    /// credential written into it.
     fn dialing(&self, reference: &ConnectorRef, endpoint: &str) -> Result<Dial, ProviderError> {
-        let address = Endpoint::parse(endpoint)
-            .map_err(|source| refused(reference, endpoint, Spawned::Unreachable(source)))?;
+        let address = Endpoint::parse(endpoint).map_err(|source| ProviderError::Endpoint {
+            id: reference.id.clone(),
+            source,
+        })?;
         let tls = rdlt_wire::tls::client_config(&self.identity, &self.ca).map_err(|error| {
             ProviderError::Tls {
                 id: reference.id.clone(),
-                endpoint: endpoint.to_owned(),
+                endpoint: address.to_string(),
                 source: Box::new(error),
             }
         })?;
@@ -191,12 +197,13 @@ impl Remote {
         let dialing = self.dialing(reference, endpoint)?;
         let stream = dial(&dialing, self.options.deadlines.connect)
             .await
-            .map_err(|spawned| refused(reference, endpoint, spawned))?;
+            .map_err(|spawned| refused(reference, &dialing.endpoint.to_string(), spawned))?;
         Ok(Wire::new(Box::new(stream), None))
     }
 }
 
-/// The provider's error for a dial of `endpoint` that failed as `spawned` says.
+/// The provider's error for a dial of the endpoint at `endpoint`, its host and port, that failed
+/// as `spawned` says.
 fn refused(reference: &ConnectorRef, endpoint: &str, spawned: Spawned) -> ProviderError {
     match spawned {
         Spawned::Io(source) | Spawned::Unreachable(source) => ProviderError::Unreachable {
@@ -290,66 +297,6 @@ fn not_found(reference: &ConnectorRef) -> ProviderError {
     }
 }
 
-/// Where a connector listens: a host name or IP address, and a port.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Endpoint {
-    /// The host name or IP address, an IPv6 address without its brackets.
-    pub host: String,
-    /// The port.
-    pub port: u16,
-}
-
-impl Endpoint {
-    /// The endpoint `grpcs://host:port`; anything else, a path or credentials included, is
-    /// refused.
-    ///
-    /// # Errors
-    ///
-    /// An [`std::io::ErrorKind::InvalidInput`] error saying what is wrong with `endpoint`.
-    pub fn parse(endpoint: &str) -> std::io::Result<Self> {
-        let invalid = |why: &str| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("`{endpoint}` {why}: an endpoint is `grpcs://host:port`"),
-            )
-        };
-        let rest = endpoint
-            .strip_prefix("grpcs://")
-            .ok_or_else(|| invalid("is not grpcs"))?;
-        let authority = rest.strip_suffix('/').unwrap_or(rest);
-        if authority.contains(['/', '@', '?', '#']) {
-            return Err(invalid("has more than a host and a port"));
-        }
-        let (host, port) = authority
-            .rsplit_once(':')
-            .ok_or_else(|| invalid("has no port"))?;
-        let port = port.parse().map_err(|_| invalid("has no valid port"))?;
-        // An IPv6 address is in brackets, and nothing else is.
-        let host = match host.strip_prefix('[') {
-            Some(inner) => {
-                let inner = inner
-                    .strip_suffix(']')
-                    .ok_or_else(|| invalid("has an unclosed bracket"))?;
-                inner
-                    .parse::<std::net::Ipv6Addr>()
-                    .map_err(|_| invalid("has no IPv6 address in brackets"))?;
-                inner
-            }
-            None if host.contains([':', ']']) => {
-                return Err(invalid("has an IPv6 address outside brackets"));
-            }
-            None => host,
-        };
-        if host.is_empty() {
-            return Err(invalid("has no host"));
-        }
-        Ok(Self {
-            host: host.to_owned(),
-            port,
-        })
-    }
-}
-
 /// How to reach a connector: its endpoint, the network it is on, and the TLS to speak there.
 pub(crate) struct Dial {
     pub(crate) endpoint: Endpoint,
@@ -361,10 +308,9 @@ pub(crate) struct Dial {
 /// accept it, all within `deadline`.
 pub(crate) async fn dial(dial: &Dial, deadline: Duration) -> Result<Dialed, Spawned> {
     let timed_out = || {
-        let Endpoint { host, port } = &dial.endpoint;
         Spawned::Unreachable(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
-            format!("{host}:{port} did not answer within {deadline:?}"),
+            format!("{} did not answer within {deadline:?}", dial.endpoint),
         ))
     };
     let dialed = async { accepted(connect(dial).await?).await };
@@ -410,13 +356,13 @@ const FIRST_BYTES: usize = 16_384;
 
 /// Connects to `dial`'s endpoint over its network and completes the TLS handshake.
 async fn connect(dial: &Dial) -> Result<TlsStream<Box<dyn Stream>>, Spawned> {
-    let Endpoint { host, port } = &dial.endpoint;
-    let name = ServerName::try_from(host.clone()).map_err(|error| {
+    let (host, port) = (dial.endpoint.host(), dial.endpoint.port());
+    let name = ServerName::try_from(host.to_owned()).map_err(|error| {
         Spawned::Unreachable(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
     })?;
     let stream = dial
         .network
-        .connect(host, *port)
+        .connect(host, port)
         .await
         .map_err(Spawned::Unreachable)?;
     TlsConnector::from(Arc::clone(&dial.tls))

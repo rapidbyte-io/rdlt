@@ -303,20 +303,48 @@ fn a_remote_provider_debugs_what_it_holds() {
 }
 
 #[tokio::test]
-async fn an_endpoint_nothing_listens_on_or_that_is_no_endpoint_is_unreachable() {
+async fn an_endpoint_nothing_listens_on_is_unreachable_and_what_is_no_endpoint_is_refused() {
     let pki = Pki::new("ca");
     let remote = Remote::new(identity(&pki.client("host")), pki.ca());
-    for endpoint in ["grpcs://127.0.0.1:1", "https://127.0.0.1:1"] {
-        let refused = remote
-            .source(&scripted(endpoint), &serde_json::json!({}))
-            .await
-            .err()
-            .expect("refused");
-        assert!(
-            matches!(refused, ProviderError::Unreachable { .. }),
-            "{endpoint}: {refused}"
-        );
-    }
+    let source = |endpoint: &'static str| {
+        let remote = remote.clone();
+        async move {
+            let (reference, config) = (scripted(endpoint), serde_json::json!({}));
+            let placed = remote.source(&reference, &config).await;
+            placed.err().expect("refused")
+        }
+    };
+    let unreachable = source("grpcs://127.0.0.1:1").await;
+    assert!(
+        matches!(unreachable, ProviderError::Unreachable { .. }),
+        "{unreachable}"
+    );
+    let refused = source("https://127.0.0.1:1").await;
+    assert!(
+        matches!(
+            refused,
+            ProviderError::Endpoint {
+                source: rdlt_host::EndpointError::Scheme,
+                ..
+            }
+        ),
+        "{refused}"
+    );
+    let destination = remote
+        .destination(&scripted("grpcs://127.0.0.1:1/x"), &serde_json::json!({}))
+        .await
+        .err()
+        .expect("refused");
+    assert!(
+        matches!(
+            destination,
+            ProviderError::Endpoint {
+                source: rdlt_host::EndpointError::Path,
+                ..
+            }
+        ),
+        "{destination}"
+    );
 }
 
 #[tokio::test]
@@ -369,4 +397,80 @@ async fn listening_without_mutual_tls_is_refused_and_a_stop_ends_it_cleanly() {
         .expect("it stops")
         .expect("its status reads");
     assert!(status.success(), "{status}");
+}
+
+/// Everything `error` says of itself, its causes and its fields.
+fn said(error: &dyn std::error::Error) -> String {
+    let mut said = format!("{error} {error:?}");
+    let mut source = error.source();
+    while let Some(cause) = source {
+        said.push_str(&format!(" {cause} {cause:?}"));
+        source = cause.source();
+    }
+    said
+}
+
+#[tokio::test]
+async fn an_endpoint_with_more_than_a_host_and_a_port_is_refused_without_repeating_it() {
+    let pki = Pki::new("ca");
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca());
+    let endpoints = [
+        "grpcs://svc:hunter2@connector:7443",
+        "grpcs://hunter2@connector:7443",
+        "grpcs://connector:7443/hunter2",
+        "grpcs://connector:7443/?token=hunter2",
+        "grpcs://connector:7443?token=hunter2",
+        "grpcs://connector:7443#hunter2",
+        "grpcs://connector:hunter2",
+        "grpcs://hunter2 connector:7443",
+        "https://hunter2:7443",
+    ];
+    for endpoint in endpoints {
+        let refused = remote
+            .source(&scripted(endpoint), &serde_json::json!({}))
+            .await
+            .err()
+            .expect("refused");
+        assert!(
+            matches!(refused, ProviderError::Endpoint { .. }),
+            "{endpoint}"
+        );
+        assert!(!said(&refused).contains("hunter2"), "{endpoint}");
+        let wired = remote
+            .wire(&scripted(endpoint))
+            .await
+            .err()
+            .expect("refused");
+        assert!(!said(&wired).contains("hunter2"), "{endpoint}");
+    }
+}
+
+#[tokio::test]
+async fn an_error_about_an_endpoint_names_its_host_and_port_alone() {
+    let pki = Pki::new("ca");
+    // Nothing listens there, and the trailing slash is no part of where.
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca());
+    let unreachable = remote
+        .source(&scripted("grpcs://127.0.0.1:1/"), &serde_json::json!({}))
+        .await
+        .err()
+        .expect("unreachable");
+    let ProviderError::Unreachable { endpoint, .. } = &unreachable else {
+        panic!("{unreachable}");
+    };
+    assert_eq!(endpoint, "127.0.0.1:1");
+    // A host whose key cannot be used fails in its TLS, at the same place.
+    let keyless = Identity {
+        key: pki.dir().join("missing.key"),
+        ..identity(&pki.client("keyless"))
+    };
+    let untrusted = Remote::new(keyless, pki.ca())
+        .source(&scripted("grpcs://[::1]:7443"), &serde_json::json!({}))
+        .await
+        .err()
+        .expect("refused");
+    let ProviderError::Tls { endpoint, .. } = &untrusted else {
+        panic!("{untrusted}");
+    };
+    assert_eq!(endpoint, "[::1]:7443");
 }

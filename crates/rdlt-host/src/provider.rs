@@ -151,12 +151,21 @@ pub enum ProviderError {
         #[source]
         source: std::io::Error,
     },
-    /// The connector's endpoint could not be reached, or is no endpoint.
+    /// The reference's endpoint is not one; the error does not repeat it.
+    #[error("connector `{id}` has no usable endpoint: an endpoint is `grpcs://host:port`")]
+    Endpoint {
+        /// The connector's id.
+        id: ConnectorId,
+        /// What is wrong with it.
+        #[source]
+        source: crate::network::EndpointError,
+    },
+    /// The connector's endpoint could not be reached.
     #[error("connector `{id}` at `{endpoint}` could not be reached")]
     Unreachable {
         /// The connector's id.
         id: ConnectorId,
-        /// The endpoint.
+        /// The endpoint's host and port.
         endpoint: String,
         /// Why.
         #[source]
@@ -168,7 +177,7 @@ pub enum ProviderError {
     Tls {
         /// The connector's id.
         id: ConnectorId,
-        /// The endpoint.
+        /// The endpoint's host and port.
         endpoint: String,
         /// Why.
         #[source]
