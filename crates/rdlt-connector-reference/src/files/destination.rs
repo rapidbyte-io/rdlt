@@ -201,7 +201,16 @@ pub(super) fn still_dropped(dir: &Dir, name: &str) -> Result<bool> {
 
 /// Removes what sessions of the pipeline whose directory `dir` is, older than `epoch`, staged
 /// that the latest manifest does not list.
+///
+/// The latest manifest's name is made durable first: a manifest a power loss could take back
+/// decides nothing about the files of the manifest before it.
 pub(super) fn discard(dir: &Dir, epoch: Epoch) -> Result<()> {
+    manifest::settle(dir)?;
+    discard_settled(dir, epoch)
+}
+
+/// Removes what [`discard`] does, the latest manifest's name already durable.
+fn discard_settled(dir: &Dir, epoch: Epoch) -> Result<()> {
     let listed: BTreeSet<String> = manifest::latest(dir)?
         .unwrap_or_default()
         .files()
@@ -235,9 +244,9 @@ const WRITTEN: [&str; 3] = ["merged", "compacted", "tombstones"];
 /// what older sessions, left that the latest manifest does not list.
 ///
 /// Only commits write under those directories, one at a time, so nothing a writer is staging
-/// is among them.
+/// is among them. The caller made the latest manifest's name durable.
 pub(super) fn discard_superseded(dir: &Dir, epoch: Epoch) -> Result<()> {
-    discard(dir, epoch)?;
+    discard_settled(dir, epoch)?;
     let listed: BTreeSet<String> = manifest::latest(dir)?
         .unwrap_or_default()
         .files()

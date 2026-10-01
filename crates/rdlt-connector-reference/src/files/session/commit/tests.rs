@@ -327,6 +327,37 @@ mod steps {
     }
 
     #[test]
+    fn what_older_sessions_staged_is_discarded_only_once_the_latest_manifest_is_durable() {
+        use crate::files::destination::discard;
+        let twin = pending(FileFormat::Jsonl, true);
+        trace::clear();
+        twin.commit(&twin.meta(1, 2, &[2])).unwrap();
+        let link = at(&trace::steps(), |step| matches!(step, Step::Link(_)));
+        // A commit whose manifest is linked and whose name is not durable: a power loss brings
+        // back the manifest before it, which lists the files this one superseded.
+        let sessions = pending(FileFormat::Jsonl, true);
+        trace::fail_at(link + 1);
+        sessions
+            .commit(&sessions.meta(1, 2, &[2]))
+            .expect_err("the sync is refused");
+        let before = sessions.data_files();
+        let dir = &sessions.location.dir;
+        let newer = rdlt_connector::Epoch(sessions.location.epoch.0 + 1);
+        // A discard refused that sync removes nothing.
+        trace::fail_at(0);
+        discard(dir, newer).expect_err("the sync is refused");
+        assert!(trace::refused());
+        assert_eq!(sessions.data_files(), before);
+        // And one that is not makes the manifest's name durable first.
+        trace::clear();
+        discard(dir, newer).unwrap();
+        let steps = trace::steps();
+        assert_eq!(steps[0], Step::SyncDir(dir.path().join("manifests")));
+        assert!(steps.len() > 1, "{steps:#?}");
+        assert_eq!(sessions.data_files(), listed(&sessions));
+    }
+
+    #[test]
     fn a_drop_that_dies_at_any_step_leaves_the_table_whole_or_gone_once_the_pipeline_opens() {
         let catalog = |sessions: &Sessions| sessions.root.path().join("tables").join("rows");
         let mut died = 0;
