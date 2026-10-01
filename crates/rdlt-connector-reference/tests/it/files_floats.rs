@@ -107,7 +107,8 @@ async fn non_finite_floats_read_back_as_they_were_written() {
                     .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
                     .await
                     .expect(&case);
-                let published = reader.published(&rows).await.expect(&case);
+                let published = PublishedRows::gather(&*reader, &rows).await;
+                let published = published.expect(&case);
                 for column in ["x", "y", "point", "items"] {
                     assert_eq!(
                         bits(&published, column),

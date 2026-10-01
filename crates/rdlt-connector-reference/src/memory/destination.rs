@@ -221,7 +221,7 @@ struct PipelineStore {
     receipts: BTreeMap<(LoadId, CommitSeq), Receipt>,
 }
 
-#[destination(id = "io.rapidbyte.memory", read_back)]
+#[destination(id = "io.rapidbyte.memory")]
 impl DestinationConnector for MemoryDestination {
     type Config = MemoryDestinationConfig;
     type Session = MemorySession;
@@ -415,13 +415,18 @@ impl TableWriter for MemoryWriter {
     }
 }
 
+#[cfg(feature = "certify")]
 impl ReadBack for MemoryDestination {
-    async fn published(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
-        let store = self.store.lock();
-        Ok(store
-            .tables
-            .get(&*table.name)
-            .map(|table| table.published.clone())
-            .unwrap_or_default())
+    async fn published(&self, table: &TableRef, rows: PublishedRows) -> Result<()> {
+        // The batches are shared with the store, not copied; the lock is not held while sending.
+        let published = {
+            let store = self.store.lock();
+            let table = store.tables.get(&*table.name);
+            table.map(|table| table.published.clone())
+        };
+        for batch in published.unwrap_or_default() {
+            rows.send(batch).await?;
+        }
+        Ok(())
     }
 }

@@ -8,7 +8,7 @@ use std::time::Duration;
 use rdlt_connector::{
     BoxFuture, Catalog, ConnectContext, ConnectorError, ConnectorErrorKind, PartitionId,
     PartitionPlan, PartitionSink, ReadMode, ReadRequest, Source, SourceFactory, StreamName,
-    StreamState, source_factory,
+    StreamState, acknowledging_source_factory,
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_engine::{CommitPolicy, EngineConfig, EngineConfigBuilder, RunStatus, StopMode, Until};
@@ -27,7 +27,7 @@ async fn log(group: &str, stream: Value) -> Arc<dyn Source> {
 }
 
 fn factory() -> Box<dyn SourceFactory> {
-    source_factory::<LogSource>()
+    acknowledging_source_factory::<LogSource>()
 }
 
 /// A configuration that plans again every 200 ms, with two lanes.

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, BooleanArray, NullArray, RecordBatch};
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorSpec, DestinationFactory,
-    PublishedReader, Reading, SchemaVersion, TablePath, TableRef, destination_factory,
-    readable_destination_factory,
+    PublishedReader, PublishedRows, Reading, SchemaVersion, TablePath, TableRef,
+    destination_factory, readable_destination_factory,
 };
 use rdlt_connector_reference::MemoryDestination;
 use serde_json::json;
@@ -92,7 +92,8 @@ impl PublishedReader for Never {
     fn published<'a>(
         &'a self,
         _: &'a TableRef,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Vec<RecordBatch>>> {
+        _: PublishedRows,
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(std::future::pending())
     }
 }

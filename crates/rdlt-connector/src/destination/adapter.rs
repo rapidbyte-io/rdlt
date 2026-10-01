@@ -8,8 +8,7 @@ use arrow_array::RecordBatch;
 
 use super::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
-    OpenContext, Opened, OpenedSession, PublishedReader, ReadBack, Reading, Session, TableChange,
-    TableRef, TableWriter, WriteStats,
+    OpenContext, Opened, OpenedSession, Session, TableChange, TableRef, TableWriter, WriteStats,
 };
 use crate::capabilities::Capabilities;
 use crate::commit::{CommitMeta, Receipt};
@@ -18,18 +17,9 @@ use crate::error::{ConnectorError, Result};
 use crate::id::{ConnectorId, SegmentId};
 use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 
-struct DestinationAdapter<C> {
-    connector: Arc<C>,
+pub(super) struct DestinationAdapter<C> {
+    pub(super) connector: Arc<C>,
     capabilities: Capabilities,
-}
-
-/// What reads back what connector `C` published.
-struct ReaderAdapter<C>(Arc<C>);
-
-impl<C: ReadBack> PublishedReader for ReaderAdapter<C> {
-    fn published<'a>(&'a self, table: &'a TableRef) -> BoxFuture<'a, Result<Vec<RecordBatch>>> {
-        Box::pin(self.0.published(table))
-    }
 }
 
 impl<C: DestinationConnector> Destination for DestinationAdapter<C> {
@@ -115,7 +105,7 @@ impl<W: TableWriter> DestinationWriter for WriterAdapter<W> {
     }
 }
 
-struct Factory<C> {
+pub(super) struct Factory<C> {
     spec: ConnectorSpec,
     connector: PhantomData<fn() -> C>,
 }
@@ -138,7 +128,7 @@ impl<C: DestinationConnector> DestinationFactory for Factory<C> {
 }
 
 /// Connects `C` with `config`, as the engine drives it.
-async fn adapted<C: DestinationConnector>(
+pub(super) async fn adapted<C: DestinationConnector>(
     config: serde_json::Value,
     context: &ConnectContext,
 ) -> Result<DestinationAdapter<C>> {
@@ -151,42 +141,6 @@ async fn adapted<C: DestinationConnector>(
     })
 }
 
-/// [`Factory`], for a connector that can read back what it published.
-struct ReadableFactory<C>(Factory<C>);
-
-impl<C: ReadBack> DestinationFactory for ReadableFactory<C> {
-    fn spec(&self) -> &ConnectorSpec {
-        self.0.spec()
-    }
-
-    fn connect(
-        &self,
-        config: serde_json::Value,
-        context: ConnectContext,
-    ) -> BoxFuture<'_, Result<Box<dyn Destination>>> {
-        self.0.connect(config, context)
-    }
-
-    fn reads_back(&self) -> bool {
-        true
-    }
-
-    fn connect_reading(
-        &self,
-        config: serde_json::Value,
-        context: ConnectContext,
-    ) -> BoxFuture<'_, Result<Reading>> {
-        Box::pin(async move {
-            let adapter = adapted::<C>(config, &context).await?;
-            let reader = ReaderAdapter(Arc::clone(&adapter.connector));
-            Ok((
-                Arc::new(adapter) as Arc<dyn Destination>,
-                Arc::new(reader) as Arc<dyn PublishedReader>,
-            ))
-        })
-    }
-}
-
 /// The engine-facing factory for destination connector `C`.
 ///
 /// # Panics
@@ -197,18 +151,7 @@ pub fn destination_factory<C: DestinationConnector>() -> Box<dyn DestinationFact
     Box::new(factory::<C>())
 }
 
-/// The engine-facing factory for destination connector `C`, which also reads back what `C`
-/// published, for certification.
-///
-/// # Panics
-///
-/// Panics if `C::ID` is not a valid [`ConnectorId`]; the `#[destination]` attribute checks it at
-/// compile time.
-pub fn readable_destination_factory<C: ReadBack>() -> Box<dyn DestinationFactory> {
-    Box::new(ReadableFactory(factory::<C>()))
-}
-
-fn factory<C: DestinationConnector>() -> Factory<C> {
+pub(super) fn factory<C: DestinationConnector>() -> Factory<C> {
     let spec = ConnectorSpec {
         id: ConnectorId::parse(C::ID).expect("the connector's ID is a valid connector id"),
         version: C::VERSION.to_owned(),

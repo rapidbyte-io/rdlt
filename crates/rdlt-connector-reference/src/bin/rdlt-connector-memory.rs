@@ -1,4 +1,5 @@
-//! The memory source and destination, served to a host that spawns them.
+//! The memory source and destination, served to a host that spawns them: test connectors, built
+//! only with the `test-connectors` feature.
 
 #![forbid(unsafe_code)]
 
@@ -11,8 +12,6 @@ use rdlt_connector_reference::{MemoryDestination, MemorySource};
 fn main() -> ExitCode {
     Served::new()
         .with_source(source_factory::<MemorySource>())
-        // Its store lives in this process, and each connection spawns one of its own: what one
-        // published, another cannot read back.
         .with_destination(destination_factory::<MemoryDestination>())
         .serve()
 }

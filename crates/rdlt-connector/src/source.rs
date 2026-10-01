@@ -1,6 +1,9 @@
 //! Source connectors: the traits authors implement and the engine-facing form the SDK builds.
 
+#[cfg(feature = "certify")]
 mod acknowledged;
+#[cfg(feature = "certify")]
+mod acknowledging;
 mod adapter;
 #[cfg(test)]
 mod tests;
@@ -20,7 +23,10 @@ use crate::sink::PartitionSink;
 use crate::spec::{BoxFuture, ConnectContext};
 use crate::state::StreamState;
 
+#[cfg(feature = "certify")]
 pub use acknowledged::{AcknowledgedReader, Acknowledging};
+#[cfg(feature = "certify")]
+pub use acknowledging::acknowledging_source_factory;
 pub use adapter::source_factory;
 
 /// A source connector, as its author writes it.
@@ -348,6 +354,7 @@ pub trait SourceFactory: Send + Sync {
     ) -> BoxFuture<'_, Result<Box<dyn Source>>>;
 
     /// Whether the source tells where it stands outside the engine, for certification.
+    #[cfg(feature = "certify")]
     fn acknowledges(&self) -> bool {
         false
     }
@@ -358,6 +365,7 @@ pub trait SourceFactory: Send + Sync {
     /// # Errors
     ///
     /// An unsupported error when the source does not tell where it stands.
+    #[cfg(feature = "certify")]
     fn connect_acknowledging(
         &self,
         config: serde_json::Value,

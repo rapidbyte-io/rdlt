@@ -100,8 +100,12 @@ pub use cursor::Cursor;
 pub use destination::{
     ChangeColumns, Deletion, Destination, DestinationConnector, DestinationFactory,
     DestinationSession, DestinationWriter, HistoryColumns, MergeKey, OpenContext, Opened,
-    OpenedSession, PublishedReader, ReadBack, Reading, RootKey, Session, TableChange, TableRef,
-    TableWriter, WriteStats, destination_factory, readable_destination_factory,
+    OpenedSession, RootKey, Session, TableChange, TableRef, TableWriter, WriteStats,
+    destination_factory,
+};
+#[cfg(feature = "certify")]
+pub use destination::{
+    PublishedReader, PublishedRows, ReadBack, Reading, readable_destination_factory,
 };
 pub use emitter::Emitter;
 pub use error::{
@@ -128,9 +132,11 @@ pub use sink::{
     admitted_partition_channel, decoded_bytes, decoded_rows, partition_channel,
 };
 pub use source::{
-    ACKNOWLEDGED_CODE, AcknowledgedReader, Acknowledging, Partition, PartitionPlan, ReadRequest,
-    ReadStream, Source, SourceConnector, SourceFactory, Streams, source_factory,
+    ACKNOWLEDGED_CODE, Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector,
+    SourceFactory, Streams, source_factory,
 };
+#[cfg(feature = "certify")]
+pub use source::{AcknowledgedReader, Acknowledging, acknowledging_source_factory};
 pub use spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
 pub use state::{
     NameConflict, NameMap, PartitionState, PipelineState, Sequences, StateChange, StateEntry,
@@ -146,11 +152,12 @@ pub mod prelude {
     pub use crate::{
         Capabilities, Catalog, Checkpointing, CommitMeta, ConnectContext, ConnectorError,
         ConnectorErrorKind, Cursor, DestinationConnector, Emitter, LogicalType, OpenContext,
-        Opened, Partition, PartitionId, ReadBack, ReadMode, ReadStream, Receipt, Result, ResultExt,
-        Secret, Session, SourceConnector, StreamName, StreamSpec, StreamState, Streams,
-        TableChange, TableRef, TableSchema, TableWriter, WriteStats, destination_factory,
-        readable_destination_factory, source_factory,
+        Opened, Partition, PartitionId, ReadMode, ReadStream, Receipt, Result, ResultExt, Secret,
+        Session, SourceConnector, StreamName, StreamSpec, StreamState, Streams, TableChange,
+        TableRef, TableSchema, TableWriter, WriteStats, destination_factory, source_factory,
     };
+    #[cfg(feature = "certify")]
+    pub use crate::{PublishedRows, ReadBack, readable_destination_factory};
     #[cfg(feature = "macros")]
     pub use crate::{destination, source};
 }

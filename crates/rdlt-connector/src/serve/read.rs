@@ -94,12 +94,13 @@ impl Outbox {
         }
     }
 
-    /// The frames queued, in order.
-    pub(super) fn into_frames(self) -> VecDeque<v1::ReadFrame> {
-        self.frames
+    /// The frames queued, in order, which leave the outbox.
+    #[cfg(feature = "certify")]
+    pub(super) fn take_frames(&mut self) -> VecDeque<v1::ReadFrame> {
+        std::mem::take(&mut self.frames)
     }
 
-    pub(super) fn push(&mut self, frame: v1::read_frame::Frame) {
+    fn push(&mut self, frame: v1::read_frame::Frame) {
         self.frames.push_back(v1::ReadFrame { frame: Some(frame) });
     }
 

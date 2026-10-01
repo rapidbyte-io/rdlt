@@ -10,7 +10,11 @@ repository.workspace = true
 [features]
 default = ["macros"]
 macros = ["dep:rdlt-connector-macros"]
-testing = ["dep:arrow-cast"]
+# Certification's probes: a destination reading back what it published, a source telling where it
+# stands, each a factory of its own and a call of the protocol. A connector's own binary leaves
+# them out.
+certify = []
+testing = ["dep:arrow-cast", "certify"]
 wire = ["dep:rdlt-wire"]
 serve = [
   "wire",

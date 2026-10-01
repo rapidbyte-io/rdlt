@@ -43,8 +43,8 @@ http.workspace = true
 hyper = { workspace = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
 nix = { workspace = true, features = ["process", "signal"] }
-rdlt-connector = { workspace = true, features = ["serve"] }
-rdlt-connector-reference.workspace = true
+rdlt-connector = { workspace = true, features = ["certify", "serve"] }
+rdlt-connector-reference = { workspace = true, features = ["certify"] }
 rdlt-engine.workspace = true
 rdlt-testkit.workspace = true
 rdlt-wire = { workspace = true, features = ["serve"] }

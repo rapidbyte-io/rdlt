@@ -7,7 +7,7 @@ use rdlt_certify::{Outcome, Target, certify_source};
 use rdlt_connector::serve::Served;
 use rdlt_connector::{
     Acknowledging, BoxFuture, ConnectContext, ConnectorError, ConnectorErrorKind, ConnectorSpec,
-    Source, SourceFactory, source_factory,
+    Source, SourceFactory, acknowledging_source_factory,
 };
 use rdlt_connector_reference::ChangesSource;
 use serde_json::json;
@@ -53,7 +53,7 @@ impl SourceFactory for Counted {
 
 fn served(asking: &Arc<AtomicUsize>, failing: bool) -> Target {
     let counted = Counted {
-        inner: source_factory::<ChangesSource>(),
+        inner: acknowledging_source_factory::<ChangesSource>(),
         asking: Arc::clone(asking),
         failing,
     };

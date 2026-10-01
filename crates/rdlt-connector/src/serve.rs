@@ -8,6 +8,8 @@ mod args;
 mod binary;
 mod handshake;
 mod listen;
+mod probes;
+#[cfg(feature = "certify")]
 mod published;
 mod read;
 mod service;
