@@ -46,3 +46,97 @@ async fn a_cursor_beyond_the_sources_limit_is_refused_as_exceeding_it() {
         Some(("cursor bytes", 64))
     );
 }
+
+/// Limits a byte, a row or a value under each of the protocol's minimums, with the limit's name.
+fn below_the_minimums() -> [(Limits, &'static str, u64); 3] {
+    use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES};
+    [
+        (
+            Limits {
+                frame_bytes: MIN_FRAME_BYTES - 1,
+                ..Limits::default()
+            },
+            "frame bytes",
+            MIN_FRAME_BYTES,
+        ),
+        (
+            Limits {
+                batch_rows: MIN_BATCH_ROWS - 1,
+                ..Limits::default()
+            },
+            "batch rows",
+            MIN_BATCH_ROWS,
+        ),
+        (
+            Limits {
+                batch_values: MIN_BATCH_VALUES - 1,
+                ..Limits::default()
+            },
+            "batch values",
+            MIN_BATCH_VALUES,
+        ),
+    ]
+}
+
+/// The limits at every minimum.
+fn at_the_minimums() -> Limits {
+    use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES};
+    Limits {
+        frame_bytes: MIN_FRAME_BYTES,
+        batch_rows: MIN_BATCH_ROWS,
+        batch_values: MIN_BATCH_VALUES,
+        ..Limits::default()
+    }
+}
+
+#[tokio::test]
+async fn a_connector_whose_limits_are_below_the_protocols_minimums_is_refused_at_the_handshake() {
+    let config = serde_json::json!({ "streams": { "items": [] } });
+    for (limits, name, minimum) in below_the_minimums() {
+        let served = Served::new().with_source(source_factory::<MemorySource>());
+        let io = served_within(served, limits);
+        let error = Connection::connect(io, Role::Source, &config, Options::default())
+            .await
+            .expect_err("the handshake is refused");
+        assert_eq!(error.code(), Some("limit_below_minimum"), "{error}");
+        assert_eq!(
+            error
+                .limit()
+                .map(|limit| (limit.name, limit.limit, limit.actual)),
+            Some((name, minimum, minimum - 1))
+        );
+    }
+    let served = Served::new().with_source(source_factory::<MemorySource>());
+    let io = served_within(served, at_the_minimums());
+    Connection::connect(io, Role::Source, &config, Options::default())
+        .await
+        .expect("limits at the minimums are admitted");
+}
+
+#[tokio::test]
+async fn a_host_whose_limits_are_below_the_protocols_minimums_is_refused_at_the_handshake() {
+    let config = serde_json::json!({ "streams": { "items": [] } });
+    let within = |limits| Options {
+        limits,
+        ..Options::default()
+    };
+    for (limits, name, minimum) in below_the_minimums() {
+        let served = Served::new().with_source(source_factory::<MemorySource>());
+        let io = served_within(served, Limits::default());
+        let error = Connection::connect(io, Role::Source, &config, within(limits))
+            .await
+            .expect_err("the handshake is refused");
+        assert_eq!(error.code(), Some("limit_below_minimum"), "{error}");
+        assert_eq!(
+            error
+                .limit()
+                .map(|limit| (limit.name, limit.limit, limit.actual)),
+            Some((name, minimum, minimum - 1))
+        );
+    }
+    let served = Served::new().with_source(source_factory::<MemorySource>());
+    let io = served_within(served, Limits::default());
+    Connection::connect(io, Role::Source, &config, within(at_the_minimums()))
+        .await
+        .expect("limits at the minimums are admitted");
+}

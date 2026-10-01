@@ -20,6 +20,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::{MemoryDestination, published};
 use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_wire::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES};
 use rdlt_wire::{Encoder, IpcFrame, Limits};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -282,22 +283,23 @@ async fn the_host_cuts_a_batch_of_more_values_than_a_connectors_frame_may_hold()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn rows_cut_to_both_ends_limits_load_once_each_and_in_order() {
-    // The host takes 40 values a frame from the source, and the destination 7 rows a frame from
-    // the host: every batch is cut on its way in and again on its way out.
+    // The host takes the fewest values a frame the protocol allows from the source, and the
+    // destination the fewest rows a frame from the host: the batch is cut on its way in and again
+    // on its way out.
     let io = served(Served::new().with_source(rdlt_connector::source_factory::<Ticks>()));
-    let config = serde_json::json!({ "rows": 500, "flags": 3 });
+    let config = serde_json::json!({ "rows": 5_000, "flags": 300 });
     let within = |limits| Options {
         limits,
         ..Options::default()
     };
     let few_values = Limits {
-        batch_values: 40,
+        batch_values: MIN_BATCH_VALUES,
         ..Limits::default()
     };
     let connection = Connection::connect(io, Role::Source, &config, within(few_values));
     let source = RemoteSource::new(connection.await.expect("the source handshakes"));
     let few_rows = Limits {
-        batch_rows: 7,
+        batch_rows: MIN_BATCH_ROWS,
         ..Limits::default()
     };
     let memory = rdlt_connector::destination_factory::<MemoryDestination>();
@@ -319,11 +321,12 @@ async fn rows_cut_to_both_ends_limits_load_once_each_and_in_order() {
         outcome.error
     );
     let batches = published("frames_cut", "ticks");
-    assert!(batches.iter().all(|batch| batch.num_rows() <= 7));
+    assert!(batches.iter().all(|batch| batch.num_rows() <= 1_024));
+    assert!(batches.len() >= 5);
     let ids = batches.iter().flat_map(|batch| {
         let ids = batch.column_by_name("id").expect("the ids");
         let ids = ids.as_any().downcast_ref::<Int64Array>().expect("integers");
         ids.values().to_vec()
     });
-    assert_eq!(ids.collect::<Vec<_>>(), (0..500).collect::<Vec<_>>());
+    assert_eq!(ids.collect::<Vec<_>>(), (0..5_000).collect::<Vec<_>>());
 }

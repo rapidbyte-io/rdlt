@@ -70,14 +70,16 @@ impl Service {
             }
             Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
         };
+        // A host may not make this connector send frames smaller than the protocol's least.
+        let host = Limits::from(request.limits.unwrap_or_default());
+        host.admit_peer()
+            .map_err(|shortfall| crate::wire::shortfall_error(&shortfall))?;
         let spec = self.spec(spec, None);
         // A handshake that ran beside this one agreed first.
         if self.agreed.set(Agreed { role, probed }).is_err() {
             return Err(repeated());
         }
-        let _ = self
-            .host
-            .set(Limits::from(request.limits.unwrap_or_default()));
+        let _ = self.host.set(host);
         Ok(spec)
     }
 

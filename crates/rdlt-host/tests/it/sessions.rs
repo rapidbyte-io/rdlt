@@ -162,7 +162,7 @@ async fn a_failed_write_answers_with_its_error_and_ends_the_write() {
 #[tokio::test]
 async fn a_writer_waits_once_its_credit_is_spent() {
     let limits = Limits {
-        frame_bytes: 4096,
+        frame_bytes: rdlt_wire::limits::MIN_FRAME_BYTES,
         ..Limits::default()
     };
     let io = served_within(
@@ -182,7 +182,7 @@ async fn a_writer_waits_once_its_credit_is_spent() {
     for segment in 1..=20 {
         let wrote = tokio::time::timeout(
             Duration::from_millis(300),
-            writer.write(SegmentId(segment), ids(100)),
+            writer.write(SegmentId(segment), ids(ROWS)),
         )
         .await;
         if wrote.is_err() {
@@ -198,12 +198,15 @@ async fn a_writer_waits_once_its_credit_is_spent() {
     );
 }
 
-/// How many writes of `ids(100)` go before one waits, with `window` bytes of credit and none
+/// Rows in each batch written until the credit is spent: about 800 KB a frame.
+const ROWS: i64 = 100_000;
+
+/// How many writes of `ids(ROWS)` go before one waits, with `window` bytes of credit and none
 /// returned: each frame goes while credit remains and spends its encoded size.
 fn writes_within(window: u64) -> usize {
     use rdlt_wire::prost::Message as _;
     use v1::write_frame::Frame;
-    let batch = ids(100);
+    let batch = ids(ROWS);
     let mut encoder = Encoder::default();
     let size = |frame: Frame| {
         i64::try_from(v1::WriteFrame { frame: Some(frame) }.encoded_len())

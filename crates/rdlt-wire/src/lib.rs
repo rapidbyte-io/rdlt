@@ -37,7 +37,7 @@ pub mod v1;
 
 pub use codec::{Cut, Decoder, Encoder, IpcFrame, Shape};
 pub use error::{Frame, Part, Problem, WireError};
-pub use limits::{Limits, Refusal};
+pub use limits::{Limits, Refusal, Shortfall};
 pub use prost;
 pub use tonic;
 

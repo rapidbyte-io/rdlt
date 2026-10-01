@@ -1609,6 +1609,10 @@ pub struct ReadPublishedRequest {
 }
 /// The limits each end enforces on what it receives. A limit left 0, as a peer from before that
 /// limit existed leaves it, is the protocol's default.
+///
+/// A sender cuts a batch to its receiver's frame_bytes, batch_rows and batch_values, so a peer may
+/// not set them below the protocol's minimums: 4194304 bytes, 1024 rows and 1048576 values. A
+/// handshake naming a lower one is refused with `limit_below_minimum`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Limits {
     /// Bytes in one frame.

@@ -574,3 +574,28 @@ fn a_refused_row_ends_its_batchs_cut_after_the_pieces_before_it() {
     assert!(cut.is_done());
     assert_eq!(encoder.piece(&mut cut).unwrap(), None);
 }
+
+#[test]
+fn a_row_of_the_widest_schema_fits_the_smallest_frame_a_peer_may_ask_for() {
+    use crate::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES, SCHEMA_COLUMNS};
+    let columns = usize::try_from(SCHEMA_COLUMNS).unwrap();
+    let text: ArrayRef = Arc::new(arrow_array::StringViewArray::from(vec![
+        Some("a value");
+        200
+    ]));
+    let named = (0..columns).map(|at| (format!("c{at}"), Arc::clone(&text)));
+    let batch = RecordBatch::try_from_iter(named).unwrap();
+    let least = Limits {
+        frame_bytes: MIN_FRAME_BYTES,
+        batch_rows: MIN_BATCH_ROWS,
+        batch_values: MIN_BATCH_VALUES,
+        ..Limits::default()
+    };
+    let one = cut(&batch.slice(0, 1), &least).unwrap();
+    assert!(bytes(&one) <= usize::try_from(MIN_FRAME_BYTES).unwrap() / 2);
+    // At the minimums a frame takes a hundred rows of a schema that wide, by its values.
+    let batch = flags(columns, 200);
+    let frames = cut(&batch, &least).unwrap();
+    let pieces = in_order(&batch, &received(&batch, &frames, least));
+    assert_eq!(pieces, [104, 96]);
+}

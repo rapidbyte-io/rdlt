@@ -181,10 +181,14 @@ impl Connection {
         };
         let deadline = options.deadlines.connect;
         let response = within(deadline, "the handshake", client.handshake(request)).await?;
+        // A connector may not make this host send frames smaller than the protocol's least.
+        let peer = response.limits.map(Limits::from).unwrap_or_default();
+        peer.admit_peer()
+            .map_err(|shortfall| rdlt_connector::wire::shortfall_error(&shortfall))?;
         Ok(Handshaken {
             client,
             spec: response.spec.unwrap_or_default(),
-            peer: response.limits.map(Limits::from).unwrap_or_default(),
+            peer,
             options,
             lost,
             spent,
