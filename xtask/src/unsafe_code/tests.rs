@@ -189,6 +189,9 @@ fn the_audited_files_bring_in_no_other_file() {
         ("#[path = \"../../other.rs\"]\nmod other;\n", 1),
         ("\n\n#[cfg_attr(unix, path = \"x.rs\")]\nmod other;\n", 3),
         ("mod other {\n    #![path = \"x\"]\n}\n", 2),
+        ("r#include!(\"x.inc\");\n", 1),
+        ("const A: &str = r#include_str!(\"x\");\n", 1),
+        ("#[r#path = \"x.inc\"]\nmod other;\n", 1),
         (
             "macro_rules! m {\n    () => {\n        include!(\"x\");\n    };\n}\n",
             3,
