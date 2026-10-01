@@ -46,7 +46,7 @@ fn texts() -> Vec<Option<String>> {
 }
 
 /// A leaf of each kind, some sliced from longer ones.
-pub(crate) fn leaves() -> Vec<Named> {
+fn leaves() -> Vec<Named> {
     let texts = texts();
     let flags = (0..9).map(|at| (at % 3 != 1).then_some(at % 2 == 0));
     let bytes = texts.iter().map(|text| text.as_ref().map(String::as_bytes));
@@ -275,10 +275,11 @@ fn wrappers(c: &ArrayRef, every_key: bool) -> Vec<(&'static str, ArrayRef)> {
     out
 }
 
-/// Every layout over every leaf, and every layout over each of those.
-pub(crate) fn columns() -> Vec<Named> {
+/// Every layout over the leaf named `leaf`, and every layout over each of those.
+pub(crate) fn over(leaf: &str) -> Vec<Named> {
     let mut columns = Vec::new();
-    for (leaf_name, leaf) in leaves() {
+    let leaves = leaves().into_iter();
+    for (leaf_name, leaf) in leaves.filter(|(name, _)| name == leaf) {
         for (first_name, first) in wrappers(&leaf, true) {
             let name = format!("{first_name}<{leaf_name}>");
             if first.len() >= 3 {
@@ -289,5 +290,12 @@ pub(crate) fn columns() -> Vec<Named> {
             columns.push((name, first));
         }
     }
+    assert!(!columns.is_empty(), "no leaf is named {leaf}");
     columns
+}
+
+/// Every layout over every leaf, and every layout over each of those.
+pub(crate) fn columns() -> Vec<Named> {
+    let leaves = leaves().into_iter();
+    leaves.flat_map(|(name, _)| over(&name)).collect()
 }

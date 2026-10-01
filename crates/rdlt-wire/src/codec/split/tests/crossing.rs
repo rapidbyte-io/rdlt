@@ -160,10 +160,11 @@ fn checked(name: &str, column: &ArrayRef) -> Vec<String> {
     problems
 }
 
-#[test]
-fn every_part_of_every_nested_layout_crosses_as_its_rows_and_as_it_was_weighed() {
+/// Checks every part of every layout over the leaf named `leaf`, and of every layout over
+/// each of those, crosses as its rows and as it was weighed.
+fn every_part_crosses(leaf: &str) {
     let mut problems = Vec::new();
-    let columns = nested::columns();
+    let columns = nested::over(leaf);
     for (name, column) in &columns {
         problems.extend(checked(name, column));
     }
@@ -174,6 +175,34 @@ fn every_part_of_every_nested_layout_crosses_as_its_rows_and_as_it_was_weighed()
         problems.len(),
         columns.len()
     );
+}
+
+/// A test of [`every_part_crosses`] for each leaf, so that they run side by side.
+macro_rules! every_part_of_every_nested_layout_crosses_as_its_rows_and_as_it_was_weighed {
+    ($($test:ident: $leaf:literal,)*) => {
+        $(
+            #[test]
+            fn $test() {
+                every_part_crosses($leaf);
+            }
+        )*
+    };
+}
+
+every_part_of_every_nested_layout_crosses_as_its_rows_and_as_it_was_weighed! {
+    every_part_of_every_layout_over_nulls_crosses_as_its_rows_and_as_weighed: "null",
+    every_part_of_every_layout_over_flags_crosses_as_its_rows_and_as_weighed: "bool",
+    every_part_of_every_layout_over_integers_crosses_as_its_rows_and_as_weighed: "int",
+    every_part_of_every_layout_over_a_part_of_integers_crosses_as_its_rows_and_as_weighed:
+        "int sliced",
+    every_part_of_every_layout_over_texts_crosses_as_its_rows_and_as_weighed: "utf8",
+    every_part_of_every_layout_over_a_part_of_texts_crosses_as_its_rows_and_as_weighed:
+        "utf8 sliced",
+    every_part_of_every_layout_over_views_crosses_as_its_rows_and_as_weighed: "view",
+    every_part_of_every_layout_over_views_of_bytes_crosses_as_its_rows_and_as_weighed:
+        "binview",
+    every_part_of_every_layout_over_a_part_of_views_crosses_as_its_rows_and_as_weighed:
+        "view sliced",
 }
 
 #[test]

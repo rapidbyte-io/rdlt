@@ -24,6 +24,19 @@ fn texts(items: usize) -> ArrayRef {
     Arc::new(ListArray::new(field, offsets, Arc::new(views), None))
 }
 
+/// How many pieces `batch` is cut into within `limits`, and how many columns, rows, runs and
+/// keys weighing them looked at.
+fn weighing(batch: &RecordBatch, limits: Limits) -> (usize, u64) {
+    let mut sender = crate::codec::Encoder::default();
+    sender.schema(&batch.schema()).unwrap();
+    let mut cutting = crate::codec::Cut::new(batch.clone(), limits);
+    let mut pieces = 0;
+    while sender.piece(&mut cutting).unwrap().is_some() {
+        pieces += 1;
+    }
+    (pieces, cutting.weigher.visits())
+}
+
 #[test]
 fn plain_columns_are_weighed_by_arithmetic_however_many_rows_they_hold() {
     // A million rows of eight integers: a frame as it is, and 977 at a peer's least limits.
@@ -45,10 +58,10 @@ fn a_value_many_keys_name_is_weighed_once() {
     let keys = Int32Array::from(vec![0; 50_000]);
     let keyed = DictionaryArray::try_new(keys, texts(20_000)).unwrap();
     let batch = batch_of(Arc::new(keyed));
-    let whole = cost(&batch, Limits::default());
-    assert_eq!(whole.pieces, 1);
+    let (pieces, visits) = weighing(&batch, Limits::default());
+    assert_eq!(pieces, 1);
     // Each key once in a stretch that fits, and the value's texts once.
-    assert!(whole.visits <= 50_000 + 20_000 + 100, "{whole:?}");
+    assert!(visits <= 50_000 + 20_000 + 100, "{visits}");
 }
 
 #[test]
@@ -56,10 +69,10 @@ fn a_run_of_many_rows_is_weighed_once() {
     let values = texts(30_000);
     let runs = RunArray::<Int32Type>::try_new(&Int32Array::from(vec![30_000]), &values).unwrap();
     let batch = batch_of(Arc::new(runs));
-    let whole = cost(&batch, Limits::default());
-    assert_eq!(whole.pieces, 1);
+    let (pieces, visits) = weighing(&batch, Limits::default());
+    assert_eq!(pieces, 1);
     // The run's value in the frame, once more for what it takes expanded, and each stretch.
-    assert!(whole.visits <= 2 * 30_000 + 100, "{whole:?}");
+    assert!(visits <= 2 * 30_000 + 100, "{visits}");
 }
 
 #[test]
