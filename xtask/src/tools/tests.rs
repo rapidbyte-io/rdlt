@@ -161,6 +161,53 @@ fn a_platform_is_excused_only_for_the_tools_listed() {
     assert_eq!(check(CONFIG, &without_mac).unwrap(), expected);
 }
 
+// A platform nobody listed is installed from the lockfile all the same.
+#[test]
+fn every_platform_the_lockfile_names_has_a_download_and_a_digest() {
+    let url = Some("https://example.com/asset.tar.gz");
+    let unlocked = |extra: &str| check(CONFIG, &format!("{}\n{extra}", locked())).unwrap();
+    let (tool, other) = ("just".to_owned(), "linux-arm64".to_owned());
+    assert_eq!(
+        unlocked(&platform("just", "linux-arm64", Some(SHA256), url)),
+        Vec::new()
+    );
+    assert_eq!(
+        unlocked(&platform("just", "linux-arm64", None, url)),
+        vec![Unlocked::Checksum {
+            tool: tool.clone(),
+            platform: other.clone()
+        }]
+    );
+    assert_eq!(
+        unlocked(&platform("just", "linux-arm64", Some(SHA256), None)),
+        vec![Unlocked::Platform {
+            tool,
+            platform: other.clone()
+        }]
+    );
+    // A platform a tool is not built for, when locked after all, is held like any other.
+    assert_eq!(
+        unlocked(&platform(FUZZ, "macos-arm64", None, url)),
+        vec![Unlocked::Checksum {
+            tool: FUZZ.to_owned(),
+            platform: "macos-arm64".to_owned()
+        }]
+    );
+    // An entry mise.toml no longer names is still one a locked install can take.
+    let stale = format!(
+        "{}{}",
+        entry("typos", "1.0.0"),
+        platform("typos", "linux-arm64", None, url)
+    );
+    assert_eq!(
+        unlocked(&stale),
+        vec![Unlocked::Checksum {
+            tool: "typos".to_owned(),
+            platform: other
+        }]
+    );
+}
+
 #[test]
 fn a_file_that_is_not_what_mise_writes_is_an_error() {
     assert!(check("[tools", &locked()).is_err());
