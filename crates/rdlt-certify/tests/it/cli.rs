@@ -548,20 +548,27 @@ fn launcher(directory: &std::path::Path, name: &str) -> String {
     path.to_str().expect("a UTF-8 path").to_owned()
 }
 
-/// The members the launchers in `directory` started that still live; each is killed, so a
-/// failing test leaves nothing behind.
+/// The members the launchers in `directory` started that still live once whatever adopted
+/// them has had time to reap them; each is killed, so a failing test leaves nothing behind.
 fn surviving(directory: &std::path::Path) -> Vec<i32> {
     let written = std::fs::read_to_string(directory.join("members")).unwrap_or_default();
-    let members = written
+    let members: Vec<i32> = written
         .lines()
-        .map(|pid| pid.trim().parse::<i32>().expect("a process id"));
-    let alive = |member: &i32| {
+        .map(|pid| pid.trim().parse().expect("a process id"))
+        .collect();
+    let alive =
+        |member: &i32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(*member), None).is_ok();
+    // Ended already, a member answers until it is reaped, which is not this process's to do.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while members.iter().any(alive) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let left: Vec<i32> = members.into_iter().filter(alive).collect();
+    for member in &left {
         let member = nix::unistd::Pid::from_raw(*member);
-        let alive = nix::sys::signal::kill(member, None).is_ok();
         nix::sys::signal::kill(member, nix::sys::signal::Signal::SIGKILL).ok();
-        alive
-    };
-    members.filter(alive).collect()
+    }
+    left
 }
 
 #[tokio::test(flavor = "multi_thread")]
