@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use cargo_metadata::MetadataCommand;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
+use syn::ext::IdentExt as _;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use walkdir::WalkDir;
@@ -153,7 +154,6 @@ fn inclusions(source: &str) -> Vec<Finding> {
 }
 
 fn find_inclusions(tokens: TokenStream, in_attribute: bool, findings: &mut Vec<Finding>) {
-    let punct = |token: Option<&TokenTree>, c: char| matches!(token, Some(TokenTree::Punct(punct)) if punct.as_char() == c);
     let mut after_hash = false;
     let mut tokens = tokens.into_iter().peekable();
     while let Some(token) = tokens.next() {
@@ -164,8 +164,9 @@ fn find_inclusions(tokens: TokenStream, in_attribute: bool, findings: &mut Vec<F
                 find_inclusions(group.stream(), in_attribute || attribute, findings);
             }
             TokenTree::Ident(ident) => {
-                let included = INCLUDES.iter().any(|include| ident == include);
-                let path = in_attribute && ident == "path" && punct(tokens.peek(), '=');
+                let name = ident.unraw();
+                let included = INCLUDES.iter().any(|include| name == include);
+                let path = in_attribute && name == "path" && punct(tokens.peek(), '=');
                 if included || path {
                     let line = ident.span().start().line;
                     let message =
@@ -177,4 +178,9 @@ fn find_inclusions(tokens: TokenStream, in_attribute: bool, findings: &mut Vec<F
         }
         after_hash = hash;
     }
+}
+
+/// Whether `token` is the punctuation character `c`.
+fn punct(token: Option<&TokenTree>, c: char) -> bool {
+    matches!(token, Some(TokenTree::Punct(punct)) if punct.as_char() == c)
 }
