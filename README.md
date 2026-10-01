@@ -34,13 +34,16 @@ with its socket on file descriptor 3, drains its output, keeps its last words fo
 stops it when done and respawns it when it is lost, and the engine's integration suite runs
 against the reference connectors both ways. `rdlt-host`'s `Remote` reaches connectors listening
 on the network over mutual TLS 1.3, redialing them when they are lost, and the integration suite
-runs against them too. The simulation also places its connectors on hosts of their own on a
+runs against them too. A listening connector accepts only the hosts named to it, by a name in
+their certificates, and holds a bounded number of connections, so peers that never authenticate
+cost a host nothing (ADR 0044). The simulation also places its connectors on hosts of their own on a
 simulated network (turmoil's, on paused clocks), through `Remote`, and loads through partitions,
 held messages, and connectors that crash or stop and start again. `rdlt-certify` certifies a
 connector through the protocol, served in this process, spawned from its binary or listening at an
 endpoint: the source and destination clauses, and the protocol's own, as a library and as the
 `rdlt-certify` binary. A destination that reads back what it published is certified in every
-destination clause from its binary alone. The kill clauses load through an engine while the
+destination clause from a binary built to serve that: a connector's own binary serves no
+certification probe. The kill clauses load through an engine while the
 connector is killed, a spawned one with its whole process group, which its host owns and stops
 before it exits, and any other by cutting its connections, and check that the load converges exactly once; they need the `kill` feature, which
 the binary has. A clause passes only when what it requires was seen: one that applies and was not

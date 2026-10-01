@@ -1941,7 +1941,8 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Read"));
             self.inner.streaming(req, path, codec).await
         }
-        /// Reports cursors a destination committed.
+        /// Reports cursors a destination committed: each a checkpoint a read sent this host. A report
+        /// of any other position is refused as transient, with the code "position_unsent".
         pub async fn committed(
             &mut self,
             request: impl tonic::IntoRequest<super::CommittedRequest>,
@@ -2057,7 +2058,8 @@ pub mod connector_client {
             self.inner.streaming(req, path, codec).await
         }
         /// Reads back every row a destination published to a table, for certification; served when
-        /// the handshake accepted the "published" feature. The engine never calls it.
+        /// the handshake accepted the "published" feature, which only a connector built and served for
+        /// certification does. The engine never calls it.
         pub async fn read_published(
             &mut self,
             request: impl tonic::IntoRequest<super::ReadPublishedRequest>,
@@ -2079,7 +2081,8 @@ pub mod connector_client {
             self.inner.server_streaming(req, path, codec).await
         }
         /// Tells where a source stands for a partition outside the engine, for certification; served
-        /// when the handshake accepted the "acknowledged" feature. The engine never calls it.
+        /// when the handshake accepted the "acknowledged" feature, which only a connector built and
+        /// served for certification does. The engine never calls it.
         pub async fn read_acknowledged(
             &mut self,
             request: impl tonic::IntoRequest<super::ReadAcknowledgedRequest>,
@@ -2151,7 +2154,8 @@ pub mod connector_server {
             &self,
             request: tonic::Request<tonic::Streaming<super::ReadControl>>,
         ) -> std::result::Result<tonic::Response<Self::ReadStream>, tonic::Status>;
-        /// Reports cursors a destination committed.
+        /// Reports cursors a destination committed: each a checkpoint a read sent this host. A report
+        /// of any other position is refused as transient, with the code "position_unsent".
         async fn committed(
             &self,
             request: tonic::Request<super::CommittedRequest>,
@@ -2202,13 +2206,15 @@ pub mod connector_server {
             > + std::marker::Send
             + 'static;
         /// Reads back every row a destination published to a table, for certification; served when
-        /// the handshake accepted the "published" feature. The engine never calls it.
+        /// the handshake accepted the "published" feature, which only a connector built and served for
+        /// certification does. The engine never calls it.
         async fn read_published(
             &self,
             request: tonic::Request<super::ReadPublishedRequest>,
         ) -> std::result::Result<tonic::Response<Self::ReadPublishedStream>, tonic::Status>;
         /// Tells where a source stands for a partition outside the engine, for certification; served
-        /// when the handshake accepted the "acknowledged" feature. The engine never calls it.
+        /// when the handshake accepted the "acknowledged" feature, which only a connector built and
+        /// served for certification does. The engine never calls it.
         async fn read_acknowledged(
             &self,
             request: tonic::Request<super::ReadAcknowledgedRequest>,

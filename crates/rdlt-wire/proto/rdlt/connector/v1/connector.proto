@@ -23,7 +23,8 @@ service Connector {
   rpc Plan(PlanRequest) returns (PlanResponse);
   // Reads a partition.
   rpc Read(stream ReadControl) returns (stream ReadFrame);
-  // Reports cursors a destination committed.
+  // Reports cursors a destination committed: each a checkpoint a read sent this host. A report
+  // of any other position is refused as transient, with the code "position_unsent".
   rpc Committed(CommittedRequest) returns (CommittedResponse);
   // Opens a destination session.
   rpc Open(OpenRequest) returns (OpenResponse);
@@ -38,10 +39,12 @@ service Connector {
   // Proves both ends are alive.
   rpc Heartbeat(stream Ping) returns (stream Pong);
   // Reads back every row a destination published to a table, for certification; served when
-  // the handshake accepted the "published" feature. The engine never calls it.
+  // the handshake accepted the "published" feature, which only a connector built and served for
+  // certification does. The engine never calls it.
   rpc ReadPublished(ReadPublishedRequest) returns (stream ReadFrame);
   // Tells where a source stands for a partition outside the engine, for certification; served
-  // when the handshake accepted the "acknowledged" feature. The engine never calls it.
+  // when the handshake accepted the "acknowledged" feature, which only a connector built and
+  // served for certification does. The engine never calls it.
   rpc ReadAcknowledged(ReadAcknowledgedRequest) returns (ReadAcknowledgedResponse);
 }
 
