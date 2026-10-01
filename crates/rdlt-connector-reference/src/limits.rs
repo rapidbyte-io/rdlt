@@ -25,7 +25,8 @@ pub(crate) const OWNER_BYTES: u64 = 128;
 pub(crate) const TABLE_NAME_BYTES: u16 = 128;
 
 /// Versions: how many manifests of a pipeline, and catalog versions of a table, stay on disk
-/// besides the latest, for readers still reading them.
+/// besides the latest, so a reader that listed a version still finds it when it reads it; the
+/// files an older manifest lists may be gone.
 pub(crate) const KEPT_VERSIONS: u64 = 8;
 
 /// Loads: bounds the loads whose receipts a manifest keeps, the most recent ones; of each it keeps

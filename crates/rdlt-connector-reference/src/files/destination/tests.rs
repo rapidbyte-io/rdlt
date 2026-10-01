@@ -1,6 +1,8 @@
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
 use rdlt_connector::{ConnectorErrorKind, Epoch, Field, LogicalType, PipelineId, TableSchema};
 
 use super::super::manifest::{Listed, Manifest, TableFiles};
@@ -301,4 +303,80 @@ fn what_commits_wrote_and_no_manifest_lists_is_swept_and_what_writers_stage_is_n
     // A pipeline whose session staged nothing has nothing to sweep.
     let empty = tempfile::tempdir().unwrap();
     super::discard_superseded(&Dir::ambient(empty.path()).unwrap(), Epoch(5)).unwrap();
+}
+
+/// Version `version` of a manifest listing one file of the table `rows`, at `path`.
+fn listing(version: u64, path: &str) -> Manifest {
+    let file = Listed {
+        path: path.to_owned(),
+        rows: 1,
+        bytes: 9,
+    };
+    let table = TableFiles {
+        files: vec![file],
+        ..TableFiles::default()
+    };
+    let mut manifest = Manifest {
+        version,
+        ..Manifest::default()
+    };
+    manifest.tables.insert("rows".to_owned(), table);
+    manifest
+}
+
+#[test]
+fn a_reader_that_finds_a_listed_file_gone_reads_the_newer_manifest_or_reports_it_lost() {
+    use std::cell::Cell;
+    let root = tempfile::tempdir().unwrap();
+    let dir = Dir::ambient(root.path()).unwrap();
+    let write = |path: &str, line: &str| {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, line).unwrap();
+    };
+    // A commit superseded the first manifest's file while a reader held that manifest.
+    let (stale, current) = (
+        listing(1, "staging/1/old.jsonl"),
+        listing(2, "staging/1/new.jsonl"),
+    );
+    write("staging/1/new.jsonl", "{\"id\":2}\n");
+    assert!(manifest::put(&dir, &current).unwrap());
+    let schema = Arc::new(schema().to_arrow());
+    let reads = Cell::new(0);
+    let read = super::published_by(&dir, "rows", &schema, |dir| {
+        reads.set(reads.get() + 1);
+        if reads.get() == 1 {
+            Ok(Some(stale.clone()))
+        } else {
+            manifest::latest(dir)
+        }
+    })
+    .unwrap();
+    assert_eq!(read.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(
+        reads.get(),
+        3,
+        "the stale read, the check and the read again"
+    );
+    // A file gone under the manifest that is still the latest is lost: the reader says so.
+    std::fs::remove_file(root.path().join("staging/1/new.jsonl")).unwrap();
+    let lost = super::published_by(&dir, "rows", &schema, manifest::latest).unwrap_err();
+    assert_eq!(lost.code(), Some("file_missing"));
+    // A reader that only ever sees stale manifests gives up.
+    let versions = Cell::new(10);
+    let endless = super::published_by(&dir, "rows", &schema, |_| {
+        versions.set(versions.get() + 1);
+        Ok(Some(listing(versions.get(), "staging/1/old.jsonl")))
+    })
+    .unwrap_err();
+    assert_eq!(endless.kind(), ConnectorErrorKind::Transient);
+    // Any other failure is the reader's at once, and a pipeline without the table has no rows.
+    write("staging/1/new.jsonl", "not json\n");
+    let unreadable = super::published_by(&dir, "rows", &schema, manifest::latest).unwrap_err();
+    assert_eq!(unreadable.kind(), ConnectorErrorKind::Data);
+    assert!(
+        super::published_by(&dir, "none", &schema, manifest::latest)
+            .unwrap()
+            .is_empty()
+    );
 }
