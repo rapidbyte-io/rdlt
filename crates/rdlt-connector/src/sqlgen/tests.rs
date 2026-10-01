@@ -2271,20 +2271,22 @@ fn a_merge_finds_the_rows_its_keys_replace_through_the_key_s_indexes() {
     }
 }
 
-/// How long `plan` takes on `connection`, the least of three runs, each rolled back so the next
-/// finds what the last did.
-pub(super) fn planned(connection: &Connection, plan: &[Statement]) -> std::time::Duration {
-    (0..3)
-        .map(|_| {
-            connection.execute_batch("BEGIN").unwrap();
-            let started = std::time::Instant::now();
-            run_all(connection, plan);
-            let elapsed = started.elapsed();
-            connection.execute_batch("ROLLBACK").unwrap();
-            elapsed
+/// The steps SQLite's virtual machine takes to run `plan` on `connection`, rolled back so the
+/// next run finds what this one did: what a plan costs, whatever else the machine is doing.
+pub(super) fn planned(connection: &Connection, plan: &[Statement]) -> u64 {
+    connection.execute_batch("BEGIN").unwrap();
+    let steps = plan
+        .iter()
+        .map(|statement| {
+            let mut prepared = connection.prepare(&statement.sql).unwrap();
+            let params = rusqlite::params_from_iter(statement.params.iter().map(value));
+            prepared.execute(params).unwrap();
+            let steps = prepared.get_status(rusqlite::StatementStatus::VmStep);
+            u64::try_from(steps).expect("a count of steps")
         })
-        .min()
-        .expect("three timings")
+        .sum();
+    connection.execute_batch("ROLLBACK").unwrap();
+    steps
 }
 
 /// A sequence as `sqlgen`'s tests fill tables in SQL: sixteen digits, which order as numbers do.

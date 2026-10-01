@@ -781,8 +781,8 @@ fn truncates_cost_their_count_and_the_keys_not_their_product() {
         for (one, many) in [(1, 2), (3, 4)] {
             let (one, many) = (committing(one), committing(many));
             assert!(
-                many < one * 15,
-                "one truncate took {one:?}, {TRUNCATES} took {many:?}"
+                many < one * 6,
+                "one truncate took {one} steps, {TRUNCATES} took {many}"
             );
         }
     }
