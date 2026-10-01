@@ -139,13 +139,20 @@ async fn connected(
 
 async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
     let catalog = bounded_call("discover", source.discover()).await;
-    // Where the source stands before any clause reads it, which S-ACK, last, checks.
+    // Where the source stands before any clause reads it, which S-ACK, last, checks: asked
+    // within a clause's bound, however many partitions the source plans.
     let mut told = match (told, &catalog) {
-        (Some(Ok(reader)), Ok(catalog)) => Some(
-            acks::standing(source, reader.as_ref(), catalog)
-                .await
-                .map(|standing| (reader, standing)),
-        ),
+        (Some(Ok(reader)), Ok(catalog)) => {
+            let standing = acks::standing(source, reader.as_ref(), catalog);
+            let standing = tokio::time::timeout(CLAUSE_TIMEOUT, standing).await;
+            let standing = standing.unwrap_or_else(|_| {
+                Err(Violation::from(format_args!(
+                    "asking where the stream's partitions stand took longer than \
+                     {CLAUSE_TIMEOUT:?}"
+                )))
+            });
+            Some(standing.map(|standing| (reader, standing)))
+        }
         (Some(Err(violation)), _) => Some(Err(violation)),
         _ => None,
     };

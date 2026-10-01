@@ -292,6 +292,40 @@ async fn a_kill_timeout_from_the_command_line_bounds_the_kill_clauses() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_certification_that_outlives_its_timeout_fails_what_it_left_and_exits_one() {
+    let binary = example("serve_hang");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    // Its configuration never answers: a connection's own deadline is a minute away.
+    for (timeout, roles) in [("2", &["--role", "destination"][..]), ("0", &[])] {
+        let args = [binary, "--env", "LLVM_PROFILE_FILE", "--output", "json"];
+        let args = [&args[..], roles, &["--timeout", timeout]].concat();
+        let began = std::time::Instant::now();
+        let output = certify(&args).await;
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(30),
+            "{timeout}"
+        );
+        assert_eq!(code(&output), Some(1), "{timeout}");
+        let report: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("the report is JSON");
+        assert_eq!(report["verdict"], "failed", "{report}");
+        let reports = report["reports"].as_array().expect("the reports");
+        assert_eq!(
+            reports.len(),
+            if roles.is_empty() { 2 } else { 1 },
+            "{report}"
+        );
+        for report in reports {
+            let clauses = report["clauses"].as_array().expect("the clauses");
+            assert!(clauses.len() > 10, "{report}");
+            for clause in clauses {
+                assert_eq!(clause["outcome"], "failed", "{timeout}: {clause}");
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_listening_connector_is_certified_from_the_command_line() {
     let pki = Pki::new("ca");
     let (_connector, endpoint) = listening(&pki).await;

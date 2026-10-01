@@ -286,3 +286,40 @@ async fn a_read_back_of_rows_that_cost_no_bytes_fails_every_clause_that_reads_it
     // The whole report is no larger than its clauses' statements and bounded reasons.
     assert!(rdlt_certify::plain(&report).len() < 100_000);
 }
+
+/// A memory destination whose configuration, its `connect`, never answers, as one dialing a
+/// store that never answers does.
+struct ConfigureNever(Box<dyn DestinationFactory>);
+
+impl DestinationFactory for ConfigureNever {
+    fn spec(&self) -> &ConnectorSpec {
+        self.0.spec()
+    }
+
+    fn connect(
+        &self,
+        _: serde_json::Value,
+        _: ConnectContext,
+    ) -> BoxFuture<'_, rdlt_connector::Result<Box<dyn rdlt_connector::Destination>>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_back_probe_never_answered_ends_at_its_deadline_and_fails_what_needs_it() {
+    let unconfigured = {
+        let factory = ConfigureNever(destination_factory::<MemoryDestination>());
+        Target::served(Served::new().with_destination(Box::new(factory)))
+    };
+    let deaf = Target::connected(|| Box::pin(async { served(Fault::Deaf) }));
+    for (call, target) in [("configure", unconfigured), ("handshake", deaf)] {
+        let config = json!({ "store": "certify_never" });
+        // A week of paused time passes at once: a call without a deadline fails this bound.
+        let week = std::time::Duration::from_hours(7 * 24);
+        let probe = tokio::time::timeout(week, read_back(&target, &config))
+            .await
+            .unwrap_or_else(|_| panic!("the probe's {call} holds the certification"))
+            .expect("a probe that could not ask still fails what needs it");
+        assert!(probe.published(&table()).await.is_err(), "{call}");
+    }
+}

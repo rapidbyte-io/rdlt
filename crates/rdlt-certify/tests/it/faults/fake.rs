@@ -59,6 +59,8 @@ pub(crate) enum Fault {
     Lingering,
     /// It answers no heartbeat.
     Mute,
+    /// It answers no handshake, though its connection lives on.
+    Deaf,
     /// As a destination, it keeps to identifiers of 32 bytes, which breaks no clause.
     ShortNames,
     /// As a destination, it takes a batch it cannot decode, or one beyond its frame limit.
@@ -182,6 +184,9 @@ impl Connector for Fake {
         &self,
         request: Request<v1::HandshakeRequest>,
     ) -> Result<Response<v1::HandshakeResponse>, Status> {
+        if !self.keeps(Fault::Deaf) {
+            std::future::pending::<()>().await;
+        }
         let request = request.into_inner();
         let unknown = request.features.iter().any(|feature| feature != PUBLISHED);
         if unknown && !self.keeps(Fault::RefusesUnknownFeatures) {

@@ -61,6 +61,8 @@ struct QueueConfig {
     misroute: bool,
     /// Keeps each committed cursor one message on from where it was told.
     off_by_one: bool,
+    /// How many seconds each answer to where a partition stands takes.
+    slow: u64,
 }
 
 /// A queue of four messages a partition, a checkpoint after each, that keeps where it was
@@ -190,6 +192,7 @@ impl ReadStream<Queue> for Messages {
         if source.config.silent {
             std::future::pending::<()>().await;
         }
+        tokio::time::sleep(std::time::Duration::from_secs(source.config.slow)).await;
         Ok(source.position(partition))
     }
 }
@@ -260,6 +263,19 @@ async fn a_queue_with_nothing_ahead_of_where_it_stands_skips_s_ack() {
 #[tokio::test(start_paused = true)]
 async fn a_queue_that_never_says_where_it_stands_fails_s_ack_alone() {
     let report = certify_source::<Queue>(json!({ "name": "silent", "silent": true })).await;
+    assert!(matches!(outcome(&report), Outcome::Failed(_)), "{report}");
+    assert_eq!(report.failures().count(), 1, "{report}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn asking_where_many_slow_partitions_stand_is_bounded_and_fails_s_ack_alone() {
+    // Each answer comes within its own bound; a thousand of them take eight hours.
+    let config = json!({ "name": "slow", "partitions": 1000, "slow": 29 });
+    let began = tokio::time::Instant::now();
+    let report = certify_source::<Queue>(config).await;
+    // The question before the clauses and the clause itself each take their bound, at most.
+    let bound = 2 * crate::testing::limits::CLAUSE_TIMEOUT + std::time::Duration::from_mins(1);
+    assert!(began.elapsed() <= bound, "{:?}", began.elapsed());
     assert!(matches!(outcome(&report), Outcome::Failed(_)), "{report}");
     assert_eq!(report.failures().count(), 1, "{report}");
 }
