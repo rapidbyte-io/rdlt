@@ -9,6 +9,7 @@ mod deps;
 mod lexer;
 mod lint;
 mod rules;
+mod shipped;
 mod tools;
 mod unsafe_code;
 mod workspaces;
@@ -35,6 +36,8 @@ enum Command {
     Deny,
     /// Check that every tool `mise.toml` names is locked to a download and its checksum.
     Tools,
+    /// Check that a connector binary built alone, as a release builds it, has no test surface.
+    Shipped,
     /// Generate the wire protocol's Rust code from its `.proto` files.
     Codegen {
         /// Fail when the committed code is stale, instead of writing it.
@@ -61,6 +64,7 @@ fn main() -> anyhow::Result<ExitCode> {
         Command::Deps => deps::run(&root),
         Command::Deny => deny::run(&root),
         Command::Tools => tools::run(&root),
+        Command::Shipped => shipped::run(&root),
         Command::Codegen { check } => codegen::run(&root, check),
         Command::CoverageGate {
             export,
