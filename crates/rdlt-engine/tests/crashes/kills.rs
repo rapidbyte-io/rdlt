@@ -89,6 +89,17 @@ impl Watched {
     }
 }
 
+impl Drop for Watched {
+    /// Kills what a run a test gave up on left running: the harness and its connectors.
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let group = Pid::from_raw(i32::try_from(self.child.id()).expect("process ids fit"));
+            killpg(group, nix::sys::signal::Signal::SIGKILL).ok();
+            self.child.wait().ok();
+        }
+    }
+}
+
 /// Whether `line` tells a read begun or a commit landed.
 fn progress(line: &str) -> bool {
     line.starts_with("read ") || line.starts_with("commit ")
@@ -97,7 +108,7 @@ fn progress(line: &str) -> bool {
 /// The reads and commits a clean run of `scenario` tells.
 fn progress_of(scenario: &Scenario) -> u64 {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    let config = scenario.write_spawned(dir.path(), None);
+    let config = scenario.write_spawned(dir.path(), &json!({}));
     let (status, lines) = Watched::spawn(&config).ended();
     assert!(
         status.success(),
@@ -144,9 +155,9 @@ fn converge(config: &Path) -> (bool, bool) {
     (false, orphaned)
 }
 
-/// Kills the harness running `scenario` at a point drawn among the reads and commits a clean run
-/// tells, after a drawn delay, for each of `draws` draws, then runs it again; every kill must
-/// land as the pipeline loads.
+/// Kills the harness running `scenario` where it waits after a read or commit drawn among those a
+/// clean run tells, a drawn delay after it began to, for each of `draws` draws, then runs it
+/// again.
 fn engine_killed(scenario: &Scenario, draws: u32) {
     let mut state = seed();
     let seed = state;
@@ -159,13 +170,14 @@ fn engine_killed(scenario: &Scenario, draws: u32) {
     for draw_index in 0..draws {
         // Never after the last two, which a run may tell fewer of than the clean one did.
         let point = 1 + draw(&mut state) % (told - 2);
-        let delay = Duration::from_millis(draw(&mut state) % 5);
+        // While one read or commit waits, the run's others go on.
+        let delay = Duration::from_millis(draw(&mut state) % 50);
         let context = format!(
             "{} seed {seed} draw {draw_index}, killed {delay:?} after read or commit {point}",
             scenario.name
         );
         let dir = tempfile::tempdir().expect("a temporary directory");
-        let config = scenario.write_spawned(dir.path(), None);
+        let config = scenario.write_spawned(dir.path(), &json!({ "pause": point }));
         let mut run = Watched::spawn(&config);
         assert!(run.progressed(point), "{context}: the run never got there");
         std::thread::sleep(delay);
@@ -178,6 +190,7 @@ fn engine_killed(scenario: &Scenario, draws: u32) {
             !orphans(group),
             "{context}: a connector outlived the killed run"
         );
+        let config = scenario.write_spawned(dir.path(), &json!({}));
         let (succeeded, orphaned) = converge(&config);
         assert!(
             succeeded,
@@ -194,7 +207,7 @@ fn connector_killed(scenario: &Scenario, victim: &str, before: &[Value]) {
     for before in before {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let kill = json!({ "victim": victim, "before": before });
-        let config = scenario.write_spawned(dir.path(), Some(kill));
+        let config = scenario.write_spawned(dir.path(), &json!({ "kill": kill }));
         let context = format!(
             "{}: the {victim} killed before commit {before}",
             scenario.name
@@ -230,6 +243,21 @@ fn connector_killed(scenario: &Scenario, victim: &str, before: &[Value]) {
 }
 
 #[test]
+fn a_run_a_test_gives_up_on_leaves_no_process_behind() {
+    let scenario = scenarios::forgetting_log();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let config = scenario.write_spawned(dir.path(), &json!({ "pause": 1 }));
+    let run = Watched::spawn(&config);
+    assert!(run.progressed(1), "the run never began to read");
+    let group = run.child.id();
+    drop(run);
+    assert!(
+        !orphans(group),
+        "the harness or a connector outlived the run"
+    );
+}
+
+#[test]
 fn a_run_killed_as_it_loads_a_forgetting_log_loads_it_once_when_it_runs_again() {
     engine_killed(&scenarios::forgetting_log(), 6);
 }
@@ -247,7 +275,7 @@ fn a_run_killed_as_it_replaces_a_table_replaces_it_once_when_it_runs_again() {
 #[test]
 fn a_spawned_source_killed_as_it_reads_is_spawned_again_and_loses_nothing() {
     connector_killed(
-        &scenarios::forgetting_log(),
+        &scenarios::long_forgetting_log(),
         "source",
         &[json!(1), json!(3)],
     );
