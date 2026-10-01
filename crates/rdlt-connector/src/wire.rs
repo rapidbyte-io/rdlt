@@ -20,7 +20,8 @@ use std::error::Error as StdError;
 pub(crate) use destination::load_id;
 pub use rdlt_wire::v1;
 pub use status::{
-    MALFORMED_FRAME, TRANSPORT, UNSENDABLE_TYPE, error, frame_error, shortfall_error, status,
+    MALFORMED_FRAME, TRANSPORT, UNENCODABLE_BATCH, UNSENDABLE_TYPE, error, frame_error,
+    shortfall_error, status,
 };
 
 /// A message from the wire that does not decode into the contract's type.

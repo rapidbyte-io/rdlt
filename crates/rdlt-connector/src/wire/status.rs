@@ -73,8 +73,11 @@ pub const MALFORMED_FRAME: &str = "malformed_frame";
 /// The code of an error for a batch of a type the protocol cannot carry.
 pub const UNSENDABLE_TYPE: &str = "unsendable_type";
 
+/// The code of an error for a batch its own sender could not encode.
+pub const UNENCODABLE_BATCH: &str = "unencodable_batch";
+
 /// What the codec refused, as the connector error the end that met it reports: a limit's
-/// refusal, a batch of a type its sender cannot send, or a frame malformed by a faulty peer,
+/// refusal, a batch its sender cannot send or encode, or a frame malformed by a faulty peer,
 /// which retrying cannot help.
 pub fn frame_error(error: &rdlt_wire::WireError) -> ConnectorError {
     use rdlt_wire::{Problem, WireError};
@@ -84,6 +87,10 @@ pub fn frame_error(error: &rdlt_wire::WireError) -> ConnectorError {
             ..
         } => ConnectorError::new(ConnectorErrorKind::Unsupported, error.to_string())
             .with_code(UNSENDABLE_TYPE),
+        WireError::Arrow { encoding: true, .. } => {
+            ConnectorError::new(ConnectorErrorKind::Internal, error.to_string())
+                .with_code(UNENCODABLE_BATCH)
+        }
         WireError::Refused(refusal) => {
             let limit = crate::error::LimitExceeded {
                 name: rdlt_wire::limits::FIELDS
