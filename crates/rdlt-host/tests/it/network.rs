@@ -558,3 +558,83 @@ async fn a_connector_whose_hosts_could_leave_one_no_session_refuses_to_listen() 
     assert!(fair.status.success(), "{fair:?}");
     assert!(fair.stdout.starts_with(b"listening on "));
 }
+
+/// Opens silent connections to `address` from `from` at `rate` a second, holding the newest
+/// hundred, until `stopped`; answers how many it opened.
+async fn flood(
+    address: String,
+    from: std::net::IpAddr,
+    rate: u64,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> u64 {
+    use std::sync::atomic::Ordering;
+    let address: std::net::SocketAddr = address.parse().expect("an address");
+    let mut held = std::collections::VecDeque::new();
+    let started = std::time::Instant::now();
+    let mut opened = 0_u64;
+    while !stopped.load(Ordering::Relaxed) {
+        let due = started.elapsed().as_millis() * u128::from(rate) / 1000;
+        if u128::from(opened) >= due {
+            tokio::time::sleep(Duration::from_micros(200)).await;
+            continue;
+        }
+        let socket = tokio::net::TcpSocket::new_v4().expect("a socket");
+        socket
+            .bind(std::net::SocketAddr::new(from, 0))
+            .expect("the address is this machine's");
+        if let Ok(stream) = socket.connect(address).await {
+            held.push_back(stream);
+            opened += 1;
+        }
+        if held.len() > 100 {
+            held.pop_front();
+        }
+    }
+    opened
+}
+
+/// A measurement, not a check: how many of a host's dials complete while silent peers connect
+/// at a rate, from the host's own address and from another.
+///
+/// Run by name on Linux, whose loopback answers at every `127.0.0.0/8` address:
+/// `cargo nextest run -p rdlt-host --all-features --run-ignored ignored-only -E
+/// 'test(dials_under_a_flood)' --no-capture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement, run by name"]
+async fn dials_under_a_flood_of_silent_peers_measured() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let pki = Pki::new("ca");
+    let (_connector, address) =
+        listening(&pki, &pki.server("server", &["localhost"]), "127.0.0.1:0").await;
+    let endpoint = format!("grpcs://localhost:{}", port(&address));
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca());
+    let reference = scripted(&endpoint);
+    let (own, other) = ([127, 0, 0, 1].into(), [127, 0, 0, 2].into());
+    for (from, rate) in [(other, 0), (other, 5_000), (other, 20_000), (own, 5_000)] {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let floods: Vec<_> = (0..4)
+            .filter(|_| rate > 0)
+            .map(|_| tokio::spawn(flood(address.clone(), from, rate / 4, Arc::clone(&stopped))))
+            .collect();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let began = std::time::Instant::now();
+        let (mut served, dials) = (0, 200);
+        for _ in 0..dials {
+            let wire = tokio::time::timeout(Duration::from_secs(3), remote.wire(&reference));
+            if matches!(wire.await, Ok(Ok(_))) {
+                served += 1;
+            }
+        }
+        let took = began.elapsed();
+        stopped.store(true, Ordering::Relaxed);
+        let mut opened = 0;
+        for flood in floods {
+            opened += flood.await.expect("the flood ends");
+        }
+        eprintln!(
+            "flood from {from} asked {rate}/s, opened {opened}: {served}/{dials} dials in {took:?}"
+        );
+        tokio::time::sleep(Duration::from_secs(6)).await;
+    }
+}

@@ -687,3 +687,72 @@ async fn hosts_serving_fewer_sessions_each_keep_a_share_no_other_host_can_take()
         placed.connector.check().await.expect("the check passes");
     }
 }
+
+/// A listener whose connections each come from the address sent with them.
+struct Addressed(mpsc::UnboundedReceiver<(DuplexStream, SocketAddr)>);
+
+impl Listener for Addressed {
+    type Stream = DuplexStream;
+
+    async fn accept(&mut self) -> std::io::Result<(DuplexStream, SocketAddr)> {
+        let accepted = self.0.recv().await;
+        accepted.ok_or_else(|| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+}
+
+/// A network that hands out the connection it was given, once.
+#[derive(Debug)]
+struct Handed(Mutex<Option<DuplexStream>>);
+
+impl rdlt_host::Network for Handed {
+    fn connect<'a>(
+        &'a self,
+        _host: &'a str,
+        _port: u16,
+    ) -> BoxFuture<'a, std::io::Result<Box<dyn rdlt_host::Stream>>> {
+        let stream = self.0.lock().expect("no panic").take();
+        Box::pin(async move {
+            stream
+                .map(|stream| Box::new(stream) as Box<dyn rdlt_host::Stream>)
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_flood_from_other_addresses_never_closes_a_hosts_handshake_while_one_holds_several() {
+    let pki = Pki::new("ca");
+    let certificate = pki.server("server", &["connector"]);
+    let (connections, accepted) = mpsc::unbounded_channel();
+    let source = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+    tokio::spawn(serve_listener(
+        source,
+        Addressed(accepted),
+        listening(&pki, &certificate),
+        rdlt_wire::Limits::default(),
+        std::future::pending(),
+    ));
+    // The host has connected, from an address of its own, and not yet begun its handshake.
+    let (host, connector) = tokio::io::duplex(64 * 1024);
+    let own: SocketAddr = "198.51.100.1:40000".parse().expect("an address");
+    connections.send((connector, own)).expect("it listens");
+    // Silent peers from three other addresses, far more than the connector holds at once.
+    let mut silent = Vec::new();
+    for peer in 0..9000_u16 {
+        let (kept, connector) = tokio::io::duplex(1024);
+        let address = SocketAddr::from(([192, 0, 2, u8::try_from(peer % 3).expect("small")], peer));
+        connections.send((connector, address)).expect("it listens");
+        silent.push(kept);
+        if peer % 500 == 0 {
+            settle(Duration::from_millis(1)).await;
+        }
+    }
+    let (reference, config) = memory();
+    let placed = Remote::new(identity(&pki.client("host")), pki.ca())
+        .network(Handed(Mutex::new(Some(host))))
+        .source(&reference, &config)
+        .await
+        .expect("the host's handshake was never closed");
+    placed.connector.check().await.expect("the check passes");
+    drop(silent);
+}

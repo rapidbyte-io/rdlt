@@ -35,7 +35,7 @@ pub use refusals::Log;
 use super::args::{Failure, Listen};
 use super::{Served, serve_until};
 use crate::limits::ListenLimits;
-use admission::{Admitted, Unauthenticated};
+use admission::{Admitted, Origin, Unauthenticated};
 use refusals::{Refusals, Refused};
 use speaking::Speaking;
 
@@ -246,7 +246,8 @@ where
                 Err(_) => Err(Refused::Slow),
             }
         });
-        if self.unauthenticated.admit(handshake) == Admitted::InPlaceOfAnother {
+        let admitted = self.unauthenticated.admit(Origin::of(peer), handshake);
+        if admitted == Admitted::InPlaceOfAnother {
             self.refusals.count(Refused::Displaced);
         }
     }
