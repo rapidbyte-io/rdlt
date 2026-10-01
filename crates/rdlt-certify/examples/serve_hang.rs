@@ -1,6 +1,8 @@
 //! A connector whose destination never answers its configuration, as one dialing a store that
 //! never answers does, for the tests of what bounds a certification.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 use rdlt_connector::serve::Served;
