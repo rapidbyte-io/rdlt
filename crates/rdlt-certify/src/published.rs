@@ -92,20 +92,21 @@ impl ReadBackProbe<'_> {
 }
 
 /// A client of `target`, handshaken as a destination with `config` and the `published` feature
-/// offered, and whether it accepted the feature.
+/// offered, and whether it accepted the feature; each call within the deadline a connection's
+/// handshake has.
 async fn handshaken(target: &Target, config: &str) -> Result<(Client, bool)> {
     let mut client = target.client().await?;
     let mut offered = request(Role::Destination, rdlt_wire::PROTOCOL_MAJOR);
     offered.features.push(PUBLISHED.to_owned());
-    let answer = client
-        .handshake(offered)
-        .await
-        .map_err(|status| error(&status))?
-        .into_inner();
-    client
-        .configure(configure_request(config))
-        .await
-        .map_err(|status| error(&status))?;
+    let answer = target
+        .opened("the read-back's handshake", client.handshake(offered))
+        .await?;
+    target
+        .opened(
+            "the read-back's configuration",
+            client.configure(configure_request(config)),
+        )
+        .await?;
     let accepted = answer
         .accepted_features
         .iter()

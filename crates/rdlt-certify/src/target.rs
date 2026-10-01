@@ -1,15 +1,17 @@
 //! What a certification reaches: a connector served in this process, spawned from its binary, or
 //! listening at an endpoint.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, Role};
-use rdlt_host::remote::{CONNECTOR_LOST, Client, client};
+use rdlt_host::remote::{CONNECTOR_LOST, Client, DEADLINE_EXCEEDED, client};
 use rdlt_host::{Connection, ConnectorRef, Local, Options, Remote, Stream, Witness};
 use rdlt_wire::Limits;
+use rdlt_wire::tonic::{Response, Status};
 
 /// How long a failed connection waits for a spawned connector's standard error to close.
 const LAST_WORDS: Duration = Duration::from_secs(1);
@@ -172,10 +174,14 @@ impl Target {
             )
         };
         match &self.reach {
-            Reach::Connected(connect) => connect()
-                .await
-                .map(|wire| (wire, None))
-                .map_err(|error| unreachable(&error)),
+            Reach::Connected(connect) => {
+                let deadline = self.options.deadlines.connect;
+                let opened = tokio::time::timeout(deadline, connect()).await;
+                let opened = opened.unwrap_or_else(|_| Err(std::io::ErrorKind::TimedOut.into()));
+                opened
+                    .map(|wire| (wire, None))
+                    .map_err(|error| unreachable(&error))
+            }
             Reach::Spawned { local, reference } => local
                 .wire(reference)
                 .map(|wire| {
@@ -213,6 +219,25 @@ impl Target {
     /// A fresh client of the protocol, with no handshake yet.
     pub(crate) async fn client(&self) -> Result<Client, ConnectorError> {
         client(self.wire().await?, self.options).await
+    }
+
+    /// The answer to `call`, a handshake or a configuration a raw client makes, within the
+    /// deadline a connection's own has: a raw client's calls have none, and `what` names the call.
+    pub(crate) async fn opened<T>(
+        &self,
+        what: &str,
+        call: impl Future<Output = Result<Response<T>, Status>>,
+    ) -> Result<T, ConnectorError> {
+        let deadline = self.options.deadlines.connect;
+        match tokio::time::timeout(deadline, call).await {
+            Ok(Ok(answer)) => Ok(answer.into_inner()),
+            Ok(Err(status)) => Err(rdlt_connector::wire::error(&status)),
+            Err(_) => {
+                let message = format!("{what} took longer than its deadline of {deadline:?}");
+                Err(ConnectorError::new(ConnectorErrorKind::Transient, message)
+                    .with_code(DEADLINE_EXCEEDED))
+            }
+        }
     }
 }
 

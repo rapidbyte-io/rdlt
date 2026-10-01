@@ -597,6 +597,8 @@ struct VaultConfig {
     writers: u16,
     /// The longest identifier it declares, when not the default.
     identifier_len: u16,
+    /// Reserves `id`, and every lengthening of it its identifiers are long enough for.
+    reserve_ids: bool,
     /// Never finishes a flush.
     hang_flush: bool,
     /// Lets any pipeline write into any table, whichever pipeline created it.
@@ -795,6 +797,12 @@ impl DestinationConnector for Vault {
         }
         if let Some(longest) = std::num::NonZeroU16::new(self.config.identifier_len) {
             capabilities.identifiers.max_len = longest;
+        }
+        if self.config.reserve_ids {
+            let longest = usize::from(capabilities.identifiers.max_len.get());
+            capabilities.identifiers.reserved = (0..=longest - 2)
+                .map(|more| format!("id{}", "_".repeat(more)))
+                .collect();
         }
         if self.config.fixed_schema {
             capabilities.schema_changes = SchemaChanges::default();
@@ -1646,6 +1654,13 @@ async fn the_lanes_and_names_clauses_skip_only_what_a_destination_declares_it_ca
         };
         assert!(expected, "{clause} runs: {runs}: {report}");
     }
+}
+
+#[tokio::test]
+async fn a_destination_reserving_every_form_of_a_name_fails_the_names_clause_alone() {
+    let config = json!({ "store": "reserved", "identifier_len": 40, "reserve_ids": true });
+    let report = certify_destination::<Vault>(config, &VaultProbe(vault("reserved"))).await;
+    assert_eq!(failed(&report), ["D-NAMES"], "{report}");
 }
 
 #[tokio::test]

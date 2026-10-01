@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -34,7 +35,9 @@ impl Bench<'_> {
             generation: None,
             merge: None,
         };
-        let names = names(rules);
+        let names = names(rules).ok_or(
+            "the destination reserves every form of a name its identifiers are long enough for",
+        )?;
         let (schema, rows) = table_of(&names);
         let mut opened = self.open(self.destination, 1).await?;
         opened
@@ -79,32 +82,40 @@ impl Bench<'_> {
 }
 
 /// The clause's column names, folded as `rules` fold: an id, one as long as `rules` allow, one
-/// beyond ASCII when any character is allowed, and one in mixed case when case is kept.
-fn names(rules: &IdentifierRules) -> Vec<String> {
+/// beyond ASCII when any character is allowed, and one in mixed case when case is kept; none
+/// when `rules` reserve every form of one.
+fn names(rules: &IdentifierRules) -> Option<Vec<String>> {
     let longest = usize::from(rules.max_len.get());
+    // Folded once: a destination declares as many reserved words as it likes.
+    let reserved: BTreeSet<String> = rules
+        .reserved
+        .iter()
+        .map(|word| folded(rules, word))
+        .collect();
+    let unreserved = |name: String| unreserved(&reserved, longest, name);
     let mut names = vec![
-        unreserved(rules, folded(rules, "id")),
+        unreserved(folded(rules, "id"))?,
         folded(rules, &padded("long_".to_owned(), longest, 'g')),
     ];
     if rules.chars == IdentifierChars::Any {
-        names.push(unreserved(rules, folded(rules, "données_名前")));
+        names.push(unreserved(folded(rules, "données_名前"))?);
     }
     if rules.case == IdentifierCase::Preserve {
-        names.push(unreserved(rules, "MixedCase".to_owned()));
+        names.push(unreserved("MixedCase".to_owned())?);
     }
-    names
+    Some(names)
 }
 
-/// `name`, lengthened with `_` until no word `rules` reserve is it, after case folding.
-fn unreserved(rules: &IdentifierRules, mut name: String) -> String {
-    while rules
-        .reserved
-        .iter()
-        .any(|word| folded(rules, word) == name)
-    {
+/// `name`, lengthened with `_` until it is none of the `reserved` words; none when the
+/// `longest` identifier is still one.
+fn unreserved(reserved: &BTreeSet<String>, longest: usize, mut name: String) -> Option<String> {
+    while reserved.contains(&name) {
+        if name.len() >= longest {
+            return None;
+        }
         name.push('_');
     }
-    name
+    Some(name)
 }
 
 /// A table of `names`' columns, the first an id and the rest strings, and three rows of it.

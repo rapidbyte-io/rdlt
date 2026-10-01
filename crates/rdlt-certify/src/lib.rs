@@ -66,6 +66,27 @@ pub async fn certify_source(target: &Target, config: serde_json::Value) -> Repor
     }
 }
 
+/// A report of every clause of `role`, each failed for `reason`: what a certification of
+/// `target` that could not be finished reports, as one cut at a deadline.
+pub fn unfinished(target: &Target, role: Role, reason: &str) -> Report {
+    let (clauses, kill) = match role {
+        Role::Source => (SOURCE_CLAUSES, kill::clauses(Role::Source)),
+        Role::Destination => (DESTINATION_CLAUSES, kill::clauses(Role::Destination)),
+    };
+    let failed = |clause: &Clause| ClauseResult {
+        clause: *clause,
+        outcome: Outcome::Failed(Reason::new(reason)),
+    };
+    Report {
+        connector: target.describe(),
+        results: [PROTOCOL_CLAUSES, clauses, kill]
+            .into_iter()
+            .flatten()
+            .map(failed)
+            .collect(),
+    }
+}
+
 /// Certifies the destination `target` reaches, with `config`, reading what it published through
 /// `probe` ([`Unprobed`] when nothing can read it): the protocol's clauses, the destination
 /// clauses, then the kill clause.

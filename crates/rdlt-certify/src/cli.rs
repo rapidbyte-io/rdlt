@@ -1,16 +1,17 @@
 //! The command line: which connector, how to reach it and with what configuration, and how to
 //! print what it met.
 
+use std::future::Future;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use rdlt_certify::{
     Outcome, Probe, Report, Target, Unprobed, Verdict, certify_destination, certify_source, json,
-    markdown, plain, read_back,
+    markdown, plain, read_back, unfinished,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote};
@@ -62,6 +63,10 @@ struct Args {
     /// slower than about two seconds a commit needs more.
     #[arg(long, value_name = "SECONDS")]
     kill_timeout: Option<u64>,
+    /// Ends the certification after this many seconds, failing every clause of a role still
+    /// certifying then; without it, each clause's own bound ends the certification.
+    #[arg(long, value_name = "SECONDS")]
+    timeout: Option<u64>,
     /// What exits 0: `complete`, every clause that applies seen to be met; `partial`, none
     /// failed and one passed, whatever was not observed.
     #[arg(long, value_enum, default_value_t = Require::Complete)]
@@ -132,45 +137,18 @@ fn run(args: &Args) -> Result<u8, Ended> {
         Some(seconds) => target.kill_timeout(Duration::from_secs(seconds)),
         None => target,
     };
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
-    let mut reports = runtime.block_on(async {
-        let mut reports = Vec::new();
-        if !matches!(args.role, Some(Role::Destination)) {
-            reports.push(certify_source(&target, config.clone()).await);
-        }
-        if !matches!(args.role, Some(Role::Source)) {
-            // What the destination published is read back when it can be; else the clauses
-            // that read it are not observed.
-            let read_back = read_back(&target, &config).await;
-            let probe: &dyn Probe = match &read_back {
-                Some(read_back) => read_back,
-                None => &Unprobed,
-            };
-            reports.push(certify_destination(&target, config, probe).await);
-        }
-        reports
-    });
-    // No clause of a role the connector does not serve applies: unless it was asked for, its
-    // report is left out.
-    if args.role.is_none() && reports.iter().any(ran) {
-        reports.retain(ran);
-    }
+    let reports = certified(args, &target, &config)?;
     let verdict = verdict(&reports);
-    let text = match args.output {
-        Output::Plain => reports.iter().map(plain).collect::<String>(),
-        Output::Json => {
-            let passed = verdict == Verdict::Passed;
-            let reports: Vec<_> = reports.iter().map(json).collect();
-            let document = serde_json::json!({
-                "verdict": verdict.as_str(),
-                "passed": passed,
-                "reports": reports,
-            });
-            format!("{document}\n")
-        }
-    };
-    print(&text)?;
+    if matches!(args.output, Output::Json) {
+        let passed = verdict == Verdict::Passed;
+        let reports: Vec<_> = reports.iter().map(json).collect();
+        let document = serde_json::json!({
+            "verdict": verdict.as_str(),
+            "passed": passed,
+            "reports": reports,
+        });
+        print(&format!("{document}\n"))?;
+    }
     if !reports.iter().any(ran) {
         return Err(Ended(
             FINDINGS,
@@ -178,6 +156,96 @@ fn run(args: &Args) -> Result<u8, Ended> {
         ));
     }
     Ok(code(verdict, args.require, &reports))
+}
+
+/// The report of each role asked that the connector serves, or of every role when it serves
+/// none, each printed as text as its certification ends.
+fn certified(
+    args: &Args,
+    target: &Target,
+    config: &serde_json::Value,
+) -> Result<Vec<Report>, Ended> {
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
+    let until = args
+        .timeout
+        .map(|seconds| Instant::now() + Duration::from_secs(seconds));
+    let overdue = |role| unfinished(target, role, OVERDUE);
+    let mut printed = Printed {
+        output: args.output,
+        held: Vec::new(),
+    };
+    let mut reports = Vec::new();
+    if !matches!(args.role, Some(Role::Destination)) {
+        let certifying = certify_source(target, config.clone());
+        let report = runtime.block_on(within(until, certifying));
+        let report = report.unwrap_or_else(|| overdue(rdlt_connector::Role::Source));
+        // No clause of a role the connector does not serve applies: unless the role was asked
+        // for, or no role is served, its report is left out.
+        if args.role.is_some() || ran(&report) {
+            printed.report(&report)?;
+            reports.push(report);
+        } else {
+            printed.held.push(report);
+        }
+    }
+    if !matches!(args.role, Some(Role::Source)) {
+        let certifying = async {
+            // What the destination published is read back when it can be; else the clauses
+            // that read it are not observed.
+            let read_back = read_back(target, config).await;
+            let probe: &dyn Probe = match &read_back {
+                Some(read_back) => read_back,
+                None => &Unprobed,
+            };
+            certify_destination(target, config.clone(), probe).await
+        };
+        let report = runtime.block_on(within(until, certifying));
+        let report = report.unwrap_or_else(|| overdue(rdlt_connector::Role::Destination));
+        let served = ran(&report);
+        if served || reports.is_empty() {
+            if !served {
+                reports.append(&mut printed.held);
+                for held in &reports {
+                    printed.report(held)?;
+                }
+            }
+            printed.report(&report)?;
+            reports.push(report);
+        }
+    }
+    Ok(reports)
+}
+
+/// Why a role's clauses fail when the certification's `--timeout` ends it.
+const OVERDUE: &str = "the certification took longer than its --timeout";
+
+/// `certifying`'s report, unless `until` comes first.
+async fn within(
+    until: Option<Instant>,
+    certifying: impl Future<Output = Report>,
+) -> Option<Report> {
+    match until {
+        Some(until) => tokio::time::timeout_at(until.into(), certifying).await.ok(),
+        None => Some(certifying.await),
+    }
+}
+
+/// The reports printed as text as each role ends, so a certification stopped from outside has
+/// said what it found; as JSON they are one document, printed last.
+struct Printed {
+    output: Output,
+    /// Reports of roles the connector does not serve, printed only when it serves none.
+    held: Vec<Report>,
+}
+
+impl Printed {
+    fn report(&self, report: &Report) -> Result<(), Ended> {
+        match self.output {
+            Output::Plain => print(&plain(report)),
+            Output::Json => Ok(()),
+        }
+    }
 }
 
 /// What `reports` amount to together: failed when one failed, else incomplete when one is.
