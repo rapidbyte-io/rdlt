@@ -134,7 +134,10 @@ pub(super) fn derived(
 }
 
 /// Refuses a database that takes the name of a catalog table for a table named otherwise.
-pub(super) fn catalog(transaction: &Transaction<'_>, planner: &SqlPlanner<Sqlite>) -> Result<()> {
+pub(in crate::sqlite) fn catalog(
+    transaction: &Transaction<'_>,
+    planner: &SqlPlanner<Sqlite>,
+) -> Result<()> {
     for name in planner.catalog() {
         planner.exact(name, &answers(transaction, &planner.resolves(name))?)?;
     }

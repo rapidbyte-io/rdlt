@@ -211,9 +211,11 @@ async fn a_catalog_table_the_database_holds_in_another_case_is_a_clash() {
             load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
         };
         let opened = destination.open(&context).await.map(drop);
-        let (kind, code) = refusal(opened);
-        assert_eq!(kind, ConnectorErrorKind::Config, "{catalog}");
-        assert_eq!(code.as_deref(), Some("table_name_clash"), "{catalog}");
+        for outcome in [opened, destination.check().await] {
+            let (kind, code) = refusal(outcome);
+            assert_eq!(kind, ConnectorErrorKind::Config, "{catalog}");
+            assert_eq!(code.as_deref(), Some("table_name_clash"), "{catalog}");
+        }
     }
 }
 

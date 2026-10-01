@@ -67,7 +67,10 @@ impl DestinationConnector for SqliteDestination {
         let database = Database::open(self.path.clone()).await?;
         let planner = Arc::clone(&self.planner);
         database
-            .transaction(move |transaction| database::run_all(transaction, &planner.bootstrap()))
+            .transaction(move |transaction| {
+                session::owners::catalog(transaction, &planner)?;
+                database::run_all(transaction, &planner.bootstrap())
+            })
             .await
     }
 
