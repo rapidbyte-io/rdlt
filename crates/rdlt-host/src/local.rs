@@ -22,6 +22,11 @@ use crate::remote::Options;
 use crate::wire::Wire;
 
 /// Places connectors in processes of their own.
+///
+/// Each connector leads a process group this process owns. Dropping a connector asks its
+/// group to stop before the drop returns; the kill that follows its grace needs this process
+/// to be running still. A host therefore calls [`stop_spawned`] before it exits, or holds a
+/// [`StopsSpawned`], and listens for the signals that would end it ([`Interrupts`]).
 #[derive(Clone, Debug)]
 pub struct Local {
     dirs: Vec<PathBuf>,

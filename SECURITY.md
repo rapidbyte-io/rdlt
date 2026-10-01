@@ -41,12 +41,12 @@ what a connector sends is charged against a limit before it is held, expanded or
 rows, its bytes and, for JSON, its records. A column read back is cast only between kinds a test
 shows cannot panic. A clause passes only when the behaviour it names was seen, in a mode the
 connector declares. A panic is not caught: it ends the run with a failure, never a pass. The
-certifier stops the process group of each connector it spawned before it exits; a process that
-left its group, or a certifier killed outright, is beyond that. It is no control against a
-connector built to pass: a connector can
-tell a certification from an engine's load, and a destination's read-back is its own account of
-what it published (`docs/certify/clauses.md`). What holds against an untrusted connector is the
-trust model above: the engine's limits, deadlines and confinement.
+certifier stops the process group of each connector it spawned before it exits, unless it is killed
+outright or aborted; a member that left its group is beyond that. It is no control against a
+connector built to pass: a connector can tell a certification from an engine's load, and a
+destination's read-back is its own account of what it published (`docs/certify/clauses.md`). What
+holds against an untrusted connector is the trust model above: the engine's limits, deadlines and
+confinement.
 
 ADR 0050 records this.
 

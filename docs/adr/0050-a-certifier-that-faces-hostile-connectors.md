@@ -82,20 +82,41 @@ things did not hold to that:
 - **A host owns the process group of a connector it spawned, for its whole life.** The
   connector leads a group of its own, and a thread of the host, which outlives the runtime that
   spawned the connector, owns it.
-  - The thread sees the leader exit without reaping it (`waitid` with `WNOWAIT`), so the
-    group's id, the leader's, cannot belong to anything else while it signals.
-  - A stop sends `SIGTERM` to the group and, once the leader has exited or its grace has
-    passed, `SIGKILL`; a kill sends `SIGKILL` at once; a leader that exits by itself has its
-    group killed. Only then is the leader reaped, and the group asked, with the null signal,
-    whether a member is left: one left after five seconds is reported
-    (`rdlt_host::Lingering`).
-  - A connector is stopped when it is dropped, when its runtime is, and when its host calls
-    `rdlt_host::stop_spawned`, which `rdlt-certify` does before it exits however it ends: its
-    run complete, cut at its timeout, or interrupted (`SIGINT`, `SIGTERM`, heard through
-    `rdlt_host::Interrupts`, exit 130 or 143).
-  - A host killed outright runs no code. Its connectors end by the end of their input and, on
-    Linux, the parent-death signal; what they started and left in their groups lives on. A
-    sandboxed spawn with a process namespace of its own closes that.
+  - The group is signalled only while its leader is seen to be the host's unreaped child
+    (`waitid` with `WNOWAIT`), under a lock the thread reaps under: the group's id, the
+    leader's, cannot belong to anything else then. Each signal goes to the leader's own process
+    as well, which may have left the group it was started to lead. A leader something else
+    reaped, as happens in a process that ignores `SIGCHLD` or waits for any child, is sent
+    nothing and not waited for.
+  - A stop closes the leader's input and sends `SIGTERM` before it returns, and the thread
+    sends `SIGKILL` once the leader has exited or its grace has passed; a kill sends `SIGKILL`
+    at once; a leader that exits by itself has its group killed. Only then is the leader
+    reaped, its exit told, and the group asked whether a living member is left: one left after
+    five seconds is reported (`rdlt_host::Lingering`). On Linux a member that has ended and
+    that nothing reaped is no living member, read from `/proc`, so a host that is the first
+    process of a container with no init reports nothing falsely; elsewhere the null signal
+    answers.
+  - A connector that started and could not be owned, its output not taken or its thread not
+    started, is killed and reaped before the failure is returned. A process owns 1024 groups
+    at most, and joins each thread once its group has ended.
+  - `rdlt_host::stop_spawned` stops every group, kills what is still stopping when its
+    patience ends, and waits to see it end. A host calls it before it exits, or holds
+    `rdlt_host::StopsSpawned`, which does so when dropped, a panic's unwinding included.
+    `rdlt-certify` holds one from before it spawns anything: it stops what it spawned when
+    its run completes, is cut at its timeout, panics on its main thread, or hears `SIGINT`,
+    `SIGTERM`, `SIGHUP` or `SIGQUIT` (`rdlt_host::Interrupts`; exit 130, 143, 129, 131). A
+    second signal while its connectors stop kills them at once.
+  - What is not reached, exactly:
+    - a host killed outright (`SIGKILL`), ended by a signal it does not hear, or aborted: it
+      runs no code. Its connectors end by the end of their input and, on Linux, the
+      parent-death signal; what they started and left in their groups lives on;
+    - a host that drops its connectors and exits without `stop_spawned`: each group was sent
+      `SIGTERM`, and a member that ignores it is never killed;
+    - a member that left the group, the leader excepted;
+    - the members of a group whose leader something else reaped: they are reported, not
+      signalled.
+
+    A sandboxed spawn with a process namespace of its own closes the first three.
 - **A kill clause passes on a kill that landed.** The host's end of a connection counts a kill
   as landed when it sees the connection end after the kill: a socket ends only when no process
   holds its other end. The answer `K-DESTINATION` loses by itself is no evidence. For a

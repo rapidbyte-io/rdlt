@@ -34,7 +34,7 @@ A kill clause that passed says beside its `pass`, and as `note` in JSON, what it
 | 2 | no clause failed, yet a role's certification is incomplete |
 | 64 | the command line was wrong: an option, the configuration's JSON, the endpoint, or a `--timeout` further ahead than the clock holds |
 | 74 | a file named could not be read, the connector's binary is missing or not executable, or a connector the certification spawned was not seen to stop |
-| 130, 143 | the certification was interrupted (`SIGINT`) or asked to terminate (`SIGTERM`): the connectors it spawned are stopped first |
+| 130, 143, 129, 131 | the certification was interrupted (`SIGINT`), asked to terminate (`SIGTERM`), hung up on (`SIGHUP`) or asked to quit (`SIGQUIT`): the connectors it spawned are stopped first, and killed at once on a second signal |
 
 A certification cut at its timeout reports what it saw: the clauses already checked keep their outcomes, the clause it was cut in fails, as does the first clause of a role it never started, and the clauses after are not observed, so it exits 1.
 
@@ -106,7 +106,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 - A reason is at most 2048 bytes, and quotes at most the first eight rows of those it counts.
 - A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill. A spawned connector's ends once no process holds its other end, which a kill of its process group brings about unless a process left the group and holds it. The connection of a connector reached at an endpoint, or served in process, is cut by the host, which proves no process stopped: the report notes which was seen.
 - A kill clause loads in a mode the connector declares: a destination in the first of append, merge and replace it writes, a source each stream in the first of incremental, full and change reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved.
-- A spawned connector leads a process group the host stops, then kills, when the certification ends, is cut at its timeout, or is interrupted. A process that left the group is not reached, and neither is anything when the certifier itself is killed outright.
+- A spawned connector leads a process group the certifier stops, then kills, when the certification ends, is cut at its timeout, panics, or hears a signal. A member that left the group is not reached, and neither is anything when the certifier is killed outright.
 - `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times: a source that ignores credit and sends less often than that is not told from one that waits.
 
 ## What certification cannot show

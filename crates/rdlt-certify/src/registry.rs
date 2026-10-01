@@ -133,8 +133,9 @@ clause |
 `--timeout` further ahead than the clock holds |
 | 74 | a file named could not be read, the connector's binary is missing or not executable, or \
 a connector the certification spawned was not seen to stop |
-| 130, 143 | the certification was interrupted (`SIGINT`) or asked to terminate (`SIGTERM`): \
-the connectors it spawned are stopped first |
+| 130, 143, 129, 131 | the certification was interrupted (`SIGINT`), asked to terminate \
+(`SIGTERM`), hung up on (`SIGHUP`) or asked to quit (`SIGQUIT`): the connectors it spawned are \
+stopped first, and killed at once on a second signal |
 
 A certification cut at its timeout reports what it saw: the clauses already checked keep their \
 outcomes, the clause it was cut in fails, as does the first clause of a role it never started, \
@@ -173,9 +174,9 @@ process stopped: the report notes which was seen.
 merge and replace it writes, a source each stream in the first of incremental, full and change \
 reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and \
 one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved.
-- A spawned connector leads a process group the host stops, then kills, when the certification \
-ends, is cut at its timeout, or is interrupted. A process that left the group is not reached, \
-and neither is anything when the certifier itself is killed outright.
+- A spawned connector leads a process group the certifier stops, then kills, when the \
+certification ends, is cut at its timeout, panics, or hears a signal. A member that left the \
+group is not reached, and neither is anything when the certifier is killed outright.
 - `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times: \
 a source that ignores credit and sends less often than that is not told from one that waits.
 
