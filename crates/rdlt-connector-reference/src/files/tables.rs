@@ -20,6 +20,10 @@ use crate::rooted::{self, Dir, Limit};
 /// The code of an error for a table's lock another holder kept for the whole wait.
 pub(super) const LOCK_TIMEOUT: &str = "lock_timeout";
 
+/// The code of an error for a catalog version or an owner file that is not what the destination
+/// writes there.
+pub(super) const CATALOG_INVALID: &str = "catalog_invalid";
+
 /// The directories of the catalog, in the destination's private directory.
 const TABLES: &str = "tables";
 const LOCKS: &str = "locks";
@@ -105,10 +109,9 @@ fn owner_of(dir: &Dir) -> Result<Option<String>> {
     let failed = |error| io::failed("reading", &dir.at(OWNER))(error);
     match dir.read(OWNER, OWNER_LIMIT) {
         Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|error| {
-            failed(stdio::Error::new(
-                ErrorKind::InvalidData,
-                error.utf8_error(),
-            ))
+            let path = dir.at(OWNER);
+            ConnectorError::data(format!("table owner {}: {error}", path.display()))
+                .with_code(CATALOG_INVALID)
         }),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(failed(error)),
@@ -303,7 +306,8 @@ fn latest(rdlt: &Dir, name: &str) -> Result<Option<(u64, TableSchema)>> {
     };
     let schema = serde_json::from_slice(&bytes).map_err(|error| {
         let path = dir.at(versions::name(version));
-        ConnectorError::internal(format!("table catalog {}: {error}", path.display()))
+        ConnectorError::data(format!("table catalog {}: {error}", path.display()))
+            .with_code(CATALOG_INVALID)
     })?;
     Ok(Some((version, schema)))
 }

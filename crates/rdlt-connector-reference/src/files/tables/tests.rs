@@ -256,7 +256,9 @@ fn an_owner_that_cannot_be_read_is_an_error_not_a_missing_owner() {
         Some(long.len() - 1)
     );
     std::fs::write(&owner_path, [0xff, 0xfe]).unwrap();
-    assert!(owner(&rdlt, "t").is_err());
+    let error = owner(&rdlt, "t").unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert_eq!(error.code(), Some(super::CATALOG_INVALID));
 }
 
 #[test]
@@ -370,4 +372,17 @@ fn catalogs_a_release_left_renamed_out_of_place_are_removed() {
     std::fs::write(trash.join("file"), b"a").unwrap();
     empty_trash(&rdlt).unwrap();
     assert_eq!(std::fs::read_dir(&trash).unwrap().count(), 0);
+}
+
+#[test]
+fn a_catalog_version_that_is_no_schema_is_a_data_error_no_retry_reads_differently() {
+    let (root, rdlt) = private();
+    update(&rdlt, "t", |current| Ok(Some(with(current, "a")))).unwrap();
+    let catalog = root.path().join("tables").join("t");
+    for junk in [&b"not json"[..], b"{", b"[[[[[[[[", b"", b"\xff\xfe"] {
+        std::fs::write(catalog.join("00000000000000000002.json"), junk).unwrap();
+        let error = read(&rdlt, "t").unwrap_err();
+        assert_eq!(error.kind(), ConnectorErrorKind::Data, "{junk:?}");
+        assert_eq!(error.code(), Some(super::CATALOG_INVALID), "{junk:?}");
+    }
 }
