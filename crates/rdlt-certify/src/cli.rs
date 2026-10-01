@@ -2,10 +2,10 @@
 //! print what it met.
 
 mod panics;
+mod session;
 #[cfg(test)]
 mod tests;
 
-use std::future::Future;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -16,10 +16,10 @@ use clap::{Parser, ValueEnum};
 use rdlt_certify::{
     Observed, Outcome, Probe, RUN_TIMEOUT, Report, Target, Unprobed, Verdict,
     certify_destination_observed, certify_source_observed, json, markdown, plain, read_back,
-    unfinished,
 };
 use rdlt_connector::ConnectorId;
-use rdlt_host::{ConnectorRef, Endpoint, Identity, Interrupts, Local, Remote};
+use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote, StopsSpawned};
+use session::{STOPPING, Session, ending, signalled};
 
 /// Every clause that applies to the connector was seen to be met.
 const PASSED: u8 = 0;
@@ -146,12 +146,14 @@ fn run(args: &Args) -> Result<u8, Ended> {
         Some(seconds) => target.kill_timeout(Duration::from_secs(seconds)),
         None => target,
     };
-    let certified = certified(args, &target, &config);
-    // However the certification ended, each connector it spawned is stopped with its whole
-    // process group, and seen to be, before this process exits.
-    let stopped = rdlt_host::stop_spawned(STOPPING);
-    let reports = certified?;
-    stopped.map_err(|lingering| Ended(IO, lingering.to_string()))?;
+    // Held from before anything is spawned: however the certification ends, a panic of this
+    // thread included, each connector it spawned is stopped with its whole process group.
+    let stops = StopsSpawned::within(STOPPING);
+    let mut session = Session::start(until(args)?)?;
+    let certified = certified(args, &target, &config, &mut session);
+    let heard = certified.as_ref().err().and_then(signalled);
+    let (stopped, heard) = session.stopped(stops, heard);
+    let reports = ending(certified, stopped, heard)?;
     let verdict = verdict(&reports);
     if matches!(args.output, Output::Json) {
         let passed = verdict == Verdict::Passed;
@@ -185,39 +187,14 @@ fn until(args: &Args) -> Result<Option<Instant>, Ended> {
     Ok(Some(until))
 }
 
-/// A role's certification, as the command line runs it.
-type Certifying<'a> = std::pin::Pin<&'a mut dyn Future<Output = Report>>;
-
 /// The report of each role asked that the connector serves, or of every role when it serves
 /// none, each printed as text as its certification ends.
 fn certified(
     args: &Args,
     target: &Target,
     config: &serde_json::Value,
+    session: &mut Session,
 ) -> Result<Vec<Report>, Ended> {
-    let runtime = tokio::runtime::Runtime::new()
-        .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
-    let until = until(args)?;
-    // Heard from here on: an interrupt ends the certification, which then stops what it spawned.
-    let mut interrupts = {
-        let _runtime = runtime.enter();
-        Interrupts::listen().map_err(|error| Ended(IO, format!("no signal is heard: {error}")))?
-    };
-    // A role's report: what its certification found, cut where the bound passed. A bound that
-    // has passed already starts no connector.
-    let mut ran_to = |role, observed: &Observed, certifying: Certifying<'_>| {
-        if until.is_some_and(|until| Instant::now() >= until) {
-            return Ok(unfinished(target, role, observed, OVERDUE));
-        }
-        let report = runtime.block_on(async {
-            tokio::select! {
-                biased;
-                status = interrupts.heard() => Err(interrupted(status)),
-                report = within(until, certifying) => Ok(report),
-            }
-        })?;
-        Ok(report.unwrap_or_else(|| unfinished(target, role, observed, OVERDUE)))
-    };
     let mut printed = Printed {
         output: args.output,
         held: Vec::new(),
@@ -226,7 +203,7 @@ fn certified(
     if !matches!(args.role, Some(Role::Destination)) {
         let observed = Observed::new();
         let certifying = std::pin::pin!(certify_source_observed(target, config.clone(), &observed));
-        let report = ran_to(rdlt_connector::Role::Source, &observed, certifying)?;
+        let report = session.ran_to(target, rdlt_connector::Role::Source, &observed, certifying)?;
         // No clause of a role the connector does not serve applies: unless the role was asked
         // for, or no role is served, its report is left out.
         if args.role.is_some() || ran(&report) {
@@ -248,7 +225,8 @@ fn certified(
             };
             certify_destination_observed(target, config.clone(), probe, &observed).await
         });
-        let report = ran_to(rdlt_connector::Role::Destination, &observed, certifying)?;
+        let role = rdlt_connector::Role::Destination;
+        let report = session.ran_to(target, role, &observed, certifying)?;
         let served = ran(&report);
         if served || reports.is_empty() {
             if !served {
@@ -264,20 +242,6 @@ fn certified(
     Ok(reports)
 }
 
-/// How long the connectors a certification spawned have to stop, each with its group, once the
-/// certification has ended: their grace, and what seeing a killed group empty takes.
-const STOPPING: Duration = Duration::from_secs(20);
-
-/// The end of a certification that was interrupted, or asked to terminate, with the exit
-/// `status` a process so ended has.
-fn interrupted(status: i32) -> Ended {
-    let code = u8::try_from(status).unwrap_or(FINDINGS);
-    Ended(code, "interrupted: nothing more is certified".to_owned())
-}
-
-/// Why a role's clauses fail when the certification's timeout ends it.
-const OVERDUE: &str = "the certification took longer than its timeout: see --timeout";
-
 /// How long the certification may take: the `timeout` chosen, in seconds, else
 /// [`RUN_TIMEOUT`]; no bound when `unbounded`.
 fn bound(timeout: Option<u64>, unbounded: bool) -> Option<Duration> {
@@ -285,17 +249,6 @@ fn bound(timeout: Option<u64>, unbounded: bool) -> Option<Duration> {
         return None;
     }
     Some(timeout.map_or(RUN_TIMEOUT, Duration::from_secs))
-}
-
-/// `certifying`'s report, unless `until` comes first.
-async fn within(
-    until: Option<Instant>,
-    certifying: impl Future<Output = Report>,
-) -> Option<Report> {
-    match until {
-        Some(until) => tokio::time::timeout_at(until.into(), certifying).await.ok(),
-        None => Some(certifying.await),
-    }
 }
 
 /// The reports printed as text as each role ends, so a certification stopped from outside has
