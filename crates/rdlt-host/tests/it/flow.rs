@@ -17,6 +17,7 @@ use rdlt_connector_reference::MemoryDestination;
 use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options};
 use rdlt_host::{RemoteDestination, RemoteSource};
 use rdlt_wire::Limits;
+use rdlt_wire::limits::MIN_FRAME_BYTES;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +38,9 @@ pub(crate) struct BlobsConfig {
     /// The length of the message the check fails with; zero checks cleanly.
     #[serde(default)]
     message: usize,
+    /// The length of each string; zero for 256 KiB.
+    #[serde(default)]
+    bytes: usize,
 }
 
 /// A source of one endless stream, `blobs`, of 256 KiB strings.
@@ -80,12 +84,16 @@ impl ReadStream<Blobs> for BlobStream {
 
     async fn read(
         &self,
-        _: &Blobs,
+        source: &Blobs,
         _: &Partition,
         _: NoCursor,
         out: &mut Emitter<NoCursor>,
     ) -> Result<()> {
-        let blob = "b".repeat(256 * 1024);
+        let bytes = match source.config.bytes {
+            0 => 256 * 1024,
+            bytes => bytes,
+        };
+        let blob = "b".repeat(bytes);
         loop {
             let column: ArrayRef = Arc::new(StringArray::from(vec![blob.clone()]));
             let batch = RecordBatch::try_from_iter([("b", column)]).expect("a valid batch");
@@ -244,20 +252,20 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
 #[tokio::test]
 async fn a_row_beyond_the_connectors_frame_limit_is_refused_typed() {
     let limits = Limits {
-        frame_bytes: 64 * 1024,
+        frame_bytes: MIN_FRAME_BYTES,
         ..Limits::default()
     };
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let mut writer = writer(served, limits, "flow_limit", Options::default()).await;
     // Rows that fit a frame go, as many frames as they need; a row that fits none is refused
     // before any of its batch is sent.
-    let small: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 20_000]));
+    let small: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 500_000]));
     let rows = RecordBatch::try_from_iter([("b", small)]).expect("a valid batch");
     writer
         .write(SegmentId(1), rows)
         .await
         .expect("a batch of small rows is cut to the limit");
-    let blob: ArrayRef = Arc::new(StringArray::from(vec!["b".repeat(128 * 1024)]));
+    let blob: ArrayRef = Arc::new(StringArray::from(vec!["b".repeat(5 << 20)]));
     let row = RecordBatch::try_from_iter([("b", blob)]).expect("a valid batch");
     let error = write_until_failed(writer.as_mut(), &row, 1).await;
     assert_eq!(
@@ -265,7 +273,10 @@ async fn a_row_beyond_the_connectors_frame_limit_is_refused_typed() {
             error.code(),
             error.limit().map(|limit| (limit.name, limit.limit))
         ),
-        (Some("limit_exceeded"), Some(("frame bytes", 64 * 1024)))
+        (
+            Some("limit_exceeded"),
+            Some(("frame bytes", MIN_FRAME_BYTES))
+        )
     );
     assert_ne!(error.code(), Some(CONNECTOR_LOST));
     // The write goes on: a row of the refused row's schema that fits is written.
@@ -282,12 +293,12 @@ async fn a_row_beyond_the_connectors_frame_limit_is_refused_typed() {
 async fn a_read_frame_beyond_the_hosts_limit_is_refused_typed() {
     let options = Options {
         limits: Limits {
-            frame_bytes: 64 * 1024,
+            frame_bytes: MIN_FRAME_BYTES,
             ..Limits::default()
         },
         ..Options::default()
     };
-    let source = blobs(serde_json::json!({}), options).await;
+    let source = blobs(serde_json::json!({ "bytes": 5 << 20 }), options).await;
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
     let request = ReadRequest::new(
         StreamName::new("blobs").expect("a valid stream name"),
@@ -299,6 +310,6 @@ async fn a_read_frame_beyond_the_hosts_limit_is_refused_typed() {
     let error = reading.await.expect("the read ends").unwrap_err();
     assert_eq!(
         error.limit().map(|limit| (limit.name, limit.limit)),
-        Some(("frame bytes", 64 * 1024))
+        Some(("frame bytes", MIN_FRAME_BYTES))
     );
 }

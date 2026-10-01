@@ -109,8 +109,8 @@ const CONFIG_BYTES: usize = 1024;
 /// Its cursor limit, in bytes.
 const CURSOR_BYTES: usize = 1024;
 
-/// Its frame limit, in bytes.
-const FRAME_BYTES: u64 = 64 * 1024;
+/// Its frame limit, in bytes: the least the protocol lets a peer set.
+const FRAME_BYTES: u64 = rdlt_wire::limits::MIN_FRAME_BYTES;
 
 /// A connection's fake, keeping the protocol but for `fault`.
 pub(crate) struct Fake {
@@ -129,8 +129,11 @@ pub(crate) fn served(fault: Fault) -> std::io::Result<Box<dyn Stream>> {
         handshaken: AtomicBool::new(false),
         configured: AtomicBool::new(false),
     };
-    let service =
-        ConnectorServer::new(fake).map_request(|request: http::Request<hyper::body::Incoming>| {
+    // A message a little over its frame limit is read, so the fake refuses it by the limit.
+    let message_bytes = usize::try_from(2 * FRAME_BYTES).expect("the limit fits");
+    let service = ConnectorServer::new(fake)
+        .max_decoding_message_size(message_bytes)
+        .map_request(|request: http::Request<hyper::body::Incoming>| {
             request.map(tonic::body::Body::new)
         });
     tokio::spawn(

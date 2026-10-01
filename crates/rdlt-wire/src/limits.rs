@@ -18,6 +18,20 @@ pub const BATCH_ROWS: u64 = 1024 * 1024;
 /// A frame at [`FRAME_BYTES`] holds this many one-byte values.
 pub const BATCH_VALUES: u64 = 64 * BATCH_ROWS;
 
+/// Bytes: the least frame limit a peer may set.
+///
+/// A sender cuts a batch to its receiver's limits, and every frame costs it each buffer's
+/// padding, whatever its rows hold: a receiver may not ask for frames so small that most of what
+/// crosses is padding. One row of a schema at the column limit fits a frame of this size.
+pub const MIN_FRAME_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Rows: the least rows a peer may limit a batch to, for the reason of [`MIN_FRAME_BYTES`].
+pub const MIN_BATCH_ROWS: u64 = 1024;
+
+/// Values: the least values a peer may limit a frame to, for the reason of
+/// [`MIN_FRAME_BYTES`]: a hundred rows of a schema at the column limit.
+pub const MIN_BATCH_VALUES: u64 = 1024 * 1024;
+
 /// Columns: bounds one schema's width, counting nested fields.
 pub const SCHEMA_COLUMNS: u64 = 10_000;
 
@@ -73,6 +87,23 @@ pub const FIELDS: &[&str] = &[
     "schema bytes",
     "view bytes",
 ];
+
+/// The code of a limit a peer set below the protocol's minimum.
+pub const LIMIT_BELOW_MINIMUM: &str = "limit_below_minimum";
+
+/// A limit a peer set below the protocol's minimum, refused at the handshake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the peer's limit of {field} is {actual}, below the protocol's minimum of {minimum}")]
+pub struct Shortfall {
+    /// Always [`LIMIT_BELOW_MINIMUM`].
+    pub code: &'static str,
+    /// The limit, as a [`Refusal`] names it.
+    pub field: &'static str,
+    /// The least a peer may set it to.
+    pub minimum: u64,
+    /// What the peer set.
+    pub actual: u64,
+}
 
 /// The limits one end enforces on what it receives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +194,32 @@ impl Limits {
     /// A [`Refusal`] when the frame exceeds [`Limits::frame_bytes`].
     pub fn admit_frame(&self, bytes: usize) -> Result<(), Refusal> {
         Self::admit("frame bytes", self.frame_bytes, len(bytes))
+    }
+
+    /// Admits these limits as a peer's: each limit a sender cuts batches to is at least the
+    /// protocol's minimum, so no peer makes its sender send frames of mostly padding.
+    ///
+    /// # Errors
+    ///
+    /// A [`Shortfall`] naming the first limit below its minimum.
+    pub fn admit_peer(&self) -> Result<(), Shortfall> {
+        let floors = [
+            ("frame bytes", MIN_FRAME_BYTES, self.frame_bytes),
+            ("batch rows", MIN_BATCH_ROWS, self.batch_rows),
+            ("batch values", MIN_BATCH_VALUES, self.batch_values),
+        ];
+        match floors
+            .into_iter()
+            .find(|(_, minimum, actual)| actual < minimum)
+        {
+            None => Ok(()),
+            Some((field, minimum, actual)) => Err(Shortfall {
+                code: LIMIT_BELOW_MINIMUM,
+                field,
+                minimum,
+                actual,
+            }),
+        }
     }
 
     /// Admits a schema message of `bytes`.

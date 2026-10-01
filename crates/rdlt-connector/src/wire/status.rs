@@ -90,3 +90,15 @@ pub fn frame_error(error: &rdlt_wire::WireError) -> ConnectorError {
             .with_code(MALFORMED_FRAME),
     }
 }
+
+/// A peer's limit below the protocol's minimum, as the error its handshake is refused with.
+pub fn shortfall_error(shortfall: &rdlt_wire::Shortfall) -> ConnectorError {
+    let limit = crate::error::LimitExceeded {
+        name: shortfall.field,
+        limit: shortfall.minimum,
+        actual: shortfall.actual,
+    };
+    ConnectorError::new(ConnectorErrorKind::Unsupported, shortfall.to_string())
+        .with_code(shortfall.code)
+        .with_limit(Some(limit))
+}

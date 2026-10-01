@@ -117,3 +117,57 @@ fn the_credit_window_and_a_messages_overhead_are_the_protocols() {
     };
     assert_eq!(limits.message_bytes(), 10 + 65_536);
 }
+
+#[test]
+fn a_peers_limits_are_admitted_from_the_protocols_minimums_up() {
+    use super::{
+        LIMIT_BELOW_MINIMUM, MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES, Shortfall,
+    };
+    assert_eq!(
+        (MIN_FRAME_BYTES, MIN_BATCH_ROWS, MIN_BATCH_VALUES),
+        (4_194_304, 1_024, 1_048_576)
+    );
+    assert_eq!(Limits::default().admit_peer(), Ok(()));
+    let least = Limits {
+        frame_bytes: MIN_FRAME_BYTES,
+        batch_rows: MIN_BATCH_ROWS,
+        batch_values: MIN_BATCH_VALUES,
+        ..Limits::default()
+    };
+    assert_eq!(least.admit_peer(), Ok(()));
+    let below = |field, minimum| {
+        Err(Shortfall {
+            code: LIMIT_BELOW_MINIMUM,
+            field,
+            minimum,
+            actual: minimum - 1,
+        })
+    };
+    let frame = Limits {
+        frame_bytes: MIN_FRAME_BYTES - 1,
+        ..least
+    };
+    assert_eq!(frame.admit_peer(), below("frame bytes", MIN_FRAME_BYTES));
+    let rows = Limits {
+        batch_rows: MIN_BATCH_ROWS - 1,
+        ..least
+    };
+    assert_eq!(rows.admit_peer(), below("batch rows", MIN_BATCH_ROWS));
+    let values = Limits {
+        batch_values: MIN_BATCH_VALUES - 1,
+        ..least
+    };
+    assert_eq!(values.admit_peer(), below("batch values", MIN_BATCH_VALUES));
+    // Limits a sender does not cut batches to have no minimum: one too low only refuses.
+    let others = Limits {
+        schema_columns: 1,
+        nesting_depth: 1,
+        json_push_bytes: 1,
+        cursor_bytes: 1,
+        config_bytes: 1,
+        control_string_bytes: 1,
+        schema_bytes: 1,
+        ..least
+    };
+    assert_eq!(others.admit_peer(), Ok(()));
+}
