@@ -7,7 +7,8 @@ mod tests;
 use super::super::{Column, Sql, SqlDialect, SqlPlanner};
 use super::Staged;
 use crate::commit::SegmentSet;
-use crate::destination::MergeKey;
+use crate::destination::{Deletion, MergeKey, TableRef};
+use crate::error::{ConnectorError, Result};
 use crate::id::{Epoch, PipelineId};
 
 /// The rows one commit publishes for one table: what `pipeline` staged at `epoch` in `segments`.
@@ -18,7 +19,65 @@ pub(super) struct Of<'a> {
     pub(super) segments: &'a SegmentSet,
 }
 
+/// The error for a merge key naming no column: a `Data` error coded `merge_key_invalid`.
+pub(in crate::sqlgen) fn keyless(table: &str) -> ConnectorError {
+    ConnectorError::data(format!("table {table} is merged by a key of no column"))
+        .with_code("merge_key_invalid")
+}
+
+/// Refuses `key` unless `columns`, the columns of the table `table`, hold every column it names
+/// there: its key columns, of which it has at least one, its sequence, where deletes are soft
+/// their deletion time, and a history table's history columns.
+///
+/// Every merge is planned from a key checked so, since a name that is no column is, to some
+/// databases, a text: a `Data` error coded `merge_key_invalid`.
+pub(in crate::sqlgen) fn holds_key(table: &str, key: &MergeKey, columns: &[Column]) -> Result<()> {
+    if key.columns.is_empty() {
+        return Err(keyless(table));
+    }
+    // A child table is keyed by its root id alone, its first key column.
+    let keys = match &key.root {
+        Some(_) => &key.columns[..1],
+        None => &key.columns[..],
+    };
+    let at = key
+        .changes
+        .as_ref()
+        .and_then(|changes| match &changes.deletion {
+            Deletion::Soft { at } => Some(at),
+            Deletion::Hard => None,
+        });
+    let history = key.history.iter().flat_map(|history| {
+        [
+            &history.valid_from,
+            &history.valid_to,
+            &history.is_current,
+            &history.row_hash,
+        ]
+    });
+    let named = keys.iter().chain([&key.seq]).chain(at).chain(history);
+    for name in named {
+        if !columns.iter().any(|column| *column.name == **name) {
+            return Err(ConnectorError::data(format!(
+                "table {table} has no column {name}, which its merge key names"
+            ))
+            .with_code("merge_key_invalid"));
+        }
+    }
+    Ok(())
+}
+
 impl<D: SqlDialect> SqlPlanner<D> {
+    /// Refuses a writer of `table` unless `columns`, the columns the table has, hold every column
+    /// its merge key names there, as [`SqlPlanner::publish`] refuses its commit: a `Data` error
+    /// coded `merge_key_invalid`; a table that does not merge has no key to hold.
+    pub fn merges(&self, table: &TableRef, columns: &[Column]) -> Result<()> {
+        match &table.merge {
+            Some(key) => holds_key(&table.name, key, columns),
+            None => Ok(()),
+        }
+    }
+
     /// The statements merging the rows `of` names into `target` by `key`, from `staging`, both of
     /// the `columns` named `names`: the published rows of their keys deleted, then the row of
     /// each key with the greatest sequence inserted.

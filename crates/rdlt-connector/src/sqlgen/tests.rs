@@ -226,6 +226,81 @@ fn a_commit_publishes_child_tables_first_and_those_listed_that_follow_a_staged_r
     );
 }
 
+/// The table `orders`, a generation of it and it as a change stream's, each of which copies the
+/// types of its columns into a table derived from it.
+fn copying() -> [TableRef; 3] {
+    let orders = keyed("orders");
+    let generation = TableRef {
+        generation: Some(GenerationId(3)),
+        ..orders.clone()
+    };
+    let changes = TableRef {
+        merge: orders.merge.clone().map(|key| MergeKey {
+            changes: Some(crate::destination::ChangeColumns {
+                op: "op".into(),
+                unchanged: None,
+                deletion: crate::destination::Deletion::Hard,
+            }),
+            ..key
+        }),
+        ..orders.clone()
+    };
+    [orders, generation, changes]
+}
+
+/// What the planner plans to derive a staging table, a generation table and the tombstones from
+/// a table of `target`'s columns.
+fn derived_from(target: &[Column]) -> [crate::error::Result<Vec<Statement>>; 3] {
+    let (_, planner) = database();
+    let [orders, generation, changes] = copying();
+    let change = create(&orders, &[("v", LogicalType::Utf8, true)]);
+    let owned = planner.own(&pipeline("mine"), "orders");
+    [
+        planner.change_of(&change, [target, &[], &[]]),
+        planner.generation(&owned, &generation, target),
+        planner.change_tables_of(&changes, [target, target, &[]]),
+    ]
+}
+
+#[test]
+fn a_declared_type_the_dialect_does_not_render_is_never_copied() {
+    let column = |name: &str, declared: &str| Column {
+        name: name.to_owned(),
+        declared: declared.to_owned(),
+    };
+    let hostile = [
+        "INTEGER, injected TEXT DEFAULT (sqlite_version())",
+        "INTEGER, CHECK (0)) --",
+        "INTEGER NOT NULL",
+        "INT",
+        "",
+    ];
+    for declared in hostile {
+        let target = [column("id", declared), column("seq", "BLOB")];
+        for derived in derived_from(&target) {
+            let error = derived.unwrap_err();
+            assert_eq!(
+                (error.kind(), error.code()),
+                (ConnectorErrorKind::Data, Some("schema_conflict")),
+                "{declared}"
+            );
+        }
+    }
+    // A type the dialect renders is written as the dialect renders it, whatever its case.
+    let target = [column("id", "integer"), column("seq", "Blob")];
+    for plan in derived_from(&target) {
+        let plan = plan.unwrap();
+        let created: Vec<&str> = plan
+            .iter()
+            .map(|statement| statement.sql.as_str())
+            .filter(|sql| sql.starts_with("CREATE TABLE"))
+            .collect();
+        assert_eq!(created.len(), 1, "{plan:?}");
+        assert!(created[0].contains("\"id\" INTEGER"), "{}", created[0]);
+        assert!(created[0].contains("\"seq\" BLOB"), "{}", created[0]);
+    }
+}
+
 #[test]
 fn no_statement_is_planned_for_a_table_from_the_owner_check_of_another() {
     let (_, planner) = database();
@@ -1105,9 +1180,9 @@ fn a_widen_the_column_holds_plans_nothing_and_a_dialect_that_can_redeclares_it()
     assert_eq!(
         sql,
         [
-            "ALTER TABLE orders ALTER COLUMN n TYPE INTEGER",
-            "ALTER TABLE _rdlt_staging__orders ALTER COLUMN n TYPE INTEGER",
-            "ALTER TABLE _rdlt_tombstones__orders ALTER COLUMN n TYPE INTEGER",
+            "ALTER TABLE \"orders\" ALTER COLUMN \"n\" TYPE INTEGER",
+            "ALTER TABLE \"_rdlt_staging__orders\" ALTER COLUMN \"n\" TYPE INTEGER",
+            "ALTER TABLE \"_rdlt_tombstones__orders\" ALTER COLUMN \"n\" TYPE INTEGER",
         ]
     );
     let lacking = widening.change_of(&widen, [&existing, &[], &[]]).unwrap();

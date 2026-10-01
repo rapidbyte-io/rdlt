@@ -1,6 +1,7 @@
 mod kit;
 mod owned;
 mod receipts;
+mod text;
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;

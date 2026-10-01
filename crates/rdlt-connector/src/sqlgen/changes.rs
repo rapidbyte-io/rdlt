@@ -18,6 +18,7 @@ use arrow_array::types::Int8Type;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
+use super::publish::keyless;
 use super::{Column, Owned, SqlDialect, SqlPlanner, Statement};
 use crate::change::ChangeOp;
 use crate::destination::{ChangeColumns, MergeKey, TableRef};
@@ -80,15 +81,17 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 .iter()
                 .chain([&key.seq])
                 .map(|name| {
-                    let column = target.iter().find(|column| *column.name == **name);
-                    column
-                        .map(|column| format!("{} {}", self.quote(name), column.declared))
+                    let column = target
+                        .iter()
+                        .find(|column| *column.name == **name)
                         .ok_or_else(|| {
                             ConnectorError::data(format!(
                                 "table {} has no column {name} to merge changes by",
                                 table.name
                             ))
-                        })
+                        })?;
+                    let declared = self.rendered(&table.name, column)?;
+                    Ok(format!("{} {declared}", self.quote(name)))
                 })
                 .collect::<Result<Vec<_>>>()?;
             plan.push(Statement {
@@ -115,6 +118,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let Some(key) = table.merge.as_ref().filter(|key| key.root.is_none()) else {
             return Ok(Vec::new());
         };
+        if key.columns.is_empty() {
+            return Err(keyless(&table.name));
+        }
         let columns: Vec<String> = key
             .columns
             .iter()

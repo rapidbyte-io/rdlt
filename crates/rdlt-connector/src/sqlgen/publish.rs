@@ -7,7 +7,8 @@ mod keyed;
 mod recorded;
 mod swap;
 
-use keyed::Of;
+pub(super) use keyed::keyless;
+use keyed::{Of, holds_key};
 use recorded::encode_merge_key;
 pub use recorded::merge_key;
 
@@ -205,6 +206,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let staging = self.quote(&self.staging_table(&staged.name));
         let target = self.quote(&name);
         let tables = [target.as_str(), staging.as_str(), names.as_str()];
+        if let Some(key) = &staged.merge {
+            holds_key(&name, key, columns)?;
+        }
         let mut plan = match &staged.merge {
             None => vec![self.appended(tables, &of).finish()],
             Some(key) if key.root.is_some() => {
@@ -254,7 +258,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let Some(key) = table.merge.as_ref().filter(|key| key.root.is_some()) else {
             return Ok(None);
         };
-        let (root_id, _) = child_key(key)?;
+        let (root_id, _) = child_key(&table.name, key)?;
         let target = self.target(table);
         let name = self.root_index_name(&target);
         let sql = self.dialect.create_index(
@@ -271,7 +275,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// The statement removing the rows of the child table `target` whose roots the root table's
     /// rows staged in the segments `of` names publish.
     fn replace_children(&self, target: &str, key: &MergeKey, of: &Of<'_>) -> Result<Statement> {
-        let (root_id, root) = child_key(key)?;
+        let (root_id, root) = child_key(&of.staged.name, key)?;
         self.named(&root.table)?;
         // Root columns are qualified, so one the root staging lacks is an error rather than the
         // child table's column of that name.
@@ -291,7 +295,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// Narrows `sql`'s staged child rows to those of each root's winning row: whose root id and
     /// sequence are a staged root row's id and greatest sequence.
     fn of_winning_roots(&self, sql: &mut Sql<'_, D>, key: &MergeKey, of: &Of<'_>) -> Result<()> {
-        let (root_id, root) = child_key(key)?;
+        let (root_id, root) = child_key(&of.staged.name, key)?;
         let staging = self.quote(&self.staging_table(&root.table));
         let children = self.quote(&self.staging_table(&of.staged.name));
         let id = format!("{staging}.{}", self.quote(&root.id));
@@ -381,11 +385,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
 }
 
 /// A child table's root id column and its root.
-fn child_key(key: &MergeKey) -> Result<(&str, &RootKey)> {
+fn child_key<'a>(table: &str, key: &'a MergeKey) -> Result<(&'a str, &'a RootKey)> {
     match (key.columns.first(), &key.root) {
         (Some(root_id), Some(root)) => Ok((root_id, root)),
-        _ => Err(ConnectorError::internal(
-            "a child table's key names its root id and its root",
+        (None, _) => Err(keyless(table)),
+        (_, None) => Err(ConnectorError::internal(
+            "a child table's key names its root",
         )),
     }
 }
