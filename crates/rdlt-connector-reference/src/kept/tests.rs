@@ -252,3 +252,89 @@ fn a_keeper_names_a_file_in_a_directory_that_exists() {
     advanced.unwrap();
     assert!(written);
 }
+
+#[test]
+fn an_acknowledgement_whose_write_failed_is_kept_when_it_is_made_again() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keeper.json");
+    let kept = Kept::<u64>::at(&path).unwrap();
+    kept.advance("s", &partition("p"), 1).unwrap();
+    let mode = |mode| {
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    mode(0o500);
+    // Where permissions bind nothing, as for root, the fault cannot be made.
+    let writable = std::fs::write(dir.path().join("probe"), b"").is_ok();
+    let failed = kept.advance("s", &partition("p"), 7);
+    mode(0o700);
+    if writable {
+        return;
+    }
+    failed.expect_err("the keeper cannot write");
+    assert_eq!(kept.position("s", &partition("p")), Some(1));
+    // The host acknowledges again what it was refused.
+    kept.advance("s", &partition("p"), 7).unwrap();
+    let reopened = Kept::<u64>::at(&path).unwrap();
+    assert_eq!(reopened.position("s", &partition("p")), Some(7));
+}
+
+#[test]
+fn an_acknowledgement_is_durable_step_by_step_and_stands_only_once_its_file_does() {
+    use crate::rooted::trace::{self, Step};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keeper.json");
+    let kept = Kept::<u64>::at(&path).unwrap();
+    kept.advance("s", &partition("p"), 1).unwrap();
+    trace::clear();
+    kept.advance("s", &partition("p"), 2).unwrap();
+    // The temporary is made durable before it takes the file's name, and the name after.
+    let steps = trace::steps();
+    let Step::Create(temporary) = steps[0].clone() else {
+        panic!("{steps:?}");
+    };
+    let expected = [
+        Step::Create(temporary.clone()),
+        Step::SyncFile(temporary),
+        Step::Rename(path.clone()),
+        Step::SyncDir(dir.path().to_owned()),
+    ];
+    assert_eq!(steps, expected);
+    // A fault at any step: the acknowledgement fails, the keeper stands where it stood, and the
+    // acknowledgement made again is kept.
+    for (step, position) in (0..expected.len()).zip(3_u64..) {
+        trace::fail_at(step);
+        kept.advance("s", &partition("p"), position)
+            .expect_err("the step is refused");
+        trace::clear();
+        assert_eq!(
+            kept.position("s", &partition("p")),
+            Some(position - 1),
+            "step {step}"
+        );
+        kept.advance("s", &partition("p"), position).unwrap();
+        let reopened = Kept::<u64>::at(&path).unwrap();
+        assert_eq!(reopened.position("s", &partition("p")), Some(position));
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "step {step}"
+        );
+    }
+    // A process that dies at any step leaves the file as it was or as it would be, whole.
+    for step in 0..expected.len() {
+        let before = Kept::<u64>::at(&path)
+            .unwrap()
+            .position("s", &partition("p"));
+        trace::crash_at(step);
+        kept.advance("s", &partition("p"), 100 + u64::try_from(step).unwrap())
+            .expect_err("the process died");
+        trace::clear();
+        let after = Kept::<u64>::at(&path)
+            .unwrap()
+            .position("s", &partition("p"));
+        let renamed = step == 3;
+        let expected = if renamed { Some(103) } else { before };
+        assert_eq!(after, expected, "step {step}");
+    }
+}
