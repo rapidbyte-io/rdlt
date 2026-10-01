@@ -3,10 +3,12 @@
 //! each runs it again and checks every row landed once (spec §20.6).
 //!
 //! `crash_run <config.json>` runs the pipeline the file describes once, retrying, and exits 0
-//! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names.
+//! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names. It
+//! tells each read as it begins (`read 2`), each commit as it lands (`commit 3`), a kill as it
+//! makes it (`killed reading 1`, the source's reads then in flight), and last its report, as JSON.
 
 mod config;
-mod killing;
+mod watch;
 
 use std::io::Write as _;
 use std::num::NonZeroUsize;
@@ -22,6 +24,7 @@ use rdlt_engine::{Engine, LocalWal, RayonPool, RunStatus, SystemEnv};
 use rdlt_host::{ConnectorRef, Kills, Local, Provider as _};
 
 use config::{Config, Victim};
+use watch::Watch;
 
 fn main() -> ExitCode {
     let _failpoints = fail::FailScenario::setup();
@@ -59,14 +62,17 @@ async fn run(config: &Config) -> Result<(), String> {
     let kills = Kills::new();
     let killed = config.kill.map(|kill| kill.victim);
     let source = source(config, (killed == Some(Victim::Source)).then_some(&kills)).await?;
-    let mut destination = destination(
+    let destination = destination(
         config,
         (killed == Some(Victim::Destination)).then_some(&kills),
     )
     .await?;
-    if let Some(kill) = config.kill {
-        destination = killing::killing(destination, kills, kill.commit);
-    }
+    let watch = Arc::new(match config.kill {
+        Some(kill) => Watch::killing(kills, kill),
+        None => Watch::default(),
+    });
+    let source = watch::source(source, Arc::clone(&watch));
+    let destination = watch::destination(destination, watch);
     let pool =
         RayonPool::new(NonZeroUsize::new(2).expect("two")).map_err(|error| error.to_string())?;
     let mut env = SystemEnv::new(pool);
