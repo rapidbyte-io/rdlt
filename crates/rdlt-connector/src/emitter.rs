@@ -1,5 +1,6 @@
 //! What a source's read handler writes to.
 
+mod admit;
 #[cfg(test)]
 mod tests;
 
@@ -12,7 +13,7 @@ use serde::Serialize;
 use crate::change::validate_change_batch;
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, LimitExceeded, Result, ResultExt};
-use crate::limits::{MAX_BATCH_ROWS, MAX_COLUMNS, MAX_JSON_PUSH_BYTES};
+use crate::limits::MAX_JSON_PUSH_BYTES;
 use crate::sink::{LogLevel, PartitionSink, Push, SourceEvent};
 
 /// Sends one partition's data and checkpoints to the engine, with cursors of type `C`.
@@ -87,7 +88,7 @@ impl<C: Serialize> Emitter<C> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        check_batch(&batch)?;
+        check_batch(&batch, self.sink.holds_whole())?;
         self.sink.send(SourceEvent::Push(Push::Arrow(batch))).await
     }
 
@@ -96,7 +97,7 @@ impl<C: Serialize> Emitter<C> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        check_batch(&batch)?;
+        check_batch(&batch, self.sink.holds_whole())?;
         validate_change_batch(&batch)?;
         self.sink
             .send(SourceEvent::Push(Push::Changes(batch)))
@@ -151,9 +152,10 @@ impl<C: Serialize> Emitter<C> {
     }
 }
 
-fn check_batch(batch: &RecordBatch) -> Result<()> {
-    check_limit("batch rows", batch.num_rows(), MAX_BATCH_ROWS)?;
-    check_limit("batch columns", batch.num_columns(), MAX_COLUMNS)
+/// Checks `batch` against the limits on a batch, before anything else walks it; one held
+/// `whole`, as it is, against what a frame may hold too.
+fn check_batch(batch: &RecordBatch, whole: bool) -> Result<()> {
+    admit::admit(batch, whole).map_err(ConnectorError::exceeds)
 }
 
 fn check_limit(name: &'static str, actual: usize, limit: u64) -> Result<()> {

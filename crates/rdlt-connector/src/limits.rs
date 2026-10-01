@@ -12,14 +12,17 @@ pub const MAX_JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;
 /// Rows: bounds one Arrow or change batch.
 pub const MAX_BATCH_ROWS: u64 = 1024 * 1024;
 
-/// Values: bounds what one batch's columns hold together, nested values and the items of list
-/// views included, whether or not they take bytes.
+/// Values: bounds what a frame holding one batch's rows would hold, as the wire weighs it.
+///
+/// Nested values and the items list views name count, whether or not they take bytes. Each
+/// dictionary's values are bounded apart, as the frame of their own they would go in.
 pub const MAX_BATCH_VALUES: u64 = 64 * MAX_BATCH_ROWS;
 
 /// Bytes: bounds what the views of one batch name in their data buffers, counted once a view.
 pub const MAX_VIEW_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Bytes: bounds the allocations one batch keeps alive, each counted once: a slice counts the
+/// Bytes: bounds one batch twice: the bytes a frame holding its rows would hold, as the wire
+/// weighs it, and the allocations it keeps alive, each counted once, where a slice counts the
 /// whole buffer it shares.
 pub const MAX_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 

@@ -117,6 +117,7 @@ fn channel(
         stop: stop.clone(),
         answered: 0,
         admission,
+        cut: false,
     };
     let feed = PartitionFeed {
         events: receiver,
@@ -134,6 +135,8 @@ pub struct PartitionSink {
     stop: CancellationToken,
     answered: u64,
     admission: Option<Arc<dyn Admission>>,
+    /// Whether what receives a batch sent here cuts it before anything holds it.
+    cut: bool,
 }
 
 impl fmt::Debug for PartitionSink {
@@ -146,6 +149,19 @@ impl fmt::Debug for PartitionSink {
 }
 
 impl PartitionSink {
+    /// The sink of a read whose batches are cut a frame at a time before anything else holds
+    /// them, as a served read's are: a batch sent here need not fit a frame.
+    #[cfg(any(test, feature = "serve"))]
+    pub(crate) fn cut(mut self) -> Self {
+        self.cut = true;
+        self
+    }
+
+    /// Whether a batch sent here is held as it is, and so must be within what a frame may hold.
+    pub(crate) fn holds_whole(&self) -> bool {
+        !self.cut
+    }
+
     /// Resolves once the engine asks the read to stop or drops its end.
     pub async fn stopped(&self) {
         tokio::select! {
