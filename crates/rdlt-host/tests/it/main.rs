@@ -4,6 +4,7 @@
 
 mod acknowledged;
 mod flow;
+mod groups;
 mod identity;
 mod kills;
 mod limits;

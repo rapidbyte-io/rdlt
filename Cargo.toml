@@ -52,6 +52,7 @@ uuid = { version = "1.26.1", features = ["serde"] } # load ids (UUIDv7)
 getrandom = "0.4.3" # the operating system random source behind SystemEnv
 memchr = "2.8.3" # finding the lines of JSON pushes
 command-fds = { version = "0.3.3", default-features = false } # a spawned connector's socket at file descriptor 3
+rustix = { version = "1.1.5", default-features = false, features = ["std"] } # a connector's exit seen before it is reaped, and its process group signalled
 nix = { version = "0.31.3", default-features = false } # a spawned connector ends with its host (PR_SET_PDEATHSIG), and the host signals its connectors
 parking_lot = "0.12.5" # locks without poisoning
 prost = "0.14.4" # protocol buffer messages of the wire protocol

@@ -28,10 +28,14 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - It takes the host's socket with `--rdlt-fd N`, and serves it with its own runtime, so a
     connector's manifest lists `rdlt-connector` alone.
   - It shuts down gracefully once its standard input ends or it receives `SIGTERM`.
-  - It ignores `SIGINT`. A terminal's Ctrl-C reaches the whole process group, and the host
-    stops its connectors itself.
+  - It ignores `SIGINT`: the host stops its connectors itself. Amended 2026-10-01 (ADR 0050):
+    a spawned connector leads a process group of its own, which the host owns, so a terminal's
+    Ctrl-C no longer reaches it. A host listens for `SIGINT` and `SIGTERM`
+    (`rdlt_host::Interrupts`) and stops what it spawned (`rdlt_host::stop_spawned`) before it
+    exits; `rdlt-certify` does.
   - On Linux, it asks for `SIGTERM` when its parent dies (`PR_SET_PDEATHSIG`). Standard input
-    ending covers a host that died before it asked.
+    ending covers a host that died before it asked. A host killed outright runs no code: these
+    two end the connector, and nothing ends what the connector started and left in its group.
   - The `#[source]` and `#[destination]` attributes implement `Serve` for the connector, so the
     binary names only its type. A binary serving two types, or a type with both roles, uses
     `serve::Served::serve()`.
