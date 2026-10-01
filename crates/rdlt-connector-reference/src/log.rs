@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use crate::generator::mix;
 use crate::kept::{Kept, Registry};
 use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, MAX_PER_SECOND, within};
-use crate::positions::{keeper_path, unnamed};
+use crate::positions::{keeper_name, keeper_path, unnamed};
 
 /// Configuration of [`LogSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -169,6 +169,7 @@ impl SourceConnector for LogSource {
                 MAX_MESSAGE_ROWS,
             )?;
         }
+        keeper_name(config.group.as_deref(), "group")?;
         if let Some(path) = &config.group_path {
             keeper_path(path, "group")?;
         }

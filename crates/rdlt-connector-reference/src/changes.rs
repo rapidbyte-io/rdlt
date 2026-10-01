@@ -26,7 +26,7 @@ pub use history::{Version, history};
 pub use model::{Change, Row, change, expected, snapshot};
 use slot::Slot;
 
-use crate::positions::{keeper_path, unnamed};
+use crate::positions::{keeper_name, keeper_path, unnamed};
 
 /// Configuration of [`ChangesSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -134,6 +134,7 @@ impl SourceConnector for ChangesSource {
             StreamName::new(&stream.name).config(format!("stream name {:?}", stream.name))?;
             stream.bounded()?;
         }
+        keeper_name(config.slot.as_deref(), "slot")?;
         if let Some(path) = &config.slot_path {
             keeper_path(path, "slot")?;
         }
