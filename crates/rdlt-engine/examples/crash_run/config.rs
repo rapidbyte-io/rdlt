@@ -67,6 +67,9 @@ pub(crate) struct Place {
     pub(crate) config: Value,
     #[serde(default)]
     pub(crate) spawned: bool,
+    /// A launcher spawned in place of the connector's own binary, which it then starts.
+    #[serde(default)]
+    pub(crate) launcher: Option<PathBuf>,
 }
 
 /// A spawned connector killed before a commit: a source only as it reads.

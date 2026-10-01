@@ -1,12 +1,14 @@
 //! The kill matrix: the process running a pipeline, its spawned source or its spawned
 //! destination is killed as it loads, the pipeline runs again, every row lands once, and no
 //! connector outlives the run that spawned it.
+//!
+//! Each connector leads a process group of its own, which the harness tells by its id as it
+//! spawns it; a run has left nothing behind once every group it told is empty.
 
 use std::io::{BufRead as _, BufReader};
-use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix::sys::signal::killpg;
@@ -41,10 +43,12 @@ fn draw(state: &mut u64) -> u64 {
     mixed ^ (mixed >> 31)
 }
 
-/// A harness run in a process group of its own its connectors join, and the lines it tells.
+/// A harness run, the lines it tells, and the process groups of the connectors it told it
+/// spawned.
 struct Watched {
     child: Child,
     lines: mpsc::Receiver<String>,
+    connectors: Arc<Mutex<Vec<u32>>>,
 }
 
 impl Watched {
@@ -53,21 +57,35 @@ impl Watched {
         let mut child = Command::new(harness())
             .arg(config)
             .env_remove("FAILPOINTS")
-            .process_group(0)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .expect("the harness starts");
         let stdout = child.stdout.take().expect("the harness's output");
         let (sender, lines) = mpsc::channel();
+        let connectors = Arc::new(Mutex::new(Vec::new()));
+        let told = Arc::clone(&connectors);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if sender.send(line).is_err() {
+                let connector = line.strip_prefix("connector ");
+                if let Some(connector) = connector.and_then(|pid| pid.parse().ok()) {
+                    told.lock().expect("unpoisoned").push(connector);
+                } else if sender.send(line).is_err() {
                     break;
                 }
             }
         });
-        Self { child, lines }
+        Self {
+            child,
+            lines,
+            connectors,
+        }
+    }
+
+    /// What tells the process groups of the connectors the run has told so far, and goes on
+    /// telling those it tells later.
+    fn connectors(&self) -> Arc<Mutex<Vec<u32>>> {
+        Arc::clone(&self.connectors)
     }
 
     /// Waits until the run has told `count` reads and commits; whether it did.
@@ -90,11 +108,11 @@ impl Watched {
 }
 
 impl Drop for Watched {
-    /// Kills what a run a test gave up on left running: the harness and its connectors.
+    /// Kills the harness of a run a test gave up on: its connectors, their host gone, end by
+    /// themselves.
     fn drop(&mut self) {
         if matches!(self.child.try_wait(), Ok(None)) {
-            let group = Pid::from_raw(i32::try_from(self.child.id()).expect("process ids fit"));
-            killpg(group, nix::sys::signal::Signal::SIGKILL).ok();
+            self.child.kill().ok();
             self.child.wait().ok();
         }
     }
@@ -124,18 +142,25 @@ fn lives(group: u32) -> bool {
     killpg(group, None).is_ok()
 }
 
-/// Waits for every process of the group `group` to end; kills what outlives `ENDING` and says
-/// whether anything did.
-fn orphans(group: u32) -> bool {
+/// Waits for every process of each connector's group the run told to end; kills what outlives
+/// `ENDING` and says whether anything did.
+fn orphans(connectors: &Arc<Mutex<Vec<u32>>>) -> bool {
+    let connectors = connectors.lock().expect("unpoisoned").clone();
+    assert!(
+        !connectors.is_empty(),
+        "the run told no connector it spawned"
+    );
     let deadline = Instant::now() + ENDING;
     while Instant::now() < deadline {
-        if !lives(group) {
+        if !connectors.iter().any(|group| lives(*group)) {
             return false;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let group = Pid::from_raw(i32::try_from(group).expect("process ids fit"));
-    killpg(group, nix::sys::signal::Signal::SIGKILL).ok();
+    for group in connectors.into_iter().filter(|group| lives(*group)) {
+        let group = Pid::from_raw(i32::try_from(group).expect("process ids fit"));
+        killpg(group, nix::sys::signal::Signal::SIGKILL).ok();
+    }
     true
 }
 
@@ -145,9 +170,9 @@ fn converge(config: &Path) -> (bool, bool) {
     let mut orphaned = false;
     for _ in 0..3 {
         let run = Watched::spawn(config);
-        let group = run.child.id();
+        let connectors = run.connectors();
         let (status, _) = run.ended();
-        orphaned |= orphans(group);
+        orphaned |= orphans(&connectors);
         if status.success() {
             return (true, orphaned);
         }
@@ -184,10 +209,10 @@ fn engine_killed(scenario: &Scenario, draws: u32) {
         let ended = run.child.try_wait().expect("the harness can be asked");
         assert!(ended.is_none(), "{context}: the run ended before its kill");
         run.child.kill().expect("the harness is killed");
-        let group = run.child.id();
+        let connectors = run.connectors();
         run.ended();
         assert!(
-            !orphans(group),
+            !orphans(&connectors),
             "{context}: a connector outlived the killed run"
         );
         let config = scenario.write_spawned(dir.path(), &json!({}));
@@ -213,9 +238,12 @@ fn connector_killed(scenario: &Scenario, victim: &str, before: &[Value]) {
             scenario.name
         );
         let run = Watched::spawn(&config);
-        let group = run.child.id();
+        let connectors = run.connectors();
         let (status, lines) = run.ended();
-        assert!(!orphans(group), "{context}: a connector outlived the run");
+        assert!(
+            !orphans(&connectors),
+            "{context}: a connector outlived the run"
+        );
         assert!(
             status.success(),
             "{context}: the run did not ride the kill out: {status}"
@@ -249,11 +277,53 @@ fn a_run_a_test_gives_up_on_leaves_no_process_behind() {
     let config = scenario.write_spawned(dir.path(), &json!({ "pause": 1 }));
     let run = Watched::spawn(&config);
     assert!(run.progressed(1), "the run never began to read");
-    let group = run.child.id();
+    let connectors = run.connectors();
     drop(run);
+    assert!(!orphans(&connectors), "a connector outlived the run");
+}
+
+/// A launcher in `dir` that starts a member of its group, which heeds neither the end of its
+/// input nor its parent's death, and becomes the example connector `served`.
+fn launcher(dir: &Path, served: &str) -> std::path::PathBuf {
+    let connector = harness().with_file_name(served);
+    let path = dir.join("launcher");
+    let script = format!(
+        "#!/bin/sh\nsleep 1000 &\nexec '{}' \"$@\"\n",
+        connector.display()
+    );
+    std::fs::write(&path, script).expect("the launcher writes");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the launcher is executable");
+    path
+}
+
+#[test]
+fn what_a_connector_started_ends_with_a_run_that_ends_and_is_an_orphan_of_one_killed() {
+    let scenario = scenarios::forgetting_log();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let launched = json!({ "source_launcher": launcher(dir.path(), "serve_log") });
+    // A run that ends stops each connector's whole group before it exits.
+    let config = scenario.write_spawned(dir.path(), &launched);
+    let run = Watched::spawn(&config);
+    let connectors = run.connectors();
+    let (status, _) = run.ended();
+    assert!(status.success(), "the run ended {status}");
+    assert!(!orphans(&connectors), "a group outlived a run that ended");
+    // A harness that is killed runs no code: the connector ends by itself, and what it
+    // started and left in its group lives on, which the check a run's tests make must see.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let mut paused = launched;
+    paused["source_launcher"] = json!(launcher(dir.path(), "serve_log"));
+    paused["pause"] = json!(1);
+    let config = scenario.write_spawned(dir.path(), &paused);
+    let mut run = Watched::spawn(&config);
+    assert!(run.progressed(1), "the run never began to read");
+    let connectors = run.connectors();
+    run.child.kill().expect("the harness is killed");
+    run.ended();
     assert!(
-        !orphans(group),
-        "the harness or a connector outlived the run"
+        orphans(&connectors),
+        "a member that outlived a killed run went unseen"
     );
 }
 

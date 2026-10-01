@@ -68,7 +68,10 @@ impl Scenario {
         config["memory"] = json!(1024);
         config["partition_buffer"] = json!(1);
         for (key, value) in extra.as_object().expect("extra keys") {
-            config[key] = value.clone();
+            match key.as_str() {
+                "source_launcher" => config["source"]["launcher"] = value.clone(),
+                _ => config[key] = value.clone(),
+            }
         }
         let path = dir.join("run.json");
         let bytes = serde_json::to_vec(&config).expect("configurations serialize");
