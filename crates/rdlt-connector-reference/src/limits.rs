@@ -3,6 +3,8 @@
 
 use std::time::Duration;
 
+use rdlt_connector::ConnectorError;
+
 /// Bytes: bounds one file the files source reads, unless its configuration sets another.
 pub(crate) const FILE_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
@@ -73,3 +75,36 @@ pub(crate) const BUSY_WAIT: Duration = Duration::from_secs(30);
 /// Bytes: the size the SQLite destination's write-ahead log file is cut back to once its content
 /// is in the database, so a large commit does not leave its log's size behind.
 pub(crate) const JOURNAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Partitions: bounds the partitions a stream of a generated source is read in, each of which a
+/// plan lists.
+pub(crate) const MAX_PARTITIONS: u64 = 1024;
+
+/// Messages: bounds one push of the log source, whose messages are JSON, so that a push stays
+/// within the bytes one JSON push may hold.
+pub(crate) const MAX_MESSAGE_ROWS: u64 = 100_000;
+
+/// Keys: bounds the table a change stream snapshots, which a snapshot read builds whole, and the
+/// changes its snapshot may hold, each of which that read applies.
+pub(crate) const MAX_SNAPSHOT_KEYS: u64 = 1_000_000;
+
+/// Changes: bounds the changes of a change stream, each of whose positions a row carries as a
+/// signed number.
+pub(crate) const MAX_CHANGES: u64 = i64::MAX.unsigned_abs();
+
+/// Positions: bounds the truncates a change stream names, which every change is looked up among.
+pub(crate) const MAX_TRUNCATES: u64 = 1024;
+
+/// Refuses the configuration of `stream` where its `name` is `actual`, over `limit`.
+pub(crate) fn within(
+    stream: &str,
+    name: &str,
+    actual: u64,
+    limit: u64,
+) -> Result<(), ConnectorError> {
+    if actual <= limit {
+        return Ok(());
+    }
+    let message = format!("stream {stream}: {name} is {actual}, over the limit of {limit}");
+    Err(ConnectorError::config(message).with_code("limit_exceeded"))
+}

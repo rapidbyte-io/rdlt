@@ -34,6 +34,7 @@ mod limits;
 pub mod log;
 mod memory;
 mod merge;
+mod positions;
 mod rooted;
 #[cfg(test)]
 mod scratch;

@@ -1,5 +1,8 @@
 //! A source that reads rows given inline in its configuration.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -93,7 +96,7 @@ impl ReadStream<MemorySource> for Rows {
             .unwrap_or_default();
         let mut next = cursor.next.min(rows.len());
         while next < rows.len() {
-            let end = (next + source.page_size).min(rows.len());
+            let end = next.saturating_add(source.page_size).min(rows.len());
             out.rows(&rows[next..end]).await?;
             next = end;
             out.checkpoint(&Offset { next }).await?;

@@ -33,7 +33,10 @@ pub fn change(seed: u64, stream: &ChangedStream, position: u64) -> Change {
     }
     let draw = mix(seed ^ position.wrapping_mul(0x9E37_79B9));
     // Half again as many keys as the snapshot holds, so changes insert keys too.
-    let span = stream.keys + stream.keys / 2 + 1;
+    let span = stream
+        .keys
+        .saturating_add(stream.keys / 2)
+        .saturating_add(1);
     let id = i64::try_from(draw % span).unwrap_or(i64::MAX);
     let n = i64::try_from(position).unwrap_or(i64::MAX);
     match (draw >> 32) % 10 {

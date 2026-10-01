@@ -6,10 +6,13 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
+use rdlt_connector::limits::MAX_BATCH_ROWS;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Field, Partitioning};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+use crate::limits::{MAX_PARTITIONS, within};
 
 /// Configuration of [`GeneratorSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -29,10 +32,12 @@ pub struct GeneratedStream {
     pub name: String,
     /// Rows in the stream.
     pub rows: u64,
-    /// Partitions the rows are split across; row `i` belongs to partition `i % partitions`.
+    /// Partitions the rows are split across, at most 1024; row `i` belongs to partition
+    /// `i % partitions`.
     #[serde(default = "one")]
     pub partitions: u64,
-    /// Rows per pushed batch; a checkpoint follows each batch.
+    /// Rows per pushed batch, at most the rows one batch may hold; a checkpoint follows each
+    /// batch.
     #[serde(default = "hundred")]
     pub batch_rows: u64,
 }
@@ -68,6 +73,18 @@ impl SourceConnector for GeneratorSource {
                     stream.name
                 )));
             }
+            within(
+                &stream.name,
+                "partitions",
+                stream.partitions,
+                MAX_PARTITIONS,
+            )?;
+            within(
+                &stream.name,
+                "batch_rows",
+                stream.batch_rows,
+                MAX_BATCH_ROWS,
+            )?;
         }
         Ok(Self {
             seed: config.seed,
@@ -153,12 +170,23 @@ impl ReadStream<GeneratorSource> for Generated {
         let index = self.partition_index(partition)?;
         let stride = self.0.partitions;
         let mut next = cursor.next.unwrap_or(index);
+        // A row left to read is the partition's own, or the cursor is another partition's.
+        if next < self.0.rows && next % stride != index {
+            let message = format!(
+                "stream {}: row {next} is not of partition {index}",
+                self.0.name
+            );
+            return Err(ConnectorError::data(message).with_code("cursor_invalid"));
+        }
         while next < self.0.rows {
             let ids: Vec<u64> = (next..self.0.rows)
                 .step_by(usize::try_from(stride).unwrap_or(usize::MAX))
                 .take(usize::try_from(self.0.batch_rows).unwrap_or(usize::MAX))
                 .collect();
-            next = ids.last().map_or(self.0.rows, |last| last + stride);
+            // Past the last row a number holds, no row is left.
+            next = ids
+                .last()
+                .map_or(self.0.rows, |last| last.saturating_add(stride));
             out.batch(batch(source.seed, &ids)?).await?;
             out.checkpoint(&NextRow { next: Some(next) }).await?;
         }

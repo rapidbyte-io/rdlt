@@ -9,6 +9,7 @@ use rdlt_connector::{
 use serde_json::{Value, json};
 
 use super::{LogSource, Logged, LoggedStream, Offset, message};
+use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS};
 
 fn events() -> StreamName {
     StreamName::new("events").expect("a valid stream")
@@ -224,8 +225,9 @@ fn a_partition_count_at_its_limit_neither_wraps_nor_panics() {
 
 #[tokio::test(start_paused = true)]
 async fn a_batch_at_its_limit_neither_wraps_nor_panics() {
-    let stream =
-        json!({ "name": "events", "partitions": 1, "messages": 3, "batch_rows": u64::MAX });
+    let stream = json!({
+        "name": "events", "partitions": 1, "messages": 3, "batch_rows": MAX_MESSAGE_ROWS,
+    });
     let source = connect(&stream, "a_whole_batch").await;
     let (read, sent) = read(source.as_ref(), Some(offset(1)), None).await;
     read.expect("the read ends");
@@ -288,4 +290,101 @@ async fn a_group_on_disk_keeps_its_committed_offsets_for_its_next_process() {
         .expect("the offset commits");
     let found: crate::kept::Kept<u64> = crate::kept::Kept::at(&path).expect("the group reads");
     assert_eq!(found.position("events", &p(0)), Some(5));
+}
+
+#[tokio::test]
+async fn a_stream_of_more_partitions_or_messages_a_batch_than_a_source_holds_is_refused() {
+    let most = u32::try_from(MAX_PARTITIONS).unwrap();
+    let at_limits = json!({
+        "name": "events", "partitions": most - 1, "partitions_later": 1, "messages": 1,
+        "batch_rows": MAX_MESSAGE_ROWS,
+    });
+    connect(&at_limits, "at_limits").await;
+    for (partitions, later, batch_rows) in [
+        (most + 1, 0, 1),
+        (most, 1, 1),
+        (u32::MAX, u32::MAX, 1),
+        (1, 0, MAX_MESSAGE_ROWS + 1),
+    ] {
+        let stream = json!({
+            "name": "events", "partitions": partitions, "partitions_later": later,
+            "messages": 1, "batch_rows": batch_rows,
+        });
+        let refused = source_factory::<LogSource>()
+            .connect(config(&stream, "past_limits"), ConnectContext::new())
+            .await
+            .err()
+            .expect("past a limit");
+        assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{stream}");
+        assert_eq!(refused.code(), Some("limit_exceeded"), "{stream}");
+    }
+}
+
+#[test]
+fn the_last_offset_a_number_holds_arrives_later_never_at_once() {
+    let stream: LoggedStream = serde_json::from_value(json!({
+        "name": "events", "partitions": 1, "messages": 0, "per_second": 1,
+    }))
+    .expect("a valid stream");
+    let wait = Logged(stream).arrives(u64::MAX, Duration::ZERO);
+    assert!(wait.expect("the log grows") > Duration::from_secs(3600));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_offset_of_a_partition_the_stream_never_has_is_not_committed() {
+    let stream = json!({
+        "name": "events", "partitions": 2, "partitions_later": 1, "messages": 8,
+    });
+    let source = connect(&stream, "members").await;
+    source
+        .committed(&events(), &[(p(2), offset(4))])
+        .await
+        .expect("a partition the stream gains");
+    for partition in ["p3", "p03", "p", "snapshot-0", "p4294967296"] {
+        let partition = PartitionId::parse(partition).expect("a valid partition");
+        let refused = source
+            .committed(
+                &events(),
+                &[(p(0), offset(7)), (partition.clone(), offset(4))],
+            )
+            .await
+            .expect_err("no such partition");
+        assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{partition}");
+    }
+    // A commit naming a partition the stream never has kept none of its offsets.
+    let factory = source_factory::<LogSource>();
+    let (_, reader) = factory
+        .connect_acknowledging(config(&stream, "members"), ConnectContext::new())
+        .await
+        .expect("the source connects with its reader");
+    let told = reader.acknowledged(&events(), &p(0)).await;
+    assert_eq!(told.expect("the group answers"), None);
+}
+
+#[tokio::test]
+async fn a_group_is_kept_only_in_a_file_named_whole_and_as_a_group_s() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let inside = |name: &str| dir.path().join(name);
+    let stream = json!({ "name": "events", "partitions": 1, "messages": 8 });
+    let paths = [
+        std::path::PathBuf::from("events.group"),
+        std::path::PathBuf::from("./events.group"),
+        inside("nested/../events.group"),
+        inside("./events.group"),
+        inside("events.slot"),
+        inside("events"),
+        inside("server.key"),
+        inside(".group"),
+    ];
+    for path in paths {
+        let mut kept = config(&stream, "unused");
+        kept["group_path"] = json!(path);
+        let refused = source_factory::<LogSource>()
+            .connect(kept, ConnectContext::new())
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{} is refused", path.display()));
+        assert_eq!(refused.kind(), ConnectorErrorKind::Config);
+        assert_eq!(refused.code(), Some("keeper_path_invalid"), "{refused}");
+    }
 }
