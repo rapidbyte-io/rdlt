@@ -497,3 +497,68 @@ fn a_dictionary_the_schema_does_not_name_is_refused() {
         "{error}"
     );
 }
+
+#[test]
+fn a_dictionary_of_dictionaries_is_refused_by_its_sender() {
+    // A field of the IPC format has one dictionary: a dictionary whose values are themselves a
+    // dictionary has no schema message, so no receiver is ever sent one.
+    let inner = DictionaryArray::<Int8Type>::try_new(
+        vec![0, 1].into(),
+        Arc::new(StringArray::from(vec!["a", "bb"])),
+    );
+    let outer =
+        DictionaryArray::<Int8Type>::try_new(vec![1, 0, 1].into(), Arc::new(inner.unwrap()));
+    let twice = samples::batch_of(Arc::new(outer.unwrap()));
+    let item = Arc::new(Field::new(
+        "item",
+        twice.column(0).data_type().clone(),
+        true,
+    ));
+    let listed = arrow_array::ListArray::new(
+        item,
+        arrow_buffer::OffsetBuffer::from_lengths([2, 1]),
+        Arc::clone(twice.column(0)),
+        None,
+    );
+    for batch in [twice, samples::batch_of(Arc::new(listed))] {
+        let mut encoder = Encoder::default();
+        encoder.schema(&batch.schema());
+        for sent in [
+            encoder.batch(&batch),
+            encoder.batch_within(&batch, &Limits::default()),
+        ] {
+            assert_eq!(frames::problem(sent), Problem::DictionaryOfDictionaries);
+        }
+    }
+}
+
+#[test]
+fn a_dictionary_of_dictionaries_is_found_wherever_it_nests() {
+    use arrow_schema::{UnionFields, UnionMode};
+    let keyed = |values: DataType| DataType::Dictionary(Box::new(DataType::Int8), Box::new(values));
+    let field = |data_type: &DataType| Arc::new(Field::new("f", data_type.clone(), true));
+    let ends = Arc::new(Field::new("run_ends", DataType::Int32, false));
+    let nestings = |inner: &DataType| -> Vec<DataType> {
+        let union = UnionFields::try_new(vec![0], vec![field(inner).as_ref().clone()]).unwrap();
+        vec![
+            inner.clone(),
+            DataType::List(field(inner)),
+            DataType::LargeList(field(inner)),
+            DataType::ListView(field(inner)),
+            DataType::LargeListView(field(inner)),
+            DataType::FixedSizeList(field(inner), 2),
+            DataType::Map(field(inner), false),
+            DataType::Struct(Fields::from(vec![field(&DataType::Int8), field(inner)])),
+            DataType::Union(union, UnionMode::Sparse),
+            DataType::RunEndEncoded(Arc::clone(&ends), field(inner)),
+            keyed(DataType::Struct(Fields::from(vec![field(inner)]))),
+        ]
+    };
+    let once = keyed(DataType::Utf8);
+    for data_type in nestings(&keyed(once.clone())) {
+        assert!(super::twice_keyed(&data_type), "{data_type}");
+    }
+    for data_type in nestings(&once).into_iter().chain(nestings(&DataType::Utf8)) {
+        assert!(!super::twice_keyed(&data_type), "{data_type}");
+    }
+}

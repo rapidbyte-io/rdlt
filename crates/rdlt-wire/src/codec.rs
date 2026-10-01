@@ -16,11 +16,11 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions};
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Schema};
 use bytes::Bytes;
 
 use self::measure::Columns;
-use crate::error::{Frame, WireError};
+use crate::error::{Frame, Problem, WireError};
 
 pub use decode::Decoder;
 pub use shape::Shape;
@@ -43,6 +43,9 @@ pub struct Encoder {
     context: IpcWriteContext,
     /// The columns of the schema last encoded, as its receiver converts it.
     columns: Option<Columns>,
+    /// Whether the schema last encoded holds a dictionary of dictionaries, which no schema
+    /// message describes.
+    twice_keyed: bool,
 }
 
 impl Default for Encoder {
@@ -53,6 +56,7 @@ impl Default for Encoder {
             options: IpcWriteOptions::default(),
             context: IpcWriteContext::default(),
             columns: None,
+            twice_keyed: false,
         }
     }
 }
@@ -67,6 +71,10 @@ impl Encoder {
             &mut self.tracker,
             &self.options,
         );
+        self.twice_keyed = schema
+            .fields()
+            .iter()
+            .any(|field| twice_keyed(field.data_type()));
         self.columns = arrow_ipc::root_as_message(&encoded.ipc_message)
             .ok()
             .and_then(|message| message.header_as_schema())
@@ -79,7 +87,8 @@ impl Encoder {
     ///
     /// # Errors
     ///
-    /// [`WireError::Arrow`] when Arrow cannot encode the batch.
+    /// [`WireError::Arrow`] when Arrow cannot encode the batch; [`WireError::Malformed`] when its
+    /// schema holds a dictionary of dictionaries, which no schema message describes.
     pub fn batch(&mut self, batch: &RecordBatch) -> Result<Vec<IpcFrame>, WireError> {
         let (mut frames, batch) = self.encoded(batch)?;
         frames.push(batch);
@@ -88,6 +97,12 @@ impl Encoder {
 
     /// The dictionaries `batch` needs that differ from those sent, and its own frame.
     fn encoded(&mut self, batch: &RecordBatch) -> Result<(Vec<IpcFrame>, IpcFrame), WireError> {
+        if self.twice_keyed {
+            return Err(WireError::malformed(
+                Frame::Batch,
+                Problem::DictionaryOfDictionaries,
+            ));
+        }
         let (dictionaries, encoded) = self
             .generator
             .encode(batch, &mut self.tracker, &self.options, &mut self.context)
@@ -104,5 +119,26 @@ impl Encoder {
             dictionaries.into_iter().map(frame).collect(),
             frame(encoded),
         ))
+    }
+}
+
+/// Whether `data_type`, or a type nested in it, is a dictionary whose values are a dictionary.
+fn twice_keyed(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Dictionary(_, values) => {
+            matches!(values.as_ref(), DataType::Dictionary(..)) || twice_keyed(values)
+        }
+        DataType::Struct(fields) => fields.iter().any(|field| twice_keyed(field.data_type())),
+        DataType::Union(fields, _) => fields
+            .iter()
+            .any(|(_, field)| twice_keyed(field.data_type())),
+        DataType::List(item)
+        | DataType::LargeList(item)
+        | DataType::ListView(item)
+        | DataType::LargeListView(item)
+        | DataType::FixedSizeList(item, _)
+        | DataType::Map(item, _) => twice_keyed(item.data_type()),
+        DataType::RunEndEncoded(_, values) => twice_keyed(values.data_type()),
+        _ => false,
     }
 }
