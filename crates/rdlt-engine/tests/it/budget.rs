@@ -12,7 +12,7 @@ use arrow_array::{
     ListViewArray, RecordBatch, new_null_array,
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field};
+use arrow_schema::{DataType, Field, Fields};
 use rdlt_connector::cost::Rendering;
 use rdlt_engine::RunStatus;
 
@@ -336,5 +336,41 @@ async fn a_push_of_very_many_small_records_loads_within_the_budget() {
         outcome.error
     );
     assert_eq!(outcome.report.rows, 2_000_000);
+    assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_null_typed_column_loads_within_the_budget_however_wide_its_table_column() {
+    const BUDGET: u64 = 16 << 20;
+    const ROWS: usize = 100_000;
+    // A row gives the column a struct of two hundred decimals, sixteen bytes each; a hundred
+    // thousand rows then hold nothing in it, in a column typed null.
+    let steps = Arc::new(|step: usize| {
+        let fields: Fields = (0..200)
+            .map(|index| Field::new(format!("d{index}"), DataType::Decimal128(38, 0), true))
+            .collect();
+        let wide = DataType::Struct(fields);
+        match step {
+            0 => Some(Step::Batch(batch(new_null_array(&wide, 1)))),
+            1 => Some(Step::Checkpoint(8)),
+            2 => Some(Step::Batch(batch(new_null_array(&DataType::Null, ROWS)))),
+            _ => None,
+        }
+    });
+    let source = making("budget_nulls", steps).await;
+    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(pipeline("nulls", [stream("events")]), source, null().await)
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 100_001);
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
 }
