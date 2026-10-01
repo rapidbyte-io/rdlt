@@ -79,6 +79,10 @@ log.
     any other reaches the hook installed before.
   - The panic's text enters the error cut to 256 bytes, with everything but printable ASCII
     escaped.
+- **The children of a run-end column of no values are not read.** Arrow's writer describes one
+  run ending at zero for a run-end column sliced to nothing, as under a list whose rows are all
+  empty, and Arrow's reader refuses that. The walk counts and checks those children as any
+  others, then hands Arrow empty ones.
 - **The write-ahead log lifts the numeric limits and keeps the rest.** Its batches are the
   engine's own and may exceed what a connector may send, so frame bytes, rows, values, columns,
   schema bytes and name lengths are unlimited there. Order, disjointness, counts, buffer lengths
@@ -90,16 +94,27 @@ larger of the row limit and eight values a byte, has contained panics printed, a
 
 ## Consequences
 
-- Some well-formed frames are refused, with a typed error naming why:
+- A receiver refuses, with a typed error naming why, some frames a sender could build:
   - more than `batch_values` values in one frame, which only columns of under a byte a value
     reach before the frame limit: booleans, nulls and the parents of nested columns, over many
-    columns and rows. A million rows of more than 64 such columns need two batches;
+    columns and rows;
   - views that name more than a frame's bytes between them;
   - buffers out of order or padded to less than eight bytes, and messages of metadata version 4.
+- rdlt's senders never send the first two. `Encoder::batch_within` measures each frame as its
+  receiver will, with the same walk, and cuts a batch by rows into the fewest frames the
+  receiver's limits admit: its rows, values, view bytes and frame bytes. A million rows of 65
+  columns of flags cross as two frames. A served connector cuts what its source pushes to the
+  host's limits, and the host what the engine writes to the connector's.
+  - The pieces are consecutive rows in order. On a read they are pushes of the segment the
+    batch was in, ahead of whatever the source sends next; on a write they are writes of the
+    batch's segment. Neither a push nor a write is a unit to a checkpoint or a commit: a segment
+    is.
+  - One row beyond a limit, or a dictionary beyond one, cannot be cut. Its sender refuses it
+    with `limit_exceeded` naming the limit, and sends none of its batch's rows.
+  - The cut is found by encoding prefixes: all the rows first, which is the only encoding a
+    batch within the limits costs, then by halving and doubling around the last piece's size.
 - Each frame costs one copy of its buffers. The body is not kept: a decoded batch holds its own
   allocation, of at most the body's size.
-- A sender still checks only a frame's bytes against its receiver's limits; one that sends a
-  batch of too many values or view bytes learns it from the receiver's refusal.
 - The wire does not bound what a dictionary or a run-end encoding multiplies: keys or runs that
   each name a large value. What a batch expands to is the cost model's to charge.
 - An embedder that installs a panic hook after the decoder's first use replaces the decoder's,

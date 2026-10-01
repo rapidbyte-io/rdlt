@@ -39,7 +39,7 @@ pub(crate) fn table() -> TableRef {
     }
 }
 
-fn context() -> OpenContext {
+pub(crate) fn context() -> OpenContext {
     OpenContext {
         pipeline: PipelineId::parse("sessions").expect("a valid pipeline id"),
         load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),

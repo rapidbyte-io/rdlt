@@ -1,6 +1,8 @@
 //! A frame whose parts are each within the limits, but which holds more than they bound as a
 //! whole, is refused where it is received: by the host reading from a connector, and by a served
 //! connector the host writes to.
+//!
+//! A sender cuts a batch to its receiver's limits, so rows that each fit are never refused.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,16 +14,18 @@ use bytes::Bytes;
 use rdlt_connector::serve::Served;
 use rdlt_connector::wire::v1;
 use rdlt_connector::{
-    ConnectorError, ConnectorErrorKind, Partition, ReadRequest, Role, Source as _, StreamName,
-    partition_channel,
+    ConnectorError, ConnectorErrorKind, Destination as _, Partition, PipelineId, ReadRequest, Role,
+    SegmentId, Source as _, StreamName, partition_channel,
 };
-use rdlt_host::{Connection, Options, RemoteSource};
-use rdlt_wire::{Encoder, IpcFrame};
+use rdlt_connector_reference::{MemoryDestination, published};
+use rdlt_engine::{PipelinePlan, RunStatus, StreamPlan};
+use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_wire::{Encoder, IpcFrame, Limits};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::sessions::{raw_session, table};
-use crate::support::connectors::{Writes, Writing};
-use crate::support::{Fake, Fault, serve_fake};
+use crate::sessions::{context, raw_session, table};
+use crate::support::connectors::{KEPT, Ticks, Writes, Writing, flagged};
+use crate::support::{Fake, Fault, engine, serve_fake, served, served_within};
 
 type Sent = (Bytes, Vec<IpcFrame>);
 
@@ -190,4 +194,136 @@ async fn a_served_connector_refuses_a_hosts_frame_no_limit_bounds_as_a_whole() {
         let error = error.expect("a connector error");
         assert_eq!(refusal(&error), (Some(code), limit), "{error}");
     }
+}
+
+/// The rows of `pieces`, checked to be `whole`'s, once each and in order: how many each holds.
+fn in_order(whole: &RecordBatch, pieces: &[RecordBatch]) -> Vec<usize> {
+    let mut start = 0;
+    for piece in pieces {
+        assert_eq!(piece, &whole.slice(start, piece.num_rows()), "at {start}");
+        start += piece.num_rows();
+    }
+    assert_eq!(start, whole.num_rows());
+    pieces.iter().map(RecordBatch::num_rows).collect()
+}
+
+/// A million rows of 64 columns of flags and their ids: more values than one frame may hold,
+/// in a frame a quarter of the frame limit.
+const ROWS: u64 = 1 << 20;
+const FLAGS: usize = 64;
+
+#[tokio::test]
+async fn a_connector_cuts_a_batch_of_more_values_than_the_hosts_frame_may_hold() {
+    let io = served(Served::new().with_source(rdlt_connector::source_factory::<Ticks>()));
+    let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS });
+    let connection = Connection::connect(io, Role::Source, &config, Options::default())
+        .await
+        .expect("the source handshakes");
+    let source = RemoteSource::new(connection);
+    let (sink, mut feed) = partition_channel(std::num::NonZeroUsize::new(64).expect("not 0"));
+    let request = ReadRequest::new(
+        StreamName::new("ticks").expect("a valid stream name"),
+        Partition::single(),
+        None,
+    );
+    let read = tokio::time::timeout(Duration::from_secs(60), source.read(request, sink));
+    read.await
+        .expect("the read ends")
+        .expect("the read succeeds");
+    let mut events = Vec::new();
+    while let Some(event) = feed.recv().await {
+        events.push(event);
+    }
+    // The pushes, then the checkpoint that follows the batch they were cut from.
+    let checkpoint = events.pop().expect("a checkpoint");
+    assert!(
+        matches!(checkpoint, rdlt_connector::SourceEvent::Checkpoint { .. }),
+        "{checkpoint:?}"
+    );
+    let pushes = events.into_iter().map(|event| match event {
+        rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Arrow(batch)) => batch,
+        other => panic!("an event other than a push of rows: {other:?}"),
+    });
+    let pieces = in_order(&flagged(ROWS, FLAGS), &pushes.collect::<Vec<_>>());
+    // At 65 values a row, a frame's values hold 1032444 rows.
+    assert_eq!(pieces, [1_032_444, 16_132]);
+}
+
+#[tokio::test]
+async fn the_host_cuts_a_batch_of_more_values_than_a_connectors_frame_may_hold() {
+    let keeping = Served::new().with_destination(Writes::factory(Writing::Keeps));
+    let config = serde_json::json!({ "store": "frames_kept" });
+    let connection = Connection::connect(
+        served(keeping),
+        Role::Destination,
+        &config,
+        Options::default(),
+    )
+    .await
+    .expect("the destination handshakes");
+    let destination = RemoteDestination::new(connection).expect("its capabilities");
+    let mut opened = destination
+        .open(&context())
+        .await
+        .expect("the session opens");
+    let mut writer = opened.session.writer(&table()).await.expect("a writer");
+    let whole = flagged(ROWS, FLAGS);
+    writer
+        .write(SegmentId(7), whole.clone())
+        .await
+        .expect("the batch is written");
+    writer.flush().await.expect("the writes are staged");
+    let kept = std::mem::take(&mut *KEPT.lock().expect("the lock is not poisoned"));
+    // Each piece is a write of the segment its batch was.
+    assert!(kept.iter().all(|(segment, _)| *segment == 7));
+    let pieces: Vec<_> = kept.into_iter().map(|(_, batch)| batch).collect();
+    assert_eq!(in_order(&whole, &pieces), [1_032_444, 16_132]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_cut_to_both_ends_limits_load_once_each_and_in_order() {
+    // The host takes 40 values a frame from the source, and the destination 7 rows a frame from
+    // the host: every batch is cut on its way in and again on its way out.
+    let io = served(Served::new().with_source(rdlt_connector::source_factory::<Ticks>()));
+    let config = serde_json::json!({ "rows": 500, "flags": 3 });
+    let within = |limits| Options {
+        limits,
+        ..Options::default()
+    };
+    let few_values = Limits {
+        batch_values: 40,
+        ..Limits::default()
+    };
+    let connection = Connection::connect(io, Role::Source, &config, within(few_values));
+    let source = RemoteSource::new(connection.await.expect("the source handshakes"));
+    let few_rows = Limits {
+        batch_rows: 7,
+        ..Limits::default()
+    };
+    let memory = rdlt_connector::destination_factory::<MemoryDestination>();
+    let io = served_within(Served::new().with_destination(memory), few_rows);
+    let config = serde_json::json!({ "store": "frames_cut" });
+    let connection = Connection::connect(io, Role::Destination, &config, Options::default());
+    let connection = connection.await.expect("the destination handshakes");
+    let destination = RemoteDestination::new(connection).expect("its capabilities");
+    let stream = StreamName::new("ticks").expect("a valid stream name");
+    let pipeline = PipelineId::parse("frames_cut").expect("a valid pipeline id");
+    let plan = PipelinePlan::new(pipeline, [StreamPlan::new(stream)]).expect("a plan");
+    let outcome = engine(50)
+        .run(plan, Arc::new(source), Arc::new(destination))
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let batches = published("frames_cut", "ticks");
+    assert!(batches.iter().all(|batch| batch.num_rows() <= 7));
+    let ids = batches.iter().flat_map(|batch| {
+        let ids = batch.column_by_name("id").expect("the ids");
+        let ids = ids.as_any().downcast_ref::<Int64Array>().expect("integers");
+        ids.values().to_vec()
+    });
+    assert_eq!(ids.collect::<Vec<_>>(), (0..500).collect::<Vec<_>>());
 }

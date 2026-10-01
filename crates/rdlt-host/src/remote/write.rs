@@ -9,8 +9,8 @@ use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
+use rdlt_wire::Encoder;
 use rdlt_wire::prost::Message as _;
-use rdlt_wire::{Encoder, WireError};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
@@ -144,17 +144,17 @@ impl RemoteWriter {
             }))
             .await?;
         }
-        for frame in self
-            .encoder
-            .batch(&batch)
-            .map_err(|error| frame_error(&error))?
-        {
-            // A frame beyond the connector's limit is refused here, typed, rather than by its
-            // transport.
-            self.connection
-                .peer
-                .admit_frame(frame.header.len().saturating_add(frame.body.len()))
-                .map_err(|refusal| frame_error(&WireError::Refused(refusal)))?;
+        // A batch beyond the connector's limits goes as several, each of the same segment; a row
+        // beyond them is refused here, typed, rather than by the connector or its transport.
+        let frames = match self.encoder.batch_within(&batch, &self.connection.peer) {
+            Ok(frames) => frames,
+            Err(error) => {
+                // What is written next starts a schema epoch of its own.
+                self.schema = None;
+                return Err(frame_error(&error));
+            }
+        };
+        for frame in frames {
             self.send(Frame::Batch(v1::WriteBatch {
                 segment: segment.0,
                 data_header: frame.header,
