@@ -351,7 +351,7 @@ async fn a_row_beyond_the_hosts_frame_limit_ends_the_read_after_the_rows_before_
     }
     // The rows ahead of the row that fits no frame arrive, in a segment no checkpoint ends: the
     // read fails with the limit, and the engine discards them with its attempt.
-    assert_eq!(pushed, [100]);
+    assert_eq!(pushed.iter().sum::<usize>(), 100, "{pushed:?}");
     let error = reading.await.expect("the read ends").unwrap_err();
     assert_eq!(
         (error.code(), error.limit().map(|limit| limit.name)),

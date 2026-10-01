@@ -89,10 +89,11 @@ log.
     costs one encoding a piece, and has the fewest pieces they admit.
   - The bytes of a frame are known only once it is encoded: its padding and header are Arrow's
     writer's. Where they bind, a batch is encoded whole once to learn its size, each piece is
-    first tried at the rows the last size predicts, and a piece is taken as full when a row more
-    of its average size would not fit. Rows of like size cost one or two encodings a piece.
-    Rows of very unlike sizes cost more: each failed try narrows the range of rows left to try,
-    so a piece costs at most the logarithm of its rows in encodings, each of at most a frame.
+    first tried at the rows the last size predicts, and a piece is taken as full when its size
+    leaves room for no more rows of its average size, or for fewer than a sixty-fourth as many
+    again. Rows of like size cost one encoding a piece. Rows of very unlike sizes cost more:
+    once a try does not fit, the rows left to try are halved each time, so a piece costs at most
+    about twice the logarithm of its rows in encodings, each of at most a frame.
   - Every frame is then measured by the receiver's own walk before it is sent, so no frame a
     sender cut is refused by its receiver.
   - The pieces are consecutive rows in order. On a read they are pushes of the segment the batch
@@ -135,8 +136,8 @@ log.
     escaped.
 - **The children of a run-end column of no values are not read.** Arrow's writer describes one
   run ending at zero for a run-end column sliced to nothing, as under a list whose rows are all
-  empty, and Arrow's reader refuses that. The walk counts and checks those children as any
-  others, then hands Arrow empty ones.
+  empty, and Arrow's reader refuses that. The walk checks those children's buffers as any
+  others, counts none of their values, and hands Arrow empty ones.
 - **The write-ahead log lifts the numeric limits and keeps the rest.** Its batches are the
   engine's own and may exceed what a connector may send, so frame bytes, rows, values, columns,
   schema bytes and name lengths are unlimited there. Order, disjointness, counts, buffer lengths
