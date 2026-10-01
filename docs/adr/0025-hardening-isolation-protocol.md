@@ -148,10 +148,12 @@ follows H1c.
     | `rdlt-host` | `rdlt-host`, `rdlt-certify` |
     | `rdlt-certify` | `rdlt-certify` |
 
-  - The nightly workflow runs the full pass, every crate's tests against every mutant, in twenty
+  - The nightly workflow runs the full pass, every crate's tests against every mutant, in forty
     shards on CI's runners, where the weekly workflow ran it once a week. Amended 2026-09-29: eight
-    shards took over three hours each, past the jobs' limit. A mutant it finds is
-    fixed the next day; one the branch's packages missed adds the package that caught it.
+    shards took over three hours each, past the jobs' limit. Amended 2026-10-01: after M5, twenty
+    shards took up to that limit too, and one was cancelled with its mutants untested. A mutant
+    it finds is fixed the next day; one the branch's packages missed adds the package that caught
+    it.
   - `just ready` runs lint, tests and `mutants-diff`. CI's pull-request gate runs the rest:
     coverage, Miri, the simulation and macOS.
   - The reference connectors' tests sync files and SQLite to disk, and four mutants tested at once
