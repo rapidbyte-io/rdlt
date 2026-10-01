@@ -143,12 +143,15 @@ given:
 - **The generated sources check their configuration and cursors.**
   - Limits, in the reference crate's `limits` module, refused where a source connects as
     `limit_exceeded`: 1024 partitions a stream; the rows of one Arrow batch; 100000 messages a
-    JSON push of the log; a million keys and captured changes of a change stream's snapshot,
-    which a snapshot read builds; 1024 truncates.
+    JSON push of the log, and a thousand million messages a second of its growth; a million
+    keys and captured changes of a change stream's snapshot, which a snapshot read builds; 1024
+    truncates.
   - Sums of a cursor and a configured size saturate. The generator refuses a cursor at a row
     of another partition (`cursor_invalid`) and ends at the last row a number holds. A cursor
     past the end reads nothing; a log's cursor past its head waits, since the head starts again
-    with each process.
+    with each process. When the awaited message arrives is computed in numbers twice as wide as
+    an offset, the wait is never under a millisecond, and for the last offset a number holds,
+    which no head passes, the read waits only to be stopped.
   - A keeper's file is named from the root, each directory by its name, as `*.group` or
     `*.slot` (`keeper_path_invalid`): one way to write each file, and no file replaced that is
     not named as a keeper's. How the file is opened and written is ADR 0047's.
