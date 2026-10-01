@@ -82,7 +82,7 @@ impl Cut {
     }
 
     /// How many of the rows left make the longest piece their weights say the limits admit,
-    /// and what they weigh: at least one row, whatever it weighs in bytes.
+    /// and what they weigh: at least one row, where its weight alone is within them.
     ///
     /// Stretches of rows are weighed, each twice as long as the last while they fit and half
     /// as long once one did not: a piece costs a few times the weighing of its own rows.
@@ -98,10 +98,12 @@ impl Cut {
                 && weight.frame_bytes().saturating_add(overhead) <= limits.frame_bytes
         };
         self.weigher.begin();
-        // A row's values and view bytes are weighed as its receiver counts them.
+        // A row's values and view bytes are weighed as its receiver counts them, and its bytes
+        // are no more than its frame's: a row beyond a limit is refused before it is copied.
         let mut weight = self.weighed(self.sent, 1);
         Limits::admit("batch values", limits.batch_values, weight.values)?;
         Limits::admit("view bytes", limits.frame_bytes, weight.view_bytes)?;
+        Limits::admit("frame bytes", limits.frame_bytes, weight.frame_bytes())?;
         // How many more rows are tried while every stretch fitted, and once one did not, how
         // many are known not to fit.
         let (mut taken, mut step, mut unfit) = (1, 1_usize, None);
