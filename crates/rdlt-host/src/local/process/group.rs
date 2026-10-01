@@ -5,6 +5,7 @@
 //! the id is still its own, and only then reaps. Once the leader is reaped the group is never
 //! signalled again: it is only asked, with the null signal, whether any member is left.
 
+mod members;
 #[cfg(test)]
 mod tests;
 
@@ -15,8 +16,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use rustix::process::{
-    Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process, kill_process_group,
-    test_kill_process_group, waitid,
+    Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process, kill_process_group, waitid,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -24,6 +24,10 @@ use tokio_util::sync::CancellationToken;
 /// How often the thread that owns a group asks whether its leader has exited, or a stop or a
 /// kill was asked.
 const WATCH: Duration = Duration::from_millis(5);
+
+/// How often a killed group is asked whether a living member is left: asking may read the state
+/// of every process there is.
+const MEMBERS: Duration = Duration::from_millis(25);
 
 /// How long a group killed with `SIGKILL` has to be seen empty before its members are
 /// reported as remaining: a process killed so ends at once, unless the kernel holds it.
@@ -251,16 +255,15 @@ fn asked(group: Pid) -> rustix::io::Result<Option<WaitIdStatus>> {
     waitid(WaitId::Pid(group), unreaped)
 }
 
-/// Whether `group`, killed and its leader reaped, is seen empty within [`EMPTYING`].
-///
-/// The null signal sends nothing: it asks whether a member is left.
+/// Whether `group`, killed and its leader reaped, is seen to have no living member within
+/// [`EMPTYING`].
 fn emptied(group: Pid) -> bool {
-    let until = Instant::now() + EMPTYING;
-    while test_kill_process_group(group).is_ok() {
-        if Instant::now() >= until {
+    let until = Instant::now().checked_add(EMPTYING);
+    while members::living(group) {
+        if until.is_none_or(|until| Instant::now() >= until) {
             return false;
         }
-        std::thread::sleep(WATCH);
+        std::thread::sleep(MEMBERS);
     }
     true
 }
