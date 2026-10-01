@@ -101,15 +101,17 @@ pub async fn serve_connection<IO>(
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    serve_until(served, io, limits, std::future::pending()).await
+    serve_until(served, io, limits, None, std::future::pending()).await
 }
 
-/// Serves as [`serve_connection`] does, and once `stop` ends, stops taking new calls and ends
-/// when the calls in flight have.
+/// Serves as [`serve_connection`] does, the host named `host` where a listening connector
+/// accepted it by name, and once `stop` ends, stops taking new calls and ends when the calls in
+/// flight have.
 async fn serve_until<IO>(
     served: Arc<Served>,
     io: IO,
     limits: Limits,
+    host: Option<Arc<str>>,
     stop: impl Future<Output = ()>,
 ) -> Result<(), ServeError>
 where
@@ -117,7 +119,7 @@ where
 {
     let bytes = limits.message_bytes();
     let stopping = tokio_util::sync::CancellationToken::new();
-    let service = service::Service::new(served, limits, stopping.clone());
+    let service = service::Service::new(served, limits, host, stopping.clone());
     let service = ConnectorServer::new(service)
         .max_decoding_message_size(bytes)
         .max_encoding_message_size(bytes);

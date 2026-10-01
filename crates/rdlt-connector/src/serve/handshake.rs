@@ -3,9 +3,12 @@
 
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 
+use std::sync::Arc;
+
 use super::probes::Probes;
 use super::service::{Connected, Service};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
+use crate::spec::ConnectContext;
 use crate::wire::v1;
 
 /// What a handshake agreed: the role to configure, and whether it accepted the role's probe for
@@ -102,18 +105,22 @@ impl Service {
             serde_json::from_str(&request.config_json).map_err(|error| {
                 ConnectorError::config(format!("the configuration is not JSON: {error}"))
             })?;
+        let context = match &self.host_name {
+            Some(host) => ConnectContext::serving(Arc::clone(host)),
+            None => ConnectContext::new(),
+        };
         let (spec, connected) = match (agreed.role, &self.served.source, &self.served.destination) {
             (v1::Role::Source, Some(factory), _) => {
                 let source = self
                     .probes
-                    .connect_source(factory.as_ref(), agreed.probed, config)
+                    .connect_source(factory.as_ref(), agreed.probed, config, context)
                     .await?;
                 (factory.spec(), Connected::Source(source))
             }
             (v1::Role::Destination, _, Some(factory)) => {
                 let destination = self
                     .probes
-                    .connect_destination(factory.as_ref(), agreed.probed, config)
+                    .connect_destination(factory.as_ref(), agreed.probed, config, context)
                     .await?;
                 (factory.spec(), Connected::Destination(destination))
             }

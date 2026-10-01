@@ -305,7 +305,7 @@ enum Slot {
 async fn session<S>(
     tls: TlsStream<S>,
     peer: SocketAddr,
-    host: &str,
+    host: &Arc<str>,
     slot: Slot,
     shared: &Shared,
 ) -> Option<Refused>
@@ -333,7 +333,8 @@ where
     // A host has as long to send HTTP/2's preface as it had to complete its TLS handshake.
     let tls = Speaking::within(tls, shared.limits.handshake);
     let (served, stopping) = (Arc::clone(&shared.served), shared.stopping.clone());
-    serve_until(served, tls, shared.wire, stopping.cancelled_owned())
+    let host = Some(Arc::clone(host));
+    serve_until(served, tls, shared.wire, host, stopping.cancelled_owned())
         .await
         .err()
         .map(|_| Refused::Transport)

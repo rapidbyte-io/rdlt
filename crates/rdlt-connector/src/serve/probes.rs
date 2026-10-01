@@ -60,8 +60,8 @@ impl Probes {
         factory: &dyn SourceFactory,
         accepted: bool,
         config: serde_json::Value,
+        context: ConnectContext,
     ) -> Result<Arc<dyn Source>, ConnectorError> {
-        let context = ConnectContext::new();
         if !accepted {
             return Ok(Arc::from(factory.connect(config, context).await?));
         }
@@ -78,8 +78,8 @@ impl Probes {
         factory: &dyn DestinationFactory,
         accepted: bool,
         config: serde_json::Value,
+        context: ConnectContext,
     ) -> Result<Arc<dyn Destination>, ConnectorError> {
-        let context = ConnectContext::new();
         if !accepted {
             return Ok(Arc::from(factory.connect(config, context).await?));
         }
@@ -163,10 +163,9 @@ impl Probes {
         factory: &dyn SourceFactory,
         _accepted: bool,
         config: serde_json::Value,
+        context: ConnectContext,
     ) -> Result<Arc<dyn Source>, ConnectorError> {
-        Ok(Arc::from(
-            factory.connect(config, ConnectContext::new()).await?,
-        ))
+        Ok(Arc::from(factory.connect(config, context).await?))
     }
 
     pub(super) async fn connect_destination(
@@ -174,10 +173,9 @@ impl Probes {
         factory: &dyn DestinationFactory,
         _accepted: bool,
         config: serde_json::Value,
+        context: ConnectContext,
     ) -> Result<Arc<dyn Destination>, ConnectorError> {
-        Ok(Arc::from(
-            factory.connect(config, ConnectContext::new()).await?,
-        ))
+        Ok(Arc::from(factory.connect(config, context).await?))
     }
 
     pub(super) fn read_published(

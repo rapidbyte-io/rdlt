@@ -96,7 +96,7 @@ fn inherited_socket(served: Served, fd: i32) -> Result<(), Failure> {
         let io = tokio::net::UnixStream::from_std(socket)
             .map_err(|error| format!("the host's socket failed: {error}"))?;
         let stop = told_to_stop().map_err(|error| format!("watching for stops failed: {error}"))?;
-        serve_until(Arc::new(served), io, Limits::default(), stop)
+        serve_until(Arc::new(served), io, Limits::default(), None, stop)
             .await
             .map_err(|error| match std::error::Error::source(&error) {
                 Some(source) => format!("{error}: {source}"),
