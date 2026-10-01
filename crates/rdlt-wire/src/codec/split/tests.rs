@@ -486,27 +486,34 @@ fn rows_naming_shared_buffers_larger_than_a_frame_are_cut_and_cross() {
 }
 
 #[test]
-fn each_step_hands_over_one_piece_no_larger_than_a_frame() {
-    // Twenty thousand rows of 65 flags, a frame for each 1024 rows: what the sender holds
-    // beyond the batch is the piece it is sending.
-    let batch = flags(65, 20_000);
-    let limits = Limits {
-        batch_rows: 1_024,
-        frame_bytes: 64 * 1_024,
+fn a_sender_holds_one_piece_of_a_batch_cut_to_the_smallest_limits_a_peer_may_set() {
+    use crate::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES};
+    // A million rows of 65 flags for a receiver at every minimum: a frame for each 1024 rows.
+    // What the sender is handed at each step, beyond the batch it already holds, is one frame
+    // of a few kilobytes, and all of them together take little more than the batch.
+    let rows = usize::try_from(BATCH_ROWS).unwrap();
+    let batch = flags(65, rows);
+    let least = Limits {
+        frame_bytes: MIN_FRAME_BYTES,
+        batch_rows: MIN_BATCH_ROWS,
+        batch_values: MIN_BATCH_VALUES,
         ..Limits::default()
     };
+    least.admit_peer().unwrap();
     let mut encoder = Encoder::default();
     encoder.schema(&batch.schema()).unwrap();
     let whole = bytes(&encoder.batch(&batch).unwrap());
-    let mut cut = Cut::new(batch.clone(), limits);
-    let (mut steps, mut sent) = (0, 0);
+    let mut cut = Cut::new(batch.clone(), least);
+    let (mut steps, mut sent, mut largest) = (0, 0, 0);
     while let Some(frames) = encoder.piece(&mut cut).unwrap() {
         assert_eq!(frames.len(), 1);
-        assert!(bytes(&frames) <= 64 * 1_024, "{}", bytes(&frames));
         (steps, sent) = (steps + 1, sent + bytes(&frames));
+        largest = largest.max(bytes(&frames));
     }
-    assert_eq!(steps, 20_000_usize.div_ceil(1_024));
+    assert_eq!(steps, rows / 1_024);
+    assert!(largest <= 32 * 1_024, "{largest}");
     assert!(sent <= 2 * whole, "{sent} of {whole}");
+    assert_eq!(encoder.encodes, 1 + steps);
     assert_eq!(encoder.piece(&mut cut).unwrap(), None);
 }
 
