@@ -1,6 +1,7 @@
 //! Source clauses.
 
 mod acks;
+mod json;
 mod partition;
 pub(super) mod recording;
 pub(super) mod resume;
@@ -181,16 +182,19 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
             }
             (Ok(catalog), "S-PLAN") => outcome(timed(plans_are_valid(source, catalog)).await),
             (Ok(catalog), "S-RESUME") => {
-                outcome(timed(resume::resumes_are_exact(source, catalog, &budget)).await)
+                // Boxed, as each clause that reads is: its reads' state would otherwise weigh on
+                // every certification's future.
+                let resumed = Box::pin(resume::resumes_are_exact(source, catalog, &budget));
+                outcome(timed(resumed).await)
             }
             (Ok(catalog), "S-PARTITION") => {
-                within(partition::partitions_cover_exactly_once(
+                within(Box::pin(partition::partitions_cover_exactly_once(
                     source, catalog, &budget,
-                ))
+                )))
                 .await
             }
             (Ok(catalog), "S-STOP") => {
-                outcome(timed(stop::stops_are_prompt(source, catalog, &budget)).await)
+                outcome(timed(Box::pin(stop::stops_are_prompt(source, catalog, &budget))).await)
             }
             (Ok(catalog), "S-ACK") => {
                 // Boxed: its reads' state would otherwise weigh on every certification's future.
@@ -202,7 +206,9 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
                 )))
                 .await
             }
-            (Ok(catalog), _) => within(barriers_are_answered(source, catalog, &budget)).await,
+            (Ok(catalog), _) => {
+                within(Box::pin(barriers_are_answered(source, catalog, &budget))).await
+            }
         };
         results.push(ClauseResult {
             clause: *clause,

@@ -45,3 +45,11 @@ pub const RENDERED_BYTES: usize = 64 << 20;
 
 /// Rows rendered between two yields to the runtime, so a clause's bound can end the rendering.
 pub(super) const YIELD_ROWS: usize = 4096;
+
+/// Bytes one record of a JSON push takes at most: a record is parsed whole to compare it, and a
+/// parsed record takes many times its text, so a push holding a larger one leaves the clause
+/// unobserved.
+pub(super) const RECORD_BYTES: usize = 1 << 20;
+
+/// Bytes of a JSON push scanned, or made canonical, between two yields to the runtime.
+pub(super) const YIELD_BYTES: usize = 1 << 20;

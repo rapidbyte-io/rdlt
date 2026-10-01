@@ -80,8 +80,8 @@ fn encodings() -> Vec<ArrayRef> {
     ]
 }
 
-#[test]
-fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_encoding() {
+#[tokio::test]
+async fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_encoding() {
     for column in encodings() {
         let kind = column.data_type().clone();
         let rows = column.len();
@@ -89,7 +89,7 @@ fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_encodi
         let changes = Push::Changes(batch(column));
         for push in [arrow, changes] {
             let budget = Budget::new();
-            budget.push(&push).unwrap();
+            budget.push(&push).await.unwrap();
             let bytes = usize::try_from(push.bytes()).unwrap() + HELD_EVENT_BYTES;
             assert_eq!(
                 left(&budget),
@@ -101,44 +101,46 @@ fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_encodi
     let budget = Budget::new();
     budget
         .push(&Push::Json(Bytes::from_static(b"[{\"a\":1}]")))
+        .await
         .unwrap();
+    // A JSON push is charged a row for each record its text holds.
     assert_eq!(
         left(&budget),
-        (HELD_BYTES - 9 - HELD_EVENT_BYTES, HELD_ROWS)
+        (HELD_BYTES - 9 - HELD_EVENT_BYTES, HELD_ROWS - 1)
     );
     budget
         .cursor(&Cursor::new(1, Bytes::from_static(b"abc")).unwrap())
         .unwrap();
     assert_eq!(
         left(&budget),
-        (HELD_BYTES - 12 - 2 * HELD_EVENT_BYTES, HELD_ROWS)
+        (HELD_BYTES - 12 - 2 * HELD_EVENT_BYTES, HELD_ROWS - 1)
     );
 }
 
-#[test]
-fn a_clause_holds_up_to_its_rows_and_its_bytes_and_nothing_once_beyond_either() {
+#[tokio::test]
+async fn a_clause_holds_up_to_its_rows_and_its_bytes_and_nothing_once_beyond_either() {
     let nulls = |rows: usize| Push::Arrow(batch(Arc::new(NullArray::new(rows))));
     let budget = Budget::new();
-    budget.push(&nulls(HELD_ROWS - 1)).unwrap();
-    budget.push(&nulls(1)).unwrap();
-    budget.push(&nulls(0)).unwrap();
-    assert!(budget.push(&nulls(1)).is_err());
+    budget.push(&nulls(HELD_ROWS - 1)).await.unwrap();
+    budget.push(&nulls(1)).await.unwrap();
+    budget.push(&nulls(0)).await.unwrap();
+    assert!(budget.push(&nulls(1)).await.is_err());
     // Events of no bytes are held as many as what holds them leaves room for.
     let budget = Budget::new();
     let empty = Push::Json(Bytes::new());
     for _ in 0..HELD_BYTES / HELD_EVENT_BYTES {
-        budget.push(&empty).unwrap();
+        budget.push(&empty).await.unwrap();
     }
-    let beyond = budget.push(&empty).unwrap_err();
+    let beyond = budget.push(&empty).await.unwrap_err();
     assert!(beyond.unobserved, "a source that sends more broke nothing");
     // Beyond its bytes, a clause holds no cursor either, nor rows it had room for.
     let cursor = Cursor::new(1, Bytes::new()).unwrap();
     assert!(budget.cursor(&cursor).is_err());
-    assert!(budget.push(&nulls(1)).is_err());
+    assert!(budget.push(&nulls(1)).await.is_err());
     let budget = Budget::new();
     let half = Push::Json(Bytes::from(vec![b' '; HELD_BYTES / 2 - HELD_EVENT_BYTES]));
-    budget.push(&half).unwrap();
-    budget.push(&half).unwrap();
+    budget.push(&half).await.unwrap();
+    budget.push(&half).await.unwrap();
     assert_eq!(left(&budget).0, 0);
     assert!(budget.cursor(&cursor).is_err());
 }

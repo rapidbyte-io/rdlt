@@ -530,14 +530,14 @@ async fn a_source_that_cannot_connect_fails_every_clause() {
     assert!(std::panic::catch_unwind(|| report.assert_passed()).is_err());
 }
 
-#[test]
-fn json_pushes_compare_by_rows_not_formatting() {
-    let array = super::source::recording::normalize(Push::Json(Bytes::from_static(
+#[tokio::test]
+async fn json_pushes_compare_by_rows_not_formatting() {
+    let normalize = super::source::recording::normalize;
+    let array = normalize(Push::Json(Bytes::from_static(
         b"[ {\"a\": 1}, {\"a\": 2} ]",
-    )));
-    let lines = super::source::recording::normalize(Push::Json(Bytes::from_static(
-        b"{\"a\":1}\n{\"a\":2}\n",
-    )));
+    )))
+    .await;
+    let lines = normalize(Push::Json(Bytes::from_static(b"{\"a\":1}\n{\"a\":2}\n"))).await;
     assert_eq!(array, lines);
     assert_eq!(
         array,
