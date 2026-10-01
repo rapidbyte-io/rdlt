@@ -48,6 +48,24 @@ pub(crate) struct Launch {
     pub(crate) grace: Duration,
     /// What kills it at once, when anything does.
     pub(crate) kills: Option<Kills>,
+    /// What is told its process id once it is spawned, when anything is.
+    pub(crate) told: Option<Told>,
+}
+
+/// What a host is told of each connector it spawns: its process id.
+#[derive(Clone)]
+pub(crate) struct Told(Arc<dyn Fn(u32) + Send + Sync>);
+
+impl Told {
+    pub(crate) fn new(told: impl Fn(u32) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(told))
+    }
+}
+
+impl fmt::Debug for Told {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Told")
+    }
 }
 
 /// The last bytes a connector wrote to its standard error, and whether it has closed it.
@@ -168,7 +186,12 @@ impl Process {
                 return Err(error);
             }
         };
+        let pid = owned.child().id();
         owned.reaped(steps.thread)?;
+        // Told once it is owned, and before anything is asked of it.
+        if let Some(Told(told)) = &launch.told {
+            told(pid);
+        }
         Ok(Self {
             held,
             killed,

@@ -76,7 +76,6 @@ async fn run(config: &Config) -> Result<(), String> {
         (killed == Some(Victim::Destination)).then_some(&kills),
     )
     .await?;
-    watch::tell_spawned();
     let kill = config.kill.map(|kill| (kills, kill));
     let watch = Arc::new(Watch::new(kill, config.pause));
     let source = watch::source(source, Arc::clone(&watch));
@@ -156,7 +155,13 @@ async fn destination(
 
 /// The host spawning connectors, killing them by `kills` where given.
 fn host(kills: Option<&Kills>) -> Local {
-    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    // Each connector is told as it is spawned, by its process id: the id of the process group
+    // it leads, which what watches the run checks is gone once the run has ended.
+    let local = Local::new()
+        .env_passthrough("LLVM_PROFILE_FILE")
+        .on_spawn(|connector| {
+            writeln!(std::io::stdout(), "connector {connector}").ok();
+        });
     match kills {
         Some(kills) => local.kills(kills),
         None => local,
