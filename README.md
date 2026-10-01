@@ -35,8 +35,9 @@ stops it when done and respawns it when it is lost, and the engine's integration
 against the reference connectors both ways. `rdlt-host`'s `Remote` reaches connectors listening
 on the network over mutual TLS 1.3, redialing them when they are lost, and the integration suite
 runs against them too. A listening connector accepts only the hosts named to it, by a name in
-their certificates, and holds a bounded number of connections, so peers that never authenticate
-cost a host nothing (ADR 0044). The simulation also places its connectors on hosts of their own on a
+their certificates, and holds a bounded number of connections at each stage: peers that never
+authenticate take nothing a session needs, and a flood from few addresses closes its own
+connections before a host's (ADR 0044). The simulation also places its connectors on hosts of their own on a
 simulated network (turmoil's, on paused clocks), through `Remote`, and loads through partitions,
 held messages, and connectors that crash or stop and start again. `rdlt-certify` certifies a
 connector through the protocol, served in this process, spawned from its binary or listening at an

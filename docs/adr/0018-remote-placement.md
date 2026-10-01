@@ -33,8 +33,8 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
   - `TlsError` names the file a failure came from.
 - **A served binary listens with `--listen <address>`**, and needs `--tls-cert`, `--tls-key`, `--tls-client-ca` and a `--tls-allow-host` for each host it accepts. `--listen` and `--rdlt-fd` exclude each other.
   - It says where it listens on standard output (`listening on <address>`), so port 0 works.
-  - Every connection is accepted at once. Those that have not completed their TLS handshake are 64 at most, each with 5 s; a further one closes one of them, drawn at random (ADR 0044).
-  - At most 256 sessions are served at once, 64 of one host; a further connection waits, among 64 at most and for 10 s at most. A peer that never completes its handshake is among the unauthenticated, and holds neither a session nor a place in that queue.
+  - Every connection is accepted at once. Those that have not completed their TLS handshake are 64 at most, each with 5 s; a further one closes the oldest of the origin that holds the most of them (ADR 0044).
+  - At most 256 sessions are served at once, each named host holding its share; a further connection waits, among 64 at most and for 10 s at most. A peer that never completes its handshake is among the unauthenticated, and holds neither a session nor a place in that queue.
   - It refuses to listen where its process may open fewer file descriptors than those limits need.
   - A failed accept pauses accepting for 100 ms.
   - Each connection is one session of the protocol, and pings its host over HTTP/2 every 5 s. A host that answers no ping for 30 s is gone.

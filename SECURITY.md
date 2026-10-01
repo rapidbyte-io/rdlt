@@ -18,8 +18,12 @@ complete, run only connectors you trust. The mechanisms in place today:
   full handshake each time. A connector accepts only the hosts named to it, by a name in their
   certificates, and a private key is read only from a file of its user's alone;
 - a listening connector holds a bounded number of connections at each stage, so peers that never
-  authenticate neither delay a host nor take the file descriptors of a session, and it reports
-  the connections it refused in one line an interval;
+  authenticate take no file descriptor of a session and hold up no accept. Once they fill the
+  places they are given, each further connection closes the oldest of the address that holds
+  the most, so a flood from few addresses closes its own. A flood from very many addresses, or
+  from behind the host's own, can still close a host's handshake, which the host tries again:
+  keep a firewall in front of a connector. Refused connections are reported in one line an
+  interval;
 - a connector's own binary serves no certification probe, and a source hears a host report
   committed only the checkpoints it sent that host;
 - an endpoint that is refused is never repeated in an error;
