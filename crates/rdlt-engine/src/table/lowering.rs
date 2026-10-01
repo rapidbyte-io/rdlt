@@ -3,6 +3,7 @@
 //! columns and, for merge tables, the sequence column and compaction.
 
 mod changes;
+mod constants;
 #[cfg(test)]
 mod differential;
 mod history;
@@ -12,24 +13,20 @@ mod prepared;
 mod reference;
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
-use arrow_array::builder::FixedSizeBinaryBuilder;
-use arrow_array::types::Int8Type;
-use arrow_array::{
-    Array, ArrayRef, BooleanArray, DictionaryArray, Int8Array, RecordBatch,
-    TimestampMicrosecondArray, new_null_array,
-};
+use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, new_null_array};
 use parking_lot::Mutex;
 use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName};
 
 use super::TableView;
 use super::convert::{convert, text};
-use super::lower::{ID_TYPE, IDX_TYPE, LOAD_ID_TYPE, loaded_at_type};
+use super::lower::{ID_TYPE, IDX_TYPE};
 use super::resolve::{Incoming, Route};
 use crate::error::Error;
 use crate::normalize::Lineage;
 pub(crate) use changes::ChangeRows;
+use constants::Constants;
 use merge::{check_key, positions, sequence};
 pub(crate) use prepared::Prepared;
 
@@ -71,13 +68,14 @@ pub(crate) struct LoweringPlan {
     constants: Mutex<Option<Constants>>,
 }
 
-/// The load id and load start as dictionary arrays of one value, for up to `rows` rows.
-#[derive(Debug)]
-struct Constants {
-    load_id: LoadId,
-    loaded_at: SystemTime,
-    rows: usize,
-    columns: [ArrayRef; 2],
+impl Source {
+    /// Whether the column holds nothing but nulls: the batch lacks it, or sends it typed null.
+    fn is_null(&self) -> bool {
+        match self {
+            Self::Incoming(_, from) => *from == LogicalType::Null,
+            Self::Nulls => true,
+        }
+    }
 }
 
 impl LoweringPlan {
@@ -117,6 +115,17 @@ impl LoweringPlan {
     /// The table view the plan lowers into.
     pub(crate) fn view(&self) -> &Arc<TableView> {
         &self.view
+    }
+
+    /// The bytes the columns a batch of `rows` rows holds nothing in take once lowered: each a
+    /// column of nulls as the destination stores it.
+    pub(crate) fn null_fill(&self, rows: usize) -> u64 {
+        self.sources
+            .iter()
+            .zip(&self.view.lowered)
+            .filter(|(source, _)| source.is_null())
+            .map(|(_, lowered)| rdlt_connector::cost::nulls(&lowered.to_arrow(), rows))
+            .fold(0, u64::saturating_add)
     }
 
     /// Whether the schema policy drops some of the rows the plan lowers: those holding a value of
@@ -234,10 +243,12 @@ impl LoweringPlan {
             .zip(&self.sources)
         {
             let array = match source {
-                Source::Incoming(index, from) => {
+                Source::Incoming(index, from) if !source.is_null() => {
                     store(&self.stream, batch.column(*index), from, column, lowered)?
                 }
-                Source::Nulls => new_null_array(&lowered.to_arrow(), batch.num_rows()),
+                // Nulls are built as the destination stores them, never as the wider type the
+                // column holds them in.
+                _ => new_null_array(&lowered.to_arrow(), batch.num_rows()),
             };
             columns.push(array);
         }
@@ -304,37 +315,6 @@ impl LoweringPlan {
         }
         let built = constants.as_ref().expect("the constants were just built");
         Ok(built.columns.clone().map(|column| column.slice(0, rows)))
-    }
-}
-
-impl Constants {
-    /// The constant metadata columns of `view` for `rows` rows of the load `stamp` names.
-    fn new(view: &TableView, stamp: &Stamp, rows: usize) -> Result<Self, arrow_schema::ArrowError> {
-        let lowered = |index: usize| view.physical[view.model.columns.len() + index].logical_type();
-        let mut load_ids = FixedSizeBinaryBuilder::with_capacity(1, 16);
-        load_ids.append_value(stamp.load_id.as_bytes())?;
-        let load_id: ArrayRef = Arc::new(load_ids.finish());
-        let micros = stamp
-            .loaded_at
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| {
-                i64::try_from(since.as_micros()).unwrap_or(i64::MAX)
-            });
-        let loaded_at: ArrayRef =
-            Arc::new(TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC"));
-        let constant = |value: ArrayRef| -> Result<ArrayRef, arrow_schema::ArrowError> {
-            let keys = Int8Array::from(vec![0; rows]);
-            Ok(Arc::new(DictionaryArray::<Int8Type>::try_new(keys, value)?))
-        };
-        Ok(Self {
-            load_id: stamp.load_id,
-            loaded_at: stamp.loaded_at,
-            rows,
-            columns: [
-                constant(lower_array(&load_id, &LOAD_ID_TYPE, lowered(0))?)?,
-                constant(lower_array(&loaded_at, &loaded_at_type(), lowered(1))?)?,
-            ],
-        })
     }
 }
 

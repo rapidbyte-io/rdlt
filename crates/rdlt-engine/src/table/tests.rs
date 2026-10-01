@@ -1696,3 +1696,51 @@ fn a_variant_of_64_bit_integers_is_exact_only_where_its_integers_are() {
         );
     }
 }
+
+/// The plan lowering `batch` into `model`, as a partition finds it.
+fn lowering(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> LoweringPlan {
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let resolution = resolver.resolve(model, &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver));
+    LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+}
+
+#[test]
+fn columns_a_batch_holds_nothing_in_are_nulls_as_the_destination_stores_them() {
+    const ROWS: usize = 1_000;
+    // A destination without decimals stores them as text.
+    let mut texts = capabilities();
+    texts.types.remove(&TypeKind::Decimal);
+    let resolver = resolver(texts, plan(), &[]);
+    let model = created(
+        &resolver,
+        &[
+            ("id", LogicalType::Int64),
+            ("wide", decimal(76, 0)),
+            ("absent", decimal(76, 0)),
+        ],
+    );
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..1_000));
+    // The batch sends `wide` typed null, and lacks `absent`.
+    let batch = batch(vec![
+        ("id", ids),
+        ("wide", arrow_array::new_null_array(&DataType::Null, ROWS)),
+    ]);
+    let plan = lowering(&resolver, &model, &batch);
+    // Two columns of text nulls: an offset a row and a bit of validity, never 32 bytes a row.
+    let text = rdlt_connector::cost::nulls(&DataType::Utf8, ROWS);
+    assert_eq!(plan.null_fill(ROWS), 2 * text);
+    assert!(text < 16 * 1_000);
+    assert_eq!(plan.null_fill(0), 0);
+    let prepared = plan.prepare(&batch, None, &stamp(), None).unwrap();
+    for column in [1, 2] {
+        let nulls = prepared.batch.column(column);
+        assert_eq!(nulls.data_type(), &DataType::Utf8);
+        assert_eq!(nulls.null_count(), ROWS);
+        let bytes = nulls.to_data().get_slice_memory_size().unwrap();
+        assert!(u64::try_from(bytes).unwrap() <= text, "{bytes}");
+    }
+    // A table the batch creates has no column for one typed null, and nothing to fill.
+    let created = lowering(&resolver, &Model::default(), &batch);
+    assert_eq!(created.null_fill(ROWS), 0);
+}

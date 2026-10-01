@@ -47,13 +47,19 @@ pub(super) async fn write_normalized(
         for (parts, held) in split.into_iter().zip(reservations) {
             let parts = parts?;
             // The parts wait on their tables' changes, so their memory is held from now.
-            let held = charge_parts(&context.budget, &parts, held);
+            let mut held = charge_parts(&context.budget, &parts, held);
             let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
             if received == 0 {
                 continue;
             }
             let stamp = stamp(context, open, received);
             let (unit, discarded) = plan_parts(job, context, parts, &rounding).await?;
+            // The columns the parts hold nothing in are charged before lowering fills them.
+            let fill = unit
+                .iter()
+                .map(|(_, part, plan)| plan.null_fill(part.batch.num_rows()))
+                .fold(0, u64::saturating_add);
+            held.reserve(&context.budget, fill);
             open.discarded_values += discarded.values;
             open.discarded_rows += discarded.rows;
             let lower_unit = move || lower_unit(unit, &stamp);

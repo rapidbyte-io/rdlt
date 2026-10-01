@@ -143,6 +143,27 @@ fn a_units_spare_charge_pays_for_what_lowering_allocates() {
 }
 
 #[test]
+fn bytes_reserved_before_a_unit_grows_pay_for_its_growth() {
+    let budget = MemoryBudget::new(1 << 20);
+    let unit = ids(10);
+    let mut held = hold(&budget, &native(), std::slice::from_ref(&unit), Vec::new()).remove(0);
+    let (charged, spare) = (budget.reserved(), held.spare);
+    held.reserve(&budget, 1_000);
+    assert_eq!(
+        budget.reserved(),
+        charged + 1_000,
+        "charged before it is built"
+    );
+    assert_eq!(held.spare, spare + 1_000);
+    // Growth within what was reserved is charged nothing more.
+    let lowered = ids(100);
+    assert!(allocated(&lowered) <= spare + 1_000);
+    let held = charge_growth(&budget, &prepared(&lowered), held);
+    assert_eq!(budget.reserved(), charged + 1_000);
+    assert_eq!(held.spare, spare + 1_000 - allocated(&lowered));
+}
+
+#[test]
 fn the_loads_constant_columns_count_for_no_growth() {
     let rows = ids(100);
     let constant = ids(100);

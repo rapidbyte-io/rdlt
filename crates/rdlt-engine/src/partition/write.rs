@@ -124,6 +124,13 @@ impl Held {
         }
     }
 
+    /// Charges `budget` `bytes` the unit is about to grow by, before it does: its permits then
+    /// spare them for the growth that follows.
+    fn reserve(&mut self, budget: &MemoryBudget, bytes: u64) {
+        self.permits.push(Box::new(budget.charge(bytes)));
+        self.spare = self.spare.saturating_add(bytes);
+    }
+
     /// Charges `budget` the `fresh` bytes the unit grew by, beyond what its permits spare.
     fn grow(&mut self, budget: &MemoryBudget, fresh: u64) {
         self.permits
@@ -163,15 +170,15 @@ async fn write(
         parts,
         changes,
         mut incoming,
-        held,
+        mut held,
     } in judged
     {
         incoming.rounding.clone_from(&rounding);
         let plan = context.tables.plan(job.table, incoming).await?;
-        let received = parts
-            .iter()
-            .map(|batch| u64::try_from(batch.num_rows()).unwrap_or(u64::MAX))
-            .sum::<u64>();
+        let rows: usize = parts.iter().map(RecordBatch::num_rows).sum();
+        // The columns the unit holds nothing in are charged before lowering fills them.
+        held.reserve(&context.budget, plan.null_fill(rows));
+        let received = u64::try_from(rows).unwrap_or(u64::MAX);
         let stamp = stamp(context, open, received);
         planned.push((move || lower(&parts, &plan, &stamp, changes.as_ref()), held));
     }
