@@ -66,15 +66,18 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   - The `Decoder` validates a schema once and caches it with its dictionaries (§12.4). A frame's
     body length and every buffer's offset and length are checked against the body before Arrow
     reads it, and compressed bodies are refused.
+    (ADR 0038 replaces the check of each buffer with one of the frame's whole shape.)
   - Delta dictionaries are refused: no end negotiates them, and a peer sending one delta after
     another would grow a dictionary without bound, copying it whole each time.
   - No node may declare more values than the larger of the row limit and eight per byte of body.
     Every value but a null or a run needs at least a bit, so a tiny frame cannot declare a child
     of 2^40 values for whatever reads the batch next to iterate.
+    (Superseded by ADR 0038: a frame's values have one limit.)
   - The flatbuffer verifier's depth follows the nesting limit, so a schema nested to the limit
     passes it and one nested deeper is refused by the nesting limit, by name.
   - Arrow's decode runs inside `catch_unwind`. On corrupt node lengths Arrow's readers panic; the
     decoder turns such a panic into a typed error (§12.8).
+    (ADR 0038 has the build require unwinding.)
 - **Limits** (§12.8) are `rdlt_wire::Limits`, with the spec's defaults, enforced on receive with a
   typed `Refusal { code, field, limit, actual }`.
   - The decoder enforces frame size, rows per batch, columns per schema and nesting depth.
@@ -86,6 +89,7 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
     checks and Arrow's readers.
   - libfuzzer aborts on any panic, even a contained one, so `ipc_frame` quiets the panic hook, and
     only a panic that escapes the decoder fails it.
+    (Superseded by ADR 0038: a contained panic skips the hook.)
   - The nightly fuzz job runs one target per matrix leg, twenty minutes each.
 - **The gates now cover `rdlt-wire`.** Coverage and mutation testing include it, as §20.14 lists.
 
@@ -96,3 +100,4 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   guards them (§12.7).
 - Arrow panics that the decoder contains are still printed by the default panic hook, as the
   engine's contained panics are.
+  (Superseded by ADR 0038: the decoder's contained panics are not printed.)
