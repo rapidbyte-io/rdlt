@@ -23,6 +23,21 @@ A report's verdict follows from its outcomes:
 
 The clauses a connector must pass are therefore those its declarations leave applicable: a connector cannot skip one by how it behaves, only by declaring less, and the engine uses of a connector only what it declares. `--require partial` exits 0 for an incomplete certification in which no clause failed and one passed; the report, and its JSON `verdict` and `passed`, say incomplete all the same. A clause is unobserved when nothing reads back what a destination published, when a source sends no checkpoint to resume or plan again from, when a read ends within its first credit, when no kill reaches the connector, or when what a source sends is more than certification holds: certify with a fixture that shows the behaviour.
 
+A kill clause that passed says beside its `pass`, and as `note` in JSON, what it passed on: `killed`, a connection ended with a process a kill ended, or `cut`, kills cut the connection of a connector the host did not start, and no process was seen to stop.
+
+## Exit codes
+
+| Code | When |
+|---|---|
+| 0 | every role certified passed, or, with `--require partial`, none failed and each passed a clause |
+| 1 | a clause failed, or the connector serves none of the roles asked |
+| 2 | no clause failed, yet a role's certification is incomplete |
+| 64 | the command line was wrong: an option, the configuration's JSON, the endpoint, or a `--timeout` further ahead than the clock holds |
+| 74 | a file named could not be read, the connector's binary is missing or not executable, or a connector the certification spawned was not seen to stop |
+| 130, 143 | the certification was interrupted (`SIGINT`) or asked to terminate (`SIGTERM`): the connectors it spawned are stopped first |
+
+A certification cut at its timeout reports what it saw: the clauses already checked keep their outcomes, the clause it was cut in fails, as does the first clause of a role it never started, and the clauses after are not observed, so it exits 1.
+
 ## Protocol (`P`)
 
 | Clause | Statement | Does not apply when |
@@ -84,11 +99,14 @@ The clauses a connector must pass are therefore those its declarations leave app
 
 ## What certification bounds
 
-- Every call has a deadline, each clause a bound on all its work (30 s a protocol clause, 600 s a source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; a role still certifying then fails every clause.
-- A source clause holds at most 64 MiB and 1,048,576 rows of what its reads send, all its reads together, and renders at most 64 MiB of text; a kill clause loads at most 100,000 rows and 64 MiB. A source that holds more leaves the clause unobserved.
-- A read-back holds at most 10,000 rows (100,000 for the kill clause) of flat columns, plain, dictionary or run-end encoded, that take at most 16 MiB once each row holds its own value, and at most 64 MiB on the wire. A destination that reads back more, or other columns, fails the clause.
+- Every call has a deadline, each clause a bound on all its work (30 s a protocol clause, 600 s a source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; the clause being checked then fails, and nothing more is started.
+- A source clause holds at most 64 MiB and 1,048,576 rows of what its reads send, all its reads together, and renders at most 64 MiB of text; a kill clause loads at most 100,000 rows and 64 MiB. A source that holds more leaves the clause unobserved. A JSON push is charged a row for each record its text holds before any is parsed, and a record of more than 1 MiB leaves the clause unobserved.
+- `S-RESUME` resumes from every checkpoint of a read that sent five at most, and else from five spread from the first to the last: a resume that is wrong only from a checkpoint between them is not caught.
+- A read-back holds at most 10,000 rows (100,000 for the kill clause) of flat columns, plain, dictionary or run-end encoded, that take at most 16 MiB once each row holds its own value, and at most 64 MiB on the wire. A column is read only as the kind it was written as, or a kind that holds the same values: integers as 64-bit integers, text as any text, bytes as any bytes, an instant as its count. A destination that reads back more, or other columns, fails the clause.
 - A reason is at most 2048 bytes, and quotes at most the first eight rows of those it counts.
-- A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill, which a spawned connector's does once every process of its group is gone.
+- A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill. A spawned connector's ends once no process holds its other end, which a kill of its process group brings about unless a process left the group and holds it. The connection of a connector reached at an endpoint, or served in process, is cut by the host, which proves no process stopped: the report notes which was seen.
+- A kill clause loads in a mode the connector declares: a destination in the first of append, merge and replace it writes, a source each stream in the first of incremental, full and change reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved.
+- A spawned connector leads a process group the host stops, then kills, when the certification ends, is cut at its timeout, or is interrupted. A process that left the group is not reached, and neither is anything when the certifier itself is killed outright.
 - `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times: a source that ignores credit and sends less often than that is not told from one that waits.
 
 ## What certification cannot show
