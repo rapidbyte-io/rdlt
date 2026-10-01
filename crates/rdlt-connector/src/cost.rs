@@ -6,9 +6,8 @@
 
 mod expanded;
 mod held;
-mod shape;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod widths;
 
 use std::collections::BTreeSet;
@@ -18,7 +17,6 @@ use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
 
 pub use held::Allocations;
-pub use shape::admit;
 
 use crate::sink::Push;
 use crate::types::TypeKind;

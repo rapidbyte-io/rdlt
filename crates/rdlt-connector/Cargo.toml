@@ -15,7 +15,7 @@ macros = ["dep:rdlt-connector-macros"]
 # them out.
 certify = []
 testing = ["dep:arrow-cast", "certify"]
-wire = ["dep:rdlt-wire"]
+wire = []
 serve = [
   "wire",
   "dep:http",
@@ -45,7 +45,7 @@ arrow-schema.workspace = true
 base64.workspace = true
 bytes.workspace = true
 rdlt-connector-macros = { workspace = true, optional = true }
-rdlt-wire = { workspace = true, optional = true }
+rdlt-wire.workspace = true
 http = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, optional = true, features = ["tokio", "service"] }

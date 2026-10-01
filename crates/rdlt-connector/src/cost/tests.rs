@@ -1,8 +1,10 @@
+mod decoded;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arrow_array::builder::{BinaryViewBuilder, StringViewBuilder};
-use arrow_array::types::{Int8Type, Int16Type, Int32Type, Int64Type};
+use arrow_array::types::{Int8Type, Int16Type, Int32Type};
 use arrow_array::{
     Array, ArrayRef, BooleanArray, Date32Array, Decimal32Array, Decimal64Array, Decimal128Array,
     Decimal256Array, DictionaryArray, DurationSecondArray, FixedSizeBinaryArray,
@@ -16,7 +18,7 @@ use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields, IntervalUnit, UnionFields};
 use proptest::prelude::*;
 
-use super::{Allocations, Rendering, admit, nulls};
+use super::{Allocations, Rendering, nulls};
 use crate::types::TypeKind;
 
 /// A destination storing every scalar as it is.
@@ -42,7 +44,7 @@ fn native() -> Rendering {
     ])
 }
 
-fn batch(column: ArrayRef) -> RecordBatch {
+pub(crate) fn batch(column: ArrayRef) -> RecordBatch {
     RecordBatch::try_from_iter([("column", column)]).unwrap()
 }
 
@@ -50,7 +52,7 @@ fn expanded(rendering: &Rendering, column: &ArrayRef) -> u64 {
     rendering.expanded_array(column.as_ref(), 0..column.len(), u64::MAX)
 }
 
-fn item(data_type: DataType) -> Arc<Field> {
+pub(crate) fn item(data_type: DataType) -> Arc<Field> {
     Arc::new(Field::new("item", data_type, true))
 }
 
@@ -224,7 +226,7 @@ fn nested_types() -> Vec<ArrayRef> {
 }
 
 /// One array of every Arrow type the wire admits, four rows each.
-fn every_type() -> Vec<ArrayRef> {
+pub(crate) fn every_type() -> Vec<ArrayRef> {
     flat().into_iter().chain(nested_types()).collect()
 }
 
@@ -452,105 +454,13 @@ fn an_allocation_arrow_did_not_make_counts_whole() {
 }
 
 /// A batch of one column nested `levels` deep, a top-level column being the first level.
-fn nested(levels: usize) -> RecordBatch {
+pub(crate) fn nested(levels: usize) -> RecordBatch {
     let mut inner: ArrayRef = Arc::new(Int64Array::from(vec![1_i64]));
     for _ in 1..levels {
         let fields = Fields::from(vec![Field::new("a", inner.data_type().clone(), true)]);
         inner = Arc::new(StructArray::new(fields, vec![inner], None));
     }
     batch(inner)
-}
-
-fn refused(batch: &RecordBatch) -> (&'static str, u64) {
-    let refusal = admit(batch).unwrap_err();
-    assert!(refusal.actual > refusal.limit);
-    (refusal.name, refusal.limit)
-}
-
-#[test]
-fn a_batch_nested_beyond_the_limit_is_refused_however_deep() {
-    admit(&nested(64)).unwrap();
-    assert_eq!(refused(&nested(65)), ("nesting depth", 64));
-    // Deep enough to overflow a stack that recursed a level at a time.
-    assert_eq!(refused(&nested(3_000)), ("nesting depth", 64));
-}
-
-#[test]
-fn a_batch_of_more_values_than_the_limit_is_refused() {
-    const ROWS: usize = 10_000;
-    // One row holding two billion nulls takes no bytes.
-    let items = 2_000_000_000_usize;
-    let nulls = ListArray::new(
-        item(DataType::Null),
-        OffsetBuffer::new(vec![0_i32, i32::try_from(items).unwrap()].into()),
-        Arc::new(NullArray::new(items)),
-        None,
-    );
-    assert_eq!(refused(&batch(Arc::new(nulls))), ("batch values", 64 << 20));
-    // A list view's sizes count, since its rows may name the same items.
-    let views = ListViewArray::new(
-        item(DataType::Int8),
-        ScalarBuffer::from(vec![0_i32; ROWS]),
-        ScalarBuffer::from(vec![i32::try_from(ROWS).unwrap(); ROWS]),
-        Arc::new(Int8Array::from(vec![0; ROWS])),
-        None,
-    );
-    assert_eq!(refused(&batch(Arc::new(views))), ("batch values", 64 << 20));
-}
-
-#[test]
-fn a_batch_whose_views_name_more_than_the_limit_is_refused() {
-    let mut views = BinaryViewBuilder::new();
-    let block = views.append_block(vec![7_u8; 1 << 20].into());
-    for _ in 0..65 {
-        views.try_append_view(block, 0, 1 << 20).unwrap();
-    }
-    assert_eq!(
-        refused(&batch(Arc::new(views.finish()))),
-        ("view bytes", 64 << 20)
-    );
-    // Within a dictionary's values too.
-    let mut views = BinaryViewBuilder::new();
-    let block = views.append_block(vec![7_u8; 1 << 20].into());
-    for _ in 0..65 {
-        views.try_append_view(block, 0, 1 << 20).unwrap();
-    }
-    let keyed =
-        DictionaryArray::<Int64Type>::try_new(Int64Array::from(vec![0]), Arc::new(views.finish()))
-            .unwrap();
-    assert_eq!(refused(&batch(Arc::new(keyed))), ("view bytes", 64 << 20));
-}
-
-#[test]
-fn a_batch_keeping_more_alive_than_the_limit_is_refused() {
-    let values = Buffer::from_vec(vec![0_u8; (64 << 20) + 1]);
-    let whole = UInt8Array::new(ScalarBuffer::new(values, 0, (64 << 20) + 1), None);
-    // Three rows of it keep all of it alive.
-    let slice: ArrayRef = Arc::new(whole.slice(0, 3));
-    assert_eq!(refused(&batch(slice)), ("batch bytes", 64 << 20));
-}
-
-#[test]
-fn a_batch_of_more_rows_or_columns_than_the_limit_is_refused() {
-    let rows: ArrayRef = Arc::new(NullArray::new((1 << 20) + 1));
-    assert_eq!(refused(&batch(rows)), ("batch rows", 1 << 20));
-    // Nested fields count as columns.
-    let fields: Fields = (0..10_000)
-        .map(|index| Field::new(format!("f{index}"), DataType::Null, true))
-        .collect();
-    let columns = fields
-        .iter()
-        .map(|_| Arc::new(NullArray::new(1)) as ArrayRef)
-        .collect();
-    let wide: ArrayRef = Arc::new(StructArray::new(fields, columns, None));
-    assert_eq!(refused(&batch(wide)), ("batch columns", 10_000));
-}
-
-#[test]
-fn every_type_within_the_limits_is_admitted() {
-    for column in every_type() {
-        admit(&batch(column)).unwrap();
-    }
 }
 
 #[test]
@@ -563,31 +473,4 @@ fn a_batch_nested_beyond_any_the_limits_admit_costs_more_than_any_limit() {
     let admitted = nested(64);
     let column = Arc::clone(admitted.column(0));
     assert!(expanded(&native(), &column) < 10_000);
-}
-
-#[test]
-fn an_encoded_column_counts_as_the_columns_its_layout_has() {
-    // A dictionary column is one column, its values': ten thousand of them are within the limit.
-    let words: ArrayRef = Arc::new(StringArray::from(vec!["a"]));
-    let keyed = |_| {
-        let keys = Int8Array::from(vec![0]);
-        Arc::new(DictionaryArray::<Int8Type>::try_new(keys, Arc::clone(&words)).unwrap())
-            as ArrayRef
-    };
-    let wide = |columns: usize, column: &dyn Fn(usize) -> ArrayRef| {
-        RecordBatch::try_from_iter((0..columns).map(|index| (format!("c{index}"), column(index))))
-            .unwrap()
-    };
-    admit(&wide(10_000, &keyed)).unwrap();
-    // A run-end encoded column is three: itself, its run ends and its values.
-    let runs = |_| {
-        let ends = arrow_array::Int16Array::from(vec![1]);
-        Arc::new(RunArray::<Int16Type>::try_new(&ends, &words).unwrap()) as ArrayRef
-    };
-    admit(&wide(3_333, &runs)).unwrap();
-    assert_eq!(refused(&wide(3_334, &runs)), ("batch columns", 10_000));
-    // Its values count toward the batch's, beside its rows and its runs.
-    let long = RunArray::<Int32Type>::try_new(&Int32Array::from(vec![1 << 20]), &NullArray::new(1))
-        .unwrap();
-    admit(&batch(Arc::new(long))).unwrap();
 }
