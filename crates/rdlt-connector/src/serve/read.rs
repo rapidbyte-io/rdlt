@@ -13,6 +13,7 @@ use rdlt_wire::{Encoder, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::acknowledgeable::Read;
 use super::service::{Answer, invalid};
 use crate::Cursor;
 use crate::error::ConnectorErrorKind;
@@ -26,12 +27,14 @@ const EVENTS: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero")
 
 /// Starts serving the read the host's first message asks for, whose cursor keeps within `own`,
 /// this end's limits; what it sends keeps within `host`, the host's.
+///
+/// Answers its frames, and which stream and partition it reads.
 pub(super) async fn serve(
     source: Arc<dyn Source>,
     own: Limits,
     host: Limits,
     mut controls: Streaming<v1::ReadControl>,
-) -> Result<Answer<v1::ReadFrame>, Status> {
+) -> Result<(Answer<v1::ReadFrame>, Read), Status> {
     let Some(v1::ReadControl {
         control: Some(v1::read_control::Control::Start(start)),
     }) = controls.message().await?
@@ -42,10 +45,18 @@ pub(super) async fn serve(
         own.admit_cursor(cursor.bytes.len()).map_err(refused)?;
     }
     let barrier = start.barrier;
+    let read = Read {
+        stream: start
+            .stream
+            .as_ref()
+            .map(|stream| (stream.namespace.clone(), stream.name.clone()))
+            .unwrap_or_default(),
+        partition: start.partition.clone(),
+    };
     let request = request(start).map_err(|error| invalid(&error))?;
     let (frames, answer) = mpsc::channel(EVENTS.get());
     tokio::spawn(pump(source, request, barrier, controls, frames, host));
-    Ok(Box::pin(ReceiverStream::new(answer)))
+    Ok((Box::pin(ReceiverStream::new(answer)), read))
 }
 
 fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
