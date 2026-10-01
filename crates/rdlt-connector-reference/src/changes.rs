@@ -38,6 +38,10 @@ pub struct ChangesConfig {
     /// slot where none is named.
     #[serde(default)]
     pub slot: Option<String>,
+    /// The file the slot is kept in instead, which outlives the process as a replication slot
+    /// outlives its clients; `slot` names none then.
+    #[serde(default)]
+    pub slot_path: Option<std::path::PathBuf>,
 }
 
 /// One change stream: a table of `keys` rows, snapshotted, then changed `changes` times.
@@ -131,7 +135,10 @@ impl SourceConnector for ChangesSource {
         Ok(Self {
             seed: config.seed,
             streams: config.streams,
-            slot: slot::named(config.slot.as_deref()),
+            slot: match &config.slot_path {
+                Some(path) => slot::at(path).config(format!("slot {}", path.display()))?,
+                None => slot::named(config.slot.as_deref()),
+            },
         })
     }
 
@@ -250,7 +257,8 @@ impl ReadStream<ChangesSource> for Changed {
         cursors: &[(PartitionId, Position)],
     ) -> Result<()> {
         for (partition, position) in cursors {
-            source.slot.advance(&self.0.name, partition, *position);
+            let kept = source.slot.advance(&self.0.name, partition, *position);
+            kept.transient("keeping the slot")?;
         }
         Ok(())
     }

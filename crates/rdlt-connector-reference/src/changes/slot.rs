@@ -15,3 +15,9 @@ static SLOTS: Registry<Position> = Registry::new();
 pub(super) fn named(name: Option<&str>) -> Arc<Slot> {
     SLOTS.named(name)
 }
+
+/// The slot kept in the file at `path`, which every change source of this process naming the
+/// file shares.
+pub(super) fn at(path: &std::path::Path) -> std::io::Result<Arc<Slot>> {
+    SLOTS.at(path)
+}

@@ -414,3 +414,50 @@ async fn a_stream_of_whole_rows_leaves_no_value_unchanged_and_changes_the_same_k
     }
     assert_eq!(read_back[0], read_back[1]);
 }
+
+#[tokio::test]
+async fn a_slot_on_disk_keeps_what_the_source_acknowledged_for_its_next_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("orders.slot");
+    let config = serde_json::json!({
+        "seed": 3, "slot_path": path,
+        "streams": [{ "name": "orders", "keys": 6, "changes": 40 }],
+    });
+    let source = source_factory::<ChangesSource>()
+        .connect(config.clone(), ConnectContext::new())
+        .await
+        .unwrap();
+    let at = Cursor::encode(
+        1,
+        &Position {
+            next: 9,
+            done: false,
+        },
+    )
+    .unwrap();
+    let changes = PartitionId::parse("changes").unwrap();
+    source
+        .committed(&orders(), &[(changes.clone(), at)])
+        .await
+        .unwrap();
+    // What the next process finds in the file.
+    let kept: crate::kept::Kept<Position> = crate::kept::Kept::at(&path).unwrap();
+    assert_eq!(
+        kept.position("orders", &changes),
+        Some(Position {
+            next: 9,
+            done: false
+        })
+    );
+    // A slot file a disk damaged is refused at connect, rather than found empty.
+    let damaged = dir.path().join("damaged.slot");
+    std::fs::write(&damaged, br#"[["orders""#).unwrap();
+    let config = serde_json::json!({
+        "seed": 3, "slot_path": damaged,
+        "streams": [{ "name": "orders", "keys": 6, "changes": 40 }],
+    });
+    let refused = source_factory::<ChangesSource>()
+        .connect(config, ConnectContext::new())
+        .await;
+    assert!(refused.is_err());
+}
