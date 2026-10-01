@@ -56,26 +56,29 @@ impl<P> Default for Kept<P> {
 impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     /// The keeper kept in the file at `path`: what the file holds, none where there is no file.
     ///
-    /// The file is a regular file in the directory `path` names it in: a link there is refused,
-    /// read or written, and so is a file larger than a keeper's.
+    /// The file's directory must be this user's alone, and so must the file: a regular file in
+    /// the directory `path` names it in, of at most a keeper's size. A link there is refused,
+    /// read or written.
     ///
     /// # Errors
     ///
     /// A file that cannot be read, or holds no keeper, as one a disk damaged would.
+    #[cfg(test)]
     pub(crate) fn at(path: &Path) -> io::Result<Self> {
-        let name = path
-            .file_name()
-            .ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
-        let directory = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let dir = Dir::ambient(directory)?;
-        let positions = match dir.read(name, LIMIT) {
+        let (dir, name) = place(path)?;
+        Self::open(dir, name)
+    }
+
+    /// The keeper kept in the file `name` of `dir`, as [`Kept::at`] reads it.
+    fn open(dir: Dir, name: OsString) -> io::Result<Self> {
+        let positions = match dir.read_private(&name, LIMIT) {
             Ok(bytes) => {
                 let listed: Vec<(String, PartitionId, P)> = serde_json::from_slice(&bytes)?;
                 if listed.len() > KEEPER_POSITIONS {
-                    return Err(io::Error::from(ErrorKind::InvalidData));
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        format!("the file holds more than {KEEPER_POSITIONS} positions"),
+                    ));
                 }
                 listed
                     .into_iter()
@@ -89,10 +92,7 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
         dir.sweep_of(&name.to_string_lossy(), std::time::Duration::ZERO)?;
         Ok(Self {
             positions: Mutex::new(positions),
-            file: Some(KeptFile {
-                dir,
-                name: name.to_owned(),
-            }),
+            file: Some(KeptFile { dir, name }),
         })
     }
 
@@ -143,6 +143,18 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     }
 }
 
+/// The directory of the keeper file at `path`, opened, and the file's name in it.
+fn place(path: &Path) -> io::Result<(Dir, OsString)> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+    let directory = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    Ok((Dir::ambient(directory)?, name.to_owned()))
+}
+
 /// Writes `positions` to `file` through a temporary beside it, created under a name nobody can
 /// guess and renamed over it once durable, the rename made durable too: a crash leaves the file
 /// as it was or as it is now, never torn.
@@ -181,13 +193,17 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Registry<P> {
     ///
     /// The file cannot be read, or holds no keeper.
     pub(crate) fn at(&self, path: &Path) -> io::Result<Arc<Kept<P>>> {
-        let name = format!("file:{}", path.display());
+        // Keyed by the directory itself and the name in it, so every path to one file names one
+        // keeper.
+        let (dir, name) = place(path)?;
+        let (device, file) = dir.identity()?;
+        let key = format!("file:{device}:{file}:{}", name.to_string_lossy());
         let mut keepers = self.0.lock();
-        if let Some(kept) = keepers.get(&name) {
+        if let Some(kept) = keepers.get(&key) {
             return Ok(Arc::clone(kept));
         }
-        let kept = Arc::new(Kept::at(path)?);
-        keepers.insert(name, Arc::clone(&kept));
+        let kept = Arc::new(Kept::open(dir, name)?);
+        keepers.insert(key, Arc::clone(&kept));
         Ok(kept)
     }
 }
