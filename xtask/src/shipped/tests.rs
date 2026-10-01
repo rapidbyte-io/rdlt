@@ -48,7 +48,11 @@ fn the_binaries_built_unasked_are_those_shipped_and_no_other() {
     let ships = ["rdlt-connector-files", "rdlt-connector-sqlite"];
     let built = |names: &[&str]| -> Vec<String> { names.iter().map(|n| (*n).to_owned()).collect() };
     assert_eq!(binaries("reference", &ships, &built(&ships)), []);
-    let extra = built(&["rdlt-connector-files", "rdlt-connector-memory", "rdlt-connector-sqlite"]);
+    let extra = built(&[
+        "rdlt-connector-files",
+        "rdlt-connector-memory",
+        "rdlt-connector-sqlite",
+    ]);
     assert_eq!(
         binaries("reference", &ships, &extra),
         [Violation::Binary {
