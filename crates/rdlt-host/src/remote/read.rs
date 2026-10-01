@@ -6,7 +6,7 @@ mod tests;
 
 use rdlt_connector::wire::{Invalid, frame_error, v1};
 use rdlt_connector::{
-    ConnectorError, ConnectorErrorKind, Cursor, LogLevel, PartitionSink, Push, ReadRequest,
+    ConnectorError, ConnectorErrorKind, Cursor, LogLevel, PartitionSink, Permit, Push, ReadRequest,
     Requested, SourceEvent,
 };
 use rdlt_wire::prost::Message as _;
@@ -40,6 +40,7 @@ pub(super) async fn run(
         epoch: None,
     };
     let (mut forwarded, mut stopping) = (pending, false);
+    let mut dictionaries = Dictionaries::default();
     loop {
         tokio::select! {
             biased;
@@ -80,7 +81,8 @@ pub(super) async fn run(
                         }
                         sink.send(event).await.ok();
                     }
-                    Read::Nothing => {}
+                    // A dictionary waits in the decoder for the batches that use it.
+                    Read::Nothing => dictionaries.charge(&sink, reader.decoder.dictionary_bytes()),
                 }
                 controls.send(control(Control::Credit(v1::Credit { bytes: size }))).await.ok();
             }
@@ -137,6 +139,28 @@ async fn start(
         )
         .await?;
     Ok((controls, frames))
+}
+
+/// What holds the bytes of the dictionaries a read's decoder keeps, charged to whoever admits
+/// the read's events for as long as the decoder keeps them.
+#[derive(Default)]
+struct Dictionaries {
+    bytes: u64,
+    held: Option<Permit>,
+}
+
+impl Dictionaries {
+    /// Charges `sink`'s admission the `bytes` the decoder now holds, in place of what it held.
+    fn charge(&mut self, sink: &PartitionSink, bytes: u64) {
+        if bytes != self.bytes {
+            self.held = if bytes == 0 {
+                None
+            } else {
+                sink.reserve(bytes)
+            };
+            self.bytes = bytes;
+        }
+    }
 }
 
 /// What one frame means to the read.

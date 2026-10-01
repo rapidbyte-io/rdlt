@@ -210,3 +210,34 @@ fn the_lesser_of_two_ends_limits_is_the_lesser_of_each() {
     assert_eq!(mixed.lesser(&high), mixed);
     assert_eq!(high.lesser(&mixed), mixed);
 }
+
+#[test]
+fn dictionaries_and_staged_frames_are_bounded_in_frames() {
+    let limits = Limits {
+        frame_bytes: 10,
+        ..Limits::default()
+    };
+    assert_eq!((limits.dictionary_bytes(), limits.staged_bytes()), (10, 40));
+    assert_eq!(limits.admit_dictionaries(10), Ok(()));
+    assert_eq!(
+        limits.admit_dictionaries(11),
+        Err(Refusal {
+            code: LIMIT_EXCEEDED,
+            field: "dictionary bytes",
+            limit: 10,
+            actual: 11,
+        })
+    );
+    assert_eq!(limits.admit_staged(40), Ok(()));
+    let refusal = limits.admit_staged(41).unwrap_err();
+    assert_eq!((refusal.field, refusal.limit), ("staged bytes", 40));
+    // A receiver that lifts the frame limit lifts these with it.
+    let unlimited = Limits {
+        frame_bytes: u64::MAX,
+        ..Limits::default()
+    };
+    assert_eq!(unlimited.admit_staged(u64::MAX), Ok(()));
+    assert_eq!(unlimited.admit_dictionaries(u64::MAX), Ok(()));
+    assert_eq!(Limits::default().dictionary_bytes(), 64 << 20);
+    assert_eq!(Limits::default().staged_bytes(), 256 << 20);
+}

@@ -1,11 +1,16 @@
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
+
+use arrow_array::types::Int8Type;
+use arrow_array::{ArrayRef, DictionaryArray, RecordBatch, StringArray};
 use bytes::{BufMut, Bytes, BytesMut};
 use rdlt_connector::wire::v1;
-use rdlt_connector::{Push, SourceEvent};
+use rdlt_connector::{Admission, BoxFuture, Permit, Push, SourceEvent, admitted_partition_channel};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::encoding::{WireType, encode_key, encode_varint};
-use rdlt_wire::{Decoder, Limits};
+use rdlt_wire::{Decoder, Encoder, Limits};
 
-use super::{Read, Reader};
+use super::{Dictionaries, Read, Reader};
 
 fn reader() -> Reader {
     let limits = Limits::default();
@@ -71,4 +76,99 @@ fn a_checkpoint_does_not_keep_its_message_alive() {
     };
     assert_eq!(cursor.bytes().as_ref(), b"7");
     assert!(message.is_unique(), "the cursor keeps its message alive");
+}
+
+/// Records what a read reserves beside its events.
+#[derive(Default)]
+struct Charges(Mutex<Vec<u64>>);
+
+/// What a charge holds: where to record its release.
+struct Charged(Arc<Charges>);
+
+impl Drop for Charged {
+    fn drop(&mut self) {
+        self.0.0.lock().unwrap().push(0);
+    }
+}
+
+struct Charging(Arc<Charges>);
+
+impl Admission for Charging {
+    fn admit<'a>(&'a self, _event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>> {
+        Box::pin(async { None })
+    }
+
+    fn charge(&self, bytes: u64) -> Permit {
+        self.0.0.lock().unwrap().push(bytes);
+        Box::new(Charged(Arc::clone(&self.0)))
+    }
+}
+
+/// A batch of one dictionary column of one row, its dictionary one value of `fill`.
+fn keyed(fill: &str) -> RecordBatch {
+    let value = fill.repeat(1_000);
+    let dictionary = DictionaryArray::<Int8Type>::try_new(
+        vec![0].into(),
+        Arc::new(StringArray::from(vec![value.as_str()])),
+    )
+    .expect("a valid dictionary");
+    RecordBatch::try_from_iter([("tag", Arc::new(dictionary) as ArrayRef)]).expect("one column")
+}
+
+fn schema_frame(encoder: &mut Encoder, batch: &RecordBatch, epoch: u64) -> v1::ReadFrame {
+    v1::ReadFrame {
+        frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
+            schema_epoch: epoch,
+            ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
+        })),
+    }
+}
+
+fn batch_frames(encoder: &mut Encoder, batch: &RecordBatch, epoch: u64) -> Vec<v1::ReadFrame> {
+    let frames = encoder.batch(batch).expect("the batch encodes");
+    frames
+        .into_iter()
+        .map(|frame| v1::ReadFrame {
+            frame: Some(v1::read_frame::Frame::Batch(v1::BatchFrame {
+                schema_epoch: epoch,
+                kind: v1::BatchKind::Arrow as i32,
+                data_header: frame.header,
+                data_body: frame.body,
+            })),
+        })
+        .collect()
+}
+
+#[test]
+fn a_reads_dictionaries_are_charged_while_its_decoder_holds_them() {
+    let charges = Arc::new(Charges::default());
+    let admission = Arc::new(Charging(Arc::clone(&charges)));
+    let (sink, _feed) = admitted_partition_channel(NonZeroUsize::MIN, admission);
+    let (mut reader, mut encoder) = (reader(), Encoder::default());
+    let mut dictionaries = Dictionaries::default();
+    let mut read = |frame: v1::ReadFrame| {
+        let read = reader.event(frame).expect("an admitted frame");
+        if matches!(read, Read::Nothing) {
+            dictionaries.charge(&sink, reader.decoder.dictionary_bytes());
+        }
+        reader.decoder.dictionary_bytes()
+    };
+    let (first, second) = (keyed("x"), keyed("y"));
+    assert_eq!(read(schema_frame(&mut encoder, &first, 1)), 0);
+    assert!(charges.0.lock().unwrap().is_empty(), "nothing is held yet");
+    let frames = batch_frames(&mut encoder, &first, 1);
+    let held: Vec<u64> = frames.into_iter().map(&mut read).collect();
+    assert!(held[0] >= 1_000);
+    // The dictionary is charged once, and the batch that uses it changes nothing.
+    assert_eq!(*charges.0.lock().unwrap(), [held[0]]);
+    // A dictionary that replaces it is charged in its place.
+    let replaced: Vec<u64> = batch_frames(&mut encoder, &second, 1)
+        .into_iter()
+        .map(&mut read)
+        .collect();
+    assert_eq!(replaced, [held[0], held[0]]);
+    assert_eq!(*charges.0.lock().unwrap(), [held[0]]);
+    // A new schema forgets the dictionaries, and what held them is released.
+    assert_eq!(read(schema_frame(&mut encoder, &second, 2)), 0);
+    assert_eq!(*charges.0.lock().unwrap(), [held[0], 0]);
 }

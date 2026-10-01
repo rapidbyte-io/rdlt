@@ -42,6 +42,14 @@ pub const NESTING_DEPTH: u64 = 64;
 /// wherever a field repeats them.
 pub const SCHEMA_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Frames: the dictionaries one read or write holds at once take at most this many frames'
+/// bytes, each dictionary counted by the allocation its frame decoded into.
+pub const DICTIONARY_FRAMES: u64 = 1;
+
+/// Frames: one write stages at most this many frames' bytes between two flushes, which a
+/// destination's writer may keep until it flushes.
+pub const STAGED_FRAMES: u64 = 4;
+
 /// Bytes: bounds one JSON push.
 pub const JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -86,6 +94,8 @@ pub const FIELDS: &[&str] = &[
     "batch values",
     "schema bytes",
     "view bytes",
+    "dictionary bytes",
+    "staged bytes",
 ];
 
 /// The code of a limit a peer set below the protocol's minimum.
@@ -185,6 +195,35 @@ impl Limits {
         usize::try_from(self.frame_bytes)
             .unwrap_or(usize::MAX)
             .saturating_add(64 * 1024)
+    }
+
+    /// Bytes: bounds the dictionaries one read or write holds at once, [`DICTIONARY_FRAMES`]
+    /// frames' worth.
+    pub fn dictionary_bytes(&self) -> u64 {
+        self.frame_bytes.saturating_mul(DICTIONARY_FRAMES)
+    }
+
+    /// Bytes: bounds what one write stages between two flushes, [`STAGED_FRAMES`] frames' worth.
+    pub fn staged_bytes(&self) -> u64 {
+        self.frame_bytes.saturating_mul(STAGED_FRAMES)
+    }
+
+    /// Admits the dictionaries a decoder would hold, `bytes` together.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`] when they exceed [`Limits::dictionary_bytes`].
+    pub fn admit_dictionaries(&self, bytes: u64) -> Result<(), Refusal> {
+        Self::admit("dictionary bytes", self.dictionary_bytes(), bytes)
+    }
+
+    /// Admits what a write would have staged since its last flush, `bytes` together.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`] when it exceeds [`Limits::staged_bytes`].
+    pub fn admit_staged(&self, bytes: u64) -> Result<(), Refusal> {
+        Self::admit("staged bytes", self.staged_bytes(), bytes)
     }
 
     /// Admits a frame of `bytes`.
