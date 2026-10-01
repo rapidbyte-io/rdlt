@@ -13,6 +13,7 @@ use rdlt_connector::{CommitSeq, LoadId, Permit, PipelineId, SegmentId, SegmentSe
 use tokio::sync::{mpsc, oneshot};
 
 use super::store::{Chunk, Claim, WalStore};
+use crate::crash::crash_point;
 use crate::error::Error;
 
 /// Frames queued for the writer before a sender waits: a batch's frame holds its whole batch.
@@ -236,6 +237,7 @@ impl Log {
                 .map_err(Error::from_wal)?;
             self.headed = Some(self.chunk.number);
         }
+        crash_point!("engine.wal.append");
         self.store
             .append(&self.pipeline, self.chunk, frame)
             .await
@@ -264,10 +266,12 @@ impl Log {
         frame: Bytes,
     ) -> Result<(), Error> {
         self.append(frame).await?;
+        crash_point!("engine.wal.sync.before");
         self.store
             .sync(&self.pipeline, self.chunk)
             .await
             .map_err(Error::from_wal)?;
+        crash_point!("engine.wal.sync.after");
         self.current().commits.insert(seq);
         self.pending.insert(seq, segments);
         self.chunk.number += 1;

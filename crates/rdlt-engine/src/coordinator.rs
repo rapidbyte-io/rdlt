@@ -19,13 +19,14 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, Sequences, Source,
+    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, Receipt, Sequences, Source,
     StateChange, StateEntry, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::CommitPolicy;
+use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
 use crate::error::{Error, Side};
 use crate::lane::Lanes;
@@ -381,7 +382,9 @@ impl Coordinator {
             receipt: marker,
             streams: streams.clone(),
         });
+        crash_point!("engine.flush.before");
         self.parts.lanes.flush().await?;
+        crash_point!("engine.flush.after");
         let meta = CommitMeta {
             load_id: self.parts.load_id,
             commit_seq: self.seq,
@@ -396,29 +399,42 @@ impl Coordinator {
             // Every batch of the commit's segments was queued for the log before its partition
             // sealed it: the commit's frame, queued now, follows them all.
             log.commit(collected.sealed, begun, &meta).await?;
+            crash_point!("engine.ack.early");
             self.acknowledge(&collected.positions, false).await?;
         }
+        let receipt = self.committed(&meta).await?;
+        self.parts.tables.recorded(&tables.revisions);
+        self.record(receipt, streams, &completing);
+        self.record_positions(&collected.positions);
+        crash_point!("engine.ack.before");
+        self.acknowledge(&collected.positions, true).await?;
+        crash_point!("engine.ack.after");
+        Ok(())
+    }
+
+    /// Commits `meta` in the destination's session, and records its receipt in the log.
+    async fn committed(&mut self, meta: &CommitMeta) -> Result<Receipt, Error> {
+        crash_point!("engine.commit.before");
         let receipt = self
             .parts
             .tables
             .session()
-            .commit(&meta)
+            .commit(meta)
             .await?
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
+        crash_point!("engine.commit.after");
         if let Some(log) = &self.parts.wal {
             log.committed(&receipt).await?;
             self.parts.positions.apply(&meta.state_delta);
+            crash_point!("engine.receipt.after");
         }
-        self.parts.tables.recorded(&tables.revisions);
-        self.record(receipt, streams, &completing);
-        self.record_positions(&collected.positions);
-        self.acknowledge(&collected.positions, true).await
+        Ok(receipt)
     }
 
     /// Advances past a landed commit: what state now records, and the commit in the log.
     fn record(
         &mut self,
-        receipt: rdlt_connector::Receipt,
+        receipt: Receipt,
         streams: BTreeMap<StreamName, crate::report::StreamReport>,
         completing: &[usize],
     ) {

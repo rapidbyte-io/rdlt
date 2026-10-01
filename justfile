@@ -42,6 +42,12 @@ test *args:
 sim seed="" seeds="1000" from="0":
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim
 
+# Crash a pipeline run in a process of its own at every durability step, and kill it or its
+# spawned connectors as it loads, then check every row landed once; a seed replays the kill matrix
+crashes seed="":
+    cargo build --package rdlt-engine --features failpoints --examples
+    RDLT_KILL_SEED="{{ seed }}" cargo nextest run --package rdlt-engine --features failpoints --test crashes
+
 # Run the simulation on many threads and the real clock, where races the paused single thread
 # never meets can happen; its failures name their seed but do not replay exactly
 stress seeds="20":
@@ -60,7 +66,7 @@ sim-coverage seeds="1000":
 # one killed as its test ends leaves a truncated profile, which the merge skips
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --package rdlt-certify --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/'
+    cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --package rdlt-certify --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/' -E 'not (package(rdlt-engine) & binary(crashes))'
     cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
 
 # Run the audited `unsafe` module's tests under Miri (§20.14): the workspace's only `unsafe` code

@@ -16,6 +16,7 @@ use rdlt_connector::{
 };
 
 use super::{RunContext, open};
+use crate::crash::crash_point;
 use crate::error::{Error, Side};
 use crate::table::SharedSession;
 use crate::wal::scan::{self, Logged, Scanned};
@@ -100,10 +101,12 @@ impl Replaying {
             .await?;
         let whole = decision.whole;
         let replayed = decision.replayed(meta, self.epoch);
+        crash_point!("engine.replay.before");
         self.session
             .commit(&replayed)
             .await?
             .map_err(|error| failed("replaying a commit", error))?;
+        crash_point!("engine.replay.after");
         self.positions.apply(&replayed.state_delta);
         if whole {
             self.last = Some((meta.load_id, meta.commit_seq.get()));
