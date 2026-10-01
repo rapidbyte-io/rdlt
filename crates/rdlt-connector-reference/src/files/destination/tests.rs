@@ -99,14 +99,25 @@ fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe()
             .count(),
         0
     );
-    // The directory is held from its first open: the root's path is not resolved again.
+    // The directory is held from its first open, and the root's path must still lead to it:
+    // a root moved aside, or another directory put in its place, takes no write unnoticed.
     let moved = root.path().with_extension("moved");
     std::fs::rename(root.path(), &moved).unwrap();
+    let replaced = |held| {
+        let error = super::held_or_opened(root.path(), held).expect_err("the root is gone");
+        assert_eq!(error.kind(), ConnectorErrorKind::Config);
+        assert_eq!(error.code(), Some("root_replaced"));
+    };
+    replaced(&held);
+    std::fs::create_dir(root.path()).unwrap();
+    replaced(&held);
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    // Put back, it is the held directory again.
+    std::fs::remove_dir(root.path()).unwrap();
+    std::fs::rename(&moved, root.path()).unwrap();
     let again = super::held_or_opened(root.path(), &held).expect("the held directory");
     assert!(Arc::ptr_eq(&rdlt, &again));
-    checked(&again).expect("the check passes where the directory now is");
-    assert!(!root.path().exists());
-    std::fs::rename(&moved, root.path()).unwrap();
+    checked(&again).expect("the check passes");
 }
 
 #[test]

@@ -324,6 +324,7 @@ fn remove_unlisted(
 fn held_or_opened(root: &Path, held: &Held) -> Result<Arc<Dir>> {
     let mut held = held.lock();
     if let Some((opened, rdlt)) = held.as_ref() {
+        still_at(root, opened)?;
         for dir in [opened, rdlt] {
             dir.private().map_err(io::failed("opening", dir.path()))?;
         }
@@ -333,6 +334,32 @@ fn held_or_opened(root: &Path, held: &Held) -> Result<Arc<Dir>> {
     let rdlt = Arc::new(rdlt);
     *held = Some((Arc::new(opened), Arc::clone(&rdlt)));
     Ok(rdlt)
+}
+
+/// The code of an error for a root whose path no longer leads to the directory first opened.
+const ROOT_REPLACED: &str = "root_replaced";
+
+/// Checks that the path `root` still leads to the directory `opened` there.
+///
+/// A root moved aside or removed, with or without another directory in its place, would
+/// otherwise keep receiving every write where nobody looks for it.
+fn still_at(root: &Path, opened: &Dir) -> Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+    let found = std::fs::metadata(root)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()));
+    let held = opened
+        .identity()
+        .map_err(io::failed("opening", opened.path()))?;
+    if found == Some(held) {
+        return Ok(());
+    }
+    Err(ConnectorError::config(format!(
+        "the root {} is no longer the directory the destination opened: it was moved, removed \
+         or replaced; start the destination again once the root is in place",
+        root.display()
+    ))
+    .with_code(ROOT_REPLACED))
 }
 
 /// Checks that the destination can write in its private directory `rdlt`.
