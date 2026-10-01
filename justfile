@@ -31,7 +31,7 @@ lint:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
     RUSTFLAGS="-D warnings" cargo hack check --workspace --each-feature --no-dev-deps
     actionlint
-    pinact run --check
+    pinact run --check --verify-comment
 
 # Check every workspace's locked dependencies, the fuzzing crate's included, for advisories, bans,
 # licenses and sources; a lockfile behind its manifest fails

@@ -37,6 +37,10 @@ To update mise in CI, set `SETUP_MISE_VERSION` in both workflows and the two che
 of the `mise-v<version>-linux-x64` and `mise-v<version>-macos-arm64` binaries in the release's
 `SHASUMS256.txt`.
 
+Actions are pinned to commit SHAs with their version in a comment; `just lint` checks with
+`pinact` that each SHA is the commit of the version beside it, which needs a GitHub token in
+`GITHUB_TOKEN` to stay within the API's rate limit.
+
 ## Vocabulary
 
 Use only these words for these concepts, in code, docs, logs and errors.
