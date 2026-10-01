@@ -46,7 +46,8 @@ follows H1c.
     - memory and the simulation in the table;
     - sqlgen in a new catalog table, `_rdlt_owners`, keyed by the table's name. Amended
       2026-10-01: the planner takes the owner for every statement that changes a table, child
-      tables, swaps, drops and discarded staging included (ADR 0049);
+      tables, swaps, drops and discarded staging included, and writes the record only where a
+      table is created (ADR 0049);
     - the files destination in an `owner` file in the table's catalog, created exclusively.
   - The simulation's two pipelines never share a table. So once a phase converges, a third
     pipeline loads one of the first pipeline's tables. It must be refused as `table_owned` and
