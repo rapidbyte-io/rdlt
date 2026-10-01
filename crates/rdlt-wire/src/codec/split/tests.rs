@@ -599,3 +599,33 @@ fn a_row_of_the_widest_schema_fits_the_smallest_frame_a_peer_may_ask_for() {
     let pieces = in_order(&batch, &received(&batch, &frames, least));
     assert_eq!(pieces, [104, 96]);
 }
+
+#[test]
+fn a_dictionary_is_bounded_by_the_values_of_a_frame_not_the_rows_of_a_batch() {
+    // A hundred tags, in batches of seven rows: the tags are values of their frame, not rows.
+    let tags = StringArray::from_iter_values((0..100).map(|tag| format!("tag {tag}")));
+    let keys = Int8Array::from_iter_values((0..50).map(|row| row % 100));
+    let batch = batch_of(Arc::new(
+        DictionaryArray::try_new(keys, Arc::new(tags)).unwrap(),
+    ));
+    let limits = Limits {
+        batch_rows: 7,
+        batch_values: 100,
+        ..Limits::default()
+    };
+    let frames = cut(&batch, &limits).unwrap();
+    assert_eq!(frames.len(), 1 + 8);
+    assert_eq!(
+        in_order(&batch, &received(&batch, &frames, limits))[..2],
+        [7, 7]
+    );
+    let fewer = Limits {
+        batch_values: 99,
+        ..limits
+    };
+    let refusal = refusal(cut(&batch, &fewer));
+    assert_eq!(
+        (refusal.field, refusal.limit, refusal.actual),
+        ("batch values", 99, 100)
+    );
+}

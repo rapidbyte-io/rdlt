@@ -63,8 +63,12 @@ pub(super) fn measured<'a>(
     let Some(columns) = columns else {
         return Err(malformed(Problem::NoSchema));
     };
-    let rows = u64::try_from(framed.batch.length()).unwrap_or(u64::MAX);
-    Limits::admit("batch rows", limits.batch_rows, rows)?;
+    // A batch's rows have a limit of their own; a dictionary's entries are values of its frame,
+    // which the walk counts.
+    if framed.dictionary.is_none() {
+        let rows = u64::try_from(framed.batch.length()).unwrap_or(u64::MAX);
+        Limits::admit("batch rows", limits.batch_rows, rows)?;
+    }
     let columns = match framed.dictionary {
         None => Arc::clone(&columns.schema),
         Some(id) => match columns.values.get(&id) {
