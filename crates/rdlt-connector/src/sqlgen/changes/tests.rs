@@ -146,10 +146,18 @@ fn flags_on_a_key_a_sequence_or_a_column_the_table_lacks_are_refused() {
     apply(&connection, &planner, &create(&orders, &fields)).unwrap();
     let target = columns(&connection, &planner, "orders");
     // Fields 0, 2 and 1: the key, the sequence, and `name`, which the table lacks.
-    for bitmap in [0b1, 0b100, 0b10] {
+    let refused = [
+        (0b1, "flag_on_key"),
+        (0b100, "flag_on_key"),
+        (0b10, "flag_on_missing_column"),
+        (0b1000, "flag_on_missing_column"),
+        (0b1_0000, "flag_on_missing_column"),
+    ];
+    for (bitmap, code) in refused {
         let batch = written(&[Some(vec![bitmap])]);
         let error = staged_changes(&batch, &orders, &target).unwrap_err();
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{bitmap:b}");
+        assert_eq!(error.code(), Some(code), "{bitmap:b}");
     }
     // Flags that are not bytes are refused too.
     let batch = written(&[None]);
@@ -166,6 +174,85 @@ fn flags_on_a_key_a_sequence_or_a_column_the_table_lacks_are_refused() {
     let batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
     let error = staged_changes(&batch, &orders, &target).unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert_eq!(error.code(), Some("flags_invalid"));
+}
+
+/// `batch` with each column of `columns` in place of the column at its index.
+fn replaced(batch: &RecordBatch, columns: &[(usize, ArrayRef)]) -> RecordBatch {
+    let schema = batch.schema();
+    let named = schema.fields().iter().enumerate().map(|(index, field)| {
+        let column = columns.iter().find(|(at, _)| *at == index).map_or_else(
+            || Arc::clone(batch.column(index)),
+            |(_, column)| Arc::clone(column),
+        );
+        (field.name().clone(), column)
+    });
+    RecordBatch::try_from_iter(named.collect::<Vec<_>>()).unwrap()
+}
+
+#[test]
+fn a_change_without_a_sequence_is_refused() {
+    let (connection, planner) = database();
+    let orders = changed("orders");
+    let fields = [
+        ("id", LogicalType::Int64, false),
+        ("name", LogicalType::Int64, true),
+        ("seq", LogicalType::Int64, false),
+    ];
+    apply(&connection, &planner, &create(&orders, &fields)).unwrap();
+    let target = columns(&connection, &planner, "orders");
+    let batch = written(&[None, None]);
+    let seqs: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None]));
+    let unsequenced = replaced(&batch, &[(2, seqs)]);
+    let error = staged_changes(&unsequenced, &orders, &target).unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert_eq!(error.code(), Some("sequence_missing"));
+    let seqless = batch.project(&[0, 1, 3, 4]).unwrap();
+    let error = staged_changes(&seqless, &orders, &target).unwrap_err();
+    assert_eq!(error.code(), Some("sequence_missing"));
+}
+
+#[test]
+fn a_deletion_of_a_soft_history_table_that_says_no_time_is_refused() {
+    use crate::destination::{ChangeColumns, Deletion, HistoryColumns};
+    let soft = Deletion::Soft { at: "name".into() };
+    let history = |deletion: Deletion, kept: bool| {
+        let mut table = changed("orders");
+        let key = table.merge.as_mut().unwrap();
+        key.changes = Some(ChangeColumns {
+            op: "op".into(),
+            unchanged: None,
+            deletion,
+        });
+        key.history = kept.then(|| HistoryColumns {
+            valid_from: "from".into(),
+            valid_to: "to".into(),
+            is_current: "current".into(),
+            row_hash: "hash".into(),
+        });
+        table
+    };
+    // The batch's `name` is the deletion time here: row 0 says one, row 1 none.
+    let rows = |ops: [i8; 2]| {
+        let times: ArrayRef = Arc::new(Int64Array::from(vec![Some(7), None]));
+        let ops: ArrayRef = Arc::new(Int8Array::from(ops.to_vec()));
+        replaced(&written(&[None, None]), &[(1, times), (3, ops)])
+    };
+    for op in [2, 3] {
+        let untimed = rows([1, op]);
+        let error = staged_changes(&untimed, &history(soft.clone(), true), &[]).unwrap_err();
+        assert_eq!(error.kind(), ConnectorErrorKind::Data, "{op}");
+        assert_eq!(error.code(), Some("deletion_untimed"), "{op}");
+        let timeless = untimed.project(&[0, 2, 3]).unwrap();
+        let error = staged_changes(&timeless, &history(soft.clone(), true), &[]).unwrap_err();
+        assert_eq!(error.code(), Some("deletion_untimed"), "{op}");
+        // A deletion that says when, an upsert, a table of no history and one whose deletes
+        // remove are staged.
+        staged_changes(&rows([op, 1]), &history(soft.clone(), true), &[]).unwrap();
+        staged_changes(&untimed, &history(soft.clone(), false), &[]).unwrap();
+        staged_changes(&untimed, &history(Deletion::Hard, true), &[]).unwrap();
+    }
+    staged_changes(&rows([1, 0]), &history(soft, true), &[]).unwrap();
 }
 
 #[test]
@@ -189,11 +276,13 @@ fn a_change_whose_op_is_no_change_op_is_refused() {
         assert_eq!(staged.is_ok(), op == 3, "{op}");
         if let Err(error) = staged {
             assert_eq!(error.kind(), ConnectorErrorKind::Data, "{op}");
+            assert_eq!(error.code(), Some("op_invalid"), "{op}");
         }
     } // A batch without its op column is refused too.
     let batch = written(&[None]).project(&[0, 1, 2, 4]).unwrap();
     let error = staged_changes(&batch, &orders, &target).unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert_eq!(error.code(), Some("op_invalid"));
 }
 
 #[test]

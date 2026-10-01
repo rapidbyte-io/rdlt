@@ -9,19 +9,18 @@
 #[cfg(test)]
 mod tests;
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use arrow_array::builder::StringBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int8Type;
-use arrow_array::{Array, ArrayRef, RecordBatch};
+use arrow_array::{Array, ArrayRef, Int8Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
 use super::publish::keyless;
 use super::{Column, Owned, SqlDialect, SqlPlanner, Statement};
 use crate::change::ChangeOp;
-use crate::destination::{ChangeColumns, MergeKey, TableRef};
+use crate::destination::{ChangeColumns, Deletion, MergeKey, TableRef};
 use crate::error::{ConnectorError, Result};
 
 impl<D: SqlDialect> SqlPlanner<D> {
@@ -160,8 +159,12 @@ fn changed(table: &TableRef) -> Option<(&MergeKey, &ChangeColumns)> {
 /// each row's unchanged flags, a bitmap over the batch's fields, become the text `,i,j,` of the
 /// ordinals of the `target` columns they name, or null for none.
 ///
-/// A flag naming a column the target lacks, or one of its key or sequence columns, which a change
-/// always sets, is a `Data` error.
+/// Each refusal is a `Data` error under its code, raised before any row is staged: a row
+/// without an op a change stream has (`op_invalid`) or without a sequence (`sequence_missing`);
+/// flags that are no bitmap (`flags_invalid`), or naming a column the target lacks
+/// (`flag_on_missing_column`) or a key or sequence column, which a change always sets
+/// (`flag_on_key`); and for a history table whose deletes are soft, a delete or a truncate that
+/// says no deletion time (`deletion_untimed`).
 pub fn staged_changes(
     batch: &RecordBatch,
     table: &TableRef,
@@ -170,7 +173,9 @@ pub fn staged_changes(
     let Some((key, changes)) = changed(table) else {
         return Ok(batch.clone());
     };
-    ops(batch, changes)?;
+    let ops = ops(batch, changes)?;
+    sequenced(batch, key)?;
+    timed(batch, key, changes, ops)?;
     let Some((index, _)) = changes
         .unchanged
         .as_deref()
@@ -180,6 +185,7 @@ pub fn staged_changes(
     };
     let flags = batch.column(index).as_binary_opt::<i32>().ok_or_else(|| {
         ConnectorError::data("a change stream's unchanged flags are not a bitmap of bytes")
+            .with_code("flags_invalid")
     })?;
     let schema = batch.schema();
     // Where each of the batch's fields is among the table's columns, worked out once for every
@@ -205,7 +211,10 @@ pub fn staged_changes(
                 continue;
             }
             match position {
-                Ok(position) => write!(text, "{position},").expect("writing to a string succeeds"),
+                Ok(position) => {
+                    text.push_str(&position.to_string());
+                    text.push(',');
+                }
                 Err(why) => return Err(why.refused(schema.field(ordinal).name())),
             }
         }
@@ -223,22 +232,53 @@ pub fn staged_changes(
         .map_err(|error| ConnectorError::internal(format!("restaging unchanged flags: {error}")))
 }
 
-/// Refuses `batch` unless each of its rows holds a change stream's op in the column `changes`
-/// names: the codes past them are those a commit computes its rows under.
-fn ops(batch: &RecordBatch, changes: &ChangeColumns) -> Result<()> {
+/// The ops of `batch`'s rows, refused unless each row holds a change stream's op in the column
+/// `changes` names: the codes past them are those a commit computes its rows under.
+fn ops<'a>(batch: &'a RecordBatch, changes: &ChangeColumns) -> Result<&'a Int8Array> {
+    let invalid = |message: String| ConnectorError::data(message).with_code("op_invalid");
     let ops = batch
         .column_by_name(&changes.op)
         .and_then(|ops| ops.as_primitive_opt::<Int8Type>())
-        .ok_or_else(|| ConnectorError::data("a change stream's batch has no op column of bytes"))?;
+        .ok_or_else(|| invalid("a change stream's batch has no op column of bytes".to_owned()))?;
     match ops
         .iter()
         .find(|op| op.and_then(ChangeOp::from_code).is_none())
     {
-        Some(op) => Err(ConnectorError::data(format!(
-            "{op:?} is no change stream's op"
-        ))),
-        None => Ok(()),
+        Some(op) => Err(invalid(format!("{op:?} is no change stream's op"))),
+        None => Ok(ops),
     }
+}
+
+/// Refuses `batch` unless each of its rows has a sequence, in the column `key` names.
+fn sequenced(batch: &RecordBatch, key: &MergeKey) -> Result<()> {
+    match batch.column_by_name(&key.seq) {
+        Some(seqs) if seqs.null_count() == 0 => Ok(()),
+        _ => Err(ConnectorError::data("a change has no sequence").with_code("sequence_missing")),
+    }
+}
+
+/// Refuses `batch`, written for a history table whose deletes are soft, where a delete or a
+/// truncate says no deletion time: when its version was deleted is what tells it from a live
+/// one.
+fn timed(
+    batch: &RecordBatch,
+    key: &MergeKey,
+    changes: &ChangeColumns,
+    ops: &Int8Array,
+) -> Result<()> {
+    let (Some(_), Deletion::Soft { at }) = (&key.history, &changes.deletion) else {
+        return Ok(());
+    };
+    let times = batch.column_by_name(at);
+    let removes = [ChangeOp::Delete.code(), ChangeOp::Truncate.code()];
+    let untimed = ops.iter().enumerate().any(|(row, op)| {
+        op.is_some_and(|op| removes.contains(&op)) && times.is_none_or(|times| times.is_null(row))
+    });
+    if untimed {
+        let message = "a delete or a truncate of a history table says no deletion time";
+        return Err(ConnectorError::data(message).with_code("deletion_untimed"));
+    }
+    Ok(())
 }
 
 /// Why a row may not flag a field unchanged.
@@ -253,14 +293,16 @@ enum Unflaggable {
 impl Unflaggable {
     /// The `Data` error for a row flagging the field `name`.
     fn refused(self, name: &str) -> ConnectorError {
-        ConnectorError::data(match self {
-            Self::SetAlways => {
-                format!("a change flags its key or sequence column {name} unchanged")
-            }
-            Self::Missing => {
-                format!("a change flags column {name} unchanged, which the table lacks")
-            }
-        })
+        match self {
+            Self::SetAlways => ConnectorError::data(format!(
+                "a change flags its key or sequence column {name} unchanged"
+            ))
+            .with_code("flag_on_key"),
+            Self::Missing => ConnectorError::data(format!(
+                "a change flags column {name} unchanged, which the table lacks"
+            ))
+            .with_code("flag_on_missing_column"),
+        }
     }
 }
 
