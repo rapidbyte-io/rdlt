@@ -42,7 +42,7 @@ bytes.workspace = true
 http.workspace = true
 hyper = { workspace = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
-nix = { workspace = true, features = ["signal"] }
+nix = { workspace = true, features = ["process", "signal"] }
 rdlt-connector = { workspace = true, features = ["serve"] }
 rdlt-connector-reference.workspace = true
 rdlt-engine.workspace = true
