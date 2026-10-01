@@ -15,8 +15,8 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use rustix::process::{
-    Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process_group, test_kill_process_group,
-    waitid,
+    Pid, Signal, WaitId, WaitIdOptions, WaitIdStatus, kill_process, kill_process_group,
+    test_kill_process_group, waitid,
 };
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -168,7 +168,7 @@ impl Owned {
             if killing.is_none() && self.stop.load(Ordering::SeqCst) {
                 // The end of its standard input and the signal both ask a connector to stop.
                 drop(stdin.take());
-                kill_process_group(group, Signal::TERM).ok();
+                signal(group, Signal::TERM);
                 killing = Instant::now().checked_add(self.grace);
             }
             if killing.is_some_and(|killing| Instant::now() >= killing) {
@@ -178,10 +178,18 @@ impl Owned {
         }
         // The leader is unreaped, exited or not: the group's id is still its own. Whatever
         // is left of the group ends now, the connector's own members with it.
-        kill_process_group(group, Signal::KILL).ok();
+        signal(group, Signal::KILL);
         let status = self.child.wait().ok();
         (status, emptied(group))
     }
+}
+
+/// Sends `signal` to the group `leader` was started to lead, and to `leader` itself, which
+/// may have left it for another: only while `leader` is this process's unreaped child, so that
+/// both ids are its own.
+fn signal(leader: Pid, signal: Signal) {
+    kill_process_group(leader, signal).ok();
+    kill_process(leader, signal).ok();
 }
 
 /// What a leader is to this process, asked without reaping it.

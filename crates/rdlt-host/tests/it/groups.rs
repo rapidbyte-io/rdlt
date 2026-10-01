@@ -195,3 +195,54 @@ async fn an_interrupted_or_terminated_host_stops_its_connectors_groups_before_it
         assert!(left.is_empty(), "{signal}: {left:?} outlived the host");
     }
 }
+
+/// A launcher in `directory` whose connector leaves the group it was started to lead for its
+/// host's, before it serves.
+#[cfg(target_os = "linux")]
+fn leaver(directory: &Path) -> ConnectorRef {
+    let path = directory.join("launcher");
+    let script = format!(
+        "#!/bin/sh\nexec perl -e 'setpgrp(0, getpgrp(getppid())); exec @ARGV' '{}' \"$@\"\n",
+        example("scripted_connector").display()
+    );
+    std::fs::write(&path, script).expect("the launcher writes");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the launcher is executable");
+    let id = ConnectorId::parse("test.scripted").expect("a valid id");
+    ConnectorRef::new(id).path(path)
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connector_that_left_the_group_it_led_is_stopped_and_killed_all_the_same() {
+    let kills = Kills::new();
+    // One ends only when killed, and is dropped; the other is killed outright.
+    for killed in [false, true] {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let source = local()
+            .grace(Duration::from_millis(200))
+            .kills(&kills)
+            .source(
+                &leaver(directory.path()),
+                &serde_json::json!({ "linger": "forever" }),
+            )
+            .await
+            .expect("the connector starts")
+            .connector;
+        let spawned = rdlt_host::spawned();
+        let [leader] = spawned.as_slice() else {
+            panic!("{spawned:?}");
+        };
+        let leader = i32::try_from(*leader).expect("a process id");
+        if killed {
+            kills.kill();
+        } else {
+            drop(source);
+        }
+        let stopping = tokio::task::spawn_blocking(|| rdlt_host::stop_spawned(ENDING));
+        let stopped = stopping.await.expect("it returns");
+        // The host's own child is reached by its process id, wherever it took itself.
+        assert!(all_gone(&[leader]).await, "killed: {killed}: {stopped:?}");
+        assert_eq!(stopped, Ok(()), "killed: {killed}");
+    }
+}
