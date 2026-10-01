@@ -171,9 +171,11 @@ mod steps {
         path.components().any(|part| part.as_os_str() == "staging")
     }
 
-    /// Checks the order of a commit's `steps`: every file it wrote is durable, with its name,
-    /// before the manifest is linked; the manifest's bytes are durable before its link and its
-    /// name after; and nothing is removed from staging before that. The staged files it removed.
+    /// Checks the order of a commit's `steps` and gives the staged files it removed.
+    ///
+    /// Every file it wrote is durable, with its name, before the manifest is linked; the
+    /// manifest's bytes are durable before its link and its name after; and nothing is removed
+    /// from staging before that.
     fn ordered(steps: &[Step]) -> Vec<PathBuf> {
         let link = at(steps, |step| matches!(step, Step::Link(_)));
         let Step::Link(manifest) = &steps[link] else {
