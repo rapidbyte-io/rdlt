@@ -3,7 +3,7 @@
 //!
 //! A spawned connector is killed outright; one reached otherwise has its connections cut, which
 //! is all a host can do to it. The clauses run only in a build with the `kill` feature, which
-//! brings the engine; another build skips them.
+//! brings the engine; in another build they are not observed.
 
 #[cfg(feature = "kill")]
 mod bounded;
@@ -35,14 +35,14 @@ pub const KILL_CLAUSES: &[Clause] = &[
         statement: "a source killed at random points of a load after it commits is started \
                     again and resumes from what was committed, so the engine converges on \
                     exactly the tables a load never killed publishes",
-        unless: "no stream is read in full or incrementally",
+        unless: "the source has no stream that is read in any mode",
     },
     Clause {
         id: "K-DESTINATION",
         statement: "a destination killed at random points of a load, as it writes, before a \
                     commit, or after a commit before its answer, is started again and \
                     publishes every row exactly once when the engine converges",
-        unless: "the destination does not append",
+        unless: "the destination declares no write mode",
     },
 ];
 
@@ -111,7 +111,7 @@ pub(crate) async fn destination(
     }
 }
 
-/// Why a build without the `kill` feature skips the kill clauses.
+/// Why a build without the `kill` feature leaves the kill clauses unobserved.
 #[cfg(not(feature = "kill"))]
 const UNBUILT: &str = "rdlt-certify was built without its `kill` feature";
 

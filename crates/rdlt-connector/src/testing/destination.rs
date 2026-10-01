@@ -47,7 +47,7 @@ pub trait Probe: Send + Sync {
 }
 
 /// The probe of a destination whose published data cannot be read, as one reached only over the
-/// wire: the clauses that compare it with what was committed are skipped.
+/// wire: the clauses that compare it with what was committed are not observed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Unprobed;
 
@@ -108,10 +108,13 @@ pub async fn certify_destination_factory(
                     index,
                 };
                 let unread = !probe.reads() && clauses::PROBED.contains(&clause.id);
-                let outcome = match evolving::skipped(destination.as_ref(), clause.id) {
-                    Some(reason) => Outcome::Inapplicable(reason.into()),
-                    None if unread => Outcome::Unobserved(UNREAD.into()),
-                    None => outcome(super::timed(bench.check(clause.id)).await),
+                let inapplicable = evolving::inapplicable(destination.as_ref(), clause.id);
+                let unobserved = evolving::unobserved(destination.as_ref(), clause.id);
+                let outcome = match (inapplicable, unobserved) {
+                    (Some(reason), _) => Outcome::Inapplicable(reason.into()),
+                    (None, Some(reason)) => Outcome::Unobserved(reason.into()),
+                    (None, None) if unread => Outcome::Unobserved(UNREAD.into()),
+                    (None, None) => outcome(super::timed(bench.check(clause.id)).await),
                 };
                 results.push(ClauseResult {
                     clause: *clause,

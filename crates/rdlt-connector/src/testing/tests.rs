@@ -1676,7 +1676,7 @@ async fn certify_vault(name: &str, flag: Option<&str>) -> Report {
 }
 
 #[tokio::test]
-async fn the_lanes_and_names_clauses_skip_only_what_a_destination_declares_it_cannot_do() {
+async fn the_lanes_clause_does_not_apply_to_one_writer_and_short_names_leave_names_unobserved() {
     let cases = [
         (json!({ "writers": 1 }), "D-LANES", false),
         (json!({ "writers": 2 }), "D-LANES", true),
@@ -1687,10 +1687,13 @@ async fn the_lanes_and_names_clauses_skip_only_what_a_destination_declares_it_ca
         config["store"] = json!(format!("{clause}_{runs}"));
         let store = config["store"].as_str().expect("a store name").to_owned();
         let report = certify_destination::<Vault>(config, &VaultProbe(vault(&store))).await;
-        let expected = if runs {
-            matches!(report.outcome(clause), Some(Outcome::Passed))
-        } else {
-            matches!(report.outcome(clause), Some(Outcome::Inapplicable(_)))
+        // The engine never runs two writers where one is declared; it names tables and
+        // columns whatever their length, which the clause's own names do not fit.
+        let expected = match (runs, report.outcome(clause)) {
+            (true, outcome) => outcome == Some(&Outcome::Passed),
+            (false, Some(Outcome::Inapplicable(_))) => clause == "D-LANES",
+            (false, Some(Outcome::Unobserved(_))) => clause == "D-NAMES",
+            (false, _) => false,
         };
         assert!(expected, "{clause} runs: {runs}: {report}");
     }

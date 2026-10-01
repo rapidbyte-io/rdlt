@@ -108,7 +108,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
         id: "D-NAMES",
         statement: "identifiers at the edges of the destination's own rules are published under \
                     their names",
-        unless: "the destination's identifiers are shorter than 32 bytes",
+        unless: "",
     },
     Clause {
         id: "D-LANES",
