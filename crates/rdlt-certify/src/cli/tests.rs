@@ -1,6 +1,7 @@
 use rdlt_certify::{Clause, ClauseResult, Outcome, Report, Verdict};
 
-use super::{FINDINGS, INCOMPLETE, PASSED, Require, bound, code, ran, verdict, within};
+use super::session::within;
+use super::{FINDINGS, INCOMPLETE, PASSED, Require, bound, code, ran, verdict};
 
 fn report(outcomes: &[Outcome]) -> Report {
     let clause = Clause {

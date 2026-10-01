@@ -610,7 +610,13 @@ async fn a_certification_cut_at_its_timeout_leaves_nothing_its_connectors_starte
 #[tokio::test(flavor = "multi_thread")]
 async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_it_exits() {
     use nix::sys::signal::Signal;
-    for (signal, exits) in [(Signal::SIGINT, 130), (Signal::SIGTERM, 143)] {
+    let heard = [
+        (Signal::SIGINT, 130),
+        (Signal::SIGTERM, 143),
+        (Signal::SIGHUP, 129),
+        (Signal::SIGQUIT, 131),
+    ];
+    for (signal, exits) in heard {
         let directory = tempfile::tempdir().expect("a temporary directory");
         let launched = launcher(directory.path(), "serve_hang");
         let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
@@ -644,4 +650,63 @@ async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_
         assert_eq!(status.code(), Some(exits), "{signal}");
         assert_eq!(surviving(directory.path()), Vec::<i32>::new(), "{signal}");
     }
+}
+
+/// A launcher in `directory` that becomes no connector: a process that answers nothing and
+/// ignores being asked to stop, with a member that does the same, whose ids it appends to
+/// `members`.
+fn stubborn(directory: &std::path::Path) -> String {
+    let path = directory.join("launcher");
+    let script = format!(
+        "#!/bin/sh\ntrap '' TERM\nsleep 1000 &\necho $! >> '{members}'\n\
+         echo $$ >> '{members}'\nexec sleep 1000\n",
+        members = directory.join("members").display(),
+    );
+    std::fs::write(&path, script).expect("the launcher writes");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the launcher is executable");
+    path.to_str().expect("a UTF-8 path").to_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_interrupt_kills_what_a_certification_spawned_and_ends_it_at_once() {
+    use nix::sys::signal::Signal;
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let launched = stubborn(directory.path());
+    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+        .args([launched.as_str(), "--role", "destination"])
+        .stdout(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("rdlt-certify runs");
+    let members = directory.path().join("members");
+    for _ in 0..600 {
+        let started = std::fs::read_to_string(&members).unwrap_or_default();
+        if started.lines().count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let pid = i32::try_from(certifying.id().expect("it runs")).expect("a process id");
+    let pid = nix::unistd::Pid::from_raw(pid);
+    nix::sys::signal::kill(pid, Signal::SIGINT).expect("it is interrupted");
+    // What it spawned ignores being asked to stop, and has ten seconds before it is killed.
+    let stopping = std::time::Duration::from_secs(1);
+    let waited = tokio::time::timeout(stopping, certifying.wait()).await;
+    assert!(
+        waited.is_err(),
+        "the certification ended before its connector's grace"
+    );
+    let began = std::time::Instant::now();
+    nix::sys::signal::kill(pid, Signal::SIGTERM).expect("it is signalled again");
+    let ending = std::time::Duration::from_secs(60);
+    let status = tokio::time::timeout(ending, certifying.wait()).await;
+    let took = began.elapsed();
+    let left = surviving(directory.path());
+    let status = status.expect("it ends").expect("it is waited for");
+    // Asked twice, it waits for nothing: what it spawned is killed, and seen to be.
+    assert!(took < std::time::Duration::from_secs(6), "{took:?}");
+    assert_eq!(left, Vec::<i32>::new());
+    // It exits as the last signal it heard would have ended it.
+    assert_eq!(status.code(), Some(143));
 }
