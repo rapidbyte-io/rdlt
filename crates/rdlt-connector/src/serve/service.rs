@@ -15,15 +15,13 @@ use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
 use super::handshake::{Agreed, no_handshake, not_configured, unsupported};
+use super::probes::Probes;
 use super::until::Until;
-use super::{Served, published, read, write};
-use crate::destination::{
-    Destination, DestinationSession, OpenContext, PUBLISHED_CODE, PublishedReader, TableChange,
-    TableRef,
-};
+use super::{Served, read, write};
+use crate::destination::{Destination, DestinationSession, OpenContext, TableChange, TableRef};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::{PartitionId, PipelineId, StreamName};
-use crate::source::{ACKNOWLEDGED_CODE, AcknowledgedReader, Source};
+use crate::source::Source;
 use crate::state::StreamState;
 use crate::wire::{Invalid, status, v1};
 use crate::{CommitMeta, Cursor};
@@ -44,10 +42,8 @@ pub(super) struct Service {
     /// What the handshake agreed.
     pub(super) agreed: OnceCell<Agreed>,
     pub(super) connected: OnceCell<Connected>,
-    /// What reads back what the destination published, when the handshake accepted that.
-    pub(super) reader: OnceCell<Arc<dyn PublishedReader>>,
-    /// What tells where the source stands, when the handshake accepted that.
-    pub(super) acknowledger: OnceCell<Arc<dyn AcknowledgedReader>>,
+    /// Certification's probes, where the handshake accepted them.
+    pub(super) probes: Probes,
     /// The host's limits, which what this end sends must keep within.
     pub(super) host: OnceCell<Limits>,
     pub(super) sessions: Mutex<BTreeMap<u64, SessionSlot>>,
@@ -63,8 +59,7 @@ impl Service {
             limits,
             agreed: OnceCell::new(),
             connected: OnceCell::new(),
-            reader: OnceCell::new(),
-            acknowledger: OnceCell::new(),
+            probes: Probes::default(),
             host: OnceCell::new(),
             sessions: Mutex::new(BTreeMap::new()),
             next_session: AtomicU64::new(1),
@@ -242,45 +237,17 @@ impl Connector for Service {
         &self,
         request: Request<v1::ReadPublishedRequest>,
     ) -> Result<Response<Self::ReadPublishedStream>, Status> {
-        let reader = self.reader.get().cloned().ok_or_else(|| {
-            let message = "reading back what was published needs its feature in the handshake";
-            status(&unsupported(message, PUBLISHED_CODE))
-        })?;
-        let table = request
-            .into_inner()
-            .table
-            .ok_or(Invalid::Missing("table"))
-            .and_then(TableRef::try_from)
-            .map_err(|e| invalid(&e))?;
         let host = self.host.get().copied().unwrap_or_default();
-        Ok(Response::new(published::serve(reader, table, host).await?))
+        let frames = self.probes.read_published(request.into_inner(), host)?;
+        Ok(Response::new(frames))
     }
 
     async fn read_acknowledged(
         &self,
         request: Request<v1::ReadAcknowledgedRequest>,
     ) -> Result<Response<v1::ReadAcknowledgedResponse>, Status> {
-        let acknowledger = self.acknowledger.get().cloned().ok_or_else(|| {
-            let message = "telling where the source stands needs its feature in the handshake";
-            status(&unsupported(message, ACKNOWLEDGED_CODE))
-        })?;
-        let request = request.into_inner();
-        let stream = StreamName::try_from(
-            request
-                .stream
-                .ok_or(Invalid::Missing("stream"))
-                .map_err(|e| invalid(&e))?,
-        )
-        .map_err(|e| invalid(&e))?;
-        let partition = PartitionId::parse(request.partition)
-            .map_err(|error| invalid(&Invalid::rejected("partition id", error)))?;
-        let cursor = acknowledger
-            .acknowledged(&stream, &partition)
-            .await
-            .map_err(|error| status(&error))?;
-        Ok(Response::new(v1::ReadAcknowledgedResponse {
-            cursor: cursor.map(|cursor| v1::Cursor::from(&cursor)),
-        }))
+        let answer = self.probes.read_acknowledged(request.into_inner()).await?;
+        Ok(Response::new(answer))
     }
 
     async fn committed(

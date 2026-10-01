@@ -60,19 +60,32 @@ fn makes_the_connector_servable_by_its_type_in_its_role() {
 }
 
 #[test]
-fn serves_a_destination_that_reads_back_through_the_readable_factory() {
-    let expanded = expand(
-        quote!(id = "io.example.sink", read_back),
-        quote!(impl DestinationConnector for Sink {}),
-        Role::Destination,
+fn serves_no_probe_whatever_the_attribute_says() {
+    let acknowledging = expand(
+        quote!(id = "io.example.queue", acknowledged),
+        quote!(impl SourceConnector for Queue {}),
+        Role::Source,
     );
     assert!(
-        expanded.contains(
-            "RoleFactory :: Destination (:: rdlt_connector :: readable_destination_factory :: < \
-             Self > ())"
-        ),
-        "{expanded}"
+        acknowledging
+            .contains("RoleFactory :: Source (:: rdlt_connector :: source_factory :: < Self > ())"),
+        "{acknowledging}"
     );
+    for role in [Role::Source, Role::Destination] {
+        let trait_name = match role {
+            Role::Source => quote!(SourceConnector),
+            Role::Destination => quote!(DestinationConnector),
+        };
+        let refused = expand(
+            quote!(id = "io.example.sink", read_back),
+            quote!(impl #trait_name for Sink {}),
+            role,
+        );
+        assert!(
+            refused.starts_with("error:") && refused.contains("readable_destination_factory"),
+            "{refused}"
+        );
+    }
 }
 
 #[test]
@@ -136,11 +149,6 @@ fn rejects_misuse_with_a_message() {
             quote!(id = "io.x"),
             quote!(impl DestinationConnector for T {}),
             "impl SourceConnector for",
-        ),
-        (
-            quote!(id = "io.x", read_back),
-            quote!(impl SourceConnector for T {}),
-            "only a destination reads back",
         ),
         (
             quote!(id = "io.x"),

@@ -7,6 +7,28 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The destinations read back what they published, for certification: `ReadBack`, served only by
+# a binary that names `readable_destination_factory`. The binaries here never do.
+certify = ["rdlt-connector/certify"]
+# The binaries of the test connectors, the generator and the memory connectors. They are no part
+# of a deployment: their sizes and their store are whatever a host asks.
+test-connectors = []
+
+[[bin]]
+name = "rdlt-connector-generator"
+required-features = ["test-connectors"]
+
+[[bin]]
+name = "rdlt-connector-memory"
+required-features = ["test-connectors"]
+
+# The suite serves the test connectors' binaries, and reads back what the destinations published.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+required-features = ["certify", "test-connectors"]
+
 [dependencies]
 arrow-array.workspace = true
 arrow-cast.workspace = true
@@ -37,6 +59,7 @@ proptest.workspace = true
 rdlt-testkit.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen", "testing"] }
 rdlt-host.workspace = true
+rdlt-wire.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 

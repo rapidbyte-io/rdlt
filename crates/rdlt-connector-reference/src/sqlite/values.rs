@@ -11,7 +11,7 @@ use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::sqlgen::{SqlDialect, SqlValue, Statement};
+use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Statement};
 use rdlt_connector::{ConnectorError, Result};
 use rusqlite::Connection;
 use rusqlite::types::Value;
@@ -146,28 +146,70 @@ fn blobs<'a>(values: impl Iterator<Item = Option<&'a [u8]>>) -> Vec<Value> {
         .collect()
 }
 
-/// Every row of `table` as one batch, each column as its storage class; none when the table is
-/// missing.
+/// Rows: the most one batch of a table read back holds.
+const BATCH_ROWS: usize = 1024;
+
+/// Bytes: the text and blob values at which a batch of a table read back ends, though it holds
+/// fewer rows.
+const BATCH_BYTES: usize = 1 << 20;
+
+/// Every row of `table`, in batches of bounded size, each column as its storage class; none when
+/// the table is missing, and one empty batch when it holds no row.
 pub(super) fn read_table(
     connection: &Connection,
     dialect: &impl SqlDialect,
     table: &str,
 ) -> Result<Vec<RecordBatch>> {
+    let mut batches = Vec::new();
+    read_table_each(connection, dialect, table, &mut |batch| {
+        batches.push(batch);
+        Ok(())
+    })?;
+    Ok(batches)
+}
+
+/// Gives `each` every batch [`read_table`] answers, as it is read: no more than one batch of the
+/// table is held at a time.
+pub(super) fn read_table_each(
+    connection: &Connection,
+    dialect: &impl SqlDialect,
+    table: &str,
+    each: &mut dyn FnMut(RecordBatch) -> Result<()>,
+) -> Result<()> {
     let columns = columns(connection, dialect, table)?;
     if columns.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let sql = format!("SELECT * FROM {}", dialect.quote(table));
     let mut prepared = connection
         .prepare(&sql)
         .map_err(failed("reading a table"))?;
-    let rows: Vec<Vec<Value>> = prepared
-        .query_map([], |row| {
-            (0..columns.len()).map(|index| row.get(index)).collect()
-        })
-        .map_err(failed("reading a table"))?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(failed("reading a table's rows"))?;
+    let mut read = prepared.query([]).map_err(failed("reading a table"))?;
+    let (mut rows, mut bytes, mut batches) = (Vec::new(), 0_usize, 0_usize);
+    while let Some(row) = read.next().map_err(failed("reading a table's rows"))? {
+        let values = (0..columns.len())
+            .map(|index| row.get::<_, Value>(index))
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(failed("reading a table's rows"))?;
+        bytes = values.iter().fold(bytes, |bytes, value| match value {
+            Value::Text(text) => bytes.saturating_add(text.len()),
+            Value::Blob(blob) => bytes.saturating_add(blob.len()),
+            _ => bytes,
+        });
+        rows.push(values);
+        if rows.len() >= BATCH_ROWS || bytes >= BATCH_BYTES {
+            each(batch(table, &columns, &std::mem::take(&mut rows))?)?;
+            (bytes, batches) = (0, batches + 1);
+        }
+    }
+    if !rows.is_empty() || batches == 0 {
+        each(batch(table, &columns, &rows)?)?;
+    }
+    Ok(())
+}
+
+/// `rows` of `table`, whose columns are `columns`, as a batch.
+fn batch(table: &str, columns: &[Column], rows: &[Vec<Value>]) -> Result<RecordBatch> {
     let mut fields = Vec::new();
     let mut arrays: Vec<ArrayRef> = Vec::new();
     for (index, column) in columns.iter().enumerate() {
@@ -201,9 +243,8 @@ pub(super) fn read_table(
         fields.push(Field::new(&column.name, data_type, true));
         arrays.push(array);
     }
-    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
-        .map_err(|error| ConnectorError::internal(format!("reading table {table}: {error}")))?;
-    Ok(vec![batch])
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
+        .map_err(|error| ConnectorError::internal(format!("reading table {table}: {error}")))
 }
 
 fn integer(value: &Value) -> Option<i64> {

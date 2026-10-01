@@ -247,8 +247,7 @@ pub(crate) fn plant_manifest(latest: &Path, mut manifest: Value) {
 pub(crate) async fn published_ids(reader: &dyn PublishedReader, table: &TableRef) -> Vec<i64> {
     use arrow_array::cast::AsArray;
     use arrow_array::types::Int64Type;
-    reader
-        .published(table)
+    PublishedRows::gather(reader, table)
         .await
         .expect("the table reads back")
         .iter()

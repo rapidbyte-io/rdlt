@@ -53,7 +53,7 @@ criterion.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing"] }
-rdlt-connector-reference.workspace = true
+rdlt-connector-reference = { workspace = true, features = ["certify"] }
 rdlt-host.workspace = true
 rdlt-testkit.workspace = true
 schemars.workspace = true

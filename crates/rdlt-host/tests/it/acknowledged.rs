@@ -6,7 +6,7 @@ use rdlt_connector::serve::Served;
 use rdlt_connector::wire::{error as carried, v1};
 use rdlt_connector::{
     BoxFuture, ConnectContext, ConnectorErrorKind, ConnectorSpec, Source, SourceFactory,
-    source_factory,
+    acknowledging_source_factory, source_factory,
 };
 use rdlt_connector_reference::{ChangesSource, GeneratorSource};
 use rdlt_wire::{ACKNOWLEDGED, PROTOCOL_MAJOR, PROTOCOL_MINOR};
@@ -69,7 +69,7 @@ fn asked() -> v1::ReadAcknowledgedRequest {
 #[tokio::test]
 async fn a_source_that_tells_accepts_the_feature_when_offered_and_tells_what_it_was_told() {
     let mut client = raw_client(served(
-        Served::new().with_source(source_factory::<ChangesSource>()),
+        Served::new().with_source(acknowledging_source_factory::<ChangesSource>()),
     ))
     .await;
     let answer = client
@@ -113,8 +113,17 @@ async fn a_source_that_tells_accepts_the_feature_when_offered_and_tells_what_it_
 #[tokio::test]
 async fn asking_a_source_the_handshake_did_not_accept_is_refused_as_unsupported() {
     let cases = [
-        (source_factory::<ChangesSource>(), &[][..]),
-        (source_factory::<ChangesSource>(), &["another"][..]),
+        (acknowledging_source_factory::<ChangesSource>(), &[][..]),
+        (
+            acknowledging_source_factory::<ChangesSource>(),
+            &["another"][..],
+        ),
+        // A source that tells, served by the factory a connector's own binary serves.
+        (source_factory::<ChangesSource>(), &[ACKNOWLEDGED][..]),
+        (
+            acknowledging_source_factory::<GeneratorSource>(),
+            &[ACKNOWLEDGED][..],
+        ),
         (source_factory::<GeneratorSource>(), &[ACKNOWLEDGED][..]),
         (
             Box::new(Plain(source_factory::<GeneratorSource>())) as Box<dyn SourceFactory>,

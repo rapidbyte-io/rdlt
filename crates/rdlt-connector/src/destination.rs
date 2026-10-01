@@ -1,7 +1,10 @@
 //! Destination connectors: the traits authors implement and the engine-facing form the SDK builds.
 
 mod adapter;
+#[cfg(feature = "certify")]
 mod read_back;
+#[cfg(feature = "certify")]
+mod readable;
 #[cfg(test)]
 mod tests;
 
@@ -22,8 +25,11 @@ use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 use crate::state::StateRecord;
 use crate::types::{Field, LogicalType};
 
-pub use adapter::{destination_factory, readable_destination_factory};
-pub use read_back::{PublishedReader, ReadBack, Reading};
+pub use adapter::destination_factory;
+#[cfg(feature = "certify")]
+pub use read_back::{PublishedReader, PublishedRows, ReadBack, Reading};
+#[cfg(feature = "certify")]
+pub use readable::readable_destination_factory;
 
 /// Who is opening a destination session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -414,6 +420,7 @@ pub trait DestinationFactory: Send + Sync {
     ) -> BoxFuture<'_, Result<Box<dyn Destination>>>;
 
     /// Whether the destination can read back what it published.
+    #[cfg(feature = "certify")]
     fn reads_back(&self) -> bool {
         false
     }
@@ -423,6 +430,7 @@ pub trait DestinationFactory: Send + Sync {
     /// # Errors
     ///
     /// An unsupported error when the destination cannot read back what it published.
+    #[cfg(feature = "certify")]
     fn connect_reading(
         &self,
         config: serde_json::Value,
@@ -440,4 +448,5 @@ pub trait DestinationFactory: Send + Sync {
 }
 
 /// The code of the error a destination that cannot read back what it published refuses to.
+#[cfg(any(feature = "serve", feature = "certify"))]
 pub(crate) const PUBLISHED_CODE: &str = "published";

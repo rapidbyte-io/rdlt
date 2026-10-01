@@ -1,8 +1,10 @@
 //! The reference connectors' binaries, spawned as a host places them.
 
+use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorId, RoleFactory, Serve};
 use rdlt_connector_reference::{GeneratorSource, SqliteDestination};
-use rdlt_host::{ConnectorRef, Local, Provider as _};
+use rdlt_host::remote::client;
+use rdlt_host::{ConnectorRef, Local, Options, Provider as _};
 use serde_json::json;
 
 fn reference(id: &str, binary: &str) -> ConnectorRef {
@@ -83,4 +85,93 @@ fn a_connector_is_servable_by_its_type_in_its_role() {
         SqliteDestination::factory(),
         RoleFactory::Destination(_)
     ));
+}
+
+/// A handshake as a destination's host that offers the feature certification reads back with.
+fn offering_read_back() -> v1::HandshakeRequest {
+    v1::HandshakeRequest {
+        protocol_major: rdlt_wire::PROTOCOL_MAJOR,
+        protocol_minor: rdlt_wire::PROTOCOL_MINOR,
+        features: vec![rdlt_wire::PUBLISHED.to_owned()],
+        role: v1::Role::Destination as i32,
+        traceparent: String::new(),
+        limits: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shipped_destination_binary_reads_nothing_back_whatever_its_host_offers() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let destinations = [
+        (
+            "io.rapidbyte.sqlite",
+            env!("CARGO_BIN_EXE_rdlt-connector-sqlite"),
+            json!({ "path": dir.path().join("shipped.db") }),
+        ),
+        (
+            "io.rapidbyte.files",
+            env!("CARGO_BIN_EXE_rdlt-connector-files"),
+            json!({ "root": dir.path(), "format": "jsonl" }),
+        ),
+    ];
+    for (id, binary, config) in destinations {
+        let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+        let wire = local
+            .wire(&reference(id, binary))
+            .expect("the binary starts");
+        let mut client = client(wire, Options::default())
+            .await
+            .expect("the binary connects");
+        let agreed = client.handshake(offering_read_back()).await;
+        let agreed = agreed.expect("the handshake succeeds").into_inner();
+        assert!(agreed.accepted_features.is_empty(), "{id}");
+        let configured = v1::ConfigureRequest {
+            config_json: config.to_string(),
+        };
+        client
+            .configure(configured)
+            .await
+            .expect("it is configured");
+        let table = v1::TableRef {
+            path: Some(v1::TablePath {
+                segments: vec!["rows".to_owned()],
+            }),
+            name: "rows".to_owned(),
+            version: 1,
+            ..v1::TableRef::default()
+        };
+        let request = v1::ReadPublishedRequest { table: Some(table) };
+        let Err(refused) = client.read_published(request).await else {
+            panic!("{id} read a table back");
+        };
+        assert_eq!(
+            refused.code(),
+            rdlt_wire::tonic::Code::Unimplemented,
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn the_test_connectors_binaries_are_built_only_on_request() {
+    let manifest = include_str!("../../Cargo.toml");
+    let binaries: Vec<&str> = manifest.split("[[bin]]").skip(1).collect();
+    for name in ["rdlt-connector-generator", "rdlt-connector-memory"] {
+        let binary = binaries
+            .iter()
+            .find(|binary| binary.contains(&format!("name = \"{name}\"")));
+        let binary = binary.unwrap_or_else(|| panic!("{name} is declared"));
+        let declared = binary.split("\n\n").next().expect("its table");
+        assert!(
+            declared.contains("required-features = [\"test-connectors\"]"),
+            "{name}: {declared}"
+        );
+    }
+    // The binaries a deployment runs are those left: built without a feature.
+    for shipped in ["rdlt-connector-sqlite", "rdlt-connector-files"] {
+        assert!(
+            !manifest.contains(&format!("name = \"{shipped}\"")),
+            "{shipped}"
+        );
+    }
 }

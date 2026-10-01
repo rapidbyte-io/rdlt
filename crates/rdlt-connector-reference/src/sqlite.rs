@@ -44,7 +44,7 @@ pub struct SqliteDestination {
     planner: Arc<SqlPlanner<Sqlite>>,
 }
 
-#[destination(id = "io.rapidbyte.sqlite", read_back)]
+#[destination(id = "io.rapidbyte.sqlite")]
 impl DestinationConnector for SqliteDestination {
     type Config = SqliteDestinationConfig;
     type Session = SqliteSession;
@@ -131,14 +131,22 @@ fn capabilities() -> Capabilities {
     capabilities
 }
 
+#[cfg(feature = "certify")]
 impl ReadBack for SqliteDestination {
-    async fn published(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
+    async fn published(&self, table: &TableRef, rows: PublishedRows) -> Result<()> {
         let (path, name) = (self.path.clone(), table.name.clone());
-        crate::blocking::blocking(move || published(path, &name)).await
+        crate::blocking::blocking(move || {
+            let connection = database::connect(&path)?;
+            values::read_table_each(&connection, &Sqlite, &name, &mut |batch| {
+                rows.blocking_send(batch)
+            })
+        })
+        .await
     }
 }
 
-/// Every row of `table` in the database at `path`, as one batch; none when the table is missing.
+/// Every row of `table` in the database at `path`, in batches of bounded size; none when the
+/// table is missing.
 ///
 /// Columns read back as their storage class: integers as `Int64`, floats as `Float64`.
 pub fn published(path: impl Into<PathBuf>, table: &str) -> Result<Vec<RecordBatch>> {

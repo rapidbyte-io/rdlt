@@ -7,8 +7,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::{
-    CommitSeq, ConnectContext, ConnectorErrorKind, Partition, PartitionId, ReadRequest, SegmentId,
-    StreamName, TableChange, TableSchema, partition_channel, source_factory,
+    CommitSeq, ConnectContext, ConnectorErrorKind, Destination, Partition, PartitionId,
+    PublishedRows, ReadRequest, SegmentId, StreamName, TableChange, TableSchema,
+    partition_channel, source_factory,
 };
 use rdlt_connector_reference::{FilesDestination, FilesSource, files};
 use serde_json::json;
@@ -220,8 +221,7 @@ async fn the_files_destination_reads_back_what_it_published() {
         .commit(&meta)
         .await
         .expect("the commit lands");
-    let rows: usize = reader
-        .published(&table("rows"))
+    let rows: usize = PublishedRows::gather(&*reader, &table("rows"))
         .await
         .expect("the table reads back")
         .iter()

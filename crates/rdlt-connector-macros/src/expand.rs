@@ -23,29 +23,18 @@ impl Role {
         }
     }
 
-    /// The factory function for this role, and the `RoleFactory` variant it goes in; for a
-    /// destination that reads back what it published, the factory that serves that too.
+    /// The factory function for this role, and the `RoleFactory` variant it goes in.
     ///
-    /// A source that tells where it stands says so in its `ACKNOWLEDGES`, which its factory reads.
-    fn factory(self, probed: bool) -> TokenStream {
-        match (self, probed) {
-            (Self::Source, _) => quote!(::rdlt_connector::RoleFactory::Source(
+    /// Neither serves certification's probes: a binary's `main` serves those by naming the factory
+    /// that does.
+    fn factory(self) -> TokenStream {
+        match self {
+            Self::Source => quote!(::rdlt_connector::RoleFactory::Source(
                 ::rdlt_connector::source_factory::<Self>()
             )),
-            (Self::Destination, false) => quote!(::rdlt_connector::RoleFactory::Destination(
+            Self::Destination => quote!(::rdlt_connector::RoleFactory::Destination(
                 ::rdlt_connector::destination_factory::<Self>()
             )),
-            (Self::Destination, true) => quote!(::rdlt_connector::RoleFactory::Destination(
-                ::rdlt_connector::readable_destination_factory::<Self>()
-            )),
-        }
-    }
-
-    /// The flag declaring a connector of this role serves certification's probe.
-    fn probe(self) -> &'static str {
-        match self {
-            Self::Source => "acknowledged",
-            Self::Destination => "read_back",
         }
     }
 
@@ -65,7 +54,7 @@ pub(crate) fn connector(
     item: TokenStream,
     role: Role,
 ) -> syn::Result<TokenStream> {
-    let Args { id, probed } = parse_args(args, role)?;
+    let Args { id, acknowledges } = parse_args(args, role)?;
     let mut block: ItemImpl = syn::parse2(item)?;
     let implements = block
         .trait_
@@ -86,14 +75,14 @@ pub(crate) fn connector(
     block.items.push(parse_quote!(
         const VERSION: &'static str = ::core::env!("CARGO_PKG_VERSION");
     ));
-    if probed && role == Role::Source {
+    if acknowledges {
         block.items.push(parse_quote!(
             const ACKNOWLEDGES: bool = true;
         ));
     }
     let (generics, _, where_clause) = block.generics.split_for_impl();
     let connector = &block.self_ty;
-    let factory = role.factory(probed);
+    let factory = role.factory();
     let serve = quote! {
         impl #generics ::rdlt_connector::Serve for #connector #where_clause {
             fn factory() -> ::rdlt_connector::RoleFactory { #factory }
@@ -102,27 +91,30 @@ pub(crate) fn connector(
     Ok(quote!(#block #serve))
 }
 
-/// What a connector attribute says: the connector's id, and whether it serves certification's
-/// probe.
+/// What a connector attribute says: the connector's id, and whether it is a source that tells
+/// where it stands.
 struct Args {
     id: LitStr,
-    probed: bool,
+    acknowledges: bool,
 }
 
 fn parse_args(args: TokenStream, role: Role) -> syn::Result<Args> {
     let mut id: Option<LitStr> = None;
-    let mut probed = false;
+    let mut acknowledges = false;
     let parser = syn::meta::parser(|meta| {
         if meta.path.is_ident("id") {
             id = Some(meta.value()?.parse()?);
             Ok(())
-        } else if meta.path.is_ident(role.probe()) {
-            probed = true;
+        } else if meta.path.is_ident("acknowledged") && role == Role::Source {
+            acknowledges = true;
             Ok(())
-        } else if meta.path.is_ident("read_back") {
-            Err(meta.error("only a destination reads back what it published"))
         } else if meta.path.is_ident("acknowledged") {
             Err(meta.error("only a source tells where it stands"))
+        } else if meta.path.is_ident("read_back") {
+            Err(meta.error(
+                "a destination that reads back implements `ReadBack`, and is served reading \
+                 back by `readable_destination_factory`",
+            ))
         } else {
             Err(meta.error("expected `id = \"...\"`"))
         }
@@ -141,5 +133,5 @@ fn parse_args(args: TokenStream, role: Role) -> syn::Result<Args> {
             "connector ids are 1-128 bytes of lowercase letters, digits, `.`, `_` and `-`";
         return Err(syn::Error::new_spanned(&id, message));
     }
-    Ok(Args { id, probed })
+    Ok(Args { id, acknowledges })
 }

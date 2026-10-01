@@ -230,8 +230,7 @@ async fn superseded_catalog_versions_are_removed() {
 }
 
 async fn read_back(reader: &dyn PublishedReader, table: &TableRef) -> Option<ConnectorErrorKind> {
-    reader
-        .published(table)
+    PublishedRows::gather(reader, table)
         .await
         .err()
         .map(|error| error.kind())

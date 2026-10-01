@@ -11,8 +11,8 @@ use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch};
 use rdlt_connector::{
     ChangeColumns, ChangeOp, CommitMeta, CommitSeq, ConnectContext, Deletion, Destination,
     DestinationConnector, Field, GenerationId, LoadId, LogicalType, MergeKey, OpenContext,
-    PipelineId, PublishedReader, ReadBack, SchemaVersion, SegmentId, TableChange, TablePath,
-    TableRef, TableSchema, readable_destination_factory,
+    PipelineId, PublishedReader, PublishedRows, ReadBack, SchemaVersion, SegmentId, TableChange,
+    TablePath, TableRef, TableSchema, readable_destination_factory,
 };
 use rdlt_connector_reference::{FilesDestination, MemoryDestination, SqliteDestination};
 use serde_json::json;
@@ -127,8 +127,7 @@ async fn commit(destination: &dyn Destination, load: u128, batch: RecordBatch) {
 
 /// The ids `reader` reads back from the table.
 async fn ids(reader: &dyn PublishedReader) -> Vec<i64> {
-    let batches = reader
-        .published(&table())
+    let batches = PublishedRows::gather(reader, &table())
         .await
         .expect("the table reads back");
     let mut ids: Vec<i64> = batches

@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use rdlt_connector::{
     ConnectContext, ConnectorErrorKind, Cursor, Partition, PartitionId, Push, ReadRequest, Source,
-    SourceEvent, StreamName, StreamState, partition_channel, source_factory,
+    SourceEvent, StreamName, StreamState, acknowledging_source_factory, partition_channel,
+    source_factory,
 };
 use serde_json::{Value, json};
 
@@ -171,7 +172,7 @@ async fn a_group_keeps_each_partitions_committed_offset_beyond_a_connection_neve
         .committed(&events(), &[(p(0), offset(3))])
         .await
         .expect("an older offset commits");
-    let factory = source_factory::<LogSource>();
+    let factory = acknowledging_source_factory::<LogSource>();
     let (_, reader) = factory
         .connect_acknowledging(config(&stream, "kept"), ConnectContext::new())
         .await

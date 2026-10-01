@@ -19,10 +19,6 @@ pub fn source(args: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Declares a destination connector's identity: `#[destination(id = "io.example.warehouse")]`.
-///
-/// With `read_back`, as in `#[destination(id = "io.example.warehouse", read_back)]`, the
-/// connector, which then implements `ReadBack`, is served reading back what it published, for
-/// certification.
 #[proc_macro_attribute]
 pub fn destination(args: TokenStream, item: TokenStream) -> TokenStream {
     expand::connector(args.into(), item.into(), expand::Role::Destination)

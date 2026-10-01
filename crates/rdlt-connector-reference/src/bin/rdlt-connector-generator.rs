@@ -1,4 +1,5 @@
-//! The generator source, served to a host that spawns it.
+//! The generator source, served to a host that spawns it: a test connector, built only with the
+//! `test-connectors` feature.
 
 #![forbid(unsafe_code)]
 

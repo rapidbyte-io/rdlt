@@ -2,7 +2,9 @@
 
 use rdlt_certify::{Outcome, Probe, Target, certify_destination, certify_source};
 use rdlt_connector::serve::Served;
-use rdlt_connector::{BoxFuture, TableRef, destination_factory, source_factory};
+use rdlt_connector::{
+    BoxFuture, TableRef, acknowledging_source_factory, destination_factory, source_factory,
+};
 use rdlt_connector_reference::{
     ChangesSource, GeneratorSource, MemoryDestination, MemorySource, published,
 };
@@ -197,8 +199,8 @@ async fn a_kill_timeout_bounds_the_kill_clauses_alone() {
 
 #[tokio::test]
 async fn a_change_source_served_in_process_tells_where_it_stands_through_the_protocol() {
-    let target = Target::served(Served::new().with_source(source_factory::<ChangesSource>()))
-        .credit_watch(crate::BRIEF);
+    let served = Served::new().with_source(acknowledging_source_factory::<ChangesSource>());
+    let target = Target::served(served).credit_watch(crate::BRIEF);
     let config = json!({
         "seed": 5,
         "streams": [{ "name": "accounts", "keys": 9, "changes": 6, "batch_rows": 2 }],

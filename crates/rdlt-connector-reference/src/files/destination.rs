@@ -78,7 +78,7 @@ pub struct FilesDestination {
 /// A destination's root and the private directory in it, once they were opened.
 type Held = Mutex<Option<(Arc<Dir>, Arc<Dir>)>>;
 
-#[destination(id = "io.rapidbyte.files", read_back)]
+#[destination(id = "io.rapidbyte.files")]
 impl DestinationConnector for FilesDestination {
     type Config = FilesDestinationConfig;
     type Session = FilesSession;
@@ -408,16 +408,18 @@ fn capabilities(format: FileFormat) -> Capabilities {
     capabilities
 }
 
+#[cfg(feature = "certify")]
 impl ReadBack for FilesDestination {
-    async fn published(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
+    async fn published(&self, table: &TableRef, rows: PublishedRows) -> Result<()> {
         let (root, name) = (self.root.to_path_buf(), table.name.clone());
         let held = Arc::clone(&self.rdlt);
         blocking(move || {
+            let mut send = |batch| rows.blocking_send(batch);
             // A destination that never opened reads what is there, and creates nothing.
             if held.lock().is_none() {
-                return published(root, &name);
+                return published_each(&root, &name, &mut send);
             }
-            published_in(&*held_or_opened(&root, &held)?, &name)
+            published_in(&*held_or_opened(&root, &held)?, &name, &mut send)
         })
         .await
     }
@@ -425,15 +427,35 @@ impl ReadBack for FilesDestination {
 
 /// Every published batch of `table` under `root`, over every pipeline's latest manifest.
 pub fn published(root: impl Into<PathBuf>, table: &str) -> Result<Vec<RecordBatch>> {
+    let mut batches = Vec::new();
+    published_each(&root.into(), table, &mut |batch| {
+        batches.push(batch);
+        Ok(())
+    })?;
+    Ok(batches)
+}
+
+/// Gives `each` every batch [`published`] answers of `table` under `root`.
+fn published_each(
+    root: &Path,
+    table: &str,
+    each: &mut dyn FnMut(RecordBatch) -> Result<()>,
+) -> Result<()> {
     tables::named(table)?;
-    match existing(&root.into())? {
-        Some(rdlt) => published_in(&rdlt, table),
-        None => Ok(Vec::new()),
+    match existing(root)? {
+        Some(rdlt) => published_in(&rdlt, table, each),
+        None => Ok(()),
     }
 }
 
-/// Every published batch of `table` under the private directory `rdlt`.
-fn published_in(rdlt: &Dir, table: &str) -> Result<Vec<RecordBatch>> {
+/// Gives `each` every published batch of `table` under the private directory `rdlt`, a
+/// pipeline's at a time: what one pipeline publishes of the table is read whole, since it is
+/// read again where a commit removed a file meanwhile.
+fn published_in(
+    rdlt: &Dir,
+    table: &str,
+    each: &mut dyn FnMut(RecordBatch) -> Result<()>,
+) -> Result<()> {
     tables::named(table)?;
     let schema = Arc::new(
         tables::read(rdlt, table)?
@@ -441,19 +463,20 @@ fn published_in(rdlt: &Dir, table: &str) -> Result<Vec<RecordBatch>> {
     );
     let pipelines = match rdlt.dir(PIPELINES) {
         Ok(pipelines) => pipelines,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(io::failed("opening", &rdlt.at(PIPELINES))(error)),
     };
     let listing = io::failed("listing", pipelines.path());
-    let mut batches = Vec::new();
     for (name, kind) in pipelines.entries().map_err(&listing)? {
         if kind != Kind::Dir {
             continue;
         }
         let dir = pipelines.dir(&name).map_err(&listing)?;
-        batches.extend(published_by(&dir, table, &schema, manifest::latest)?);
+        for batch in published_by(&dir, table, &schema, manifest::latest)? {
+            each(batch)?;
+        }
     }
-    Ok(batches)
+    Ok(())
 }
 
 /// Every batch the pipeline whose directory `dir` is publishes of `table`, as the manifest

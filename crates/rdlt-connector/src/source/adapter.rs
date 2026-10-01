@@ -1,12 +1,8 @@
 //! Turns an author's [`SourceConnector`] into the engine-facing [`Source`].
 
 use std::marker::PhantomData;
-use std::sync::Arc;
 
-use super::{
-    ACKNOWLEDGED_CODE, AcknowledgedReader, Acknowledging, PartitionPlan, ReadRequest, ReadStream,
-    Source, SourceConnector, SourceFactory,
-};
+use super::{PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::config;
 use crate::cursor::Cursor;
@@ -41,6 +37,7 @@ pub(crate) trait ErasedStream<S>: Send + Sync {
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, Result<()>>;
 
+    #[cfg(feature = "certify")]
     fn acknowledged<'a>(
         &'a self,
         source: &'a S,
@@ -100,6 +97,7 @@ impl<S: SourceConnector, R: ReadStream<S>> ErasedStream<S> for R {
         })
     }
 
+    #[cfg(feature = "certify")]
     fn acknowledged<'a>(
         &'a self,
         source: &'a S,
@@ -121,13 +119,13 @@ fn decode<S: SourceConnector, R: ReadStream<S>>(stream: &R, cursor: &Cursor) -> 
         .map_err(|error| error.in_stream(ReadStream::spec(stream).name()))
 }
 
-struct SourceAdapter<C: SourceConnector> {
-    connector: C,
+pub(super) struct SourceAdapter<C: SourceConnector> {
+    pub(super) connector: C,
     streams: Vec<(StreamName, Box<dyn ErasedStream<C>>)>,
 }
 
 impl<C: SourceConnector> SourceAdapter<C> {
-    fn stream(&self, name: &StreamName) -> Result<&dyn ErasedStream<C>> {
+    pub(super) fn stream(&self, name: &StreamName) -> Result<&dyn ErasedStream<C>> {
         self.streams
             .iter()
             .find(|(candidate, _)| candidate == name)
@@ -178,21 +176,8 @@ impl<C: SourceConnector> Source for SourceAdapter<C> {
     }
 }
 
-impl<C: SourceConnector> AcknowledgedReader for SourceAdapter<C> {
-    fn acknowledged<'a>(
-        &'a self,
-        stream: &'a StreamName,
-        partition: &'a PartitionId,
-    ) -> BoxFuture<'a, Result<Option<Cursor>>> {
-        match self.stream(stream) {
-            Ok(erased) => erased.acknowledged(&self.connector, partition),
-            Err(error) => Box::pin(async move { Err(error) }),
-        }
-    }
-}
-
 /// Connects `C` with `config`, as the engine drives it.
-async fn adapted<C: SourceConnector>(
+pub(super) async fn adapted<C: SourceConnector>(
     config: serde_json::Value,
     context: &ConnectContext,
 ) -> Result<SourceAdapter<C>> {
@@ -206,7 +191,7 @@ async fn adapted<C: SourceConnector>(
     Ok(SourceAdapter { connector, streams })
 }
 
-struct Factory<C> {
+pub(super) struct Factory<C> {
     spec: ConnectorSpec,
     connector: PhantomData<fn() -> C>,
 }
@@ -226,37 +211,12 @@ impl<C: SourceConnector> SourceFactory for Factory<C> {
             Ok(Box::new(adapter) as Box<dyn Source>)
         })
     }
-
-    fn acknowledges(&self) -> bool {
-        C::ACKNOWLEDGES
-    }
-
-    fn connect_acknowledging(
-        &self,
-        config: serde_json::Value,
-        context: ConnectContext,
-    ) -> BoxFuture<'_, Result<Acknowledging>> {
-        Box::pin(async move {
-            if !C::ACKNOWLEDGES {
-                return Err(ConnectorError::new(
-                    ConnectorErrorKind::Unsupported,
-                    "this source does not tell where it stands outside the engine",
-                )
-                .with_code(ACKNOWLEDGED_CODE));
-            }
-            // The reader is connected apart from the source it tells of, so it answers what the
-            // source keeps beyond a connection, not what one connection was told.
-            let source = adapted::<C>(config.clone(), &context).await?;
-            let reader = adapted::<C>(config, &context).await?;
-            Ok((
-                Arc::new(source) as Arc<dyn Source>,
-                Arc::new(reader) as Arc<dyn AcknowledgedReader>,
-            ))
-        })
-    }
 }
 
 /// The engine-facing factory for source connector `C`.
+///
+/// It never tells where the source stands outside the engine: certification asks that of
+/// `acknowledging_source_factory`, which the `certify` feature adds.
 ///
 /// # Panics
 ///
@@ -266,7 +226,7 @@ pub fn source_factory<C: SourceConnector>() -> Box<dyn SourceFactory> {
     Box::new(factory::<C>())
 }
 
-fn factory<C: SourceConnector>() -> Factory<C> {
+pub(super) fn factory<C: SourceConnector>() -> Factory<C> {
     let spec = ConnectorSpec {
         id: ConnectorId::parse(C::ID).expect("the connector's ID is a valid connector id"),
         version: C::VERSION.to_owned(),

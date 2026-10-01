@@ -1,15 +1,11 @@
 //! The handshake and the configuration: the handshake agrees the role and answers who the
 //! connector is, and only then, once the host has checked that, does the configuration connect it.
 
-use std::sync::Arc;
-
 use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 
+use super::probes::Probes;
 use super::service::{Connected, Service};
-use crate::destination::{Destination, DestinationFactory};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
-use crate::source::{Source, SourceFactory};
-use crate::spec::ConnectContext;
 use crate::wire::v1;
 
 /// What a handshake agreed: the role to configure, and whether it accepted the role's probe for
@@ -30,11 +26,6 @@ impl Agreed {
             _ => None,
         }
     }
-}
-
-/// Whether `request` offers `feature`.
-fn offers(request: &v1::HandshakeRequest, feature: &str) -> bool {
-    request.features.iter().any(|offered| offered == feature)
 }
 
 impl Service {
@@ -62,7 +53,7 @@ impl Service {
                     .source
                     .as_ref()
                     .ok_or_else(|| unserved("source"))?;
-                let probed = offers(request, rdlt_wire::ACKNOWLEDGED) && factory.acknowledges();
+                let probed = Probes::of_source(request, factory.as_ref());
                 (v1::Role::Source, factory.spec(), probed)
             }
             Ok(v1::Role::Destination) => {
@@ -71,7 +62,7 @@ impl Service {
                     .destination
                     .as_ref()
                     .ok_or_else(|| unserved("destination"))?;
-                let probed = offers(request, rdlt_wire::PUBLISHED) && factory.reads_back();
+                let probed = Probes::of_destination(request, factory.as_ref());
                 (v1::Role::Destination, factory.spec(), probed)
             }
             Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
@@ -114,12 +105,14 @@ impl Service {
         let (spec, connected) = match (agreed.role, &self.served.source, &self.served.destination) {
             (v1::Role::Source, Some(factory), _) => {
                 let source = self
+                    .probes
                     .connect_source(factory.as_ref(), agreed.probed, config)
                     .await?;
                 (factory.spec(), Connected::Source(source))
             }
             (v1::Role::Destination, _, Some(factory)) => {
                 let destination = self
+                    .probes
                     .connect_destination(factory.as_ref(), agreed.probed, config)
                     .await?;
                 (factory.spec(), Connected::Destination(destination))
@@ -132,42 +125,6 @@ impl Service {
             return Err(configured());
         }
         Ok(spec)
-    }
-
-    /// Connects `factory`'s source with `config`, telling where it stands when the handshake
-    /// accepted that.
-    async fn connect_source(
-        &self,
-        factory: &dyn SourceFactory,
-        accepted: bool,
-        config: serde_json::Value,
-    ) -> Result<Arc<dyn Source>, ConnectorError> {
-        let context = ConnectContext::new();
-        if !accepted {
-            return Ok(Arc::from(factory.connect(config, context).await?));
-        }
-        let (source, acknowledger) = factory.connect_acknowledging(config, context).await?;
-        // Set once: a handshake that ran beside this one is refused once connected.
-        self.acknowledger.set(acknowledger).ok();
-        Ok(source)
-    }
-
-    /// Connects `factory`'s destination with `config`, reading back what it published when the
-    /// host `offered` that and it can.
-    async fn connect_destination(
-        &self,
-        factory: &dyn DestinationFactory,
-        offered: bool,
-        config: serde_json::Value,
-    ) -> Result<Arc<dyn Destination>, ConnectorError> {
-        let context = ConnectContext::new();
-        if !(offered && factory.reads_back()) {
-            return Ok(Arc::from(factory.connect(config, context).await?));
-        }
-        let (destination, reader) = factory.connect_reading(config, context).await?;
-        // Set once: a handshake that ran beside this one is refused once connected.
-        self.reader.set(reader).ok();
-        Ok(destination)
     }
 
     /// The spec the handshake and the configuration answer with: the connector's, the roles the

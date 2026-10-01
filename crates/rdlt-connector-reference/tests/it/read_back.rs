@@ -8,8 +8,8 @@ use arrow_array::types::Int64Type;
 use arrow_array::{Int64Array, RecordBatch};
 use rdlt_connector::{
     CommitMeta, CommitSeq, ConnectContext, DestinationConnector, Field, LoadId, LogicalType,
-    OpenContext, OpenedSession, PipelineId, ReadBack, SchemaVersion, SegmentId, TableChange,
-    TablePath, TableRef, TableSchema, readable_destination_factory,
+    OpenContext, OpenedSession, PipelineId, PublishedRows, ReadBack, SchemaVersion, SegmentId,
+    TableChange, TablePath, TableRef, TableSchema, readable_destination_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, SqliteDestination, tables};
 use serde_json::json;
@@ -77,8 +77,7 @@ async fn read_back<C: DestinationConnector + ReadBack>(config: serde_json::Value
         .commit(&meta)
         .await
         .expect("the commit lands");
-    let batches = reader
-        .published(&published)
+    let batches = PublishedRows::gather(&*reader, &published)
         .await
         .expect("the table reads back");
     let mut ids: Vec<i64> = batches
@@ -126,4 +125,149 @@ async fn a_memory_store_lists_every_table_created_in_it() {
     let mut listed = tables("listed");
     listed.sort();
     assert_eq!(listed, ["first", "second"]);
+}
+
+#[tokio::test]
+async fn the_sqlite_destination_reads_a_large_table_back_in_bounded_batches() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("large.db");
+    let (destination, reader) = readable_destination_factory::<SqliteDestination>()
+        .connect_reading(json!({ "path": path }), ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let context = OpenContext {
+        pipeline: PipelineId::parse("reader").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+    };
+    let mut opened = destination.open(&context).await.expect("a session opens");
+    let large = table("large");
+    stage(&mut opened, &large, 1, (0..5000).collect()).await;
+    let meta = CommitMeta {
+        load_id: context.load_id,
+        commit_seq: CommitSeq::FIRST,
+        epoch: opened.epoch,
+        segments: [SegmentId(1)].into_iter().collect(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    let batches = PublishedRows::gather(&*reader, &large)
+        .await
+        .expect("the table reads back");
+    let rows: Vec<usize> = batches.iter().map(RecordBatch::num_rows).collect();
+    assert_eq!(rows.iter().sum::<usize>(), 5000);
+    assert_eq!(rows, [1024, 1024, 1024, 1024, 904]);
+}
+
+#[tokio::test]
+async fn the_sqlite_destination_ends_a_batch_read_back_at_its_bytes_as_at_its_rows() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("wide.db");
+    let (destination, reader) = readable_destination_factory::<SqliteDestination>()
+        .connect_reading(json!({ "path": path }), ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let context = OpenContext {
+        pipeline: PipelineId::parse("reader").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+    };
+    let mut opened = destination.open(&context).await.expect("a session opens");
+    let wide = table("wide");
+    let schema = TableSchema::new(vec![Field::new("text", LogicalType::Utf8, false)])
+        .expect("the schema is valid");
+    let create = TableChange::Create {
+        table: wide.clone(),
+        schema,
+    };
+    opened
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("the table is created");
+    // Forty rows of a tenth of a megabyte: a megabyte is passed at every eleventh.
+    let texts = vec!["x".repeat(100_000); 40];
+    let batch = RecordBatch::try_from_iter([(
+        "text",
+        Arc::new(arrow_array::StringArray::from(texts)) as _,
+    )])
+    .expect("the batch is valid");
+    let mut writer = opened.session.writer(&wide).await.expect("a writer opens");
+    writer
+        .write(SegmentId(1), batch)
+        .await
+        .expect("the write buffers");
+    writer.flush().await.expect("the flush stages");
+    drop(writer);
+    let meta = CommitMeta {
+        load_id: context.load_id,
+        commit_seq: CommitSeq::FIRST,
+        epoch: opened.epoch,
+        segments: [SegmentId(1)].into_iter().collect(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    let batches = PublishedRows::gather(&*reader, &wide)
+        .await
+        .expect("the table reads back");
+    let rows: Vec<usize> = batches.iter().map(RecordBatch::num_rows).collect();
+    assert_eq!(rows, [11, 11, 11, 7]);
+}
+
+#[tokio::test]
+async fn a_table_read_back_in_whole_batches_ends_without_an_empty_one() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("exact.db");
+    let (destination, reader) = readable_destination_factory::<SqliteDestination>()
+        .connect_reading(json!({ "path": path }), ConnectContext::new())
+        .await
+        .expect("the destination connects");
+    let context = OpenContext {
+        pipeline: PipelineId::parse("reader").expect("valid pipeline id"),
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+    };
+    let mut opened = destination.open(&context).await.expect("a session opens");
+    let (exact, empty) = (table("exact"), table("empty"));
+    stage(&mut opened, &exact, 1, (0..2048).collect()).await;
+    stage(&mut opened, &empty, 2, Vec::new()).await;
+    let meta = CommitMeta {
+        load_id: context.load_id,
+        commit_seq: CommitSeq::FIRST,
+        epoch: opened.epoch,
+        segments: [SegmentId(1)].into_iter().collect(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    opened
+        .session
+        .commit(&meta)
+        .await
+        .expect("the commit lands");
+    let rows = |batches: Vec<RecordBatch>| -> Vec<usize> {
+        batches.iter().map(RecordBatch::num_rows).collect()
+    };
+    let read = PublishedRows::gather(&*reader, &exact).await;
+    assert_eq!(rows(read.expect("the table reads back")), [1024, 1024]);
+    // A table without a row reads back as its columns, in a batch of none.
+    let read = PublishedRows::gather(&*reader, &empty).await;
+    assert_eq!(rows(read.expect("the table reads back")), [0]);
+    let read = PublishedRows::gather(&*reader, &table("missing")).await;
+    assert_eq!(
+        rows(read.expect("the table reads back")),
+        Vec::<usize>::new()
+    );
 }

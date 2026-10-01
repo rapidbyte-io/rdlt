@@ -23,7 +23,7 @@ use crate::id::StreamName;
 use crate::sink::partition_channel;
 use crate::source::{
     ACKNOWLEDGED_CODE, AcknowledgedReader, Partition, PartitionPlan, ReadRequest, Source,
-    SourceConnector, SourceFactory, source_factory,
+    SourceConnector, SourceFactory, acknowledging_source_factory,
 };
 use crate::spec::ConnectContext;
 use crate::state::{PartitionState, StreamState};
@@ -80,7 +80,7 @@ pub const SOURCE_CLAUSES: &[Clause] = &[
 /// Certifies source connector `C` with `config`; where it tells where it stands
 /// ([`SourceConnector::ACKNOWLEDGES`]), `S-ACK` checks that too.
 pub async fn certify_source<C: SourceConnector>(config: serde_json::Value) -> Report {
-    certify_source_factory(source_factory::<C>().as_ref(), config).await
+    certify_source_factory(acknowledging_source_factory::<C>().as_ref(), config).await
 }
 
 /// Certifies the source `factory` creates from `config`.
