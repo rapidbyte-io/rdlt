@@ -16,12 +16,15 @@ arrow-row.workspace = true
 arrow-schema.workspace = true
 arrow-select.workspace = true
 base64.workspace = true
+getrandom.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen"] }
 rusqlite.workspace = true
+rustix.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 xxhash-rust.workspace = true
 

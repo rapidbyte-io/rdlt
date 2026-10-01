@@ -28,6 +28,7 @@ mod kept;
 pub mod log;
 mod memory;
 mod merge;
+mod rooted;
 pub mod sqlite;
 
 pub use changes::{ChangedStream, ChangesConfig, ChangesSource};

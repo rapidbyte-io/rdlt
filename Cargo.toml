@@ -49,7 +49,7 @@ serde_json = "1.0.151" # JSON rows, cursors, state values and configuration
 serde_path_to_error = "0.1.20" # field paths in configuration errors
 syn = { version = "2", features = ["full"] } # parsing impl blocks in rdlt-connector-macros
 uuid = { version = "1.26.1", features = ["serde"] } # load ids (UUIDv7)
-getrandom = "0.4.3" # the operating system random source behind SystemEnv
+getrandom = "0.4.3" # the operating system random source behind SystemEnv, and the names of the reference connectors' temporary files
 memchr = "2.8.3" # finding the lines of JSON pushes
 command-fds = { version = "0.3.3", default-features = false } # a spawned connector's socket at file descriptor 3
 rustix = { version = "1.1.5", default-features = false, features = [
@@ -66,6 +66,11 @@ hyper-util = { version = "0.1.21", default-features = false } # tokio's executor
 tokio-stream = { version = "0.1.19", default-features = false } # the streams a served read and write answer with
 tower = { version = "0.5.3", default-features = false } # adapting the gRPC service and the client's connector
 rayon = "1.12.0" # the compute pool for CPU-bound stages
+rustix = { version = "1.1.5", default-features = false, features = [
+  "fs",
+  "process",
+  "std",
+] } # files opened by name beneath an open directory, following no link, without `unsafe`
 rustls = { version = "0.23.45", default-features = false, features = [
   "ring",
   "std",
