@@ -66,7 +66,9 @@ async fn a_listening_connector_is_certified_over_mutual_tls() {
     let (_connector, endpoint) = listening(&pki).await;
     let target = target(&pki, &endpoint);
     let config = json!({ "streams": { "users": [{"id": 1}, {"id": 2}] } });
-    certify_source(&target, config).await.assert_passed();
+    let source = certify_source(&target, config).await;
+    // Two rows end before a kill lands.
+    assert_eq!(crate::unobserved(&source), ["K-SOURCE"], "{source}");
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("listening.db");
     let report = certify_destination(&target, json!({ "path": path }), &SqliteProbe(path)).await;

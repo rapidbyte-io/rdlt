@@ -29,7 +29,8 @@ pub use kill::KILL_CLAUSES;
 pub use protocol::PROTOCOL_CLAUSES;
 pub use published::{ReadBackProbe, read_back};
 pub use rdlt_connector::testing::{
-    Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, Unprobed,
+    Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, REASON_BYTES, Reason, Report,
+    SOURCE_CLAUSES, Unprobed, Verdict,
 };
 pub use registry::{Family, clauses, markdown};
 pub use report::{json, plain};
@@ -42,7 +43,7 @@ use rdlt_connector::{DestinationFactory, SourceFactory};
 /// Certifies the source `target` reaches, with `config`: the protocol's clauses, the source
 /// clauses, each over connections of its own, then the kill clause.
 ///
-/// A connector that serves no source has every clause skipped.
+/// No clause applies to a connector that serves no source.
 pub async fn certify_source(target: &Target, config: serde_json::Value) -> Report {
     match connect::Factory::new(target, Role::Source, &config).await {
         Ok(factory) => {
@@ -68,7 +69,7 @@ pub async fn certify_source(target: &Target, config: serde_json::Value) -> Repor
 /// `probe` ([`Unprobed`] when nothing can read it): the protocol's clauses, the destination
 /// clauses, then the kill clause.
 ///
-/// A connector that serves no destination has every clause skipped.
+/// No clause applies to a connector that serves no destination.
 pub async fn certify_destination(
     target: &Target,
     config: serde_json::Value,

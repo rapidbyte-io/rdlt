@@ -109,7 +109,9 @@ pub(super) async fn roles(target: &Target, role: Role, config: &str) -> Found {
         let (_, answer) = handshaken(target, role, config).await?;
         let served = answer.spec.map(|spec| spec.roles).unwrap_or_default();
         if served.contains(&(wire_role(other) as i32)) {
-            return Ok(Some(format!("the connector serves the {named} role too")));
+            return Ok(Found::Inapplicable(format!(
+                "the connector serves the {named} role too"
+            )));
         }
         let mut client = target.client().await.map_err(Violation::of)?;
         let refused = client.handshake(request(other, PROTOCOL_MAJOR)).await;
@@ -118,7 +120,7 @@ pub(super) async fn roles(target: &Target, role: Role, config: &str) -> Found {
             &refused_with(refused, crate::connect::UNSERVED, what)?,
             what,
         )?;
-        Ok(None)
+        Ok(Found::Kept)
     };
     checked.await.into()
 }

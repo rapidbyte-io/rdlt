@@ -8,7 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use super::{Recording, placed, record};
+use super::placed;
+use super::recording::{Recording, record};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::sink::Push;
 use crate::source::{Partition, PartitionPlan, Source};
@@ -20,28 +21,40 @@ pub(super) async fn partitions_cover_exactly_once(
     source: &dyn Source,
     catalog: &Catalog,
 ) -> Outcome {
-    let mut checked = false;
+    let (mut checked, mut uncheckpointed) = (false, false);
     for stream in catalog.iter() {
         match covered(source, stream).await {
-            Ok(covered) => checked = checked || covered,
+            Ok(Covered::Checked) => checked = true,
+            Ok(Covered::Uncheckpointed) => uncheckpointed = true,
+            Ok(Covered::Unbounded) => {}
             Err(violation) => return outcome(Err(violation)),
         }
     }
     if checked {
         Outcome::Passed
+    } else if uncheckpointed {
+        Outcome::Unobserved("no stream's partitions checkpoint before their end".into())
     } else {
-        Outcome::Skipped(
-            "no stream has partitions that end and checkpoint before their end".to_owned(),
-        )
+        Outcome::Inapplicable("every stream plans a partition that never ends".into())
     }
 }
 
-/// Checks `stream`, where its partitions end and one checkpoints before its end: whether it did.
-async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<bool, Violation> {
+/// What checking a stream came to.
+enum Covered {
+    /// Its partitions cover it exactly once, however planned.
+    Checked,
+    /// It plans a partition that never ends, which no single read covers.
+    Unbounded,
+    /// None of its partitions checkpoints before its end, so nothing is planned again.
+    Uncheckpointed,
+}
+
+/// Checks `stream`, where its partitions end and one checkpoints before its end.
+async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<Covered, Violation> {
     let fresh = StreamState::default();
     let first = planned(source, stream, &fresh).await?;
     if first.partitions.iter().any(Partition::is_unbounded) {
-        return Ok(false);
+        return Ok(Covered::Unbounded);
     }
     let (mut whole, mut read, mut stood) = (Rows::default(), Rows::default(), BTreeMap::new());
     for (partition, cursor) in placed(&first, &fresh) {
@@ -56,7 +69,7 @@ async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<bool, Viola
         }
     }
     if stood.is_empty() {
-        return Ok(false);
+        return Ok(Covered::Uncheckpointed);
     }
     let state = StreamState {
         phase: first.phase.unwrap_or(fresh.phase),
@@ -68,7 +81,7 @@ async fn covered(source: &dyn Source, stream: &StreamSpec) -> Result<bool, Viola
         read.add_all(&record(source, stream, &partition, cursor, None).await?);
     }
     match whole.difference(&read) {
-        None => Ok(true),
+        None => Ok(Covered::Checked),
         Some((missing, extra)) => Err(Violation::from(format!(
             "stream {}: planned again from its first checkpoints, its partitions read {missing} \
              rows fewer and {extra} more than one read of the whole stream",
@@ -85,7 +98,7 @@ async fn planned(
     let name = stream.name();
     bounded_call("plan", source.plan(name, state))
         .await
-        .map_err(|Violation(reason)| Violation::from(format!("plan {name}: {reason}")))
+        .map_err(|violation| violation.of(format_args!("plan {name}")))
 }
 
 /// Rows, each as many times as it was read, rendered alike however they were pushed.

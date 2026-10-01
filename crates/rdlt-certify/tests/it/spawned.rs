@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use rdlt_certify::{Outcome, Probe, Target, Unprobed, certify_destination, certify_source};
+use rdlt_certify::{
+    Outcome, Probe, Target, Unprobed, Verdict, certify_destination, certify_source,
+};
 use rdlt_connector::serve::Served;
 use rdlt_connector::{BoxFuture, ConnectorId, TableRef, source_factory};
 use rdlt_connector_reference::{MemorySource, sqlite};
@@ -47,7 +49,8 @@ async fn a_spawned_source_binary_is_certified_through_the_protocol() {
     let config =
         json!({ "streams": { "users": [{"id": 1}, {"id": 2}, {"id": 3}] }, "page_size": 1 });
     let report = certify_source(&reference(), config).await;
-    report.assert_passed();
+    // Three rows end before a kill lands.
+    assert_eq!(crate::unobserved(&report), ["K-SOURCE"], "{report}");
     assert_eq!(report.connector, "io.rapidbyte.memory", "{report}");
     assert_eq!(
         report.outcome("P-CREDIT"),
@@ -99,16 +102,17 @@ async fn a_spawned_destination_binary_is_certified_through_the_protocol() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_destination_nothing_can_read_skips_the_clauses_that_read_what_it_published() {
+async fn a_destination_nothing_can_read_is_certified_incompletely() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let config = json!({ "path": directory.path().join("unread.db") });
     let report = certify_destination(&reference(), config, &Unprobed).await;
-    report.assert_passed();
+    report.assert_none_failed();
+    assert_eq!(report.verdict(), Verdict::Incomplete, "{report}");
     for id in ["D-CHECK", "D-EPOCH", "D-STATE"] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
     assert!(
-        matches!(report.outcome("D-COMMIT"), Some(Outcome::Skipped(_))),
+        matches!(report.outcome("D-COMMIT"), Some(Outcome::Unobserved(_))),
         "{report}"
     );
 }

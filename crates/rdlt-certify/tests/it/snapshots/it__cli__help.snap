@@ -19,6 +19,7 @@ Options:
       --tls-ca <TLS_CA>            The CA bundle that issued the connector's certificate, in PEM, for an endpoint
       --kill-seed <SEED>           Kills the connector at the points this seed draws, as a failed kill clause reports, to reproduce the failure
       --kill-timeout <SECONDS>     Gives each kill clause this many seconds for all its loads, rather than 300: a connector slower than about two seconds a commit needs more
+      --require <REQUIRE>          What exits 0: `complete`, every clause that applies seen to be met; `partial`, none failed and one passed, whatever was not observed [default: complete] [possible values: complete, partial]
       --output <OUTPUT>            How to print the reports [default: plain] [possible values: plain, json]
       --clauses                    Prints every clause, in Markdown, and exits
   -h, --help                       Print help

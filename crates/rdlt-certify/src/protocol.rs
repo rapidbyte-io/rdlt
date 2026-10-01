@@ -29,33 +29,40 @@ pub const PROTOCOL_CLAUSES: &[Clause] = &[
                     and limits before any configuration, ignores features it does not know, and \
                     refuses another major version as unsupported; the configuration answers the \
                     same connector's spec",
+        unless: "",
     },
     Clause {
         id: "P-ORDER",
         statement: "a call before the handshake or before the configuration, and a second \
                     handshake or configuration, are refused with typed errors",
+        unless: "",
     },
     Clause {
         id: "P-ROLE",
         statement: "a role the connector does not serve is refused as unsupported",
+        unless: "the connector serves both roles",
     },
     Clause {
         id: "P-LIMITS",
         statement: "a configuration, a source's cursor or a destination's batch frame beyond the \
                     connector's limit is refused with `limit_exceeded`",
+        unless: "the connector declares no limit this host can exceed",
     },
     Clause {
         id: "P-HEARTBEAT",
         statement: "each heartbeat is answered with its sequence number, in order",
+        unless: "",
     },
     Clause {
         id: "P-MALFORMED",
         statement: "a call the connector cannot read, or a frame it cannot decode, is refused \
                     with a typed error, and the connection serves on",
+        unless: "",
     },
     Clause {
         id: "P-CREDIT",
         statement: "a read sends nothing more once its credit is spent, until more is granted",
+        unless: "the connector is certified as a destination, which grants credit and spends none",
     },
 ];
 
@@ -85,11 +92,13 @@ impl From<&str> for Violation {
     }
 }
 
-/// What a clause found: nothing wrong, a violation, or a reason it does not apply.
+/// What a clause found: nothing wrong, a violation, a reason it does not apply to what the
+/// connector declares, or a reason what it requires was not seen.
 pub(crate) enum Found {
     Kept,
     Broken(Violation),
     Inapplicable(String),
+    Unobserved(String),
 }
 
 impl From<Result<(), Violation>> for Found {
@@ -101,13 +110,9 @@ impl From<Result<(), Violation>> for Found {
     }
 }
 
-impl From<Result<Option<String>, Violation>> for Found {
-    fn from(result: Result<Option<String>, Violation>) -> Self {
-        match result {
-            Ok(None) => Self::Kept,
-            Ok(Some(reason)) => Self::Inapplicable(reason),
-            Err(violation) => Self::Broken(violation),
-        }
+impl From<Result<Found, Violation>> for Found {
+    fn from(result: Result<Found, Violation>) -> Self {
+        result.unwrap_or_else(Self::Broken)
     }
 }
 
@@ -133,8 +138,9 @@ pub(crate) async fn check(
         };
         let outcome = match within(checking).await {
             Found::Kept => Outcome::Passed,
-            Found::Broken(Violation(reason)) => Outcome::Failed(reason),
-            Found::Inapplicable(reason) => Outcome::Skipped(reason),
+            Found::Broken(Violation(reason)) => Outcome::Failed(reason.into()),
+            Found::Inapplicable(reason) => Outcome::Inapplicable(reason.into()),
+            Found::Unobserved(reason) => Outcome::Unobserved(reason.into()),
         };
         results.push(ClauseResult {
             clause: *clause,

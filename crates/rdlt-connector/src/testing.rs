@@ -17,25 +17,22 @@
 //! ```
 
 mod destination;
+mod limits;
+mod reason;
 mod source;
 #[cfg(test)]
 mod tests;
 
 use std::fmt;
 use std::future::Future;
-use std::time::Duration;
 
 pub use destination::{
     DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
 };
+pub use limits::REASON_BYTES;
+use limits::{CALL_TIMEOUT, CLAUSE_TIMEOUT};
+pub use reason::Reason;
 pub use source::{SOURCE_CLAUSES, certify_source, certify_source_factory};
-
-/// How long any single connector call may take during certification.
-const CALL_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// The longest one clause takes, all its calls together: one that takes longer fails, rather
-/// than hold the certification, whichever of its awaits never ends.
-const CLAUSE_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Runs a clause for at most [`CLAUSE_TIMEOUT`].
 async fn timed(check: impl Future<Output = Result<(), Violation>>) -> Result<(), Violation> {
@@ -51,17 +48,23 @@ pub struct Clause {
     pub id: &'static str,
     /// What the clause requires.
     pub statement: &'static str,
+    /// What a connector declares that makes the clause not apply to it; empty for a clause that
+    /// applies to every connector of its role.
+    pub unless: &'static str,
 }
 
 /// The result of checking one clause.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The connector meets the clause.
+    /// The connector was seen to meet the clause.
     Passed,
     /// The connector breaks the clause, for the stated reason.
-    Failed(String),
-    /// The clause does not apply to this connector, for the stated reason.
-    Skipped(String),
+    Failed(Reason),
+    /// The clause does not apply to this connector, by what it declares, for the stated reason.
+    Inapplicable(Reason),
+    /// The clause applies, yet what it requires was not seen, for the stated reason: it neither
+    /// passed nor failed.
+    Unobserved(Reason),
 }
 
 /// One clause and its outcome.
@@ -71,6 +74,34 @@ pub struct ClauseResult {
     pub clause: Clause,
     /// Its outcome.
     pub outcome: Outcome,
+}
+
+/// What a report's outcomes amount to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Every clause that applies was seen to be met, and one at least applies.
+    Passed,
+    /// No clause failed, yet one that applies was not observed, or none applies.
+    Incomplete,
+    /// A clause failed.
+    Failed,
+}
+
+impl Verdict {
+    /// The verdict's name, as reports print it: `passed`, `incomplete` or `failed`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Incomplete => "incomplete",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl fmt::Display for Verdict {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
 }
 
 /// Every clause's outcome for one connector.
@@ -90,14 +121,46 @@ impl Report {
             .filter(|result| matches!(result.outcome, Outcome::Failed(_)))
     }
 
-    /// Whether no clause failed, and one passed at least: a report whose every clause was
-    /// skipped certified nothing.
+    /// The clauses that apply and were not observed.
+    pub fn unobserved(&self) -> impl Iterator<Item = &ClauseResult> {
+        self.results
+            .iter()
+            .filter(|result| matches!(result.outcome, Outcome::Unobserved(_)))
+    }
+
+    /// What the outcomes amount to: failed when a clause failed, incomplete when one that
+    /// applies was not observed or none passed, and passed otherwise.
+    pub fn verdict(&self) -> Verdict {
+        let passed = |result: &ClauseResult| result.outcome == Outcome::Passed;
+        if self.failures().next().is_some() {
+            Verdict::Failed
+        } else if self.unobserved().next().is_some() || !self.results.iter().any(passed) {
+            Verdict::Incomplete
+        } else {
+            Verdict::Passed
+        }
+    }
+
+    /// The verdict, and how many clauses passed, failed, were not observed and do not apply, in
+    /// one line.
+    pub fn summary(&self) -> String {
+        let count = |counted: fn(&Outcome) -> bool| {
+            let results = self.results.iter();
+            results.filter(|result| counted(&result.outcome)).count()
+        };
+        format!(
+            "{}: {} passed, {} failed, {} not observed, {} not applicable",
+            self.verdict(),
+            count(|outcome| matches!(outcome, Outcome::Passed)),
+            count(|outcome| matches!(outcome, Outcome::Failed(_))),
+            count(|outcome| matches!(outcome, Outcome::Unobserved(_))),
+            count(|outcome| matches!(outcome, Outcome::Inapplicable(_))),
+        )
+    }
+
+    /// Whether every clause that applies was seen to be met: the [`Verdict::Passed`] verdict.
     pub fn passed(&self) -> bool {
-        self.failures().next().is_none()
-            && self
-                .results
-                .iter()
-                .any(|result| result.outcome == Outcome::Passed)
+        self.verdict() == Verdict::Passed
     }
 
     /// The outcome of the clause with `id`.
@@ -112,9 +175,21 @@ impl Report {
     ///
     /// # Panics
     ///
-    /// Panics when a clause failed, or none passed.
+    /// Panics when a clause failed, one that applies was not observed, or none passed.
     pub fn assert_passed(&self) {
         assert!(self.passed(), "{self}");
+    }
+
+    /// Panics with the whole report when a clause failed, or none passed: what a certification
+    /// that cannot observe every clause, as one with no probe, asserts.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a clause failed, or none passed.
+    pub fn assert_none_failed(&self) {
+        let passed = |result: &ClauseResult| result.outcome == Outcome::Passed;
+        let kept = self.verdict() != Verdict::Failed && self.results.iter().any(passed);
+        assert!(kept, "{self}");
     }
 }
 
@@ -122,41 +197,84 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "certification of {}", self.connector)?;
         for result in &self.results {
+            let id = result.clause.id;
             match &result.outcome {
-                Outcome::Passed => writeln!(f, "  pass {}", result.clause.id)?,
-                Outcome::Failed(reason) => writeln!(
-                    f,
-                    "  FAIL {}: {} ({reason})",
-                    result.clause.id, result.clause.statement
-                )?,
-                Outcome::Skipped(reason) => writeln!(f, "  skip {}: {reason}", result.clause.id)?,
+                Outcome::Passed => writeln!(f, "  pass {id}")?,
+                Outcome::Failed(reason) => {
+                    writeln!(f, "  FAIL {id}: {} ({reason})", result.clause.statement)?;
+                }
+                Outcome::Inapplicable(reason) => writeln!(f, "  n/a  {id}: {reason}")?,
+                Outcome::Unobserved(reason) => writeln!(f, "  skip {id}: {reason}")?,
             }
         }
-        Ok(())
+        writeln!(f, "{}", self.summary())
     }
 }
 
-/// Why a connector breaks a clause.
+/// Why a clause did not pass: the connector breaks it, or what it requires could not be seen.
 #[derive(Debug)]
-struct Violation(String);
+struct Violation {
+    reason: Reason,
+    /// Whether the clause, rather than broken, was not observed.
+    unobserved: bool,
+}
+
+impl Violation {
+    /// A clause not observed, for `reason`.
+    fn unobserved(reason: impl fmt::Display) -> Self {
+        Self {
+            reason: Reason::new(reason),
+            unobserved: true,
+        }
+    }
+
+    /// This violation, said to be of `what`.
+    fn of(self, what: impl fmt::Display) -> Self {
+        Self {
+            reason: Reason::new(format_args!("{what}: {}", self.reason)),
+            unobserved: self.unobserved,
+        }
+    }
+
+    /// The outcome of the clause this ends.
+    fn outcome(self) -> Outcome {
+        if self.unobserved {
+            Outcome::Unobserved(self.reason)
+        } else {
+            Outcome::Failed(self.reason)
+        }
+    }
+}
 
 impl From<String> for Violation {
     fn from(reason: String) -> Self {
-        Self(reason)
+        Self {
+            reason: Reason::new(reason),
+            unobserved: false,
+        }
     }
 }
 
 impl From<&str> for Violation {
     fn from(reason: &str) -> Self {
-        Self(reason.to_owned())
+        Self::from(reason.to_owned())
     }
 }
 
-/// Runs a clause body, turning a violation into a failure.
+impl From<fmt::Arguments<'_>> for Violation {
+    fn from(reason: fmt::Arguments<'_>) -> Self {
+        Self {
+            reason: Reason::new(reason),
+            unobserved: false,
+        }
+    }
+}
+
+/// Runs a clause body, turning a violation into its outcome.
 fn outcome(result: Result<(), Violation>) -> Outcome {
     match result {
         Ok(()) => Outcome::Passed,
-        Err(Violation(reason)) => Outcome::Failed(reason),
+        Err(violation) => violation.outcome(),
     }
 }
 

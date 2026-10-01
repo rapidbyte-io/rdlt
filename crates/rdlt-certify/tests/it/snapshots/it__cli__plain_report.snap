@@ -5,7 +5,7 @@ expression: "String::from_utf8_lossy(&certified.stdout)"
 certification of io.rapidbyte.memory
   pass P-HANDSHAKE
   pass P-ORDER
-  skip P-ROLE: the connector serves the destination role too
+  n/a  P-ROLE: the connector serves the destination role too
   pass P-LIMITS
   pass P-HEARTBEAT
   pass P-MALFORMED
@@ -16,6 +16,7 @@ certification of io.rapidbyte.memory
   pass S-RESUME
   pass S-PARTITION
   pass S-STOP
-  skip S-BARRIER: no stream checkpoints on demand
-  skip S-ACK: the source does not tell where it stands
+  n/a  S-BARRIER: no stream checkpoints on demand
+  n/a  S-ACK: the source does not tell where it stands
   skip K-SOURCE: no kill interrupted the load (kill seed 515): it ended first
+incomplete: 12 passed, 0 failed, 1 not observed, 3 not applicable

@@ -27,17 +27,20 @@ fn code(output: &Output) -> Option<i32> {
 const USERS: &str = r#"{"streams": {"users": [{"id": 1}, {"id": 2}]}}"#;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_connector_that_keeps_every_clause_exits_zero_and_reports_as_json() {
-    let binary = example("serve_reference");
+async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() {
+    let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
+    // Rows enough that a kill lands as the source still reads.
     let output = certify(&[
         binary,
         "--role",
         "source",
         "--config",
-        USERS,
+        r#"{"seed": 11, "streams": [{"name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50}]}"#,
         "--env",
         "LLVM_PROFILE_FILE",
+        "--kill-seed",
+        "1",
         "--output",
         "json",
     ])
@@ -50,10 +53,51 @@ async fn a_connector_that_keeps_every_clause_exits_zero_and_reports_as_json() {
     );
     let report: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("the report is JSON");
-    assert_eq!(report["passed"], true);
-    assert_eq!(report["reports"][0]["connector"], "io.rapidbyte.memory");
+    assert_eq!(report["passed"], true, "{report}");
+    assert_eq!(report["verdict"], "passed", "{report}");
+    assert_eq!(report["reports"][0]["verdict"], "passed", "{report}");
+    assert_eq!(report["reports"][0]["connector"], "io.rapidbyte.generator");
     assert_eq!(report["reports"][0]["clauses"][0]["id"], "P-HANDSHAKE");
     assert_eq!(report["reports"][0]["clauses"][0]["outcome"], "passed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_is_required() {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    // Two rows end before any kill lands: the kill clause applies, and is not observed.
+    let small = [
+        binary,
+        "--role",
+        "source",
+        "--config",
+        USERS,
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--kill-seed",
+        "515",
+        "--output",
+        "json",
+    ];
+    for (require, exits) in [(None, 2), (Some("complete"), 2), (Some("partial"), 0)] {
+        let mut args = small.to_vec();
+        args.extend(require.iter().flat_map(|require| ["--require", *require]));
+        let output = certify(&args).await;
+        assert_eq!(code(&output), Some(exits), "{require:?}");
+        let report: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("the report is JSON");
+        // Whatever is required, the report says what was seen.
+        assert_eq!(report["verdict"], "incomplete", "{report}");
+        assert_eq!(report["passed"], false, "{report}");
+        assert_eq!(report["reports"][0]["verdict"], "incomplete", "{report}");
+        let clauses = report["reports"][0]["clauses"].as_array().expect("clauses");
+        let unobserved: Vec<_> = clauses
+            .iter()
+            .filter(|clause| clause["outcome"] == "unobserved")
+            .map(|clause| clause["id"].as_str())
+            .collect();
+        assert_eq!(unobserved, [Some("K-SOURCE")], "{report}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -103,6 +147,18 @@ async fn a_role_the_connector_does_not_serve_exits_one() {
         serde_json::from_slice(&json.stdout).expect("the report is JSON");
     assert_eq!(report["passed"], false, "{report}");
     assert_eq!(report["reports"][0]["passed"], false, "{report}");
+    // Nothing was certified, whatever is required.
+    let partial = certify(&[
+        binary,
+        "--role",
+        "destination",
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--require",
+        "partial",
+    ])
+    .await;
+    assert_eq!(code(&partial), Some(1));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -126,7 +182,9 @@ async fn a_connector_serving_one_role_is_certified_in_it_alone() {
     let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
     let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
-    let output = certify(&[binary, "--config", config, "--env", "LLVM_PROFILE_FILE"]).await;
+    let args = [binary, "--config", config, "--env", "LLVM_PROFILE_FILE"];
+    // Five rows end before a kill lands.
+    let output = certify(&[&args[..], &["--require", "partial"]].concat()).await;
     assert_eq!(
         code(&output),
         Some(0),
@@ -255,6 +313,9 @@ async fn a_listening_connector_is_certified_from_the_command_line() {
         key,
         "--tls-ca",
         ca,
+        // Two rows end before a kill lands.
+        "--require",
+        "partial",
     ];
     let output = certify(&args).await;
     assert_eq!(

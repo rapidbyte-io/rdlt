@@ -189,7 +189,7 @@ fn a_load_proves_something_only_once_a_kill_interrupted_it() {
     killed.kill();
     for (kills, interrupted) in [(&unkilled, false), (&unkilled, true), (&killed, false)] {
         assert!(
-            matches!(unproven(kills, interrupted, 9), Some(Loaded::Uninterrupted(reason)) if reason.contains("kill seed 9")),
+            matches!(unproven(kills, interrupted, 9), Some(Loaded::Unseen(reason)) if reason.contains("kill seed 9")),
             "{} kills, interrupted: {interrupted}",
             kills.count()
         );
@@ -209,7 +209,7 @@ fn drew(chosen: Option<u64>, interrupts: impl Fn(usize) -> bool) -> (Loaded, Vec
             if interrupted {
                 Loaded::Kept
             } else {
-                Loaded::Uninterrupted(format!("kill seed {seed}"))
+                Loaded::Unseen(format!("kill seed {seed}"))
             }
         }
     }));
@@ -237,10 +237,10 @@ fn a_clause_loads_again_with_new_kill_points_until_a_kill_interrupts_a_load() {
     assert_eq!(loads[0], (100, drawn(None, 100)));
     // A load no kill ever interrupts proves nothing after the last draw.
     let (outcome, loads) = drew(None, |_| false);
-    assert!(matches!(outcome, Loaded::Uninterrupted(_)));
+    assert!(matches!(outcome, Loaded::Unseen(_)));
     assert_eq!(loads.len(), usize::try_from(DRAWS).expect("few draws"));
     // A chosen seed loads once, as chosen, so its run can be repeated.
     let (outcome, loads) = drew(Some(7), |_| false);
-    assert!(matches!(outcome, Loaded::Uninterrupted(_)));
+    assert!(matches!(outcome, Loaded::Unseen(_)));
     assert_eq!(loads, [(100, 7)]);
 }

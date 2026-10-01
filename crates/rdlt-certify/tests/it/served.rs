@@ -30,7 +30,8 @@ async fn the_generator_served_in_process_is_certified_through_the_protocol() {
         "streams": [{ "name": "events", "rows": 57, "partitions": 3, "batch_rows": 5 }],
     });
     let report = certify_source(&target, config).await;
-    report.assert_passed();
+    // A source this small ends before a kill lands: its kill clause is not observed.
+    assert_eq!(crate::unobserved(&report), ["K-SOURCE"], "{report}");
     for id in [
         "P-HANDSHAKE",
         "P-ORDER",
@@ -60,7 +61,7 @@ async fn the_memory_destination_served_in_process_is_certified_through_the_proto
     assert_eq!(
         report
             .outcome("P-CREDIT")
-            .map(|outcome| matches!(outcome, Outcome::Skipped(_))),
+            .map(|outcome| matches!(outcome, Outcome::Inapplicable(_))),
         Some(true),
         "{report}"
     );
@@ -78,6 +79,8 @@ async fn a_source_served_in_process_killed_as_it_loads_resumes_where_it_was() {
         "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
     });
     let report = certify_source(&target, config).await;
+    // Every clause that applies was seen to be met, the kill clause among them.
+    report.assert_passed();
     assert_eq!(
         report.outcome("K-SOURCE"),
         Some(&Outcome::Passed),
@@ -94,7 +97,7 @@ async fn a_source_read_before_any_kill_lands_proves_nothing_of_kills() {
     });
     let report = certify_source(&target, config).await;
     assert!(
-        matches!(report.outcome("K-SOURCE"), Some(Outcome::Skipped(_))),
+        matches!(report.outcome("K-SOURCE"), Some(Outcome::Unobserved(_))),
         "{report}"
     );
 }
@@ -123,7 +126,8 @@ async fn the_memory_source_served_in_process_is_certified_through_the_protocol()
     let target = Target::served(Served::new().with_source(source_factory::<MemorySource>()));
     let config =
         json!({ "streams": { "users": [{"id": 1}, {"id": 2}, {"id": 3}] }, "page_size": 1 });
-    certify_source(&target, config).await.assert_passed();
+    let report = certify_source(&target, config).await;
+    assert_eq!(crate::unobserved(&report), ["K-SOURCE"], "{report}");
 }
 
 #[tokio::test]
@@ -162,7 +166,7 @@ async fn a_change_source_served_in_process_tells_where_it_stands_through_the_pro
 }
 
 #[tokio::test]
-async fn a_source_that_tells_nothing_skips_s_ack_through_the_protocol() {
+async fn s_ack_does_not_apply_through_the_protocol_to_a_source_that_tells_nothing() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
     let config = json!({
         "seed": 7,
@@ -170,7 +174,7 @@ async fn a_source_that_tells_nothing_skips_s_ack_through_the_protocol() {
     });
     let report = certify_source(&target, config).await;
     assert!(
-        matches!(report.outcome("S-ACK"), Some(Outcome::Skipped(_))),
+        matches!(report.outcome("S-ACK"), Some(Outcome::Inapplicable(_))),
         "{report}"
     );
 }

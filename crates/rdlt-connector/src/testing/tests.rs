@@ -17,7 +17,7 @@ use serde_json::json;
 
 use super::{
     Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, Unprobed,
-    certify_destination, certify_source,
+    Verdict, certify_destination, certify_source,
 };
 use crate::capabilities::{Capabilities, SchemaChanges};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
@@ -57,6 +57,11 @@ struct PagesConfig {
     /// owes, not the ones.
     shifted: bool,
     ignore_barriers: bool,
+    /// Its reads send no checkpoint at all.
+    uncheckpointed: bool,
+    /// A read from this page's cursor or a later one is shifted as `shifted` shifts every read;
+    /// 0 shifts none.
+    shifted_from: u32,
     natural: bool,
     unstable_discover: bool,
     empty_catalog: bool,
@@ -88,6 +93,8 @@ impl Default for PagesConfig {
             ignore_cursor: false,
             shifted: false,
             ignore_barriers: false,
+            uncheckpointed: false,
+            shifted_from: 0,
             natural: false,
             unstable_discover: false,
             empty_catalog: false,
@@ -231,7 +238,9 @@ impl ReadStream<Pages> for Page {
         if cursor < source.config.start {
             return Err(ConnectorError::data("the phase starts later"));
         }
-        let (start, end) = match (source.config.ignore_cursor, source.config.shifted) {
+        let late = source.config.shifted_from > 0 && cursor >= source.config.shifted_from;
+        let shifted = source.config.shifted || late;
+        let (start, end) = match (source.config.ignore_cursor, shifted) {
             (true, _) => (0, source.config.pages),
             (false, true) if cursor > 0 => (cursor - 1, source.config.pages - 1),
             (false, _) => (cursor, source.config.pages),
@@ -242,7 +251,8 @@ impl ReadStream<Pages> for Page {
                 return Err(ConnectorError::data("gave up"));
             }
             pushed?;
-            if !source.config.ignore_barriers || !out.checkpoint_due() {
+            let answers = !source.config.ignore_barriers || !out.checkpoint_due();
+            if answers && !source.config.uncheckpointed {
                 out.checkpoint(&(page + 1)).await?;
             }
         }
@@ -253,17 +263,26 @@ impl ReadStream<Pages> for Page {
 #[tokio::test]
 async fn a_correct_source_passes_every_clause() {
     certify_source::<Pages>(json!({})).await.assert_passed();
+}
+
+#[tokio::test]
+async fn a_source_with_no_data_is_incomplete_where_nothing_could_be_seen() {
     let empty = certify_source::<Pages>(json!({ "pages": 0 })).await;
-    empty.assert_passed();
+    assert_eq!(empty.verdict(), Verdict::Incomplete, "{empty}");
     assert_eq!(
         empty.outcome("S-BARRIER"),
         Some(&Outcome::Passed),
         "a source with no data owes no answer"
     );
-    assert!(
-        matches!(empty.outcome("S-PARTITION"), Some(Outcome::Skipped(_))),
-        "a stream that never checkpoints leaves nothing to plan again from: {empty}"
-    );
+    // A stream that never checkpoints leaves nothing to resume, or plan again, from.
+    for clause in ["S-RESUME", "S-PARTITION"] {
+        assert!(
+            matches!(empty.outcome(clause), Some(Outcome::Unobserved(_))),
+            "{clause}: {empty}"
+        );
+    }
+    let unobserved: Vec<_> = empty.unobserved().map(|result| result.clause.id).collect();
+    assert_eq!(unobserved, ["S-RESUME", "S-PARTITION"]);
 }
 
 #[tokio::test]
@@ -274,28 +293,58 @@ async fn a_source_whose_plans_name_their_phase_is_planned_again_within_it() {
 }
 
 #[test]
-fn a_report_whose_every_clause_was_skipped_certified_nothing_and_did_not_pass() {
-    let skipped = |id| ClauseResult {
+fn a_report_passes_only_when_every_clause_that_applies_was_seen_to_be_met() {
+    let result = |outcome: &Outcome| ClauseResult {
         clause: Clause {
-            id,
+            id: "S-CHECK",
             statement: "a statement",
+            unless: "",
         },
-        outcome: Outcome::Skipped("not served".to_owned()),
+        outcome: outcome.clone(),
     };
-    let report = Report {
-        connector: "test.skipped".to_owned(),
-        results: vec![skipped("S-CHECK"), skipped("S-PLAN")],
-    };
-    assert!(!report.passed(), "{report}");
-    assert!(std::panic::catch_unwind(|| report.assert_passed()).is_err());
+    let (passed, failed) = (Outcome::Passed, Outcome::Failed("broken".into()));
+    let inapplicable = Outcome::Inapplicable("not served".into());
+    let unobserved = Outcome::Unobserved("not seen".into());
+    let cases: [(&[&Outcome], Verdict); 9] = [
+        (&[], Verdict::Incomplete),
+        (&[&passed], Verdict::Passed),
+        (&[&passed, &inapplicable], Verdict::Passed),
+        // A report none of whose clauses applies certified nothing.
+        (&[&inapplicable, &inapplicable], Verdict::Incomplete),
+        (&[&passed, &unobserved], Verdict::Incomplete),
+        (&[&unobserved], Verdict::Incomplete),
+        (&[&passed, &failed], Verdict::Failed),
+        (&[&unobserved, &failed, &inapplicable], Verdict::Failed),
+        (&[&failed], Verdict::Failed),
+    ];
+    for (outcomes, verdict) in cases {
+        let report = Report {
+            connector: "test.verdict".to_owned(),
+            results: outcomes.iter().copied().map(result).collect(),
+        };
+        assert_eq!(report.verdict(), verdict, "{report}");
+        assert_eq!(report.passed(), verdict == Verdict::Passed, "{report}");
+        let asserted = std::panic::catch_unwind(|| report.assert_passed());
+        assert_eq!(asserted.is_ok(), verdict == Verdict::Passed, "{report}");
+        // Whatever was not observed, nothing failed and something passed.
+        let kept = verdict != Verdict::Failed && outcomes.contains(&&passed);
+        let asserted = std::panic::catch_unwind(|| report.assert_none_failed());
+        assert_eq!(asserted.is_ok(), kept, "{report}");
+        assert_eq!(
+            report.failures().count(),
+            usize::from(outcomes.contains(&&failed))
+        );
+        let unseen = outcomes.iter().filter(|outcome| ***outcome == unobserved);
+        assert_eq!(report.unobserved().count(), unseen.count());
+    }
 }
 
 #[tokio::test]
-async fn natural_checkpointing_skips_the_barrier_clause() {
+async fn the_barrier_clause_does_not_apply_to_natural_checkpointing() {
     let report = certify_source::<Pages>(json!({ "natural": true })).await;
     report.assert_passed();
     assert!(
-        matches!(report.outcome("S-BARRIER"), Some(Outcome::Skipped(_))),
+        matches!(report.outcome("S-BARRIER"), Some(Outcome::Inapplicable(_))),
         "{report}"
     );
     assert_eq!(report.outcome("S-CHECK"), Some(&Outcome::Passed));
@@ -320,6 +369,40 @@ async fn each_broken_source_behavior_fails_exactly_its_clause() {
         let report = certify_source::<Pages>(json!({ flag: true })).await;
         assert_eq!(failed(&report), clauses, "{flag}: {report}");
     }
+}
+
+#[tokio::test]
+async fn a_source_that_never_checkpoints_leaves_its_resumes_unobserved() {
+    let config = json!({ "uncheckpointed": true, "natural": true });
+    let report = certify_source::<Pages>(config).await;
+    let outcome = report.outcome("S-RESUME");
+    assert!(matches!(outcome, Some(Outcome::Unobserved(_))), "{report}");
+    assert!(failed(&report).is_empty(), "{report}");
+    assert_eq!(report.verdict(), Verdict::Incomplete, "{report}");
+}
+
+#[tokio::test]
+async fn a_source_whose_late_cursors_resume_wrongly_fails_its_resume_clause() {
+    for shifted_from in [6, 7, 9] {
+        let config = json!({ "pages": 12, "shifted_from": shifted_from });
+        let report = certify_source::<Pages>(config).await;
+        assert_eq!(failed(&report), ["S-RESUME"], "{shifted_from}: {report}");
+    }
+}
+
+#[test]
+fn resumes_are_sampled_from_the_first_checkpoint_to_the_last() {
+    assert!(super::source::resume::sampled(0).is_empty());
+    for sent in 1..=5 {
+        let every: Vec<usize> = (0..sent).collect();
+        assert_eq!(super::source::resume::sampled(sent), every);
+    }
+    assert_eq!(super::source::resume::sampled(6), [0, 1, 2, 3, 5]);
+    assert_eq!(super::source::resume::sampled(12), [0, 2, 5, 8, 11]);
+    assert_eq!(
+        super::source::resume::sampled(1_000_001),
+        [0, 250_000, 500_000, 750_000, 1_000_000]
+    );
 }
 
 #[tokio::test]
@@ -408,10 +491,12 @@ async fn a_source_that_cannot_connect_fails_every_clause() {
 
 #[test]
 fn json_pushes_compare_by_rows_not_formatting() {
-    let array = super::source::normalize(Push::Json(Bytes::from_static(
+    let array = super::source::recording::normalize(Push::Json(Bytes::from_static(
         b"[ {\"a\": 1}, {\"a\": 2} ]",
     )));
-    let lines = super::source::normalize(Push::Json(Bytes::from_static(b"{\"a\":1}\n{\"a\":2}\n")));
+    let lines = super::source::recording::normalize(Push::Json(Bytes::from_static(
+        b"{\"a\":1}\n{\"a\":2}\n",
+    )));
     assert_eq!(array, lines);
     assert_eq!(
         array,
@@ -1556,7 +1641,7 @@ async fn the_lanes_and_names_clauses_skip_only_what_a_destination_declares_it_ca
         let expected = if runs {
             matches!(report.outcome(clause), Some(Outcome::Passed))
         } else {
-            matches!(report.outcome(clause), Some(Outcome::Skipped(_)))
+            matches!(report.outcome(clause), Some(Outcome::Inapplicable(_)))
         };
         assert!(expected, "{clause} runs: {runs}: {report}");
     }
@@ -1704,7 +1789,7 @@ async fn change_clauses_check_only_what_a_destination_declares_it_does() {
         let actual: Vec<&str> = report
             .results
             .iter()
-            .filter(|result| matches!(result.outcome, Outcome::Skipped(_)))
+            .filter(|result| matches!(result.outcome, Outcome::Inapplicable(_)))
             .map(|result| result.clause.id)
             .collect();
         assert_eq!(actual, skipped, "{name}: {report}");
@@ -1804,7 +1889,7 @@ async fn clauses_for_capabilities_a_destination_lacks_are_skipped() {
     report.assert_passed();
     for clause in ["D-REPLACE", "D-MERGE", "D-HIST"] {
         assert!(
-            matches!(report.outcome(clause), Some(Outcome::Skipped(_))),
+            matches!(report.outcome(clause), Some(Outcome::Inapplicable(_))),
             "{clause}: {report}"
         );
     }
@@ -1820,13 +1905,17 @@ async fn the_schema_clause_is_skipped_for_a_destination_that_changes_no_schema()
     let report = certify_vault("fixed_schema", Some("fixed_schema")).await;
     report.assert_passed();
     assert!(
-        matches!(report.outcome("D-SCHEMA"), Some(Outcome::Skipped(_))),
+        matches!(report.outcome("D-SCHEMA"), Some(Outcome::Inapplicable(_))),
         "{report}"
     );
 }
 
 #[tokio::test]
-async fn a_source_that_tells_nothing_of_where_it_stands_skips_s_ack() {
+async fn s_ack_does_not_apply_to_a_source_that_tells_nothing_of_where_it_stands() {
     let report = certify_source::<Pages>(json!({})).await;
-    assert!(matches!(report.outcome("S-ACK"), Some(Outcome::Skipped(_))));
+    let outcome = report.outcome("S-ACK");
+    assert!(
+        matches!(outcome, Some(Outcome::Inapplicable(_))),
+        "{report}"
+    );
 }

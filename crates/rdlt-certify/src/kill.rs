@@ -33,12 +33,14 @@ pub const KILL_CLAUSES: &[Clause] = &[
         statement: "a source killed at random points of a load after it commits is started \
                     again and resumes from what was committed, so the engine converges on \
                     exactly the tables a load never killed publishes",
+        unless: "no stream is read in full or incrementally",
     },
     Clause {
         id: "K-DESTINATION",
         statement: "a destination killed at random points of a load, as it writes, before a \
                     commit, or after a commit before its answer, is started again and \
                     publishes every row exactly once when the engine converges",
+        unless: "the destination does not append",
     },
 ];
 
@@ -68,7 +70,7 @@ pub(crate) async fn source(
     #[cfg(not(feature = "kill"))]
     let outcome = {
         let _ = (target, id, config);
-        Outcome::Skipped(UNBUILT.to_owned())
+        Outcome::Unobserved(UNBUILT.into())
     };
     ClauseResult {
         clause: KILL_CLAUSES[0],
@@ -99,7 +101,7 @@ pub(crate) async fn destination(
     #[cfg(not(feature = "kill"))]
     let outcome = {
         let _ = (target, id, config, probe);
-        Outcome::Skipped(UNBUILT.to_owned())
+        Outcome::Unobserved(UNBUILT.into())
     };
     ClauseResult {
         clause: KILL_CLAUSES[1],
@@ -123,7 +125,7 @@ mod running {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use rdlt_connector::testing::Outcome;
+    use rdlt_connector::testing::{Outcome, Reason};
     use rdlt_connector::{Destination, Source};
 
     use crate::protocol::Violation;
@@ -159,11 +161,14 @@ mod running {
         Kept,
         /// It broke the clause, for the stated reason.
         Broken(String),
-        /// The clause proves nothing of the connector, for the stated reason: nothing reads back
-        /// what it published, or nothing it serves loads as the clause loads.
+        /// The clause does not apply to what the connector declares, for the stated reason:
+        /// nothing it serves loads as the clause loads.
         Inapplicable(String),
-        /// No kill interrupted the load, which ended first, for the stated reason.
-        Uninterrupted(String),
+        /// What the clause requires was not seen, for the stated reason: no kill reached the
+        /// connector, or nothing reads back what it published.
+        Unobserved(String),
+        /// No kill interrupted the load, for the stated reason: another draw of kill points may.
+        Unseen(String),
     }
 
     /// The loads a clause runs until a kill interrupts one: its kill points count commits, and a
@@ -183,7 +188,7 @@ mod running {
         loop {
             let loaded = load(run.wrapping_add(draw), seed).await;
             draw += 1;
-            if !matches!(loaded, Loaded::Uninterrupted(_)) || chosen.is_some() || draw == DRAWS {
+            if !matches!(loaded, Loaded::Unseen(_)) || chosen.is_some() || draw == DRAWS {
                 return loaded;
             }
             seed = mixed(seed);
@@ -198,14 +203,15 @@ mod running {
         let bound = chosen.unwrap_or(KILL_TIME);
         match tokio::time::timeout(bound, clause).await {
             Ok(Loaded::Kept) => Outcome::Passed,
-            Ok(Loaded::Broken(reason)) => Outcome::Failed(reason),
-            Ok(Loaded::Inapplicable(reason) | Loaded::Uninterrupted(reason)) => {
-                Outcome::Skipped(reason)
+            Ok(Loaded::Broken(reason)) => Outcome::Failed(reason.into()),
+            Ok(Loaded::Inapplicable(reason)) => Outcome::Inapplicable(reason.into()),
+            Ok(Loaded::Unobserved(reason) | Loaded::Unseen(reason)) => {
+                Outcome::Unobserved(reason.into())
             }
-            Err(_) => Outcome::Failed(format!(
+            Err(_) => Outcome::Failed(Reason::new(format_args!(
                 "the loads took longer than {bound:?}; a connector this slow needs a longer \
                  --kill-timeout"
-            )),
+            ))),
         }
     }
 
@@ -239,7 +245,7 @@ mod running {
     pub(crate) fn unproven(kills: &Kills, interrupted: bool, seed: u64) -> Option<Loaded> {
         (kills.count() == 0 || !interrupted).then(|| {
             let reason = format!("no kill interrupted the load (kill seed {seed}): it ended first");
-            Loaded::Uninterrupted(reason)
+            Loaded::Unseen(reason)
         })
     }
 

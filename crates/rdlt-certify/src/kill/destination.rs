@@ -33,7 +33,7 @@ pub(crate) async fn exactly_once(
 ) -> Loaded {
     if !probe.reads() {
         let reason = "nothing reads back what the destination published";
-        return Loaded::Inapplicable(reason.to_owned());
+        return Loaded::Unobserved(reason.to_owned());
     }
     super::proven(target.chosen_seed(), super::run(), |run, seed| async move {
         match loaded(target, id, config, probe, run, seed).await {

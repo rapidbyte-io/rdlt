@@ -22,7 +22,7 @@ use crate::cursor::Cursor;
 use crate::id::PartitionId;
 use crate::source::{AcknowledgedReader, Partition, PartitionPlan, Source};
 use crate::state::{PartitionState, StreamState};
-use crate::testing::{Outcome, Violation, bounded_call, outcome};
+use crate::testing::{Outcome, Reason, Violation, bounded_call, outcome};
 
 /// How many phases of a stream the clause reads, as a snapshot and then its changes are two.
 const PHASES: usize = 4;
@@ -69,15 +69,15 @@ pub(super) async fn acknowledged_only_when_committed(
     catalog: &Catalog,
 ) -> Outcome {
     let Some(told) = told else {
-        return Outcome::Skipped("the source does not tell where it stands".to_owned());
+        return Outcome::Inapplicable("the source does not tell where it stands".into());
     };
     let (reader, standing) = match told {
         Ok(told) => told,
         Err(violation) => return outcome(Err(violation)),
     };
     let Some(stream) = changes(catalog) else {
-        return Outcome::Skipped(
-            "the source reads no stream as changes or incrementally".to_owned(),
+        return Outcome::Inapplicable(
+            "the source reads no stream as changes or incrementally".into(),
         );
     };
     let mut probed = Probed::new(source, reader.as_ref(), stream);
@@ -87,15 +87,15 @@ pub(super) async fn acknowledged_only_when_committed(
     };
     match checked.await {
         Err(violation) => outcome(Err(violation)),
-        Ok(Last::Nothing) => Outcome::Skipped(format!(
+        Ok(Last::Nothing) => Outcome::Unobserved(Reason::new(format_args!(
             "no partition of the last phase of stream {} read has anything ahead of where it \
              stands to acknowledge, and reading them moved nothing",
             stream.name()
-        )),
-        Ok(Last::Unkept(partition)) => Outcome::Failed(format!(
+        ))),
+        Ok(Last::Unkept(partition)) => Outcome::Failed(Reason::new(format_args!(
             "stream {} partition {partition}: told checkpoints are committed, it keeps none",
             stream.name()
-        )),
+        ))),
         Ok(Last::Kept) => Outcome::Passed,
     }
 }
@@ -210,7 +210,7 @@ impl<'a> Probed<'a> {
         let name = self.stream.name();
         bounded_call("plan", self.source.plan(name, state))
             .await
-            .map_err(|Violation(reason)| Violation::from(format!("plan {name}: {reason}")))
+            .map_err(|violation| violation.of(format_args!("plan {name}")))
     }
 
     /// Probes `partition`, which its phase starts at `start`.
