@@ -173,7 +173,9 @@ pub(super) fn locked<T>(
         .dir_created(LOCKS)
         .map_err(io::failed("creating", &rdlt.at(LOCKS)))?;
     let path = locks.at(name);
-    let file = lock_file(&locks, name).map_err(io::failed("opening", &path))?;
+    let file = locks
+        .lock_file(name)
+        .map_err(io::failed("opening", &path))?;
     acquire(&file, wait).map_err(|error| match error {
         Some(error) => io::failed("locking", &path)(error),
         None => ConnectorError::new(
@@ -185,32 +187,6 @@ pub(super) fn locked<T>(
     let done = work();
     drop(file);
     done
-}
-
-/// Opens the lock file `name` in `locks`, creating it where missing: a regular file of this
-/// user's alone, never a link and never another user's.
-fn lock_file(locks: &Dir, name: &str) -> stdio::Result<File> {
-    let mut lost = None;
-    // A file created between the open that missed it and the create that lost to it is opened.
-    for _ in 0..2 {
-        match locks.file(name) {
-            Ok(file) => {
-                rooted::private(&file)?;
-                return Ok(file);
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        match locks.create(name) {
-            Ok(file) => {
-                locks.sync()?;
-                return Ok(file);
-            }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => lost = Some(error),
-            Err(error) => return Err(error),
-        }
-    }
-    Err(lost.unwrap_or_else(|| ErrorKind::AlreadyExists.into()))
 }
 
 /// Takes the exclusive lock on `file`, trying for at most `wait`; `None` is a lock that stayed
