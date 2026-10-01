@@ -81,6 +81,9 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
 - **Limits** (§12.8) are `rdlt_wire::Limits`, with the spec's defaults, enforced on receive with a
   typed `Refusal { code, field, limit, actual }`.
   - The decoder enforces frame size, rows per batch, columns per schema and nesting depth.
+    (ADR 0038 adds the values of a frame, the bytes its views name and the bytes of a schema
+    message, each with a limit or a refusal field of its own, and has a sender cut a batch to
+    its receiver's limits.)
   - JSON pushes, cursors, configuration documents and control strings have `admit_*` functions,
     which M4b's receive paths call.
 - **Fuzzing** (§20.7) gains two targets:
