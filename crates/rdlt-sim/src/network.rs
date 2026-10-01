@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::serve::{Listener, Listening, Served, serve_listener};
+use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
 use rdlt_connector::{BoxFuture, Destination, Source, destination_factory, source_factory};
 use rdlt_host::{
     ConnectorRef, Deadlines, Identity, Network, Options, Placed, Provider as _, ProviderError,
@@ -168,7 +168,11 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
     let tls = rdlt_wire::tls::server_config(&identity(&net.server), &accepted)
         .map(Arc::new)
         .map_err(|error| error.to_string())?;
-    let listening = Listening::new(tls, accepted.hosts);
+    // A seed's output is its failure alone: what the connectors would report is dropped.
+    let listening = Listening {
+        log: Log::new(|_| {}),
+        ..Listening::new(tls, accepted.hosts)
+    };
     loop {
         net.connectors.up(side).await;
         let crashes = net.connectors.crashes(side);
