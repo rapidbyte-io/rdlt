@@ -23,10 +23,10 @@ const CONTINUATION: [u8; 4] = [0xff; 4];
 
 /// One message of the file: where it starts, and how long its metadata and its body are.
 #[derive(Clone, Copy, Debug)]
-struct Block {
-    offset: u64,
-    metadata: usize,
-    body: usize,
+pub(super) struct Block {
+    pub(super) offset: u64,
+    pub(super) metadata: usize,
+    pub(super) body: usize,
 }
 
 /// An Arrow IPC file, its record batches read in order.
@@ -66,9 +66,9 @@ impl IpcFile {
     /// against the file's size and `limits`, and reading its schema and dictionaries.
     pub(super) fn open(mut file: File, limits: Limits) -> Result<Self> {
         let size = file.metadata().map_err(read)?.len();
-        let (dictionaries, batches) = blocks(&mut file, size, &limits)?;
         let mut decoder = Decoder::new(limits);
-        let schema = schema(&mut file, size, &limits, &mut decoder)?;
+        let (schema, messages) = schema(&mut file, size, &limits, &mut decoder)?;
+        let (dictionaries, batches) = blocks(&mut file, size, &limits, messages)?;
         let mut opened = Self {
             file,
             decoder,
@@ -144,8 +144,14 @@ fn message(metadata: &Bytes) -> Result<Bytes> {
 }
 
 /// The dictionary and record batch blocks the footer of `file`, `size` bytes long, lists, each
-/// lying between the file's head and its footer and within the frame limit.
-fn blocks(file: &mut File, size: u64, limits: &Limits) -> Result<(Vec<Block>, Vec<Block>)> {
+/// lying between `from`, where the schema message ends, and the footer, within the frame limit,
+/// and sharing no byte with another.
+fn blocks(
+    file: &mut File,
+    size: u64,
+    limits: &Limits,
+    from: u64,
+) -> Result<(Vec<Block>, Vec<Block>)> {
     let Some(tail) = size
         .checked_sub(TAIL)
         .filter(|tail| tail.checked_sub(HEAD).is_some())
@@ -177,8 +183,8 @@ fn blocks(file: &mut File, size: u64, limits: &Limits) -> Result<(Vec<Block>, Ve
     let footer = arrow_ipc::root_as_footer_with_opts(&verifier(limits), &footer)
         .map_err(|error| malformed(format_args!("its footer is no footer: {error}")))?;
     let listed = |blocks: Option<flatbuffers::Vector<'_, arrow_ipc::Block>>| {
-        // Each block follows the block listed before it: no two share a byte of the file.
-        let mut from = HEAD;
+        // Each block follows the block listed before it.
+        let mut from = from;
         blocks
             .into_iter()
             .flatten()
@@ -189,10 +195,24 @@ fn blocks(file: &mut File, size: u64, limits: &Limits) -> Result<(Vec<Block>, Ve
             })
             .collect::<Result<Vec<Block>>>()
     };
-    Ok((
+    let (dictionaries, batches) = (
         listed(footer.dictionaries())?,
         listed(footer.recordBatches())?,
-    ))
+    );
+    // Nor does a block of one list share a byte with a block of the other.
+    let mut all: Vec<Block> = dictionaries.iter().chain(&batches).copied().collect();
+    all.sort_by_key(|block| block.offset);
+    if !apart(&all) {
+        return Err(malformed("two blocks share bytes of the file"));
+    }
+    Ok((dictionaries, batches))
+}
+
+/// Whether no block of `blocks`, sorted by where they start, reaches into the block after it.
+pub(super) fn apart(blocks: &[Block]) -> bool {
+    blocks
+        .windows(2)
+        .all(|pair| pair[0].offset.saturating_add(frame(&pair[0])) <= pair[1].offset)
 }
 
 /// The flatbuffers verifier a schema nested to the limit passes, as the wire's decoder sets it:
@@ -238,10 +258,15 @@ fn checked(block: &arrow_ipc::Block, from: u64, footer: u64, limits: &Limits) ->
 const FIRST_MESSAGE: usize = 64;
 
 /// Reads the schema message `file` starts with into `decoder`, which checks it against its
-/// limits.
+/// limits; the schema, and where its message ends.
 ///
 /// The message follows the magic and its padding, to eight bytes or to its writer's alignment.
-fn schema(file: &mut File, size: u64, limits: &Limits, decoder: &mut Decoder) -> Result<SchemaRef> {
+fn schema(
+    file: &mut File,
+    size: u64,
+    limits: &Limits,
+    decoder: &mut Decoder,
+) -> Result<(SchemaRef, u64)> {
     let mut head = [0; FIRST_MESSAGE + 8];
     let known = usize::try_from(size).map_or(head.len(), |size| size.min(head.len()));
     file.seek(SeekFrom::Start(0))
@@ -269,7 +294,8 @@ fn schema(file: &mut File, size: u64, limits: &Limits, decoder: &mut Decoder) ->
     file.seek(SeekFrom::Start(after))
         .and_then(|_| file.read_exact(&mut message))
         .map_err(read)?;
-    decoder.schema(&Bytes::from(message)).map_err(refused)
+    let schema = decoder.schema(&Bytes::from(message)).map_err(refused)?;
+    Ok((schema, after.saturating_add(length)))
 }
 
 /// Checks that `schema` is one a reader of the file accepts: within the limits on columns and
