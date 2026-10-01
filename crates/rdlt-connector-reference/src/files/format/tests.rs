@@ -1281,3 +1281,5 @@ fn an_arrow_file_s_first_message_starts_within_the_alignment_writers_use() {
     let message = error.to_string();
     assert!(message.contains("does not start as one"), "{message}");
 }
+
+mod keyed;

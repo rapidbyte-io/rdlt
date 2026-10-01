@@ -7,30 +7,59 @@ use std::io::BufReader;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{Array, RecordBatch};
-use arrow_json::writer::{Encoder, EncoderFactory, EncoderOptions, NullableEncoder};
+use arrow_json::writer::{Encoder, EncoderFactory, EncoderOptions, NullableEncoder, make_encoder};
 use arrow_schema::{ArrowError, DataType, FieldRef, SchemaRef};
 
 use super::lines::Lines;
 use crate::limits::{CHUNK_BYTES, LINE_BYTES, READ_BATCH_ROWS};
 
-/// Encodes floats so each reads back as the value written: JSON has no number for a float that
-/// is not finite, which arrow-json writes as `null`; here it is the string naming it.
+/// Encodes floats and dictionaries so each row reads back as the value written.
+///
+/// JSON has no number for a float that is not finite, which arrow-json writes as `null`; here
+/// it is the string naming it. A dictionary may hold a null among its values, which arrow-json
+/// writes as whatever bytes lie under it; here a row is null where its key is null or the
+/// value its key stands for is.
 #[derive(Debug)]
 pub(super) struct ExactFloats;
 
 impl EncoderFactory for ExactFloats {
     fn make_default_encoder<'a>(
         &self,
-        _field: &'a FieldRef,
+        field: &'a FieldRef,
         array: &'a dyn Array,
-        _options: &'a EncoderOptions,
+        options: &'a EncoderOptions,
     ) -> Result<Option<NullableEncoder<'a>>, ArrowError> {
         let encoder: Box<dyn Encoder + 'a> = match array.data_type() {
             DataType::Float32 => Box::new(Floats(array.as_primitive::<Float32Type>())),
             DataType::Float64 => Box::new(Floats(array.as_primitive::<Float64Type>())),
+            DataType::Dictionary(..) => {
+                let dictionary = array.as_any_dictionary();
+                let values = dictionary.values();
+                // A dictionary of no values has no key that is not null.
+                let keys = match values.len() {
+                    0 => Vec::new(),
+                    _ => dictionary.normalized_keys(),
+                };
+                let values = make_encoder(field, values.as_ref(), options)?;
+                let keyed: Box<dyn Encoder + 'a> = Box::new(Keyed { keys, values });
+                return Ok(Some(NullableEncoder::new(keyed, array.logical_nulls())));
+            }
             _ => return Ok(None),
         };
         Ok(Some(NullableEncoder::new(encoder, array.nulls().cloned())))
+    }
+}
+
+/// Writes each row of a dictionary as the value its key stands for.
+struct Keyed<'a> {
+    /// Each row's place among the values; that of a row whose key is null is never asked for.
+    keys: Vec<usize>,
+    values: NullableEncoder<'a>,
+}
+
+impl Encoder for Keyed<'_> {
+    fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
+        self.values.encode(self.keys[idx], out);
     }
 }
 
