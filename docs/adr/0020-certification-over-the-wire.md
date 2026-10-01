@@ -1,6 +1,7 @@
 # ADR 0020: Certifying connectors over the wire
 
-Status: accepted, 2026-09-27.
+Status: accepted, 2026-09-27; outcomes, the pass rule and exit codes are amended by ADR 0050
+(2026-10-01): a skipped clause is inapplicable or unobserved, and an unobserved one does not pass.
 
 ## Context
 

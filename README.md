@@ -41,8 +41,10 @@ connector through the protocol, served in this process, spawned from its binary 
 endpoint: the source and destination clauses, and the protocol's own, as a library and as the
 `rdlt-certify` binary. A destination that reads back what it published is certified in every
 destination clause from its binary alone. The kill clauses load through an engine while the
-connector is killed, a spawned one outright and any other by cutting its connections, and check
-that the load converges exactly once; they need the `kill` feature, which the binary has.
+connector is killed, a spawned one with its whole process group and any other by cutting its
+connections, and check that the load converges exactly once; they need the `kill` feature, which
+the binary has. A clause passes only when what it requires was seen: one that applies and was not
+observed leaves the report incomplete, and the binary exits 2 (`docs/certify/clauses.md`).
 Change streams load through the engine: a CDC source reads a snapshot, then its changes, in phases
 the engine advances within a run. Its inserts, updates, partial updates and deletes merge by key
 under the seq guard, with deletes hard, soft or ignored; a truncate, which names no key, removes or

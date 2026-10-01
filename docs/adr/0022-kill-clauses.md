@@ -1,6 +1,7 @@
 # ADR 0022: The kill clauses
 
-Status: accepted, 2026-09-28.
+Status: accepted, 2026-09-28; amended 2026-10-01 by ADR 0050: a kill reaches a spawned
+connector's process group, and a clause passes only on a kill seen to have ended a connection.
 
 ## Context
 

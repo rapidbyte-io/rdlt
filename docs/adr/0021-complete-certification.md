@@ -1,6 +1,8 @@
 # ADR 0021: Certification complete for today's features
 
-Status: accepted, 2026-09-27.
+Status: accepted, 2026-09-27; amended 2026-10-01 by ADR 0050: a read-back is bounded in rows and
+in what its rows expand to, only `P-HANDSHAKE`'s handshake offers an unknown feature, and the
+probes' own handshakes keep a deadline.
 
 ## Context
 

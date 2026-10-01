@@ -84,9 +84,14 @@ The clauses a connector must pass are therefore those its declarations leave app
 
 ## What certification bounds
 
-Every call has a deadline and every clause a bound on all its work; what a connector sends is charged against a limit before it is held, expanded or rendered, and a reason quotes at most a few rows and 2048 bytes. A connector that exceeds a bound fails the clause, or leaves it unobserved where an honest connector with more data would do the same.
+- Every call has a deadline, each clause a bound on all its work (30 s a protocol clause, 600 s a source or destination clause, 300 s a kill clause unless `--kill-timeout` says), and `--timeout` bounds a whole run.
+- A source clause holds at most 64 MiB and 1,048,576 rows of what its reads send, all its reads together, and renders at most 64 MiB of text; a kill clause loads at most 100,000 rows and 64 MiB. A source that holds more leaves the clause unobserved.
+- A read-back holds at most 10,000 rows (100,000 for the kill clause) of flat columns, plain, dictionary or run-end encoded, that take at most 16 MiB once each row holds its own value, and at most 64 MiB on the wire. A destination that reads back more, or other columns, fails the clause.
+- A reason is at most 2048 bytes, and quotes at most the first eight rows of those it counts.
+- A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill, which a spawned connector's does once every process of its group is gone.
+- `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times: a source that ignores credit and sends less often than that is not told from one that waits.
 
 ## What certification cannot show
 
 - A read-back is the destination's own account of what it published. The clauses that compare it with what was committed certify a destination against that account; a probe that reads the store itself is the stronger check.
-- A connector can tell a certification from an engine's load: by the tables and pipelines certification names `certify_…`, the features it offers, and the calls it makes. A connector built to pass keeps the clauses while it is certified and may break them later. Certification finds the defects of a connector that does not hide them; it is no control against one that does. The engine's own limits, deadlines and confinement are.
+- A connector can tell a certification from an engine's load: by the tables and pipelines certification names `certify_…`, the read-back and acknowledged features it offers, and the calls it makes. A connector built to pass keeps the clauses while it is certified and may break them later. Certification finds the defects of a connector that does not hide them; it is no control against one that does. The engine's own limits, deadlines and confinement are.
