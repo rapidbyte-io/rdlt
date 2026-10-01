@@ -36,6 +36,7 @@ checks: locked
     cargo xtask deps
     cargo xtask codegen --check
     cargo xtask tools
+    cargo xtask shipped
     cargo machete
     cargo xtask deny
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
