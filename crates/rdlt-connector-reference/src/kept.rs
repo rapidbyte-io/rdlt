@@ -9,14 +9,23 @@
 mod tests;
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::io::{self, ErrorKind, Write as _};
+use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
 use parking_lot::Mutex;
 use rdlt_connector::PartitionId;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+
+use crate::limits::{KEEPER_BYTES, KEEPER_POSITIONS};
+use crate::rooted::{Dir, Limit};
+
+const LIMIT: Limit = Limit {
+    name: "keeper bytes",
+    bytes: KEEPER_BYTES,
+};
 
 /// Each partition's acknowledged position, by stream and partition.
 type Positions<P> = BTreeMap<(String, PartitionId), P>;
@@ -25,14 +34,21 @@ type Positions<P> = BTreeMap<(String, PartitionId), P>;
 #[derive(Debug)]
 pub(crate) struct Kept<P> {
     positions: Mutex<Positions<P>>,
-    path: Option<PathBuf>,
+    file: Option<KeptFile>,
+}
+
+/// Where a keeper's file is: its directory, opened once, and its name there.
+#[derive(Debug)]
+struct KeptFile {
+    dir: Dir,
+    name: OsString,
 }
 
 impl<P> Default for Kept<P> {
     fn default() -> Self {
         Self {
             positions: Mutex::default(),
-            path: None,
+            file: None,
         }
     }
 }
@@ -40,46 +56,76 @@ impl<P> Default for Kept<P> {
 impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     /// The keeper kept in the file at `path`: what the file holds, none where there is no file.
     ///
+    /// The file is a regular file in the directory `path` names it in: a link there is refused,
+    /// read or written, and so is a file larger than a keeper's.
+    ///
     /// # Errors
     ///
     /// A file that cannot be read, or holds no keeper, as one a disk damaged would.
-    pub(crate) fn at(path: &Path) -> std::io::Result<Self> {
-        let positions = match std::fs::read(path) {
+    pub(crate) fn at(path: &Path) -> io::Result<Self> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let dir = Dir::ambient(directory)?;
+        let positions = match dir.read(name, LIMIT) {
             Ok(bytes) => {
                 let listed: Vec<(String, PartitionId, P)> = serde_json::from_slice(&bytes)?;
+                if listed.len() > KEEPER_POSITIONS {
+                    return Err(io::Error::from(ErrorKind::InvalidData));
+                }
                 listed
                     .into_iter()
                     .map(|(stream, partition, position)| ((stream, partition), position))
                     .collect()
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) if error.kind() == ErrorKind::NotFound => BTreeMap::new(),
             Err(error) => return Err(error),
         };
+        // No other writer shares the file: every temporary of it is one a crash left.
+        dir.sweep_of(&name.to_string_lossy(), std::time::Duration::ZERO)?;
         Ok(Self {
             positions: Mutex::new(positions),
-            path: Some(path.to_owned()),
+            file: Some(KeptFile {
+                dir,
+                name: name.to_owned(),
+            }),
         })
     }
 
-    /// Acknowledges `position` of `partition` of `stream`, unless the keeper stands past it, and
-    /// writes the keeper to its file, whole, in place of what it held.
+    /// Acknowledges `position` of `partition` of `stream`, unless the keeper stands at or past
+    /// it, and writes the keeper it moved to its file, whole, in place of what it held.
     ///
     /// # Errors
     ///
-    /// The file cannot be written.
+    /// The file cannot be written, or the partition is one more than a keeper holds.
     pub(crate) fn advance(
         &self,
         stream: &str,
         partition: &PartitionId,
         position: P,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         let mut positions = self.positions.lock();
-        let standing = positions
-            .entry((stream.to_owned(), partition.clone()))
-            .or_insert(position);
-        *standing = (*standing).max(position);
-        match &self.path {
-            Some(path) => write(path, &positions),
+        let key = (stream.to_owned(), partition.clone());
+        let held = positions.len();
+        match positions.get_mut(&key) {
+            Some(standing) if *standing >= position => return Ok(()),
+            Some(standing) => *standing = position,
+            None if held >= KEEPER_POSITIONS => {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidInput,
+                    format!("a keeper holds at most {KEEPER_POSITIONS} positions"),
+                ));
+            }
+            None => {
+                positions.insert(key, position);
+            }
+        }
+        match &self.file {
+            Some(file) => write(file, &positions),
             None => Ok(()),
         }
     }
@@ -93,27 +139,18 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     }
 }
 
-/// Writes `positions` to `path` through a file beside it, renamed over it once durable and the
-/// rename made durable too, so a crash leaves the file as it was or as it is now, never torn.
-fn write<P: Serialize>(path: &Path, positions: &Positions<P>) -> std::io::Result<()> {
+/// Writes `positions` to `file` through a temporary beside it, created under a name nobody can
+/// guess and renamed over it once durable, the rename made durable too: a crash leaves the file
+/// as it was or as it is now, never torn.
+fn write<P: Serialize>(file: &KeptFile, positions: &Positions<P>) -> io::Result<()> {
     let listed: Vec<(&String, &PartitionId, &P)> = positions
         .iter()
         .map(|((stream, partition), position)| (stream, partition, position))
         .collect();
     let bytes = serde_json::to_vec(&listed)?;
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".writing");
-    let temporary = PathBuf::from(temporary);
-    let mut file = std::fs::File::create(&temporary)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)?;
-    // The rename outlives a power loss only once the directory holding it is synced.
-    let directory = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    std::fs::File::open(directory)?.sync_all()
+    let mut temporary = file.dir.temporary_of(&file.name.to_string_lossy())?;
+    temporary.file().write_all(&bytes)?;
+    temporary.replace(&file.name)
 }
 
 /// Keepers by name, for as long as the process runs.
@@ -139,7 +176,7 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Registry<P> {
     /// # Errors
     ///
     /// The file cannot be read, or holds no keeper.
-    pub(crate) fn at(&self, path: &Path) -> std::io::Result<Arc<Kept<P>>> {
+    pub(crate) fn at(&self, path: &Path) -> io::Result<Arc<Kept<P>>> {
         let name = format!("file:{}", path.display());
         let mut keepers = self.0.lock();
         if let Some(kept) = keepers.get(&name) {
