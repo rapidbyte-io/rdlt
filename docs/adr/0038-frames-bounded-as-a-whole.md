@@ -32,6 +32,11 @@ log.
   counts of data buffers each type's layout has, for every Arrow type, dictionaries and their
   values' frames included. A message with fewer or more of them than its schema needs is
   refused.
+  - A dictionary whose values are themselves a dictionary is no part of that: a field of the IPC
+    format has one dictionary, so no schema message describes it, and no receiver is sent one.
+    Arrow's writer would send a schema of its inner dictionary and then fail on the batch; the
+    encoder refuses the batch by name instead (`Problem::DictionaryOfDictionaries`). A dictionary
+    nested in a dictionary's struct or list values has a field of its own and decodes.
 - **Buffers are ordered, disjoint and padded.** Each starts at or after the end of the buffer before
   it, at a multiple of eight bytes, as the IPC format lays them out, within the body. Their
   total is then at most the body.

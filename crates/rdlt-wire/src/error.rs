@@ -127,6 +127,10 @@ pub enum Problem {
         /// The dictionary's id.
         id: i64,
     },
+    /// A dictionary's values are themselves a dictionary, which the IPC format cannot describe: a
+    /// field has one dictionary.
+    #[error("a dictionary's values are a dictionary")]
+    DictionaryOfDictionaries,
     /// The message is of a metadata version other than V5, which no end negotiates.
     #[error("the message is of metadata version {found}")]
     Version {
