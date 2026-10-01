@@ -12,6 +12,7 @@ mod rules;
 mod shipped;
 mod tools;
 mod unsafe_code;
+mod unwinding;
 mod workspaces;
 
 use std::path::PathBuf;

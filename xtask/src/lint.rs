@@ -1,5 +1,5 @@
 //! `cargo xtask lint`: runs the rules over every Rust file in the repository, and checks where
-//! `unsafe` code may be.
+//! `unsafe` code may be and which crates must unwind.
 
 #[cfg(test)]
 mod tests;
@@ -15,6 +15,7 @@ use crate::codegen::GENERATED;
 use crate::lexer::scan;
 use crate::rules::{self, FileRole, Finding, Severity};
 use crate::unsafe_code;
+use crate::unwinding::Unwinding;
 
 /// Build output, never scanned, relative to the repository root.
 const BUILD_OUTPUT: &str = "fuzz/target";
@@ -28,6 +29,7 @@ const SOURCE_ROOTS: &[&str] = &["crates", "fuzz", "xtask"];
 /// to every rule about `unsafe` code.
 pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> {
     let mut all = Vec::new();
+    let mut unwinding = Unwinding::default();
     for dir in SOURCE_ROOTS
         .iter()
         .map(|dir| root.join(dir))
@@ -45,7 +47,9 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
             let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
             let mut findings = Vec::new();
             if relative != Path::new(GENERATED) {
-                findings = rules::check(FileRole::of(&relative), &scan(&source));
+                let (role, scanned) = (FileRole::of(&relative), scan(&source));
+                unwinding.read(&relative, role, &scanned);
+                findings = rules::check(role, &scanned);
             }
             findings.extend(unsafe_code::check_file(&relative, &source));
             all.extend(
@@ -55,6 +59,8 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
             );
         }
     }
+    all.extend(unwinding.findings());
+    all.sort_by(|(left, _), (right, _)| left.cmp(right));
     Ok(all)
 }
 
