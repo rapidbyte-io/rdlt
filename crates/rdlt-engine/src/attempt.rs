@@ -287,7 +287,8 @@ fn spawn_partitions(
                 phases.reading.push(partitions.len());
             }
             let stop = job.stop.clone();
-            partitions.push(PartitionRun::new(index, id, stream.on_demand, stop));
+            let tracked = PartitionRun::new(index, id, stream.on_demand, stop);
+            partitions.push(tracked.starting(job.cursor.as_ref()));
             scope.spawn(partition::run(job, context.clone()));
         }
         streams.push(stream.stream);

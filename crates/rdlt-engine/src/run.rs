@@ -192,7 +192,8 @@ impl Ledger {
         }
     }
 
-    /// Records `attempt`, which `failed` or not, and whether it committed anything.
+    /// Records `attempt`, which `failed` or not, and whether a commit of it moved the load on: a
+    /// commit that left every partition where it stood, and published nothing, is no progress.
     ///
     /// A failed attempt's commit in flight is credited once a later attempt opened and found it
     /// landed, to the attempt whose load its receipt names. An attempt that never opened read
@@ -208,7 +209,7 @@ impl Ledger {
         if failed && let Some(pending) = log.pending.take() {
             self.unresolved = Some(pending);
         }
-        let progressed = log.committed.commits > 0;
+        let progressed = log.progressed;
         self.report.absorb(attempt);
         progressed
     }

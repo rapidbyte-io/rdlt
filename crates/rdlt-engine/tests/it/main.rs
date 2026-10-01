@@ -6,6 +6,7 @@
     reason = "tests drive tokio's paused clock directly"
 )]
 
+mod acknowledging;
 mod change_limits;
 mod change_tables;
 mod changes;

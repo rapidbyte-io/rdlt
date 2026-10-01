@@ -101,6 +101,9 @@ pub(crate) struct PartitionRun {
     answered: u64,
     /// Stops this partition alone.
     stop: CancellationToken,
+    /// Where the destination holds the partition: the cursor its read started from, then the
+    /// position of its last commit that landed.
+    stands: Option<rdlt_connector::PartitionState>,
 }
 
 impl PartitionRun {
@@ -118,7 +121,14 @@ impl PartitionRun {
             ended: false,
             answered: 0,
             stop,
+            stands: None,
         }
+    }
+
+    /// The partition, whose read starts from `cursor`, where the destination holds it.
+    pub(crate) fn starting(mut self, cursor: Option<&rdlt_connector::Cursor>) -> Self {
+        self.stands = cursor.cloned().map(rdlt_connector::PartitionState::Cursor);
+        self
     }
 
     /// Whether barrier `barrier` is waiting for this partition.
@@ -371,6 +381,8 @@ impl Coordinator {
         if collected.segments.is_empty() && delta.is_empty() {
             return Ok(());
         }
+        let quiet = begun.is_empty() && completing.is_empty() && tables.revisions.is_empty();
+        let moved = self.moved(&collected, quiet);
         let streams = self.stream_reports(collected.streams, &completing);
         // The commit records its own receipt, so an attempt that loses the response can still be
         // credited with it once a later attempt reads it back.
@@ -400,7 +412,7 @@ impl Coordinator {
             // sealed it: the commit's frame, queued now, follows them all.
             log.commit(collected.sealed, begun, &meta).await?;
             crash_point!("engine.ack.early");
-            self.acknowledge(&collected.positions, false).await?;
+            self.acknowledge(&moved.advanced, false).await?;
         }
         // The commit completing a stream publishes it: a replace swaps its generation in.
         crash_point!("engine.complete.before", !completing.is_empty());
@@ -409,8 +421,9 @@ impl Coordinator {
         self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing);
         self.record_positions(&collected.positions);
+        self.landed(&collected.positions, moved.progressed);
         crash_point!("engine.ack.before");
-        self.acknowledge(&collected.positions, true).await?;
+        self.acknowledge(&moved.advanced, true).await?;
         crash_point!("engine.ack.after");
         Ok(())
     }
