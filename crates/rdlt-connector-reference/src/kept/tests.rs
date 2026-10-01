@@ -90,7 +90,6 @@ fn an_advance_makes_its_rename_durable_in_the_keeper_s_directory() {
     assert_eq!(synced.last(), Some(&dir.path().to_owned()), "{synced:?}");
 }
 
-#[cfg(unix)]
 #[test]
 fn a_keeper_whose_directory_cannot_be_written_is_refused_its_advance() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -108,7 +107,6 @@ fn a_keeper_whose_directory_cannot_be_written_is_refused_its_advance() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn a_link_at_a_temporary_name_or_at_the_keeper_is_never_written_through() {
     let dir = tempfile::tempdir().unwrap();
@@ -141,7 +139,6 @@ fn a_link_at_a_temporary_name_or_at_the_keeper_is_never_written_through() {
     assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
 }
 
-#[cfg(unix)]
 #[test]
 fn a_keeper_file_is_private() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -153,7 +150,6 @@ fn a_keeper_file_is_private() {
     assert_eq!(mode, 0o600);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_keeper_file_that_is_too_large_or_no_regular_file_is_refused_unread() {
     let dir = tempfile::tempdir().unwrap();
@@ -220,7 +216,6 @@ fn a_keeper_holds_a_bounded_number_of_positions() {
     assert_eq!(kept.position("orders", &partition("p0")), Some(2));
 }
 
-#[cfg(unix)]
 #[test]
 fn an_acknowledgement_that_moves_nothing_writes_nothing() {
     use std::os::unix::fs::MetadataExt as _;

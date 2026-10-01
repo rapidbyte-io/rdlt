@@ -1,8 +1,6 @@
 //! A files commit that fails between writing its data and recording it in its manifest leaves
 //! the table as it was, and its retry publishes once.
 
-#![cfg(unix)]
-
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
