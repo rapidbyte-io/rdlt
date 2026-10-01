@@ -5,6 +5,7 @@ pub(crate) mod destinations;
 pub(crate) mod faults;
 pub(crate) mod listening;
 pub(crate) mod logs;
+pub(crate) mod making;
 pub(crate) mod script;
 pub(crate) mod targets;
 

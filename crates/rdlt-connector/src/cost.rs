@@ -20,6 +20,7 @@ use arrow_schema::DataType;
 pub use held::Allocations;
 pub use shape::admit;
 
+use crate::sink::Push;
 use crate::types::TypeKind;
 use expanded::Meter;
 
@@ -44,27 +45,35 @@ impl Cost {
 ///
 /// Nested values always cost their JSON text, field names included: whether a table stores them
 /// as they are is its stream's choice, made after a push is admitted.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rendering {
-    native: BTreeSet<TypeKind>,
+    /// The kinds stored as they are; `None` where every kind is.
+    native: Option<BTreeSet<TypeKind>>,
 }
 
 impl Rendering {
     /// A destination storing values of the kinds `native` as they are, and any other as text.
     pub fn new(native: impl IntoIterator<Item = TypeKind>) -> Self {
         Self {
-            native: native.into_iter().collect(),
+            native: Some(native.into_iter().collect()),
         }
     }
 
     /// A destination storing every value as text: what costs most.
     pub fn text() -> Self {
-        Self::default()
+        Self::new([])
+    }
+
+    /// Whoever holds every value outside a nested one as it is: what decoding alone costs.
+    pub fn native() -> Self {
+        Self { native: None }
     }
 
     /// Whether a value of `kind` outside any nested value is rendered as text.
     fn renders(&self, kind: TypeKind) -> bool {
-        !self.native.contains(&kind)
+        self.native
+            .as_ref()
+            .is_some_and(|native| !native.contains(&kind))
     }
 
     /// What `batch` costs, its expansion measured up to `limit`.
@@ -75,6 +84,16 @@ impl Rendering {
         Cost {
             held: Allocations::of(batch).bytes(),
             expanded: self.expanded(batch, 0..batch.num_rows(), limit),
+        }
+    }
+
+    /// The bytes whoever holds `push` charges for it, its expansion measured up to `limit`: a
+    /// batch the larger of what it keeps alive and what it becomes, and JSON its text, whose
+    /// records are charged as they are parsed.
+    pub fn charge(&self, push: &Push, limit: u64) -> u64 {
+        match push {
+            Push::Arrow(batch) | Push::Changes(batch) => self.cost(batch, limit).charge(),
+            Push::Json(text) => widths::count(text.len()),
         }
     }
 

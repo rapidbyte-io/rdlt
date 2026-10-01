@@ -7,6 +7,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
 use parking_lot::Mutex;
+use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ColumnPath, Permit, StreamName};
 
 use super::{Held, OpenSegment, PartitionContext, PartitionJob, queue, schema_of, stamp, windows};
@@ -254,7 +255,12 @@ pub(super) fn judge(
     budget: &MemoryBudget,
     units: Vec<Vec<Part>>,
 ) -> Result<Rounding, Error> {
-    let bytes = units.iter().flatten().map(part_bytes).sum();
+    let mut allocations = Allocations::default();
+    let bytes = units
+        .iter()
+        .flatten()
+        .map(|part| part_growth(part, &mut allocations))
+        .fold(0, u64::saturating_add);
     let _held = budget.charge(bytes);
     let mut rounding = Rounding::new();
     for part in units.into_iter().flatten() {
@@ -317,34 +323,41 @@ pub(super) fn share_growth(
     prepared: &[(usize, Prepared)],
     mut held: Held,
 ) -> Arc<Mutex<Vec<Permit>>> {
-    let bytes: u64 = prepared
-        .iter()
-        .map(|(_, prepared)| super::slices::held_bytes(&prepared.batch))
-        .sum();
-    held.permits
-        .push(Box::new(budget.charge(bytes.saturating_sub(held.bytes))));
+    let fresh = {
+        let mut allocations = held.allocations.lock();
+        prepared
+            .iter()
+            .map(|(_, prepared)| prepared.growth(&mut allocations))
+            .fold(0, u64::saturating_add)
+    };
+    held.grow(budget, fresh);
     Arc::new(Mutex::new(held.permits))
 }
 
-/// The memory `part`'s arrays take.
-pub(super) fn part_bytes(part: &Part) -> u64 {
+/// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `held`
+/// holds, which then holds them too.
+pub(super) fn part_growth(part: &Part, held: &mut Allocations) -> u64 {
     let lineage = &part.lineage;
     let mut arrays = vec![&lineage.id, &lineage.root_row];
     if let Some(parent) = &lineage.parent {
         arrays.extend([&parent.id, &parent.root, &parent.idx, &parent.row]);
     }
-    let arrays = arrays
+    let batch = held.add(&part.batch);
+    arrays
         .into_iter()
-        .map(|array| array.get_array_memory_size())
-        .sum::<usize>();
-    super::slices::held_bytes(&part.batch).saturating_add(u64::try_from(arrays).unwrap_or(u64::MAX))
+        .map(|array| held.add_array(array.as_ref()))
+        .fold(batch, u64::saturating_add)
 }
 
 /// `held` with the growth of `parts`, a unit's normalized parts, beyond it charged.
 pub(super) fn charge_parts(budget: &MemoryBudget, parts: &[Part], mut held: Held) -> Held {
-    let bytes: u64 = parts.iter().map(part_bytes).sum();
-    held.permits
-        .push(Box::new(budget.charge(bytes.saturating_sub(held.bytes))));
-    held.bytes = held.bytes.max(bytes);
+    let fresh = {
+        let mut allocations = held.allocations.lock();
+        parts
+            .iter()
+            .map(|part| part_growth(part, &mut allocations))
+            .fold(0, u64::saturating_add)
+    };
+    held.grow(budget, fresh);
     held
 }

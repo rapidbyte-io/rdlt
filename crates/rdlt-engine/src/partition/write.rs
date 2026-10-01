@@ -8,8 +8,12 @@ mod tests;
 
 use std::collections::BTreeSet;
 
+use std::sync::Arc;
+
 use arrow_array::{BooleanArray, RecordBatch};
+use parking_lot::Mutex;
 use rdlt_connector::ChangeOp;
+use rdlt_connector::cost::{Allocations, Rendering};
 use rdlt_connector::{ColumnPath, Permit, TableSchema};
 
 use super::coalesce::{Flushed, Unit};
@@ -32,10 +36,7 @@ pub(super) async fn write_flushed(
     let permits = flushed.permits;
     let units = match flushed.unit {
         Unit::Arrow(batches) => {
-            let held = Held {
-                permits,
-                bytes: flushed.bytes,
-            };
+            let held = Held::of(permits, flushed.bytes, &batches);
             vec![(batches, held)]
         }
         Unit::Json(pushes) => {
@@ -44,7 +45,7 @@ pub(super) async fn write_flushed(
                 .await
                 .map_err(|error| shred_failed(job, &error))?;
             drop(pushes);
-            let held = hold(&context.budget, &batches, permits);
+            let held = hold(&context.budget, &context.rendering, &batches, permits);
             batches
                 .into_iter()
                 .zip(held)
@@ -68,28 +69,67 @@ fn shred_failed(job: &PartitionJob, error: &ShredError) -> Error {
     failed.with_code(error.code()).with_stream(&job.stream)
 }
 
-/// Reservations holding each of `batches`' bytes, charged before `permits`, which held the pushes
-/// they were shredded from, are released: the budget always accounts for one or the other.
-fn hold(budget: &MemoryBudget, batches: &[RecordBatch], permits: Vec<Permit>) -> Vec<Held> {
+/// What holds each of `batches`, charged as `rendering` costs it before `permits`, which held
+/// the pushes they were shredded from, are released: the budget always accounts for one or the
+/// other.
+fn hold(
+    budget: &MemoryBudget,
+    rendering: &Rendering,
+    batches: &[RecordBatch],
+    permits: Vec<Permit>,
+) -> Vec<Held> {
     let held = batches
         .iter()
         .map(|batch| {
-            let bytes = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
+            let bytes = rendering.cost(batch, budget.capacity()).charge();
             let permit: Permit = Box::new(budget.charge(bytes));
-            Held {
-                permits: vec![permit],
-                bytes,
-            }
+            Held::of(vec![permit], bytes, std::slice::from_ref(batch))
         })
         .collect();
     drop(permits);
     held
 }
 
-/// Permits holding `bytes` of a batch's memory.
+/// What holds a unit's memory: the permits charged for it and the allocations they cover.
 struct Held {
     permits: Vec<Permit>,
-    bytes: u64,
+    /// Bytes the permits hold beyond what the allocations take: what the unit may still grow by
+    /// before more is charged.
+    spare: u64,
+    /// The allocations charged so far, the unit's own first; the pieces of a unit share them,
+    /// so each is charged once however many pieces keep it alive.
+    allocations: Arc<Mutex<Allocations>>,
+}
+
+impl Held {
+    /// What holds `batches`, a unit `permits` hold `bytes` for.
+    fn of(permits: Vec<Permit>, bytes: u64, batches: &[RecordBatch]) -> Self {
+        let mut allocations = Allocations::default();
+        for batch in batches {
+            allocations.add(batch);
+        }
+        Self {
+            permits,
+            spare: bytes.saturating_sub(allocations.bytes()),
+            allocations: Arc::new(Mutex::new(allocations)),
+        }
+    }
+
+    /// What holds another piece of the same unit: no permits of its own, the unit's allocations.
+    fn piece(&self) -> Self {
+        Self {
+            permits: Vec::new(),
+            spare: 0,
+            allocations: Arc::clone(&self.allocations),
+        }
+    }
+
+    /// Charges `budget` the `fresh` bytes the unit grew by, beyond what its permits spare.
+    fn grow(&mut self, budget: &MemoryBudget, fresh: u64) {
+        self.permits
+            .push(Box::new(budget.charge(fresh.saturating_sub(self.spare))));
+        self.spare = self.spare.saturating_sub(fresh);
+    }
 }
 
 /// Lowers `units`, each some batches of one schema and the memory they hold, into the partition's
@@ -107,7 +147,9 @@ async fn write(
     units: Vec<(Vec<RecordBatch>, Held)>,
 ) -> Result<(), Error> {
     // A few bytes of encoded columns may decode to far more, so large units lower in slices.
-    let units = slices::sliced(units, slices::slice_bytes(&context.budget));
+    let slice = slices::slice_bytes(&context.budget);
+    let units = slices::sliced(units, &context.rendering, slice, context.budget.capacity())
+        .map_err(|row| row_too_large(job, &row))?;
     if let Some(shape) = context.tables.shape(job.table) {
         return normalized::write_normalized(job, context, open, units, &shape).await;
     }
@@ -240,16 +282,45 @@ fn windows<T>(items: Vec<T>) -> Vec<Vec<T>> {
     windows
 }
 
-/// `held` with the growth of `prepared` beyond it charged: the permits then hold the lowered
-/// batch's bytes, or the shredded batch's where lowering shrank it.
+/// `held` with the growth of `prepared` beyond it charged: the permits then hold the allocations
+/// the lowered batch keeps alive that the unit did not hold already.
 ///
-/// A lowered piece of a larger batch may share its buffers, so it is charged for its own rows.
+/// A lowered piece of a larger batch may share the batch's buffers, which the unit's permits
+/// hold until its last piece is written.
 fn charge_growth(budget: &MemoryBudget, prepared: &Prepared, mut held: Held) -> Held {
-    let bytes = slices::held_bytes(&prepared.batch);
-    held.permits
-        .push(Box::new(budget.charge(bytes.saturating_sub(held.bytes))));
-    held.bytes = held.bytes.max(bytes);
+    let fresh = prepared.growth(&mut held.allocations.lock());
+    held.grow(budget, fresh);
     held
+}
+
+/// The error for a row that alone expands beyond the whole budget: no slice of it can be lowered
+/// within the budget.
+fn row_too_large(job: &PartitionJob, row: &slices::RowTooLarge) -> Error {
+    Error::new(
+        ErrorKind::Source,
+        format!(
+            "stream {}: one row expands to more than {} bytes, beyond the memory budget of {}",
+            job.stream, row.expanded, row.budget
+        ),
+    )
+    .with_code("row_exceeds_budget")
+    .with_stream(&job.stream)
+}
+
+/// The bytes the rows of `batch` take, as reports and the commit policy count what was written:
+/// a slice counts its own rows, whatever it keeps alive, which is the budget's to charge.
+fn written_bytes(batch: &RecordBatch) -> u64 {
+    batch
+        .columns()
+        .iter()
+        .map(|column| {
+            let bytes = column
+                .to_data()
+                .get_slice_memory_size()
+                .unwrap_or_else(|_| column.get_array_memory_size());
+            u64::try_from(bytes).unwrap_or(u64::MAX)
+        })
+        .fold(0, u64::saturating_add)
 }
 
 /// `parts`, one batch once concatenated, as `plan` lowers it, with a change stream's `changes`.
@@ -344,7 +415,7 @@ async fn queue(
     if rows == 0 {
         return Ok(());
     }
-    let bytes = slices::held_bytes(&prepared.batch);
+    let bytes = written_bytes(&prepared.batch);
     if let Some(log) = &context.wal {
         // Queued for the log before the partition can seal the segment, so the frame of the
         // commit that takes the segment, queued after the seal, follows this batch's.

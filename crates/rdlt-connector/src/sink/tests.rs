@@ -80,7 +80,8 @@ async fn a_checkpoint_answering_a_barrier_clears_it() {
     assert_eq!(sink.pending_barrier(), Some(3));
 }
 
-/// Admits pushes once opened, recording the bytes each asked for.
+/// Admits pushes and checkpoints once opened, recording the bytes each holds, and charges what a
+/// read reserves at once.
 #[derive(Default)]
 struct Gate {
     open: Notify,
@@ -88,12 +89,23 @@ struct Gate {
 }
 
 impl Admission for Gate {
-    fn admit(&self, bytes: u64) -> BoxFuture<'_, Permit> {
+    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>> {
         Box::pin(async move {
+            let bytes = match event {
+                SourceEvent::Push(Push::Json(json)) => json.len(),
+                SourceEvent::Checkpoint { cursor, .. } => cursor.bytes().len(),
+                _ => return None,
+            };
+            let bytes = u64::try_from(bytes).unwrap();
             self.asked.lock().unwrap().push(bytes);
             self.open.notified().await;
-            Box::new(bytes) as Permit
+            Some(Box::new(bytes) as Permit)
         })
+    }
+
+    fn charge(&self, bytes: u64) -> Permit {
+        self.asked.lock().unwrap().push(bytes);
+        Box::new(bytes)
     }
 }
 
@@ -125,20 +137,56 @@ async fn an_admitted_push_waits_for_admission_and_carries_its_permit() {
     );
 }
 
-#[tokio::test]
-async fn events_other_than_pushes_need_no_admission() {
+#[tokio::test(start_paused = true)]
+async fn a_checkpoint_waits_for_admission_and_carries_its_permit() {
     let gate = Arc::new(Gate::default());
     let (mut sink, mut feed) =
         admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
+    let cursor = Cursor::new(1, Bytes::from_static(b"12345")).unwrap();
     let checkpoint = SourceEvent::Checkpoint {
-        cursor: Cursor::encode(1, &1u32).unwrap(),
+        cursor,
         answers: None,
     };
-    sink.send(checkpoint.clone()).await.unwrap();
+    let sent = checkpoint.clone();
+    let sending = tokio::spawn(async move { sink.send(sent).await });
+    tokio::task::yield_now().await;
+    assert_eq!(*gate.asked.lock().unwrap(), [5]);
+    assert!(!sending.is_finished());
+    gate.open.notify_one();
+    sending.await.unwrap().unwrap();
     let (event, permit) = feed.recv_admitted().await.unwrap();
     assert_eq!(event, checkpoint);
-    assert!(permit.is_none());
+    assert_eq!(
+        permit
+            .and_then(|permit| permit.downcast::<u64>().ok())
+            .map(|bytes| *bytes),
+        Some(5)
+    );
+}
+
+#[tokio::test]
+async fn an_event_its_admission_charges_nothing_enters_without_a_permit() {
+    let gate = Arc::new(Gate::default());
+    let (mut sink, mut feed) =
+        admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
+    for event in [SourceEvent::Replan, SourceEvent::Behind { records: 7 }] {
+        sink.send(event.clone()).await.unwrap();
+        let (received, permit) = feed.recv_admitted().await.unwrap();
+        assert_eq!(received, event);
+        assert!(permit.is_none());
+    }
     assert!(gate.asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_sink_reserves_bytes_from_whoever_admits_its_events() {
+    let gate = Arc::new(Gate::default());
+    let (sink, _feed) = admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
+    let permit = sink.reserve(64).unwrap();
+    assert_eq!(permit.downcast::<u64>().ok().map(|bytes| *bytes), Some(64));
+    assert_eq!(*gate.asked.lock().unwrap(), [64]);
+    let (plain, _feed) = partition_channel(NonZeroUsize::new(4).unwrap());
+    assert!(plain.reserve(64).is_none());
 }
 
 #[tokio::test(start_paused = true)]

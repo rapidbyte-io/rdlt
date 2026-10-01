@@ -1,6 +1,5 @@
 //! The channel between one partition's read and the engine.
 
-mod decoded;
 #[cfg(test)]
 mod tests;
 
@@ -13,8 +12,6 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
-
-pub use decoded::{decoded_bytes, decoded_rows};
 
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, Result};
@@ -29,18 +26,6 @@ pub enum Push {
     Json(Bytes),
     /// A change batch; see [`validate_change_batch`](crate::validate_change_batch).
     Changes(RecordBatch),
-}
-
-impl Push {
-    /// The push's size in memory, as it is charged against a budget: a batch's once its encoded
-    /// columns are decoded, as the engine decodes them.
-    pub fn bytes(&self) -> u64 {
-        let bytes = match self {
-            Self::Arrow(batch) | Self::Changes(batch) => return decoded_bytes(batch),
-            Self::Json(json) => json.len(),
-        };
-        u64::try_from(bytes).unwrap_or(u64::MAX)
-    }
 }
 
 /// The severity of a connector log line.
@@ -91,14 +76,18 @@ pub enum SourceEvent {
     },
 }
 
-/// Holds a push's bytes against a memory budget until it is dropped.
+/// Holds bytes against a memory budget until it is dropped.
 pub type Permit = Box<dyn Any + Send>;
 
-/// Admits pushes into a partition channel by their size in memory, so the data a source has
-/// handed over stays within the budget of whoever reads the channel.
+/// Admits events into a partition channel by what they hold, so nothing a source has handed
+/// over waits outside the budget of whoever reads the channel.
 pub trait Admission: Send + Sync {
-    /// Waits until `bytes` more may enter, and returns what holds them.
-    fn admit(&self, bytes: u64) -> BoxFuture<'_, Permit>;
+    /// Waits until what `event` holds may enter, and returns what holds it; `None` for an event
+    /// that holds nothing to charge.
+    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>>;
+
+    /// Charges `bytes` a read keeps beside its events, at once and beyond the budget if need be.
+    fn charge(&self, bytes: u64) -> Permit;
 }
 
 /// Creates the two ends of one partition's channel, buffering up to `capacity` events.
@@ -106,8 +95,8 @@ pub fn partition_channel(capacity: NonZeroUsize) -> (PartitionSink, PartitionFee
     channel(capacity, None)
 }
 
-/// Creates a partition channel whose pushes each wait for `admission` of their bytes before they
-/// enter it; the feed hands every push over with its [`Permit`].
+/// Creates a partition channel whose events each wait for `admission` of what they hold before
+/// they enter it; the feed hands every event over with its [`Permit`].
 pub fn admitted_partition_channel(
     capacity: NonZeroUsize,
     admission: Arc<dyn Admission>,
@@ -190,14 +179,14 @@ impl PartitionSink {
             }
             self.answered = self.answered.max(*barrier);
         }
-        let permit = match (&self.admission, &event) {
-            (Some(admission), SourceEvent::Push(push)) => Some(tokio::select! {
+        let permit = match &self.admission {
+            Some(admission) => tokio::select! {
                 biased;
                 // A stop request wins over an admission that could still arrive.
                 () = self.stop.cancelled() => return Err(ConnectorError::stopped()),
-                permit = admission.admit(push.bytes()) => permit,
-            }),
-            _ => None,
+                permit = admission.admit(&event) => permit,
+            },
+            None => None,
         };
         tokio::select! {
             biased;
@@ -231,6 +220,16 @@ impl PartitionSink {
         }
     }
 
+    /// Charges `bytes` the read keeps beside its events, as a decoder's dictionaries, to whoever
+    /// admits the channel's events.
+    ///
+    /// The bytes are held until the permit is dropped; a channel nothing admits returns `None`.
+    pub fn reserve(&self, bytes: u64) -> Option<Permit> {
+        self.admission
+            .as_ref()
+            .map(|admission| admission.charge(bytes))
+    }
+
     /// The newest barrier no checkpoint has answered yet.
     pub fn pending_barrier(&self) -> Option<u64> {
         let requested = *self.barrier.borrow();
@@ -262,7 +261,7 @@ impl PartitionFeed {
         self.recv_admitted().await.map(|(event, _)| event)
     }
 
-    /// The next event with the permit that admitted it, for a push on an admitted channel.
+    /// The next event with the permit that admitted it, for an event an admitted channel charged.
     pub async fn recv_admitted(&mut self) -> Option<(SourceEvent, Option<Permit>)> {
         self.events.recv().await
     }

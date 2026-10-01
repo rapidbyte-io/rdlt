@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::json;
 use crate::catalog::StreamSpec;
+use crate::cost::Rendering;
 use crate::cursor::Cursor;
 use crate::sink::{Push, SourceEvent, partition_channel};
 use crate::source::{Partition, ReadRequest, Source};
@@ -41,8 +42,10 @@ impl Budget {
             Push::Arrow(batch) | Push::Changes(batch) => batch.num_rows(),
             Push::Json(text) => json::counted(text).await?,
         };
-        let bytes = usize::try_from(push.bytes()).unwrap_or(usize::MAX);
-        self.charge(bytes, rows)
+        // As the engine charges a push, for what holds each value as it is.
+        let limit = u64::try_from(HELD_BYTES).unwrap_or(u64::MAX);
+        let bytes = Rendering::native().charge(push, limit);
+        self.charge(usize::try_from(bytes).unwrap_or(usize::MAX), rows)
     }
 
     /// Charges a checkpoint's cursor the clause holds.

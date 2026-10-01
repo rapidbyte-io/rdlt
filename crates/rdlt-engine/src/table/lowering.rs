@@ -7,6 +7,7 @@ mod changes;
 mod differential;
 mod history;
 mod merge;
+mod prepared;
 #[cfg(test)]
 mod reference;
 
@@ -30,6 +31,7 @@ use crate::error::Error;
 use crate::normalize::Lineage;
 pub(crate) use changes::ChangeRows;
 use merge::{check_key, positions, sequence};
+pub(crate) use prepared::Prepared;
 
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
@@ -43,18 +45,6 @@ pub(crate) struct Stamp {
     /// The batch's segment, and the position of its first row among the rows written to it.
     pub(crate) segment: SegmentId,
     pub(crate) first_row: u64,
-}
-
-/// A batch ready for its table, and what the schema policy discarded from it.
-#[derive(Debug)]
-pub(crate) struct Prepared {
-    pub(crate) batch: RecordBatch,
-    /// The view the batch was lowered for, which names its schema version.
-    pub(crate) view: Arc<TableView>,
-    /// Rows dropped because they carried a discarded change.
-    pub(crate) discarded_rows: u64,
-    /// Values nulled because they carried a discarded change.
-    pub(crate) discarded_values: u64,
 }
 
 /// Where one of the view's columns takes its values from.
