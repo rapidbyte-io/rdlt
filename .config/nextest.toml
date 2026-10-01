@@ -64,3 +64,9 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 [[profile.mutants.overrides]]
 filter = "package(rdlt-connector-reference)"
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+# The engine's tests of the files destinations' growth run over a hundred runs against real files,
+# each syncing them: three seconds alone, and as the reference connectors' tests beside others.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-engine) & test(/keeps_few_files_however_many_commits_append$/)"
+slow-timeout = { period = "30s", terminate-after = 2 }

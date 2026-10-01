@@ -274,7 +274,8 @@ fn publish_table(
         (Some(generation), _) => {
             let filling = table.generations.entry(*generation).or_default();
             filling.extend(listed);
-            compact(location, name, Some(*generation), filling, meta, created);
+            let (generation, added) = (Some(*generation), files.len());
+            compact(location, name, generation, filling, added, meta, created);
         }
         (None, Some(key)) => {
             let root = key.root.as_ref().map(|root| {
@@ -295,7 +296,8 @@ fn publish_table(
         }
         (None, None) => {
             table.files.extend(listed);
-            compact(location, name, None, &mut table.files, meta, created);
+            let added = files.len();
+            compact(location, name, None, &mut table.files, added, meta, created);
         }
     }
     Ok(())

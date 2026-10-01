@@ -407,44 +407,104 @@ pub(crate) async fn loads_streams_named_like_its_own_tables(target: Target) {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_files_destinations_keep_few_files_however_many_commits_append() {
-    each([Target::Jsonl, Target::Arrow], keeps_few_files).await;
+async fn the_json_lines_destination_keeps_few_files_however_many_commits_append() {
+    keeps_few_files(Target::Jsonl).await;
 }
 
-/// One partition appended by hundreds of runs, each a session committing a few rows: the
-/// batches the engine writes, each with the dictionary columns of its load, are merged as they
-/// are published, so the table's files stay few and hold every row once, in the order it was
+#[tokio::test(start_paused = true)]
+async fn the_arrow_destination_keeps_few_files_however_many_commits_append() {
+    keeps_few_files(Target::Arrow).await;
+}
+
+/// The runs each steady source of [`keeps_few_files`] is read by.
+const STEADY_RUNS: u64 = 32;
+
+/// One partition appended by run after run, each a session committing what the source grew by,
+/// for sources of each steady shape: the batches the engine writes, each with the dictionary
+/// columns of its load, are merged as they are published, so the table's files stay few, no
+/// merge writes the table again and again, and every row is there once, in the order it was
 /// read.
 async fn keeps_few_files(target: Target) {
-    let name = target.name("few_files");
-    let (script, source) = Script::new(vec![ScriptStream::new("events", 1, 3, 3)])
+    // Rows a run, pushed in batches of eight: less than a batch, one batch, a batch and its
+    // remainder, and batches and their remainder.
+    let mut failures = Vec::new();
+    for rows in [3, 8, 9, 20] {
+        let store = format!("few_files_{rows}");
+        let written = steadily_appended(target, &store, rows).await;
+        let files = target.data_files(&store);
+        // Files that at least halve in rows number at most the logarithm of the rows, and one.
+        let most = usize::try_from((rows * STEADY_RUNS).ilog2()).expect("a logarithm fits") + 1;
+        if files.len() > most {
+            failures.push(format!("{rows} rows a run: {} files", files.len()));
+        }
+        // A row is written again only into a file half as large again as the file it was in,
+        // so a table is written by merges at most the logarithm of its runs times over, and
+        // not once a run, as a rule that merges everything does.
+        let kept: u64 = files.iter().map(|(_, bytes)| bytes).sum();
+        let often = u64::from(STEADY_RUNS.ilog2()) + 2;
+        if written > often * kept {
+            failures.push(format!(
+                "{rows} rows a run: merges wrote {written} of {kept}"
+            ));
+        }
+        let expected = ids(1, rows * STEADY_RUNS);
+        if read_in_order(target, &store) != expected {
+            failures.push(format!("{rows} rows a run: other rows than were read"));
+        }
+    }
+    assert!(failures.is_empty(), "{target:?}: {failures:?}");
+}
+
+/// Reads a source that grows by `rows` rows a run into `store`, run after run; the bytes of
+/// every file a merge wrote.
+async fn steadily_appended(target: Target, store: &str, rows: u64) -> u64 {
+    let name = target.name(store);
+    let (script, source) = Script::new(vec![ScriptStream::new("events", 1, rows, 8)])
         .connect(&name)
         .await;
     let plan = pipeline("few-files", [stream("events").read(ReadMode::Incremental)]);
-    let engine = engine(commit_every(1));
+    let engine = engine(commit_every(1000));
     let mut source = Some(source);
-    let runs = 200;
-    for run in 0..runs {
+    let (mut seen, mut written) = (Vec::new(), 0);
+    for run in 0..STEADY_RUNS {
         let source = match source.take() {
             Some(source) => source,
             None => reconnect(&name).await,
         };
         let outcome = engine
-            .run(plan.clone(), source, target.destination("few_files").await)
+            .run(plan.clone(), source, target.destination(store).await)
             .await;
         assert_eq!(
             outcome.report.status,
             RunStatus::Succeeded,
-            "{target:?} {run}"
+            "{target:?} {rows} {run}"
         );
-        script.streams[0].grow(3);
+        script.streams[0].grow(rows);
+        let files = target.data_files(store);
+        written += files
+            .iter()
+            .filter(|(path, _)| {
+                path.components()
+                    .any(|part| part.as_os_str() == "compacted")
+            })
+            .filter(|(path, _)| !seen.contains(path))
+            .map(|(_, bytes)| bytes)
+            .sum::<u64>();
+        seen = files.into_iter().map(|(path, _)| path).collect();
     }
-    let files = target.data_files("few_files");
-    assert!(files <= 16, "{target:?}: {files} files");
-    let read: Vec<i64> = target
-        .published("few_files", "events")
+    written
+}
+
+/// The ids `store` publishes for the table, in the order its files hold them; every other
+/// column, the load's dictionary columns among them, holds a value in every row.
+fn read_in_order(target: Target, store: &str) -> Vec<i64> {
+    target
+        .published(store, "events")
         .iter()
         .flat_map(|batch| {
+            for column in batch.columns() {
+                assert_eq!(column.logical_null_count(), 0, "{target:?} {store}");
+            }
             let ids = batch.column_by_name("id").expect("an id column");
             let ids = ids
                 .as_any()
@@ -452,6 +512,5 @@ async fn keeps_few_files(target: Target) {
                 .expect("ids read back as Int64");
             ids.values().to_vec()
         })
-        .collect();
-    assert_eq!(read, ids(1, 3 * runs), "{target:?}");
+        .collect()
 }

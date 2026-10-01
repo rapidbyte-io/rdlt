@@ -3,13 +3,21 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use rdlt_connector::{CommitMeta, CommitSeq, GenerationId, SegmentSet};
 
-use super::{compact, keyed, tail};
+use super::{compact, keyed, runs};
 use crate::files::FileFormat;
 use crate::files::format::plain::plain;
 use crate::files::manifest::{self, Listed};
 use crate::files::session::Location;
 use crate::files::session::tests::location;
 use crate::limits::COMPACT_BYTES;
+
+mod growth;
+
+/// Where the files to merge start in `files` when a commit adds the last of them, if more than
+/// that file is to be merged.
+fn tail(location: &Location, files: &[Listed]) -> Option<usize> {
+    runs(location, files, 1).first().map(|run| run.start)
+}
 
 /// A list of files of `rows` rows and one byte each, named for `format`; none exists.
 fn listed(format: FileFormat, rows: &[u64]) -> Vec<Listed> {
@@ -136,6 +144,7 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
             "rows",
             generation,
             &mut files,
+            1,
             &meta(&location, seq),
             &mut created,
         );
@@ -161,6 +170,7 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
             "rows",
             generation,
             &mut again,
+            1,
             &meta(&location, seq),
             &mut created,
         );
@@ -202,6 +212,7 @@ fn a_merge_that_fails_leaves_the_list_and_nothing_it_made() {
                 "rows",
                 None,
                 &mut files,
+                1,
                 &meta(&location, seq),
                 &mut created,
             );
@@ -228,6 +239,7 @@ fn a_merge_that_fails_leaves_the_list_and_nothing_it_made() {
             "rows",
             None,
             &mut files,
+            1,
             &meta(&location, seq),
             &mut created,
         );
@@ -287,6 +299,7 @@ fn arrow_files_with_dictionaries_merge_as_the_values_they_stand_for() {
         "rows",
         None,
         &mut files,
+        1,
         &meta(&location, seq),
         &mut created,
     );
