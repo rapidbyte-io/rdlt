@@ -43,7 +43,8 @@ its data from the source again, so an object store backend is not built.
     what the load meant to;
   - a `closed` frame ends a log whose load stopped appending.
 - **Writer.** One task per load appends frames in the order they are sent, through a bounded
-  channel; each batch frame's bytes are charged to the memory budget until appended. A commit's
+  channel; each batch frame's bytes are charged to the memory budget until appended.
+  (ADR 0039 charges seal and commit frames too, and writes a state value as base64 text.) A commit's
   frame is appended, made durable, then answered, and the log moves to a new chunk; a chunk goes
   once every segment and commit in it has a receipt. Every chunk starts with the header and the
   schema frames its batches name, so it reads alone. After a failed append or sync every later

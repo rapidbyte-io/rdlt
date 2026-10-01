@@ -184,6 +184,24 @@ buffers are disjoint and long enough for its values, its values and the bytes it
 within the limits, and a schema is measured before it is built. A frame that is not is refused
 with a typed error, `limit_exceeded` or `malformed_frame`.
 
+## What the engine holds
+
+Whatever a connector sends is charged to the memory budget before the engine holds it, or bounded
+by a limit with a typed refusal (ADR 0039):
+
+- A push is charged the larger of what it keeps alive and what its rows become once decoded and
+  rendered. A row that alone expands beyond the whole budget is refused with
+  `row_exceeds_budget`.
+- A batch pushed in process meets the limits a frame meets on the wire: its nesting, its values,
+  the bytes its views name and the bytes it keeps alive.
+- A checkpoint's cursor is charged until its commit lands, and checkpoints that seal no rows keep
+  one cursor a partition. Signals are kept as state, not queued.
+- A decoder's dictionaries and what a served write stages between flushes have limits of their
+  own, `dictionary bytes` and `staged bytes`.
+
+How much one push may expand to in total is not bounded: it costs time and destination storage in
+proportion, within the budget's memory.
+
 ## Building rdlt
 
 rdlt turns a panic, of the Arrow library on a corrupt frame or of a connector's task, into a
