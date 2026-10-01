@@ -194,3 +194,42 @@ fn ended(
         guard = waited.unwrap_or_else(PoisonError::into_inner).0;
     }
 }
+
+/// Stops what this process spawned when it is dropped, a panic's unwinding included: what a
+/// host holds for as long as it runs, so that it leaves nothing it spawned however it ends.
+///
+/// A host that ends in order calls [`stop`](Self::stop), and learns what lingers. What ends a
+/// process without unwinding it, a signal nobody hears or an abort, drops nothing.
+#[derive(Debug)]
+#[must_use = "what it spawned is stopped when this is dropped"]
+pub struct StopsSpawned {
+    patience: Duration,
+}
+
+impl StopsSpawned {
+    /// What stops every connector this process spawned, as [`stop_spawned`] does within
+    /// `patience`, once it is dropped.
+    pub fn within(patience: Duration) -> Self {
+        Self { patience }
+    }
+
+    /// Stops every connector this process spawned now, as [`stop_spawned`] does.
+    ///
+    /// # Errors
+    ///
+    /// [`Lingering`], as [`stop_spawned`] answers it.
+    pub fn stop(self) -> Result<(), Lingering> {
+        let stopped = stop_spawned(self.patience);
+        std::mem::forget(self);
+        stopped
+    }
+}
+
+impl Drop for StopsSpawned {
+    fn drop(&mut self) {
+        // Dropped without being asked: nobody is left to tell what lingers but the log.
+        if let Err(lingering) = stop_spawned(self.patience) {
+            tracing::error!("{lingering}");
+        }
+    }
+}

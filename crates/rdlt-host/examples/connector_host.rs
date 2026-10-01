@@ -1,7 +1,10 @@
-//! A host of two spawned connectors that runs until it is killed or interrupted, for the tests
-//! of what a host that ends leaves running: `connector_host <connector binary>`.
+//! A host of two spawned connectors, for the tests of what a host that ends leaves running:
+//! `connector_host <connector binary> [mode]`.
 //!
-//! Interrupted or asked to terminate, it stops what it spawned before it exits, as a host does.
+//! - `wait`, or no mode: it runs until it is killed or hears a signal, and then stops what it spawned
+//!   before it exits, as a host does.
+//! - `leave`: it drops its connectors and returns, without waiting to see them stop.
+//! - `panic`: it panics on its main thread, and stops what it spawned as it unwinds.
 
 #![forbid(unsafe_code)]
 
@@ -10,38 +13,61 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use rdlt_connector::ConnectorId;
-use rdlt_host::{ConnectorRef, Local, Provider as _};
+use rdlt_host::{ConnectorRef, Local, Placed, Provider as _};
+
+/// How long what the host spawned has to stop.
+const STOPPING: Duration = Duration::from_secs(20);
+
+type Source = Placed<Box<dyn rdlt_connector::Source>>;
+
+/// Two connectors of `binary`, spawned.
+async fn connectors(binary: PathBuf) -> (Source, Source) {
+    let id = ConnectorId::parse("test.scripted").expect("a valid id");
+    let reference = ConnectorRef::new(id).path(binary);
+    let config = serde_json::json!({});
+    let local = Local::new()
+        .env_passthrough("LLVM_PROFILE_FILE")
+        .grace(Duration::from_millis(500));
+    let first = local.source(&reference, &config).await;
+    let second = local.source(&reference, &config).await;
+    (
+        first.expect("the first connector starts"),
+        second.expect("the second connector starts"),
+    )
+}
 
 fn main() {
+    let mut args = std::env::args().skip(1);
+    let binary = PathBuf::from(args.next().expect("the connector's binary"));
+    let mode = args.next().unwrap_or_else(|| "wait".to_owned());
+    let stops = rdlt_host::StopsSpawned::within(STOPPING);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("a runtime");
     let code = runtime.block_on(async {
-        let mut interrupts = rdlt_host::Interrupts::listen().expect("the signals are heard");
-        let binary = PathBuf::from(std::env::args().nth(1).expect("the connector's binary"));
-        let id = ConnectorId::parse("test.scripted").expect("a valid id");
-        let reference = ConnectorRef::new(id).path(binary);
-        let config = serde_json::json!({});
-        let local = Local::new()
-            .env_passthrough("LLVM_PROFILE_FILE")
-            .grace(Duration::from_millis(500));
-        let first = local
-            .source(&reference, &config)
-            .await
-            .expect("the first connector starts");
-        let second = local
-            .source(&reference, &config)
-            .await
-            .expect("the second connector starts");
+        let mut signals = rdlt_host::Interrupts::listen().expect("the signals are heard");
+        let connectors = connectors(binary).await;
         let mut stdout = std::io::stdout();
         writeln!(stdout, "ready").expect("the test reads this");
         stdout.flush().expect("the test reads this");
-        let code = interrupts.heard().await;
-        drop((first, second));
+        let code = match mode.as_str() {
+            "wait" => signals.heard().await,
+            "leave" => 0,
+            _ => panic!("the host panics"),
+        };
+        drop(connectors);
         code
     });
+    if mode == "leave" {
+        // Gone at once: nothing waits for what it dropped.
+        std::mem::forget(stops);
+        std::process::exit(code);
+    }
     drop(runtime);
-    rdlt_host::stop_spawned(Duration::from_secs(20)).expect("every connector's group ends");
+    if let Err(lingering) = stops.stop() {
+        writeln!(std::io::stderr(), "{lingering}").ok();
+        std::process::exit(74);
+    }
     std::process::exit(code);
 }
