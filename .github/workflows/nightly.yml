@@ -12,6 +12,23 @@ env:
   MISE_CARGO_BINSTALL_ONLY: "true"
 
 jobs:
+  # An advisory published since the last change reaches no pull request: every lockfile is checked
+  # each night.
+  advisories:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          install_args: just cargo-deny
+          cache_key_prefix: mise-v1-deny
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - run: just deny
+
   # A million seeds, in ten shards of 100 000 that run at once: one job alone outlasts its time.
   sim:
     runs-on: ubuntu-24.04
