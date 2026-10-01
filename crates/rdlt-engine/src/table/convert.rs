@@ -3,6 +3,7 @@
 //! Every conversion is exact: a column's type is the join of every type it received, so it holds
 //! each incoming value as it is, and text or JSON renderings keep every value.
 
+mod decode;
 mod encoders;
 
 use std::fmt::Write as _;
@@ -139,42 +140,15 @@ fn wide_dates(data_type: &DataType) -> DataType {
     }
 }
 
-/// `array` with every dictionary and run-end encoding in it, at any depth, decoded.
+/// `array` holding only what its rows name: every dictionary and run-end encoding in it, at
+/// any depth, decoded, every list view a list, and every list's items the ones its rows hold.
 ///
-/// Filtering rows out of a dictionary or run-end encoding leaves their values in it, and a value
-/// no row holds must not fail a conversion: decoded, only the values rows hold remain.
+/// Arrow converts a nested array's items whether or not a row names them, and a dictionary's
+/// values whether or not a key does, so what follows would cost what the array keeps alive, not
+/// what its rows hold. Filtering rows out of an encoding also leaves their values in it, and a
+/// value no row holds must not fail a conversion.
 pub(crate) fn decoded(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
-    let decoded = decoded_type(array.data_type());
-    if decoded == *array.data_type() {
-        Ok(Arc::clone(array))
-    } else {
-        cast(array, &decoded)
-    }
-}
-
-/// `data_type` with every dictionary and run-end encoding in it, at any depth, as its values'
-/// type.
-fn decoded_type(data_type: &DataType) -> DataType {
-    let field = |field: &FieldRef| {
-        Arc::new(
-            field
-                .as_ref()
-                .clone()
-                .with_data_type(decoded_type(field.data_type())),
-        )
-    };
-    match data_type {
-        DataType::Dictionary(_, values) => decoded_type(values),
-        DataType::RunEndEncoded(_, values) => decoded_type(values.data_type()),
-        DataType::Struct(fields) => DataType::Struct(fields.iter().map(field).collect()),
-        DataType::List(item) => DataType::List(field(item)),
-        DataType::LargeList(item) => DataType::LargeList(field(item)),
-        DataType::ListView(item) => DataType::ListView(field(item)),
-        DataType::LargeListView(item) => DataType::LargeListView(field(item)),
-        DataType::FixedSizeList(item, size) => DataType::FixedSizeList(field(item), *size),
-        DataType::Map(entries, sorted) => DataType::Map(field(entries), *sorted),
-        other => other.clone(),
-    }
+    decode::decoded(array)
 }
 
 /// `array` with every map in it, at any depth, as the list of key and value structs it holds,

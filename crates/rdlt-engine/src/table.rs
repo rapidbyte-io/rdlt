@@ -1,7 +1,7 @@
 //! Tables as the engine loads them: each stream's table, its schema versions and names, and how a
 //! batch becomes rows the destination stores.
 
-mod convert;
+pub(crate) mod convert;
 mod exact;
 mod lower;
 mod lowering;

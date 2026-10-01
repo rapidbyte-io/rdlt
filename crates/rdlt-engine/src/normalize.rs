@@ -355,7 +355,7 @@ fn item_field(data_type: &DataType) -> Option<&Arc<ArrowField>> {
 }
 
 /// `array` as a `ListArray`: maps as arrays of their entries, other arrays cast.
-fn as_list(array: &ArrayRef) -> Result<ListArray, ArrowError> {
+pub(crate) fn as_list(array: &ArrayRef) -> Result<ListArray, ArrowError> {
     match array.data_type() {
         DataType::List(_) => Ok(array.as_list::<i32>().clone()),
         DataType::Map(entries, _) => {
