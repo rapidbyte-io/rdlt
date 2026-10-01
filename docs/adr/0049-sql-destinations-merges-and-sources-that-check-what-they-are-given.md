@@ -75,14 +75,22 @@ given:
     `database_path_invalid`, and SQLite is handed the path from the root, which starts with a
     separator: `?`, `%` and `#` in it are characters of the name. A path that ends in no file's
     name is refused the same way.
-  - A new database is created for its user alone (0600). One that exists and its group or
-    others can reach is refused as `not_private` and not re-moded: tightening it would hide that it had been exposed. SQLite gives its log
-    and lock file the database's mode, and whoever can read the lock file can hold every writer
-    out, which is why the mode matters to more than readers.
+  - A database's place is its user's alone, by the rule ADR 0047 gives the files connectors.
+    Its directory, asked once open, belongs to the user the process runs as and is writable by
+    neither its group nor others (`not_private`; `not_a_directory` where it is none). The
+    database and each file SQLite keeps beside it (`-wal`, `-shm`, `-journal`), where they
+    exist, are regular files of that user's that no one else reaches: a link, at the database's
+    name too, is refused as `not_a_regular_file`, and a file others reach as `not_private`,
+    never re-moded, since tightening it would hide that it had been exposed. A new database is
+    created exclusively, mode 0600, and SQLite gives the files it creates beside it that mode.
+    SQLite adopts a log that is already there as it is, and whoever can read the lock file can
+    hold every writer out, which is why the rule covers more than the database.
   - A statement waits thirty seconds for another connection's write, then fails as transient. A
     full disk is transient too, coded `disk_full`.
-  - Links in the path are followed: SQLite's own refusal applies to every component, and data
-    directories are often links. The path is the operator's.
+  - Links above the database's directory are followed, as the files connectors follow them
+    to their root: SQLite's own refusal of links applies to every component, and data
+    directories are often links. Only the user of the private directory puts a name in it, so
+    the database's own name is no link another user planted.
 - **SQLite stages a row at a time and refuses a float it would change.** A float that is no
   number, or negative zero, is a `Data` error coded `float_unstorable` before its row is bound,
   and nothing of its batch stays. Storing them exactly needs a column without `REAL` affinity,
@@ -137,8 +145,11 @@ given:
 - A stream holding a float that is no number, or negative zero, does not load into SQLite.
 - `_rdlt_receipts` grows by a row a commit, and a change table's tombstones by a row a key
   hard-deleted, until the engine declares what it may still repeat.
-- An operator who shared a SQLite file with a group must serve its readers another way. Where
-  the open of a new database fails after its file was created, an empty private file stays.
+- An operator who shared a SQLite file or its directory with a group must serve its readers
+  another way. Where the open of a new database fails after its file was created, an empty
+  private file stays.
+- The check of a database's place is by path after its directory is asked: it holds while the
+  directories above are the operator's, as ADR 0047 leaves them.
 - The exact conversion repeats what the engine's own lowering does for arriving values; one
   implementation in the connector SDK would serve both.
 - The files destination shares the reference merge, and still writes a merged table column by
