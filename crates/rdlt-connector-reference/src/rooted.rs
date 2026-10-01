@@ -5,6 +5,24 @@
 //! of the directory a [`Dir`] was opened at. Only regular files are read, their sizes bounded
 //! before a byte is; what is created is its owner's alone.
 
+/// Takes one durable step, `$effect`, an expression of an `io::Result`, and gives its value.
+///
+/// Every call that creates, syncs, links, renames or removes goes through here, and nothing
+/// else touches the tests' record: a test may refuse `$step` before it takes place, and the
+/// step is recorded once it has, so the record is the order of what took place.
+macro_rules! durable {
+    ($step:expr, $effect:expr) => {{
+        #[cfg(test)]
+        let step = $step;
+        #[cfg(test)]
+        $crate::rooted::trace::attempt(&step)?;
+        let done = $effect?;
+        #[cfg(test)]
+        $crate::rooted::trace::done(step);
+        done
+    }};
+}
+
 mod limited;
 mod temporary;
 #[cfg(test)]
@@ -217,6 +235,11 @@ impl Dir {
             .mode(0o700)
             .create(path)?;
         for created in missing.iter().rev() {
+            // The directory is made: a test may stop here, before it is durable in its parent.
+            durable!(
+                trace::Step::MakeDir(created.to_path_buf()),
+                io::Result::Ok(())
+            );
             // A relative directory of one component has the empty path as its parent.
             let parent = created
                 .parent()
@@ -270,18 +293,27 @@ impl Dir {
     /// in this one.
     pub(crate) fn dir_created(&self, name: impl AsRef<OsStr>) -> io::Result<Self> {
         let name = component(name.as_ref())?;
-        #[cfg(test)]
-        let known = self.kind(name)?.is_some();
-        #[cfg(test)]
-        if !known {
-            trace::step(trace::Step::MakeDir(self.at(name)))?;
-        }
-        match rustix::fs::mkdirat(&self.file, name, PRIVATE_DIR) {
-            Ok(()) => self.sync()?,
-            Err(rustix::io::Errno::EXIST) => {}
-            Err(error) => return Err(error.into()),
+        if self.made(name)? {
+            self.sync()?;
         }
         self.dir(name)
+    }
+
+    /// Makes the directory `name`, private to its owner; whether it was missing.
+    fn made(&self, name: &OsStr) -> io::Result<bool> {
+        #[cfg(test)]
+        let step = trace::Step::MakeDir(self.at(name));
+        match rustix::fs::mkdirat(&self.file, name, PRIVATE_DIR) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::EXIST) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+        // A test stops here, the directory made and not yet durable in this one.
+        #[cfg(test)]
+        trace::attempt(&step)?;
+        #[cfg(test)]
+        trace::done(step);
+        Ok(true)
     }
 
     /// Opens the directory the `names` lead to, one after another.
@@ -370,10 +402,11 @@ impl Dir {
     /// included, is refused.
     pub(crate) fn create(&self, name: impl AsRef<OsStr>) -> io::Result<File> {
         let name = component(name.as_ref())?;
-        #[cfg(test)]
-        trace::step(trace::Step::Create(self.at(name)))?;
         let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | BENEATH;
-        let fd = rustix::fs::openat(&self.file, name, flags, PRIVATE_FILE)?;
+        let fd = durable!(
+            trace::Step::Create(self.at(name)),
+            rustix::fs::openat(&self.file, name, flags, PRIVATE_FILE)
+        );
         Ok(File::from(fd))
     }
 
@@ -414,17 +447,21 @@ impl Dir {
     /// Removes the entry `name` that is no directory: a link itself, never what it leads to.
     pub(crate) fn remove_file(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
         let name = component(name.as_ref())?;
-        #[cfg(test)]
-        trace::step(trace::Step::Remove(self.at(name)))?;
-        Ok(rustix::fs::unlinkat(&self.file, name, AtFlags::empty())?)
+        durable!(
+            trace::Step::Remove(self.at(name)),
+            rustix::fs::unlinkat(&self.file, name, AtFlags::empty())
+        );
+        Ok(())
     }
 
     /// Removes the empty directory `name`.
     pub(crate) fn remove_dir(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
         let name = component(name.as_ref())?;
-        #[cfg(test)]
-        trace::step(trace::Step::RemoveDir(self.at(name)))?;
-        Ok(rustix::fs::unlinkat(&self.file, name, AtFlags::REMOVEDIR)?)
+        durable!(
+            trace::Step::RemoveDir(self.at(name)),
+            rustix::fs::unlinkat(&self.file, name, AtFlags::REMOVEDIR)
+        );
+        Ok(())
     }
 
     /// Removes `name` and, where it is a directory, everything beneath it; a link is removed
@@ -471,17 +508,38 @@ impl Dir {
         to: impl AsRef<OsStr>,
     ) -> io::Result<()> {
         let (name, to) = (component(name.as_ref())?, component(to.as_ref())?);
-        #[cfg(test)]
-        trace::step(trace::Step::Rename(into.at(to)))?;
-        Ok(rustix::fs::renameat(&self.file, name, &into.file, to)?)
+        durable!(
+            trace::Step::Rename(into.at(to)),
+            rustix::fs::renameat(&self.file, name, &into.file, to)
+        );
+        Ok(())
     }
 
     /// Makes the directory's entries durable, so a file created, linked or renamed in it
     /// survives a crash.
     pub(crate) fn sync(&self) -> io::Result<()> {
+        durable!(
+            trace::Step::SyncDir(self.path.clone()),
+            self.file.sync_all()
+        );
+        Ok(())
+    }
+
+    /// Links the file `name` of this directory as `to` in it, unless that name exists; whether
+    /// it linked.
+    fn link(&self, name: &OsStr, to: &OsStr) -> io::Result<bool> {
         #[cfg(test)]
-        trace::step(trace::Step::SyncDir(self.path.clone()))?;
-        self.file.sync_all()
+        let step = trace::Step::Link(self.at(to));
+        #[cfg(test)]
+        trace::attempt(&step)?;
+        match rustix::fs::linkat(&self.file, name, &self.file, to, AtFlags::empty()) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::EXIST) => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+        #[cfg(test)]
+        trace::done(step);
+        Ok(true)
     }
 
     /// Checks that the directory is its user's alone to write: it belongs to the user the
@@ -489,6 +547,14 @@ impl Dir {
     pub(crate) fn private(&self) -> io::Result<()> {
         private(&self.file)
     }
+}
+
+/// Makes the bytes of `file`, which `path` names in a test's record, durable.
+pub(crate) fn sync_file(file: &File, path: &Path) -> io::Result<()> {
+    #[cfg(not(test))]
+    let _ = path;
+    durable!(trace::Step::SyncFile(path.to_owned()), file.sync_all());
+    Ok(())
 }
 
 /// Every byte of `reader`, which holds at most `limit`: one byte beyond the limit refuses a

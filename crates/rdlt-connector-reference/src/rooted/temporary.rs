@@ -111,9 +111,7 @@ fn prefix(owner: &str) -> String {
 impl Temporary<'_> {
     /// Makes the file's bytes durable.
     fn sync(&self) -> io::Result<()> {
-        #[cfg(test)]
-        super::trace::step(super::trace::Step::SyncFile(self.dir.at(&self.name)))?;
-        self.file.sync_all()
+        super::sync_file(&self.file, &self.dir.at(&self.name))
     }
 
     /// The file, to write.
@@ -126,13 +124,8 @@ impl Temporary<'_> {
     pub(crate) fn publish(self, name: impl AsRef<OsStr>) -> io::Result<bool> {
         let name = component(name.as_ref())?;
         self.sync()?;
-        #[cfg(test)]
-        super::trace::step(super::trace::Step::Link(self.dir.at(name)))?;
-        let (from, into) = (&self.dir.file, &self.dir.file);
-        match rustix::fs::linkat(from, self.name.as_os_str(), into, name, AtFlags::empty()) {
-            Ok(()) => {}
-            Err(rustix::io::Errno::EXIST) => return Ok(false),
-            Err(error) => return Err(error.into()),
+        if !self.dir.link(&self.name, name)? {
+            return Ok(false);
         }
         self.dir.sync()?;
         Ok(true)
