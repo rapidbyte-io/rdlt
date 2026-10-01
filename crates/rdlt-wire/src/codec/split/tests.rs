@@ -1,3 +1,5 @@
+mod crossing;
+
 use std::sync::Arc;
 
 use arrow_array::{
@@ -584,12 +586,9 @@ fn a_cut_costs_one_weighing_of_its_rows_and_one_narrowing_and_encoding_a_piece()
     let cut_in_two = cost(&wide, Limits::default());
     assert_eq!(cut_in_two.pieces, 2);
     costs_a_scan_and_an_encode_a_piece(&wide, &cut_in_two);
-    // A batch that fits goes as it is: weighed, and encoded once.
+    // A batch that fits is weighed, and encoded once.
     let fitting = cost(&flags(64, rows), Limits::default());
-    assert_eq!(
-        (fitting.pieces, fitting.encodes, fitting.probe.compactions),
-        (1, 1, 0)
-    );
+    assert_eq!((fitting.pieces, fitting.encodes), (1, 1));
     // Bytes bind, on plain columns and on those whose pieces are copies of what their rows
     // name: views, list views and dense unions.
     let plain = batch_of(Arc::new(BinaryArray::from_iter_values(
@@ -734,7 +733,7 @@ fn a_batch_of_no_rows_sliced_from_a_large_one_is_a_frame_of_its_empty_schema() {
             let none = batch_of(column.slice(start, 0));
             let cost = cost(&none, least());
             assert_eq!((cost.pieces, cost.encodes), (1, 1), "{}", none.schema());
-            assert_eq!((cost.probe.weighed, cost.probe.compactions), (0, 0));
+            assert_eq!(cost.probe.weighed, 0);
             assert!(cost.sent < 4_096, "{cost:?}: {}", none.schema());
         }
     }
@@ -747,13 +746,12 @@ fn a_batch_sliced_from_a_larger_one_goes_with_only_what_its_rows_name() {
     let column = sharing().remove(0);
     let part = batch_of(column.slice(500, 10));
     let sliced = cost(&part, Limits::default());
-    assert_eq!((sliced.pieces, sliced.probe.compactions), (1, 1));
+    assert_eq!(sliced.pieces, 1);
     assert!(sliced.sent < 4_096, "{sliced:?}");
-    // The same rows in buffers of their own go as they are.
+    // The same rows in buffers of their own take the same frame.
     let own = compacted(&part).unwrap();
     let tight = cost(&own, Limits::default());
-    assert_eq!((tight.pieces, tight.probe.compactions), (1, 0));
-    assert_eq!(tight.sent, sliced.sent);
+    assert_eq!((tight.pieces, tight.sent), (1, sliced.sent));
 }
 
 #[test]

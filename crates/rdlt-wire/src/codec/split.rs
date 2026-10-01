@@ -5,18 +5,14 @@
 #[cfg(test)]
 mod tests;
 
-use arrow_array::{Array as _, RecordBatch};
+use arrow_array::RecordBatch;
 
-use super::compact::compacted;
+use super::compact::Narrower;
 use super::measure::measured;
 use super::weigh::{Weigher, Weight};
 use super::{Encoder, IpcFrame};
 use crate::error::{Frame, WireError};
 use crate::limits::{Limits, Refusal};
-
-/// How many times the bytes its rows weigh a batch's buffers may hold and still go as they are:
-/// beyond it, a batch sliced from a larger one is narrowed to what its rows name.
-const SHARED: u64 = 2;
 
 /// A batch on its way to a receiver, and how far it has got.
 #[derive(Debug)]
@@ -24,6 +20,7 @@ pub struct Cut {
     batch: RecordBatch,
     limits: Limits,
     weigher: Weigher,
+    narrower: Narrower,
     /// Rows already framed.
     sent: usize,
     done: bool,
@@ -38,7 +35,7 @@ pub struct Cut {
 pub(super) struct Probe {
     /// Rows weighed.
     pub(super) weighed: usize,
-    /// Pieces narrowed to what their rows name.
+    /// Pieces handed to the narrower.
     pub(super) compactions: usize,
     /// Pieces encoded again with half the rows.
     pub(super) halvings: usize,
@@ -51,6 +48,7 @@ impl Cut {
     pub fn new(batch: RecordBatch, limits: Limits) -> Self {
         Self {
             weigher: Weigher::new(&batch),
+            narrower: Narrower::default(),
             batch,
             limits,
             sent: 0,
@@ -106,27 +104,20 @@ impl Cut {
         Ok((taken, weight))
     }
 
-    /// The next `rows` rows as they go: holding only what they name, unless they are the whole
-    /// batch and its buffers hold little else.
-    fn piece(&mut self, rows: usize, weight: &Weight) -> Result<RecordBatch, WireError> {
-        let piece = self.batch.slice(self.sent, rows);
-        let held = piece.columns().iter();
-        let held = held.fold(0, |held, column| held + column.get_buffer_memory_size());
-        let held = u64::try_from(held).unwrap_or(u64::MAX);
-        let room = self.limits.frame_bytes.saturating_sub(self.overhead());
-        let tight = held <= room.min(SHARED.saturating_mul(weight.frame_bytes()));
-        if tight && rows == self.batch.num_rows() {
-            return Ok(piece);
-        }
+    /// The next `rows` rows as they go: holding only what they name.
+    fn piece(&mut self, rows: usize) -> Result<RecordBatch, WireError> {
         #[cfg(test)]
         {
             self.probe.compactions += 1;
         }
-        compacted(&piece).map_err(|source| WireError::Arrow {
-            frame: Frame::Batch,
-            encoding: true,
-            source,
-        })
+        let piece = self.batch.slice(self.sent, rows);
+        self.narrower
+            .batch(&piece)
+            .map_err(|source| WireError::Arrow {
+                frame: Frame::Batch,
+                encoding: true,
+                source,
+            })
     }
 }
 
@@ -160,18 +151,13 @@ impl Encoder {
 
     fn framed(&mut self, cut: &mut Cut) -> Result<Vec<IpcFrame>, WireError> {
         let mut frames = Vec::new();
-        if cut.batch.num_rows() == 0 {
-            // A batch of no rows is a frame of its schema's empty columns, whatever buffers the
-            // batch was sliced from.
-            let empty = RecordBatch::new_empty(cut.batch.schema());
-            let frame = self.trial(&empty, &cut.limits, &mut frames)??;
-            cut.done = true;
-            frames.push(frame);
-            return Ok(frames);
-        }
-        let (mut rows, weight) = cut.longest()?;
+        // A batch of no rows is one frame of none.
+        let (mut rows, _) = match cut.batch.num_rows() {
+            0 => (0, Weight::default()),
+            _ => cut.longest()?,
+        };
         loop {
-            let piece = cut.piece(rows, &weight)?;
+            let piece = cut.piece(rows)?;
             match self.trial(&piece, &cut.limits, &mut frames)? {
                 Ok(frame) => {
                     cut.sent += rows;
@@ -179,7 +165,7 @@ impl Encoder {
                     frames.push(frame);
                     return Ok(frames);
                 }
-                Err(refusal) if rows == 1 => return Err(refusal.into()),
+                Err(refusal) if rows <= 1 => return Err(refusal.into()),
                 // The rows weighed less than their frame takes: half as many.
                 Err(_) => rows /= 2,
             }
