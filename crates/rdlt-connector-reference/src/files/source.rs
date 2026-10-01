@@ -18,7 +18,7 @@ use super::format::{FileFormat, Reader};
 use super::io;
 use crate::blocking::blocking;
 use crate::limits::{FILE_BYTES, LINE_BYTES};
-use crate::rooted::{Dir, Kind, Limit};
+use crate::rooted::{Dir, Kind, Limit, Limited};
 
 /// Configuration of [`FilesSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -276,6 +276,20 @@ impl ReadStream<FilesSource> for FileStream {
     }
 }
 
+/// The code of an error for a cursor that stands beyond what its file holds.
+const CURSOR_BEYOND_FILE: &str = "cursor_beyond_file";
+
+/// A cursor that read `read` records or batches of the file at `path`, which holds fewer: the
+/// file was cut or replaced since, and the source cannot vouch for what a read from there would
+/// skip.
+fn beyond(path: &std::path::Path, read: u64) -> ConnectorError {
+    ConnectorError::data(format!(
+        "reading {}: the cursor stands after {read} records or batches, more than the file holds",
+        path.display()
+    ))
+    .with_code(CURSOR_BEYOND_FILE)
+}
+
 /// One push of a file.
 enum Pushed {
     /// Lines of JSON, and how many records they hold.
@@ -320,11 +334,17 @@ impl Pushes {
             .and_then(|size| Ok(limit.admit(size.len())?));
         measured.map_err(io::failed("reading", &path))?;
         match format {
-            FileFormat::Jsonl => JsonLines::open(opened, path, read, limits).map(Self::Jsonl),
+            FileFormat::Jsonl => {
+                // The file is measured again as it is read: one that grows fails its read.
+                let opened = Limited::new(opened, limit);
+                JsonLines::open(opened, path, read, limits).map(Self::Jsonl)
+            }
             FileFormat::Arrow => {
                 let empty = Arc::new(arrow_schema::Schema::empty());
-                let mut reader = Reader::over(format, opened, path, &empty)?;
-                reader.skip(read);
+                let mut reader = Reader::over(format, opened, path.clone(), &empty)?;
+                if reader.skip(read) < read {
+                    return Err(beyond(&path, read));
+                }
                 Ok(Self::Arrow(reader))
             }
         }
@@ -340,7 +360,7 @@ impl Pushes {
 
 /// The records of a JSON lines file, as pushes of bounded size.
 struct JsonLines {
-    lines: Lines<BufReader<File>>,
+    lines: Lines<BufReader<Limited<File>>>,
     path: PathBuf,
     /// The line last read, which the next push starts with where `carried`.
     line: Vec<u8>,
@@ -350,7 +370,7 @@ struct JsonLines {
 
 impl JsonLines {
     /// The records of `file` after its first `read`; blank lines hold none.
-    fn open(file: File, path: PathBuf, read: u64, limits: ReadLimits) -> Result<Self> {
+    fn open(file: Limited<File>, path: PathBuf, read: u64, limits: ReadLimits) -> Result<Self> {
         let mut opened = Self {
             lines: Lines::new(BufReader::new(file), limits.line_bytes),
             path,
@@ -361,6 +381,9 @@ impl JsonLines {
         let mut skipped = 0;
         while skipped < read && opened.record()? {
             skipped += 1;
+        }
+        if skipped < read {
+            return Err(beyond(&opened.path, read));
         }
         Ok(opened)
     }

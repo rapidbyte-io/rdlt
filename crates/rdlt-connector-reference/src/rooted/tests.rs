@@ -674,3 +674,39 @@ fn every_durable_step_is_recorded_in_order_and_a_fault_refuses_its_step() {
     trace::clear();
     dir.remove_file("d").unwrap();
 }
+
+#[test]
+fn a_limited_reader_refuses_the_first_byte_beyond_its_limit() {
+    use std::io::Read as _;
+    for (held, chunk) in [(8_u64, 3), (8, 8), (8, 64), (0, 4)] {
+        let mut reader = super::Limited::new(std::io::repeat(b'x').take(held), LIMIT);
+        let mut bytes = Vec::new();
+        let mut buffer = vec![0; chunk];
+        loop {
+            let read = reader.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        assert_eq!(bytes.len(), usize::try_from(held).unwrap(), "{chunk}");
+    }
+    // One byte more: the read fails, by however many bytes it went beyond, and never ends as
+    // though the file did.
+    for chunk in [1, 3, 9, 64] {
+        let mut reader = super::Limited::new(std::io::repeat(b'x').take(1 << 20), LIMIT);
+        let mut buffer = vec![0; chunk];
+        let error = loop {
+            match reader.read(&mut buffer) {
+                Ok(read) => assert!(read > 0, "the reader ended"),
+                Err(error) => break error,
+            }
+        };
+        let too_large = Refusal::TooLarge {
+            name: "test bytes",
+            limit: 8,
+            actual: 9,
+        };
+        assert_eq!(refusal(&error), Some(too_large), "{chunk}");
+    }
+}

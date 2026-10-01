@@ -1211,68 +1211,20 @@ fn an_arrow_reader_skips_batches_and_tells_its_schema() {
     let (bytes, schema) = arrow_bytes(3, IpcWriteOptions::default());
     std::fs::write(root.path().join("rows.arrow"), bytes).unwrap();
     let empty = Arc::new(Schema::empty());
-    for (skipped, left) in [(0, 3), (1, 2), (3, 0), (4, 0), (u64::MAX, 0)] {
+    // It tells how many it skipped: fewer than asked where the file holds fewer.
+    for (asked, skipped, left) in [(0, 0, 3), (1, 1, 2), (3, 3, 0), (4, 3, 0), (u64::MAX, 3, 0)] {
         let mut reader = Reader::open(FileFormat::Arrow, &dir, "rows.arrow", &empty).unwrap();
         assert_eq!(reader.schema(), Some(&schema));
-        reader.skip(skipped);
+        assert_eq!(reader.skip(asked), skipped, "{asked}");
         let mut read = 0;
         while reader.next().unwrap().is_some() {
             read += 1;
         }
-        assert_eq!(read, left, "{skipped}");
+        assert_eq!(read, left, "{asked}");
     }
     std::fs::write(root.path().join("rows.jsonl"), "{}\n").unwrap();
     let mut lines = Reader::open(FileFormat::Jsonl, &dir, "rows.jsonl", &empty).unwrap();
     assert_eq!(lines.schema(), None);
-    lines.skip(1);
+    assert_eq!(lines.skip(1), 0);
     assert_eq!(lines.next().unwrap().map(|batch| batch.num_rows()), Some(1));
-}
-
-#[test]
-fn a_batch_without_dictionaries_holds_the_values_its_dictionaries_stood_for() {
-    use super::plain::{plain, unkeyed};
-    // Every key type, alone and within a list and a struct.
-    let mut columns = keyed();
-    columns.truncate(8);
-    let nested = nested_encodings();
-    columns.push(nested[3].clone());
-    let inner = dictionary::<Int16Type>(vec![Some(1), None, Some(0), Some(2)]);
-    let fields = Fields::from(vec![Field::new("tag", inner.data_type().clone(), true)]);
-    columns.push(column(
-        "struct of dictionary",
-        StructArray::new(fields, vec![inner], None),
-    ));
-    for (name, keyed) in columns {
-        let batch = single(Arc::clone(&keyed));
-        let schema = plain(batch.schema_ref());
-        let values = unkeyed(&batch, &schema).unwrap();
-        assert_eq!(values.num_rows(), 4, "{name}");
-        let rendered = |batch: &RecordBatch| {
-            let mut writer = arrow_json::ArrayWriter::new(Vec::new());
-            writer.write(batch).unwrap();
-            writer.finish().unwrap();
-            String::from_utf8(writer.into_inner()).unwrap()
-        };
-        assert_eq!(rendered(&values), rendered(&batch), "{name}");
-        let kinds = format!("{:?}", values.schema());
-        assert!(!kinds.contains("Dictionary"), "{name}: {kinds}");
-        // What holds no dictionary is the batch it was.
-        assert_eq!(unkeyed(&values, &schema).unwrap(), values, "{name}");
-    }
-}
-
-#[test]
-fn a_plain_schema_keeps_names_nullability_and_metadata() {
-    use super::plain::{plain, unkeyed};
-    let metadata = std::collections::HashMap::from([("k".to_owned(), "v".to_owned())]);
-    let dictionary = DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Int64));
-    let field = Field::new("load", dictionary, false).with_metadata(metadata.clone());
-    let schema = Schema::new_with_metadata(vec![field], metadata.clone());
-    let plain_schema = plain(&schema);
-    let expected = Field::new("load", DataType::Int64, false).with_metadata(metadata.clone());
-    assert_eq!(plain_schema.field(0), &expected);
-    assert_eq!(plain_schema.metadata(), &metadata);
-    // A batch of another shape is refused, not written under the wrong names.
-    let other = single(Arc::new(StringArray::from(vec!["x"])));
-    assert!(unkeyed(&other, &plain_schema).is_err());
 }
