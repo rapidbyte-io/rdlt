@@ -272,7 +272,7 @@ async fn a_following_read_of_the_first_partition_asks_for_a_plan_as_partitions_a
 
 #[tokio::test(start_paused = true)]
 async fn a_group_on_disk_keeps_its_committed_offsets_for_its_next_process() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
+    let dir = crate::scratch::tempdir().expect("a temporary directory");
     let path = dir.path().join("events.group");
     let stream = json!({ "name": "events", "partitions": 1, "messages": 8 });
     let mut kept = config(&stream, "unused");
