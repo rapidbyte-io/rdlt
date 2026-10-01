@@ -12,7 +12,7 @@ use arrow_array::types::{Int16Type, Int32Type, Int64Type, RunEndIndexType};
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, GenericListArray, GenericListViewArray, MapArray,
     OffsetSizeTrait, PrimitiveArray, RecordBatch, RecordBatchOptions, RunArray, StructArray,
-    UInt64Array, UnionArray,
+    UInt64Array, UnionArray, make_array,
 };
 use arrow_buffer::{ArrowNativeType as _, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{ArrowError, DataType};
@@ -192,10 +192,16 @@ fn runs<R: RunEndIndexType>(runs: &RunArray<R>) -> Result<ArrayRef, ArrowError> 
         R::Native::from_usize(end).unwrap_or_default()
     });
     let ends = PrimitiveArray::<R>::from_iter_values(ends);
-    Ok(Arc::new(RunArray::try_new(
-        &ends,
-        &column(&runs.values_slice())?,
-    )?))
+    let values = column(&runs.values_slice())?;
+    // Rebuilt under the column's own type: its fields may be named, nullable or described
+    // otherwise than a new run-end array's.
+    let rebuilt = runs
+        .to_data()
+        .into_builder()
+        .offset(0)
+        .len(rows)
+        .child_data(vec![ends.into_data(), values.into_data()]);
+    Ok(make_array(rebuilt.build()?))
 }
 
 /// An index as `take` reads it.

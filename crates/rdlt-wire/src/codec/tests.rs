@@ -1,4 +1,5 @@
 pub(crate) mod frames;
+pub(crate) mod odd;
 pub(crate) mod samples;
 
 use std::sync::Arc;
