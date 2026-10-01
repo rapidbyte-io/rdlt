@@ -16,7 +16,6 @@ use std::os::fd::OwnedFd;
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -108,8 +107,8 @@ fn command(launch: &Launch, socket: OwnedFd) -> std::io::Result<Command> {
 
 /// A running connector's process, which dropping stops, with every process of its group.
 pub(crate) struct Process {
-    /// Set to stop the process; the thread that reaps it reads it.
-    stop: Arc<AtomicBool>,
+    /// What stops the process and its group.
+    held: Arc<group::Held>,
     /// What the kill that kills it cancels, when one may.
     killed: Option<CancellationToken>,
     /// The process's exit, once it has exited and its group is empty.
@@ -121,7 +120,9 @@ pub(crate) struct Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        // Asked before this returns: a host that drops its connectors and exits has stopped
+        // them, though only one that waits sees them end.
+        self.held.stop();
     }
 }
 
@@ -154,18 +155,12 @@ impl Process {
         // The command holds this process's copy of the connector's end: dropped, the connector's
         // exit closes the socket.
         drop(command);
-        let stop = Arc::new(AtomicBool::new(false));
         let (exit_sender, exit) = watch::channel(None);
         let killed = launch.kills.as_ref().map(Kills::next);
         // Owned from here on: whatever fails next, the connector does not outlive it.
-        let mut owned = group::Owned {
-            child,
-            grace: launch.grace,
-            stop: Arc::clone(&stop),
-            killed: killed.clone(),
-            exit: exit_sender,
-        };
-        let (tail, stderr_closed) = match drained(&mut owned.child, &launch.id, steps) {
+        let mut owned = group::Owned::new(child, launch.grace, killed.clone(), exit_sender);
+        let held = owned.held();
+        let (tail, stderr_closed) = match drained(owned.child(), &launch.id, steps) {
             Ok(drained) => drained,
             Err(error) => {
                 owned.discarded();
@@ -174,7 +169,7 @@ impl Process {
         };
         owned.reaped(steps.thread)?;
         Ok(Self {
-            stop,
+            held,
             killed,
             exit,
             stderr_closed,

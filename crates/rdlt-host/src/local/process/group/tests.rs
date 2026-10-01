@@ -1,8 +1,6 @@
 use std::io::{BufRead as _, BufReader};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use nix::sys::signal::{Signal, kill};
@@ -34,15 +32,9 @@ fn pid(child: &Child) -> Pid {
     Pid::from_raw(i32::try_from(child.id()).expect("a process id"))
 }
 
-/// `child` and its group, owned, asked to stop already, with `grace` to do it.
-fn stopping(child: Child, grace: Duration) -> Owned {
-    Owned {
-        child,
-        grace,
-        stop: Arc::new(AtomicBool::new(true)),
-        killed: None,
-        exit: watch::channel(None).0,
-    }
+/// `child` and its group, owned, with `grace` to end once stopped.
+fn owned(child: Child, grace: Duration) -> Owned {
+    Owned::new(child, grace, None, watch::channel(None).0)
 }
 
 #[test]
@@ -70,7 +62,9 @@ fn a_leader_something_else_reaped_is_neither_signalled_nor_waited_for() {
     // Something else in this process reaps the leader, as a loop waiting for any child does.
     kill(pid(&child), Signal::SIGKILL).expect("the leader is killed");
     nix::sys::wait::waitpid(pid(&child), None).expect("it is reaped elsewhere");
-    let ended = stopping(child, Duration::ZERO).ended();
+    let mut owned = owned(child, Duration::ZERO);
+    owned.held().stop();
+    let ended = owned.ended();
     // Its group's id may be another's by now: the member it held was sent nothing.
     let alive = kill(member, None).is_ok();
     kill(member, Signal::SIGKILL).ok();
@@ -124,4 +118,26 @@ fn a_process_says_its_state_and_its_group_at_each_depth_of_namespaces() {
     assert_eq!(member("State:\tS (sleeping)\n", 1), None);
     assert_eq!(member("NSpgid:\t5\n", 1), None);
     assert_eq!(member("State:\tS\nNSpgid:\tfive\n", 1), None);
+}
+
+#[test]
+fn a_stop_has_asked_every_member_to_end_before_it_returns() {
+    let (child, member) = leading("exec sleep 1000");
+    let leader = pid(&child);
+    // No thread owns the group: what reaches it, the stop itself sent.
+    let owned = owned(child, Duration::from_secs(1000));
+    owned.held().stop();
+    let terminated = nix::sys::wait::WaitStatus::Signaled(leader, Signal::SIGTERM, false);
+    assert_eq!(nix::sys::wait::waitpid(leader, None), Ok(terminated));
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while kill(member, None).is_ok() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        kill(member, None).is_err(),
+        "the member was not asked to end"
+    );
+    // Reaped elsewhere since, the leader is sent nothing more, however often it is stopped.
+    owned.held().stop();
+    owned.discarded();
 }
