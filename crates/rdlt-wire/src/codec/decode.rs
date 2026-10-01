@@ -98,7 +98,7 @@ impl Decoder {
         };
         let types = columns.fields().iter().map(|field| field.data_type());
         let walked = walk(framed.frame, framed.batch, types, &frame.body, &self.limits)?;
-        let relocated = relocated(framed.batch, &walked.placed);
+        let relocated = relocated(framed.batch, &walked);
         let shape = Shape {
             values: walked.values,
             view_bytes: walked.view_bytes,
