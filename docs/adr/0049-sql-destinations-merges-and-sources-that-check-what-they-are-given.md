@@ -120,6 +120,11 @@ given:
     to their root: SQLite's own refusal of links applies to every component, and data
     directories are often links. Only the user of the private directory puts a name in it, so
     the database's own name is no link another user planted.
+- **Read-back reads what pipelines published and changes nothing.** The SQLite destination
+  reads a table back on a connection that only reads, hardened and checked for its place as
+  any other. A database that is missing is not created. A name the destination keeps, the
+  catalog's among them, is refused as `table_name_reserved`, and a table no pipeline owns as
+  `table_unowned`. Read-back names no pipeline, so any pipeline's published table is read.
 - **SQLite stages a row at a time and refuses a float it would change.** A float that is no
   number, or negative zero, is a `Data` error coded `float_unstorable` before its row is bound,
   and nothing of its batch stays. Storing them exactly needs a column without `REAL` affinity,

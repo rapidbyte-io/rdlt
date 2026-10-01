@@ -121,7 +121,7 @@ async fn a_table_without_an_owner_record_is_never_dropped() {
         refusal(session.commit(&drop).await),
         config("table_unowned")
     );
-    assert_eq!(shared.ids("customers"), [7]);
+    assert_eq!(shared.count("SELECT id FROM customers"), 7);
     // A table that is not there, dropped by an earlier try of the commit, is no drop at all.
     let mut again = session.meta(&[]);
     again.drop_tables = vec![dropped("gone")];
@@ -152,7 +152,7 @@ async fn a_listed_child_table_of_another_pipeline_is_refused() {
         refusal(intruder.commit(&loose).await),
         config("table_unowned")
     );
-    assert_eq!(shared.ids("loose"), [2]);
+    assert_eq!(shared.count("SELECT id FROM loose"), 2);
 }
 
 /// Pipeline `a` replaces its table while pipeline `b` creates, and where `dropping` then drops,

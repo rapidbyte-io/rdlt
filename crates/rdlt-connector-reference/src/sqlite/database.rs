@@ -85,6 +85,21 @@ fn connect_waiting(path: &Path, wait: Duration) -> Result<Connection> {
     Ok(connection)
 }
 
+/// A connection that only reads the database at `path`, hardened as [`connect`]'s; none where
+/// there is no database: reading creates none.
+pub(super) fn reading(path: &Path) -> Result<Option<Connection>> {
+    let Some(path) = located(path, false)? else {
+        return Ok(None);
+    };
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection =
+        Connection::open_with_flags(&path, flags).map_err(failed("opening the database"))?;
+    let configuring = failed("configuring the database");
+    harden(&connection).map_err(&configuring)?;
+    connection.busy_timeout(BUSY_WAIT).map_err(&configuring)?;
+    Ok(Some(connection))
+}
+
 /// Sets `connection` to trust nothing its database file holds beyond tables and their rows:
 /// the schema cannot be written as rows, no trigger fires, no view resolves, no foreign key
 /// acts, a double-quoted name is an identifier or an error, no other database attaches, and

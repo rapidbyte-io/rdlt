@@ -175,6 +175,21 @@ impl<'t> Standing<'t> {
         self.owned(pipeline).map(Some)
     }
 
+    /// The table's name as anyone may read its rows back: a table a pipeline owns, held under
+    /// its own name; none where no pipeline owns it and the database holds nothing under its
+    /// name.
+    ///
+    /// What the database holds under the name without an owner record is refused as
+    /// `table_unowned`: no pipeline published it.
+    pub fn published(self) -> Result<Option<String>> {
+        let other = self.found.iter().find(|found| **found != self.name);
+        match (&self.owner, other) {
+            (None, None) if self.found.is_empty() => Ok(None),
+            (Some(_), None) => Ok(Some(self.name)),
+            (_, other) => Err(unowned(&self.name, other.unwrap_or(&self.name))),
+        }
+    }
+
     /// The witness of the table for `pipeline`, where no other pipeline owns it and the
     /// database takes its name for nothing named otherwise.
     fn witness(self, pipeline: &PipelineId, claims: bool) -> Result<Owned<'t>> {
