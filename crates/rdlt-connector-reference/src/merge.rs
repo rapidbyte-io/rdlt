@@ -2,6 +2,7 @@
 
 mod changes;
 mod history;
+mod retype;
 #[cfg(test)]
 mod tests;
 mod tombstones;
@@ -32,15 +33,14 @@ pub(crate) fn refuse_history_generation(table: &TableRef) -> rdlt_connector::Res
     Ok(())
 }
 
-/// `batch` under `schema`: columns found by name and cast to the schema's types, missing columns
-/// null.
+/// `batch` under `schema`: columns found by name, each as the schema's type where that keeps
+/// every value exactly, and missing columns null; a value the schema's type cannot hold fails.
 pub(crate) fn align(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
     let columns = schema
         .fields()
         .iter()
-        // A cast to the type a column already has returns the column itself.
         .map(|field| match batch.column_by_name(field.name()) {
-            Some(column) => arrow_cast::cast(column, field.data_type()),
+            Some(column) => retype::retyped(column, field.data_type()),
             None => Ok(new_null_array(field.data_type(), batch.num_rows())),
         })
         .collect::<Result<Vec<ArrayRef>, _>>()?;

@@ -2076,6 +2076,7 @@ dependencies = [
  "arrow-select",
  "base64 0.22.1",
  "bytes",
+ "chrono",
  "flatbuffers",
  "getrandom 0.4.3",
  "parking_lot",

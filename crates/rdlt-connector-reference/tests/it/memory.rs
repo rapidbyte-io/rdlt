@@ -1,5 +1,6 @@
 mod owned;
 mod receipts;
+mod widened;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
