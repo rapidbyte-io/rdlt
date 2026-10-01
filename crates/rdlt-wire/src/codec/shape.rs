@@ -126,8 +126,11 @@ impl<'a> Walk<'a, '_, '_> {
         WireError::malformed(self.frame, problem)
     }
 
-    /// Counts `values` more values toward the frame's.
+    /// Counts `values` more values toward the frame's, but for those nothing reads.
     fn count(&mut self, values: u64) -> Result<(), WireError> {
+        if self.unread > 0 {
+            return Ok(());
+        }
         self.values = self.values.saturating_add(values);
         Ok(Limits::admit(
             "batch values",

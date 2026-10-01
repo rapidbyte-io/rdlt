@@ -73,8 +73,15 @@ async fn send(
         outbox
             .batch(&batch, v1::BatchKind::Arrow)
             .map_err(Left::Refused)?;
-        for frame in outbox.take_frames() {
-            frames.send(Ok(frame)).await.map_err(|_| Left::Host)?;
+        // A piece of the batch at a time: the next is cut once the host has taken the last.
+        loop {
+            for frame in outbox.take_frames() {
+                frames.send(Ok(frame)).await.map_err(|_| Left::Host)?;
+            }
+            if !outbox.cutting() {
+                break;
+            }
+            outbox.refill().map_err(Left::Refused)?;
         }
     }
     Ok(())

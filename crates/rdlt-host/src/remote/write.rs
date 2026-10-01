@@ -9,8 +9,8 @@ use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
-use rdlt_wire::Encoder;
 use rdlt_wire::prost::Message as _;
+use rdlt_wire::{Cut, Encoder};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
@@ -144,25 +144,31 @@ impl RemoteWriter {
             }))
             .await?;
         }
-        // A batch beyond the connector's limits goes as several, each of the same segment; a row
-        // beyond them is refused here, typed, rather than by the connector or its transport.
-        let frames = match self.encoder.batch_within(&batch, &self.connection.peer) {
-            Ok(frames) => frames,
-            Err(error) => {
-                // What is written next starts a schema epoch of its own.
-                self.schema = None;
-                return Err(frame_error(&error));
+        // A batch beyond the connector's limits goes as several, each of the same segment and
+        // encoded only once the piece before it was sent; a row beyond them is refused here,
+        // typed, rather than by the connector or its transport.
+        let mut cut = Cut::new(batch, self.connection.peer);
+        loop {
+            let frames = match self.encoder.piece(&mut cut) {
+                Ok(Some(frames)) => frames,
+                Ok(None) => return Ok(()),
+                Err(error) => {
+                    // What is written next starts a schema epoch of its own.
+                    self.schema = None;
+                    return Err(frame_error(&error));
+                }
+            };
+            for frame in frames {
+                self.send(Frame::Batch(v1::WriteBatch {
+                    segment: segment.0,
+                    data_header: frame.header,
+                    data_body: frame.body,
+                }))
+                .await?;
             }
-        };
-        for frame in frames {
-            self.send(Frame::Batch(v1::WriteBatch {
-                segment: segment.0,
-                data_header: frame.header,
-                data_body: frame.body,
-            }))
-            .await?;
+            // Encoding a piece is work of its own: other tasks run before the next.
+            tokio::task::yield_now().await;
         }
-        Ok(())
     }
 
     async fn flush_all(&mut self) -> rdlt_connector::Result<WriteStats> {

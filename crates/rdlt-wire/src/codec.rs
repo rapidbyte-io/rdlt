@@ -3,6 +3,7 @@
 
 mod compact;
 mod contain;
+mod count;
 mod decode;
 mod framing;
 mod measure;
@@ -25,6 +26,7 @@ use crate::error::{Frame, Problem, WireError};
 
 pub use decode::Decoder;
 pub use shape::Shape;
+pub use split::Cut;
 
 /// One IPC message: its flatbuffer header and its body buffers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -47,6 +49,9 @@ pub struct Encoder {
     /// Whether the schema last encoded holds a dictionary of dictionaries, which no schema
     /// message describes.
     twice_keyed: bool,
+    /// How many batches were encoded, for tests of what a cut costs.
+    #[cfg(test)]
+    encodes: usize,
 }
 
 impl Default for Encoder {
@@ -58,6 +63,8 @@ impl Default for Encoder {
             context: IpcWriteContext::default(),
             columns: None,
             twice_keyed: false,
+            #[cfg(test)]
+            encodes: 0,
         }
     }
 }
@@ -103,6 +110,10 @@ impl Encoder {
                 Frame::Batch,
                 Problem::DictionaryOfDictionaries,
             ));
+        }
+        #[cfg(test)]
+        {
+            self.encodes += 1;
         }
         let (dictionaries, encoded) = self
             .generator
