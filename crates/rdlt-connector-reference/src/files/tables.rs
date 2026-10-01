@@ -159,6 +159,9 @@ pub(super) fn owner(rdlt: &Dir, name: &str) -> Result<Option<String>> {
 ///
 /// The lock file stays in place, outside the catalog, so every process locks the same file. A
 /// lock another holder keeps for all of `wait` is a transient error coded `lock_timeout`.
+///
+/// The lock is tried again at short intervals and keeps no queue: whoever tries first after a
+/// release takes it, so a waiter may be overtaken and waits at most `wait`, never in turn.
 pub(super) fn locked<T>(
     rdlt: &Dir,
     name: &str,
