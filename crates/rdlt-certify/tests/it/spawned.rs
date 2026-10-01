@@ -63,8 +63,8 @@ async fn a_spawned_source_binary_is_certified_through_the_protocol() {
 async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
     let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
     let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
-    let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")))
-        .kill_seed(crate::killed::SETTLED_LATE);
+    // No seed is chosen: the clause loads again until a kill interrupts a load.
+    let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")));
     let config = json!({
         "seed": 11,
         "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
@@ -163,7 +163,14 @@ fn launcher(directory: &std::path::Path, detached: bool) -> Target {
         .expect("the launcher is executable");
     let id = ConnectorId::parse("io.rapidbyte.reference").expect("a valid id");
     let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
-    Target::spawned(local, ConnectorRef::new(id).path(path)).kill_seed(7)
+    let target = Target::spawned(local, ConnectorRef::new(id).path(path));
+    // A connector no kill reaches is loaded once: one that is, until a kill interrupts a load,
+    // which on a busy machine may end before the points one seed draws.
+    if detached {
+        target.kill_seed(7)
+    } else {
+        target
+    }
 }
 
 #[cfg(target_os = "linux")]

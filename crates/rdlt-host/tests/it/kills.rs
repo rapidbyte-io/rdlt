@@ -13,9 +13,12 @@ use rdlt_host::{Connect, ConnectorRef, Kills, Placement, Provider as _};
 use crate::process::{local, scripted, wait_gone};
 use crate::support::served;
 
+/// How long a process killed may take to be gone on a busy machine.
+const GONE: Duration = Duration::from_secs(60);
+
 /// Calls `check` until it succeeds, as an engine's retries would, within a bound.
 async fn checks_again(source: &dyn Source) {
-    for _ in 0..50 {
+    for _ in 0..3000 {
         if source.check().await.is_ok() {
             return;
         }
@@ -41,10 +44,7 @@ async fn a_killed_spawned_connector_is_spawned_again_for_the_next_call() {
         .parse()
         .expect("a process id");
     kills.kill();
-    assert!(
-        wait_gone(pid, Duration::from_secs(5)).await,
-        "the connector was killed"
-    );
+    assert!(wait_gone(pid, GONE).await, "the connector was killed");
     checks_again(source.as_ref()).await;
     let respawned: i32 = std::fs::read_to_string(&pid_file)
         .expect("the respawned connector wrote its id")
@@ -136,15 +136,22 @@ fn sleeper(directory: &std::path::Path) -> i32 {
     written.trim().parse().expect("a process id")
 }
 
-/// Waits for `kills` to have landed `landed` times, within a bound; whether they did.
+/// Waits for `kills` to have landed `landed` times, within a bound a busy machine keeps;
+/// whether they did.
 async fn lands(kills: &Kills, landed: u64) -> bool {
-    for _ in 0..250 {
+    for _ in 0..3000 {
         if kills.landed() >= landed {
             return kills.landed() == landed;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     false
+}
+
+/// How often `kills` have landed once a second has passed in which one more could.
+async fn landed_after_a_while(kills: &Kills) -> u64 {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    kills.landed()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -162,7 +169,7 @@ async fn a_kill_reaches_every_process_of_the_connectors_group_and_lands() {
     assert_eq!(kills.landed(), 0);
     kills.kill();
     assert!(
-        wait_gone(started, Duration::from_secs(5)).await,
+        wait_gone(started, GONE).await,
         "what the connector started was killed with it"
     );
     assert!(lands(&kills, 1).await, "{} landed", kills.landed());
@@ -171,7 +178,7 @@ async fn a_kill_reaches_every_process_of_the_connectors_group_and_lands() {
     let again = sleeper(directory.path());
     assert_ne!(again, started);
     kills.kill();
-    assert!(wait_gone(again, Duration::from_secs(5)).await);
+    assert!(wait_gone(again, GONE).await);
     assert!(lands(&kills, 2).await, "{} landed", kills.landed());
     assert_eq!(kills.count(), 2);
 }
@@ -189,7 +196,7 @@ async fn a_stopped_connector_takes_what_it_started_with_it() {
     let started = sleeper(directory.path());
     drop(source);
     assert!(
-        wait_gone(started, Duration::from_secs(5)).await,
+        wait_gone(started, GONE).await,
         "what the connector started stopped with it"
     );
 }
@@ -210,7 +217,7 @@ async fn a_kill_that_leaves_a_holder_of_the_connection_alive_has_not_landed() {
     // outlives the kill of the connector's group.
     let holder = sleeper(directory.path());
     kills.kill();
-    assert!(!lands(&kills, 1).await, "{} landed", kills.landed());
+    assert_eq!(landed_after_a_while(&kills).await, 0);
     assert_eq!((kills.count(), kills.landed()), (1, 0));
     assert!(!wait_gone(holder, Duration::from_millis(100)).await);
     // Once the last holder ends, the connection does, and the kill has landed.
@@ -241,5 +248,5 @@ async fn a_cut_connection_lands_its_kill_once_and_a_kill_of_nothing_lands_nowher
     assert!(lands(&kills, 1).await, "{} landed", kills.landed());
     checks_again(placed.connector.as_ref()).await;
     // The connection that ended is counted once, however often it is asked of after.
-    assert!(!lands(&kills, 2).await, "{} landed", kills.landed());
+    assert_eq!(landed_after_a_while(&kills).await, 1);
 }

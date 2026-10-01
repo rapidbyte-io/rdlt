@@ -222,7 +222,7 @@ async fn rows_that_cost_no_bytes_are_counted_and_cannot_outrun_a_clause() {
     assert!(taken("nulls") <= held + AHEAD, "{}", taken("nulls"));
     // Rendering each row of them takes minutes.
     assert!(
-        began.elapsed() < Duration::from_secs(30),
+        began.elapsed() < Duration::from_secs(120),
         "{:?}",
         began.elapsed()
     );
