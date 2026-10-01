@@ -55,6 +55,34 @@ fn separates_comments_from_code() {
     }
 }
 
+// A raw C string ends at its first quote, a backslash before it or not; a lexer that reads the
+// backslash as an escape blanks the code up to the next quote.
+#[test]
+fn c_strings_are_literals_and_end_where_the_compiler_ends_them() {
+    let cases: &[(&str, &str)] = &[
+        ("let a = cr\"\\\"; marker(); let b = \"\\\"\";\n", "marker"),
+        ("let a = cr#\"\\\"#; marker(); let b = \"\";\n", "marker"),
+        ("let a = cr##\"x\"# \"##; marker();\n", "marker"),
+        ("let a = c\"x\\\"y\"; marker();\n", "marker"),
+    ];
+    for (source, kept) in cases {
+        let scanned = scan(source);
+        assert!(scanned.code.contains(kept), "source: {source:?}");
+        assert!(scanned.comments.is_empty(), "source: {source:?}");
+    }
+    let hidden: &[&str] = &[
+        "let a = cr#\"\" marker(); // no\"#;\n",
+        "let a = c\"marker(); // no\";\n",
+        "let a = cr\"marker(); // no\";\n",
+        "let a = c\"\\\" marker(); // no\";\n",
+    ];
+    for source in hidden {
+        let scanned = scan(source);
+        assert!(!scanned.code.contains("marker"), "source: {source:?}");
+        assert!(scanned.comments.is_empty(), "source: {source:?}");
+    }
+}
+
 #[test]
 fn code_keeps_lines_and_drops_comment_text() {
     let scanned = scan("fn a() {} // x\n/* y\n z */\nfn b() {}\n");
