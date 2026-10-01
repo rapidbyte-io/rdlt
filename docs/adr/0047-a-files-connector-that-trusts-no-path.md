@@ -56,7 +56,9 @@ when it is read and never written in a form its reader refuses.
   entry on a file system that folds case; any other name, from the host or
   from a manifest, is refused as `invalid_name` or `manifest_invalid`. A manifest lists files
   relative to its pipeline's directory, each under `staging`; a manifest whose version is not
-  its file's, or that names anything else, is refused. Versions are counted with checks, and an
+  its file's, or that names anything else, is refused. A manifest, a catalog version or an owner
+  file that does not read as one is a data error coded `manifest_invalid` or `catalog_invalid`.
+  Versions are counted with checks, and an
   open or a schema change that keeps losing to other sessions ends after 64 tries.
 - **Arrow files are read by the wire's decoder.** The footer and every block it lists are
   checked against the file before anything is held: lengths are not negative, blocks lie
@@ -76,9 +78,7 @@ when it is read and never written in a form its reader refuses.
 - **A float JSON has no number for is named.** JSON lines hold `NaN`, `Infinity` and `-Infinity`
   as strings, as the engine's JSON lowering does (ADR 0011), and read them back as floats.
 - **What the destination creates is its user's alone.** Directories are 0700 and files 0600.
-  Published files are private too: a reader runs as that user. A manifest, a catalog version or
-  an owner file that does not read as one is a data error coded `manifest_invalid` or
-  `catalog_invalid`.
+  Published files are private too: a reader runs as that user.
 - **Locks are private, exclusive and waited for a bounded time.** A table's lock file is created
   exclusively, opened without following a link, and must be a regular file of the user's. The
   lock is tried until `lock_wait_ms` (30 seconds) passed, then the call fails as a transient
