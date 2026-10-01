@@ -49,6 +49,10 @@ pub(crate) enum Fault {
     Lenient,
     /// Its reads send every frame, whatever the credit.
     Greedy,
+    /// Its reads send every frame, whatever the credit, a second and a half apart.
+    Paced,
+    /// Its reads send a frame for each credit it is granted, however little that is.
+    Eager,
     /// It declares configuration and cursor limits beyond any this host sends, which breaks no
     /// clause.
     Vast,
@@ -77,7 +81,7 @@ pub(crate) enum Fault {
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 12] = [
+pub(crate) const BROKEN: [(Fault, &str); 14] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -88,6 +92,8 @@ pub(crate) const BROKEN: [(Fault, &str); 12] = [
     (Fault::EchoAhead, "P-HEARTBEAT"),
     (Fault::Lenient, "P-MALFORMED"),
     (Fault::Greedy, "P-CREDIT"),
+    (Fault::Paced, "P-CREDIT"),
+    (Fault::Eager, "P-CREDIT"),
     (Fault::LenientCursor, "P-LIMITS"),
     (Fault::AcceptsAnyFeature, "P-HANDSHAKE"),
 ];
@@ -310,7 +316,9 @@ impl Connector for Fake {
                 return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
             }
         }
-        let greedy = !self.keeps(Fault::Greedy);
+        let paced = !self.keeps(Fault::Paced);
+        let greedy = !self.keeps(Fault::Greedy) || paced;
+        let eager = !self.keeps(Fault::Eager);
         let (frames, answer) = mpsc::channel(64);
         tokio::spawn(async move {
             let log = |line: usize| v1::ReadFrame {
@@ -321,12 +329,18 @@ impl Connector for Fake {
             };
             let mut credit: i64 = 0;
             for line in 0..8 {
+                if paced && line > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                }
                 while credit <= 0 && !greedy {
                     match controls.next().await {
                         Some(Ok(v1::ReadControl {
                             control: Some(Control::Credit(granted)),
                         })) => {
                             credit += i64::try_from(granted.bytes).unwrap_or(i64::MAX);
+                            if eager {
+                                credit = credit.max(1);
+                            }
                         }
                         Some(Ok(_)) => {}
                         _ => return,
