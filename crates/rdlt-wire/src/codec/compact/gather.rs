@@ -55,7 +55,9 @@ impl Narrower {
         let DataType::FixedSizeList(field, size) = lists.data_type() else {
             return Ok(Arc::new(lists.clone()));
         };
-        let width = usize::try_from(*size).unwrap_or(0);
+        let width = usize::try_from(*size).map_err(|_| {
+            ArrowError::InvalidArgumentError(format!("lists of {size} items have no size"))
+        })?;
         let mut items = Vec::new();
         for (start, end) in ranges {
             name(
