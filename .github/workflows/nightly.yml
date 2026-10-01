@@ -5,8 +5,8 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
-# Every job gets a token that can read the repository and nothing else. No step's environment
-# holds it but the one that is given it by name.
+# Every job's token can read the repository and nothing else, and no step has it in its
+# environment.
 permissions:
   contents: read
 
