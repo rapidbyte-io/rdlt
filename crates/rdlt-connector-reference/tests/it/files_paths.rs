@@ -2,8 +2,6 @@
 //! link, takes no name that is not one path component, and reads only regular files of bounded
 //! size.
 
-#![cfg(unix)]
-
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::Path;
 use std::time::{Duration, SystemTime};

@@ -1,8 +1,6 @@
 //! What the files destination keeps is bounded by what it publishes, and what it publishes reads
 //! back as it was written.
 
-#![cfg(unix)]
-
 use std::path::Path;
 use std::sync::Arc;
 

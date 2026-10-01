@@ -1,7 +1,5 @@
 //! A table's lock is waited for a bounded time, and checks of one root never fail each other.
 
-#![cfg(unix)]
-
 use std::time::{Duration, Instant};
 
 use rdlt_connector::{ConnectorErrorKind, Field, LogicalType, TableChange};

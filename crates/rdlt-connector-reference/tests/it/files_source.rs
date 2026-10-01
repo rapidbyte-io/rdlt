@@ -1,8 +1,6 @@
 //! The files source reads only regular files under its root, within its limits, and pushes JSON
 //! lines as they are written.
 
-#![cfg(unix)]
-
 use std::num::NonZeroUsize;
 use std::os::unix::fs::symlink;
 use std::path::Path;

@@ -21,6 +21,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(not(unix))]
+compile_error!("rdlt-connector-reference needs a Unix: it reaches files beneath open directories");
+
 mod blocking;
 pub mod changes;
 mod columns;
