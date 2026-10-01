@@ -631,3 +631,33 @@ fn a_column_is_read_only_as_what_a_column_of_its_kind_is_written_as() {
         }
     }
 }
+
+#[test]
+fn the_integers_of_a_read_back_are_read_through_its_admission_whatever_their_columns_case() {
+    use super::read_back_integers;
+    let ids = |column: ArrayRef| RecordBatch::try_from_iter_with_nullable([("ID", column, true)]);
+    let whole = ids(Arc::new(Int32Array::from(vec![3, 1]))).unwrap();
+    let encoded = ids(dictionary::<Int8Type>(
+        Arc::new(Int64Array::from(vec![7, 8])),
+        2,
+    ));
+    let read = read_back_integers(vec![whole.clone(), whole], "id").unwrap();
+    assert_eq!(read, [3, 1, 3, 1]);
+    assert_eq!(
+        read_back_integers(Vec::new(), "id").unwrap(),
+        Vec::<i64>::new()
+    );
+    // A null, another column, another kind, a column no clause admits, and too many rows.
+    assert!(read_back_integers(vec![encoded.unwrap()], "id").is_err());
+    assert!(read_back_integers(vec![batch(Arc::new(Int64Array::from(vec![1])))], "id").is_err());
+    let refused = refused().into_iter().chain([texts(), zero_width()]);
+    for column in refused {
+        let kind = column.data_type().clone();
+        assert!(
+            read_back_integers(vec![ids(column).unwrap()], "id").is_err(),
+            "{kind}"
+        );
+    }
+    let many = ids(Arc::new(Int64Array::from(vec![0; PUBLISHED_ROWS + 1]))).unwrap();
+    assert!(read_back_integers(vec![many], "id").is_err());
+}

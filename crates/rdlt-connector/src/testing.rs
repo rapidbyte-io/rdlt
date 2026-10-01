@@ -29,6 +29,7 @@ use std::future::Future;
 
 pub use destination::{
     DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
+    read_back_integers,
 };
 use limits::{CALL_TIMEOUT, CLAUSE_TIMEOUT};
 pub use limits::{REASON_BYTES, RENDERED_BYTES};

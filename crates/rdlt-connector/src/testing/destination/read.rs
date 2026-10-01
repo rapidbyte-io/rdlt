@@ -6,7 +6,7 @@ mod tests;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    BinaryViewType, ByteArrayType, ByteViewType, GenericBinaryType, GenericStringType,
+    BinaryViewType, ByteArrayType, ByteViewType, GenericBinaryType, GenericStringType, Int64Type,
     StringViewType,
 };
 use arrow_array::{Array, ArrayRef, RecordBatch};
@@ -15,7 +15,7 @@ use arrow_schema::DataType;
 use super::Bench;
 use crate::destination::TableRef;
 use crate::testing::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS};
-use crate::testing::{Violation, bounded_call};
+use crate::testing::{Reason, Violation, bounded_call};
 
 /// The batches a destination read back of one table, within certification's limits.
 #[derive(Debug)]
@@ -75,6 +75,34 @@ impl Published {
     pub(super) fn rows(&self) -> usize {
         self.0.iter().map(RecordBatch::num_rows).sum()
     }
+}
+
+/// The whole numbers of the column `name`, matched whatever its case, of `batches`, what a
+/// destination read back of a table: admitted as every read-back a clause reads is, read as
+/// integers are, and none of them null.
+///
+/// # Errors
+///
+/// Why the read-back is not admitted, or its column not such integers.
+pub fn read_back_integers(batches: Vec<RecordBatch>, name: &str) -> Result<Vec<i64>, Reason> {
+    let integers = || -> Result<Vec<i64>, Violation> {
+        let published = Published::admit(batches)?;
+        let mut integers = Vec::with_capacity(published.rows());
+        for batch in published.batches() {
+            let schema = batch.0.schema();
+            let named = schema
+                .fields()
+                .iter()
+                .find(|field| field.name().eq_ignore_ascii_case(name))
+                .ok_or_else(|| {
+                    Violation::from(format_args!("a published batch has no `{name}` column"))
+                })?;
+            let column = batch.required(named.name(), &DataType::Int64)?;
+            integers.extend(column.as_primitive::<Int64Type>().values().iter().copied());
+        }
+        Ok(integers)
+    };
+    integers().map_err(|violation| violation.reason)
 }
 
 /// One batch read back.
