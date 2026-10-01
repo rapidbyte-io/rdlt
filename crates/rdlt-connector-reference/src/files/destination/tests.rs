@@ -245,3 +245,60 @@ fn a_table_is_still_dropped_only_while_the_latest_manifest_lists_nothing_for_it(
     assert!(manifest::put(&dir, &manifest).unwrap());
     assert!(!super::still_dropped(&dir, "t").unwrap());
 }
+
+#[test]
+fn what_commits_wrote_and_no_manifest_lists_is_swept_and_what_writers_stage_is_not() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = Dir::ambient(root.path()).unwrap();
+    let touch = |path: &str| {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"x").unwrap();
+    };
+    let listed = "staging/5/load/merged/c1/rows/table/0.jsonl";
+    let kept = [
+        listed,
+        // A writer of the session is staging these: no commit wrote them.
+        "staging/5/load/7/rows/table/1.jsonl",
+        "staging/5/other/8/rows/table/1.jsonl",
+        // A newer session's.
+        "staging/6/load/merged/c1/rows/table/0.jsonl",
+    ];
+    let swept = [
+        "staging/5/load/merged/c0/rows/table/0.jsonl",
+        "staging/5/load/compacted/c0/rows/table/0.jsonl",
+        "staging/5/other/tombstones/c0/rows/table/0.jsonl",
+        "staging/4/load/3/rows/table/1.jsonl",
+    ];
+    for path in kept.iter().chain(&swept) {
+        touch(path);
+    }
+    touch("staging/5/stray");
+    let mut manifest = Manifest {
+        version: 1,
+        ..Manifest::default()
+    };
+    let file = Listed {
+        path: listed.to_owned(),
+        rows: 1,
+        bytes: 1,
+    };
+    let table = TableFiles {
+        files: vec![file],
+        ..TableFiles::default()
+    };
+    manifest.tables.insert("rows".to_owned(), table);
+    assert!(manifest::put(&dir, &manifest).unwrap());
+    super::discard_superseded(&dir, Epoch(5)).unwrap();
+    for path in kept {
+        assert!(root.path().join(path).exists(), "{path}");
+    }
+    for path in swept {
+        assert!(!root.path().join(path).exists(), "{path}");
+    }
+    assert!(!root.path().join("staging/5/load/compacted").exists());
+    assert!(root.path().join("staging/5/stray").exists());
+    // A pipeline whose session staged nothing has nothing to sweep.
+    let empty = tempfile::tempdir().unwrap();
+    super::discard_superseded(&Dir::ambient(empty.path()).unwrap(), Epoch(5)).unwrap();
+}

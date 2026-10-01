@@ -107,3 +107,149 @@ fn a_file_a_commit_writes_is_named_for_its_own_load_and_number_and_for_no_other_
     assert_ne!(first, second);
     assert!(crate::rooted::component(first.as_ref()).is_ok());
 }
+
+/// One pipeline's sessions over a root, driven as the engine drives them but on the test's own
+/// thread, so each step they take is recorded and can be refused.
+pub(crate) struct Sessions {
+    pub(crate) root: tempfile::TempDir,
+    pub(crate) location: Location,
+    pub(in crate::files::session) shared: parking_lot::Mutex<super::Shared>,
+}
+
+impl Sessions {
+    /// A first session of `format` under a fresh root.
+    pub(crate) fn new(format: FileFormat) -> Self {
+        let (root, location) = location(format);
+        let mut sessions = Self {
+            root,
+            location,
+            shared: parking_lot::Mutex::default(),
+        };
+        sessions.open(1);
+        sessions
+    }
+
+    /// Opens the pipeline's next session for `load`, as an open does: the next epoch, and what
+    /// older sessions staged and never published discarded.
+    pub(crate) fn open(&mut self, load: u128) {
+        let (dir, rdlt) = (&self.location.dir, &self.location.rdlt);
+        let wait = self.location.lock_wait;
+        let manifest =
+            crate::files::destination::next_epoch(dir, rdlt, &self.location.pipeline, wait)
+                .unwrap();
+        self.location.epoch = manifest.epoch;
+        self.location.load_id = LoadId::from_parts(UNIX_EPOCH, load);
+        self.shared = parking_lot::Mutex::default();
+        crate::files::destination::discard(dir, manifest.epoch).unwrap();
+    }
+
+    /// Creates `table` with `schema`, as a schema change does.
+    pub(crate) fn create(
+        &self,
+        table: &rdlt_connector::TableRef,
+        schema: &rdlt_connector::TableSchema,
+    ) {
+        let (rdlt, wait) = (&self.location.rdlt, self.location.lock_wait);
+        crate::files::tables::locked(rdlt, &table.name, wait, || {
+            super::claim(&self.location, &table.name)?;
+            crate::files::tables::update(rdlt, &table.name, |_| Ok(Some(schema.clone())))
+        })
+        .unwrap();
+        self.shared
+            .lock()
+            .names
+            .insert(super::path_key(&table.path), table.name.to_string());
+    }
+
+    /// Stages `batch` of `table` as `segment`.
+    pub(crate) fn stage(
+        &self,
+        table: &rdlt_connector::TableRef,
+        segment: u64,
+        batch: arrow_array::RecordBatch,
+    ) {
+        let buffered = vec![(rdlt_connector::SegmentId(segment), batch)];
+        super::stage(&self.location, &self.shared, table, buffered).unwrap();
+    }
+
+    /// Commit `seq` of `load` of `segments`.
+    pub(crate) fn meta(
+        &self,
+        load: u128,
+        seq: u64,
+        segments: &[u64],
+    ) -> rdlt_connector::CommitMeta {
+        let seq = (1..seq).fold(rdlt_connector::CommitSeq::FIRST, |seq, _| seq.next());
+        rdlt_connector::CommitMeta {
+            load_id: LoadId::from_parts(UNIX_EPOCH, load),
+            commit_seq: seq,
+            epoch: self.location.epoch,
+            segments: segments
+                .iter()
+                .copied()
+                .map(rdlt_connector::SegmentId)
+                .collect(),
+            state_delta: Vec::new(),
+            finish_generations: Vec::new(),
+            child_tables: Vec::new(),
+            drop_tables: Vec::new(),
+        }
+    }
+
+    pub(crate) fn commit(
+        &self,
+        meta: &rdlt_connector::CommitMeta,
+    ) -> rdlt_connector::Result<rdlt_connector::Receipt> {
+        super::commit::commit(&self.location, &self.shared, meta)
+    }
+
+    /// The `id` of every row the latest manifest publishes for `table`, in order; every file it
+    /// lists must read.
+    pub(crate) fn ids(&self, table: &str) -> Vec<i64> {
+        use arrow_array::cast::AsArray as _;
+        let schema = crate::files::tables::read(&self.location.rdlt, table)
+            .unwrap()
+            .map_or_else(arrow_schema::Schema::empty, |schema| schema.to_arrow());
+        let schema = Arc::new(schema);
+        let Some(manifest) = crate::files::manifest::latest(&self.location.dir).unwrap() else {
+            return Vec::new();
+        };
+        let Some(files) = manifest.tables.get(table) else {
+            return Vec::new();
+        };
+        let mut ids = Vec::new();
+        for file in &files.files {
+            let read = crate::files::manifest::read(&self.location.dir, &file.path, &schema);
+            for batch in read.unwrap() {
+                let column = batch.column_by_name("id").unwrap();
+                let column = arrow_cast::cast(column, &arrow_schema::DataType::Int64).unwrap();
+                ids.extend(
+                    column
+                        .as_primitive::<arrow_array::types::Int64Type>()
+                        .values(),
+                );
+            }
+        }
+        ids
+    }
+
+    /// The data files under the pipeline's staging, relative to the pipeline's directory.
+    pub(crate) fn data_files(&self) -> Vec<String> {
+        let base = self.location.dir.path().to_owned();
+        let mut pending = vec![base.join("staging")];
+        let mut found = Vec::new();
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let relative = path.strip_prefix(&base).unwrap();
+                    found.push(relative.to_string_lossy().into_owned());
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+}

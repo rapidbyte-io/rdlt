@@ -280,6 +280,16 @@ pub(super) fn latest(dir: &Dir) -> Result<Option<Manifest>> {
     }
 }
 
+/// Makes the names of the manifests of the pipeline whose directory `dir` is durable.
+pub(super) fn settle(dir: &Dir) -> Result<()> {
+    match manifests(dir)? {
+        Some(manifests) => manifests
+            .sync()
+            .map_err(io::failed("syncing", manifests.path())),
+        None => Ok(()),
+    }
+}
+
 /// Removes the temporaries writers that died left among the manifests of the pipeline whose
 /// directory `dir` is.
 pub(super) fn sweep(dir: &Dir) -> Result<()> {

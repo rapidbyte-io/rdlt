@@ -34,10 +34,6 @@ pub(super) fn commit(
             manifest.epoch, location.epoch
         )));
     }
-    if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq) {
-        return Ok(receipt);
-    }
-    named(meta)?;
     let (staged, names) = {
         let shared = shared.lock();
         let staged: Vec<StagedFile> = shared
@@ -48,19 +44,24 @@ pub(super) fn commit(
             .collect();
         (staged, shared.names.clone())
     };
-    let mut held: Vec<String> = manifest.files().map(|file| file.path.clone()).collect();
-    held.extend(staged.iter().map(|staged| staged.file.path.clone()));
-    let mut created = Vec::new();
-    let published = publish_all(location, &mut manifest, &staged, meta, &mut created)
-        .and_then(|()| put(location, &mut manifest, &staged, names, meta));
-    let receipt = match published {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            // What the failed commit wrote goes, unless its manifest was created after all: a
-            // failure after that leaves the manifest, which lists what was written.
-            prune(&location.dir, &created);
-            return Err(error);
-        }
+    let mut held: Vec<String> = staged
+        .iter()
+        .map(|staged| staged.file.path.clone())
+        .collect();
+    let receipt = if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq) {
+        // The commit's manifest exists, and an earlier answer may have failed before the
+        // manifest's name was durable: it is made durable before the commit is answered again.
+        manifest::settle(&location.dir)?;
+        // What that commit superseded may still be there: what no manifest lists goes, as far
+        // as it goes.
+        drop(destination::discard_superseded(
+            &location.dir,
+            location.epoch,
+        ));
+        receipt
+    } else {
+        held.extend(manifest.files().map(|file| file.path.clone()));
+        publish(location, &mut manifest, &staged, names, meta)?
     };
     {
         let mut shared = shared.lock();
@@ -77,6 +78,28 @@ pub(super) fn commit(
     prune(&location.dir, &held);
     release_dropped(location, shared, &manifest);
     Ok(receipt)
+}
+
+/// Publishes the `staged` files of commit `meta` in `manifest` and creates it as the pipeline's
+/// next version; the commit's receipt.
+///
+/// A commit that fails removes what it wrote unless its manifest was created after all: a
+/// failure after that leaves the manifest, which lists what was written.
+fn publish(
+    location: &Location,
+    manifest: &mut Manifest,
+    staged: &[StagedFile],
+    names: BTreeMap<String, String>,
+    meta: &CommitMeta,
+) -> Result<Receipt> {
+    named(meta)?;
+    let mut created = Vec::new();
+    let published = publish_all(location, manifest, staged, meta, &mut created)
+        .and_then(|()| put(location, manifest, staged, names, meta));
+    if published.is_err() {
+        prune(&location.dir, &created);
+    }
+    published
 }
 
 /// Removes the catalogs of the tables `manifest` lists as dropped, each once in the session.
@@ -232,7 +255,7 @@ fn finish(location: &Location, manifest: &mut Manifest, meta: &CommitMeta) -> Re
 
 /// Adds `files`, staged for the table `name` or one generation of it, to what `manifest` lists
 /// for it: appended, into their generation, or merged into one new file of the table's rows.
-fn publish(
+fn publish_table(
     location: &Location,
     manifest: &mut Manifest,
     name: &str,
@@ -292,7 +315,7 @@ fn publish_all(
             .push(file);
     }
     for ((name, _), files) in &by_table {
-        publish(location, manifest, name, files, meta, &by_table, created)?;
+        publish_table(location, manifest, name, files, meta, &by_table, created)?;
     }
     for child in &meta.child_tables {
         follow_root(location, manifest, child, meta, &by_table, created)?;

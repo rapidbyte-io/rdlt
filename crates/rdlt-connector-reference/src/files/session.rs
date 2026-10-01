@@ -49,7 +49,7 @@ struct StagedFile {
 
 /// What a session and its writers share.
 #[derive(Debug, Default)]
-struct Shared {
+pub(super) struct Shared {
     staged: Vec<StagedFile>,
     /// The identifier of each table path the session wrote or changed, by the path's JSON.
     names: BTreeMap<String, String>,
@@ -231,38 +231,46 @@ impl TableWriter for FilesWriter {
             Arc::clone(&self.shared),
             self.table.clone(),
         );
-        blocking(move || {
-            let mut stats = WriteStats::default();
-            for (segment, batch) in buffered {
-                if batch.num_rows() == 0 {
-                    continue;
-                }
-                let part = {
-                    let mut shared = shared.lock();
-                    shared.parts += 1;
-                    shared.parts
-                };
-                let (names, file) =
-                    location.staged(&[segment.to_string()], &table.name, table.generation, part);
-                let dir = location.staging(&names)?;
-                let written = location.format.write(&dir, &file, &[batch])?;
-                let file = Listed {
-                    path: format!("{}/{file}", names.join("/")),
-                    rows: written.rows,
-                    bytes: written.bytes,
-                };
-                shared.lock().staged.push(StagedFile {
-                    segment,
-                    table: table.clone(),
-                    file,
-                });
-                stats.rows += written.rows;
-                stats.bytes += written.bytes;
-            }
-            Ok(stats)
-        })
-        .await
+        blocking(move || stage(&location, &shared, &table, buffered)).await
     }
+}
+
+/// Writes each of the `buffered` batches of `table` to a staged file of its own, which the
+/// session then holds for its segment's commit; what was written.
+fn stage(
+    location: &Location,
+    shared: &Mutex<Shared>,
+    table: &TableRef,
+    buffered: Vec<(SegmentId, RecordBatch)>,
+) -> Result<WriteStats> {
+    let mut stats = WriteStats::default();
+    for (segment, batch) in buffered {
+        if batch.num_rows() == 0 {
+            continue;
+        }
+        let part = {
+            let mut shared = shared.lock();
+            shared.parts += 1;
+            shared.parts
+        };
+        let (names, file) =
+            location.staged(&[segment.to_string()], &table.name, table.generation, part);
+        let dir = location.staging(&names)?;
+        let written = location.format.write(&dir, &file, &[batch])?;
+        let file = Listed {
+            path: format!("{}/{file}", names.join("/")),
+            rows: written.rows,
+            bytes: written.bytes,
+        };
+        shared.lock().staged.push(StagedFile {
+            segment,
+            table: table.clone(),
+            file,
+        });
+        stats.rows += written.rows;
+        stats.bytes += written.bytes;
+    }
+    Ok(stats)
 }
 
 /// How the manifest keys a table path: its segments as a JSON array.
