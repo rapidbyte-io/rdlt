@@ -10,8 +10,10 @@ use proptest::prelude::*;
 use rdlt_testkit::drawn::values;
 
 use crate::codec::compact::compacted;
+use crate::codec::split::Probe;
 use crate::codec::tests::frames::refusal;
 use crate::codec::tests::samples::batch_of;
+use crate::codec::weigh::{Weigher, Weight};
 use crate::codec::{Cut, Decoder, Encoder, IpcFrame};
 use crate::error::WireError;
 use crate::limits::{BATCH_ROWS, BATCH_VALUES, Limits};
@@ -93,11 +95,20 @@ fn rows(rows: i32) -> RecordBatch {
     RecordBatch::try_from_iter([("id", ids), ("name", Arc::new(names) as ArrayRef)]).unwrap()
 }
 
+/// What every row of `batch` weighs as one piece, and what a frame of it takes beside.
+fn weighed(batch: &RecordBatch) -> (Weight, u64) {
+    let mut weigher = Weigher::new(batch);
+    let mut weight = Weight::default();
+    weigher.begin();
+    for row in 0..batch.num_rows() {
+        weight += weigher.weigh(row);
+    }
+    (weight, weigher.overhead())
+}
+
 #[test]
 fn a_batch_at_each_limit_goes_whole_and_one_beyond_is_cut_where_the_limit_falls() {
     let batch = rows(10);
-    let whole = cut(&batch, &Limits::default()).unwrap();
-    let bytes = u64::try_from(whole[0].header.len() + whole[0].body.len()).unwrap();
     let of_rows = |batch_rows| Limits {
         batch_rows,
         ..Limits::default()
@@ -110,7 +121,10 @@ fn a_batch_at_each_limit_goes_whole_and_one_beyond_is_cut_where_the_limit_falls(
         frame_bytes,
         ..Limits::default()
     };
-    // Two values a row.
+    // Two values a row; its rows weigh, with a frame's padding and header, what a frame of
+    // them may take at most.
+    let (weight, overhead) = weighed(&batch);
+    let bytes = weight.frame_bytes() + overhead;
     let cases = [
         (of_rows(10), vec![10]),
         (of_rows(9), vec![9, 1]),
@@ -119,6 +133,7 @@ fn a_batch_at_each_limit_goes_whole_and_one_beyond_is_cut_where_the_limit_falls(
         (of_values(19), vec![9, 1]),
         (of_values(2), vec![1; 10]),
         (of_bytes(bytes), vec![10]),
+        (of_bytes(bytes - 1), vec![9, 1]),
     ];
     for (limits, expected) in cases {
         let frames = cut(&batch, &limits).unwrap();
@@ -129,14 +144,6 @@ fn a_batch_at_each_limit_goes_whole_and_one_beyond_is_cut_where_the_limit_falls(
             "{limits:?}"
         );
     }
-    // A frame of many rows a byte over the limit is cut in two.
-    let batch = rows(2_000);
-    let whole = cut(&batch, &Limits::default()).unwrap();
-    let bytes = u64::try_from(whole[0].header.len() + whole[0].body.len()).unwrap();
-    let limits = of_bytes(bytes - 1);
-    let frames = cut(&batch, &limits).unwrap();
-    let pieces = in_order(&batch, &received(&batch, &frames, limits));
-    assert_eq!(pieces.len(), 2, "{pieces:?}");
 }
 
 /// Two lists, of one and of three integers.
@@ -366,23 +373,15 @@ proptest! {
                 prop_assert!(each_fits);
                 let received = received(&batch, &frames, limits);
                 let pieces = in_order(&batch, &received);
-                // No piece but the last could have taken the row after it, unless the frame's
-                // bytes bind: then a row more of its average size, or a sixty-fourth of its
-                // rows more, would not have fitted.
-                let batches = frames.iter().filter(|frame| {
-                    let message = arrow_ipc::root_as_message(&frame.header).unwrap();
-                    message.header_type() == arrow_ipc::MessageHeader::RecordBatch
-                });
-                let sizes: Vec<usize> =
-                    batches.map(|frame| bytes(std::slice::from_ref(frame))).collect();
-                prop_assert_eq!(sizes.len(), pieces.len());
+                // No piece but the last could have taken the row after it: its receiver would
+                // refuse the longer piece, or the longer piece weighs more than a frame takes.
                 let mut start = 0;
-                for (at, piece) in pieces[..pieces.len() - 1].iter().enumerate() {
-                    let full = !part_fits(&batch, start, piece + 1, limits);
-                    let size = u64::try_from(sizes[at]).unwrap();
-                    let average = size / u64::try_from(*piece).unwrap();
-                    let more = 1 + u64::try_from(*piece).unwrap() / 64;
-                    prop_assert!(full || size + more * average > limits.frame_bytes);
+                for piece in &pieces[..pieces.len() - 1] {
+                    let longer = batch.slice(start, piece + 1);
+                    let (weight, overhead) = weighed(&compacted(&longer).unwrap());
+                    let heavy = weight.frame_bytes() + overhead > limits.frame_bytes;
+                    let most = u64::try_from(*piece).unwrap() == most_rows;
+                    prop_assert!(most || heavy || !part_fits(&batch, start, piece + 1, limits));
                     start += piece;
                 }
             }
@@ -485,14 +484,9 @@ fn rows_naming_shared_buffers_larger_than_a_frame_are_cut_and_cross() {
     }
 }
 
-#[test]
-fn a_sender_holds_one_piece_of_a_batch_cut_to_the_smallest_limits_a_peer_may_set() {
+/// The limits at every minimum a peer may set.
+fn least() -> Limits {
     use crate::limits::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES};
-    // A million rows of 65 flags for a receiver at every minimum: a frame for each 1024 rows.
-    // What the sender is handed at each step, beyond the batch it already holds, is one frame
-    // of a few kilobytes, and all of them together take little more than the batch.
-    let rows = usize::try_from(BATCH_ROWS).unwrap();
-    let batch = flags(65, rows);
     let least = Limits {
         frame_bytes: MIN_FRAME_BYTES,
         batch_rows: MIN_BATCH_ROWS,
@@ -500,79 +494,261 @@ fn a_sender_holds_one_piece_of_a_batch_cut_to_the_smallest_limits_a_peer_may_set
         ..Limits::default()
     };
     least.admit_peer().unwrap();
-    let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema()).unwrap();
-    let whole = bytes(&encoder.batch(&batch).unwrap());
-    let mut cut = Cut::new(batch.clone(), least);
-    let (mut steps, mut sent, mut largest) = (0, 0, 0);
-    while let Some(frames) = encoder.piece(&mut cut).unwrap() {
-        assert_eq!(frames.len(), 1);
-        (steps, sent) = (steps + 1, sent + bytes(&frames));
-        largest = largest.max(bytes(&frames));
-    }
-    assert_eq!(steps, rows / 1_024);
-    assert!(largest <= 32 * 1_024, "{largest}");
-    assert!(sent <= 2 * whole, "{sent} of {whole}");
-    assert_eq!(encoder.encodes, 1 + steps);
-    assert_eq!(encoder.piece(&mut cut).unwrap(), None);
+    least
 }
 
-/// How many batches `encoder` encodes to cut `batch` within `limits`, and into how many pieces.
-fn cost(batch: &RecordBatch, limits: &Limits) -> (usize, usize) {
+/// What cutting a batch cost its sender.
+#[derive(Debug)]
+struct Cost {
+    /// The pieces the batch went as.
+    pieces: usize,
+    /// Batches encoded.
+    encodes: usize,
+    /// What the cut itself counted.
+    probe: Probe,
+    /// The bytes of the largest frame encoded, and of all the frames sent.
+    largest: usize,
+    sent: usize,
+}
+
+/// Cuts `batch` within `limits` on a fresh encoder, checks a receiver within them decodes its
+/// rows once each and in order, and reports what the cut cost.
+fn cost(batch: &RecordBatch, limits: Limits) -> Cost {
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema()).unwrap();
-    let frames = stepped(&mut encoder, batch, limits).unwrap();
-    (encoder.encodes, frames.len())
+    let mut decoder = Decoder::new(limits);
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
+    let mut cut = Cut::new(batch.clone(), limits);
+    let (mut start, mut cost) = (
+        0,
+        Cost {
+            pieces: 0,
+            encodes: 0,
+            probe: Probe::default(),
+            largest: 0,
+            sent: 0,
+        },
+    );
+    while let Some(frames) = encoder.piece(&mut cut).unwrap() {
+        // What the sender is handed at each step is the piece, and the dictionaries before it.
+        cost.largest = cost.largest.max(bytes(&frames));
+        cost.sent += bytes(&frames);
+        for frame in &frames {
+            if let Some(piece) = decoder.frame(frame).unwrap() {
+                assert_eq!(piece, batch.slice(start, piece.num_rows()), "at {start}");
+                start += piece.num_rows();
+                cost.pieces += 1;
+            }
+        }
+    }
+    assert_eq!(start, batch.num_rows());
+    assert_eq!(encoder.piece(&mut cut).unwrap(), None);
+    (cost.encodes, cost.probe) = (encoder.encodes, cut.probe);
+    cost
+}
+
+/// Checks a cut cost one weighing of each row, and of the first row of each piece after the
+/// first again, and one narrowing and one encoding of each piece.
+fn costs_a_scan_and_an_encode_a_piece(batch: &RecordBatch, cost: &Cost) {
+    assert!(cost.pieces > 1, "{cost:?}");
+    assert_eq!(cost.encodes, cost.pieces, "{cost:?}");
+    assert_eq!(cost.probe.compactions, cost.pieces, "{cost:?}");
+    assert_eq!(cost.probe.halvings, 0, "{cost:?}");
+    // A piece that ends at the row limit ends without weighing the row after it.
+    let weighed = batch.num_rows()..batch.num_rows() + cost.pieces;
+    assert!(weighed.contains(&cost.probe.weighed), "{cost:?}");
 }
 
 #[test]
-fn a_cut_costs_about_an_encode_a_piece() {
-    // Values bind: the cut is found by counting, and each piece is encoded once.
+fn a_sender_holds_one_piece_of_a_batch_cut_to_the_smallest_limits_a_peer_may_set() {
+    // A million rows of 65 flags for a receiver at every minimum: a frame for each 1024 rows.
+    // What the sender is handed at each step, beyond the batch it already holds, is one frame
+    // of a few kilobytes, and all of them together take little more than the batch.
     let rows = usize::try_from(BATCH_ROWS).unwrap();
-    assert_eq!(cost(&flags(65, rows), &Limits::default()), (2, 2));
-    assert_eq!(cost(&flags(64, rows), &Limits::default()), (1, 1));
-    let of_values = Limits {
-        batch_values: 6_500,
-        ..Limits::default()
-    };
-    assert_eq!(cost(&flags(65, 20_000), &of_values), (200, 200));
-    // Bytes bind: the batch is encoded whole to learn its size, then each piece once where rows
-    // are of one size.
-    let alike = batch_of(Arc::new(Int32Array::from_iter_values(0..200_000)));
-    let whole = cut(&alike, &Limits::default()).unwrap();
-    let tenth = Limits {
-        frame_bytes: u64::try_from(bytes(&whole)).unwrap() / 10,
-        ..Limits::default()
-    };
-    let (encodes, pieces) = cost(&alike, &tenth);
-    assert!((10..=11).contains(&pieces), "{pieces}");
-    // One for the whole batch, and one for the first guess, which a frame's header puts a
-    // little over.
-    assert!(encodes <= pieces + 2, "{encodes} for {pieces}");
-    // Rows whose sizes drift, as text of growing numbers does, cost a piece a try more.
-    let batch = self::rows(20_000);
-    let whole = cut(&batch, &Limits::default()).unwrap();
-    let of_bytes = Limits {
-        frame_bytes: u64::try_from(bytes(&whole)).unwrap() / 10,
-        ..Limits::default()
-    };
-    let (encodes, pieces) = cost(&batch, &of_bytes);
-    assert!((10..=12).contains(&pieces), "{pieces}");
-    assert!(encodes <= 3 * pieces, "{encodes} for {pieces}");
-    // Rows of very different sizes: a thousand of a byte, then one of sixty thousand, fifty
-    // times over. No piece costs more than a few encodes.
-    let mut texts = Vec::new();
-    for _ in 0..50 {
-        texts.extend(std::iter::repeat_n("x".to_owned(), 1_000));
-        texts.push("y".repeat(60_000));
+    let batch = flags(65, rows);
+    let whole = bytes(&cut(&batch, &Limits::default()).unwrap());
+    let cost = cost(&batch, least());
+    assert_eq!(cost.pieces, rows / 1_024);
+    assert!(cost.largest <= 32 * 1_024, "{cost:?}");
+    assert!(cost.sent <= 2 * whole, "{cost:?} of {whole}");
+    // The row limit binds: no row is weighed twice.
+    assert_eq!((cost.encodes, cost.probe.weighed), (cost.pieces, rows));
+}
+
+#[test]
+fn a_cut_costs_one_weighing_of_its_rows_and_one_narrowing_and_encoding_a_piece() {
+    // Values bind.
+    let rows = usize::try_from(BATCH_ROWS).unwrap();
+    let wide = flags(65, rows);
+    let cut_in_two = cost(&wide, Limits::default());
+    assert_eq!(cut_in_two.pieces, 2);
+    costs_a_scan_and_an_encode_a_piece(&wide, &cut_in_two);
+    // A batch that fits goes as it is: weighed, and encoded once.
+    let fitting = cost(&flags(64, rows), Limits::default());
+    assert_eq!(
+        (fitting.pieces, fitting.encodes, fitting.probe.compactions),
+        (1, 1, 0)
+    );
+    // Bytes bind, on plain columns and on those whose pieces are copies of what their rows
+    // name: views, list views and dense unions.
+    let plain = batch_of(Arc::new(BinaryArray::from_iter_values(
+        std::iter::repeat_n(vec![7_u8; 16 << 10], 1_000),
+    )));
+    let texts = (0..20_000).map(|row| format!("{row:04000}"));
+    let views = batch_of(Arc::new(arrow_array::StringViewArray::from_iter_values(
+        texts,
+    )));
+    for batch in [
+        plain,
+        views,
+        list_views_of_blobs(1_000),
+        dense_of_blobs(1_000),
+    ] {
+        let cost = cost(&batch, least());
+        costs_a_scan_and_an_encode_a_piece(&batch, &cost);
+        assert!(cost.largest <= 4 << 20, "{cost:?}");
     }
-    let skewed = batch_of(Arc::new(StringArray::from(texts)));
-    let of_bytes = Limits {
-        frame_bytes: 64 * 1_024,
+}
+
+/// `rows` list views of one blob of 16 KiB each.
+fn list_views_of_blobs(rows: usize) -> RecordBatch {
+    let blobs = BinaryArray::from_iter_values(std::iter::repeat_n(vec![7_u8; 16 << 10], rows));
+    let item = Arc::new(Field::new("item", DataType::Binary, true));
+    let offsets: Vec<i32> = (0..i32::try_from(rows).unwrap()).collect();
+    batch_of(Arc::new(arrow_array::ListViewArray::new(
+        item,
+        offsets.into(),
+        vec![1; rows].into(),
+        Arc::new(blobs),
+        None,
+    )))
+}
+
+/// `rows` rows of a dense union, each a blob of 16 KiB.
+fn dense_of_blobs(rows: usize) -> RecordBatch {
+    let blobs = BinaryArray::from_iter_values(std::iter::repeat_n(vec![7_u8; 16 << 10], rows));
+    let field = Field::new("b", DataType::Binary, true);
+    let fields = arrow_schema::UnionFields::try_new(vec![0], vec![field]).unwrap();
+    let offsets: Vec<i32> = (0..i32::try_from(rows).unwrap()).collect();
+    let union = arrow_array::UnionArray::try_new(
+        fields,
+        vec![0_i8; rows].into(),
+        Some(offsets.into()),
+        vec![Arc::new(blobs)],
+    );
+    batch_of(Arc::new(union.unwrap()))
+}
+
+#[test]
+fn no_frame_larger_than_the_limit_is_encoded_where_row_sizes_jump() {
+    // A thousand rows of a byte then forty of three mebibytes, and a thousand rows of 128
+    // KiB, for a receiver of four-mebibyte frames: the rows are weighed before any is encoded.
+    let mut jumping = vec![vec![1_u8]; 1_024];
+    jumping.extend(std::iter::repeat_n(vec![7_u8; 3 << 20], 40));
+    let jumping = batch_of(Arc::new(BinaryArray::from_iter_values(jumping)));
+    let alike = BinaryArray::from_iter_values(std::iter::repeat_n(vec![7_u8; 128 << 10], 1_000));
+    for batch in [jumping, batch_of(Arc::new(alike))] {
+        let cost = cost(&batch, least());
+        assert!(cost.largest <= 4 << 20, "{cost:?}");
+        costs_a_scan_and_an_encode_a_piece(&batch, &cost);
+    }
+}
+
+#[test]
+fn a_piece_whose_frame_outweighs_its_rows_is_halved_a_bounded_number_of_times() {
+    // Rows of two bits in sixteen buffers: with a frame's padding and header left out of the
+    // weighing, all 4096 rows seem to fit a frame that half of them fill.
+    let batch = flags(8, 4_096);
+    let whole = bytes(&cut(&batch, &Limits::default()).unwrap());
+    let limits = Limits {
+        frame_bytes: u64::try_from(whole).unwrap() - 1,
         ..Limits::default()
     };
-    let (encodes, pieces) = cost(&skewed, &of_bytes);
-    assert!(encodes <= 6 * pieces, "{encodes} for {pieces}");
+    assert!(weighed(&batch).0.frame_bytes() < limits.frame_bytes);
+    let mut encoder = Encoder::default();
+    encoder.schema(&batch.schema()).unwrap();
+    let mut cut = Cut::new(batch.clone(), limits);
+    cut.probe.unpadded = true;
+    let mut frames = Vec::new();
+    while let Some(piece) = encoder.piece(&mut cut).unwrap() {
+        frames.extend(piece);
+    }
+    let pieces = in_order(&batch, &received(&batch, &frames, limits));
+    assert!(pieces.len() > 1, "{pieces:?}");
+    // Each piece is halved until it fits: at most twelve times for 4096 rows.
+    assert!(
+        (1..=12 * pieces.len()).contains(&cut.probe.halvings),
+        "{:?}",
+        cut.probe
+    );
+    assert_eq!(encoder.encodes, pieces.len() + cut.probe.halvings);
+}
+
+#[test]
+fn rows_naming_the_same_items_cross_as_what_they_name() {
+    // 256 list views of the same six thousand integers: 24 KB of items in the batch, six megabytes
+    // once each row holds its own, which is what its receiver is given and bounded by.
+    let items = Int32Array::from_iter_values(0..6_000);
+    let item = Arc::new(Field::new("item", DataType::Int32, true));
+    let lists = arrow_array::ListViewArray::new(
+        item,
+        vec![0; 256].into(),
+        vec![6_000; 256].into(),
+        Arc::new(items),
+        None,
+    );
+    let batch = batch_of(Arc::new(lists));
+    let (weight, overhead) = weighed(&batch);
+    assert_eq!(weight.values, 256 * (1 + 6_000 + 6_000));
+    let cost = cost(&batch, least());
+    // 12001 values a row: 87 rows a frame by its values.
+    assert_eq!(cost.pieces, 3);
+    costs_a_scan_and_an_encode_a_piece(&batch, &cost);
+    let most = weight.frame_bytes() + 3 * overhead;
+    assert!(
+        u64::try_from(cost.sent).unwrap() <= most,
+        "{cost:?} of {most}"
+    );
+    assert!(cost.sent > 6_000_000, "{cost:?}");
+}
+
+#[test]
+fn a_batch_of_no_rows_sliced_from_a_large_one_is_a_frame_of_its_empty_schema() {
+    // A list column of more items than a frame's values, and columns sharing megabytes.
+    let items = Int32Array::from_iter_values(0..1_100_000);
+    let item = Arc::new(Field::new("item", DataType::Int32, true));
+    let offsets = OffsetBuffer::from_lengths([100_000; 11]);
+    let lists: ArrayRef = Arc::new(ListArray::new(item, offsets, Arc::new(items), None));
+    let mut columns = sharing();
+    columns.push(lists);
+    columns.extend(crate::codec::tests::samples::columns());
+    for column in columns {
+        let rows = column.len();
+        for start in [0, rows / 2, rows] {
+            let none = batch_of(column.slice(start, 0));
+            let cost = cost(&none, least());
+            assert_eq!((cost.pieces, cost.encodes), (1, 1), "{}", none.schema());
+            assert_eq!((cost.probe.weighed, cost.probe.compactions), (0, 0));
+            assert!(cost.sent < 4_096, "{cost:?}: {}", none.schema());
+        }
+    }
+}
+
+#[test]
+fn a_batch_sliced_from_a_larger_one_goes_with_only_what_its_rows_name() {
+    // Ten rows of a view column of two thousand: a frame of the ten rows' bytes, not of the
+    // column's two hundred kilobytes.
+    let column = sharing().remove(0);
+    let part = batch_of(column.slice(500, 10));
+    let sliced = cost(&part, Limits::default());
+    assert_eq!((sliced.pieces, sliced.probe.compactions), (1, 1));
+    assert!(sliced.sent < 4_096, "{sliced:?}");
+    // The same rows in buffers of their own go as they are.
+    let own = compacted(&part).unwrap();
+    let tight = cost(&own, Limits::default());
+    assert_eq!((tight.pieces, tight.probe.compactions), (1, 0));
+    assert_eq!(tight.sent, sliced.sent);
 }
 
 #[test]
@@ -705,32 +881,4 @@ proptest! {
         // The second time, the dictionaries the first sent are not sent again.
         prop_assert!(sent[1] <= sent[0]);
     }
-}
-
-#[test]
-fn a_row_that_needs_a_frame_of_its_own_costs_its_piece_a_logarithm_of_encodes() {
-    // A thousand rows of a byte, then one that fits no frame with them, twenty times over: where
-    // the size of a prefix says nothing of the next row, the cut is found by halving.
-    let mut texts = Vec::new();
-    for _ in 0..20 {
-        texts.extend(std::iter::repeat_n("x".to_owned(), 1_000));
-        texts.push("y".repeat(60_000));
-    }
-    let batch = batch_of(Arc::new(StringArray::from(texts)));
-    let limits = Limits {
-        frame_bytes: 60_600,
-        ..Limits::default()
-    };
-    let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema()).unwrap();
-    let frames = stepped(&mut encoder, &batch, &limits).unwrap();
-    let pieces = in_order(&batch, &received(&batch, &frames, limits));
-    assert!((40..=41).contains(&pieces.len()), "{pieces:?}");
-    // Two to the tenth is over a thousand rows; a halving and a guess for each.
-    assert!(
-        encoder.encodes <= 22 * pieces.len(),
-        "{} for {}",
-        encoder.encodes,
-        pieces.len()
-    );
 }

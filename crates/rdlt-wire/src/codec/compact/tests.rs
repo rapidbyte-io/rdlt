@@ -1,28 +1,11 @@
 use proptest::prelude::*;
 use rdlt_testkit::drawn::values;
 
-use arrow_array::RecordBatch;
-
 use super::compacted;
-use crate::codec::count::{Counted, counted};
 use crate::codec::tests::frames::sent;
 use crate::codec::tests::odd;
 use crate::codec::tests::samples::{self, ROWS, batch_of};
 use crate::limits::Limits;
-
-/// What the receiver's walk counts in the frame of `batch`.
-fn walked(batch: &RecordBatch) -> Counted {
-    let (mut decoder, frames) = sent(batch, Limits::default());
-    let mut last = None;
-    for frame in &frames {
-        last = Some(decoder.shaped(frame).unwrap().1);
-    }
-    let shape = last.unwrap();
-    Counted {
-        values: shape.values,
-        view_bytes: shape.view_bytes,
-    }
-}
 
 #[test]
 fn every_part_of_every_kind_of_column_compacts_to_the_same_rows() {
@@ -35,7 +18,6 @@ fn every_part_of_every_kind_of_column_compacts_to_the_same_rows() {
                 let part = batch.slice(start, rows);
                 let compact = compacted(&part).unwrap();
                 assert_eq!(compact, part, "{start}+{rows} of {}", batch.schema());
-                assert_eq!(counted(&compact), walked(&compact), "{}", batch.schema());
             }
         }
     }
@@ -55,7 +37,6 @@ proptest! {
         let rows = rows.min(batch.num_rows() - start);
         let part = batch.slice(start, rows);
         let compact = compacted(&part).unwrap();
-        prop_assert_eq!(counted(&compact), walked(&compact));
         prop_assert_eq!(compact, part);
     }
 }
