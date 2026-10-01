@@ -5,6 +5,10 @@
 //! sequenced before it are gone, whichever key they hold. Soft deletes keep their rows, whose
 //! sequences guard them, and need neither. Tombstones are stored as rows of the key's columns and
 //! the sequence; the bound's names no key.
+//!
+//! A tombstone stays until a later change of its key lifts it or the bound passes it: a source
+//! may send any earlier change of a key again, however long after, so none is dropped for its
+//! age.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -15,7 +19,9 @@ use arrow_row::RowConverter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use rdlt_connector::MergeKey;
 
-use super::{concat, key_columns};
+use super::aligned::{Nulls, concat};
+use super::key_columns;
+use super::retype::{compared, retyped};
 
 /// Where a tombstone's key values come from.
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +46,8 @@ pub(crate) struct Tombstones {
     by_key: BTreeMap<Vec<u8>, Stone>,
     /// The sequence of the latest hard truncate: every row sequenced before it is gone.
     bound: Option<Vec<u8>>,
+    /// Whether the changes left the tombstones other than as they were stored.
+    changed: bool,
 }
 
 /// The schema of `schema`'s tombstones, for a table merged by `key`: its key columns, nullable
@@ -67,20 +75,22 @@ impl Tombstones {
         converter: &RowConverter,
         key: &MergeKey,
     ) -> Result<Self, ArrowError> {
-        let stored = concat(stored, schema)?;
+        let stored = concat(stored, schema, &mut Nulls::default())?;
         let columns = key_columns(&stored, key)?;
         let keys = converter.convert_columns(&columns)?;
-        let seqs = arrow_cast::cast(stored.column(key.columns.len()), &DataType::Binary)?;
+        let seqs = compared(stored.column(key.columns.len()))?;
         let seqs = seqs.as_binary::<i32>();
         let mut tombstones = Self {
             stored: stored.clone(),
             by_key: BTreeMap::new(),
             bound: None,
+            changed: false,
         };
         for row in 0..stored.num_rows() {
             let seq = seqs.value(row).to_vec();
             if columns.iter().all(|column| column.is_null(row)) {
-                tombstones.raise(seq);
+                // A bound above another, as two commits' truncates leave, is the table's.
+                tombstones.bound = tombstones.bound.max(Some(seq));
             } else {
                 let key = KeyCell::Stored(row);
                 tombstones
@@ -106,32 +116,38 @@ impl Tombstones {
     pub(crate) fn bury(&mut self, key: Vec<u8>, seq: Vec<u8>, batch: usize, row: usize) {
         let key_cell = KeyCell::Incoming(batch, row);
         self.by_key.insert(key, Stone { seq, key: key_cell });
+        self.changed = true;
     }
 
     /// Forgets `key`'s tombstone: a row sequenced after it holds the key now.
     pub(crate) fn lift(&mut self, key: &[u8]) {
-        self.by_key.remove(key);
+        self.changed |= self.by_key.remove(key).is_some();
     }
 
-    /// Records a hard truncate at `seq`: the bound rises to it, and tombstones before it are
-    /// covered by it.
+    /// Records a hard truncate at `seq`: the bound rises to it, which covers the tombstones
+    /// before it; they go when the tombstones are assembled, once for every truncate of a merge.
     pub(crate) fn raise(&mut self, seq: Vec<u8>) {
         if self.bound.as_ref().is_some_and(|bound| *bound >= seq) {
             return;
         }
-        self.by_key.retain(|_, stone| stone.seq >= seq);
         self.bound = Some(seq);
+        self.changed = true;
     }
 
-    /// The tombstones as one batch of `schema`, the tombstone schema, their key values taken
-    /// from the stored tombstones or `aligned`, the incoming batches aligned to the table.
+    /// The tombstones as batches of `schema`, the tombstone schema, their key values taken from
+    /// the stored tombstones or `aligned`, the incoming batches aligned to the table; the stored
+    /// batch itself where the changes left them as they were.
     pub(crate) fn assemble(
         &self,
         schema: &SchemaRef,
         aligned: &[RecordBatch],
         key: &MergeKey,
-    ) -> Result<RecordBatch, ArrowError> {
-        let stones: Vec<&Stone> = self.by_key.values().collect();
+    ) -> Result<Vec<RecordBatch>, ArrowError> {
+        if !self.changed {
+            return Ok(super::held([self.stored.clone()]));
+        }
+        let covered = |stone: &&Stone| self.bound.as_ref().is_none_or(|bound| stone.seq >= *bound);
+        let stones: Vec<&Stone> = self.by_key.values().filter(covered).collect();
         let bound = usize::from(self.bound.is_some());
         let mut columns: Vec<ArrayRef> = Vec::with_capacity(key.columns.len() + 1);
         for (index, column) in key.columns.iter().enumerate() {
@@ -144,7 +160,7 @@ impl Tombstones {
                     let values = batch.column_by_name(column).ok_or_else(|| {
                         ArrowError::SchemaError(format!("no key column {column}"))
                     })?;
-                    arrow_cast::cast(values, field.data_type())
+                    retyped(values, field.data_type())
                 })
                 .collect::<Result<_, _>>()?;
             let mut sources: Vec<&dyn Array> = vec![stored.as_ref()];
@@ -169,6 +185,7 @@ impl Tombstones {
         columns.push(Arc::new(seqs));
         let options =
             arrow_array::RecordBatchOptions::new().with_row_count(Some(stones.len() + bound));
-        RecordBatch::try_new_with_options(Arc::clone(schema), columns, &options)
+        let assembled = RecordBatch::try_new_with_options(Arc::clone(schema), columns, &options)?;
+        Ok(super::held([assembled]))
     }
 }

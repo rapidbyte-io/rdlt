@@ -554,3 +554,23 @@ fn a_list_converts_item_by_item_whatever_encodes_it() {
     let nanos = DataType::List(Arc::new(field("item", nanos)));
     assert!(retyped(&far, &nanos).is_err());
 }
+
+#[test]
+fn an_id_or_a_sequence_kept_as_text_compares_as_the_bytes_it_is() {
+    let text: ArrayRef = Arc::new(StringArray::from(vec![Some("0a"), Some("")]));
+    let large: ArrayRef = Arc::new(LargeStringArray::from(vec![Some("0a"), Some("")]));
+    let fixed: ArrayRef =
+        Arc::new(FixedSizeBinaryArray::try_from_iter([b"0a", b"zz"].into_iter()).unwrap());
+    for (stored, expected) in [
+        (&text, [&b"0a"[..], b""]),
+        (&large, [b"0a", b""]),
+        (&fixed, [b"0a", b"zz"]),
+    ] {
+        let bytes = super::compared(stored).unwrap();
+        let held: Vec<&[u8]> = bytes.as_binary::<i32>().iter().flatten().collect();
+        assert_eq!(held, expected, "{}", stored.data_type());
+    }
+    // A number is no id or sequence.
+    let number: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+    assert!(super::compared(&number).is_err());
+}

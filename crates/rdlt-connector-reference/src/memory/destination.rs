@@ -19,7 +19,7 @@ use crate::columns::changed;
 use crate::merge::Merged;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use table::{Plan, Staged, Table};
+use table::{Plan, Staged, Table, holds_key};
 
 /// Configuration of [`MemoryDestination`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -324,7 +324,13 @@ impl Session for MemorySession {
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
         crate::merge::refuse_history_generation(table)?;
-        self.store.lock().table(&self.pipeline, self.epoch, table)?;
+        let mut store = self.store.lock();
+        if let Some(key) = &table.merge {
+            let held = store.tables.get(&*table.name);
+            holds_key(&table.name, key, held.and_then(|held| held.schema.as_ref()))?;
+        }
+        store.table(&self.pipeline, self.epoch, table)?;
+        drop(store);
         Ok(MemoryWriter {
             store: Arc::clone(&self.store),
             pipeline: self.pipeline.clone(),
