@@ -1,18 +1,20 @@
 //! A connector's process group, owned by the thread that reaps its leader.
 //!
 //! A group's id is its leader's process id, and belongs to no other process while the leader
-//! is unreaped. So the thread sees the leader exit without reaping it, signals the group while
-//! the id is still its own, and only then reaps. Once the leader is reaped the group is never
-//! signalled again: it is only asked, with the null signal, whether any member is left.
+//! is this process's unreaped child. So the group is signalled only while its leader is seen
+//! to be that, under a lock the thread that reaps it takes too; the thread sees the leader exit
+//! without reaping it, kills the group while the id is still its own, and only then reaps.
+//! Once the leader is reaped the group is never signalled again: it is only asked whether a
+//! living member is left.
 
+mod interrupts;
 mod members;
+mod registry;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
-use std::process::{Child, ExitStatus};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::process::{Child, ChildStdin, ExitStatus};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use rustix::process::{
@@ -21,8 +23,11 @@ use rustix::process::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-/// How often the thread that owns a group asks whether its leader has exited, or a stop or a
-/// kill was asked.
+pub use interrupts::Interrupts;
+pub use registry::{Lingering, spawned, stop_spawned};
+
+/// How often the thread that owns a group asks whether its leader has exited, a kill was
+/// asked, or a stop's grace has passed.
 const WATCH: Duration = Duration::from_millis(5);
 
 /// How often a killed group is asked whether a living member is left: asking may read the state
@@ -33,100 +38,101 @@ const MEMBERS: Duration = Duration::from_millis(25);
 /// reported as remaining: a process killed so ends at once, unless the kernel holds it.
 const EMPTYING: Duration = Duration::from_secs(5);
 
-/// Every group this process spawned and has not seen end, by its leader's process id, with
-/// what stops it; and the groups that ended with members remaining.
-#[derive(Default)]
-struct Groups {
-    live: BTreeMap<u32, Arc<AtomicBool>>,
-    remaining: Vec<u32>,
-}
-
-static GROUPS: Mutex<Option<Groups>> = Mutex::new(None);
-
-/// Signalled when a group ends.
-static ENDED: Condvar = Condvar::new();
-
-fn groups() -> std::sync::MutexGuard<'static, Option<Groups>> {
-    GROUPS.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// The process ids of the connectors this process spawned and has not seen end, each the id of
-/// the process group its connector leads.
-pub fn spawned() -> Vec<u32> {
-    let groups = groups();
-    groups
-        .as_ref()
-        .map(|groups| groups.live.keys().copied().collect())
-        .unwrap_or_default()
-}
-
-/// Connector process groups a host could not see stopped.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("connector process groups {groups:?} were not seen to end")]
-pub struct Lingering {
-    /// The groups' ids, each its connector's process id: those still stopping when the wait
-    /// ended, and those that kept a member after they were killed.
-    pub groups: Vec<u32>,
-}
-
-/// Stops every connector this process spawned, each with its whole process group, and waits
-/// up to `patience` for them to end: what a host calls before it exits, and when it is
-/// interrupted.
-///
-/// Each connector is stopped as dropping it stops it: `SIGTERM` to its group, `SIGKILL` once
-/// its grace has passed, and its group seen empty. It blocks, so call it outside a runtime, or
-/// on a thread that may block.
-///
-/// # Errors
-///
-/// [`Lingering`] names the groups not seen to end within `patience`, and those that kept a
-/// member after they were killed.
-pub fn stop_spawned(patience: Duration) -> Result<(), Lingering> {
-    let until = Instant::now().checked_add(patience);
-    let mut guard = groups();
-    let groups = guard.get_or_insert_default();
-    for stop in groups.live.values() {
-        stop.store(true, Ordering::SeqCst);
-    }
-    loop {
-        let groups = guard.get_or_insert_default();
-        let left = until.map_or(WATCH, |until| {
-            until.saturating_duration_since(Instant::now())
-        });
-        if groups.live.is_empty() || left.is_zero() {
-            let mut lingering: Vec<u32> = groups.live.keys().copied().collect();
-            lingering.append(&mut groups.remaining);
-            lingering.sort_unstable();
-            if lingering.is_empty() {
-                return Ok(());
-            }
-            return Err(Lingering { groups: lingering });
-        }
-        let waited = ENDED.wait_timeout(guard, left);
-        guard = waited.unwrap_or_else(PoisonError::into_inner).0;
-    }
-}
-
 /// Starts the thread that owns a group.
 pub(super) type Threaded = fn(
     std::thread::Builder,
     Box<dyn FnOnce() + Send>,
 ) -> std::io::Result<std::thread::JoinHandle<()>>;
 
-/// A connector's process and the group it leads, with what stops and kills them.
-pub(super) struct Owned {
-    pub(super) child: Child,
+/// What stops a group, shared by the connector's handle, the host that stops every group, and
+/// the thread that owns it.
+pub(super) struct Held {
+    state: Mutex<State>,
+}
+
+/// A group as those that signal it see it.
+struct State {
+    /// The group's leader, while it is this process's unreaped child for all that is known.
+    leader: Option<Pid>,
+    /// The leader's standard input, whose end asks a connector to stop.
+    stdin: Option<ChildStdin>,
     /// How long the group has to end, once stopped, before it is killed.
-    pub(super) grace: Duration,
-    pub(super) stop: Arc<AtomicBool>,
-    pub(super) killed: Option<CancellationToken>,
+    grace: Duration,
+    /// When the group, stopped, is killed.
+    killing: Option<Instant>,
+}
+
+impl Held {
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Asks the group to stop, before it returns: the end of its leader's standard input and
+    /// `SIGTERM` to every member, sent once, while its leader is seen to be this process's
+    /// running child.
+    ///
+    /// The thread that owns the group kills it once its grace has passed.
+    pub(super) fn stop(&self) {
+        let mut state = self.state();
+        let Some(leader) = state.leader else {
+            return;
+        };
+        if state.killing.is_some() || Leader::of(&asked(leader)) != Leader::Running {
+            return;
+        }
+        drop(state.stdin.take());
+        signal(leader, Signal::TERM);
+        state.killing = Instant::now().checked_add(state.grace);
+    }
+}
+
+/// A connector's process and the group it leads, with what kills them.
+pub(super) struct Owned {
+    child: Child,
+    held: Arc<Held>,
+    killed: Option<CancellationToken>,
     /// Told the leader's exit, once its group is empty.
-    pub(super) exit: watch::Sender<Option<ExitStatus>>,
+    exit: watch::Sender<Option<ExitStatus>>,
 }
 
 impl Owned {
-    /// Hands the group to a thread of its own, started by `threaded`, which stops, kills and
-    /// reaps it, whatever becomes of the runtime that spawned it.
+    /// `child` and the group it leads, which has `grace` to end once stopped, is killed at once
+    /// when `killed` is cancelled, and whose leader's `exit` is told.
+    pub(super) fn new(
+        mut child: Child,
+        grace: Duration,
+        killed: Option<CancellationToken>,
+        exit: watch::Sender<Option<ExitStatus>>,
+    ) -> Self {
+        let state = State {
+            leader: Some(Pid::from_child(&child)),
+            stdin: child.stdin.take(),
+            grace,
+            killing: None,
+        };
+        let held = Arc::new(Held {
+            state: Mutex::new(state),
+        });
+        Self {
+            child,
+            held,
+            killed,
+            exit,
+        }
+    }
+
+    /// The connector's process, whose output is still to be taken.
+    pub(super) fn child(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
+    /// What stops the group.
+    pub(super) fn held(&self) -> Arc<Held> {
+        Arc::clone(&self.held)
+    }
+
+    /// Hands the group to a thread of its own, started by `threaded`, which kills and reaps it,
+    /// whatever becomes of the runtime that spawned it.
     ///
     /// The thread is handed the group once it exists, so a thread that cannot be started leaves
     /// the group here, to be [discarded](Self::discarded).
@@ -139,25 +145,17 @@ impl Owned {
                 return;
             };
             let (status, emptied) = owned.ended();
-            let mut groups = groups();
-            let groups = groups.get_or_insert_default();
-            groups.live.remove(&id);
-            if !emptied {
-                tracing::error!(group = id, "a connector's process group kept a member");
-                groups.remaining.push(id);
-            }
             owned.exit.send_replace(status);
-            ENDED.notify_all();
+            registry::leave(id, emptied);
         };
         if let Err(error) = threaded(reaping, Box::new(owning)) {
             self.discarded();
             return Err(error);
         }
         // Listed before its thread has it, so the thread's removal comes after.
-        let stop = Arc::clone(&self.stop);
-        groups().get_or_insert_default().live.insert(id, stop);
+        registry::enter(id, self.held());
         if let Err(std::sync::mpsc::SendError(owned)) = give.send(self) {
-            groups().get_or_insert_default().live.remove(&id);
+            registry::leave(id, true);
             owned.discarded();
             return Err(std::io::Error::other(
                 "the thread that owns a connector ended",
@@ -170,9 +168,10 @@ impl Owned {
     /// not be owned.
     pub(super) fn discarded(mut self) {
         let group = Pid::from_child(&self.child);
+        let held = self.held();
+        let state = held.state();
         if Leader::of(&asked(group)) != Leader::Lost {
-            signal(group, Signal::KILL);
-            self.child.wait().ok();
+            reap(&mut self.child, group, state);
         }
     }
 
@@ -180,43 +179,50 @@ impl Owned {
     /// empty after it was killed.
     fn ended(&mut self) -> (Option<ExitStatus>, bool) {
         let group = Pid::from_child(&self.child);
-        let mut stdin = self.child.stdin.take();
-        let mut killing: Option<Instant> = None;
+        let held = self.held();
         // Until the leader has exited, a kill has come, or a stop's grace has passed.
         loop {
-            match Leader::of(&asked(group)) {
-                Leader::Running => {}
-                Leader::Exited => break,
+            let mut state = held.state();
+            let due = match Leader::of(&asked(group)) {
+                Leader::Running => self.due(&state),
+                Leader::Exited => true,
                 // Its id may be another's by now: nothing is signalled, and nothing waited for.
                 Leader::Lost => {
+                    state.leader = None;
+                    drop(state);
                     tracing::error!(group = self.child.id(), "a connector was reaped elsewhere");
                     return (None, emptied(group));
                 }
+            };
+            if due {
+                let status = reap(&mut self.child, group, state);
+                return (status, emptied(group));
             }
-            if self
-                .killed
-                .as_ref()
-                .is_some_and(CancellationToken::is_cancelled)
-            {
-                break;
-            }
-            if killing.is_none() && self.stop.load(Ordering::SeqCst) {
-                // The end of its standard input and the signal both ask a connector to stop.
-                drop(stdin.take());
-                signal(group, Signal::TERM);
-                killing = Instant::now().checked_add(self.grace);
-            }
-            if killing.is_some_and(|killing| Instant::now() >= killing) {
-                break;
-            }
+            drop(state);
             std::thread::sleep(WATCH);
         }
-        // The leader is unreaped, exited or not: the group's id is still its own. Whatever
-        // is left of the group ends now, the connector's own members with it.
-        signal(group, Signal::KILL);
-        let status = self.child.wait().ok();
-        (status, emptied(group))
     }
+
+    /// Whether the group, its leader running, is to be killed now: a kill has come, or the
+    /// grace of the stop `state` records has passed.
+    fn due(&self, state: &State) -> bool {
+        let killed = self.killed.as_ref();
+        killed.is_some_and(CancellationToken::is_cancelled)
+            || state
+                .killing
+                .is_some_and(|killing| Instant::now() >= killing)
+    }
+}
+
+/// Kills `group` and its leader `child`, and reaps `child`, which was just seen to be this
+/// process's unreaped child: the group's id is still its own, exited or not, and from here on,
+/// as `state` then says, nobody's to signal.
+fn reap(child: &mut Child, group: Pid, mut state: MutexGuard<'_, State>) -> Option<ExitStatus> {
+    signal(group, Signal::KILL);
+    let status = child.wait().ok();
+    state.leader = None;
+    drop(state.stdin.take());
+    status
 }
 
 /// Sends `signal` to the group `leader` was started to lead, and to `leader` itself, which
@@ -266,41 +272,4 @@ fn emptied(group: Pid) -> bool {
         std::thread::sleep(MEMBERS);
     }
     true
-}
-
-/// Hears this process being interrupted or asked to terminate (`SIGINT`, `SIGTERM`).
-///
-/// A host that spawns connectors owns their process groups, which a terminal's Ctrl-C does not
-/// reach: it listens before it spawns, awaits [`heard`](Self::heard) beside its work, and once
-/// that answers calls [`stop_spawned`] and exits. From the moment it listens, neither signal
-/// ends the process by itself.
-#[derive(Debug)]
-pub struct Interrupts {
-    interrupt: tokio::signal::unix::Signal,
-    terminate: tokio::signal::unix::Signal,
-}
-
-impl Interrupts {
-    /// Starts listening, within a runtime.
-    ///
-    /// # Errors
-    ///
-    /// The error of installing the signals' handlers.
-    pub fn listen() -> std::io::Result<Self> {
-        use tokio::signal::unix::{SignalKind, signal};
-        Ok(Self {
-            interrupt: signal(SignalKind::interrupt())?,
-            terminate: signal(SignalKind::terminate())?,
-        })
-    }
-
-    /// Waits for either signal, and answers the exit status a process so ended has: 130 for an
-    /// interrupt, 143 for a termination.
-    pub async fn heard(&mut self) -> i32 {
-        tokio::select! {
-            biased;
-            _ = self.interrupt.recv() => 130,
-            _ = self.terminate.recv() => 143,
-        }
-    }
 }
