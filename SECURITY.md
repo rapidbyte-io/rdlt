@@ -34,6 +34,15 @@ complete, run only connectors you trust. The mechanisms in place today:
 
 ADR 0048 records these.
 
+## Certification
+
+`rdlt-certify` treats the connector it certifies as hostile input: every wait has a deadline, what
+the connector sends is bounded before it is held or rendered, and a clause passes only when the
+behaviour it names was seen. It is no control against a connector built to pass: a connector can
+tell a certification from an engine's load, and a destination's read-back is its own account of
+what it published (`docs/certify/clauses.md`). What holds against a hostile connector is the
+engine's limits, deadlines and confinement.
+
 ## Reporting a vulnerability
 
 Report vulnerabilities privately through GitHub: open the repository's **Security** tab and choose
