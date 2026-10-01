@@ -53,10 +53,12 @@ pins:
 deny: locked
     cargo xtask deny
 
-# Run the test suite; extra arguments go to nextest
+# Run the test suite; extra arguments go to nextest. The last run is of a connector built without
+# certification's probes, which a build with every feature never is: it must serve none
 test *args:
     cargo nextest run --workspace --all-features {{ args }}
     cargo test --workspace --all-features --doc
+    cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
 
 # Run the simulation suite; pass a seed to replay one run, or an empty seed, a count and the first
 # seed of a shard
