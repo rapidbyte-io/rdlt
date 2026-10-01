@@ -362,7 +362,10 @@ fn target(args: &Args) -> Result<Target, Ended> {
     }
     let path = Path::new(named);
     if !path.is_file() {
-        return Err(Ended(IO, format!("{named} is no connector binary")));
+        // Not repeated: what was typed may be an endpoint mistyped, with a credential in it.
+        let message = "the connector named is neither a binary's path nor an endpoint, \
+                       `grpcs://host:port`";
+        return Err(Ended(IO, message.to_owned()));
     }
     let executable = path
         .metadata()
