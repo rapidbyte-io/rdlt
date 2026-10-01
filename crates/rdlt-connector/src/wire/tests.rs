@@ -807,3 +807,56 @@ fn a_long_message_crosses_a_status_cut_to_the_control_string_limit() {
     );
     assert!(message.starts_with(&carried));
 }
+
+#[test]
+fn what_the_codec_refuses_is_reported_by_what_went_wrong() {
+    use rdlt_wire::{Frame, Problem, Refusal, WireError};
+    let refusal = Refusal {
+        code: "limit_exceeded",
+        field: "batch values",
+        limit: 1,
+        actual: 2,
+    };
+    let unencoded = WireError::Arrow {
+        frame: Frame::Batch,
+        encoding: true,
+        source: arrow_schema::ArrowError::IpcError("no".to_owned()),
+    };
+    let undecoded = WireError::Arrow {
+        frame: Frame::Batch,
+        encoding: false,
+        source: arrow_schema::ArrowError::IpcError("no".to_owned()),
+    };
+    let malformed = |problem| WireError::Malformed {
+        frame: Frame::Batch,
+        problem,
+    };
+    let cases = [
+        (
+            WireError::Refused(refusal),
+            ConnectorErrorKind::Data,
+            "limit_exceeded",
+        ),
+        // A batch its own sender cannot encode is no frame a peer malformed.
+        (unencoded, ConnectorErrorKind::Internal, "unencodable_batch"),
+        (undecoded, ConnectorErrorKind::Internal, "malformed_frame"),
+        (
+            malformed(Problem::Compressed),
+            ConnectorErrorKind::Internal,
+            "malformed_frame",
+        ),
+        (
+            malformed(Problem::DictionaryOfDictionaries),
+            ConnectorErrorKind::Unsupported,
+            "unsendable_type",
+        ),
+    ];
+    for (error, kind, code) in cases {
+        let reported = super::frame_error(&error);
+        assert_eq!(
+            (reported.kind(), reported.code()),
+            (kind, Some(code)),
+            "{error}"
+        );
+    }
+}
