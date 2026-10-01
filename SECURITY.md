@@ -19,6 +19,18 @@ complete, run only connectors you trust. The mechanisms in place today:
   after the host has checked its identity and, where one is named, its binary's digest;
 - frames from a connector are checked against size limits before they are decoded.
 
+## Build and supply chain
+
+- `unsafe` code is in one audited crate, `rdlt-adopt`. Every other crate, test, example, bench
+  and fuzz target forbids it, which the compiler enforces.
+- Dependencies are locked, and every lockfile is checked against the RustSec advisory database
+  on each change and each night.
+- Development and CI tools are locked to a release archive and its checksum; GitHub Actions are
+  pinned to commits that are checked against the versions they claim.
+- CI runs with a read-only token, which no build or test step receives, and with no secrets.
+
+ADR 0048 records these.
+
 ## Reporting a vulnerability
 
 Report vulnerabilities privately through GitHub: open the repository's **Security** tab and choose
