@@ -216,9 +216,21 @@ impl DestinationFactory for Large {
 
 /// A client that reads `factory`'s table back: its frames.
 async fn reading_back(factory: Large) -> tonic::Streaming<v1::ReadFrame> {
+    reading_back_within(factory, None).await
+}
+
+/// As [`reading_back`], a host that takes frames within `limits`.
+async fn reading_back_within(
+    factory: Large,
+    limits: Option<v1::Limits>,
+) -> tonic::Streaming<v1::ReadFrame> {
     let mut client = raw_client(served(Served::new().with_destination(Box::new(factory)))).await;
+    let offered = v1::HandshakeRequest {
+        limits,
+        ..handshake(&[PUBLISHED])
+    };
     client
-        .handshake(handshake(&[PUBLISHED]))
+        .handshake(offered)
         .await
         .expect("the handshake succeeds");
     client
@@ -307,4 +319,35 @@ async fn a_read_back_that_fails_ends_with_its_error_after_the_rows_it_read() {
     };
     assert_eq!(batches, 3);
     assert_eq!(failed.kind(), ConnectorErrorKind::Transient, "{failed}");
+}
+
+#[tokio::test]
+async fn a_batch_read_back_beyond_its_hosts_frames_ends_the_read_back_as_exceeding_them() {
+    let factory = Large::new(100_000, false);
+    let (sent, ended) = (Arc::clone(&factory.sent), Arc::clone(&factory.ended));
+    let small = v1::Limits {
+        frame_bytes: 1024,
+        ..v1::Limits::from(rdlt_wire::Limits::default())
+    };
+    let mut frames = reading_back_within(factory, Some(small)).await;
+    let refused = loop {
+        match frames.message().await {
+            Ok(Some(frame)) => assert!(
+                matches!(frame.frame, Some(v1::read_frame::Frame::Schema(_))),
+                "a batch beyond the host's frames was sent"
+            ),
+            Ok(None) => panic!("the read-back ended without its error"),
+            Err(status) => break carried(&status),
+        }
+    };
+    assert!(refused.limit().is_some(), "{refused}");
+    // The table is read no further.
+    for _ in 0..100 {
+        if ended.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(ended.load(Ordering::SeqCst), 1);
+    assert!(sent.load(Ordering::SeqCst) < 8);
 }

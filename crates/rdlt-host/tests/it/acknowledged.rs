@@ -185,16 +185,8 @@ fn two_streams() -> v1::ConfigureRequest {
 
 #[tokio::test]
 async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
-    let served_by = || Served::new().with_source(acknowledging_source_factory::<ChangesSource>());
-    let mut client = raw_client(served(served_by())).await;
-    client
-        .handshake(handshake(&[ACKNOWLEDGED]))
-        .await
-        .expect("the handshake succeeds");
-    client
-        .configure(two_streams())
-        .await
-        .expect("the configuration succeeds");
+    let changes = Served::new().with_source(acknowledging_source_factory::<ChangesSource>());
+    let mut client = connected(&Arc::new(changes)).await;
     let refused = |refused: Result<_, tonic::Status>, what: &str| {
         let Err(refused): Result<tonic::Response<v1::CommittedResponse>, _> = refused else {
             panic!("{what} was acknowledged");
@@ -244,6 +236,11 @@ async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
         standing.expect("the source tells").into_inner().cursor,
         None
     );
+    // A report that names no cursor is no report: a message the source cannot read.
+    let mut blank = committed("accounts", "changes", checkpoint.clone());
+    blank.cursors[0].cursor = None;
+    let unreadable = client.committed(blank).await.expect_err("refused");
+    assert_eq!(carried(&unreadable).code(), Some("invalid_message"));
     // Every checkpoint the read was sent is acknowledged, more than once too.
     for cursor in sent.iter().chain(&sent) {
         let told = client.committed(committed("accounts", "changes", cursor.clone()));

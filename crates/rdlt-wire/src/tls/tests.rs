@@ -426,3 +426,32 @@ fn a_revocation_list_file_without_a_list_is_refused_by_name() {
     assert!(matches!(refused(&empty), TlsError::NoRevocationList { path } if path == empty));
     assert!(matches!(refused(&missing), TlsError::Pem { path, .. } if path == missing));
 }
+
+#[test]
+fn naming_hosts_changes_nothing_else_of_how_a_certificate_is_verified() {
+    use rustls::server::WebPkiClientVerifier;
+    use rustls::server::danger::ClientCertVerifier as _;
+    let pki = Pki::new("ca");
+    let roots = Arc::new(super::roots(&pki.ca()).expect("the CA reads"));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let inner = WebPkiClientVerifier::builder_with_provider(roots, provider)
+        .build()
+        .expect("a verifier");
+    let hosts = Hosts::new(["client"]).expect("a host is named");
+    let named = super::hosts::Named::new(Arc::clone(&inner), hosts);
+    assert!(!inner.root_hint_subjects().is_empty());
+    let subjects = |verifier: &dyn rustls::server::danger::ClientCertVerifier| -> Vec<Vec<u8>> {
+        let hints = verifier.root_hint_subjects();
+        hints
+            .iter()
+            .map(|subject| subject.as_ref().to_vec())
+            .collect()
+    };
+    assert_eq!(subjects(&named), subjects(inner.as_ref()));
+    assert!(!inner.supported_verify_schemes().is_empty());
+    assert_eq!(
+        named.supported_verify_schemes(),
+        inner.supported_verify_schemes()
+    );
+    assert!(named.offer_client_auth() && named.client_auth_mandatory());
+}
