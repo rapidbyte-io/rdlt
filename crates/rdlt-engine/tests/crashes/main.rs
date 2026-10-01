@@ -157,10 +157,17 @@ fn every_commit(scenario: &Scenario, point: &str) {
             );
             return;
         }
-        assert!(crashed(status), "{} {case}: the run ended {status}", scenario.name);
+        assert!(
+            crashed(status),
+            "{} {case}: the run ended {status}",
+            scenario.name
+        );
         again(scenario, dir.path(), &config, &case);
     }
-    panic!("{}: {point} crashed {MOST_COMMITS} commits and the run never ended", scenario.name);
+    panic!(
+        "{}: {point} crashed {MOST_COMMITS} commits and the run never ended",
+        scenario.name
+    );
 }
 
 /// The failpoint crashing a run at the `hit`th time it passes `point`.

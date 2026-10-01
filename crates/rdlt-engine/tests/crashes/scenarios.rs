@@ -58,10 +58,15 @@ impl Scenario {
 
     /// Writes the harness configuration into `dir` with its source and destination spawned in
     /// processes of their own, and `kill` where given; its path.
+    ///
+    /// The run holds a kilobyte of batches at once, and an event a partition, so its source
+    /// waits for commits, its reads in flight across them.
     pub(crate) fn write_spawned(&self, dir: &Path, kill: Option<Value>) -> PathBuf {
         let mut config = self.configured(dir);
         config["source"]["spawned"] = json!(true);
         config["destination"]["spawned"] = json!(true);
+        config["memory"] = json!(1024);
+        config["partition_buffer"] = json!(1);
         if let Some(kill) = kill {
             config["kill"] = kill;
         }
