@@ -581,3 +581,31 @@ async fn a_cursor_beyond_what_its_file_now_holds_is_refused() {
         assert_eq!(events.len(), 2, "{stream}: a push and its checkpoint");
     }
 }
+
+#[tokio::test]
+async fn two_entries_that_name_the_same_stream_are_refused_by_both_names() {
+    for other in ["orders.ndjson", "orders.arrow", "orders"] {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("orders.jsonl"), "{\"id\":1}\n").unwrap();
+        let other_path = root.path().join(other);
+        if other == "orders" {
+            std::fs::create_dir(&other_path).unwrap();
+            std::fs::write(other_path.join("0.jsonl"), "{\"id\":2}\n").unwrap();
+        } else if other.ends_with("arrow") {
+            arrow_file(&other_path, 1);
+        } else {
+            std::fs::write(&other_path, "{\"id\":2}\n").unwrap();
+        }
+        let Err(error) = connect_with(root.path(), json!({})).await else {
+            panic!("{other}: two entries name the stream orders");
+        };
+        assert_eq!(error.kind(), ConnectorErrorKind::Config, "{other}");
+        assert_eq!(error.code(), Some("duplicate_stream"), "{other}");
+        let message = error.to_string();
+        assert!(message.contains("orders.jsonl"), "{other}: {message}");
+        assert!(
+            message.contains(&format!("{other:?}")),
+            "{other}: {message}"
+        );
+    }
+}
