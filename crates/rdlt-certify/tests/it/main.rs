@@ -13,6 +13,10 @@ mod spawned;
 mod unmet;
 mod unreached;
 
+/// How long the tests that are not of `P-CREDIT` have a read whose credit is spent watched after
+/// each grant: a source that waits for credit sends nothing however long it is watched.
+const BRIEF: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// The clauses of `report` that apply and were not observed, when no clause failed and one
 /// passed.
 fn unobserved(report: &rdlt_certify::Report) -> Vec<&'static str> {

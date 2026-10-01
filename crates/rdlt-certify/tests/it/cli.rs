@@ -63,13 +63,15 @@ async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() 
 async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_is_required() {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
-    // Two rows end before any kill lands: the kill clause applies, and is not observed.
-    let small = [
+    // A stream of no rows: its read ends within its first credit, sends no checkpoint, and
+    // ends before any kill lands. The clauses that need those apply, and are not observed;
+    // none of them waits to see it.
+    let empty = [
         binary,
         "--role",
         "source",
         "--config",
-        USERS,
+        r#"{"streams": {"users": []}}"#,
         "--env",
         "LLVM_PROFILE_FILE",
         "--kill-seed",
@@ -77,11 +79,12 @@ async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_i
         "--output",
         "json",
     ];
-    for (require, exits) in [(None, 2), (Some("complete"), 2), (Some("partial"), 0)] {
-        let mut args = small.to_vec();
-        args.extend(require.iter().flat_map(|require| ["--require", *require]));
-        let output = certify(&args).await;
-        assert_eq!(code(&output), Some(exits), "{require:?}");
+    // Complete is what is required unless part is: the command line's own tests say so.
+    let complete = [&empty[..], &["--require", "complete"]].concat();
+    let partial = [&empty[..], &["--require", "partial"]].concat();
+    let (complete, partial) = tokio::join!(certify(&complete), certify(&partial));
+    for (output, exits) in [(complete, 2), (partial, 0)] {
+        assert_eq!(code(&output), Some(exits));
         let report: serde_json::Value =
             serde_json::from_slice(&output.stdout).expect("the report is JSON");
         // Whatever is required, the report says what was seen.
@@ -92,9 +95,10 @@ async fn a_certification_that_could_not_observe_a_clause_exits_two_unless_part_i
         let unobserved: Vec<_> = clauses
             .iter()
             .filter(|clause| clause["outcome"] == "unobserved")
-            .map(|clause| clause["id"].as_str())
+            .filter_map(|clause| clause["id"].as_str())
             .collect();
-        assert_eq!(unobserved, [Some("K-SOURCE")], "{report}");
+        let unseen = ["P-CREDIT", "S-RESUME", "S-PARTITION", "K-SOURCE"];
+        assert_eq!(unobserved, unseen, "{report}");
     }
 }
 
@@ -340,9 +344,12 @@ async fn a_certification_that_outlives_its_timeout_fails_where_it_was_cut_and_ex
 async fn a_certification_asked_for_no_timeout_runs_unbounded_and_takes_no_timeout_beside() {
     let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
-    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    // A stream of no rows: its read ends within its first credit, so nothing waits to see
+    // it hold to one.
+    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 0}]}"#;
     let args = [binary, "--config", config, "--env", "LLVM_PROFILE_FILE"];
-    let unbounded = ["--no-timeout", "--require", "partial"];
+    let unbounded = ["--no-timeout", "--require", "partial", "--role", "source"];
+    let unbounded = [&unbounded[..], &["--kill-seed", "1"]].concat();
     let output = certify(&[&args[..], &unbounded].concat()).await;
     assert_eq!(code(&output), Some(0));
     let both = ["--no-timeout", "--timeout", "5"];
@@ -575,7 +582,9 @@ fn surviving(directory: &std::path::Path) -> Vec<i32> {
 async fn a_certification_that_ends_leaves_nothing_its_connectors_started() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let launched = launcher(directory.path(), "serve_source");
-    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    // A stream of no rows: its read ends within its first credit, so nothing waits to see
+    // it hold to one.
+    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 0}]}"#;
     let args = [
         launched.as_str(),
         "--config",

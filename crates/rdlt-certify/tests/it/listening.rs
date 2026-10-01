@@ -58,6 +58,7 @@ pub(crate) fn target(pki: &Pki, endpoint: &str) -> Target {
         Remote::new(identity, pki.ca()),
         ConnectorRef::new(id).endpoint(endpoint),
     )
+    .credit_watch(crate::BRIEF)
 }
 
 #[tokio::test(flavor = "multi_thread")]

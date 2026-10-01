@@ -127,7 +127,9 @@ things did not hold to that:
 - **`P-CREDIT` accounts credit.** It sizes the first frame as the host does and grants a byte
   more, three times, each too little to restore the credit, watching a second after each. A
   first frame too small to leave room for three such bytes is granted nothing in their place, so
-  the watch is four seconds whatever the frame spent.
+  the watch is four seconds whatever the frame spent. A caller of the library may choose
+  another watch (`Target::credit_watch`), as the tests that are not of this clause do; the
+  binary keeps the second.
 - **A connector can tell a certification, and the documentation says so.** Certification names
   its pipelines and tables `certify_…`, offers the read-back and acknowledged features, makes
   calls no engine makes, and holds a connector to its limits on purpose. A connector built to

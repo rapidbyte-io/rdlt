@@ -263,8 +263,9 @@ async fn a_source_that_loses_what_it_resumes_fails_k_source_at_every_schedule() 
     for seed in every_schedule(false) {
         certifying.spawn(async move {
             let forgetful = Forgetful(source_factory::<GeneratorSource>());
-            let target =
-                Target::served(Served::new().with_source(Box::new(forgetful))).kill_seed(seed);
+            let target = Target::served(Served::new().with_source(Box::new(forgetful)))
+                .credit_watch(crate::BRIEF)
+                .kill_seed(seed);
             let config = json!({
                 "seed": 3,
                 "streams": [{ "name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50 }],
@@ -367,6 +368,7 @@ async fn a_destination_is_killed_in_a_write_mode_it_declares_whichever_that_is()
 #[tokio::test]
 async fn a_change_source_is_killed_as_it_reads_its_changes() {
     let target = Target::served(Served::new().with_source(source_factory::<ChangesSource>()))
+        .credit_watch(crate::BRIEF)
         .kill_seed(SETTLED_LATE);
     let config = json!({
         "seed": 5,

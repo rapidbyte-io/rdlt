@@ -23,6 +23,7 @@ pub struct Target {
     options: Options,
     kill_seed: Option<u64>,
     kill_timeout: Option<Duration>,
+    credit_watch: Option<Duration>,
 }
 
 enum Reach {
@@ -102,6 +103,7 @@ impl Target {
             options: Options::default(),
             kill_seed: None,
             kill_timeout: None,
+            credit_watch: None,
         }
     }
 
@@ -126,6 +128,20 @@ impl Target {
     pub fn kill_timeout(mut self, bound: Duration) -> Self {
         self.kill_timeout = Some(bound);
         self
+    }
+
+    /// Watches a read whose credit is spent for `watch` after each grant, rather than a second:
+    /// `P-CREDIT` then takes four times `watch`, and tells a source that ignores credit only
+    /// when it sends within that.
+    #[must_use]
+    pub fn credit_watch(mut self, watch: Duration) -> Self {
+        self.credit_watch = Some(watch);
+        self
+    }
+
+    /// How long a read whose credit is spent is watched after each grant, when that is chosen.
+    pub(crate) fn chosen_watch(&self) -> Option<Duration> {
+        self.credit_watch
     }
 
     /// How long each kill clause may take, when that is chosen.

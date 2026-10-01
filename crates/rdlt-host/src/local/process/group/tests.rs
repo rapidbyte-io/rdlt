@@ -64,7 +64,8 @@ fn a_leader_something_else_reaped_is_neither_signalled_nor_waited_for() {
     nix::sys::wait::waitpid(pid(&child), None).expect("it is reaped elsewhere");
     let mut owned = owned(child, Duration::ZERO);
     owned.held().stop();
-    let ended = owned.ended(super::emptied);
+    // Its member lives: asked, the group would be watched for as long as one may.
+    let ended = owned.ended(|_| false);
     // Its group's id may be another's by now: the member it held was sent nothing.
     let alive = kill(member, None).is_ok();
     kill(member, Signal::SIGKILL).ok();
