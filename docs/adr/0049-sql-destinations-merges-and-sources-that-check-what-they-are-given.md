@@ -35,17 +35,38 @@ given:
 ## Decision
 
 - **A statement that changes a table takes a witness that the session owns it.**
-  - `sqlgen::Owned` holds a table's name and the pipeline that owns it. Only
-    `SqlPlanner::owned` makes one, from the owner record the destination read in the transaction
-    that uses it, and every planner method that creates, alters, stages into, publishes, swaps,
-    drops or discards a table takes one. The planner stays free of I/O, so a blocking and an
-    async driver both use it; what a connector can no longer do is plan a write without the
-    check.
+  - `sqlgen::Owned` holds a table's name and the pipeline that owns it, and every planner
+    method that creates, alters, stages into, publishes, swaps, drops or discards a table takes
+    one. The planner stays free of I/O, so a blocking and an async driver both use it.
+  - What the witness gives, and what it does not. `SqlPlanner::check` hands a connector two
+    queries, who owns the table and what the database takes its name for; `Check::answered`
+    reads the rows they returned into a `Standing`; and only a `Standing` makes an `Owned`.
+    The witness cannot be copied, and it borrows what the connector hands `answered` with the
+    rows; the SQLite session hands its transaction, so there the witness is not kept across
+    transactions. A connector cannot plan a write without asking, and one that hands its
+    transaction cannot reuse an answer later. It can still hand back rows the database did not return: the
+    planner runs no statement, so that the answers are the database's is the connector's to
+    keep.
+  - **An owner record stands for a table its pipeline created.** The record, the table, its
+    staging table and its registration are one plan, written by `TableChange::Create` alone, in
+    one transaction. A writer or any other change of a table no pipeline owns is refused as
+    `table_unowned` and claims nothing; from a session a newer one fenced it is refused as
+    fenced, as ADR 0033 has it. Where a pipeline opens, an owner record of its that stands for
+    no staging table is released: the record goes and nothing is dropped.
+  - **Names are compared as the database resolves them.** A dialect says what the database
+    takes a name for (`SqlDialect::resolves`: for SQLite every table, view or index of that
+    name without ASCII case). A table the database already holds under the name, in any case,
+    without an owner record is not adopted: creating it is refused as `table_unowned`, never
+    done as nothing. A name the database takes for a table named otherwise is refused the same
+    way wherever the table is changed or dropped, so a drop reaches only a table its
+    pipeline's owner record names as the database holds it. A staging, tombstone, generation or
+    catalog table the database holds in another case is a `table_name_clash`, checked before
+    the catalog is created, where a table is created and where a writer opens; the clash check
+    between tables folds names as the dialect does.
   - A name under `_rdlt_`, in any case, or one the dialect keeps (`SqlDialect::reserves_table`:
     for SQLite `sqlite_`, `pragma_`, and any name that is not its own lower case, since SQLite
-    matches names without case) is refused as `table_name_reserved`. A table that exists and no
-    pipeline owns is refused as `table_unowned`; one that does not exist is no drop at all, as
-    ADR 0033 has it.
+    matches names without case) is refused as `table_name_reserved`. A table that does not
+    exist and no pipeline owns is no drop at all, as ADR 0033 has it.
   - A path resolves to a table per pipeline: `_rdlt_tables` is keyed by pipeline and path. A
     generation finished for a path swaps the pipeline's own table or nothing.
   - A commit's child table is checked where it publishes, and an open discards the staging of
@@ -138,7 +159,8 @@ given:
 ## Consequences
 
 - A host that sends SQLite a table name in mixed case, or one under `sqlite_` or `pragma_`, is
-  refused. A table whose owner record was lost must be dropped by hand.
+  refused. A table whose owner record was lost must be dropped by hand, and a table another
+  program made is never loaded into: a pipeline loads only tables it created.
 - A database with a column of a type the dialect does not declare cannot be adopted until the
   column is retyped.
 - Dialects with identifiers under 63 bytes are unsupported.

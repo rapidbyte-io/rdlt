@@ -32,7 +32,7 @@ use crate::types::LogicalType;
 
 pub use catalog::{micros, receipt};
 pub use changes::staged_changes;
-pub use owned::Owned;
+pub use owned::{Check, Owned, Standing};
 pub use publish::{Staged, merge_key};
 pub use sqlite::Sqlite;
 pub use tables::{STAGING_COLUMNS, TABLE_PREFIX};
@@ -140,6 +140,19 @@ pub trait SqlDialect: Send + Sync {
     /// The query listing `table`'s columns as rows of identifier and declared type, in order; it
     /// returns no rows when the table does not exist.
     fn columns(&self, table: &str) -> Statement;
+
+    /// The query returning the name, as the database holds it, of every table, view or index it
+    /// takes `name` for: what a statement naming `name` would reach, or creating it collide with.
+    ///
+    /// A database that matches names without case answers with a table whose name differs from
+    /// `name` in case alone; the planner refuses to take that table for the table it was asked for.
+    fn resolves(&self, name: &str) -> Statement;
+
+    /// `name` as the database compares names: itself by default, and folded where the database
+    /// matches names without case.
+    fn folds(&self, name: &str) -> String {
+        name.to_owned()
+    }
 
     /// Whether schema changes a transaction makes commit or roll back with it, as SQLite's and
     /// PostgreSQL's do.

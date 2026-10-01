@@ -15,7 +15,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// table is `Unsupported`: it could not be atomic.
     pub fn swap(
         &self,
-        owned: &Owned,
+        owned: &Owned<'_>,
         base_exists: bool,
         generation: GenerationId,
         generations: &[(String, GenerationId)],

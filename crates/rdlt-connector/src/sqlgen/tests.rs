@@ -44,6 +44,10 @@ impl SqlDialect for Widening {
         Sqlite.columns(table)
     }
 
+    fn resolves(&self, name: &str) -> Statement {
+        Sqlite.resolves(name)
+    }
+
     fn transactional_ddl(&self) -> bool {
         Sqlite.transactional_ddl()
     }
@@ -69,6 +73,10 @@ impl SqlDialect for Bytesless {
         Sqlite.columns(table)
     }
 
+    fn resolves(&self, name: &str) -> Statement {
+        Sqlite.resolves(name)
+    }
+
     fn transactional_ddl(&self) -> bool {
         Sqlite.transactional_ddl()
     }
@@ -89,6 +97,10 @@ impl<const MAX: usize> SqlDialect for Short<MAX> {
 
     fn columns(&self, table: &str) -> Statement {
         Sqlite.columns(table)
+    }
+
+    fn resolves(&self, name: &str) -> Statement {
+        Sqlite.resolves(name)
     }
 
     fn transactional_ddl(&self) -> bool {
@@ -350,103 +362,6 @@ fn no_statement_is_planned_for_a_table_from_the_owner_check_of_another() {
 }
 
 #[test]
-fn only_a_table_its_pipeline_owns_under_a_name_it_may_take_is_changed() {
-    let (_, planner) = database();
-    let mine = pipeline("mine");
-    let code = |outcome: crate::error::Result<Owned>| {
-        let error = outcome.unwrap_err();
-        (error.kind(), error.code().map(str::to_owned))
-    };
-    let config = |code: &str| (ConnectorErrorKind::Config, Some(code.to_owned()));
-    let owned = planner.owned(&mine, "orders", Some("mine")).unwrap();
-    assert_eq!((owned.name(), owned.pipeline()), ("orders", &mine));
-    assert_eq!(
-        code(planner.owned(&mine, "orders", Some("theirs"))),
-        config("table_owned")
-    );
-    assert_eq!(
-        code(planner.owned(&mine, "orders", None)),
-        config("table_unowned")
-    );
-    let reserved = [
-        "",
-        "_rdlt_state",
-        "_rdlt_",
-        "_RDLT_state",
-        "_Rdlt_staging__orders",
-        "sqlite_master",
-        "SQLITE_x",
-        "pragma_table_info",
-        "Pragma_x",
-        "Orders",
-        "ordeRs",
-    ];
-    for name in reserved {
-        let reserved = config("table_name_reserved");
-        assert_eq!(
-            code(planner.owned(&mine, name, Some("mine"))),
-            reserved,
-            "{name}"
-        );
-        assert_eq!(
-            planner.claim(&mine, name).unwrap_err().code(),
-            Some("table_name_reserved")
-        );
-        let dropped = planner.dropped(&mine, name, None, false).unwrap_err();
-        assert_eq!(dropped.code(), Some("table_name_reserved"), "{name}");
-    }
-    // Names that only resemble the reserved ones, and names beyond ASCII, are tables' to take.
-    for name in [
-        "_rdl",
-        "_rdlt",
-        "rdlt_x",
-        "sqlite",
-        "pragma",
-        "ünïcode",
-        "_rdlté",
-    ] {
-        planner.owned(&mine, name, Some("mine")).unwrap();
-        planner.claim(&mine, name).unwrap();
-    }
-    // A dialect that keeps no names leaves the planner's own.
-    let plain = SqlPlanner::try_new(Widening).unwrap();
-    plain.owned(&mine, "sqlite_master", Some("mine")).unwrap();
-    plain.owned(&mine, "Orders", Some("mine")).unwrap();
-    assert!(plain.owned(&mine, "_rdlt_state", Some("mine")).is_err());
-}
-
-#[test]
-fn a_dropped_table_is_owned_or_was_dropped_before() {
-    let (_, planner) = database();
-    let mine = pipeline("mine");
-    assert_eq!(planner.dropped(&mine, "gone", None, false).unwrap(), None);
-    let owned = planner
-        .dropped(&mine, "orders", Some("mine"), true)
-        .unwrap();
-    assert_eq!(
-        owned.map(|owned| owned.name().to_owned()),
-        Some("orders".to_owned())
-    );
-    // An owner record without its table still drops: the record and the derived tables go.
-    assert!(
-        planner
-            .dropped(&mine, "orders", Some("mine"), false)
-            .unwrap()
-            .is_some()
-    );
-    let unowned = planner.dropped(&mine, "customers", None, true).unwrap_err();
-    assert_eq!(unowned.code(), Some("table_unowned"));
-    let theirs = planner
-        .dropped(&mine, "orders", Some("theirs"), true)
-        .unwrap_err();
-    assert_eq!(theirs.code(), Some("table_owned"));
-    let theirs = planner
-        .dropped(&mine, "orders", Some("theirs"), false)
-        .unwrap_err();
-    assert_eq!(theirs.code(), Some("table_owned"));
-}
-
-#[test]
 fn a_dialect_whose_schema_changes_do_not_commit_with_it_swaps_no_generation_table() {
     let planner = SqlPlanner::try_new(Autocommitting).unwrap();
     assert!(!planner.swaps_atomically());
@@ -496,6 +411,10 @@ impl SqlDialect for Autocommitting {
 
     fn columns(&self, table: &str) -> Statement {
         Sqlite.columns(table)
+    }
+
+    fn resolves(&self, name: &str) -> Statement {
+        Sqlite.resolves(name)
     }
 
     fn transactional_ddl(&self) -> bool {
@@ -578,8 +497,18 @@ fn a_cut_name_is_a_hash_no_uncut_name_can_take() {
 /// of what a statement does name the pipeline where they stage and publish, and are `mine`
 /// otherwise.
 impl<D: SqlDialect> SqlPlanner<D> {
-    pub(in crate::sqlgen) fn own(&self, pipeline: &PipelineId, name: &str) -> Owned {
-        self.owned(pipeline, name, Some(pipeline.as_str())).unwrap()
+    pub(in crate::sqlgen) fn own(&self, pipeline: &PipelineId, name: &str) -> Owned<'static> {
+        let owner = [vec![SqlValue::Text(pipeline.to_string())]];
+        let found = [vec![SqlValue::Text(name.to_owned())]];
+        let standing = self.check(name).unwrap().answered(&(), &owner, &found);
+        standing.unwrap().owned(pipeline).unwrap()
+    }
+
+    /// The table `name` as `pipeline` creates it where no pipeline owns it and nothing holds
+    /// its name.
+    pub(in crate::sqlgen) fn claiming(&self, pipeline: &PipelineId, name: &str) -> Owned<'static> {
+        let standing = self.check(name).unwrap().answered(&(), &[], &[]);
+        standing.unwrap().created(pipeline).unwrap()
     }
 
     pub(in crate::sqlgen) fn publish_as(
@@ -679,7 +608,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         epoch: Epoch,
         names: &[String],
     ) -> Vec<Statement> {
-        let tables: Vec<Owned> = names.iter().map(|name| self.own(pipeline, name)).collect();
+        let tables: Vec<Owned<'_>> = names.iter().map(|name| self.own(pipeline, name)).collect();
         self.discard(pipeline, epoch, &tables)
     }
 }
@@ -985,7 +914,7 @@ fn a_stored_receipt_is_found_by_its_load_and_commit_and_reads_back_equal() {
 }
 
 #[test]
-fn a_create_makes_the_table_and_its_staging_table_and_applying_it_again_plans_nothing() {
+fn a_create_makes_the_table_and_its_staging_table_and_applying_it_again_changes_neither() {
     let (connection, planner) = database();
     let orders = table("orders");
     let change = create(
@@ -1022,7 +951,9 @@ fn a_create_makes_the_table_and_its_staging_table_and_applying_it_again_plans_no
             "name"
         ]
     );
-    assert!(apply(&connection, &planner, &change).unwrap().is_empty());
+    // Applied again it changes no table: what is left of its plan registers the table again.
+    let again = apply(&connection, &planner, &change).unwrap();
+    assert_eq!(again, planner.register_of(change.table()));
     let null_id = connection.execute("INSERT INTO orders (id, name) VALUES (NULL, 'x')", []);
     assert!(null_id.is_err(), "a column declared non-null refuses nulls");
 }
@@ -1045,7 +976,8 @@ fn a_create_on_existing_tables_adds_only_the_columns_they_lack() {
         ],
     );
     let plan = apply(&connection, &planner, &wider).unwrap();
-    assert_eq!(plan.len(), 2, "one column added to each table: {plan:?}");
+    let added = plan.len() - planner.register_of(&orders).len();
+    assert_eq!(added, 2, "one column added to each table: {plan:?}");
     let names = |table: &str| -> Vec<String> {
         columns(&connection, &planner, table)
             .into_iter()

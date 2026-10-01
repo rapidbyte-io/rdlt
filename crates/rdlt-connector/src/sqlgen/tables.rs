@@ -84,18 +84,22 @@ impl<D: SqlDialect> SqlPlanner<D> {
             );
             names
         };
+        let folded = |names: Vec<String>| -> Vec<String> {
+            names.iter().map(|name| self.dialect.folds(name)).collect()
+        };
         let mut own = derived(name);
         if table.generation.is_some() {
             own.extend(indexed(self.target(table)));
         }
+        let own = folded(own);
         let tables = owned
             .iter()
             .filter(|other| other.as_str() != name)
-            .map(|other| (other, derived(other)));
+            .map(|other| (other, folded(derived(other))));
         let filling = generations
             .iter()
             .filter(|(_, base)| base != name)
-            .map(|(generation, base)| (base, indexed(generation.clone()).to_vec()));
+            .map(|(generation, base)| (base, folded(indexed(generation.clone()).to_vec())));
         let clash = tables
             .chain(filling)
             .find(|(_, names)| names.iter().any(|derived| own.contains(derived)));
@@ -122,7 +126,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// when the base is missing.
     pub fn generation(
         &self,
-        owned: &Owned,
+        owned: &Owned<'_>,
         table: &TableRef,
         base: &[Column],
     ) -> Result<Vec<Statement>> {
@@ -146,6 +150,9 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// The statements applying `change` to the table `owned` names, given the columns its target,
     /// staging and tombstones tables have now, empty where a table is missing.
     ///
+    /// A create writes the owner record where `owned` claims the table, creates the table and its
+    /// staging, and registers the table at its path, in that order.
+    ///
     /// A widen applies to each of them that has the column: a change stream's tombstones hold
     /// its key.
     ///
@@ -154,12 +161,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// then. A change the tables already reflect plans nothing.
     pub fn change(
         &self,
-        owned: &Owned,
+        owned: &Owned<'_>,
         change: &TableChange,
         [target, staging, tombstones]: [&[Column]; 3],
     ) -> Result<Vec<Statement>> {
         let table = change.table();
-        owned.is(&table.name)?;
+        if !matches!(change, TableChange::Create { .. }) {
+            owned.is(&table.name)?;
+        }
         let names = [
             self.target(table),
             self.staging_table(&table.name),
@@ -168,7 +177,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
         match change {
             TableChange::Create { schema, .. } => {
                 let fields: Vec<&Field> = schema.fields().iter().collect();
-                self.fields([&names[0], &names[1]], [target, staging], &fields)
+                let tables = self.fields([&names[0], &names[1]], [target, staging], &fields)?;
+                self.created(owned, table, tables)
             }
             TableChange::AddColumn { field, .. } => {
                 if target.is_empty() {
@@ -212,6 +222,28 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 Ok(plan)
             }
         }
+    }
+
+    /// The plan creating `table`, which `owned` names: its owner record where `owned` claims it,
+    /// then `tables`, the statements creating its tables, then its registration.
+    ///
+    /// They are one plan, for one transaction: no owner record stands for a table that was not
+    /// created.
+    fn created(
+        &self,
+        owned: &Owned<'_>,
+        table: &TableRef,
+        tables: Vec<Statement>,
+    ) -> Result<Vec<Statement>> {
+        owned.names(&table.name)?;
+        let mut plan = if owned.claims() {
+            self.claim(owned.pipeline(), owned.name())
+        } else {
+            Vec::new()
+        };
+        plan.extend(tables);
+        plan.extend(self.register(owned, table)?);
+        Ok(plan)
     }
 
     /// Creates the tables of `names` that are missing with `fields`, and adds the fields an

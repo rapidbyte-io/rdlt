@@ -24,6 +24,8 @@ async fn a_declared_type_the_dialect_does_not_render_is_never_copied() {
     );
     // The declared columns hold their types; the table's other column is what staging would copy.
     shared.execute("CREATE TABLE u (id INTEGER, seq BLOB, extra \"TEXT, injected TEXT\")");
+    // Both stand as tables of the pipeline's that another program made again.
+    shared.execute("INSERT INTO _rdlt_owners (name, pipeline) VALUES ('t', 'p'), ('u', 'p')");
     for name in ["t", "u"] {
         let adopted = table(name, name, true);
         assert_eq!(
