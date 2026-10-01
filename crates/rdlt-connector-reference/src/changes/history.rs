@@ -1,4 +1,4 @@
-//! The history a timed stream of whole rows leaves in a history table (spec §9.5).
+//! The history a timed stream of whole rows leaves in a history table.
 
 use std::collections::BTreeMap;
 

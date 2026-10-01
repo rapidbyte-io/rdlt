@@ -25,12 +25,12 @@ pub enum WriteMode {
     Replace,
     /// Upsert by key: a row replaces the table's row with the same key.
     Merge,
-    /// Keep every version of each key (spec §9.5): a row that changes its key's data closes the
+    /// Keep every version of each key: a row that changes its key's data closes the
     /// key's current version and becomes the current one.
     History,
 }
 
-/// What a change stream's deletes do to its merge or history table (spec §9.4).
+/// What a change stream's deletes do to its merge or history table.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DeleteMode {
@@ -44,7 +44,7 @@ pub enum DeleteMode {
     Ignore,
 }
 
-/// What a change stream's truncates do to its merge or history table (spec §9.4).
+/// What a change stream's truncates do to its merge or history table.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OnTruncate {

@@ -174,7 +174,7 @@ pub enum StateEntry {
         table: TablePath,
         /// Who made them.
         sequences: Sequences,
-        /// Whether the table is a history table (spec §9.5); records written before tables kept
+        /// Whether the table is a history table; records written before tables kept
         /// history hold no flag, as no table did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         history: bool,
