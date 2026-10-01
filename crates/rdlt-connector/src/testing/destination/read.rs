@@ -97,11 +97,11 @@ impl Read<'_> {
         let Some(column) = self.0.column_by_name(name) else {
             return Ok(None);
         };
-        // Arrow renders an instant as text through a calendar, which holds no instant near its
-        // ends: a column written as text reads back as no instant.
-        if text(to) && temporal(column.data_type()) {
+        // Only the casts that compute nothing on what a destination chose: a column is read as
+        // what a column of its kind is written as, or not at all.
+        if !reads(column.data_type(), to) {
             return Err(Violation::from(format_args!(
-                "column `{name}` read back as {}, not as text",
+                "column `{name}` read back as {}, which no column written as {to} is",
                 column.data_type()
             )));
         }
@@ -143,19 +143,36 @@ fn whole(name: &str, cast: ArrayRef, rows: usize) -> Result<ArrayRef, Violation>
     }
 }
 
-fn text(kind: &DataType) -> bool {
-    matches!(
-        kind,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    )
-}
-
-/// Whether `kind` holds instants, dates, times or spans, encoded or not.
-fn temporal(kind: &DataType) -> bool {
-    match kind {
-        DataType::Dictionary(_, values) => temporal(values),
-        DataType::RunEndEncoded(_, values) => temporal(values.data_type()),
-        kind => kind.is_temporal(),
+/// Whether a column of `from`, plain or encoded once, is read as `to`.
+///
+/// A column is read from the kinds one written as `to` is stored as: integers and instants as
+/// integers, text as text, bytes as bytes, flags as flags, instants and whole numbers as
+/// instants. Those casts copy, narrow with a check or change an instant's unit with a check;
+/// none renders through a calendar or multiplies unchecked, as casts between kinds do.
+fn reads(from: &DataType, to: &DataType) -> bool {
+    let from = match from {
+        DataType::Dictionary(_, values) => values.as_ref(),
+        DataType::RunEndEncoded(_, values) => values.data_type(),
+        plain => plain,
+    };
+    let bytes = matches!(
+        from,
+        DataType::Binary
+            | DataType::LargeBinary
+            | DataType::BinaryView
+            | DataType::FixedSizeBinary(_)
+    );
+    let instant = matches!(from, DataType::Timestamp(..));
+    match to {
+        _ if *from == DataType::Null => true,
+        DataType::Int64 => from.is_integer() || instant,
+        DataType::Utf8 => matches!(
+            from,
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+        ),
+        DataType::Binary | DataType::FixedSizeBinary(_) => bytes,
+        DataType::Timestamp(..) => instant || *from == DataType::Int64,
+        to => from == to,
     }
 }
 

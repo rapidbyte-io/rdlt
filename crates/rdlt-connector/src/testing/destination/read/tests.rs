@@ -383,3 +383,251 @@ fn a_temporal_column_is_never_rendered_as_text_whatever_encodes_it() {
     let numbers = Read(&batch).required("column", &DataType::Int64).unwrap();
     assert_eq!(numbers.as_primitive::<Int64Type>().values(), &[edge; 2]);
 }
+
+/// A column of `T` at the ends of what it holds, and nothing.
+fn ends<T: arrow_array::ArrowPrimitiveType>(low: T::Native, high: T::Native) -> ArrayRef
+where
+    T::Native: Default,
+{
+    Arc::new(PrimitiveArray::<T>::from_iter_values([
+        low,
+        high,
+        T::Native::default(),
+    ]))
+}
+
+/// Numbers, dates, times and spans, each at the ends of what it holds.
+fn numbers() -> Vec<ArrayRef> {
+    use arrow_array::types::{
+        Date32Type, Date64Type, Decimal128Type, DurationNanosecondType, Float32Type, Float64Type,
+        Time32SecondType, Time64NanosecondType,
+    };
+    vec![
+        ends::<Int8Type>(i8::MIN, i8::MAX),
+        ends::<Int16Type>(i16::MIN, i16::MAX),
+        ends::<Int32Type>(i32::MIN, i32::MAX),
+        ends::<Int64Type>(i64::MIN, i64::MAX),
+        ends::<UInt8Type>(0, u8::MAX),
+        ends::<UInt16Type>(0, u16::MAX),
+        ends::<UInt32Type>(0, u32::MAX),
+        ends::<UInt64Type>(0, u64::MAX),
+        ends::<Float32Type>(f32::MIN, f32::MAX),
+        ends::<Float64Type>(f64::NEG_INFINITY, f64::NAN),
+        ends::<Decimal128Type>(i128::MIN, i128::MAX),
+        ends::<Date32Type>(i32::MIN, i32::MAX),
+        ends::<Date64Type>(i64::MIN, i64::MAX),
+        ends::<Time32SecondType>(i32::MIN, i32::MAX),
+        ends::<Time64NanosecondType>(i64::MIN, i64::MAX),
+        ends::<DurationNanosecondType>(i64::MIN, i64::MAX),
+    ]
+}
+
+/// Instants of every unit, zoned and not, each at the ends of what it holds.
+fn instants() -> Vec<ArrayRef> {
+    use arrow_array::types::{
+        TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+        TimestampSecondType,
+    };
+    let zoned = |array: ArrayRef, zone: &str| -> ArrayRef {
+        let kind = match array.data_type() {
+            DataType::Timestamp(unit, _) => DataType::Timestamp(*unit, Some(zone.into())),
+            other => other.clone(),
+        };
+        let data = array.to_data().into_builder().data_type(kind);
+        arrow_array::make_array(data.build().unwrap())
+    };
+    vec![
+        ends::<TimestampSecondType>(i64::MIN, i64::MAX),
+        ends::<TimestampMillisecondType>(i64::MIN, i64::MAX),
+        ends::<TimestampMicrosecondType>(i64::MIN, i64::MAX),
+        ends::<TimestampNanosecondType>(i64::MIN, i64::MAX),
+        zoned(
+            ends::<TimestampSecondType>(i64::MIN, 8_210_266_876_799),
+            "+14:00",
+        ),
+        zoned(ends::<TimestampMicrosecondType>(i64::MIN, i64::MAX), "UTC"),
+        zoned(
+            ends::<TimestampNanosecondType>(i64::MIN, i64::MAX),
+            "-12:00",
+        ),
+    ]
+}
+
+/// Every kind of scalar column a read-back admits, each at the ends of what it holds.
+fn extremes() -> Vec<ArrayRef> {
+    let bytes = || -> ArrayRef {
+        Arc::new(BinaryArray::from_iter_values([
+            &b""[..],
+            &[255; 16],
+            &[0; 17],
+        ]))
+    };
+    let uuid = FixedSizeBinaryArray::try_from_iter([[0_u8; 16], [255; 16], [7; 16]].into_iter());
+    let mut columns = numbers();
+    columns.extend(instants());
+    columns.extend([
+        Arc::new(BooleanArray::from(vec![true, false, true])) as ArrayRef,
+        Arc::new(NullArray::new(3)),
+        Arc::new(StringArray::from(vec!["", "9223372036854775808", "true"])),
+        Arc::new(LargeStringArray::from(vec![
+            "",
+            "-1",
+            "1970-01-01T00:00:00Z",
+        ])),
+        arrow_cast::cast(&texts(), &DataType::Utf8View).unwrap(),
+        bytes(),
+        arrow_cast::cast(&bytes(), &DataType::LargeBinary).unwrap(),
+        arrow_cast::cast(&bytes(), &DataType::BinaryView).unwrap(),
+        Arc::new(uuid.unwrap()),
+    ]);
+    columns
+}
+
+/// `column`, plain, and encoded by a dictionary of each key type and by run ends of each type.
+fn encoded(column: &ArrayRef) -> Vec<ArrayRef> {
+    fn keyed<K: ArrowDictionaryKeyType>(values: &ArrayRef) -> ArrayRef
+    where
+        K::Native: TryFrom<usize>,
+    {
+        let keys = (0..values.len()).map(|key| K::Native::try_from(key).ok().unwrap());
+        let keys = PrimitiveArray::<K>::from_iter_values(keys);
+        Arc::new(DictionaryArray::<K>::try_new(keys, Arc::clone(values)).unwrap())
+    }
+    fn runs<R: RunEndIndexType>(values: &ArrayRef) -> ArrayRef
+    where
+        R::Native: TryFrom<usize>,
+    {
+        let ends = (1..=values.len()).map(|end| R::Native::try_from(end).ok().unwrap());
+        let ends = PrimitiveArray::<R>::from_iter_values(ends);
+        Arc::new(RunArray::<R>::try_new(&ends, values.as_ref()).unwrap())
+    }
+    vec![
+        Arc::clone(column),
+        keyed::<Int8Type>(column),
+        keyed::<Int16Type>(column),
+        keyed::<Int32Type>(column),
+        keyed::<Int64Type>(column),
+        keyed::<UInt8Type>(column),
+        keyed::<UInt16Type>(column),
+        keyed::<UInt32Type>(column),
+        keyed::<UInt64Type>(column),
+        runs::<Int16Type>(column),
+        runs::<Int32Type>(column),
+        runs::<Int64Type>(column),
+    ]
+}
+
+/// Every type a clause reads a column back as.
+fn targets() -> [DataType; 6] {
+    [
+        DataType::Int64,
+        DataType::Utf8,
+        DataType::Binary,
+        DataType::Boolean,
+        DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into())),
+        DataType::FixedSizeBinary(16),
+    ]
+}
+
+/// `column`'s values as text, a null as none.
+fn shown(column: &ArrayRef) -> Vec<Option<String>> {
+    let options = arrow_cast::display::FormatOptions::default();
+    let formatter = arrow_cast::display::ArrayFormatter::try_new(column.as_ref(), &options);
+    let formatter = formatter.unwrap();
+    (0..column.len())
+        .map(|row| {
+            column
+                .is_valid(row)
+                .then(|| formatter.value(row).to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn every_cast_a_clause_asks_of_a_read_back_is_exact_or_refused_and_never_panics() {
+    let mut read = 0;
+    for column in extremes() {
+        // What each value is, read with no arithmetic: integers and instants as their numbers.
+        let numbers = match column.data_type() {
+            DataType::Timestamp(..) => {
+                let data = column.to_data().into_builder().data_type(DataType::Int64);
+                Some(shown(&arrow_array::make_array(data.build().unwrap())))
+            }
+            kind if kind.is_integer() => Some(shown(&column)),
+            _ => None,
+        };
+        for encoded in encoded(&column) {
+            let kind = encoded.data_type().clone();
+            let batch = batch(encoded);
+            for to in targets() {
+                // A cast that computes on what a destination chose would panic here, or wrap.
+                let Ok(Some(cast)) = Read(&batch).optional("column", &to) else {
+                    continue;
+                };
+                read += 1;
+                assert_eq!(cast.len(), column.len(), "{kind} to {to}");
+                let (DataType::Int64, Some(numbers)) = (&to, &numbers) else {
+                    continue;
+                };
+                // A number read back is the number held, or none where Int64 holds none such.
+                for (row, number) in shown(&cast).into_iter().enumerate() {
+                    assert!(
+                        number.is_none() || number == numbers[row],
+                        "{kind} to {to}: {number:?}, not {:?}",
+                        numbers[row]
+                    );
+                }
+            }
+        }
+    }
+    assert!(read > 300, "only {read} casts were read");
+}
+
+#[test]
+fn a_column_is_read_only_as_what_a_column_of_its_kind_is_written_as() {
+    let micros = DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()));
+    let read = |column: ArrayRef, to: &DataType| {
+        let batch = batch(column);
+        Read(&batch).optional("column", to).is_ok()
+    };
+    let column = |index: usize| Arc::clone(&extremes()[index]);
+    let kinds: Vec<DataType> = extremes()
+        .iter()
+        .map(|column| column.data_type().clone())
+        .collect();
+    for (index, kind) in kinds.iter().enumerate() {
+        let integer = kind.is_integer();
+        let instant = matches!(kind, DataType::Timestamp(..));
+        let nothing = *kind == DataType::Null;
+        let text = matches!(
+            kind,
+            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+        );
+        let bytes = matches!(
+            kind,
+            DataType::Binary
+                | DataType::LargeBinary
+                | DataType::BinaryView
+                | DataType::FixedSizeBinary(_)
+        );
+        let flag = *kind == DataType::Boolean;
+        for encoded in encoded(&column(index)) {
+            let read = |to: &DataType| read(Arc::clone(&encoded), to);
+            assert_eq!(
+                read(&DataType::Int64),
+                integer || instant || nothing,
+                "{kind}"
+            );
+            assert_eq!(read(&DataType::Utf8), text || nothing, "{kind}");
+            assert_eq!(read(&DataType::Boolean), flag || nothing, "{kind}");
+            let whole = *kind == DataType::Int64;
+            assert_eq!(read(&micros), instant || whole || nothing, "{kind}");
+            // Bytes of another length than a column holds are refused by the cast itself.
+            assert!(!read(&DataType::Binary) || bytes || nothing, "{kind}");
+            assert!(
+                !read(&DataType::FixedSizeBinary(16)) || bytes || nothing,
+                "{kind}"
+            );
+        }
+    }
+}
