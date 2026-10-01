@@ -9,10 +9,18 @@
 //! Every other crate of the workspace forbids `unsafe` code. This one holds nothing else, and
 //! allows it only at the two places that need it.
 //!
+//! [`adopt`] is a safe function, so that a crate forbidding `unsafe` code can call it, and what
+//! it cannot check is left to its caller: that nothing else in the process owns the descriptor.
+//! A process that made a socket, cleared its close-on-exec flag and kept its owner would have it
+//! owned twice. `rdlt-connector` calls it first thing in a connector's `main`, on the descriptor
+//! its host passed, and is the only crate the workspace's dependency rule lets use this one.
+//!
 //! ```no_run
 //! let socket = rdlt_adopt::adopt(3)?;
 //! # Ok::<(), std::io::Error>(())
 //! ```
+
+#![cfg(unix)]
 
 #[cfg(test)]
 mod tests;
@@ -29,7 +37,9 @@ static ADOPTED: AtomicBool = AtomicBool::new(false);
 /// Takes ownership of the socket the host passed this process at `fd`.
 ///
 /// Call it first thing in `main`, before anything opens a file: a descriptor the host did not
-/// pass is then closed, and no part of the process can own one it did.
+/// pass is then closed, and no part of the process can own one it did. Nothing else in the
+/// process may own `fd`: the checks below refuse what this process opened in the usual way, and
+/// cannot see an owner of a descriptor whose close-on-exec flag the process cleared itself.
 ///
 /// # Errors
 ///

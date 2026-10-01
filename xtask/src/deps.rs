@@ -53,8 +53,9 @@ const RULES: &[(&str, &[&str])] = &[
     ("xtask", &[]),
 ];
 
-/// Crates nothing may depend on, not even as a dev-dependency.
-const LEAVES: &[&str] = &["rdlt-cli", "rdlt-sim", "xtask"];
+/// Crates nothing may use as a dev-dependency: those nothing depends on at all, and the audited
+/// `unsafe` crate, which only the crate [`RULES`] names may use.
+const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-cli", "rdlt-sim", "xtask"];
 
 /// A dependency of one workspace crate on another.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -55,3 +55,23 @@ fn a_crate_missing_from_the_rules_is_reported() {
         vec![Violation::Unlisted("rdlt-new".to_owned())]
     );
 }
+
+// The audited crate's function is sound only as its one caller uses it: no other crate may reach
+// it, in its tests either.
+#[test]
+fn only_the_connector_crate_uses_the_audited_crate() {
+    let names = crates(&["rdlt-adopt", "rdlt-connector", "rdlt-host", "rdlt-engine"]);
+    let allowed = edge("rdlt-connector", "rdlt-adopt", false);
+    assert_eq!(check(&names, &[allowed]), Vec::new());
+    for case in [
+        edge("rdlt-host", "rdlt-adopt", false),
+        edge("rdlt-engine", "rdlt-adopt", false),
+        edge("rdlt-host", "rdlt-adopt", true),
+        edge("rdlt-connector", "rdlt-adopt", true),
+    ] {
+        assert_eq!(
+            check(&names, std::slice::from_ref(&case)),
+            vec![Violation::Forbidden(case)]
+        );
+    }
+}
