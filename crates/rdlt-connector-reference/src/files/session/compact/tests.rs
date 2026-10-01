@@ -178,7 +178,8 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
 }
 
 #[test]
-fn a_merge_that_fails_leaves_the_list_and_no_file() {
+fn a_merge_that_fails_leaves_the_list_and_nothing_it_made() {
+    use crate::rooted::trace::{self, Step};
     for format in [FileFormat::Jsonl, FileFormat::Arrow] {
         let (_root, location) = location(format);
         let mut files = vec![
@@ -186,11 +187,42 @@ fn a_merge_that_fails_leaves_the_list_and_no_file() {
             staged(&location, 2, &ids(&[2])),
         ];
         let before = files.clone();
-        // The first file is gone: Arrow files cannot be told to share a schema, and JSON
-        // lines cannot be read.
-        std::fs::remove_file(location.dir.at(&files[0].path)).unwrap();
+        let made = location
+            .dir
+            .at("staging/7")
+            .join(location.load_id.to_string());
+        // A try refused at any step, the syncs of its file and of its directory among them,
+        // leaves no part of its file and none of the directories made for it.
+        for step in 0.. {
+            let mut created = Vec::new();
+            let seq = CommitSeq::FIRST;
+            trace::fail_at(step);
+            compact(
+                &location,
+                "rows",
+                None,
+                &mut files,
+                &meta(&location, seq),
+                &mut created,
+            );
+            let (refused, steps) = (trace::refused(), trace::steps());
+            trace::clear();
+            if !refused {
+                assert_eq!(files.len(), 1, "{format:?}");
+                break;
+            }
+            assert_eq!(files, before, "{format:?} step {step}: {steps:?}");
+            assert!(created.is_empty(), "{format:?} step {step}");
+            assert!(!made.join("compacted").exists(), "{format:?} step {step}");
+        }
+        // A file to merge that is gone: Arrow files cannot be told to share a schema, and JSON
+        // lines cannot be read, before anything is created.
+        let mut files = vec![before[0].clone(), staged(&location, 3, &ids(&[3]))];
+        let unmerged = files.clone();
+        std::fs::remove_file(location.dir.at(&files[0].path)).ok();
         let mut created = Vec::new();
-        let seq = CommitSeq::FIRST;
+        trace::clear();
+        let seq = CommitSeq::FIRST.next();
         compact(
             &location,
             "rows",
@@ -199,10 +231,13 @@ fn a_merge_that_fails_leaves_the_list_and_no_file() {
             &meta(&location, seq),
             &mut created,
         );
-        assert_eq!(files, before, "{format:?}");
-        for path in created {
-            assert!(!location.dir.at(path).exists(), "{format:?}");
-        }
+        assert_eq!(files, unmerged, "{format:?}");
+        assert!(created.is_empty(), "{format:?}");
+        let made_anything = trace::steps()
+            .into_iter()
+            .filter(|step| matches!(step, Step::Create(_) | Step::MakeDir(_)))
+            .count();
+        assert_eq!(made_anything, 0, "{format:?}");
     }
 }
 
