@@ -242,8 +242,8 @@ fn round_trip(batch: RecordBatch) -> (Frame, Vec<Frame>) {
 #[test]
 fn a_batch_beyond_what_a_connector_may_send_reads_back_as_the_engine_logged_it() {
     use arrow_array::{BinaryArray, NullArray};
-    // The engine logs what it lowered, which may hold more columns and rows, and more bytes, than
-    // the wire lets a connector send in one frame.
+    // The engine logs what it lowered, which may hold more columns, rows and values, more bytes
+    // and longer names than the wire lets a connector send in one frame.
     let columns = 10_001;
     let wide = RecordBatch::try_new(
         Arc::new(Schema::new(
@@ -272,8 +272,40 @@ fn a_batch_beyond_what_a_connector_may_send_reads_back_as_the_engine_logged_it()
         Arc::new(BinaryArray::from_iter_values([vec![7_u8; 65 << 20]])) as arrow_array::ArrayRef,
     )])
     .expect("a large batch");
-    for batch in [wide, long, large] {
+    let full = RecordBatch::try_from_iter([(
+        "n",
+        Arc::new(NullArray::new(64 * 1_048_576 + 1)) as arrow_array::ArrayRef,
+    )])
+    .expect("a batch of more values than a frame's");
+    let named = RecordBatch::try_from_iter([
+        ("n".repeat((64 << 10) + 1), Arc::new(NullArray::new(1)) as _),
+        ("m".repeat(4 << 20), Arc::new(NullArray::new(1)) as _),
+    ])
+    .expect("a batch of long names");
+    for batch in [wide, long, large, full, named] {
         let (frame, read) = round_trip(batch);
         assert_eq!(read, [frame]);
     }
+}
+
+#[test]
+fn a_batch_whose_buffers_share_bytes_is_refused_whatever_its_size() {
+    use arrow_array::Int64Array;
+    let values = Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])) as arrow_array::ArrayRef;
+    let batch = RecordBatch::try_from_iter([("n", values)]).expect("a batch");
+    let logged = super::arrow::encode(&batch).expect("the batch encodes");
+    assert_eq!(super::arrow::decode(&logged).expect("it decodes"), batch);
+    // The values' buffer follows the validity's, 64 bytes into the body and 24 bytes long; here
+    // it starts with it.
+    let described: Vec<u8> = [64_i64, 24]
+        .into_iter()
+        .flat_map(i64::to_le_bytes)
+        .collect();
+    let at = logged
+        .windows(described.len())
+        .position(|window| window == described)
+        .expect("the values' buffer is described");
+    let mut shared = logged;
+    shared[at..at + 8].copy_from_slice(&0_i64.to_le_bytes());
+    assert!(super::arrow::decode(&shared).is_err());
 }

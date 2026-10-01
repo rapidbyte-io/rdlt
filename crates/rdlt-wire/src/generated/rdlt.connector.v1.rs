@@ -1635,6 +1635,12 @@ pub struct Limits {
     /// Bytes in one string field of a control message.
     #[prost(uint64, tag = "8")]
     pub control_string_bytes: u64,
+    /// Values in one frame, nested values and the items of list views included.
+    #[prost(uint64, tag = "9")]
+    pub batch_values: u64,
+    /// Bytes in one schema message.
+    #[prost(uint64, tag = "10")]
+    pub schema_bytes: u64,
 }
 /// Opens the conversation.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -18,7 +18,7 @@ use tonic::transport::Channel;
 use crate::support::connectors::{Writes, Writing};
 use crate::support::{Fake, Fault, raw_client, serve_fake, served_within};
 
-fn handshake(role: v1::Role) -> v1::HandshakeRequest {
+pub(crate) fn handshake(role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
         protocol_minor: PROTOCOL_MINOR,
@@ -29,7 +29,7 @@ fn handshake(role: v1::Role) -> v1::HandshakeRequest {
     }
 }
 
-fn table() -> TableRef {
+pub(crate) fn table() -> TableRef {
     TableRef {
         path: TablePath::new(["items"]).expect("a valid table path"),
         name: Arc::from("items"),
@@ -56,7 +56,7 @@ fn ids(count: i64) -> arrow_array::RecordBatch {
 }
 
 /// A raw client of a destination `served` over `store`, handshaken, and a session it opened.
-async fn raw_session(served: Served, store: &str) -> (ConnectorClient<Channel>, u64) {
+pub(crate) async fn raw_session(served: Served, store: &str) -> (ConnectorClient<Channel>, u64) {
     let mut client = raw_client(crate::support::served(served)).await;
     let config = serde_json::json!({ "store": store });
     client
