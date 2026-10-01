@@ -6,8 +6,8 @@ use rdlt_connector::wire::v1;
 use rdlt_wire::PROTOCOL_MAJOR;
 
 use super::{
-    Found, UNKNOWN_FEATURE, Violation, configure_request, error, handshaken, refused_with, request,
-    unsupported, wire_role,
+    Found, Violation, configure_request, error, handshaken, refused_with, request, unsupported,
+    wire_role,
 };
 use crate::target::Target;
 
@@ -21,8 +21,13 @@ const OTHER_MAJORS: [u32; 2] = [0, u32::MAX];
 pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found {
     let checked = async {
         let mut client = target.client().await.map_err(Violation::of)?;
+        // A connector takes the features it knows and ignores the rest: this handshake alone
+        // offers one no host defines, named anew each time.
+        let unknown = unknown();
+        let mut offered = request(role, PROTOCOL_MAJOR);
+        offered.features.push(unknown.clone());
         let answer = client
-            .handshake(request(role, PROTOCOL_MAJOR))
+            .handshake(offered)
             .await
             .map_err(|status| format!("the handshake failed: {}", error(&status)))?
             .into_inner();
@@ -45,11 +50,7 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
             )
             .into());
         }
-        if answer
-            .accepted_features
-            .iter()
-            .any(|feature| feature == UNKNOWN_FEATURE)
-        {
+        if answer.accepted_features.contains(&unknown) {
             return Err(Violation::from(
                 "the handshake accepted a feature no host defines",
             ));
@@ -63,6 +64,15 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
         Ok(())
     };
     checked.await.into()
+}
+
+/// A feature no host defines, named after the time, so no connector knows it by name.
+fn unknown() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("x.{nanos:x}")
 }
 
 /// Checks `P-ORDER`.

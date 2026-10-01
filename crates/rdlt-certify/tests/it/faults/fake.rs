@@ -81,7 +81,7 @@ pub(crate) enum Fault {
 }
 
 /// The clause each fault breaks.
-pub(crate) const BROKEN: [(Fault, &str); 14] = [
+pub(crate) const BROKEN: [(Fault, &str); 15] = [
     (Fault::AnyVersion, "P-HANDSHAKE"),
     (Fault::MistypedVersion, "P-HANDSHAKE"),
     (Fault::Limitless, "P-HANDSHAKE"),
@@ -96,6 +96,8 @@ pub(crate) const BROKEN: [(Fault, &str); 14] = [
     (Fault::Eager, "P-CREDIT"),
     (Fault::LenientCursor, "P-LIMITS"),
     (Fault::AcceptsAnyFeature, "P-HANDSHAKE"),
+    // Only the handshake clause offers a feature no host defines.
+    (Fault::RefusesUnknownFeatures, "P-HANDSHAKE"),
 ];
 
 /// Its configuration limit, in bytes.
