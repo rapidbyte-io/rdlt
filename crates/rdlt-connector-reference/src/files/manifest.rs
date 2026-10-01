@@ -22,11 +22,14 @@ use serde::{Deserialize, Serialize};
 
 use super::format::FileFormat;
 use super::{io, tables, versions};
-use crate::limits::{MANIFEST_BYTES, RECEIPT_LOADS, TEMPORARY_AGE};
+use crate::limits::{MANIFEST_BYTES, RECEIPT_LOADS, RECEIPTS_PER_LOAD, TEMPORARY_AGE};
 use crate::rooted::{self, Dir, Limit};
 
 /// The code of an error for a manifest that is not what the destination writes.
 pub(super) const MANIFEST_INVALID: &str = "manifest_invalid";
+
+/// The code of an error for a commit older than the receipts its load keeps.
+pub(super) const RECEIPT_FORGOTTEN: &str = "receipt_forgotten";
 
 /// The directory of a pipeline's manifests, in the pipeline's directory.
 const MANIFESTS: &str = "manifests";
@@ -48,7 +51,7 @@ pub(super) struct Manifest {
     pub(super) epoch: Epoch,
     /// The pipeline's state records, their values in base64.
     pub(super) state: BTreeMap<String, String>,
-    /// The receipts of the most recent loads' commits.
+    /// The receipts of the most recent loads' latest commits.
     pub(super) receipts: Vec<StoredReceipt>,
     /// Each table's published files and replace generations, by identifier.
     pub(super) tables: BTreeMap<String, TableFiles>,
@@ -121,21 +124,42 @@ impl Manifest {
         }
     }
 
-    /// The stored receipt of `(load_id, commit_seq)`, if that commit happened.
-    pub(super) fn receipt(&self, load_id: LoadId, commit_seq: CommitSeq) -> Option<Receipt> {
-        self.receipts
+    /// The stored receipt of `(load_id, commit_seq)`, if that commit happened and is kept.
+    ///
+    /// # Errors
+    ///
+    /// A data error coded `receipt_forgotten` for a commit older than the receipts its load
+    /// keeps: it happened, and is neither answered nor published again.
+    pub(super) fn receipt(
+        &self,
+        load_id: LoadId,
+        commit_seq: CommitSeq,
+    ) -> Result<Option<Receipt>> {
+        let mut kept = self
+            .receipts
             .iter()
-            .find(|stored| stored.load_id == load_id && stored.commit_seq == commit_seq)
-            .map(|stored| Receipt {
+            .filter(|stored| stored.load_id == load_id);
+        if let Some(stored) = kept.clone().find(|stored| stored.commit_seq == commit_seq) {
+            return Ok(Some(Receipt {
                 load_id: stored.load_id,
                 commit_seq: stored.commit_seq,
                 committed_at: UNIX_EPOCH + Duration::from_micros(stored.committed_at),
                 rows: stored.rows,
                 bytes: stored.bytes,
-            })
+            }));
+        }
+        if kept.any(|stored| stored.commit_seq > commit_seq) {
+            return Err(ConnectorError::data(format!(
+                "commit {} of load {load_id} is older than the receipts the load keeps",
+                commit_seq.get()
+            ))
+            .with_code(RECEIPT_FORGOTTEN));
+        }
+        Ok(None)
     }
 
-    /// Records `receipt`, forgetting the receipts of loads older than the most recent ones.
+    /// Records `receipt`, forgetting the receipts of loads older than the most recent ones and,
+    /// of each load, those older than its most recent commits'.
     pub(super) fn record(&mut self, receipt: &Receipt) {
         self.receipts.push(StoredReceipt {
             load_id: receipt.load_id,
@@ -144,15 +168,26 @@ impl Manifest {
             rows: receipt.rows,
             bytes: receipt.bytes,
         });
-        let mut loads: Vec<LoadId> = Vec::new();
-        for stored in self.receipts.iter().rev() {
-            if !loads.contains(&stored.load_id) {
-                loads.push(stored.load_id);
+        // Newest first: each load's count so far decides what is kept.
+        let mut loads: Vec<(LoadId, usize)> = Vec::new();
+        let mut kept: Vec<StoredReceipt> = Vec::new();
+        for stored in self.receipts.drain(..).rev() {
+            let known = loads.iter().position(|(load, _)| *load == stored.load_id);
+            let count = match known {
+                Some(index) => &mut loads[index].1,
+                None if loads.len() < RECEIPT_LOADS => {
+                    loads.push((stored.load_id, 0));
+                    &mut loads.last_mut().expect("a load was pushed").1
+                }
+                None => continue,
+            };
+            if *count < RECEIPTS_PER_LOAD {
+                *count += 1;
+                kept.push(stored);
             }
         }
-        loads.truncate(RECEIPT_LOADS);
-        self.receipts
-            .retain(|stored| loads.contains(&stored.load_id));
+        kept.reverse();
+        self.receipts = kept;
     }
 
     /// Every file the manifest lists.

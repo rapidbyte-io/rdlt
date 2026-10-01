@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use rdlt_connector::{ConnectorErrorKind, Field, LogicalType, PipelineId, TableSchema};
 
 use super::{LOCK_TIMEOUT, claim, empty_trash, locked, named, owner, read, release, update};
-use crate::limits::{CATALOG_BYTES, OWNER_BYTES, TABLE_NAME_BYTES};
+use crate::limits::{CATALOG_BYTES, KEPT_VERSIONS, OWNER_BYTES, TABLE_NAME_BYTES};
 use crate::rooted::Dir;
 
 /// How long these tests wait for a lock nobody holds for long.
@@ -113,6 +113,28 @@ fn a_change_that_changes_nothing_writes_nothing() {
     update(&rdlt, "t", |current| Ok(Some(with(current, "a")))).unwrap();
     update(&rdlt, "t", |_| Ok(None)).unwrap();
     assert_eq!(names(&rdlt), ["a"]);
+}
+
+#[test]
+fn superseded_catalog_versions_are_removed_but_the_most_recent() {
+    let (root, rdlt) = private();
+    for column in 0..20 {
+        update(&rdlt, "t", |current| {
+            Ok(Some(with(current, &format!("c{column}"))))
+        })
+        .unwrap();
+    }
+    let catalog = root.path().join("tables").join("t");
+    let mut kept: Vec<String> = std::fs::read_dir(&catalog)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    kept.sort();
+    let expected: Vec<String> = (20 - KEPT_VERSIONS..=20)
+        .map(|version| format!("{version:020}.json"))
+        .collect();
+    assert_eq!(kept, expected);
+    assert_eq!(names(&rdlt).len(), 20);
 }
 
 #[test]

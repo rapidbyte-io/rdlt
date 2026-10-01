@@ -9,6 +9,7 @@ mod children;
 mod discard;
 mod files;
 mod files_floats;
+mod files_growth;
 mod files_locks;
 mod files_paths;
 mod files_source;

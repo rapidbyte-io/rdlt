@@ -24,12 +24,16 @@ pub(crate) const OWNER_BYTES: u64 = 128;
 /// digits and underscores.
 pub(crate) const TABLE_NAME_BYTES: u16 = 128;
 
-/// Versions: how many manifests of a pipeline stay on disk besides the latest, for readers still
-/// reading them.
+/// Versions: how many manifests of a pipeline, and catalog versions of a table, stay on disk
+/// besides the latest, for readers still reading them.
 pub(crate) const KEPT_VERSIONS: u64 = 8;
 
 /// Loads: bounds the loads whose receipts a manifest keeps, the most recent ones.
 pub(crate) const RECEIPT_LOADS: usize = 16;
+
+/// Receipts: bounds the receipts a manifest keeps of one load, its most recent commits'; an
+/// older commit of the load is refused rather than published again.
+pub(crate) const RECEIPTS_PER_LOAD: usize = 16;
 
 /// Attempts: bounds how often an open or a schema change is worked out again when another
 /// session's lands first.
@@ -49,6 +53,9 @@ pub(crate) const CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Rows: bounds one batch read back from a JSON lines file of the files destination.
 pub(crate) const READ_BATCH_ROWS: usize = 1024;
+
+/// Bytes: the size from which a published file of an append table is merged with no other.
+pub(crate) const COMPACT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Bytes: bounds the file a keeper of positions is kept in.
 pub(crate) const KEEPER_BYTES: u64 = 4 * 1024 * 1024;

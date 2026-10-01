@@ -2,6 +2,7 @@
 //! and commits that create the next manifest.
 
 mod commit;
+mod compact;
 mod merged;
 #[cfg(test)]
 pub(super) mod tests;

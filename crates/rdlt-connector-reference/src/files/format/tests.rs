@@ -820,6 +820,49 @@ fn a_writer_dropped_unfinished_leaves_no_file_and_a_finished_one_is_synced() {
     }
 }
 
+#[test]
+fn files_are_appended_to_a_file_being_written_row_for_row() {
+    let (root, dir) = scratch();
+    let (first, second) = (strings(2, 3), strings(3, 1));
+    for format in [FileFormat::Jsonl, FileFormat::Arrow] {
+        format
+            .write(&dir, "first", std::slice::from_ref(&first))
+            .unwrap();
+        format
+            .write(&dir, "second", std::slice::from_ref(&second))
+            .unwrap();
+        let mut writer = Writer::create(format, &dir, "both", first.schema_ref()).unwrap();
+        for name in ["first", "second"] {
+            writer
+                .append(dir.file(name).unwrap(), dir.at(name))
+                .unwrap();
+        }
+        assert_eq!(writer.finish().unwrap().rows, 5);
+        let read = format.read(&dir, "both", first.schema_ref()).unwrap();
+        assert_eq!(joined(&read), joined(&[first.clone(), second.clone()]));
+        for name in ["first", "second", "both"] {
+            std::fs::remove_file(root.path().join(name)).unwrap();
+        }
+    }
+    // JSON lines are appended as they are: a last line without its ending gets one, and lines
+    // holding no record are left out.
+    std::fs::write(
+        root.path().join("ragged"),
+        "{\"c\":\"a\"}\r\n\n  \n{\"c\":\"b\"}",
+    )
+    .unwrap();
+    let mut writer = Writer::create(FileFormat::Jsonl, &dir, "copied", first.schema_ref()).unwrap();
+    writer
+        .append(dir.file("ragged").unwrap(), dir.at("ragged"))
+        .unwrap();
+    writer
+        .append(dir.file("ragged").unwrap(), dir.at("ragged"))
+        .unwrap();
+    assert_eq!(writer.finish().unwrap().rows, 4);
+    let copied = std::fs::read_to_string(root.path().join("copied")).unwrap();
+    assert_eq!(copied, "{\"c\":\"a\"}\r\n{\"c\":\"b\"}\n".repeat(2));
+}
+
 fn lines_of(text: &[u8], limit: u64, buffer: usize) -> std::io::Result<Vec<Vec<u8>>> {
     let mut lines = Lines::new(BufReader::with_capacity(buffer, Cursor::new(text)), limit);
     let (mut read, mut line) = (Vec::new(), Vec::new());
@@ -1166,13 +1209,14 @@ fn an_arrow_file_of_messages_no_reader_frames_is_refused() {
 }
 
 #[test]
-fn an_arrow_reader_skips_batches() {
+fn an_arrow_reader_skips_batches_and_tells_its_schema() {
     let (root, dir) = scratch();
-    let (bytes, _) = arrow_bytes(3, IpcWriteOptions::default());
+    let (bytes, schema) = arrow_bytes(3, IpcWriteOptions::default());
     std::fs::write(root.path().join("rows.arrow"), bytes).unwrap();
     let empty = Arc::new(Schema::empty());
     for (skipped, left) in [(0, 3), (1, 2), (3, 0), (4, 0), (u64::MAX, 0)] {
         let mut reader = Reader::open(FileFormat::Arrow, &dir, "rows.arrow", &empty).unwrap();
+        assert_eq!(reader.schema(), Some(&schema));
         reader.skip(skipped);
         let mut read = 0;
         while reader.next().unwrap().is_some() {
@@ -1182,6 +1226,7 @@ fn an_arrow_reader_skips_batches() {
     }
     std::fs::write(root.path().join("rows.jsonl"), "{}\n").unwrap();
     let mut lines = Reader::open(FileFormat::Jsonl, &dir, "rows.jsonl", &empty).unwrap();
+    assert_eq!(lines.schema(), None);
     lines.skip(1);
     assert_eq!(lines.next().unwrap().map(|batch| batch.num_rows()), Some(1));
 }

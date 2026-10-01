@@ -34,6 +34,7 @@ struct Block {
 pub(super) struct IpcFile {
     file: File,
     decoder: Decoder,
+    schema: SchemaRef,
     batches: std::vec::IntoIter<Block>,
 }
 
@@ -67,10 +68,11 @@ impl IpcFile {
         let size = file.metadata().map_err(read)?.len();
         let (dictionaries, batches) = blocks(&mut file, size, &limits)?;
         let mut decoder = Decoder::new(limits);
-        schema(&mut file, size, &limits, &mut decoder)?;
+        let schema = schema(&mut file, size, &limits, &mut decoder)?;
         let mut opened = Self {
             file,
             decoder,
+            schema,
             batches: Vec::new().into_iter(),
         };
         for block in dictionaries {
@@ -80,6 +82,11 @@ impl IpcFile {
         }
         opened.batches = batches.into_iter();
         Ok(opened)
+    }
+
+    /// The schema of the file's batches.
+    pub(super) fn schema(&self) -> &SchemaRef {
+        &self.schema
     }
 
     /// Skips the next `batches` record batches.
