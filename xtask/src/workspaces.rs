@@ -28,6 +28,12 @@ pub(crate) fn unlisted(lockfiles: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Every lockfile in the repository at `root` that git tracks or would track, relative to `root`.
 pub(crate) fn lockfiles(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    tracked(root, &["Cargo.lock", "*/Cargo.lock"])
+}
+
+/// The files matching `pathspecs` that git tracks or would track in the repository at `root`,
+/// relative to `root`: what it ignores is in no commit.
+pub(crate) fn tracked(root: &Path, pathspecs: &[&str]) -> anyhow::Result<Vec<PathBuf>> {
     let listing = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -38,7 +44,8 @@ pub(crate) fn lockfiles(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
             "--others",
             "--exclude-standard",
         ])
-        .args(["--", "Cargo.lock", "*/Cargo.lock"])
+        .arg("--")
+        .args(pathspecs)
         .output()
         .context("running git ls-files")?;
     anyhow::ensure!(
@@ -46,7 +53,7 @@ pub(crate) fn lockfiles(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         "git ls-files failed: {}",
         String::from_utf8_lossy(&listing.stderr).trim()
     );
-    let names = String::from_utf8(listing.stdout).context("a lockfile's path is UTF-8")?;
+    let names = String::from_utf8(listing.stdout).context("a tracked path is UTF-8")?;
     let found: BTreeSet<PathBuf> = names.split_terminator('\0').map(PathBuf::from).collect();
     Ok(found.into_iter().collect())
 }
