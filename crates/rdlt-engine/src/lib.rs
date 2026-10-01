@@ -32,6 +32,7 @@ mod budget;
 mod compute;
 mod config;
 mod coordinator;
+mod cost;
 mod crash;
 mod env;
 mod error;
