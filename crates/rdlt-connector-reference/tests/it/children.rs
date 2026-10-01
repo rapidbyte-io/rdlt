@@ -157,7 +157,13 @@ fn merged_files(dir: &Path, seq: u64, table: &str) -> Vec<String> {
                 pending.push(path);
             } else {
                 let path = path.to_string_lossy().replace('\\', "/");
-                if path.contains(&format!("merged/{seq}/{table}/")) {
+                // `merged/<load>-<commit>-<random>/<table>/...`
+                let written = path.split_once("/merged/").and_then(|(_, rest)| {
+                    let (commit, rest) = rest.split_once('/')?;
+                    let number = commit.rsplit('-').nth(1)?;
+                    Some(number == seq.to_string() && rest.starts_with(&format!("{table}/")))
+                });
+                if written == Some(true) {
                     found.push(path);
                 }
             }

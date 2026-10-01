@@ -130,11 +130,9 @@ pub(super) fn written(
     if rows.num_rows() == 0 {
         return Ok(None);
     }
-    let segment = [kind.to_owned(), meta.commit_seq.get().to_string()];
+    let segment = Location::written_by(kind, meta)?;
     let (names, file) = location.staged(&segment, name, None, 0);
     let dir = location.staging(&names)?;
-    // What an earlier try of this commit left under the name is listed nowhere.
-    drop(dir.remove_file(&file));
     let path = format!("{}/{file}", names.join("/"));
     created.push(path.clone());
     let mut writer = Writer::create(location.format, &dir, &file, rows.schema_ref())?;

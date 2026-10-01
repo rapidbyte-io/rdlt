@@ -50,11 +50,9 @@ fn merged(
     meta: &CommitMeta,
     created: &mut Vec<String>,
 ) -> Result<Listed> {
-    let segment = ["compacted".to_owned(), meta.commit_seq.get().to_string()];
+    let segment = Location::written_by("compacted", meta)?;
     let (names, file) = location.staged(&segment, name, generation, 0);
     let dir = location.staging(&names)?;
-    // What an earlier try of this commit left under the name is listed nowhere.
-    drop(dir.remove_file(&file));
     let path = format!("{}/{file}", names.join("/"));
     created.push(path.clone());
     let schema = schema_of(location, &files[0])?

@@ -142,18 +142,18 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
         assert_eq!(files[0], before[0]);
         assert_eq!(files[1].rows, 2);
         assert_eq!(created, [files[1].path.clone()]);
-        assert!(
-            files[1].path.contains("/compacted/1/rows/g4/0."),
-            "{}",
-            files[1].path
-        );
+        let commit = format!("/compacted/{}-1-", location.load_id);
+        assert!(files[1].path.contains(&commit), "{}", files[1].path);
+        assert!(files[1].path.contains("/rows/g4/0."), "{}", files[1].path);
         let size = std::fs::metadata(location.dir.at(&files[1].path))
             .unwrap()
             .len();
         assert_eq!(files[1].bytes, size);
         assert_eq!(read(&location, &files), (1..=11).collect::<Vec<_>>());
         assert_eq!(read(&location, &before), (1..=11).collect::<Vec<_>>());
-        // Tried again, as a commit that failed is, it writes the file again.
+        // Tried again, as a commit that failed is, it writes another file and leaves the
+        // first: no file a commit wrote is ever removed or written over by its name.
+        let first = std::fs::read(location.dir.at(&files[1].path)).unwrap();
         let mut again = before.clone();
         compact(
             &location,
@@ -163,7 +163,16 @@ fn merged_files_hold_every_row_in_order_and_what_they_merged_stays_until_the_com
             &meta(&location, seq),
             &mut created,
         );
-        assert_eq!(again, files);
+        assert_ne!(again[1].path, files[1].path);
+        assert_eq!(
+            (again[1].rows, again[1].bytes),
+            (files[1].rows, files[1].bytes)
+        );
+        assert_eq!(
+            std::fs::read(location.dir.at(&files[1].path)).unwrap(),
+            first
+        );
+        assert_eq!(created.len(), 2);
     }
 }
 
