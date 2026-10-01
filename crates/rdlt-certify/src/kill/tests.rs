@@ -166,44 +166,55 @@ fn a_repeated_missing_or_stray_row_is_not_exactly_once() {
 }
 
 #[test]
-fn ids_are_found_in_any_case_and_any_integer_rendering() {
-    let rendered: Vec<String> = generated().iter().map(ToString::to_string).collect();
-    let as_text = batch(vec![("ID", Arc::new(StringArray::from(rendered)))]);
-    every_row_once(&[as_text]).expect("text ids cast");
+fn ids_are_found_in_any_case_and_any_width_of_integer() {
+    let narrow: Vec<i32> = (0..i32::try_from(ROWS).expect("few rows")).collect();
+    let narrow = batch(vec![(
+        "ID",
+        Arc::new(arrow_array::Int32Array::from(narrow)),
+    )]);
+    every_row_once(&[narrow]).expect("ids of any width are integers");
 }
 
 #[test]
-fn a_table_without_integer_ids_is_not_exactly_once() {
+fn a_table_whose_ids_no_read_back_admits_is_not_exactly_once() {
     let unnamed = batch(vec![("key", Arc::new(Int64Array::from(vec![0])))]);
-    assert_eq!(every_row_once(&[unnamed]), Err(Fault::NoIds));
     let words = batch(vec![("id", Arc::new(StringArray::from(vec!["zero"])))]);
-    assert!(matches!(
-        every_row_once(&[words]),
-        Err(Fault::NotIntegers(_))
-    ));
+    // Text that spells integers is no column of integers either.
+    let spelled = batch(vec![("id", Arc::new(StringArray::from(vec!["0"])))]);
     let nulls = batch(vec![(
         "id",
         Arc::new(Int64Array::from(vec![Some(0), None])),
     )]);
-    assert_eq!(every_row_once(&[nulls]), Err(Fault::Nulls));
+    let item = Arc::new(arrow_schema::Field::new_list_field(
+        arrow_schema::DataType::Int64,
+        true,
+    ));
+    let nested: ArrayRef = Arc::new(arrow_array::ListArray::new_null(item, 1));
+    let nested = batch(vec![("id", nested)]);
+    // More rows than any clause reads of a table, of ids that cost no bytes.
+    let nothing: ArrayRef = Arc::new(arrow_array::NullArray::new(1 << 20));
+    let flood = batch(vec![("id", nothing)]);
+    for unread in [unnamed, words, spelled, nulls, nested, flood] {
+        let kind = unread.schema();
+        let fault = every_row_once(&[unread]);
+        assert!(matches!(fault, Err(Fault::Unread(_))), "{kind}: {fault:?}");
+    }
 }
 
 #[test]
 fn each_fault_reads_apart_and_names_its_row() {
     let faults = [
-        Fault::NoIds,
-        Fault::NotIntegers("words".to_owned()),
-        Fault::Nulls,
+        Fault::Unread("words".into()),
         Fault::Repeated(17),
         Fault::Missing(17),
         Fault::Stray(17),
     ];
     let read: std::collections::BTreeSet<String> = faults.iter().map(ToString::to_string).collect();
     assert_eq!(read.len(), faults.len(), "{read:?}");
-    for fault in &faults[3..] {
+    for fault in &faults[1..] {
         assert!(fault.to_string().contains("17"), "{fault}");
     }
-    assert!(faults[1].to_string().contains("words"), "{}", faults[1]);
+    assert!(faults[0].to_string().contains("words"), "{}", faults[0]);
 }
 
 #[test]
@@ -290,27 +301,6 @@ fn a_clause_loads_again_with_new_kill_points_until_a_kill_interrupts_a_load() {
     let (outcome, loads) = drew(Some(7), |_| false);
     assert!(matches!(outcome, Loaded::Unseen(_)));
     assert_eq!(loads, [(100, 7)]);
-}
-
-#[test]
-fn a_table_read_back_beyond_the_rows_a_read_back_reads_is_refused_before_it_is_read() {
-    let limit = crate::limits::PUBLISHED_ROWS;
-    let nothing = |rows: usize| {
-        let nothing: ArrayRef = Arc::new(arrow_array::NullArray::new(rows));
-        batch(vec![("id", nothing)])
-    };
-    // Within its rows, a table of no ids is read, and found to hold none.
-    assert_eq!(every_row_once(&[nothing(limit)]), Err(Fault::Nulls));
-    assert_eq!(every_row_once(&[nothing(limit + 1)]), Err(Fault::Beyond));
-    assert_eq!(
-        every_row_once(&[nothing(limit), nothing(1)]),
-        Err(Fault::Beyond)
-    );
-    assert_eq!(
-        every_row_once(&[nothing(usize::MAX), nothing(1)]),
-        Err(Fault::Beyond)
-    );
-    assert!(Fault::Beyond.to_string().contains(&limit.to_string()));
 }
 
 #[test]

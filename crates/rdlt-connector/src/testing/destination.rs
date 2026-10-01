@@ -22,6 +22,7 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 
 pub use clauses::DESTINATION_CLAUSES;
+pub use read::read_back_integers;
 
 use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
 use crate::commit::{CommitMeta, SegmentSet};

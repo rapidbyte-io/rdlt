@@ -1998,7 +1998,6 @@ name = "rdlt-certify"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
- "arrow-cast",
  "arrow-schema",
  "clap",
  "http",

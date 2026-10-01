@@ -3,10 +3,8 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, Int64Array, RecordBatch};
-use arrow_cast::CastOptions;
-use arrow_schema::DataType;
-use rdlt_connector::testing::Probe;
+use arrow_array::RecordBatch;
+use rdlt_connector::testing::{Probe, Reason, read_back_integers};
 use rdlt_connector::{
     ConnectContext, ConnectorId, Destination, PipelineId, Source, StreamName, WriteModes,
     source_factory,
@@ -17,7 +15,6 @@ use rdlt_host::Kills;
 
 use super::killing::{Killing, Schedule};
 use super::{Loaded, converged};
-use crate::limits::PUBLISHED_ROWS;
 use crate::protocol::Violation;
 use crate::target::Target;
 
@@ -142,14 +139,9 @@ async fn generator(name: &str, seed: u64) -> Result<Arc<dyn Source>, Violation> 
 /// Why a table read back does not hold each generated row exactly once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Fault {
-    /// It has no `id` column.
-    NoIds,
-    /// Its `id` column is no integer, for the stated reason.
-    NotIntegers(String),
-    /// Its `id` column holds nulls.
-    Nulls,
-    /// It holds more rows than a read-back reads of a table.
-    Beyond,
+    /// Its ids could not be read, for the stated reason: it was not admitted as a read-back
+    /// is, or its `id` column holds no integers, or a null.
+    Unread(Reason),
     /// The row was published more than once.
     Repeated(i64),
     /// The row was never published.
@@ -161,18 +153,7 @@ pub(super) enum Fault {
 impl std::fmt::Display for Fault {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoIds => formatter.write_str("the table read back has no `id` column"),
-            Self::NotIntegers(reason) => {
-                write!(
-                    formatter,
-                    "the `id` column read back is no integer: {reason}"
-                )
-            }
-            Self::Nulls => formatter.write_str("the `id` column read back holds nulls"),
-            Self::Beyond => write!(
-                formatter,
-                "the table read back holds more than the {PUBLISHED_ROWS} rows certification reads"
-            ),
+            Self::Unread(reason) => write!(formatter, "the table read back: {reason}"),
             Self::Repeated(row) => write!(formatter, "row {row} was published more than once"),
             Self::Missing(row) => write!(formatter, "row {row} was never published"),
             Self::Stray(row) => write!(formatter, "row {row} was published but never loaded"),
@@ -182,37 +163,8 @@ impl std::fmt::Display for Fault {
 
 /// Whether `batches` hold each generated id exactly once.
 pub(super) fn every_row_once(batches: &[RecordBatch]) -> Result<(), Fault> {
-    let rows = batches
-        .iter()
-        .fold(0_usize, |rows, batch| rows.saturating_add(batch.num_rows()));
-    if rows > PUBLISHED_ROWS {
-        return Err(Fault::Beyond);
-    }
-    let mut ids = Vec::new();
-    for batch in batches {
-        let schema = batch.schema();
-        let column = schema
-            .fields()
-            .iter()
-            .position(|field| field.name().eq_ignore_ascii_case("id"))
-            .map(|index| batch.column(index))
-            .ok_or(Fault::NoIds)?;
-        // Strict, so an id that is no integer is refused rather than read as a null.
-        let strict = CastOptions {
-            safe: false,
-            ..CastOptions::default()
-        };
-        let cast = arrow_cast::cast_with_options(column, &DataType::Int64, &strict)
-            .map_err(|error| Fault::NotIntegers(error.to_string()))?;
-        let cast = cast
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .ok_or_else(|| Fault::NotIntegers("it casts to no `Int64` array".to_owned()))?;
-        if cast.null_count() > 0 {
-            return Err(Fault::Nulls);
-        }
-        ids.extend(cast.values().iter().copied());
-    }
+    // Through the admission every clause's read-back passes: its rows, its kinds of column.
+    let mut ids = read_back_integers(batches.to_vec(), "id").map_err(Fault::Unread)?;
     ids.sort_unstable();
     let expected = 0..i64::try_from(ROWS).unwrap_or(i64::MAX);
     let repeats = |pair: &[i64]| match pair {
