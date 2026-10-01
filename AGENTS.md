@@ -41,7 +41,13 @@ summaries, `biased;` in every `select!`, no `mod.rs`. The workspace's clippy lin
 `#[expect(.., reason = "..")]` instead of `allow`. Run `just lint` rather than guessing what they
 accept.
 
-Every target's root file (a library's, a binary's, an example's, a test's, a bench's, a fuzz
-target's) starts with `#![forbid(unsafe_code)]`, and `cargo xtask lint` fails on one that does
-not. `unsafe` code lives in `rdlt-adopt` alone, which holds its two audited files and nothing
-else (ADR 0048).
+`unsafe` code lives in `rdlt-adopt` alone, which holds its two audited files and nothing else
+(ADR 0048). Two checks hold that, and neither is enough alone:
+
+- The compiler: every target's root file (a library's, a binary's, an example's, a test's, a
+  bench's, a fuzz target's) starts with `#![forbid(unsafe_code)]`, and `cargo xtask lint` fails on
+  one that does not. The compiler does not look inside a macro's definition, nor at what another
+  crate's macro expands to.
+- The lint: `cargo xtask lint` fails on `unsafe` wherever it is a token outside `rdlt-adopt`, a
+  `macro_rules!` or `quote!` body included, on `include!`, and on a `#[path]` that is not a `.rs`
+  file beneath its crate, so no code comes from a file the lint did not read.
