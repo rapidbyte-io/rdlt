@@ -340,20 +340,15 @@ async fn a_certification_asked_for_no_timeout_runs_unbounded_and_takes_no_timeou
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_timeout_beyond_what_a_clock_holds_bounds_nothing() {
+async fn a_timeout_beyond_what_a_clock_holds_is_refused_rather_than_taken_for_none() {
     let binary = example("serve_source");
     let binary = binary.to_str().expect("a UTF-8 path");
-    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
     let forever = u64::MAX.to_string();
-    let args = [binary, "--config", config, "--env", "LLVM_PROFILE_FILE"];
-    let bounded = ["--timeout", forever.as_str(), "--require", "partial"];
-    let output = certify(&[&args[..], &bounded].concat()).await;
-    assert_eq!(
-        code(&output),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = certify(&[binary, "--timeout", forever.as_str()]).await;
+    // Whoever asks for a bound gets one, or is told why not: nothing was certified.
+    assert_eq!(code(&output), Some(64));
+    assert!(output.stdout.is_empty());
+    assert!(!output.stderr.is_empty(), "it says why");
 }
 
 #[tokio::test(flavor = "multi_thread")]
