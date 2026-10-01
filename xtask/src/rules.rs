@@ -34,6 +34,7 @@ pub(crate) enum Rule {
     UnforbiddenUnsafe,
     UnauditedFile,
     IncludedCode,
+    UnlistedWorkspace,
 }
 
 impl Rule {

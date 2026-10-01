@@ -26,11 +26,16 @@ lint:
     cargo xtask deps
     cargo xtask codegen --check
     cargo machete
-    cargo deny check
+    cargo xtask deny
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
     RUSTFLAGS="-D warnings" cargo hack check --workspace --each-feature --no-dev-deps
     actionlint
     pinact run --check
+
+# Check every workspace's locked dependencies, the fuzzing crate's included, for advisories, bans,
+# licenses and sources; a lockfile behind its manifest fails
+deny:
+    cargo xtask deny
 
 # Run the test suite; extra arguments go to nextest
 test *args:

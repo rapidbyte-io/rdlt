@@ -19,6 +19,7 @@ use syn::punctuated::Punctuated;
 use walkdir::WalkDir;
 
 use crate::rules::{Finding, Rule};
+use crate::workspaces::{self, MANIFESTS};
 
 /// The crate that holds the workspace's `unsafe` code, relative to the repository root.
 pub(crate) const AUDITED_CRATE: &str = "crates/rdlt-adopt";
@@ -26,15 +27,18 @@ pub(crate) const AUDITED_CRATE: &str = "crates/rdlt-adopt";
 /// Every file of the audited crate, relative to it.
 const AUDITED_FILES: &[&str] = &["Cargo.toml", "src/lib.rs", "src/tests.rs"];
 
-/// The manifests of the repository's workspaces, relative to its root.
-pub(crate) const MANIFESTS: &[&str] = &["Cargo.toml", "fuzz/Cargo.toml"];
-
 /// Macros that compile another file's contents into the file that calls them.
 const INCLUDES: &[&str] = &["include", "include_str", "include_bytes"];
 
 /// Every finding about `unsafe` code in the repository at `root`.
 pub(crate) fn check(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> {
-    check_tree(root, &target_roots(root)?)
+    let mut all = check_tree(root, &target_roots(root)?)?;
+    // A workspace that is not listed has roots this check never read.
+    for lockfile in workspaces::unlisted(&workspaces::lockfiles(root)?) {
+        let message = "a workspace xtask's MANIFESTS does not list";
+        all.push((lockfile, finding(1, Rule::UnlistedWorkspace, message)));
+    }
+    Ok(all)
 }
 
 /// The root file of every target cargo compiles in the repository's workspaces, relative to

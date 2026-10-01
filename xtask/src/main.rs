@@ -4,11 +4,13 @@
 
 mod codegen;
 mod coverage;
+mod deny;
 mod deps;
 mod lexer;
 mod lint;
 mod rules;
 mod unsafe_code;
+mod workspaces;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -28,6 +30,8 @@ enum Command {
     Lint,
     /// Check that workspace crates depend only on what the architecture allows.
     Deps,
+    /// Check every workspace's locked dependencies for advisories, bans, licenses and sources.
+    Deny,
     /// Generate the wire protocol's Rust code from its `.proto` files.
     Codegen {
         /// Fail when the committed code is stale, instead of writing it.
@@ -52,6 +56,7 @@ fn main() -> anyhow::Result<ExitCode> {
     match Cli::parse().command {
         Command::Lint => lint::run(&root),
         Command::Deps => deps::run(&root),
+        Command::Deny => deny::run(&root),
         Command::Codegen { check } => codegen::run(&root, check),
         Command::CoverageGate {
             export,
