@@ -2,7 +2,8 @@ use std::io::{BufReader, Cursor, Write as _};
 use std::sync::Arc;
 
 use arrow_array::builder::{
-    GenericListViewBuilder, Int64Builder, ListBuilder, StringBuilder, StringViewBuilder,
+    Float64Builder, GenericListViewBuilder, Int64Builder, ListBuilder, StringBuilder,
+    StringViewBuilder,
 };
 use arrow_array::types::{
     ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, RunEndIndexType, UInt8Type,
@@ -550,6 +551,133 @@ fn json_lines_are_read_back_in_batches_of_bounded_rows_and_bytes() {
         .unwrap();
     let rows: Vec<usize> = read.iter().map(RecordBatch::num_rows).collect();
     assert_eq!(rows, [2, 2, 1]);
+}
+
+/// The bits of each value of a float column, a NaN as one value whatever its payload.
+fn bits(column: &ArrayRef) -> Vec<Option<u64>> {
+    use arrow_array::cast::AsArray as _;
+    use arrow_array::types::{Float32Type, Float64Type};
+    let canonical = |value: f64| {
+        if value.is_nan() {
+            f64::NAN.to_bits()
+        } else {
+            value.to_bits()
+        }
+    };
+    match column.data_type() {
+        DataType::Float32 => column
+            .as_primitive::<Float32Type>()
+            .iter()
+            .map(|value| value.map(|value| canonical(f64::from(value))))
+            .collect(),
+        _ => column
+            .as_primitive::<Float64Type>()
+            .iter()
+            .map(|value| value.map(canonical))
+            .collect(),
+    }
+}
+
+/// Every kind of double: those that are no number, both zeros, the extremes and values whose
+/// shortest text is long.
+const DOUBLES: [f64; 14] = [
+    f64::NAN,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    -0.0,
+    0.0,
+    1.5,
+    f64::MAX,
+    f64::MIN,
+    f64::MIN_POSITIVE,
+    5e-324,
+    0.1,
+    1e21,
+    9_007_199_254_740_993.0,
+    f64::EPSILON,
+];
+
+const SINGLES: [f32; 14] = [
+    f32::NAN,
+    f32::INFINITY,
+    f32::NEG_INFINITY,
+    -0.0,
+    0.0,
+    1.5,
+    f32::MAX,
+    f32::MIN,
+    f32::MIN_POSITIVE,
+    1e-45,
+    0.1,
+    1e21,
+    16_777_217.0,
+    f32::EPSILON,
+];
+
+#[test]
+fn every_float_reads_back_from_json_lines_as_the_value_written() {
+    let mut doubles: Vec<Option<f64>> = DOUBLES.iter().copied().map(Some).collect();
+    doubles.push(None);
+    let mut singles: Vec<Option<f32>> = SINGLES.iter().copied().map(Some).collect();
+    singles.push(None);
+    let x: ArrayRef = Arc::new(Float64Array::from(doubles));
+    let y: ArrayRef = Arc::new(Float32Array::from(singles));
+    let batch = RecordBatch::try_from_iter_with_nullable([
+        ("x", Arc::clone(&x), true),
+        ("y", Arc::clone(&y), true),
+    ])
+    .unwrap();
+    let read = round_trip(FileFormat::Jsonl, &batch);
+    assert_eq!(bits(read.column(0)), bits(&x));
+    assert_eq!(bits(read.column(1)), bits(&y));
+}
+
+#[test]
+fn a_float_that_is_no_number_is_named_in_json_lines_wherever_it_nests() {
+    // Named in the file, so no reader takes one for a missing value.
+    let (root, dir) = scratch();
+    let named = single(Arc::new(Float64Array::from(vec![
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ])));
+    FileFormat::Jsonl
+        .write(&dir, "named.jsonl", &[named])
+        .unwrap();
+    let text = std::fs::read_to_string(root.path().join("named.jsonl")).unwrap();
+    assert_eq!(
+        text,
+        "{\"c\":\"NaN\"}\n{\"c\":\"Infinity\"}\n{\"c\":\"-Infinity\"}\n"
+    );
+    // Inside lists and structs alike, required or not.
+    let mut items = ListBuilder::new(Float64Builder::new());
+    items.append_value([Some(f64::NAN), None, Some(f64::NEG_INFINITY)]);
+    let inner = Arc::new(Field::new("x", DataType::Float32, false));
+    let point = StructArray::from(vec![(
+        inner,
+        Arc::new(Float32Array::from(vec![f32::INFINITY])) as ArrayRef,
+    )]);
+    let nested = RecordBatch::try_from_iter_with_nullable([
+        ("items", Arc::new(items.finish()) as ArrayRef, false),
+        ("point", Arc::new(point) as ArrayRef, false),
+    ])
+    .unwrap();
+    FileFormat::Jsonl
+        .write(&dir, "nested.jsonl", std::slice::from_ref(&nested))
+        .unwrap();
+    let text = std::fs::read_to_string(root.path().join("nested.jsonl")).unwrap();
+    assert_eq!(
+        text,
+        "{\"items\":[\"NaN\",null,\"-Infinity\"],\"point\":{\"x\":\"Infinity\"}}\n"
+    );
+    let read = FileFormat::Jsonl
+        .read(&dir, "nested.jsonl", nested.schema_ref())
+        .unwrap();
+    assert_eq!(
+        format!("{:?}", read[0].column(0)),
+        format!("{:?}", nested.column(0))
+    );
+    assert_eq!(read[0].column(1), nested.column(1));
 }
 
 /// Three rows of every scalar type JSON lines keep, the second null.

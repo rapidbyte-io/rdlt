@@ -1,13 +1,87 @@
-//! JSON lines as the destination reads them back: no line held beyond its limit.
+//! JSON lines as the destination writes and reads them back: every float exactly, and no line
+//! held beyond its limit.
 
 use std::fs::File;
 use std::io::BufReader;
 
-use arrow_array::RecordBatch;
-use arrow_schema::{ArrowError, SchemaRef};
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Float32Type, Float64Type};
+use arrow_array::{Array, RecordBatch};
+use arrow_json::writer::{Encoder, EncoderFactory, EncoderOptions, NullableEncoder};
+use arrow_schema::{ArrowError, DataType, FieldRef, SchemaRef};
 
 use super::lines::Lines;
 use crate::limits::{CHUNK_BYTES, LINE_BYTES, READ_BATCH_ROWS};
+
+/// Encodes floats so each reads back as the value written: JSON has no number for a float that
+/// is not finite, which arrow-json writes as `null`; here it is the string naming it.
+#[derive(Debug)]
+pub(super) struct ExactFloats;
+
+impl EncoderFactory for ExactFloats {
+    fn make_default_encoder<'a>(
+        &self,
+        _field: &'a FieldRef,
+        array: &'a dyn Array,
+        _options: &'a EncoderOptions,
+    ) -> Result<Option<NullableEncoder<'a>>, ArrowError> {
+        let encoder: Box<dyn Encoder + 'a> = match array.data_type() {
+            DataType::Float32 => Box::new(Floats(array.as_primitive::<Float32Type>())),
+            DataType::Float64 => Box::new(Floats(array.as_primitive::<Float64Type>())),
+            _ => return Ok(None),
+        };
+        Ok(Some(NullableEncoder::new(encoder, array.nulls().cloned())))
+    }
+}
+
+/// Writes a finite float as the shortest text that reads back as it, and one that is not finite
+/// as a JSON string of its name: `NaN`, `Infinity` or `-Infinity`.
+struct Floats<'a, T: arrow_array::ArrowPrimitiveType>(&'a arrow_array::PrimitiveArray<T>);
+
+/// A float as JSON text.
+trait Written: Copy {
+    fn name(self) -> Option<&'static [u8]>;
+    fn text(self, out: &mut Vec<u8>);
+}
+
+macro_rules! written {
+    ($float:ty) => {
+        impl Written for $float {
+            fn name(self) -> Option<&'static [u8]> {
+                if self.is_nan() {
+                    Some(b"\"NaN\"")
+                } else if self == <$float>::INFINITY {
+                    Some(b"\"Infinity\"")
+                } else if self == <$float>::NEG_INFINITY {
+                    Some(b"\"-Infinity\"")
+                } else {
+                    None
+                }
+            }
+
+            fn text(self, out: &mut Vec<u8>) {
+                serde_json::to_writer(out, &self).expect("a finite float writes to a vector");
+            }
+        }
+    };
+}
+
+written!(f32);
+written!(f64);
+
+impl<T> Encoder for Floats<'_, T>
+where
+    T: arrow_array::ArrowPrimitiveType,
+    T::Native: Written,
+{
+    fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
+        let value = self.0.value(idx);
+        match value.name() {
+            Some(name) => out.extend_from_slice(name),
+            None => value.text(out),
+        }
+    }
+}
 
 /// The rows of a JSON lines file, read as a table's schema in batches.
 pub(super) struct Rows {
