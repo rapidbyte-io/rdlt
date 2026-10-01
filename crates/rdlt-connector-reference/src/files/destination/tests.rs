@@ -7,7 +7,7 @@ use super::super::manifest::{Listed, Manifest, TableFiles};
 use super::super::{manifest, tables};
 use super::{checked, discard, existing, next_epoch, private};
 use crate::rooted::Dir;
-use crate::rooted::tests::SYNCED;
+use crate::rooted::trace;
 
 const WAIT: Duration = Duration::from_secs(20);
 
@@ -84,9 +84,9 @@ fn a_discard_keeps_what_the_latest_manifest_lists_and_enters_no_link() {
 #[test]
 fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe() {
     let root = tempfile::tempdir().expect("a temporary directory");
-    SYNCED.with(|synced| synced.borrow_mut().clear());
+    trace::clear();
     checked(root.path()).expect("the check passes");
-    let synced = SYNCED.with(|synced| synced.borrow().clone());
+    let synced = trace::synced();
     assert!(synced.contains(&root.path().to_owned()), "{synced:?}");
     assert!(root.path().join("_rdlt").is_dir());
     assert_eq!(

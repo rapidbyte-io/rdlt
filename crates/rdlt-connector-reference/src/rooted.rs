@@ -7,7 +7,9 @@
 
 mod temporary;
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;
+#[cfg(test)]
+pub(crate) mod trace;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -205,6 +207,12 @@ impl Dir {
     /// in this one.
     pub(crate) fn dir_created(&self, name: impl AsRef<OsStr>) -> io::Result<Self> {
         let name = component(name.as_ref())?;
+        #[cfg(test)]
+        let known = self.kind(name)?.is_some();
+        #[cfg(test)]
+        if !known {
+            trace::step(trace::Step::MakeDir(self.at(name)))?;
+        }
         match rustix::fs::mkdirat(&self.file, name, PRIVATE_DIR) {
             Ok(()) => self.sync()?,
             Err(rustix::io::Errno::EXIST) => {}
@@ -283,6 +291,8 @@ impl Dir {
     /// included, is refused.
     pub(crate) fn create(&self, name: impl AsRef<OsStr>) -> io::Result<File> {
         let name = component(name.as_ref())?;
+        #[cfg(test)]
+        trace::step(trace::Step::Create(self.at(name)))?;
         let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | BENEATH;
         let fd = rustix::fs::openat(&self.file, name, flags, PRIVATE_FILE)?;
         Ok(File::from(fd))
@@ -325,12 +335,16 @@ impl Dir {
     /// Removes the entry `name` that is no directory: a link itself, never what it leads to.
     pub(crate) fn remove_file(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
         let name = component(name.as_ref())?;
+        #[cfg(test)]
+        trace::step(trace::Step::Remove(self.at(name)))?;
         Ok(rustix::fs::unlinkat(&self.file, name, AtFlags::empty())?)
     }
 
     /// Removes the empty directory `name`.
     pub(crate) fn remove_dir(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
         let name = component(name.as_ref())?;
+        #[cfg(test)]
+        trace::step(trace::Step::RemoveDir(self.at(name)))?;
         Ok(rustix::fs::unlinkat(&self.file, name, AtFlags::REMOVEDIR)?)
     }
 
@@ -367,6 +381,8 @@ impl Dir {
         to: impl AsRef<OsStr>,
     ) -> io::Result<()> {
         let (name, to) = (component(name.as_ref())?, component(to.as_ref())?);
+        #[cfg(test)]
+        trace::step(trace::Step::Rename(into.at(to)))?;
         Ok(rustix::fs::renameat(&self.file, name, &into.file, to)?)
     }
 
@@ -374,7 +390,7 @@ impl Dir {
     /// survives a crash.
     pub(crate) fn sync(&self) -> io::Result<()> {
         #[cfg(test)]
-        tests::SYNCED.with(|synced| synced.borrow_mut().push(self.path.clone()));
+        trace::step(trace::Step::SyncDir(self.path.clone()))?;
         self.file.sync_all()
     }
 
