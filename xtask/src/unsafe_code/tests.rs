@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use super::{AUDITED_CRATE, check, check_file, check_tree, target_roots};
 use crate::rules::Rule;
@@ -15,6 +16,7 @@ fn write(root: &Path, relative: &str, contents: &str) {
 /// A tree holding the audited crate as it is audited.
 fn tree() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
+    git(root.path(), &["init", "--quiet"]);
     // The manifest is no Rust source: what an audited file may not say, it may.
     let manifest = "[package]\nname = \"rdlt-adopt\"\ninclude = [\"src\"]\n";
     write(
@@ -27,6 +29,16 @@ fn tree() -> tempfile::TempDir {
         write(root.path(), &format!("{AUDITED_CRATE}/{file}"), contents);
     }
     root
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
 }
 
 fn found(root: &Path, roots: &[&str]) -> Vec<(String, Rule)> {
@@ -175,7 +187,28 @@ fn the_audited_crate_holds_only_its_audited_files() {
 #[test]
 fn a_tree_without_the_audited_crate_is_clean() {
     let root = tempfile::tempdir().unwrap();
+    git(root.path(), &["init", "--quiet"]);
     assert_eq!(found(root.path(), &[]), Vec::new());
+}
+
+// What git ignores is in no commit: an editor's or the system's droppings are not the crate's.
+#[test]
+fn a_file_git_ignores_in_the_audited_crate_is_no_finding() {
+    let root = tree();
+    fs::write(root.path().join(".gitignore"), ".DS_Store\n").unwrap();
+    write(root.path(), &format!("{AUDITED_CRATE}/.DS_Store"), "");
+    write(root.path(), &format!("{AUDITED_CRATE}/src/.DS_Store"), "");
+    assert_eq!(found(root.path(), &[]), Vec::new());
+    // Tracked, it is the crate's again, whatever the ignore rules say.
+    git(
+        root.path(),
+        &["add", "--force", &format!("{AUDITED_CRATE}/src/.DS_Store")],
+    );
+    let expected = vec![(
+        format!("{AUDITED_CRATE}/src/.DS_Store"),
+        Rule::UnauditedFile,
+    )];
+    assert_eq!(found(root.path(), &[]), expected);
 }
 
 fn in_file(path: &str, source: &str) -> Vec<(Rule, usize)> {

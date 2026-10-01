@@ -17,7 +17,6 @@ use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::ext::IdentExt as _;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use walkdir::WalkDir;
 
 use crate::rules::{Finding, Rule};
 use crate::workspaces::{self, MANIFESTS};
@@ -115,20 +114,10 @@ pub(crate) fn check_tree(
             all.push((path.clone(), finding(1, Rule::UnforbiddenUnsafe, message)));
         }
     }
-    let dir = root.join(audited);
-    if !dir.exists() {
-        return Ok(all);
-    }
-    for entry in WalkDir::new(&dir).sort_by_file_name() {
-        let entry = entry.with_context(|| format!("walking {}", dir.display()))?;
-        if entry.file_type().is_dir() {
-            continue;
-        }
-        let path = entry.path();
-        let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-        if !AUDITED_FILES.iter().any(|file| path == dir.join(file)) {
+    for path in workspaces::tracked(root, &[AUDITED_CRATE])? {
+        if !AUDITED_FILES.iter().any(|file| path == audited.join(file)) {
             let message = format!("{AUDITED_CRATE} holds only its audited files");
-            all.push((relative, finding(1, Rule::UnauditedFile, message)));
+            all.push((path, finding(1, Rule::UnauditedFile, message)));
         }
     }
     Ok(all)
