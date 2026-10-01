@@ -376,3 +376,20 @@ fn a_staged_path_lies_under_the_pipeline_s_staging() {
     assert_eq!(unknown.kind(), ConnectorErrorKind::Data);
     assert!(read(&dir, "staging/1/x.jsonl", &schema).unwrap().is_empty());
 }
+
+#[test]
+fn a_manifest_whose_state_is_not_base64_is_refused_written_or_read() {
+    let refused = changed(&|manifest| {
+        manifest
+            .state
+            .insert("k".to_owned(), "!!!not base64!!!".to_owned());
+    });
+    let error = refused.expect_err("the state is no base64");
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    assert_eq!(error.code(), Some(MANIFEST_INVALID));
+    let kept = changed(&|manifest| {
+        manifest.state.insert("k".to_owned(), "aGVsbG8=".to_owned());
+    });
+    let records = kept.unwrap().unwrap().records().unwrap();
+    assert_eq!(&records[0].value[..], b"hello");
+}

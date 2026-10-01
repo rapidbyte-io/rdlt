@@ -185,9 +185,13 @@ impl Manifest {
                 return Some(format!("{name:?} is no table identifier"));
             }
         }
-        self.files()
-            .find(|file| staged(&file.path).is_err())
-            .map(|file| format!("{:?} is no staged file", file.path))
+        if let Some(file) = self.files().find(|file| staged(&file.path).is_err()) {
+            return Some(format!("{:?} is no staged file", file.path));
+        }
+        self.state
+            .iter()
+            .find(|(_, value)| STANDARD.decode(value).is_err())
+            .map(|(key, _)| format!("state record {key:?} is not base64"))
     }
 }
 
