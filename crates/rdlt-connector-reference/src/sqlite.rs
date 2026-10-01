@@ -141,7 +141,9 @@ impl ReadBack for SqliteDestination {
     async fn published(&self, table: &TableRef, rows: PublishedRows) -> Result<()> {
         let (path, name) = (self.path.clone(), table.name.clone());
         crate::blocking::blocking(move || {
-            let connection = database::connect(&path)?;
+            let Some((connection, name)) = readable(&path, &name)? else {
+                return Ok(());
+            };
             values::read_table_each(&connection, &Sqlite, &name, &mut |batch| {
                 rows.blocking_send(batch)
             })
@@ -150,11 +152,30 @@ impl ReadBack for SqliteDestination {
     }
 }
 
-/// Every row of `table` in the database at `path`, in batches of bounded size; none when the
-/// table is missing.
+/// A connection that only reads the database at `path` and the name it holds `table` under,
+/// where a pipeline owns the table; none where the table or the database is missing.
 ///
-/// Columns read back as their storage class: integers as `Int64`, floats as `Float64`.
+/// Reading changes nothing and creates no database. A name the destination keeps, as the
+/// catalog's, is a `Config` error coded `table_name_reserved`, and a table no pipeline owns one
+/// coded `table_unowned`.
+fn readable(path: &std::path::Path, table: &str) -> Result<Option<(rusqlite::Connection, String)>> {
+    let planner = SqlPlanner::try_new(Sqlite)?;
+    planner.named(table)?;
+    let Some(connection) = database::reading(path)? else {
+        return Ok(None);
+    };
+    let name = session::owners::published(&connection, &planner, table)?;
+    Ok(name.map(|name| (connection, name)))
+}
+
+/// Every row of `table` in the database at `path`, in batches of bounded size; none where the
+/// table or the database is missing.
+///
+/// Columns read back as their storage class: integers as `Int64`, floats as `Float64`. Only a
+/// table a pipeline owns is read, as [`readable`] says.
 pub fn published(path: impl Into<PathBuf>, table: &str) -> Result<Vec<RecordBatch>> {
-    let connection = database::connect(&path.into())?;
-    values::read_table(&connection, &Sqlite, table)
+    match readable(&path.into(), table)? {
+        Some((connection, name)) => values::read_table(&connection, &Sqlite, &name),
+        None => Ok(Vec::new()),
+    }
 }

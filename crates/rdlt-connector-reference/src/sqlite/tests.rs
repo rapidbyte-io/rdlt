@@ -373,7 +373,13 @@ fn differ(path: &Path, commits: &[Vec<Vec<Change>>], shape: &Shape) -> Result<()
             "rows after commit {}",
             seq
         );
-        let buried = published(path, "_rdlt_tombstones__changes").expect("the tombstones read");
+        // The tombstones are no table read-back serves: a reader of the file itself reads them.
+        let reader = super::database::reading(path)
+            .expect("the database opens")
+            .expect("the database is there");
+        let buried =
+            super::values::read_table(&reader, &super::Sqlite, "_rdlt_tombstones__changes")
+                .expect("the tombstones read");
         prop_assert_eq!(
             rows(&buried),
             rows(&state.tombstones),

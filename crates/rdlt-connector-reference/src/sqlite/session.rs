@@ -1,7 +1,7 @@
 //! A SQLite session: schema changes, staging writers and commits, each one transaction.
 
 mod commit;
-mod owners;
+pub(super) mod owners;
 #[cfg(test)]
 mod tests;
 mod writer;

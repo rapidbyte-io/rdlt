@@ -4,14 +4,14 @@
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{Owned, SqlPlanner, SqlValue, Sqlite, Standing};
 use rdlt_connector::{Epoch, PipelineId};
-use rusqlite::Transaction;
 use rusqlite::types::Value;
+use rusqlite::{Connection, Transaction};
 
 use super::super::database::{columns, query, run, run_all, text};
 
 /// The rows `statement` answers, as the planner reads them.
 fn answers(
-    transaction: &Transaction<'_>,
+    transaction: &Connection,
     statement: &rdlt_connector::sqlgen::Statement,
 ) -> Result<Vec<Vec<SqlValue>>> {
     let rows = query(transaction, statement)?;
@@ -35,7 +35,7 @@ fn planned(value: Value) -> SqlValue {
 /// How the table `name` stands in `transaction`: who owns it and what the database takes its
 /// name for.
 pub(super) fn standing<'t>(
-    transaction: &'t Transaction<'_>,
+    transaction: &'t Connection,
     planner: &SqlPlanner<Sqlite>,
     name: &str,
 ) -> Result<Standing<'t>> {
@@ -43,6 +43,27 @@ pub(super) fn standing<'t>(
     let owner = answers(transaction, check.owner())?;
     let resolved = answers(transaction, check.resolved())?;
     check.answered(transaction, &owner, &resolved)
+}
+
+/// The name of the table `name` as its rows are read back on `connection`: a table a pipeline
+/// owns; none where there is no such table, or no catalog, as in a database no pipeline opened.
+pub(in crate::sqlite) fn published(
+    connection: &Connection,
+    planner: &SqlPlanner<Sqlite>,
+    name: &str,
+) -> Result<Option<String>> {
+    let check = planner.check(name)?;
+    let resolved = answers(connection, check.resolved())?;
+    // Without a catalog no pipeline owns anything.
+    let cataloged = planner.catalog().iter().all(|table| {
+        columns(connection, planner.dialect(), table).is_ok_and(|held| !held.is_empty())
+    });
+    let owner = if cataloged {
+        answers(connection, check.owner())?
+    } else {
+        Vec::new()
+    };
+    check.answered(connection, &owner, &resolved)?.published()
 }
 
 /// The table `name` as `pipeline`'s session may change it: refused under a name the destination
