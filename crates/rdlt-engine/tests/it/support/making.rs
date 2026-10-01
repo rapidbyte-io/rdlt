@@ -18,6 +18,8 @@ use serde_json::json;
 pub(crate) enum Step {
     /// An Arrow batch.
     Batch(RecordBatch),
+    /// A JSON push.
+    Json(bytes::Bytes),
     /// A checkpoint whose cursor is this many bytes.
     Checkpoint(usize),
     /// How far behind the read is.
@@ -105,6 +107,7 @@ impl ReadStream<MakingSource> for Events {
         while let Some(made) = (source.steps)(step) {
             match made {
                 Step::Batch(batch) => out.batch(batch).await?,
+                Step::Json(json) => out.json(json).await?,
                 // The cursor's JSON text is the bytes and its two quotes.
                 Step::Checkpoint(bytes) => {
                     out.checkpoint(&"c".repeat(bytes.saturating_sub(2))).await?;
