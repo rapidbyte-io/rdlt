@@ -1,7 +1,5 @@
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::builder::{Int64Builder, ListBuilder};
 use arrow_array::{
@@ -9,109 +7,13 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::{
-    CommitMeta, CommitSeq, ConnectContext, ConnectorErrorKind, Destination, Field, LoadId,
-    LogicalType, OpenContext, OpenedSession, Partition, PartitionId, PipelineId, ReadRequest,
-    SchemaVersion, SegmentId, SegmentSet, StreamName, TableChange, TablePath, TableRef,
-    TableSchema, destination_factory, partition_channel, source_factory,
+    CommitSeq, ConnectContext, ConnectorErrorKind, Partition, PartitionId, ReadRequest, SegmentId,
+    StreamName, TableChange, TableSchema, partition_channel, source_factory,
 };
 use rdlt_connector_reference::{FilesDestination, FilesSource, files};
 use serde_json::json;
 
-async fn connect(root: &Path, format: &str) -> Box<dyn Destination> {
-    destination_factory::<FilesDestination>()
-        .connect(
-            json!({ "root": root, "format": format }),
-            ConnectContext::new(),
-        )
-        .await
-        .expect("the files destination connects")
-}
-
-async fn open(destination: &dyn Destination, load: u128) -> OpenedSession {
-    let context = OpenContext {
-        pipeline: PipelineId::parse("files").expect("valid pipeline id"),
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
-    };
-    destination.open(&context).await.expect("the root opens")
-}
-
-fn table() -> TableRef {
-    TableRef {
-        path: TablePath::new(["rows"]).expect("valid table path"),
-        name: "rows".into(),
-        version: SchemaVersion(1),
-        generation: None,
-        merge: None,
-    }
-}
-
-fn meta(opened: &OpenedSession, load: u128, seq: CommitSeq, segments: &[u64]) -> CommitMeta {
-    CommitMeta {
-        load_id: LoadId::from_parts(UNIX_EPOCH, load),
-        commit_seq: seq,
-        epoch: opened.epoch,
-        segments: segments
-            .iter()
-            .copied()
-            .map(SegmentId)
-            .collect::<SegmentSet>(),
-        state_delta: Vec::new(),
-        finish_generations: Vec::new(),
-        child_tables: Vec::new(),
-        drop_tables: Vec::new(),
-    }
-}
-
-/// Creates the table with `schema` and stages `batch` as segment `segment`.
-async fn stage(opened: &mut OpenedSession, schema: &TableSchema, batch: RecordBatch, segment: u64) {
-    let create = TableChange::Create {
-        table: table(),
-        schema: schema.clone(),
-    };
-    opened
-        .session
-        .apply_schema(&create)
-        .await
-        .expect("the table is created");
-    let mut writer = opened
-        .session
-        .writer(&table())
-        .await
-        .expect("a writer opens");
-    writer
-        .write(SegmentId(segment), batch)
-        .await
-        .expect("the write buffers");
-    writer.flush().await.expect("the flush stages");
-}
-
-fn ids(values: &[i64]) -> (TableSchema, RecordBatch) {
-    let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
-        .expect("the schema is valid");
-    let batch = RecordBatch::try_from_iter([(
-        "id",
-        Arc::new(Int64Array::from(values.to_vec())) as ArrayRef,
-    )])
-    .expect("the batch is valid");
-    (schema, batch)
-}
-
-/// Every file under `dir`.
-fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
-    let mut found = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            found.extend(files_under(&path));
-        } else {
-            found.push(path);
-        }
-    }
-    found
-}
+use crate::fixtures::{connect, files_under, ids, meta, open, stage, table};
 
 #[tokio::test]
 async fn a_new_session_removes_what_older_sessions_staged_and_never_published() {
@@ -119,8 +21,8 @@ async fn a_new_session_removes_what_older_sessions_staged_and_never_published() 
     let destination = connect(root.path(), "jsonl").await;
     let (schema, batch) = ids(&[1, 2]);
     let mut first = open(destination.as_ref(), 1).await;
-    stage(&mut first, &schema, batch.clone(), 1).await;
-    stage(&mut first, &schema, batch, 2).await;
+    stage(&mut first, &table("rows"), &schema, batch.clone(), 1).await;
+    stage(&mut first, &table("rows"), &schema, batch, 2).await;
     let committed = meta(&first, 1, CommitSeq::FIRST, &[1]);
     first.session.commit(&committed).await.unwrap();
     let staging = root.path().join("_rdlt").join("pipelines");
@@ -175,7 +77,7 @@ async fn nested_values_and_times_read_back_as_they_were_written() {
         let destination = connect(root.path(), format).await;
         let mut opened = open(destination.as_ref(), 1).await;
         let (schema, batch) = nested(format);
-        stage(&mut opened, &schema, batch.clone(), 1).await;
+        stage(&mut opened, &table("rows"), &schema, batch.clone(), 1).await;
         opened
             .session
             .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
@@ -263,7 +165,7 @@ async fn a_files_writer_s_flush_counts_the_bytes_of_the_files_it_staged() {
     let mut opened = open(destination.as_ref(), 1).await;
     let (schema, batch) = ids(&[1, 2, 3]);
     let create = TableChange::Create {
-        table: table(),
+        table: table("rows"),
         schema,
     };
     opened
@@ -271,7 +173,11 @@ async fn a_files_writer_s_flush_counts_the_bytes_of_the_files_it_staged() {
         .apply_schema(&create)
         .await
         .expect("the table is created");
-    let mut writer = opened.session.writer(&table()).await.expect("a writer");
+    let mut writer = opened
+        .session
+        .writer(&table("rows"))
+        .await
+        .expect("a writer");
     for segment in [1, 2] {
         writer
             .write(SegmentId(segment), batch.clone())
@@ -307,7 +213,7 @@ async fn the_files_destination_reads_back_what_it_published() {
         .expect("the destination connects");
     let mut opened = open(destination.as_ref(), 1).await;
     let (schema, batch) = ids(&[4, 5, 6]);
-    stage(&mut opened, &schema, batch, 1).await;
+    stage(&mut opened, &table("rows"), &schema, batch, 1).await;
     let meta = meta(&opened, 1, CommitSeq::FIRST, &[1]);
     opened
         .session
@@ -315,7 +221,7 @@ async fn the_files_destination_reads_back_what_it_published() {
         .await
         .expect("the commit lands");
     let rows: usize = reader
-        .published(&table())
+        .published(&table("rows"))
         .await
         .expect("the table reads back")
         .iter()

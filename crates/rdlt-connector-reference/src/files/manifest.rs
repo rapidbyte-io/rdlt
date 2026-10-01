@@ -1,16 +1,17 @@
 //! A pipeline's manifests: each version lists the published files and the pipeline's state, and
 //! is created only if no other writer created that version first.
+//!
+//! A manifest is checked when it is read: its version is its file's, the tables it names are
+//! identifiers, and the files it lists are staged files of its own pipeline.
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use rdlt_connector::{
@@ -19,14 +20,24 @@ use rdlt_connector::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::io;
+use super::format::FileFormat;
+use super::{io, tables, versions};
+use crate::limits::{MANIFEST_BYTES, RECEIPT_LOADS, TEMPORARY_AGE};
+use crate::rooted::{self, Dir, Limit};
 
-/// Loads whose receipts a manifest keeps, most recent last; a commit of an older load is not
-/// recognized again.
-const RECEIPT_LOADS: usize = 16;
+/// The code of an error for a manifest that is not what the destination writes.
+pub(super) const MANIFEST_INVALID: &str = "manifest_invalid";
 
-/// Manifest versions kept on disk besides the latest, for readers still reading them.
-const KEPT_VERSIONS: u64 = 8;
+/// The directory of a pipeline's manifests, in the pipeline's directory.
+const MANIFESTS: &str = "manifests";
+
+/// The directory of a pipeline's staged and published files, in the pipeline's directory.
+pub(super) const STAGING: &str = "staging";
+
+const LIMIT: Limit = Limit {
+    name: "manifest bytes",
+    bytes: MANIFEST_BYTES,
+};
 
 /// One version of a pipeline's manifest.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,15 +70,23 @@ pub(super) struct StoredReceipt {
     bytes: u64,
 }
 
-/// A table's published files, relative to the root, and those of generations not yet swapped in.
+/// A published file: its path relative to the pipeline's directory, and what it holds.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(super) struct Listed {
+    pub(super) path: String,
+    pub(super) rows: u64,
+    pub(super) bytes: u64,
+}
+
+/// A table's published files and those of generations not yet swapped in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct TableFiles {
-    pub(super) files: Vec<String>,
-    pub(super) generations: BTreeMap<GenerationId, Vec<String>>,
+    pub(super) files: Vec<Listed>,
+    pub(super) generations: BTreeMap<GenerationId, Vec<Listed>>,
     /// A change stream's tombstones: the rows it removed outright, which no earlier change
     /// brings back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) tombstones: Vec<String>,
+    pub(super) tombstones: Vec<Listed>,
 }
 
 impl Manifest {
@@ -137,7 +156,7 @@ impl Manifest {
     }
 
     /// Every file the manifest lists.
-    pub(super) fn files(&self) -> impl Iterator<Item = &String> {
+    pub(super) fn files(&self) -> impl Iterator<Item = &Listed> {
         self.tables.values().flat_map(|table| {
             table
                 .files
@@ -146,6 +165,64 @@ impl Manifest {
                 .chain(&table.tombstones)
         })
     }
+
+    /// What keeps the manifest, read or to be written as `version`, from being one the
+    /// destination writes, if anything does.
+    fn fault(&self, version: u64) -> Option<String> {
+        if self.version != version {
+            return Some(format!("it holds version {}", self.version));
+        }
+        let names = self
+            .tables
+            .keys()
+            .chain(&self.dropped)
+            .chain(self.paths.values());
+        for name in names {
+            if tables::named(name).is_err() {
+                return Some(format!("{name:?} is no table identifier"));
+            }
+        }
+        self.files()
+            .find(|file| staged(&file.path).is_err())
+            .map(|file| format!("{:?} is no staged file", file.path))
+    }
+}
+
+/// The names leading to the file at `path`, a path relative to a pipeline's directory, which
+/// lies under the pipeline's staging.
+pub(super) fn staged(path: &str) -> std::io::Result<Vec<&str>> {
+    let names = rooted::components(path)?;
+    if names.len() < 2 || names[0] != STAGING {
+        return Err(rooted::Refusal::Name.into());
+    }
+    Ok(names)
+}
+
+/// The directory holding the file listed at `path` under the pipeline's directory `dir`, and
+/// the file's name in it.
+pub(super) fn located<'a>(dir: &Dir, path: &'a str) -> Result<(Dir, &'a str)> {
+    let reached = dir.at(path);
+    let names = staged(path).map_err(io::failed("opening", &reached))?;
+    let (file, parents) = names.split_last().expect("a staged path has two names");
+    let parent = dir.walk(parents).map_err(io::listed("opening", &reached))?;
+    Ok((parent, file))
+}
+
+/// The rows of the file listed at `path` under the pipeline's directory `dir`, in the format
+/// its name says; JSON lines are read as `schema`.
+pub(super) fn read(dir: &Dir, path: &str, schema: &SchemaRef) -> Result<Vec<RecordBatch>> {
+    let (parent, file) = located(dir, path)?;
+    format_of(dir, path)?.read(&parent, file, schema)
+}
+
+/// The format of the file listed at `path` under `dir`, which its name's extension says.
+pub(super) fn format_of(dir: &Dir, path: &str) -> Result<FileFormat> {
+    FileFormat::named(path).ok_or_else(|| {
+        ConnectorError::data(format!(
+            "{}: no format has this name",
+            dir.at(path).display()
+        ))
+    })
 }
 
 /// `at` to the microsecond, the precision receipts keep, so a receipt reads back equal.
@@ -158,95 +235,90 @@ fn micros(at: SystemTime) -> u64 {
     u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
 }
 
-/// The directory holding `pipeline`'s manifests and staged files under `root`.
+/// The name of the directory holding `pipeline`'s manifests and staged files.
 ///
 /// The name holds a hash of the exact id, so ids that differ only in case never share a
 /// directory on a filesystem that ignores case.
-pub(super) fn pipeline_dir(root: &Path, pipeline: &PipelineId) -> PathBuf {
+pub(super) fn pipeline_dir(pipeline: &PipelineId) -> String {
     let hash = xxhash_rust::xxh3::xxh3_64(pipeline.as_str().as_bytes());
-    root.join("_rdlt")
-        .join("pipelines")
-        .join(format!("{pipeline}-{hash:016x}"))
+    format!("{pipeline}-{hash:016x}")
 }
 
-/// The latest manifest in `dir`, if any.
-pub(super) fn latest(dir: &Path) -> Result<Option<Manifest>> {
-    let Some(version) = versions(&dir.join("manifests"))?.last().copied() else {
+/// The manifests of the pipeline whose directory `dir` is, if it has any.
+fn manifests(dir: &Dir) -> Result<Option<Dir>> {
+    match dir.dir(MANIFESTS) {
+        Ok(manifests) => Ok(Some(manifests)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::failed("opening", &dir.at(MANIFESTS))(error)),
+    }
+}
+
+/// The latest manifest of the pipeline whose directory `dir` is, if any.
+pub(super) fn latest(dir: &Dir) -> Result<Option<Manifest>> {
+    let Some(manifests) = manifests(dir)? else {
         return Ok(None);
     };
-    let path = manifest_path(dir, version);
-    let bytes = fs::read(&path).map_err(io::failed("reading a manifest", &path))?;
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| ConnectorError::internal(format!("manifest {}: {error}", path.display())))
+    let read = versions::newest(&manifests, LIMIT);
+    let Some((version, bytes)) =
+        read.map_err(io::failed("reading a manifest of", manifests.path()))?
+    else {
+        return Ok(None);
+    };
+    let invalid = |reason: String| {
+        let path = manifests.at(versions::name(version));
+        ConnectorError::data(format!("manifest {}: {reason}", path.display()))
+            .with_code(MANIFEST_INVALID)
+    };
+    let manifest: Manifest =
+        serde_json::from_slice(&bytes).map_err(|error| invalid(error.to_string()))?;
+    match manifest.fault(version) {
+        Some(fault) => Err(invalid(fault)),
+        None => Ok(Some(manifest)),
+    }
 }
 
-/// Creates `manifest` as its version in `dir`, unless that version or a newer one exists;
-/// returns whether it did, removing versions older than those kept.
+/// Removes the temporaries writers that died left among the manifests of the pipeline whose
+/// directory `dir` is.
+pub(super) fn sweep(dir: &Dir) -> Result<()> {
+    let Some(manifests) = manifests(dir)? else {
+        return Ok(());
+    };
+    manifests
+        .sweep(TEMPORARY_AGE)
+        .map_err(io::failed("sweeping", manifests.path()))
+}
+
+/// Creates `manifest` as its version in the pipeline's directory `dir`, unless that version or
+/// a newer one exists; returns whether it did, removing versions older than those kept.
 ///
 /// A version older than the newest loses even where garbage collection removed it: its writer
 /// read a manifest others have moved past.
-pub(super) fn put(dir: &Path, manifest: &Manifest) -> Result<bool> {
-    static WRITES: AtomicU64 = AtomicU64::new(0);
-    let manifests = dir.join("manifests");
-    io::create_dirs(&manifests)?;
-    let temporary = manifests.join(format!(
-        ".{}-{}-{}.tmp",
-        manifest.version,
-        std::process::id(),
-        WRITES.fetch_add(1, Ordering::Relaxed)
-    ));
+pub(super) fn put(dir: &Dir, manifest: &Manifest) -> Result<bool> {
+    // A manifest no reader accepts is never written.
+    if let Some(fault) = manifest.fault(manifest.version) {
+        let message = format!("the next manifest: {fault}");
+        return Err(ConnectorError::data(message).with_code(MANIFEST_INVALID));
+    }
     let json = serde_json::to_vec_pretty(manifest).expect("manifests serialize to JSON");
-    let written = (|| {
-        let mut file = fs::File::create_new(&temporary)?;
-        file.write_all(&json)?;
-        file.sync_all()
-    })();
-    written.map_err(io::failed("writing a manifest", &temporary))?;
-    let path = manifest_path(dir, manifest.version);
-    let linked = fs::hard_link(&temporary, &path);
-    drop(fs::remove_file(&temporary));
-    if !io::created(linked, &path)? {
+    let failed = io::failed("writing a manifest of", dir.path());
+    // Nor one larger than a reader accepts.
+    LIMIT
+        .admit(u64::try_from(json.len()).unwrap_or(u64::MAX))
+        .map_err(|refusal| failed(refusal.into()))?;
+    let manifests = dir
+        .dir_created(MANIFESTS)
+        .map_err(io::failed("creating", &dir.at(MANIFESTS)))?;
+    if !versions::create(&manifests, manifest.version, &json).map_err(&failed)? {
         return Ok(false);
     }
-    io::sync_dir(&manifests)?;
-    let versions = versions(&manifests)?;
-    if versions
+    let listed = versions::listed(&manifests).map_err(&failed)?;
+    if listed
         .last()
         .is_some_and(|newest| *newest > manifest.version)
     {
-        drop(fs::remove_file(&path));
+        drop(manifests.remove_file(versions::name(manifest.version)));
         return Ok(false);
     }
-    for old in versions {
-        if old + KEPT_VERSIONS < manifest.version {
-            drop(fs::remove_file(manifest_path(dir, old)));
-        }
-    }
+    versions::prune(&manifests, &listed, manifest.version);
     Ok(true)
-}
-
-fn manifest_path(dir: &Path, version: u64) -> PathBuf {
-    dir.join("manifests").join(format!("{version:020}.json"))
-}
-
-/// The versions of the manifests in `manifests`, ascending.
-fn versions(manifests: &Path) -> Result<Vec<u64>> {
-    let entries = match fs::read_dir(manifests) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(io::failed("listing manifests", manifests)(error)),
-    };
-    let mut versions = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(io::failed("listing manifests", manifests))?;
-        let name = entry.file_name();
-        let version = name
-            .to_str()
-            .and_then(|name| name.strip_suffix(".json"))
-            .and_then(|stem| stem.parse::<u64>().ok());
-        versions.extend(version);
-    }
-    versions.sort_unstable();
-    Ok(versions)
 }

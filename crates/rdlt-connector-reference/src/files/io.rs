@@ -1,28 +1,58 @@
-//! Filesystem errors as connector errors, and making a directory's entries durable.
+//! Filesystem errors as connector errors.
 
 #[cfg(test)]
-pub(super) mod tests;
+mod tests;
 
-use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 
-use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result};
+
+use crate::limits::PUBLISH_ATTEMPTS;
+use crate::rooted::{self, Refusal};
+
+/// The code of an error for a name that is not one path component, or no table identifier.
+pub(super) const INVALID_NAME: &str = "invalid_name";
+
+/// The code of an error for a link, a pipe, a device or a directory where a file belongs.
+pub(super) const NOT_A_REGULAR_FILE: &str = "not_a_regular_file";
 
 /// Classifies a filesystem error from `what` on `path`: a path the connector may not use is a
-/// configuration error, anything else is transient.
+/// configuration error, a name or a file it refuses a data error, anything else transient.
 pub(super) fn failed<'a>(
     what: &'a str,
     path: &'a Path,
 ) -> impl Fn(io::Error) -> ConnectorError + 'a {
     move |error| {
-        let kind = match error.kind() {
-            ErrorKind::PermissionDenied
-            | ErrorKind::ReadOnlyFilesystem
-            | ErrorKind::NotADirectory => ConnectorErrorKind::Config,
-            _ => ConnectorErrorKind::Transient,
-        };
-        ConnectorError::new(kind, format!("{what} {}: {error}", path.display())).with_source(error)
+        let message = format!("{what} {}: {error}", path.display());
+        match rooted::refusal(&error) {
+            Some(Refusal::TooLarge {
+                name,
+                limit,
+                actual,
+            }) => ConnectorError::exceeds(LimitExceeded {
+                name,
+                limit,
+                actual,
+            })
+            .with_source(error),
+            Some(Refusal::Name) => ConnectorError::data(message)
+                .with_code(INVALID_NAME)
+                .with_source(error),
+            Some(Refusal::NotRegular) => ConnectorError::data(message)
+                .with_code(NOT_A_REGULAR_FILE)
+                .with_source(error),
+            Some(Refusal::Shared) => ConnectorError::config(message).with_source(error),
+            None => {
+                let kind = match error.kind() {
+                    ErrorKind::PermissionDenied
+                    | ErrorKind::ReadOnlyFilesystem
+                    | ErrorKind::NotADirectory => ConnectorErrorKind::Config,
+                    _ => ConnectorErrorKind::Transient,
+                };
+                ConnectorError::new(kind, message).with_source(error)
+            }
+        }
     }
 }
 
@@ -44,48 +74,17 @@ pub(super) fn listed<'a>(
     }
 }
 
-/// Whether linking a new file at `path` created it: one that exists already is another writer's,
-/// which won.
-pub(super) fn created(link: io::Result<()>, path: &Path) -> Result<bool> {
-    match link {
-        Ok(()) => Ok(true),
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(failed("publishing", path)(error)),
-    }
-}
-
-/// Makes the entries of `dir` durable, so a file created or linked in it survives a crash.
-pub(super) fn sync_dir(dir: &Path) -> Result<()> {
-    #[cfg(test)]
-    tests::SYNCED.with(|synced| synced.borrow_mut().push(dir.to_owned()));
-    fs::File::open(dir)
-        .and_then(|dir| dir.sync_all())
-        .map_err(failed("syncing", dir))
-}
-
-/// Creates `dir` and whichever of its ancestors are missing, making each new directory durable
-/// in its parent: a crash never loses a directory that synced files sit in.
-pub(super) fn create_dirs(dir: &Path) -> Result<()> {
-    let mut missing = Vec::new();
-    let mut current = Some(dir);
-    while let Some(path) = current {
-        if path.try_exists().map_err(failed("inspecting", path))? {
-            break;
-        }
-        missing.push(path);
-        current = path.parent();
-    }
-    fs::create_dir_all(dir).map_err(failed("creating a directory", dir))?;
-    for created in missing.iter().rev() {
-        if let Some(parent) = created.parent() {
-            // A relative directory of one component has the empty path as its parent.
-            let parent = if parent.as_os_str().is_empty() {
-                Path::new(".")
-            } else {
-                parent
-            };
-            sync_dir(parent)?;
+/// Runs `work` until it yields a value: each run that yields none lost to another session's
+/// write and works its change out again, a bounded number of times; `what` names the work that
+/// kept losing in the transient error that follows the last.
+pub(super) fn retried<T>(what: &str, mut work: impl FnMut() -> Result<Option<T>>) -> Result<T> {
+    for _ in 0..PUBLISH_ATTEMPTS {
+        if let Some(done) = work()? {
+            return Ok(done);
         }
     }
-    Ok(())
+    Err(ConnectorError::new(
+        ConnectorErrorKind::Transient,
+        format!("{what}: other sessions kept writing first"),
+    ))
 }

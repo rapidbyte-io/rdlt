@@ -1,10 +1,12 @@
 use std::path::Path;
 
-use rdlt_connector::{Epoch, Field, LogicalType, PipelineId, TableSchema};
+use rdlt_connector::{ConnectorErrorKind, Epoch, Field, LogicalType, PipelineId, TableSchema};
 
-use super::super::io::tests::SYNCED;
+use super::super::manifest::{Listed, Manifest, TableFiles};
 use super::super::{manifest, tables};
-use super::{checked, discard, next_epoch};
+use super::{checked, discard, existing, next_epoch, private};
+use crate::rooted::Dir;
+use crate::rooted::tests::SYNCED;
 
 fn staged(dir: &Path, epoch: u64) -> std::path::PathBuf {
     let path = dir
@@ -19,10 +21,11 @@ fn staged(dir: &Path, epoch: u64) -> std::path::PathBuf {
 #[test]
 fn an_open_discards_what_older_sessions_staged_and_keeps_its_own_and_newer_ones() {
     let root = tempfile::tempdir().expect("a temporary directory");
-    let dir = root.path().join("pipeline");
-    let [older, own, newer] = [4, 5, 6].map(|epoch| staged(&dir, epoch));
-    discard(root.path(), &dir, Epoch(5)).expect("the discard runs");
+    let [older, own, newer] = [4, 5, 6].map(|epoch| staged(root.path(), epoch));
+    let dir = Dir::ambient(root.path()).unwrap();
+    discard(&dir, Epoch(5)).expect("the discard runs");
     assert!(!older.exists(), "an older session's staging stays");
+    assert!(!older.parent().unwrap().exists(), "its directory stays");
     assert!(
         own.exists() && newer.exists(),
         "a current or newer session's staging went"
@@ -30,42 +33,148 @@ fn an_open_discards_what_older_sessions_staged_and_keeps_its_own_and_newer_ones(
 }
 
 #[test]
-fn a_check_makes_the_catalog_directory_durable_in_the_root() {
+fn a_discard_keeps_what_the_latest_manifest_lists_and_enters_no_link() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let outside = tempfile::tempdir().expect("a temporary directory");
+    std::fs::write(outside.path().join("kept"), b"x").unwrap();
+    let [listed, unlisted] = [1, 2].map(|epoch| staged(root.path(), epoch));
+    let staging = root.path().join("staging");
+    std::os::unix::fs::symlink(outside.path(), staging.join("1").join("link")).unwrap();
+    std::os::unix::fs::symlink(outside.path(), staging.join("0")).unwrap();
+    // Not a session's staging: no epoch names it.
+    std::fs::write(staging.join("notes"), b"x").unwrap();
+    // A link under a listed name is not the listed file.
+    std::fs::create_dir(staging.join("3")).unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("kept"),
+        staging.join("3").join("rows.jsonl"),
+    )
+    .unwrap();
+    let file = |path: &str| Listed {
+        path: path.to_owned(),
+        rows: 1,
+        bytes: 3,
+    };
+    let mut manifest = Manifest {
+        version: 1,
+        ..Manifest::default()
+    };
+    let table = TableFiles {
+        files: vec![file("staging/1/rows.jsonl"), file("staging/3/rows.jsonl")],
+        ..TableFiles::default()
+    };
+    manifest.tables.insert("rows".to_owned(), table);
+    let dir = Dir::ambient(root.path()).unwrap();
+    assert!(manifest::put(&dir, &manifest).unwrap());
+    discard(&dir, Epoch(9)).expect("the discard runs");
+    assert!(listed.exists() && !unlisted.exists());
+    assert!(std::fs::symlink_metadata(staging.join("1").join("link")).is_err());
+    assert!(std::fs::symlink_metadata(staging.join("0")).is_err());
+    assert!(!staging.join("3").exists());
+    assert!(staging.join("notes").exists() && !staging.join("2").exists());
+    assert!(outside.path().join("kept").exists());
+    // A pipeline that staged nothing has nothing to discard.
+    let empty = tempfile::tempdir().unwrap();
+    discard(&Dir::ambient(empty.path()).unwrap(), Epoch(9)).unwrap();
+}
+
+#[test]
+fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe() {
     let root = tempfile::tempdir().expect("a temporary directory");
     SYNCED.with(|synced| synced.borrow_mut().clear());
     checked(root.path()).expect("the check passes");
     let synced = SYNCED.with(|synced| synced.borrow().clone());
     assert!(synced.contains(&root.path().to_owned()), "{synced:?}");
     assert!(root.path().join("_rdlt").is_dir());
+    assert_eq!(
+        std::fs::read_dir(root.path().join("_rdlt"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn a_private_directory_is_read_only_where_it_exists_and_is_its_user_s() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("root");
+    assert!(existing(&root).unwrap().is_none(), "no root");
+    std::fs::create_dir(&root).unwrap();
+    assert!(existing(&root).unwrap().is_none(), "no private directory");
+    assert!(!root.join("_rdlt").exists(), "a reader made one");
+    private(&root).unwrap();
+    assert!(existing(&root).unwrap().is_some());
+    let shared = std::fs::Permissions::from_mode(0o777);
+    std::fs::set_permissions(root.join("_rdlt"), shared).unwrap();
+    for refused in [existing(&root).map(drop), private(&root).map(drop)] {
+        assert_eq!(refused.unwrap_err().kind(), ConnectorErrorKind::Config);
+    }
+    // A root that is a file is no root.
+    let file = base.path().join("file");
+    std::fs::write(&file, b"").unwrap();
+    assert_eq!(
+        existing(&file).unwrap_err().kind(),
+        ConnectorErrorKind::Config
+    );
+    assert_eq!(
+        private(&file.join("below")).unwrap_err().kind(),
+        ConnectorErrorKind::Config
+    );
+}
+
+fn schema() -> TableSchema {
+    TableSchema::new(vec![Field::new("x", LogicalType::Int64, true)]).unwrap()
 }
 
 #[test]
 fn an_open_removes_the_catalogs_of_tables_its_pipeline_dropped_before_anything_creates_them() {
     // A drop committed, but the catalogs outlived it: the process ended before removing them.
     let root = tempfile::tempdir().expect("a temporary directory");
+    let rdlt = Dir::ambient(root.path()).unwrap();
     let (owner, other) = (
         PipelineId::parse("a").unwrap(),
         PipelineId::parse("b").unwrap(),
     );
-    let dir = manifest::pipeline_dir(root.path(), &owner);
-    let schema = TableSchema::new(vec![Field::new("x", LogicalType::Int64, true)]).unwrap();
+    let dir = rdlt.dir_created("pipeline").unwrap();
     for (table, pipeline) in [("dropped", &owner), ("taken", &other)] {
-        tables::claim(root.path(), table, pipeline).expect("the table is claimed");
-        tables::update(root.path(), table, |_| Ok(Some(schema.clone()))).expect("it has columns");
+        tables::claim(&rdlt, table, pipeline).expect("the table is claimed");
+        tables::update(&rdlt, table, |_| Ok(Some(schema()))).expect("it has columns");
     }
-    let left = manifest::Manifest {
+    let left = Manifest {
         dropped: ["dropped".to_owned(), "taken".to_owned()].into(),
-        ..manifest::Manifest::default()
+        ..Manifest::default()
     };
     assert!(manifest::put(&dir, &left).expect("the manifest is written"));
-    let opened = next_epoch(&dir, root.path(), &owner).expect("the open succeeds");
+    let opened = next_epoch(&dir, &rdlt, &owner).expect("the open succeeds");
     assert!(opened.dropped.is_empty());
-    assert_eq!(tables::read(root.path(), "dropped").unwrap(), None);
-    assert_eq!(tables::owner(root.path(), "dropped").unwrap(), None);
+    assert_eq!((opened.version, opened.epoch), (1, Epoch(1)));
+    assert_eq!(tables::read(&rdlt, "dropped").unwrap(), None);
+    assert_eq!(tables::owner(&rdlt, "dropped").unwrap(), None);
     // A table another pipeline created since is its own.
-    assert_eq!(
-        tables::owner(root.path(), "taken").unwrap().as_deref(),
-        Some("b")
-    );
-    assert!(tables::read(root.path(), "taken").unwrap().is_some());
+    assert_eq!(tables::owner(&rdlt, "taken").unwrap().as_deref(), Some("b"));
+    assert!(tables::read(&rdlt, "taken").unwrap().is_some());
+}
+
+#[test]
+fn a_manifest_at_the_end_of_its_versions_or_epochs_is_followed_by_none() {
+    let root = tempfile::tempdir().unwrap();
+    let rdlt = Dir::ambient(root.path()).unwrap();
+    let pipeline = PipelineId::parse("a").unwrap();
+    for (version, epoch) in [(u64::MAX, 1), (1, u64::MAX)] {
+        let last = Manifest {
+            version,
+            epoch: Epoch(epoch),
+            ..Manifest::default()
+        };
+        let ended = tempfile::tempdir().unwrap();
+        let dir = Dir::ambient(ended.path()).unwrap();
+        assert!(manifest::put(&dir, &last).unwrap());
+        let error = next_epoch(&dir, &rdlt, &pipeline).unwrap_err();
+        assert_eq!(error.kind(), ConnectorErrorKind::Data);
+        assert_eq!(manifest::latest(&dir).unwrap(), Some(last));
+    }
+    let fresh = rdlt.dir_created("pipeline").unwrap();
+    let first = next_epoch(&fresh, &rdlt, &pipeline).unwrap();
+    assert_eq!((first.version, first.epoch), (1, Epoch(1)));
 }

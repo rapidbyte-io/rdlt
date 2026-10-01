@@ -16,9 +16,12 @@ arrow-row.workspace = true
 arrow-schema.workspace = true
 arrow-select.workspace = true
 base64.workspace = true
+bytes.workspace = true
+flatbuffers.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen"] }
+rdlt-wire.workspace = true
 rusqlite.workspace = true
 rustix.workspace = true
 schemars.workspace = true
@@ -29,6 +32,7 @@ tokio = { workspace = true, features = ["macros", "rt", "time"] }
 xxhash-rust.workspace = true
 
 [dev-dependencies]
+arrow-buffer.workspace = true
 proptest.workspace = true
 rdlt-testkit.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen", "testing"] }

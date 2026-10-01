@@ -1,87 +1,102 @@
-use std::cell::RefCell;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::io::{Error, ErrorKind};
+use std::path::Path;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::ConnectorErrorKind;
+use rdlt_connector::{ConnectorErrorKind, LimitExceeded};
 
-use super::super::FileFormat;
-use super::created;
-
-thread_local! {
-    /// Every directory this thread synced, in order.
-    pub(crate) static SYNCED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
-}
-
-fn rows() -> RecordBatch {
-    let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
-    RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch")
-}
+use super::{INVALID_NAME, NOT_A_REGULAR_FILE, failed, listed, retried};
+use crate::limits::PUBLISH_ATTEMPTS;
+use crate::rooted::Refusal;
 
 #[test]
-fn a_new_file_s_directory_and_every_directory_made_for_it_are_synced() {
-    let root = tempfile::tempdir().expect("a temporary directory");
-    std::fs::create_dir(root.path().join("existing")).expect("a directory");
-    let path = root.path().join("existing/new/newer/rows.jsonl");
-    SYNCED.with(|synced| synced.borrow_mut().clear());
-    FileFormat::Jsonl
-        .write(&path, &rows())
-        .expect("the file writes");
-    let synced = SYNCED.with(|synced| synced.borrow().clone());
-    let dir = |relative: &str| root.path().join(relative);
-    // Each new directory's entry is synced in its parent, and the file's in its own.
-    for expected in [
-        dir("existing"),
-        dir("existing/new"),
-        dir("existing/new/newer"),
+fn a_filesystem_error_is_classified_by_what_refused() {
+    let path = Path::new("root/file");
+    let classified = |error: Error| {
+        let error = failed("opening", path)(error);
+        (error.kind(), error.code().map(str::to_owned))
+    };
+    let (config, transient, data) = (
+        ConnectorErrorKind::Config,
+        ConnectorErrorKind::Transient,
+        ConnectorErrorKind::Data,
+    );
+    for kind in [
+        ErrorKind::PermissionDenied,
+        ErrorKind::ReadOnlyFilesystem,
+        ErrorKind::NotADirectory,
     ] {
-        assert!(
-            synced.contains(&expected),
-            "{expected:?} unsynced: {synced:?}"
-        );
+        assert_eq!(classified(kind.into()), (config, None), "{kind:?}");
     }
-    assert!(!synced.contains(&root.path().to_owned()), "{synced:?}");
+    for kind in [
+        ErrorKind::NotFound,
+        ErrorKind::StorageFull,
+        ErrorKind::AlreadyExists,
+        ErrorKind::Other,
+        ErrorKind::InvalidInput,
+        ErrorKind::InvalidData,
+    ] {
+        assert_eq!(classified(kind.into()), (transient, None), "{kind:?}");
+    }
+    assert_eq!(
+        classified(Refusal::Name.into()),
+        (data, Some(INVALID_NAME.to_owned()))
+    );
+    assert_eq!(
+        classified(Refusal::NotRegular.into()),
+        (data, Some(NOT_A_REGULAR_FILE.to_owned()))
+    );
+    assert_eq!(classified(Refusal::Shared.into()), (config, None));
+    let too_large = Refusal::TooLarge {
+        name: "manifest bytes",
+        limit: 8,
+        actual: 9,
+    };
+    let error = failed("reading", path)(too_large.into());
+    assert_eq!(error.kind(), data);
+    assert_eq!(error.code(), Some("limit_exceeded"));
+    let limit = LimitExceeded {
+        name: "manifest bytes",
+        limit: 8,
+        actual: 9,
+    };
+    assert_eq!(error.limit(), Some(limit));
 }
 
 #[test]
 fn a_listed_file_that_is_missing_is_lost_for_good() {
-    let root = tempfile::tempdir().expect("a temporary directory");
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
-    let error = FileFormat::Jsonl
-        .read(&root.path().join("gone.jsonl"), &schema)
-        .expect_err("the file is missing");
+    let path = Path::new("root/gone.jsonl");
+    let error = listed("opening", path)(ErrorKind::NotFound.into());
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
     assert_eq!(error.code(), Some("file_missing"));
-}
-
-#[test]
-fn a_file_another_writer_linked_first_loses_and_any_other_failure_is_an_error() {
-    let path = std::path::Path::new("manifests/1.json");
-    assert!(created(Ok(()), path).expect("created"));
-    let lost = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
-    assert!(!created(Err(lost), path).expect("lost to another writer"));
-    let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-    let error = created(Err(denied), path).expect_err("a failure");
+    // Anything else is classified as any filesystem error is.
+    let error = listed("opening", path)(ErrorKind::PermissionDenied.into());
     assert_eq!(error.kind(), ConnectorErrorKind::Config);
+    let error = listed("opening", path)(Refusal::NotRegular.into());
+    assert_eq!(error.code(), Some(NOT_A_REGULAR_FILE));
 }
 
 #[test]
-fn a_relative_directory_whose_parent_is_the_working_directory_is_created() {
-    let scratch = tempfile::Builder::new()
-        .tempdir_in(".")
-        .expect("a temporary directory here");
-    let name = scratch
-        .path()
-        .file_name()
-        .expect("a name")
-        .to_string_lossy()
-        .into_owned();
-    // One relative component, whose parent is the empty path.
-    let relative = PathBuf::from(format!("{name}-root"));
-    let created = super::create_dirs(&relative.join("rows"));
-    let exists = relative.join("rows").is_dir();
-    drop(std::fs::remove_dir_all(&relative));
-    created.expect("the directories are created");
-    assert!(exists);
+fn work_that_keeps_losing_is_tried_a_bounded_number_of_times() {
+    let mut tries = 0;
+    let lost = retried("opening", || {
+        tries += 1;
+        Ok(None::<()>)
+    });
+    assert_eq!(lost.unwrap_err().kind(), ConnectorErrorKind::Transient);
+    assert_eq!(tries, PUBLISH_ATTEMPTS);
+    // It ends with the first value, or the first error.
+    let mut tries = 0;
+    let won = retried("opening", || {
+        tries += 1;
+        Ok((tries == 3).then_some(tries))
+    });
+    assert_eq!((won.unwrap(), tries), (3, 3));
+    let mut tries = 0;
+    let failed = retried("opening", || {
+        tries += 1;
+        Err::<Option<()>, _>(rdlt_connector::ConnectorError::data("no"))
+    });
+    assert_eq!(
+        (failed.unwrap_err().kind(), tries),
+        (ConnectorErrorKind::Data, 1)
+    );
 }

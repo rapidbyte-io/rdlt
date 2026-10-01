@@ -6,8 +6,10 @@ use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{ChildTable, CommitMeta, MergeKey, RootKey};
 
-use super::{Location, StagedFile, Staging};
-use crate::files::manifest::{Manifest, TableFiles};
+use super::commit::Staging;
+use super::{Location, StagedFile};
+use crate::files::format::Writer;
+use crate::files::manifest::{self, Listed, Manifest, TableFiles};
 use crate::files::tables;
 use crate::merge::Merged;
 
@@ -53,6 +55,8 @@ pub(super) struct MergedRows {
 
 /// The rows of the table `name` once `files` are merged into its published `table` by `key`, or
 /// for a child table once they replace the children of the roots its root's `files` publish.
+///
+/// The whole table is held in memory while it merges.
 pub(super) fn merged_rows(
     location: &Location,
     name: &str,
@@ -61,7 +65,7 @@ pub(super) fn merged_rows(
     key: &MergeKey,
     root: Option<(&RootKey, &[&StagedFile])>,
 ) -> Result<MergedRows> {
-    let schema = tables::read(&location.root, name)?
+    let schema = tables::read(&location.rdlt, name)?
         .ok_or_else(|| ConnectorError::data(format!("table {name} does not exist")))?;
     let schema = Arc::new(schema.to_arrow());
     // A change stream's staged rows carry the columns that direct its merge, and a truncate's
@@ -70,10 +74,10 @@ pub(super) fn merged_rows(
         Some(changes) => crate::merge::written_schema(&schema, changes),
         None => Arc::clone(&schema),
     };
-    let read = |paths: &mut dyn Iterator<Item = &String>, schema: &arrow_schema::SchemaRef| {
+    let read = |files: &mut dyn Iterator<Item = &Listed>, schema: &arrow_schema::SchemaRef| {
         let mut batches = Vec::new();
-        for path in paths {
-            batches.extend(location.format.read(&location.root.join(path), schema)?);
+        for file in files {
+            batches.extend(manifest::read(&location.dir, &file.path, schema)?);
         }
         Ok::<_, ConnectorError>(batches)
     };
@@ -82,20 +86,16 @@ pub(super) fn merged_rows(
     let merging = |error: arrow_schema::ArrowError| {
         ConnectorError::data(format!("merging table {name}: {error}"))
     };
-    let incoming = read(&mut files.iter().map(|file| &file.path), &staged)?;
+    let incoming = read(&mut files.iter().map(|staged| &staged.file), &staged)?;
     let merged = if let Some((root, root_files)) = root {
-        let root_schema = tables::read(&location.root, &root.table)?.ok_or_else(|| {
+        let root_schema = tables::read(&location.rdlt, &root.table)?.ok_or_else(|| {
             ConnectorError::data(format!("root table {} does not exist", root.table))
         })?;
         let root_schema = Arc::new(root_schema.to_arrow());
-        let mut roots = Vec::new();
-        for file in root_files {
-            roots.extend(
-                location
-                    .format
-                    .read(&location.root.join(&file.path), &root_schema)?,
-            );
-        }
+        let roots = read(
+            &mut root_files.iter().map(|staged| &staged.file),
+            &root_schema,
+        )?;
         let rows = crate::merge::merge_children(&schema, &published, &incoming, key, root, &roots)
             .map_err(merging)?;
         Merged {
@@ -124,11 +124,20 @@ pub(super) fn written(
     kind: &str,
     rows: &RecordBatch,
     meta: &CommitMeta,
-) -> Result<Option<String>> {
+) -> Result<Option<Listed>> {
     if rows.num_rows() == 0 {
         return Ok(None);
     }
-    let path = location.staged(&format!("{kind}/{}", meta.commit_seq.get()), name, None, 0);
-    location.format.write(&location.root.join(&path), rows)?;
-    Ok(Some(path))
+    let segment = [kind.to_owned(), meta.commit_seq.get().to_string()];
+    let (names, file) = location.staged(&segment, name, None, 0);
+    let dir = location.staging(&names)?;
+    let path = format!("{}/{file}", names.join("/"));
+    let mut writer = Writer::create(location.format, &dir, &file, rows.schema_ref())?;
+    writer.write(rows)?;
+    let written = writer.finish()?;
+    Ok(Some(Listed {
+        path,
+        rows: written.rows,
+        bytes: written.bytes,
+    }))
 }
