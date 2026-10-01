@@ -271,7 +271,7 @@ async fn a_row_beyond_the_connectors_frame_limit_is_refused_typed() {
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let mut writer = writer(served, limits, "flow_limit", Options::default()).await;
     // Rows that fit a frame go, as many frames as they need; a row that fits none is refused
-    // before any of its batch is sent.
+    // where the cut reaches it, and its caller must not commit the segment it was written to.
     let small: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 500_000]));
     let rows = RecordBatch::try_from_iter([("b", small)]).expect("a valid batch");
     writer

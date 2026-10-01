@@ -202,6 +202,10 @@ impl ReadStream<Ticks> for TickStream {
                 out.batch(flagged_from(cursor.next, rows, config.flags))
                     .await?;
             }
+            // Paced, the rows' checkpoint waits to be asked for.
+            while config.pace_ms > 0 && !out.checkpoint_due() {
+                tokio::time::sleep(Duration::from_millis(config.pace_ms)).await;
+            }
             return out.checkpoint(&Tick { next: rows }).await;
         }
         let pace = Duration::from_millis(config.pace_ms);
