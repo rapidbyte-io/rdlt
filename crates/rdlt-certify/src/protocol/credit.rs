@@ -1,5 +1,11 @@
 //! The credit's clause: a read sends nothing more once its credit is spent, and the rest once
 //! more is granted.
+//!
+//! The clause grants one byte and takes the frame it buys, which spends its own size. It then
+//! grants a byte more, several times over, each too little to bring the credit above nothing,
+//! and watches after each for a frame: a source that sends on any grant, or at its own pace,
+//! sends one. Silence is watched for a bounded time, so a source slower than the whole watch is
+//! not told from one that waits.
 
 #[cfg(test)]
 mod tests;
@@ -9,6 +15,7 @@ use std::time::Duration;
 use rdlt_connector::Role;
 use rdlt_connector::wire::v1;
 use rdlt_host::remote::Client;
+use rdlt_wire::prost::Message as _;
 use rdlt_wire::tonic::{Status, Streaming};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
@@ -17,8 +24,12 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::{Found, Violation, handshaken};
 use crate::target::Target;
 
-/// How long a read whose credit is spent is watched for frames it must not send.
+/// How long a read whose credit is spent is watched, at first and after each grant too small to
+/// restore it, for frames it must not send.
 const QUIET: Duration = Duration::from_secs(1);
+
+/// How many grants of a byte, each too small to restore the credit, a read is watched after.
+const REGRANTS: u64 = 3;
 
 /// The credit granted once the read has shown it waits: enough for the rest of any partition.
 const PLENTY: u64 = 1 << 40;
@@ -66,27 +77,49 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
                 "the read ended within its first credit".to_owned(),
             ));
         }
-        waits_then_resumes(&controls, &mut frames).await?;
+        // A frame spends its encoded size, as the host that grants credit counts it.
+        let spent = u64::try_from(first.encoded_len()).unwrap_or(u64::MAX);
+        waits_then_resumes(&controls, &mut frames, regrants(spent)).await?;
         Ok(Found::Kept)
     };
     checked.await.into()
 }
 
-/// Checks that a read whose credit is spent sends nothing more, and goes on once granted more;
-/// then stops it, since the rest of the partition, however long, need not be read.
+/// How many grants of a byte leave the credit of a read spent, once one byte bought a frame of
+/// `spent` bytes: at most [`REGRANTS`].
+fn regrants(spent: u64) -> u64 {
+    // One byte was granted and `spent` taken: each byte more is one less below nothing.
+    spent.saturating_sub(1).min(REGRANTS)
+}
+
+/// Watches `frames` for [`QUIET`]: a violation when the read, its credit spent, sends a frame.
+async fn stays_quiet(frames: &mut Streaming<v1::ReadFrame>) -> Result<(), Violation> {
+    match tokio::time::timeout(QUIET, frames.next()).await {
+        Ok(Some(Ok(_))) => Err(Violation::from(
+            "the read sent a frame after its credit was spent",
+        )),
+        Ok(Some(Err(status))) => Err(failed(&status)),
+        Ok(None) => Err(Violation::from("the read ended without its done frame")),
+        Err(_) => Ok(()),
+    }
+}
+
+/// Checks that a read whose credit is spent sends nothing more, whatever it is granted that does
+/// not restore its credit, `regrants` times a byte, and goes on once granted more; then stops
+/// it, since the rest of the partition, however long, need not be read.
 async fn waits_then_resumes(
     controls: &mpsc::Sender<v1::ReadControl>,
     frames: &mut Streaming<v1::ReadFrame>,
+    regrants: u64,
 ) -> Result<(), Violation> {
-    match tokio::time::timeout(QUIET, frames.next()).await {
-        Ok(Some(Ok(_))) => {
-            return Err(Violation::from(
-                "the read sent a frame after its credit was spent",
-            ));
-        }
-        Ok(Some(Err(status))) => return Err(failed(&status)),
-        Ok(None) => return Err(Violation::from("the read ended without its done frame")),
-        Err(_) => {}
+    stays_quiet(frames).await?;
+    for _ in 0..regrants {
+        send(
+            controls,
+            v1::read_control::Control::Credit(v1::Credit { bytes: 1 }),
+        )
+        .await?;
+        stays_quiet(frames).await?;
     }
     send(
         controls,
