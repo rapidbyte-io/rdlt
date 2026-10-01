@@ -43,7 +43,8 @@ checks: locked
     actionlint
 
 # Check that each action is pinned to the commit of the version beside it; GITHUB_TOKEN, where
-# set, keeps the lookups within GitHub's rate limit
+# set, keeps the lookups within GitHub's rate limit. CI runs this in a job of its own, the only
+# one given the token, so it builds nothing
 pins:
     pinact run --check --verify-comment
 
