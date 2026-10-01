@@ -95,8 +95,10 @@ impl Manifest {
         self.state
             .iter()
             .map(|(key, value)| {
+                // A manifest read from disk was checked for this; one built here holds none.
                 let value = STANDARD.decode(value).map_err(|error| {
-                    ConnectorError::internal(format!("state record {key} is not base64: {error}"))
+                    let message = format!("state record {key} is not base64: {error}");
+                    ConnectorError::data(message).with_code(MANIFEST_INVALID)
                 })?;
                 Ok(StateRecord {
                     key: key.clone(),

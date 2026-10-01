@@ -282,6 +282,7 @@ fn a_keeper_names_a_file_in_a_directory_that_exists() {
     let advanced = kept.advance("orders", &partition("p0"), 1);
     let written = std::path::Path::new(&name).is_file();
     drop(std::fs::remove_file(&name));
+    drop(std::fs::remove_file(format!(".{name}.lock")));
     advanced.unwrap();
     assert!(written);
 }
