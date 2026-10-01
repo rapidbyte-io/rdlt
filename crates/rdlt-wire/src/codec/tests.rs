@@ -41,7 +41,9 @@ pub(crate) fn batch((columns, rows): &Drawn) -> RecordBatch {
 /// `batch` sent through a fresh encoder and decoder, and the shape of its last frame.
 fn crossed(batch: &RecordBatch) -> (RecordBatch, Shape) {
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     let mut last = None;
     for frame in encoder.batch(batch).unwrap() {
         last = Some(decoder.shaped(&frame).unwrap());
@@ -139,7 +141,7 @@ proptest! {
     ) {
         let batch = batch(&drawn);
         let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-        decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+        decoder.schema(&encoder.schema(&batch.schema()).unwrap()).unwrap();
         for mut frame in encoder.batch(&batch).unwrap() {
             let target = if header { &mut frame.header } else { &mut frame.body };
             let mut bytes = target.to_vec();
@@ -164,7 +166,9 @@ fn a_dictionary_is_sent_once_per_schema_epoch_and_later_batches_use_it() {
     let first = strings(&["a", "bb", "a"]);
     let second = strings(&["bb", "bb"]);
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    decoder.schema(&encoder.schema(&first.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&first.schema()).unwrap())
+        .unwrap();
     let frames = encoder.batch(&first).unwrap();
     assert_eq!(frames.len(), 2, "the dictionary, then the batch");
     assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
@@ -173,7 +177,9 @@ fn a_dictionary_is_sent_once_per_schema_epoch_and_later_batches_use_it() {
     assert_eq!(frames.len(), 1, "the dictionary continues");
     assert_eq!(decoder.frame(&frames[0]).unwrap(), Some(second.clone()));
     // A new schema epoch forgets the dictionary on both ends.
-    decoder.schema(&encoder.schema(&second.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&second.schema()).unwrap())
+        .unwrap();
     let frames = encoder.batch(&second).unwrap();
     assert_eq!(frames.len(), 2);
 }
@@ -182,7 +188,7 @@ fn a_dictionary_is_sent_once_per_schema_epoch_and_later_batches_use_it() {
 fn a_batch_before_any_schema_is_malformed() {
     let batch = ints(2);
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema());
+    encoder.schema(&batch.schema()).unwrap();
     let frames = encoder.batch(&batch).unwrap();
     let error = Decoder::new(Limits::default())
         .frame(&frames[0])
@@ -221,7 +227,7 @@ fn a_header_that_is_no_message_is_malformed() {
 fn a_schema_where_a_batch_belongs_is_malformed() {
     let batch = ints(1);
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    let schema = encoder.schema(&batch.schema());
+    let schema = encoder.schema(&batch.schema()).unwrap();
     decoder.schema(&schema).unwrap();
     let frame = IpcFrame {
         header: schema,
@@ -244,7 +250,9 @@ fn a_schema_where_a_batch_belongs_is_malformed() {
 fn a_body_shorter_than_its_header_declares_is_malformed() {
     let batch = ints(4);
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     let mut frame = encoder.batch(&batch).unwrap().remove(0);
     frame.body = frame.body.slice(..frame.body.len() - 8);
     let error = decoder.frame(&frame).unwrap_err();
@@ -268,7 +276,9 @@ fn batches_beyond_the_row_limit_and_frames_beyond_the_byte_limit_are_refused() {
         ..Limits::default()
     };
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(limits));
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     let frame = encoder.batch(&batch).unwrap().remove(0);
     let refused = |error: WireError| match error {
         WireError::Refused(refusal) => (refusal.field, refusal.limit, refusal.actual),
@@ -310,7 +320,7 @@ fn schemas_beyond_the_column_and_depth_limits_are_refused() {
         Field::new("b", DataType::Utf8, true),
     ]);
     let mut encoder = Encoder::default();
-    let message = encoder.schema(&schema);
+    let message = encoder.schema(&schema).unwrap();
     let refusal = |limits: Limits| match Decoder::new(limits).schema(&message).unwrap_err() {
         WireError::Refused(refusal) => (refusal.field, refusal.actual),
         other => panic!("{other}"),
@@ -345,7 +355,9 @@ fn schemas_beyond_the_column_and_depth_limits_are_refused() {
 fn a_delta_dictionary_is_refused_so_no_peer_can_grow_one_without_bound() {
     let batch = strings(&["a", "bb"]);
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     let frames = encoder.batch(&batch).unwrap();
     assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
     let delta = frames::changed(&frames[..1], |parts| {
@@ -379,13 +391,13 @@ fn a_schema_nested_to_the_limit_decodes_and_one_level_deeper_is_refused_by_name(
     let mut decoder = Decoder::new(Limits::default());
     assert_eq!(
         decoder
-            .schema(&encoder.schema(&nested(depth)))
+            .schema(&encoder.schema(&nested(depth)).unwrap())
             .unwrap()
             .as_ref(),
         &nested(depth)
     );
     match decoder
-        .schema(&encoder.schema(&nested(depth + 1)))
+        .schema(&encoder.schema(&nested(depth + 1)).unwrap())
         .unwrap_err()
     {
         WireError::Refused(refusal) => assert_eq!(refusal.field, "nesting depth"),
@@ -481,10 +493,14 @@ fn a_dictionary_nested_in_any_type_reaches_its_column() {
 fn a_dictionary_the_schema_does_not_name_is_refused() {
     let batch = strings(&["a", "bb"]);
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     let frames = encoder.batch(&batch).unwrap();
     // A schema without dictionaries forgets the ids of the schema before it.
-    decoder.schema(&encoder.schema(&ints(1).schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&ints(1).schema()).unwrap())
+        .unwrap();
     let error = decoder.frame(&frames[0]).unwrap_err();
     assert!(
         matches!(
@@ -522,12 +538,17 @@ fn a_dictionary_of_dictionaries_is_refused_by_its_sender() {
     );
     for batch in [twice, samples::batch_of(Arc::new(listed))] {
         let mut encoder = Encoder::default();
-        encoder.schema(&batch.schema());
-        let whole = encoder.batch(&batch);
-        assert_eq!(frames::problem(whole), Problem::DictionaryOfDictionaries);
+        let schema = encoder.schema(&batch.schema());
+        assert_eq!(frames::problem(schema), Problem::DictionaryOfDictionaries);
+        // No schema went, so no batch does.
+        assert_eq!(frames::problem(encoder.batch(&batch)), Problem::NoSchema);
         let mut cut = super::Cut::new(batch.clone(), Limits::default());
-        let piece = encoder.piece(&mut cut);
-        assert_eq!(frames::problem(piece), Problem::DictionaryOfDictionaries);
+        assert_eq!(frames::problem(encoder.piece(&mut cut)), Problem::NoSchema);
+        // The schema epoch before it is over too.
+        let plain = ints(1);
+        encoder.schema(&plain.schema()).unwrap();
+        assert!(encoder.schema(&batch.schema()).is_err());
+        assert_eq!(frames::problem(encoder.batch(&plain)), Problem::NoSchema);
     }
 }
 

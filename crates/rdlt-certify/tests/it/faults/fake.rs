@@ -389,7 +389,7 @@ impl Connector for Fake {
         let batch = RecordBatch::try_from_iter([("id", rows)]).expect("a batch");
         let schema = Frame::Schema(v1::SchemaFrame {
             schema_epoch: 1,
-            ipc_schema: encoder.schema(&batch.schema()),
+            ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
         });
         let data = encoder.batch(&batch).expect("the batch encodes").remove(0);
         let rows = Frame::Batch(v1::BatchFrame {

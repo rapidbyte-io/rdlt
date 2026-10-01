@@ -195,7 +195,7 @@ fn text_a_schema_repeats_counts_wherever_a_field_repeats_it() {
 #[test]
 fn a_schema_message_beyond_its_byte_limit_is_refused() {
     let schema = Schema::new(vec![Field::new("a", DataType::Int32, true)]);
-    let message = Encoder::default().schema(&schema);
+    let message = Encoder::default().schema(&schema).unwrap();
     let bytes = u64::try_from(message.len()).unwrap();
     let within = |schema_bytes| {
         Decoder::new(Limits {
@@ -225,7 +225,7 @@ fn a_field_name_beyond_the_control_string_limit_is_refused_wherever_it_nests() {
     let inner = Fields::from(vec![Field::new(&long, DataType::Int32, true)]);
     let nested = Schema::new(vec![Field::new("a", DataType::Struct(inner), true)]);
     for schema in [top, nested] {
-        let message = Encoder::default().schema(&schema);
+        let message = Encoder::default().schema(&schema).unwrap();
         let within = |control_string_bytes| {
             Decoder::new(Limits {
                 control_string_bytes,
@@ -251,7 +251,7 @@ fn a_schema_beyond_the_column_limit_is_refused_before_it_is_converted() {
     let fields: Vec<_> = (0..2 * SCHEMA_COLUMNS)
         .map(|column| Field::new(format!("c{column}"), DataType::Null, true))
         .collect();
-    let message = Encoder::default().schema(&Schema::new(fields));
+    let message = Encoder::default().schema(&Schema::new(fields)).unwrap();
     let refusal = refusal(Decoder::new(Limits::default()).schema(&message));
     // The count stops at the first column beyond the limit.
     assert_eq!(
@@ -278,7 +278,7 @@ fn a_schema_at_the_column_and_depth_limits_is_admitted() {
         Field::new(name, zoned, true).with_metadata(described.clone())
     }));
     let schema = Schema::new(fields).with_metadata(described);
-    let message = Encoder::default().schema(&schema);
+    let message = Encoder::default().schema(&schema).unwrap();
     let decoded = Decoder::new(Limits::default()).schema(&message).unwrap();
     assert_eq!(decoded.as_ref(), &schema);
 }
@@ -318,7 +318,7 @@ fn every_kind_of_nested_type_counts_its_columns_and_levels() {
     ];
     for (data_type, columns, depth) in cases {
         let schema = Schema::new(vec![Field::new("c", data_type.clone(), true)]);
-        let message = Encoder::default().schema(&schema);
+        let message = Encoder::default().schema(&schema).unwrap();
         let within = |schema_columns, nesting_depth| {
             Decoder::new(Limits {
                 schema_columns,
@@ -363,7 +363,8 @@ fn a_schema_message_of_another_metadata_version_or_kind_is_refused() {
         options: IpcWriteOptions::try_new(8, false, MetadataVersion::V4).unwrap(),
         ..Encoder::default()
     }
-    .schema(&schema);
+    .schema(&schema)
+    .unwrap();
     let decoded = Decoder::new(Limits::default()).schema(&old);
     assert_eq!(
         problem(decoded),
@@ -372,7 +373,9 @@ fn a_schema_message_of_another_metadata_version_or_kind_is_refused() {
         }
     );
     let batch = arrow_array::RecordBatch::new_empty(Arc::new(schema));
-    let frame = Encoder::default().batch(&batch).unwrap().remove(0);
+    let mut encoder = Encoder::default();
+    encoder.schema(&batch.schema()).unwrap();
+    let frame = encoder.batch(&batch).unwrap().remove(0);
     let decoded = Decoder::new(Limits::default()).schema(&frame.header);
     assert_eq!(
         problem(decoded),

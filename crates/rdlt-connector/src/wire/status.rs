@@ -70,11 +70,21 @@ pub fn error(status: &Status) -> ConnectorError {
 /// The code of an error for a frame the other end sent malformed.
 pub const MALFORMED_FRAME: &str = "malformed_frame";
 
-/// A frame the codec refused, as the connector error the end that received it reports: a limit's
-/// refusal, or a frame malformed by a faulty peer, which retrying cannot help.
+/// The code of an error for a batch of a type the protocol cannot carry.
+pub const UNSENDABLE_TYPE: &str = "unsendable_type";
+
+/// What the codec refused, as the connector error the end that met it reports: a limit's
+/// refusal, a batch of a type its sender cannot send, or a frame malformed by a faulty peer,
+/// which retrying cannot help.
 pub fn frame_error(error: &rdlt_wire::WireError) -> ConnectorError {
+    use rdlt_wire::{Problem, WireError};
     match error {
-        rdlt_wire::WireError::Refused(refusal) => {
+        WireError::Malformed {
+            problem: Problem::DictionaryOfDictionaries,
+            ..
+        } => ConnectorError::new(ConnectorErrorKind::Unsupported, error.to_string())
+            .with_code(UNSENDABLE_TYPE),
+        WireError::Refused(refusal) => {
             let limit = crate::error::LimitExceeded {
                 name: rdlt_wire::limits::FIELDS
                     .iter()

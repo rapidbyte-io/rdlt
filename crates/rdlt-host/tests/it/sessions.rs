@@ -124,7 +124,7 @@ async fn a_failed_write_answers_with_its_error_and_ends_the_write() {
     frames
         .send(frame(Frame::Schema(v1::WriteSchema {
             version: 1,
-            ipc_schema: encoder.schema(&batch.schema()),
+            ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
         })))
         .await
         .unwrap();
@@ -214,7 +214,7 @@ fn writes_within(window: u64) -> usize {
     };
     let schema = size(Frame::Schema(v1::WriteSchema {
         version: 1,
-        ipc_schema: encoder.schema(&batch.schema()),
+        ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
     }));
     let batches: Vec<i64> = encoder
         .batch(&batch)

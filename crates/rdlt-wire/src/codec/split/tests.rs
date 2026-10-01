@@ -19,7 +19,7 @@ use crate::limits::{BATCH_ROWS, BATCH_VALUES, Limits};
 /// The frames a sender within `limits` cuts `batch` into, or its refusal.
 fn cut(batch: &RecordBatch, limits: &Limits) -> Result<Vec<IpcFrame>, WireError> {
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema());
+    encoder.schema(&batch.schema()).unwrap();
     stepped(&mut encoder, batch, limits)
 }
 
@@ -41,7 +41,7 @@ fn stepped(
 /// The batches a receiver within `limits` decodes from `frames` of `batch`'s schema.
 fn received(batch: &RecordBatch, frames: &[IpcFrame], limits: Limits) -> Vec<RecordBatch> {
     let mut decoder = Decoder::new(limits);
-    let schema = Encoder::default().schema(&batch.schema());
+    let schema = Encoder::default().schema(&batch.schema()).unwrap();
     decoder.schema(&schema).unwrap();
     let pieces = frames
         .iter()
@@ -255,7 +255,7 @@ fn a_dictionary_goes_once_ahead_of_the_batches_cut_from_its_batch() {
         ..Limits::default()
     };
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema());
+    encoder.schema(&batch.schema()).unwrap();
     let frames = stepped(&mut encoder, &batch, &limits).unwrap();
     assert_eq!(frames.len(), 1 + 3);
     assert_eq!(
@@ -276,7 +276,7 @@ fn a_dictionary_goes_once_ahead_of_the_batches_cut_from_its_batch() {
     let both = RecordBatch::try_from_iter([("t", Arc::new(tag) as ArrayRef), ("n", wide)]);
     let both = both.unwrap();
     let mut encoder = Encoder::default();
-    encoder.schema(&both.schema());
+    encoder.schema(&both.schema()).unwrap();
     let few = Limits {
         batch_values: 50,
         ..Limits::default()
@@ -291,7 +291,7 @@ fn a_dictionary_goes_once_ahead_of_the_batches_cut_from_its_batch() {
         crate::codec::tests::frames::problem(unsent),
         crate::error::Problem::NoSchema
     );
-    encoder.schema(&both.schema());
+    encoder.schema(&both.schema()).unwrap();
     let frames = stepped(&mut encoder, &both, &Limits::default()).unwrap();
     assert_eq!(frames.len(), 1 + 1);
     assert_eq!(received(&both, &frames, Limits::default()), [both]);
@@ -333,7 +333,9 @@ fn part_fits(batch: &RecordBatch, start: usize, rows: usize, limits: Limits) -> 
 fn fits(batch: &RecordBatch, limits: Limits) -> bool {
     let mut encoder = Encoder::default();
     let mut decoder = Decoder::new(limits);
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     let frames = encoder.batch(batch).unwrap();
     frames.iter().all(|frame| decoder.frame(frame).is_ok())
 }
@@ -492,7 +494,7 @@ fn each_step_hands_over_one_piece_no_larger_than_a_frame() {
         ..Limits::default()
     };
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema());
+    encoder.schema(&batch.schema()).unwrap();
     let whole = bytes(&encoder.batch(&batch).unwrap());
     let mut cut = Cut::new(batch.clone(), limits);
     let (mut steps, mut sent) = (0, 0);
@@ -509,7 +511,7 @@ fn each_step_hands_over_one_piece_no_larger_than_a_frame() {
 /// How many batches `encoder` encodes to cut `batch` within `limits`, and into how many pieces.
 fn cost(batch: &RecordBatch, limits: &Limits) -> (usize, usize) {
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema());
+    encoder.schema(&batch.schema()).unwrap();
     let frames = stepped(&mut encoder, batch, limits).unwrap();
     (encoder.encodes, frames.len())
 }
@@ -562,7 +564,7 @@ fn a_refused_row_ends_its_batchs_cut_after_the_pieces_before_it() {
         ..Limits::default()
     };
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema());
+    encoder.schema(&batch.schema()).unwrap();
     let mut cut = Cut::new(batch.clone(), limits);
     let first = encoder.piece(&mut cut).unwrap().unwrap();
     assert_eq!(

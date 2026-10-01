@@ -55,7 +55,9 @@ fn a_batch_padded_to_the_formats_eight_bytes_decodes_unchanged() {
     let batch = batch.unwrap();
     let mut encoder = padding(8);
     let mut decoder = Decoder::new(Limits::default());
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     let frames = encoder.batch(&batch).unwrap();
     let offsets = Parts::of(&frames.last().unwrap().header).buffers;
     assert!(offsets.iter().any(|(offset, _)| offset % 16 == 8));

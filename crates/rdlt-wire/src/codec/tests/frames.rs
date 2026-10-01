@@ -131,7 +131,9 @@ impl Parts {
 /// A decoder within `limits` that received `schema`.
 pub(crate) fn decoder(schema: &Schema, limits: Limits) -> Decoder {
     let mut decoder = Decoder::new(limits);
-    decoder.schema(&Encoder::default().schema(schema)).unwrap();
+    decoder
+        .schema(&Encoder::default().schema(schema).unwrap())
+        .unwrap();
     decoder
 }
 
@@ -139,7 +141,9 @@ pub(crate) fn decoder(schema: &Schema, limits: Limits) -> Decoder {
 pub(crate) fn sent(batch: &RecordBatch, limits: Limits) -> (Decoder, Vec<IpcFrame>) {
     let mut encoder = Encoder::default();
     let mut decoder = Decoder::new(limits);
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
     (decoder, encoder.batch(batch).unwrap())
 }
 

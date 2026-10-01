@@ -46,9 +46,6 @@ pub struct Encoder {
     context: IpcWriteContext,
     /// The columns of the schema last encoded, as its receiver converts it.
     columns: Option<Columns>,
-    /// Whether the schema last encoded holds a dictionary of dictionaries, which no schema
-    /// message describes.
-    twice_keyed: bool,
     /// How many batches were encoded, for tests of what a cut costs.
     #[cfg(test)]
     encodes: usize,
@@ -62,7 +59,6 @@ impl Default for Encoder {
             options: IpcWriteOptions::default(),
             context: IpcWriteContext::default(),
             columns: None,
-            twice_keyed: false,
             #[cfg(test)]
             encodes: 0,
         }
@@ -72,22 +68,34 @@ impl Default for Encoder {
 impl Encoder {
     /// The IPC schema message opening a new schema epoch for `schema`; every dictionary is sent
     /// again after it.
-    pub fn schema(&mut self, schema: &Schema) -> Bytes {
+    ///
+    /// # Errors
+    ///
+    /// [`WireError::Malformed`] when the schema holds a dictionary of dictionaries, which no
+    /// schema message describes: nothing is to be sent for it, and the epoch before it is over.
+    pub fn schema(&mut self, schema: &Schema) -> Result<Bytes, WireError> {
+        self.columns = None;
+        if schema
+            .fields()
+            .iter()
+            .any(|field| twice_keyed(field.data_type()))
+        {
+            return Err(WireError::malformed(
+                Frame::Schema,
+                Problem::DictionaryOfDictionaries,
+            ));
+        }
         self.tracker = DictionaryTracker::new(false);
         let encoded = self.generator.schema_to_bytes_with_dictionary_tracker(
             schema,
             &mut self.tracker,
             &self.options,
         );
-        self.twice_keyed = schema
-            .fields()
-            .iter()
-            .any(|field| twice_keyed(field.data_type()));
         self.columns = arrow_ipc::root_as_message(&encoded.ipc_message)
             .ok()
             .and_then(|message| message.header_as_schema())
             .map(|schema| Columns::new(Arc::new(arrow_ipc::convert::fb_to_schema(schema))));
-        Bytes::from(encoded.ipc_message)
+        Ok(Bytes::from(encoded.ipc_message))
     }
 
     /// The frames of `batch`, which must be in the schema last encoded: the dictionaries it needs
@@ -95,8 +103,8 @@ impl Encoder {
     ///
     /// # Errors
     ///
-    /// [`WireError::Arrow`] when Arrow cannot encode the batch; [`WireError::Malformed`] when its
-    /// schema holds a dictionary of dictionaries, which no schema message describes.
+    /// [`WireError::Arrow`] when Arrow cannot encode the batch; [`WireError::Malformed`] when no
+    /// schema was encoded for it.
     pub fn batch(&mut self, batch: &RecordBatch) -> Result<Vec<IpcFrame>, WireError> {
         let (mut frames, batch) = self.encoded(batch)?;
         frames.push(batch);
@@ -105,11 +113,8 @@ impl Encoder {
 
     /// The dictionaries `batch` needs that differ from those sent, and its own frame.
     fn encoded(&mut self, batch: &RecordBatch) -> Result<(Vec<IpcFrame>, IpcFrame), WireError> {
-        if self.twice_keyed {
-            return Err(WireError::malformed(
-                Frame::Batch,
-                Problem::DictionaryOfDictionaries,
-            ));
+        if self.columns.is_none() {
+            return Err(WireError::malformed(Frame::Batch, Problem::NoSchema));
         }
         #[cfg(test)]
         {
