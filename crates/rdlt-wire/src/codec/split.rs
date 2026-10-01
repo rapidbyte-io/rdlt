@@ -5,6 +5,7 @@ mod tests;
 
 use arrow_array::RecordBatch;
 
+use super::compact::compacted;
 use super::measure::measured;
 use super::{Encoder, IpcFrame};
 use crate::error::{Frame, Problem, WireError};
@@ -66,7 +67,18 @@ impl Encoder {
         let (mut high, mut refused) = (most + 1, None);
         let (mut rows, mut step) = (guess.min(most), 1_usize);
         loop {
-            match self.trial(&rest.slice(0, rows), limits, frames)? {
+            let piece = rest.slice(0, rows);
+            // The whole of a batch goes as it is; a part of one carries only its rows.
+            let piece = if rows == rest.num_rows() && frames.is_empty() {
+                piece
+            } else {
+                compacted(&piece).map_err(|source| WireError::Arrow {
+                    frame: Frame::Batch,
+                    encoding: true,
+                    source,
+                })?
+            };
+            match self.trial(&piece, limits, frames)? {
                 Ok(frame) => (low, kept) = (rows, Some(frame)),
                 Err(refusal) => (high, refused) = (rows, Some(refusal)),
             }
