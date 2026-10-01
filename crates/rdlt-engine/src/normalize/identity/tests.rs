@@ -182,3 +182,96 @@ fn times_and_durations_encode_as_their_kind_and_nanoseconds() {
         ),
     ]);
 }
+
+/// A column of four values of `data_type`, one of them null.
+fn narrow(data_type: &DataType) -> ArrayRef {
+    let ints: ArrayRef = Arc::new(Int8Array::from(vec![Some(1), None, Some(3), Some(4)]));
+    let through = |stored: &DataType| {
+        let stored = arrow_cast::cast(&ints, stored).unwrap();
+        arrow_cast::cast(&stored, data_type).unwrap()
+    };
+    match data_type {
+        DataType::Decimal32(..) | DataType::Decimal64(..) | DataType::Decimal256(..) => {
+            through(&DataType::Decimal128(9, 0))
+        }
+        DataType::Date32 | DataType::Time32(_) => through(&DataType::Int32),
+        DataType::Date64
+        | DataType::Time64(_)
+        | DataType::Timestamp(..)
+        | DataType::Duration(_) => through(&DataType::Int64),
+        other => arrow_cast::cast(&ints, other).unwrap(),
+    }
+}
+
+#[test]
+fn values_are_read_where_they_lie_not_from_a_wider_copy() {
+    use arrow_schema::TimeUnit as U;
+    let read_in_place = [
+        DataType::Int8,
+        DataType::Int16,
+        DataType::Int32,
+        DataType::Int64,
+        DataType::UInt8,
+        DataType::UInt16,
+        DataType::UInt32,
+        DataType::Date32,
+        DataType::Date64,
+        DataType::Time32(U::Second),
+        DataType::Time32(U::Millisecond),
+        DataType::Time64(U::Microsecond),
+        DataType::Time64(U::Nanosecond),
+        DataType::Timestamp(U::Second, None),
+        DataType::Timestamp(U::Millisecond, None),
+        DataType::Timestamp(U::Microsecond, None),
+        DataType::Timestamp(U::Nanosecond, Some("UTC".into())),
+        DataType::Duration(U::Second),
+        DataType::Duration(U::Millisecond),
+        DataType::Duration(U::Microsecond),
+        DataType::Duration(U::Nanosecond),
+        DataType::Decimal32(9, 2),
+        DataType::Decimal64(18, 2),
+        DataType::Decimal128(38, 2),
+        DataType::Decimal256(76, 2),
+    ];
+    for data_type in read_in_place {
+        let column = narrow(&data_type);
+        let field = arrow_schema::Field::new("k", data_type.clone(), true);
+        let (super::Encoder::Integer(held, values)
+        | super::Encoder::Decimal(held, values, _)
+        | super::Encoder::Temporal(_, held, values, _)) =
+            super::Encoder::new(&field, &column).unwrap()
+        else {
+            panic!("{data_type} is encoded through a copy");
+        };
+        assert!(Arc::ptr_eq(&held, &column), "{data_type}");
+        assert!(values.shares(column.as_ref()), "{data_type}");
+        // The null stays one, and each value hashes as its 64-bit self does.
+        let ids = keyed_ids(Arc::clone(&column));
+        assert_eq!(ids[1], hashed(&[vec![super::NULL]])[0], "{data_type}");
+        assert_ne!(ids[0], ids[2], "{data_type}");
+    }
+}
+
+#[test]
+fn an_encoded_column_hashes_by_the_values_its_rows_name() {
+    // A dictionary holding a value no key names, and a run of one value.
+    let words = StringArray::from(vec!["unnamed", "a", "b"]);
+    let keyed: ArrayRef = Arc::new(
+        DictionaryArray::<Int8Type>::try_new(
+            Int8Array::from(vec![Some(1), None, Some(2)]),
+            Arc::new(words),
+        )
+        .unwrap(),
+    );
+    let plain: ArrayRef = Arc::new(StringArray::from(vec![Some("a"), None, Some("b")]));
+    assert_eq!(keyed_ids(keyed), keyed_ids(plain));
+    let runs: ArrayRef = Arc::new(
+        arrow_array::RunArray::<arrow_array::types::Int32Type>::try_new(
+            &arrow_array::Int32Array::from(vec![2, 3]),
+            &StringArray::from(vec!["a", "b"]),
+        )
+        .unwrap(),
+    );
+    let repeated: ArrayRef = Arc::new(StringArray::from(vec!["a", "a", "b"]));
+    assert_eq!(keyed_ids(runs), keyed_ids(repeated));
+}
