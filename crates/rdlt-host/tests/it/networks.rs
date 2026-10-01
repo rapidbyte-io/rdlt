@@ -181,6 +181,27 @@ async fn a_listener_that_keeps_failing_is_tried_again_after_a_pause() {
     assert_eq!(crate::admission::refused(&lines), u64::from(accepted));
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_pause_after_a_failed_accept_holds_up_neither_a_stop_nor_anything_else() {
+    let pki = Pki::new("ca");
+    let server = pki.server("server", &["connector"]);
+    let accepts = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
+    // The stop falls within a pause, not at its end.
+    let stop = tokio::time::sleep(std::time::Duration::from_millis(250));
+    let started = tokio::time::Instant::now();
+    serve_listener(
+        memory,
+        Failing(Arc::clone(&accepts)),
+        logged(listening(&pki, &server)).0,
+        rdlt_wire::Limits::default(),
+        stop,
+    )
+    .await;
+    assert_eq!(started.elapsed(), std::time::Duration::from_millis(250));
+    assert_eq!(accepts.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
 /// A network whose connections never complete, as one that drops every packet.
 #[derive(Debug)]
 struct Blackhole;

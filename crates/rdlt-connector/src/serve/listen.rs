@@ -149,7 +149,10 @@ pub async fn serve_listener<L: Listener>(
     let every = doors.shared.limits.report_every;
     let mut reports = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
     reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    tokio::pin!(stop);
+    // After an accept failed, accepting waits out a pause, and nothing else does.
+    let pause = tokio::time::sleep(Duration::ZERO);
+    let mut paused = false;
+    tokio::pin!(stop, pause);
     loop {
         tokio::select! {
             biased;
@@ -159,12 +162,14 @@ pub async fn serve_listener<L: Listener>(
             Some(ended) = doors.sessions.join_next() => doors.left(ended.ok()),
             handshaken = doors.unauthenticated.next() => doors.authenticated(handshaken),
             _ = reports.tick() => doors.report(),
-            accepted = listener.accept() => {
+            () = &mut pause, if paused => paused = false,
+            accepted = listener.accept(), if !paused => {
                 if let Ok((stream, peer)) = accepted {
                     doors.accepted(stream, peer);
                 } else {
                     doors.refusals.count(Refused::Accept);
-                    tokio::time::sleep(ACCEPT_BACKOFF).await;
+                    pause.as_mut().reset(tokio::time::Instant::now() + ACCEPT_BACKOFF);
+                    paused = true;
                 }
             }
         }
