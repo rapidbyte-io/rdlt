@@ -1098,7 +1098,16 @@ fn misleading(end: i64) -> Vec<(&'static str, Change)> {
         let (at, metadata) = (batches[1].offset(), batches[1].metaDataLength());
         batches[1] = arrow_ipc::Block::new(at - 8, metadata, batches[1].bodyLength());
     });
+    // A dictionary block again, listed where it lies but reaching into the schema message.
+    let schema: Change = Box::new(|dictionaries, _| {
+        let (metadata, body) = (
+            dictionaries[0].metaDataLength(),
+            dictionaries[0].bodyLength(),
+        );
+        dictionaries[0] = arrow_ipc::Block::new(64, metadata, body);
+    });
     vec![
+        ("a block over the schema message", schema),
         ("a block listed twice", twice),
         ("blocks out of their order in the file", swapped),
         ("a block starting within the block before it", within),
@@ -1227,4 +1236,44 @@ fn an_arrow_reader_skips_batches_and_tells_its_schema() {
     assert_eq!(lines.schema(), None);
     assert_eq!(lines.skip(1), 0);
     assert_eq!(lines.next().unwrap().map(|batch| batch.num_rows()), Some(1));
+}
+
+#[test]
+fn blocks_are_apart_when_none_reaches_into_the_next() {
+    use super::ipc::{Block, apart};
+    let block = |offset, metadata, body| Block {
+        offset,
+        metadata,
+        body,
+    };
+    assert!(apart(&[]));
+    assert!(apart(&[block(8, 8, 8)]));
+    assert!(apart(&[block(8, 8, 8), block(24, 8, 0), block(32, 16, 16)]));
+    assert!(!apart(&[block(8, 8, 8), block(23, 8, 0)]));
+    assert!(!apart(&[block(8, 8, 8), block(8, 8, 8)]));
+    assert!(!apart(&[block(8, 8, 0), block(16, 9, 0), block(24, 8, 8)]));
+}
+
+#[test]
+fn an_arrow_file_s_first_message_starts_within_the_alignment_writers_use() {
+    // Every block moved eight bytes on, behind eight bytes more of padding: a file whose first
+    // message starts at byte 72 is no file a writer makes.
+    let (bytes, schema) = arrow_bytes(1, IpcWriteOptions::default());
+    assert_eq!(bytes[64..68], [0xff; 4], "the writer aligns to 64 bytes");
+    let mut moved = bytes[..8].to_vec();
+    moved.extend_from_slice(&[0; 8]);
+    moved.extend_from_slice(&bytes[8..]);
+    let moved = refooted(&moved, |dictionaries, batches| {
+        for block in dictionaries.iter_mut().chain(batches.iter_mut()) {
+            let (metadata, body) = (block.metaDataLength(), block.bodyLength());
+            *block = arrow_ipc::Block::new(block.offset() + 8, metadata, body);
+        }
+    });
+    let error = read_bytes(&moved, &schema).expect_err("the first message is too far");
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    // Padding that is not zeros is no padding.
+    let mut padded = bytes.clone();
+    padded[9] = 1;
+    let error = read_bytes(&padded, &schema).expect_err("the padding holds a byte");
+    assert_eq!(error.kind(), ConnectorErrorKind::Data);
 }
