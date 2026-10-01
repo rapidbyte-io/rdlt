@@ -321,10 +321,25 @@ fn what_a_connector_started_ends_with_a_run_that_ends_and_is_an_orphan_of_one_ki
     let connectors = run.connectors();
     run.child.kill().expect("the harness is killed");
     run.ended();
+    // Each connector ended by itself: it is the member the launcher started that lives on,
+    // in the group of the source it became, and in no other.
+    let told = connectors.lock().expect("unpoisoned").clone();
+    let process_lives = |connector: &&u32| {
+        let connector = Pid::from_raw(i32::try_from(**connector).expect("process ids fit"));
+        nix::sys::signal::kill(connector, None).is_ok()
+    };
+    let deadline = Instant::now() + ENDING;
+    while told.iter().any(|connector| process_lives(&connector)) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let running: Vec<&u32> = told.iter().filter(process_lives).collect();
+    let kept = told.iter().filter(|group| lives(**group)).count();
     assert!(
         orphans(&connectors),
         "a member that outlived a killed run went unseen"
     );
+    assert!(running.is_empty(), "{running:?} outlived a killed run");
+    assert_eq!(kept, 1, "of the groups {told:?}");
 }
 
 #[test]
