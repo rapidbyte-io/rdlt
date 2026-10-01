@@ -20,8 +20,8 @@ pub(crate) const CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 /// Bytes: bounds the file naming the pipeline that owns a table of the files destination.
 pub(crate) const OWNER_BYTES: u64 = 128;
 
-/// Bytes: bounds the name of a table of the files destination, an identifier of ASCII letters,
-/// digits and underscores.
+/// Bytes: bounds the name of a table of the files destination, an identifier of lower-case ASCII
+/// letters, digits and underscores.
 pub(crate) const TABLE_NAME_BYTES: u16 = 128;
 
 /// Versions: how many manifests of a pipeline, and catalog versions of a table, stay on disk
