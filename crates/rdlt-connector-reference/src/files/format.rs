@@ -1,17 +1,29 @@
 //! The file formats: JSON lines and Arrow IPC files, written once and read back.
+//!
+//! Nothing is written that the reader would refuse: a line or a batch beyond the reader's limits
+//! fails the write, and the file is removed.
+
+pub(super) mod ipc;
+mod json;
+pub(super) mod lines;
+#[cfg(test)]
+mod tests;
 
 use std::collections::BTreeSet;
-use std::fs;
-use std::io::{BufReader, BufWriter, Write};
-use std::path::Path;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 
 use arrow_array::RecordBatch;
-use arrow_schema::SchemaRef;
+use arrow_schema::{ArrowError, SchemaRef};
 use rdlt_connector::{ConnectorError, Result, TypeKind};
+use rdlt_wire::Limits;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::io;
+use crate::limits::{CHUNK_BYTES, LINE_BYTES};
+use crate::rooted::Dir;
 
 /// How a table's files store its rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -22,6 +34,13 @@ pub enum FileFormat {
     Jsonl,
     /// Arrow IPC files, which keep every type.
     Arrow,
+}
+
+/// What a written file holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Written {
+    pub(super) rows: u64,
+    pub(super) bytes: u64,
 }
 
 impl FileFormat {
@@ -40,6 +59,11 @@ impl FileFormat {
             "arrow" => Some(Self::Arrow),
             _ => None,
         }
+    }
+
+    /// The format of the file `name`, by its extension.
+    pub(super) fn named(name: &str) -> Option<Self> {
+        Self::of(name.rsplit_once('.')?.1)
     }
 
     /// The logical types the format keeps.
@@ -72,58 +96,290 @@ impl FileFormat {
         types
     }
 
-    /// Writes `batch` to a new file at `path`, durably, with its directory entry and every
-    /// directory created for it; returns the file's size in bytes.
-    pub(super) fn write(self, path: &Path, batch: &RecordBatch) -> Result<u64> {
-        let parent = path.parent().unwrap_or(Path::new("."));
-        io::create_dirs(parent)?;
-        let file = fs::File::create_new(path).map_err(io::failed("creating", path))?;
-        let encoded = |error: arrow_schema::ArrowError| {
-            ConnectorError::data(format!("writing {}: {error}", path.display()))
+    /// Writes `batches`, of one schema, to the new file `name` in `dir`, durably with its
+    /// directory entry; what the file holds.
+    pub(super) fn write(self, dir: &Dir, name: &str, batches: &[RecordBatch]) -> Result<Written> {
+        let Some(first) = batches.first() else {
+            return Err(ConnectorError::internal("a file of no batch has no schema"));
         };
-        let file = match self {
-            Self::Jsonl => {
-                let mut writer = arrow_json::LineDelimitedWriter::new(BufWriter::new(file));
-                writer.write(batch).map_err(encoded)?;
-                writer.finish().map_err(encoded)?;
-                writer.into_inner().into_inner()
-            }
-            Self::Arrow => {
-                let mut writer = arrow_ipc::writer::FileWriter::try_new(
-                    BufWriter::new(file),
-                    batch.schema_ref(),
-                )
-                .map_err(encoded)?;
-                writer.write(batch).map_err(encoded)?;
-                writer.finish().map_err(encoded)?;
-                writer.into_inner().map_err(encoded)?.into_inner()
-            }
-        };
-        let mut file = file.map_err(|error| io::failed("writing", path)(error.into_error()))?;
-        file.flush().map_err(io::failed("writing", path))?;
-        file.sync_all().map_err(io::failed("syncing", path))?;
-        io::sync_dir(parent)?;
-        file.metadata()
-            .map(|metadata| metadata.len())
-            .map_err(io::failed("reading the size of", path))
+        let mut writer = Writer::create(self, dir, name, first.schema_ref())?;
+        for batch in batches {
+            writer.write(batch)?;
+        }
+        writer.finish()
     }
 
-    /// The rows of the file at `path`; JSON lines are read as `schema`, Arrow files as written.
-    pub(super) fn read(self, path: &Path, schema: &SchemaRef) -> Result<Vec<RecordBatch>> {
-        let file = fs::File::open(path).map_err(io::listed("opening", path))?;
-        let decoded = |error: arrow_schema::ArrowError| {
-            ConnectorError::data(format!("reading {}: {error}", path.display()))
-        };
-        match self {
-            Self::Jsonl => arrow_json::ReaderBuilder::new(SchemaRef::clone(schema))
-                .build(BufReader::new(file))
-                .map_err(decoded)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(decoded),
-            Self::Arrow => arrow_ipc::reader::FileReader::try_new(BufReader::new(file), None)
-                .map_err(decoded)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(decoded),
+    /// The rows of the file `name` in `dir`; JSON lines are read as `schema`, Arrow files as
+    /// written.
+    pub(super) fn read(
+        self,
+        dir: &Dir,
+        name: &str,
+        schema: &SchemaRef,
+    ) -> Result<Vec<RecordBatch>> {
+        let mut reader = Reader::open(self, dir, name, schema)?;
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.next()? {
+            batches.push(batch);
         }
+        Ok(batches)
+    }
+}
+
+/// The batches of one file, read in order.
+#[derive(Debug)]
+pub(super) struct Reader {
+    path: PathBuf,
+    rows: Rows,
+}
+
+#[derive(Debug)]
+enum Rows {
+    Jsonl(json::Rows),
+    Arrow(ipc::IpcFile),
+}
+
+impl Reader {
+    /// A reader of the regular file `name` in `dir`, which a manifest or a session's staging
+    /// lists.
+    pub(super) fn open(
+        format: FileFormat,
+        dir: &Dir,
+        name: &str,
+        schema: &SchemaRef,
+    ) -> Result<Self> {
+        let path = dir.at(name);
+        let file = dir.file(name).map_err(io::listed("opening", &path))?;
+        Self::over(format, file, path, schema)
+    }
+
+    /// A reader of the open regular `file`, which `path` names in messages.
+    pub(super) fn over(
+        format: FileFormat,
+        file: File,
+        path: PathBuf,
+        schema: &SchemaRef,
+    ) -> Result<Self> {
+        let rows = match format {
+            FileFormat::Jsonl => json::Rows::new(file, schema)
+                .map(Rows::Jsonl)
+                .map_err(|error| decoded(&path, error)),
+            FileFormat::Arrow => ipc::IpcFile::open(file, Limits::default())
+                .map(Rows::Arrow)
+                .map_err(|error| located(&path, error)),
+        }?;
+        Ok(Self { path, rows })
+    }
+
+    /// Skips the next `batches` batches of an Arrow file.
+    pub(super) fn skip(&mut self, batches: u64) {
+        if let Rows::Arrow(file) = &mut self.rows {
+            file.skip(batches);
+        }
+    }
+
+    /// The next batch, none once the file is read.
+    pub(super) fn next(&mut self) -> Result<Option<RecordBatch>> {
+        match &mut self.rows {
+            Rows::Jsonl(rows) => rows.next().map_err(|error| decoded(&self.path, error)),
+            Rows::Arrow(file) => file.next().map_err(|error| located(&self.path, error)),
+        }
+    }
+}
+
+/// `error` reading the file at `path`, naming the file.
+fn located(path: &std::path::Path, error: ConnectorError) -> ConnectorError {
+    let message = format!("reading {}: {error}", path.display());
+    let located = match error.limit() {
+        Some(limit) => ConnectorError::exceeds(limit),
+        None => ConnectorError::new(error.kind(), message),
+    };
+    located.with_source(error)
+}
+
+/// An Arrow error reading the file at `path`: a line beyond its limit keeps the limit, anything
+/// else is a data error.
+fn decoded(path: &std::path::Path, error: ArrowError) -> ConnectorError {
+    match error {
+        ArrowError::IoError(_, error) => io::failed("reading", path)(error),
+        error => {
+            ConnectorError::data(format!("reading {}: {error}", path.display())).with_source(error)
+        }
+    }
+}
+
+/// A file being written; one dropped unfinished is removed.
+pub(super) struct Writer<'a> {
+    dir: &'a Dir,
+    name: &'a str,
+    path: PathBuf,
+    rows: u64,
+    sink: Option<Sink>,
+    finished: bool,
+}
+
+enum Sink {
+    Jsonl(lines::Bounded<BufWriter<File>>),
+    Arrow(Box<arrow_ipc::writer::FileWriter<Counted<BufWriter<File>>>>),
+}
+
+impl std::fmt::Debug for Writer<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Writer")
+            .field("path", &self.path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> Writer<'a> {
+    /// Creates the file `name` in `dir`, to hold batches of `schema`.
+    ///
+    /// # Errors
+    ///
+    /// A name that exists, and for an Arrow file a schema beyond the limits a reader accepts.
+    pub(super) fn create(
+        format: FileFormat,
+        dir: &'a Dir,
+        name: &'a str,
+        schema: &SchemaRef,
+    ) -> Result<Self> {
+        let path = dir.at(name);
+        if format == FileFormat::Arrow {
+            ipc::admitted(schema, Limits::default())?;
+        }
+        let file = dir.create(name).map_err(io::failed("creating", &path))?;
+        let mut writer = Self {
+            dir,
+            name,
+            path,
+            rows: 0,
+            sink: None,
+            finished: false,
+        };
+        let file = BufWriter::new(file);
+        writer.sink = Some(match format {
+            FileFormat::Jsonl => Sink::Jsonl(lines::Bounded::new(file, LINE_BYTES)),
+            FileFormat::Arrow => {
+                let counted = Counted {
+                    inner: file,
+                    written: 0,
+                };
+                let started = arrow_ipc::writer::FileWriter::try_new(counted, schema);
+                Sink::Arrow(Box::new(started.map_err(|error| writer.encoded(error))?))
+            }
+        });
+        Ok(writer)
+    }
+
+    /// Writes `batch`; an Arrow file holds it as batches of about the size a batch aims for.
+    pub(super) fn write(&mut self, batch: &RecordBatch) -> Result<()> {
+        let rows = batch.num_rows();
+        let written = match self.sink.as_mut().expect("the writer is unfinished") {
+            Sink::Jsonl(lines) => {
+                let mut writer = arrow_json::LineDelimitedWriter::new(lines);
+                writer.write(batch).and_then(|()| writer.finish())
+            }
+            Sink::Arrow(writer) => chunks(batch).try_for_each(|chunk| {
+                let before = writer.get_ref().written;
+                writer.write(&chunk)?;
+                framed(writer.get_ref().written - before)
+            }),
+        };
+        written.map_err(|error| self.encoded(error))?;
+        self.count(rows);
+        Ok(())
+    }
+
+    fn count(&mut self, rows: usize) {
+        self.rows = self
+            .rows
+            .saturating_add(u64::try_from(rows).unwrap_or(u64::MAX));
+    }
+
+    /// Finishes the file and makes it and its directory entry durable; what the file holds.
+    pub(super) fn finish(mut self) -> Result<Written> {
+        let sink = self.sink.take().expect("the writer is unfinished");
+        let buffered = match sink {
+            Sink::Jsonl(lines) => Ok(lines.into_inner()),
+            Sink::Arrow(mut writer) => writer
+                .finish()
+                .and_then(|()| writer.into_inner())
+                .map(|counted| counted.inner),
+        };
+        let buffered = buffered.map_err(|error| self.encoded(error))?;
+        let failed = io::failed("writing", &self.path);
+        let file = buffered
+            .into_inner()
+            .map_err(|error| failed(error.into_error()))?;
+        file.sync_all().map_err(&failed)?;
+        let bytes = file.metadata().map_err(&failed)?.len();
+        self.dir
+            .sync()
+            .map_err(io::failed("syncing", self.dir.path()))?;
+        let rows = self.rows;
+        self.finished = true;
+        Ok(Written { rows, bytes })
+    }
+
+    /// An Arrow error writing the file: a limit a line or a batch went beyond keeps the limit,
+    /// a filesystem failure is classified as one, anything else is a data error.
+    fn encoded(&self, error: ArrowError) -> ConnectorError {
+        match error {
+            ArrowError::IoError(_, error) => io::failed("writing", &self.path)(error),
+            error => ConnectorError::data(format!("writing {}: {error}", self.path.display()))
+                .with_source(error),
+        }
+    }
+}
+
+impl Drop for Writer<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            drop(self.dir.remove_file(self.name));
+        }
+    }
+}
+
+/// `batch` as batches of about [`CHUNK_BYTES`] each, by its rows' average size.
+fn chunks(batch: &RecordBatch) -> impl Iterator<Item = RecordBatch> + '_ {
+    let rows = batch.num_rows();
+    let bytes = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
+    let row = (bytes / u64::try_from(rows).unwrap_or(u64::MAX).max(1)).max(1);
+    let step = usize::try_from(CHUNK_BYTES / row)
+        .unwrap_or(usize::MAX)
+        .max(1);
+    (0..rows)
+        .step_by(step)
+        .map(move |from| batch.slice(from, step.min(rows - from)))
+}
+
+/// Checks that a batch written as `bytes` is a frame a reader accepts.
+fn framed(bytes: u64) -> Result<(), ArrowError> {
+    let limit = crate::rooted::Limit {
+        name: "frame bytes",
+        bytes: Limits::default().frame_bytes,
+    };
+    limit
+        .admit(bytes)
+        .map_err(|refusal| ArrowError::from(std::io::Error::from(refusal)))
+}
+
+/// A writer that counts the bytes written through it.
+struct Counted<W> {
+    inner: W,
+    written: u64,
+}
+
+impl<W: Write> Write for Counted<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        self.written = self
+            .written
+            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
     }
 }

@@ -1,12 +1,13 @@
 //! A files session: schema changes in the table catalog, writers that stage one file per batch,
 //! and commits that create the next manifest.
 
+mod commit;
 mod merged;
+#[cfg(test)]
+pub(super) mod tests;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
@@ -14,19 +15,21 @@ use rdlt_connector::prelude::*;
 use rdlt_connector::{Epoch, GenerationId, LoadId, PipelineId, SegmentId, TablePath};
 
 use super::format::FileFormat;
-use super::manifest::{self, Manifest};
-use super::{destination, tables};
+use super::manifest::{self, Listed, STAGING};
+use super::{destination, io, tables};
 use crate::blocking::blocking;
 use crate::columns::changed;
-use merged::{follow_root, merged_rows, written};
+use crate::rooted::Dir;
 
-/// Where a session writes: the root, its pipeline's directory, the format, and who it is.
+/// Where a session writes: the destination's directories, the format, and who it is.
 #[derive(Clone, Debug)]
 pub(super) struct Location {
-    pub(super) root: Arc<Path>,
+    /// The destination's private directory, which holds the catalog.
+    pub(super) rdlt: Arc<Dir>,
     /// The pipeline the session belongs to, which owns the tables it creates.
     pub(super) pipeline: PipelineId,
-    pub(super) dir: PathBuf,
+    /// The pipeline's directory, which its manifests list files relative to.
+    pub(super) dir: Arc<Dir>,
     pub(super) format: FileFormat,
     pub(super) epoch: Epoch,
     pub(super) load_id: LoadId,
@@ -37,10 +40,7 @@ pub(super) struct Location {
 struct StagedFile {
     segment: SegmentId,
     table: TableRef,
-    /// The file's path relative to the root.
-    path: String,
-    rows: u64,
-    bytes: u64,
+    file: Listed,
 }
 
 /// What a session and its writers share.
@@ -82,11 +82,11 @@ impl Session for FilesSession {
         let (location, table) = (self.location.clone(), change.table().clone());
         let change = change.clone();
         blocking(move || {
-            let (root, name) = (&location.root, &change.table().name);
+            let (rdlt, name) = (&location.rdlt, &change.table().name);
             // Claimed and changed under one lock, so no release lands between them.
-            tables::locked(root, name, || {
+            tables::locked(rdlt, name, || {
                 claim(&location, name)?;
-                tables::update(root, name, |current| {
+                tables::update(rdlt, name, |current| {
                     let next = changed(current, &change)?;
                     Ok((current != Some(&next)).then_some(next))
                 })
@@ -100,7 +100,7 @@ impl Session for FilesSession {
     async fn writer(&mut self, table: &TableRef) -> Result<FilesWriter> {
         crate::merge::refuse_history_generation(table)?;
         let (location, name) = (self.location.clone(), table.name.clone());
-        blocking(move || tables::locked(&location.root, &name, || claim(&location, &name))).await?;
+        blocking(move || tables::locked(&location.rdlt, &name, || claim(&location, &name))).await?;
         self.learn(table);
         Ok(FilesWriter {
             location: self.location.clone(),
@@ -112,7 +112,7 @@ impl Session for FilesSession {
 
     async fn discard_staged(&mut self) -> Result<()> {
         let location = self.location.clone();
-        blocking(move || destination::discard(&location.root, &location.dir, location.epoch)).await
+        blocking(move || destination::discard(&location.dir, location.epoch)).await
     }
 
     async fn commit(&mut self, meta: &CommitMeta) -> Result<Receipt> {
@@ -121,7 +121,7 @@ impl Session for FilesSession {
             Arc::clone(&self.shared),
             meta.clone(),
         );
-        blocking(move || commit(&location, &shared, &meta)).await
+        blocking(move || commit::commit(&location, &shared, &meta)).await
     }
 
     async fn close(self) -> Result<()> {
@@ -136,8 +136,8 @@ impl Session for FilesSession {
 /// The catalog is outside the manifest, so the session is checked again once it claimed: a
 /// claim a drop overtook is undone. The caller holds the catalog's lock.
 fn claim(location: &Location, name: &str) -> Result<()> {
-    let (root, pipeline) = (&location.root, &location.pipeline);
-    let unowned = tables::owner(root, name)?.is_none();
+    let (rdlt, pipeline) = (&location.rdlt, &location.pipeline);
+    let unowned = tables::owner(rdlt, name)?.is_none();
     let fenced = || -> Result<Option<ConnectorError>> {
         let epoch = manifest::latest(&location.dir)?.map(|manifest| manifest.epoch);
         Ok((epoch != Some(location.epoch)).then(|| {
@@ -150,182 +150,41 @@ fn claim(location: &Location, name: &str) -> Result<()> {
     if unowned && let Some(error) = fenced()? {
         return Err(error);
     }
-    tables::claim(root, name, pipeline)?;
+    tables::claim(rdlt, name, pipeline)?;
     if unowned && let Some(error) = fenced()? {
-        tables::release_held(root, name, pipeline)?;
+        tables::release_held(rdlt, name, pipeline)?;
         return Err(error);
     }
     Ok(())
 }
 
-/// The files a commit publishes, by table and generation.
-type Staging<'a> = BTreeMap<(String, Option<GenerationId>), Vec<&'a StagedFile>>;
-
-/// Publishes the files this session staged in `meta`'s segments by creating the next manifest.
-fn commit(location: &Location, shared: &Mutex<Shared>, meta: &CommitMeta) -> Result<Receipt> {
-    let mut manifest = manifest::latest(&location.dir)?.unwrap_or_default();
-    if manifest.epoch != location.epoch || meta.epoch != location.epoch {
-        return Err(ConnectorError::fenced(format!(
-            "the pipeline is at epoch {}; this session opened at {}",
-            manifest.epoch, location.epoch
-        )));
-    }
-    if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq) {
-        return Ok(receipt);
-    }
-    let (staged, names) = {
-        let shared = shared.lock();
-        let staged: Vec<StagedFile> = shared
-            .staged
-            .iter()
-            .filter(|file| meta.segments.contains(file.segment))
-            .cloned()
-            .collect();
-        (staged, shared.names.clone())
-    };
-    publish_all(location, &mut manifest, &staged, meta)?;
-    manifest.paths.extend(names);
-    finish(location, &mut manifest, meta)?;
-    manifest.apply(&meta.state_delta);
-    let receipt = Receipt {
-        load_id: meta.load_id,
-        commit_seq: meta.commit_seq,
-        committed_at: manifest::truncated(SystemTime::now()),
-        rows: staged.iter().map(|file| file.rows).sum(),
-        bytes: staged.iter().map(|file| file.bytes).sum(),
-    };
-    manifest.record(&receipt);
-    manifest.version += 1;
-    if !manifest::put(&location.dir, &manifest)? {
-        return Err(ConnectorError::fenced(
-            "another session published the pipeline's next manifest first",
-        ));
-    }
-    shared
-        .lock()
-        .staged
-        .retain(|file| !meta.segments.contains(file.segment));
-    // The manifest is the truth: a catalog left behind here is removed by the next open.
-    for name in &manifest.dropped {
-        drop(tables::release(&location.root, name, &location.pipeline));
-    }
-    Ok(receipt)
-}
-
-/// Swaps into `manifest` the generations `meta` finishes, and drops from it the tables `meta`
-/// drops, each of which another pipeline must not own.
-fn finish(location: &Location, manifest: &mut Manifest, meta: &CommitMeta) -> Result<()> {
-    for dropped in &meta.drop_tables {
-        if let Some(owner) = tables::owner(&location.root, &dropped.name)?
-            && owner != location.pipeline.as_str()
-        {
-            return Err(ConnectorError::table_owned(&dropped.name, &owner));
-        }
-    }
-    for (path, generation) in &meta.finish_generations {
-        let Some(name) = manifest.paths.get(&path_key(path)).cloned() else {
-            continue;
-        };
-        let table = manifest.tables.entry(name).or_default();
-        table.files = table.generations.remove(generation).unwrap_or_default();
-        table.generations.clear();
-        table.tombstones.clear();
-    }
-    for dropped in &meta.drop_tables {
-        manifest.tables.remove(&*dropped.name);
-        manifest.paths.remove(&path_key(&dropped.path));
-        manifest.dropped.insert(dropped.name.to_string());
-    }
-    Ok(())
-}
-
-/// Adds `files`, staged for the table `name` or one generation of it, to what `manifest` lists
-/// for it: appended, into their generation, or merged into one new file of the table's rows.
-fn publish(
-    location: &Location,
-    manifest: &mut Manifest,
-    name: &str,
-    files: &[&StagedFile],
-    meta: &CommitMeta,
-    staged: &Staging<'_>,
-) -> Result<()> {
-    let table = manifest.tables.entry(name.to_owned()).or_default();
-    let first = &files[0].table;
-    let paths = files.iter().map(|file| file.path.clone());
-    match (&first.generation, &first.merge) {
-        (Some(generation), _) => table
-            .generations
-            .entry(*generation)
-            .or_default()
-            .extend(paths),
-        (None, Some(key)) => {
-            let root = key.root.as_ref().map(|root| {
-                let files = staged.get(&(root.table.to_string(), None));
-                (root, files.map(Vec::as_slice).unwrap_or_default())
-            });
-            let merged = merged_rows(location, name, table, files, key, root)?;
-            table.files = written(location, name, "merged", &merged.rows, meta)?
-                .into_iter()
-                .collect();
-            table.tombstones = match &merged.tombstones {
-                Some(tombstones) => written(location, name, "tombstones", tombstones, meta)?
-                    .into_iter()
-                    .collect(),
-                None => Vec::new(),
-            };
-        }
-        (None, None) => table.files.extend(paths),
-    }
-    Ok(())
-}
-
-/// Adds the `staged` files of `meta` to what `manifest` lists for their tables, and has the
-/// child tables it lists follow their roots.
-fn publish_all(
-    location: &Location,
-    manifest: &mut Manifest,
-    staged: &[StagedFile],
-    meta: &CommitMeta,
-) -> Result<()> {
-    let mut by_table: Staging<'_> = BTreeMap::new();
-    for file in staged {
-        by_table
-            .entry((file.table.name.to_string(), file.table.generation))
-            .or_default()
-            .push(file);
-    }
-    for ((name, _), files) in &by_table {
-        publish(location, manifest, name, files, meta, &by_table)?;
-    }
-    for child in &meta.child_tables {
-        follow_root(location, manifest, child, meta, &by_table)?;
-    }
-    Ok(())
-}
-
 impl Location {
-    /// The path, relative to the root, of `part` of `table` staged under `segment` for
-    /// `generation`.
+    /// Where `part` of `table` is staged under `segment`, a segment's id or what a commit writes
+    /// in a segment's place, for `generation`: the names leading to its directory under the
+    /// pipeline's, and its file's name.
     fn staged(
         &self,
-        segment: &str,
+        segment: &[String],
         table: &str,
         generation: Option<GenerationId>,
         part: u64,
-    ) -> String {
-        let dir = self
-            .dir
-            .strip_prefix(&self.root)
-            .unwrap_or(&self.dir)
-            .to_string_lossy()
-            .replace('\\', "/");
+    ) -> (Vec<String>, String) {
         let generation = generation.map_or_else(|| "table".to_owned(), |g| format!("g{g}"));
-        format!(
-            "{dir}/staging/{}/{}/{segment}/{table}/{generation}/{part}.{}",
-            self.epoch,
-            self.load_id,
-            self.format.extension()
-        )
+        let mut names = vec![
+            STAGING.to_owned(),
+            self.epoch.to_string(),
+            self.load_id.to_string(),
+        ];
+        names.extend(segment.iter().cloned());
+        names.extend([table.to_owned(), generation]);
+        (names, format!("{part}.{}", self.format.extension()))
+    }
+
+    /// Opens the directory the `names` lead to under the pipeline's, creating what is missing.
+    fn staging(&self, names: &[String]) -> Result<Dir> {
+        self.dir
+            .walk_created(names)
+            .map_err(io::failed("creating", &self.dir.at(names.join("/"))))
     }
 }
 
@@ -362,19 +221,22 @@ impl TableWriter for FilesWriter {
                     shared.parts += 1;
                     shared.parts
                 };
-                let path =
-                    location.staged(&segment.to_string(), &table.name, table.generation, part);
-                let bytes = location.format.write(&location.root.join(&path), &batch)?;
-                let rows = batch.num_rows() as u64;
+                let (names, file) =
+                    location.staged(&[segment.to_string()], &table.name, table.generation, part);
+                let dir = location.staging(&names)?;
+                let written = location.format.write(&dir, &file, &[batch])?;
+                let file = Listed {
+                    path: format!("{}/{file}", names.join("/")),
+                    rows: written.rows,
+                    bytes: written.bytes,
+                };
                 shared.lock().staged.push(StagedFile {
                     segment,
                     table: table.clone(),
-                    path,
-                    rows,
-                    bytes,
+                    file,
                 });
-                stats.rows += rows;
-                stats.bytes += bytes;
+                stats.rows += written.rows;
+                stats.bytes += written.bytes;
             }
             Ok(stats)
         })

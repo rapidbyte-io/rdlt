@@ -4,7 +4,8 @@
 mod tests;
 
 use std::collections::BTreeSet;
-use std::fs;
+use std::ffi::OsStr;
+use std::io::ErrorKind;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,10 +20,18 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::format::FileFormat;
-use super::manifest::{self, Manifest};
+use super::manifest::{self, Manifest, STAGING};
 use super::session::{FilesSession, Location};
 use super::{io, tables};
 use crate::blocking::blocking;
+use crate::limits::TABLE_NAME_BYTES;
+use crate::rooted::{Dir, Kind};
+
+/// The destination's private directory under its root: catalogs, locks, manifests and files.
+const PRIVATE: &str = "_rdlt";
+
+/// The directory of the pipelines' directories, in the private directory.
+const PIPELINES: &str = "pipelines";
 
 /// Configuration of [`FilesDestination`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -41,6 +50,11 @@ pub struct FilesDestinationConfig {
 /// Creating a manifest version fails when another writer created it first, which fences older
 /// sessions: a commit is atomic and happens at most once. Readers read only the files the latest
 /// manifest lists. A merge table's commit rewrites the table as one file.
+///
+/// Everything lives in the directory `_rdlt` under the root, which belongs to the user the
+/// destination runs as and is that user's alone: directories are created with mode 0700 and
+/// files with 0600. Nothing is opened but by name beneath that directory, and no link is
+/// followed.
 #[derive(Debug)]
 pub struct FilesDestination {
     root: Arc<Path>,
@@ -69,17 +83,23 @@ impl DestinationConnector for FilesDestination {
     }
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<FilesSession>> {
-        let dir = manifest::pipeline_dir(&self.root, &context.pipeline);
-        let (opening, root, pipeline) = (
-            dir.clone(),
-            Arc::clone(&self.root),
-            context.pipeline.clone(),
-        );
-        let manifest = blocking(move || next_epoch(&opening, &root, &pipeline)).await?;
+        let (root, pipeline) = (Arc::clone(&self.root), context.pipeline.clone());
+        let (rdlt, dir, manifest) = blocking(move || {
+            let rdlt = private(&root)?;
+            tables::empty_trash(&rdlt)?;
+            let name = manifest::pipeline_dir(&pipeline);
+            let dir = rdlt
+                .walk_created([PIPELINES, name.as_str()])
+                .map_err(io::failed("creating", &rdlt.at(PIPELINES).join(&name)))?;
+            manifest::sweep(&dir)?;
+            let manifest = next_epoch(&dir, &rdlt, &pipeline)?;
+            Ok((rdlt, dir, manifest))
+        })
+        .await?;
         let location = Location {
-            root: Arc::clone(&self.root),
+            rdlt: Arc::new(rdlt),
             pipeline: context.pipeline.clone(),
-            dir,
+            dir: Arc::new(dir),
             format: self.format,
             epoch: manifest.epoch,
             load_id: context.load_id,
@@ -92,81 +112,128 @@ impl DestinationConnector for FilesDestination {
     }
 }
 
-/// Creates the pipeline's next manifest with the next epoch, retrying while other sessions
-/// create versions first.
+/// Opens the destination's private directory under `root`, creating both where missing; one
+/// another user made, or others may write, is refused.
+fn private(root: &Path) -> Result<Dir> {
+    let opened = Dir::ambient_created(root).map_err(io::failed("creating", root))?;
+    let path = opened.at(PRIVATE);
+    let rdlt = opened
+        .dir_created(PRIVATE)
+        .map_err(io::failed("creating", &path))?;
+    rdlt.private().map_err(io::failed("opening", &path))?;
+    Ok(rdlt)
+}
+
+/// Opens the private directory under `root` to read, if the destination ever wrote there.
+fn existing(root: &Path) -> Result<Option<Dir>> {
+    let missing = |error: &std::io::Error| error.kind() == ErrorKind::NotFound;
+    let opened = match Dir::ambient(root) {
+        Ok(opened) => opened,
+        Err(error) if missing(&error) => return Ok(None),
+        Err(error) => return Err(io::failed("opening", root)(error)),
+    };
+    let path = opened.at(PRIVATE);
+    let rdlt = match opened.dir(PRIVATE) {
+        Ok(rdlt) => rdlt,
+        Err(error) if missing(&error) => return Ok(None),
+        Err(error) => return Err(io::failed("opening", &path)(error)),
+    };
+    rdlt.private().map_err(io::failed("opening", &path))?;
+    Ok(Some(rdlt))
+}
+
+/// Creates the next manifest of the pipeline whose directory `dir` is, with the next epoch,
+/// trying again a bounded number of times while other sessions create versions first.
 ///
 /// The catalogs of tables the pipeline dropped are removed first, before this session can create
 /// any of them again.
-fn next_epoch(dir: &Path, root: &Path, pipeline: &PipelineId) -> Result<Manifest> {
-    loop {
+fn next_epoch(dir: &Dir, rdlt: &Dir, pipeline: &PipelineId) -> Result<Manifest> {
+    io::retried(&format!("opening pipeline {pipeline}"), || {
         let mut manifest = manifest::latest(dir)?.unwrap_or_default();
         for name in &manifest.dropped {
-            tables::release(root, name, pipeline)?;
+            tables::release(rdlt, name, pipeline)?;
         }
         manifest.dropped.clear();
-        manifest.version += 1;
-        manifest.epoch = manifest.epoch.next();
-        if manifest::put(dir, &manifest)? {
-            return Ok(manifest);
-        }
-    }
+        let (version, epoch) = (manifest.version.checked_add(1), manifest.epoch.next());
+        let Some(version) = version.filter(|_| epoch != manifest.epoch) else {
+            return Err(ConnectorError::data(format!(
+                "pipeline {pipeline} holds the last manifest version or epoch there is"
+            )));
+        };
+        (manifest.version, manifest.epoch) = (version, epoch);
+        Ok(manifest::put(dir, &manifest)?.then_some(manifest))
+    })
 }
 
-/// Removes the files sessions of the pipeline in `dir` older than `epoch` staged that the latest
-/// manifest does not list; listed paths are relative to `root`.
-pub(super) fn discard(root: &Path, dir: &Path, epoch: Epoch) -> Result<()> {
-    let listed: BTreeSet<PathBuf> = manifest::latest(dir)?
+/// Removes what sessions of the pipeline whose directory `dir` is, older than `epoch`, staged
+/// that the latest manifest does not list.
+pub(super) fn discard(dir: &Dir, epoch: Epoch) -> Result<()> {
+    let listed: BTreeSet<String> = manifest::latest(dir)?
         .unwrap_or_default()
         .files()
-        .map(PathBuf::from)
+        .map(|file| file.path.clone())
         .collect();
-    let staging = dir.join("staging");
-    let Ok(epochs) = fs::read_dir(&staging) else {
-        return Ok(());
+    let staging = match dir.dir(STAGING) {
+        Ok(staging) => staging,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(io::failed("opening", &dir.at(STAGING))(error)),
     };
-    for entry in epochs.flatten() {
-        let older = entry
-            .file_name()
+    let entries = staging
+        .entries()
+        .map_err(io::failed("listing", staging.path()))?;
+    for (name, kind) in entries {
+        let older = name
             .to_str()
             .and_then(|name| name.parse::<u64>().ok())
             .is_some_and(|staged| staged < epoch.0);
         if older {
-            remove_unlisted(&entry.path(), root, &listed)?;
+            let path = format!("{STAGING}/{}", name.to_string_lossy());
+            remove_unlisted(&staging, &name, kind, &path, &listed)?;
         }
     }
     Ok(())
 }
 
-/// Removes the files under `path` whose path relative to `root` is not `listed`, and the
-/// directories left empty; returns whether `path` is gone.
-fn remove_unlisted(path: &Path, root: &Path, listed: &BTreeSet<PathBuf>) -> Result<bool> {
-    if path.is_dir() {
-        let entries = fs::read_dir(path).map_err(io::failed("listing", path))?;
-        let mut empty = true;
-        for entry in entries {
-            let entry = entry.map_err(io::failed("listing", path))?;
-            empty &= remove_unlisted(&entry.path(), root, listed)?;
+/// Removes the entry `name` of `parent`, at `path` under the pipeline's directory, unless it is
+/// a `listed` file or a directory holding one; returns whether it is gone.
+///
+/// A link is removed itself: only directories are entered, each opened by name in its parent.
+fn remove_unlisted(
+    parent: &Dir,
+    name: &OsStr,
+    kind: Kind,
+    path: &str,
+    listed: &BTreeSet<String>,
+) -> Result<bool> {
+    let removing = |error| io::failed("removing", &parent.at(name))(error);
+    if kind != Kind::Dir {
+        if kind == Kind::File && listed.contains(path) {
+            return Ok(false);
         }
-        if empty {
-            fs::remove_dir(path).map_err(io::failed("removing", path))?;
-        }
-        return Ok(empty);
+        parent.remove_file(name).map_err(removing)?;
+        return Ok(true);
     }
-    let relative = path.strip_prefix(root).unwrap_or(path);
-    if listed.contains(relative) {
-        return Ok(false);
+    let dir = parent
+        .dir(name)
+        .map_err(io::failed("listing", &parent.at(name)))?;
+    let mut empty = true;
+    for (child, kind) in dir.entries().map_err(io::failed("listing", dir.path()))? {
+        let below = format!("{path}/{}", child.to_string_lossy());
+        empty &= remove_unlisted(&dir, &child, kind, &below, listed)?;
     }
-    fs::remove_file(path).map_err(io::failed("removing", path))?;
-    Ok(true)
+    if empty {
+        parent.remove_dir(name).map_err(removing)?;
+    }
+    Ok(empty)
 }
 
-/// Checks that the destination can write under `root`, creating its catalog directory durably.
+/// Checks that the destination can write under `root`, creating its private directory durably.
 fn checked(root: &Path) -> Result<()> {
-    let dir = root.join("_rdlt");
-    io::create_dirs(&dir)?;
-    let probe = dir.join(".check");
-    fs::write(&probe, b"").map_err(io::failed("writing", &probe))?;
-    fs::remove_file(&probe).map_err(io::failed("removing", &probe))
+    let rdlt = private(root)?;
+    // The probe goes as it leaves scope, whichever check made it.
+    rdlt.temporary()
+        .map(drop)
+        .map_err(io::failed("writing in", rdlt.path()))
 }
 
 /// What the files destination stores: every type its format keeps, any schema change, and
@@ -197,7 +264,7 @@ fn capabilities(format: FileFormat) -> Capabilities {
     capabilities.schema_changes = SchemaChanges::all();
     capabilities.identifiers = IdentifierRules {
         case: IdentifierCase::Lower,
-        max_len: NonZeroU16::new(128).expect("128 is non-zero"),
+        max_len: NonZeroU16::new(TABLE_NAME_BYTES).expect("the limit is not zero"),
         chars: IdentifierChars::AsciiWord,
         reserved: BTreeSet::new(),
         reserved_table_prefixes: BTreeSet::new(),
@@ -215,31 +282,34 @@ impl ReadBack for FilesDestination {
 
 /// Every published batch of `table` under `root`, over every pipeline's latest manifest.
 pub fn published(root: impl Into<PathBuf>, table: &str) -> Result<Vec<RecordBatch>> {
-    let root = root.into();
-    let schema = Arc::new(
-        tables::read(&root, table)?
-            .map_or_else(arrow_schema::Schema::empty, |schema| schema.to_arrow()),
-    );
-    let pipelines = root.join("_rdlt").join("pipelines");
-    let Ok(entries) = fs::read_dir(&pipelines) else {
+    tables::named(table)?;
+    let Some(rdlt) = existing(&root.into())? else {
         return Ok(Vec::new());
     };
+    let schema = Arc::new(
+        tables::read(&rdlt, table)?
+            .map_or_else(arrow_schema::Schema::empty, |schema| schema.to_arrow()),
+    );
+    let pipelines = match rdlt.dir(PIPELINES) {
+        Ok(pipelines) => pipelines,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(io::failed("opening", &rdlt.at(PIPELINES))(error)),
+    };
+    let listing = io::failed("listing", pipelines.path());
     let mut batches = Vec::new();
-    for entry in entries.flatten() {
-        let Some(manifest) = manifest::latest(&entry.path())? else {
+    for (name, kind) in pipelines.entries().map_err(&listing)? {
+        if kind != Kind::Dir {
+            continue;
+        }
+        let dir = pipelines.dir(&name).map_err(&listing)?;
+        let Some(manifest) = manifest::latest(&dir)? else {
             continue;
         };
         let Some(files) = manifest.tables.get(table) else {
             continue;
         };
         for file in &files.files {
-            let path = root.join(file);
-            let format = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .and_then(FileFormat::of)
-                .unwrap_or_default();
-            batches.extend(format.read(&path, &schema)?);
+            batches.extend(manifest::read(&dir, &file.path, &schema)?);
         }
     }
     Ok(batches)

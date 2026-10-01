@@ -8,6 +8,7 @@ mod manifest;
 mod session;
 mod source;
 mod tables;
+mod versions;
 
 pub use destination::{FilesDestination, FilesDestinationConfig, published};
 pub use format::FileFormat;

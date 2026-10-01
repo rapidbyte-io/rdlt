@@ -2066,6 +2066,7 @@ name = "rdlt-connector-reference"
 version = "0.0.0"
 dependencies = [
  "arrow-array",
+ "arrow-buffer",
  "arrow-cast",
  "arrow-ipc",
  "arrow-json",
@@ -2073,12 +2074,15 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "base64 0.22.1",
+ "bytes",
+ "flatbuffers",
  "getrandom 0.4.3",
  "parking_lot",
  "proptest",
  "rdlt-connector",
  "rdlt-host",
  "rdlt-testkit",
+ "rdlt-wire",
  "rusqlite",
  "rustix",
  "schemars",

@@ -1,21 +1,24 @@
 //! A source that reads JSON lines and Arrow IPC files under a root directory.
 
-use std::fs;
-use std::io::{BufRead, BufReader, Seek};
-use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::BufReader;
+use std::num::{NonZeroU64, NonZeroUsize};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
-use arrow_schema::ArrowError;
+use bytes::Bytes;
+use rdlt_connector::limits::MAX_JSON_PUSH_BYTES;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Partitioning, StreamName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::format::FileFormat;
+use super::format::lines::{self, Lines};
+use super::format::{FileFormat, Reader};
 use super::io;
 use crate::blocking::blocking;
+use crate::limits::{FILE_BYTES, LINE_BYTES};
+use crate::rooted::{Dir, Kind, Limit};
 
 /// Configuration of [`FilesSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -23,32 +26,66 @@ use crate::blocking::blocking;
 pub struct FilesSourceConfig {
     /// The directory holding the streams.
     pub root: PathBuf,
-    /// Rows per pushed batch of a JSON lines file; a checkpoint follows each batch.
+    /// Records per push of a JSON lines file; a checkpoint follows each push.
     #[serde(default = "default_batch_rows")]
     pub batch_rows: NonZeroUsize,
+    /// Bytes: the longest line of a JSON lines file the source reads, its line ending apart; a
+    /// longer line fails the read.
+    ///
+    /// 32 MiB where unset, and at most two bytes less than a JSON push may hold.
+    #[serde(default = "default_line_bytes")]
+    pub max_line_bytes: NonZeroU64,
+    /// Bytes: the largest file the source reads, 16 GiB where unset; a larger file fails the
+    /// read.
+    #[serde(default = "default_file_bytes")]
+    pub max_file_bytes: NonZeroU64,
 }
 
 fn default_batch_rows() -> NonZeroUsize {
     NonZeroUsize::new(1024).expect("1024 is non-zero")
 }
 
+fn default_line_bytes() -> NonZeroU64 {
+    NonZeroU64::new(LINE_BYTES).expect("the limit is not zero")
+}
+
+fn default_file_bytes() -> NonZeroU64 {
+    NonZeroU64::new(FILE_BYTES).expect("the limit is not zero")
+}
+
+/// Bytes: what a line's ending adds to it at most, a carriage return and a line feed.
+const LINE_ENDING: u64 = 2;
+
 /// Reads the files under a root: `<stream>.jsonl` or `<stream>.arrow` is a stream of one
 /// partition, and a directory `<stream>/` is a stream whose files are its partitions.
 ///
-/// Names starting with `.` or `_` are skipped. A JSON lines file's schema is inferred from the
-/// whole file; an Arrow file's batches are pushed as written. Every batch is followed by a
-/// checkpoint, so a read resumes after the last committed batch.
+/// Names starting with `.` or `_`, names that are no stream or partition name, and whatever is
+/// no regular file or directory (a link, a pipe, a device) are skipped. A JSON lines file's
+/// records are pushed as JSON, as they are written, for the engine to type; an Arrow file's
+/// batches are pushed as written. Every push is followed by a checkpoint, so a read resumes
+/// after the last committed push.
 #[derive(Debug)]
 pub struct FilesSource {
+    root: Arc<Dir>,
     streams: Vec<FileStream>,
-    batch_rows: NonZeroUsize,
+    limits: ReadLimits,
 }
 
-/// One stream: its name and its files, by partition.
+/// The limits a read keeps.
+#[derive(Clone, Copy, Debug)]
+struct ReadLimits {
+    batch_rows: usize,
+    line_bytes: u64,
+    file_bytes: u64,
+}
+
+/// One stream: its name, the directory its files are in, and its files by partition.
 #[derive(Clone, Debug)]
 struct FileStream {
     name: StreamName,
-    files: Arc<Vec<(PartitionId, PathBuf, FileFormat)>>,
+    /// The stream's directory under the root, for a stream that is one.
+    dir: Option<String>,
+    files: Arc<Vec<(PartitionId, String, FileFormat)>>,
 }
 
 #[source(id = "io.rapidbyte.files")]
@@ -56,11 +93,31 @@ impl SourceConnector for FilesSource {
     type Config = FilesSourceConfig;
 
     async fn connect(config: FilesSourceConfig, _context: &ConnectContext) -> Result<Self> {
-        let root = config.root;
-        let streams = blocking(move || discover(&root)).await?;
+        let limits = ReadLimits {
+            batch_rows: config.batch_rows.get(),
+            line_bytes: config.max_line_bytes.get(),
+            file_bytes: config.max_file_bytes.get(),
+        };
+        if limits.line_bytes > MAX_JSON_PUSH_BYTES - LINE_ENDING {
+            return Err(ConnectorError::config(format!(
+                "max_line_bytes is {}; one JSON push holds lines of at most {} bytes",
+                limits.line_bytes,
+                MAX_JSON_PUSH_BYTES - LINE_ENDING
+            )));
+        }
+        let (root, streams) = blocking(move || {
+            let root = Dir::ambient(&config.root).map_err(|error| {
+                let error = io::failed("opening", &config.root)(error);
+                ConnectorError::config(error.to_string())
+            })?;
+            let streams = discover(&root)?;
+            Ok((root, streams))
+        })
+        .await?;
         Ok(Self {
+            root: Arc::new(root),
             streams,
-            batch_rows: config.batch_rows,
+            limits,
         })
     }
 
@@ -76,61 +133,68 @@ impl SourceConnector for FilesSource {
 }
 
 /// The streams under `root`, in name order.
-fn discover(root: &Path) -> Result<Vec<FileStream>> {
+fn discover(root: &Dir) -> Result<Vec<FileStream>> {
     let mut streams = Vec::new();
-    for (name, path) in entries(root)? {
-        let (stream, files) = if path.is_dir() {
-            let files: Vec<_> = entries(&path)?
-                .into_iter()
-                .filter_map(|(file, path)| {
-                    let (_, format) = split(&file)?;
-                    Some((file, path, format))
-                })
-                .collect();
-            (name, files)
-        } else {
-            let Some((stem, format)) = split(&name) else {
-                continue;
-            };
-            (stem.to_owned(), vec![(name, path, format)])
+    for (entry, kind) in entries(root)? {
+        let (stream, dir, files) = match kind {
+            Kind::Dir => {
+                let listed = root
+                    .dir(&entry)
+                    .map_err(io::failed("listing", &root.at(&entry)))?;
+                let files = entries(&listed)?
+                    .into_iter()
+                    .filter(|(_, kind)| *kind == Kind::File)
+                    .filter_map(|(file, _)| partition(file))
+                    .collect();
+                (entry.clone(), Some(entry), files)
+            }
+            Kind::File => {
+                let Some((stem, _)) = split(&entry) else {
+                    continue;
+                };
+                (
+                    stem.to_owned(),
+                    None,
+                    partition(entry).into_iter().collect(),
+                )
+            }
+            // A link, a pipe, a device or a socket is no stream: none is opened.
+            Kind::Other => continue,
         };
-        if files.is_empty() {
+        let files: Vec<_> = files;
+        // A name that is no stream's is skipped, as a hidden one is.
+        let Ok(name) = StreamName::new(&stream) else {
             continue;
+        };
+        if !files.is_empty() {
+            streams.push(FileStream {
+                name,
+                dir,
+                files: Arc::new(files),
+            });
         }
-        let name = StreamName::new(&stream).config(format!("stream name {stream:?}"))?;
-        let files = files
-            .into_iter()
-            .map(|(file, path, format)| {
-                let partition = PartitionId::parse(&file).config(format!("file name {file:?}"))?;
-                Ok((partition, path, format))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        streams.push(FileStream {
-            name,
-            files: Arc::new(files),
-        });
     }
     Ok(streams)
 }
 
-/// The entries of `dir` that are not hidden, by name, in name order.
-fn entries(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
-    let listed = fs::read_dir(dir).map_err(|error| {
-        let error = io::failed("listing", dir)(error);
+/// The file `name` as a partition, if its extension is a format's and its name a partition's.
+fn partition(name: String) -> Option<(PartitionId, String, FileFormat)> {
+    let (_, format) = split(&name)?;
+    let id = PartitionId::parse(&name).ok()?;
+    Some((id, name, format))
+}
+
+/// The entries of `dir` that are not hidden and whose names are text, in name order.
+fn entries(dir: &Dir) -> Result<Vec<(String, Kind)>> {
+    let listed = dir.entries().map_err(|error| {
+        let error = io::failed("listing", dir.path())(error);
         ConnectorError::config(error.to_string())
     })?;
-    let mut entries = Vec::new();
-    for entry in listed {
-        let entry = entry.map_err(io::failed("listing", dir))?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        if !name.starts_with(['.', '_']) {
-            entries.push((name, entry.path()));
-        }
-    }
-    entries.sort();
-    Ok(entries)
+    Ok(listed
+        .into_iter()
+        .filter_map(|(name, kind)| Some((name.into_string().ok()?, kind)))
+        .filter(|(name, _)| !name.starts_with(['.', '_']))
+        .collect())
 }
 
 /// The stem and format of the file `name`, if its extension is a format's.
@@ -173,7 +237,7 @@ impl ReadStream<FilesSource> for FileStream {
         cursor: Position,
         out: &mut Emitter<Position>,
     ) -> Result<()> {
-        let Some((_, path, format)) = self.files.iter().find(|(id, ..)| id == partition.id())
+        let Some((_, file, format)) = self.files.iter().find(|(id, ..)| id == partition.id())
         else {
             return Err(ConnectorError::data(format!(
                 "stream {} has no file {}",
@@ -181,97 +245,160 @@ impl ReadStream<FilesSource> for FileStream {
                 partition.id()
             )));
         };
-        let (path, format, batch_rows) = (path.clone(), *format, source.batch_rows.get());
-        let mut reader =
-            blocking(move || Batches::open(&path, format, cursor.read, batch_rows)).await?;
+        let (root, dir) = (Arc::clone(&source.root), self.dir.clone());
+        let (file, format, limits) = (file.clone(), *format, source.limits);
+        let mut pushes = blocking(move || {
+            Pushes::open(&root, dir.as_deref(), &file, format, cursor.read, limits)
+        })
+        .await?;
         let mut read = cursor.read;
         loop {
-            let (next, batch) = blocking(move || {
-                let mut reader = reader;
-                let batch = reader.next()?;
-                Ok((reader, batch))
+            let (next, push) = blocking(move || {
+                let mut pushes = pushes;
+                let push = pushes.next()?;
+                Ok((pushes, push))
             })
             .await?;
-            reader = next;
-            let Some(batch) = batch else {
-                return Ok(());
-            };
-            read += match format {
-                FileFormat::Jsonl => batch.num_rows() as u64,
-                FileFormat::Arrow => 1,
-            };
-            out.batch(batch).await?;
+            pushes = next;
+            match push {
+                None => return Ok(()),
+                Some(Pushed::Json(json, records)) => {
+                    read += records;
+                    out.json(json).await?;
+                }
+                Some(Pushed::Arrow(batch)) => {
+                    read += 1;
+                    out.batch(batch).await?;
+                }
+            }
             out.checkpoint(&Position { read }).await?;
         }
     }
 }
 
-/// The batches of one file, from a position on.
-enum Batches {
-    Jsonl(arrow_json::Reader<BufReader<fs::File>>),
-    Arrow(arrow_ipc::reader::FileReader<BufReader<fs::File>>),
-    /// A file read to its end.
-    Read,
+/// One push of a file.
+enum Pushed {
+    /// Lines of JSON, and how many records they hold.
+    Json(Bytes, u64),
+    Arrow(arrow_array::RecordBatch),
 }
 
-impl Batches {
-    /// The batches of the file at `path` after the first `read` records or batches.
-    fn open(path: &Path, format: FileFormat, read: u64, batch_rows: usize) -> Result<Self> {
-        let failed = |error: ArrowError| {
-            ConnectorError::data(format!("reading {}: {error}", path.display()))
-        };
-        let file = fs::File::open(path).map_err(io::failed("opening", path))?;
-        let mut file = BufReader::new(file);
-        match format {
-            FileFormat::Jsonl => {
-                let (schema, _) =
-                    arrow_json::reader::infer_json_schema_from_seekable(&mut file, None)
-                        .map_err(failed)?;
-                file.rewind().map_err(io::failed("reading", path))?;
-                skip_records(&mut file, read).map_err(io::failed("reading", path))?;
-                let reader = arrow_json::ReaderBuilder::new(Arc::new(schema))
-                    .with_batch_size(batch_rows)
-                    .build(file)
-                    .map_err(failed)?;
-                Ok(Self::Jsonl(reader))
+/// The pushes of one file, from a position on.
+enum Pushes {
+    Jsonl(JsonLines),
+    Arrow(Reader),
+}
+
+impl Pushes {
+    /// The pushes of the regular file `file`, in `dir` under `root` or in `root` itself, after
+    /// its first `read` records or batches.
+    fn open(
+        root: &Dir,
+        dir: Option<&str>,
+        file: &str,
+        format: FileFormat,
+        read: u64,
+        limits: ReadLimits,
+    ) -> Result<Self> {
+        let listed;
+        let dir = match dir {
+            Some(name) => {
+                let opened = root.dir(name);
+                listed = opened.map_err(io::failed("opening", &root.at(name)))?;
+                &listed
             }
+            None => root,
+        };
+        let path = dir.at(file);
+        let opened = dir.file(file).map_err(io::failed("opening", &path))?;
+        let limit = Limit {
+            name: "file bytes",
+            bytes: limits.file_bytes,
+        };
+        let measured = opened
+            .metadata()
+            .and_then(|size| Ok(limit.admit(size.len())?));
+        measured.map_err(io::failed("reading", &path))?;
+        match format {
+            FileFormat::Jsonl => JsonLines::open(opened, path, read, limits).map(Self::Jsonl),
             FileFormat::Arrow => {
-                let mut reader =
-                    arrow_ipc::reader::FileReader::try_new(file, None).map_err(failed)?;
-                let index = usize::try_from(read).unwrap_or(usize::MAX);
-                if index >= reader.num_batches() {
-                    return Ok(Self::Read);
-                }
-                reader.set_index(index).map_err(failed)?;
+                let empty = Arc::new(arrow_schema::Schema::empty());
+                let mut reader = Reader::over(format, opened, path, &empty)?;
+                reader.skip(read);
                 Ok(Self::Arrow(reader))
             }
         }
     }
 
-    fn next(&mut self) -> Result<Option<RecordBatch>> {
-        let batch = match self {
-            Self::Jsonl(reader) => reader.next(),
-            Self::Arrow(reader) => reader.next(),
-            Self::Read => None,
-        };
-        batch
-            .transpose()
-            .map_err(|error| ConnectorError::data(format!("reading a file: {error}")))
+    fn next(&mut self) -> Result<Option<Pushed>> {
+        match self {
+            Self::Jsonl(lines) => lines.next(),
+            Self::Arrow(reader) => Ok(reader.next()?.map(Pushed::Arrow)),
+        }
     }
 }
 
-/// Moves `file` past its first `records` lines that hold a record; blank lines hold none.
-fn skip_records(file: &mut impl BufRead, records: u64) -> std::io::Result<()> {
-    let mut skipped = 0;
-    let mut line = String::new();
-    while skipped < records {
-        line.clear();
-        if file.read_line(&mut line)? == 0 {
-            break;
-        }
-        if !line.trim().is_empty() {
+/// The records of a JSON lines file, as pushes of bounded size.
+struct JsonLines {
+    lines: Lines<BufReader<File>>,
+    path: PathBuf,
+    /// The line last read, which the next push starts with where `carried`.
+    line: Vec<u8>,
+    carried: bool,
+    batch_rows: usize,
+}
+
+impl JsonLines {
+    /// The records of `file` after its first `read`; blank lines hold none.
+    fn open(file: File, path: PathBuf, read: u64, limits: ReadLimits) -> Result<Self> {
+        let mut opened = Self {
+            lines: Lines::new(BufReader::new(file), limits.line_bytes),
+            path,
+            line: Vec::new(),
+            carried: false,
+            batch_rows: limits.batch_rows,
+        };
+        let mut skipped = 0;
+        while skipped < read && opened.record()? {
             skipped += 1;
         }
+        Ok(opened)
     }
-    Ok(())
+
+    /// Reads the next line that holds a record into `line`; `false` at the end.
+    fn record(&mut self) -> Result<bool> {
+        loop {
+            let read = self.lines.next(&mut self.line);
+            if !read.map_err(io::failed("reading", &self.path))? {
+                return Ok(false);
+            }
+            if lines::holds_a_record(&self.line) {
+                return Ok(true);
+            }
+        }
+    }
+
+    /// The next records, as they are written: at most the rows of one batch, and the bytes one
+    /// JSON push may hold.
+    fn next(&mut self) -> Result<Option<Pushed>> {
+        let most = usize::try_from(MAX_JSON_PUSH_BYTES).unwrap_or(usize::MAX);
+        let (mut push, mut records) = (Vec::new(), 0_u64);
+        while usize::try_from(records).unwrap_or(usize::MAX) < self.batch_rows {
+            if !std::mem::take(&mut self.carried) && !self.record()? {
+                break;
+            }
+            let ended = self.line.ends_with(b"\n");
+            if push.len() + self.line.len() + usize::from(!ended) > most {
+                // The line starts the next push.
+                self.carried = true;
+                break;
+            }
+            push.extend_from_slice(&self.line);
+            if !ended {
+                push.push(b'\n');
+            }
+            records += 1;
+        }
+        Ok((records > 0).then(|| Pushed::Json(Bytes::from(push), records)))
+    }
 }

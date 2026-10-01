@@ -8,8 +8,9 @@
 //! - [`FilesSource`] reads JSON lines and Arrow IPC files.
 //! - [`FilesDestination`] writes JSON lines or Arrow IPC files and publishes them with manifests.
 //!
-//! They serve as examples for connector authors and as the engine's test connectors. The sources'
-//! position files need a Unix: they are reached by name beneath an open directory.
+//! They serve as examples for connector authors and as the engine's test connectors. The files
+//! connectors and the sources' position files need a Unix: they reach every file by name beneath
+//! an open directory.
 //!
 //! ```
 //! use rdlt_connector::source_factory;
