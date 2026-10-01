@@ -96,10 +96,12 @@ loads, then run again; every row lands once and no connector outlives its run (`
 
 ## Development
 
-The toolchain is pinned in `rust-toolchain.toml`; every other tool is pinned in `mise.toml`.
+The toolchain is pinned in `rust-toolchain.toml`. Every other tool is pinned in `mise.toml` and
+locked in `mise.lock`, which holds each tool's download and its checksum; CONTRIBUTING.md says how
+to change one.
 
 ```sh
-mise install        # install the pinned tools
+mise install --locked # install the tools as `mise.lock` holds them
 just --list         # see every recipe
 just ci             # what the pull-request gate runs: lint, test, coverage, simulation
 just ready          # before pushing: `just ci` plus mutation testing of your change

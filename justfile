@@ -25,6 +25,7 @@ lint:
     cargo xtask lint
     cargo xtask deps
     cargo xtask codegen --check
+    cargo xtask tools
     cargo machete
     cargo xtask deny
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
