@@ -33,7 +33,8 @@ pub(crate) fn runs(root: &Path) -> Vec<Vec<OsString>> {
 #[expect(clippy::print_stdout, reason = "failures are the command's output")]
 pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
     let mut failed = false;
-    for lockfile in workspaces::unlisted(&workspaces::lockfiles(root)?) {
+    for lockfile in workspaces::unlisted(&workspaces::manifests(root)?, &workspaces::members(root)?)
+    {
         println!(
             "error: {} belongs to a workspace xtask's MANIFESTS does not list",
             lockfile.display()

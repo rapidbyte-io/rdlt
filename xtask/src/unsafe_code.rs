@@ -12,14 +12,13 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context as _;
-use cargo_metadata::MetadataCommand;
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 use syn::ext::IdentExt as _;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 
 use crate::rules::{Finding, Rule};
-use crate::workspaces::{self, MANIFESTS};
+use crate::workspaces;
 
 /// The crate that holds the workspace's `unsafe` code, relative to the repository root.
 pub(crate) const AUDITED_CRATE: &str = "crates/rdlt-adopt";
@@ -33,25 +32,30 @@ const INCLUDES: &[&str] = &["include", "include_str", "include_bytes"];
 /// Every finding about `unsafe` code in the repository at `root`.
 pub(crate) fn check(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> {
     let mut all = check_tree(root, &target_roots(root)?)?;
-    // A workspace that is not listed has roots this check never read.
-    for lockfile in workspaces::unlisted(&workspaces::lockfiles(root)?) {
-        let message = "a workspace xtask's MANIFESTS does not list";
-        all.push((lockfile, finding(1, Rule::UnlistedWorkspace, message)));
-    }
+    let members = workspaces::members(root)?;
+    all.extend(unchecked(workspaces::unlisted(
+        &workspaces::manifests(root)?,
+        &members,
+    )));
     Ok(all)
+}
+
+/// A finding for each manifest in `unlisted`: a workspace that is not listed has roots this
+/// check never read.
+fn unchecked(unlisted: Vec<PathBuf>) -> Vec<(PathBuf, Finding)> {
+    let message = "a manifest in no workspace xtask's MANIFESTS lists";
+    unlisted
+        .into_iter()
+        .map(|manifest| (manifest, finding(1, Rule::UnlistedWorkspace, message)))
+        .collect()
 }
 
 /// The root file of every target cargo compiles in the repository's workspaces, relative to
 /// `root`.
 pub(crate) fn target_roots(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut roots = BTreeSet::new();
-    for manifest in MANIFESTS {
-        let metadata = MetadataCommand::new()
-            .manifest_path(root.join(manifest))
-            .no_deps()
-            .exec()
-            .with_context(|| format!("running cargo metadata on {manifest}"))?;
-        for target in metadata
+    for workspace in workspaces::metadata(root)? {
+        for target in workspace
             .packages
             .iter()
             .flat_map(|package| &package.targets)
