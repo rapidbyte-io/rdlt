@@ -20,9 +20,11 @@ use crate::factory::{RoleFactory, Serve};
 /// host manages it, so it ignores `SIGINT`: a terminal's Ctrl-C reaches the host, which stops its
 /// connectors itself.
 ///
-/// Run on its own, with `--listen <address> --tls-cert <path> --tls-key <path> --tls-client-ca <path>`, it
-/// serves every host that connects over mutual TLS, and says where on standard output
-/// (`listening on <address>`). The first `SIGTERM` or `SIGINT` stops it gracefully; a second, at once.
+/// Run on its own, with `--listen <address> --tls-cert <path> --tls-key <path> --tls-client-ca
+/// <path>` and a `--tls-allow-host <name>` for each host it accepts, it serves those hosts over
+/// mutual TLS, and says where on standard output (`listening on <address>`). A host is named by a
+/// DNS name or URI in its certificate; `--tls-client-crl <path>` refuses the certificates its
+/// revocation lists name. The first `SIGTERM` or `SIGINT` stops it gracefully; a second, at once.
 pub fn serve<C: Serve>() -> ExitCode {
     Served::from(C::factory()).serve()
 }

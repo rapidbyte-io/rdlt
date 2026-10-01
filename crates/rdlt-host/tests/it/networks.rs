@@ -4,15 +4,25 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rdlt_connector::serve::{Listener, Served, serve_listener};
+use rdlt_connector::serve::{Listener, Listening, Served, serve_listener};
 use rdlt_connector::{BoxFuture, ConnectorId, source_factory};
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::{ConnectorRef, Kills, Network, Provider as _, Remote, Stream};
-use rdlt_testkit::tls::Pki;
+use rdlt_testkit::tls::{Files, Pki};
 use tokio::io::{AsyncWriteExt as _, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::network::identity;
+use crate::network::{accepted, identity};
+
+/// How a connector with `server`'s certificate listens for the host of `pki` named `host`.
+fn listening(pki: &Pki, server: &Files) -> Listening {
+    let tls = rdlt_wire::tls::server_config(&identity(server), &accepted(pki))
+        .expect("the server's configuration builds");
+    Listening {
+        tls: Arc::new(tls),
+        hosts: accepted(pki).hosts,
+    }
+}
 
 /// A network in this process: each connection is an in-memory pipe.
 #[derive(Debug)]
@@ -52,15 +62,14 @@ impl Listener for Piped {
 async fn a_connector_served_on_another_network_is_placed_through_it_and_stops_cleanly() {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["connector"]);
-    let tls = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
-        .expect("the server's configuration builds");
+    let tls = listening(&pki, &server);
     let (connections, accepted) = mpsc::unbounded_channel();
     let (stop, stopped) = oneshot::channel::<()>();
     let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
     let listening = tokio::spawn(serve_listener(
         memory,
         Piped(accepted),
-        Arc::new(tls),
+        tls,
         rdlt_wire::Limits::default(),
         async {
             stopped.await.ok();
@@ -84,15 +93,14 @@ async fn a_connector_served_on_another_network_is_placed_through_it_and_stops_cl
 async fn a_host_that_never_completes_http2_preface_after_its_handshake_is_dropped() {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["connector"]);
-    let tls = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
-        .expect("the server's configuration builds");
+    let tls = listening(&pki, &server);
     let (connections, accepted) = mpsc::unbounded_channel();
     let (stop, stopped) = oneshot::channel::<()>();
     let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
     let listening = tokio::spawn(serve_listener(
         memory,
         Piped(accepted),
-        Arc::new(tls),
+        tls,
         rdlt_wire::Limits::default(),
         async {
             stopped.await.ok();
@@ -141,15 +149,14 @@ impl Listener for Failing {
 async fn a_listener_that_keeps_failing_is_tried_again_after_a_pause() {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["connector"]);
-    let tls = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
-        .expect("the server's configuration builds");
+    let tls = listening(&pki, &server);
     let accepts = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
     let stop = tokio::time::sleep(std::time::Duration::from_secs(1));
     serve_listener(
         memory,
         Failing(Arc::clone(&accepts)),
-        Arc::new(tls),
+        tls,
         rdlt_wire::Limits::default(),
         stop,
     )
@@ -222,14 +229,13 @@ impl Network for Counted {
 async fn a_remote_connection_a_kill_cuts_is_dialed_again() {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["connector"]);
-    let tls = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
-        .expect("the server's configuration builds");
+    let tls = listening(&pki, &server);
     let (connections, accepted) = mpsc::unbounded_channel();
     let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
     tokio::spawn(serve_listener(
         memory,
         Piped(accepted),
-        Arc::new(tls),
+        tls,
         rdlt_wire::Limits::default(),
         std::future::pending(),
     ));
