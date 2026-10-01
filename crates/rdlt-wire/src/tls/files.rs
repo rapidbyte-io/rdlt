@@ -15,8 +15,9 @@ use super::TlsError;
 /// The permission bits of a file's group and of others.
 const NOT_THE_OWNERS: u32 = 0o077;
 
-/// Opens the file at `path` to read, without waiting for it: a pipe would otherwise hold the
-/// open until something wrote to it. Answers what the handle is of, beside it.
+/// Opens the file at `path` to read, without waiting for it, and answers what the handle is of.
+///
+/// A pipe would otherwise hold the open until something wrote to it.
 fn open(path: &Path) -> std::io::Result<(File, Metadata)> {
     let file = OpenOptions::new()
         .read(true)

@@ -169,8 +169,13 @@ fn a_listening_connector_must_name_its_hosts_and_count_its_sessions() {
                 TLS.as_slice(),
             ]
             .concat(),
-            "the hosts named to it",
+            "names no host",
         ),
+        (
+            listening(&["--tls-allow-host", "*.example.com"]),
+            "names no host",
+        ),
+        (listening(&["--tls-allow-host", "host."]), "names no host"),
         (
             listening(&["--tls-client-crl", "a", "--tls-client-crl", "b"]),
             "given twice",
