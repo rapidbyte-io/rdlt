@@ -61,20 +61,33 @@ fn a_connection_is_opened_hardened() {
         pragma(&connection, "journal_size_limit"),
         Value::Integer(journal)
     );
-    run(&connection, &statement("CREATE TABLE t (a INTEGER)")).expect("a table is created");
-    // A double-quoted name that is no column is an error, never a text, in rows and in schemas.
+}
+
+#[test]
+fn each_protection_refuses_what_a_plain_connection_does() {
+    // A double-quoted name that is no column is an error, never a text, in rows and in schemas;
+    // no database attaches; and the schema is not written as rows, asked to be or not.
     let refused = [
         "SELECT \"nope\" FROM t",
         "INSERT INTO t VALUES (\"nope\")",
         "CREATE INDEX i ON t (\"nope\")",
         "ATTACH DATABASE ':memory:' AS other",
-        "SELECT load_extension('nowhere')",
-        "UPDATE sqlite_schema SET sql = 'x'",
-        "DELETE FROM sqlite_schema",
+        "PRAGMA writable_schema = ON; UPDATE sqlite_schema SET sql = sql WHERE name = 't'",
+        "PRAGMA writable_schema = ON; DELETE FROM sqlite_schema WHERE name = 't'",
     ];
     for sql in refused {
-        let outcome = connection.execute_batch(sql);
-        assert!(outcome.is_err(), "{sql}");
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("hard.db");
+        let connection = connect(&path).expect("the database opens");
+        run(&connection, &statement("CREATE TABLE t (a INTEGER)")).expect("a table is created");
+        assert!(connection.execute_batch(sql).is_err(), "{sql}");
+        drop(connection);
+        // The same statement on a connection opened as SQLite's defaults leave it runs: what
+        // refuses it above is what the connector sets.
+        let plain = Connection::open(&path).expect("the database opens");
+        plain
+            .execute_batch(sql)
+            .unwrap_or_else(|error| panic!("{sql}: {error}"));
     }
 }
 
