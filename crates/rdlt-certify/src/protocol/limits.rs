@@ -4,6 +4,9 @@
 //! A host never sends beyond its own limits, so a connector's limit beyond the host's is never
 //! met; such a limit is not exceeded, since exceeding it would only cost this process the memory.
 
+#[cfg(test)]
+mod tests;
+
 use rdlt_connector::Role;
 use rdlt_connector::wire::v1;
 use rdlt_wire::limits::LIMIT_EXCEEDED;

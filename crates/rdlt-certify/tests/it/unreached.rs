@@ -100,3 +100,19 @@ fn every_clause_is_registered_once_under_its_family() {
         assert!(markdown().contains(&format!("| `{}` |", clause.id)));
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_connector_whose_stream_never_opens_fails_every_clause_instead_of_holding_them() {
+    let target = Target::connected(|| Box::pin(std::future::pending()));
+    let week = std::time::Duration::from_hours(7 * 24);
+    let report = tokio::time::timeout(week, certify_source(&target, serde_json::json!({})))
+        .await
+        .expect("a stream that never opens holds no certification");
+    assert!(
+        report
+            .results
+            .iter()
+            .all(|result| matches!(result.outcome, Outcome::Failed(_))),
+        "{report}"
+    );
+}
