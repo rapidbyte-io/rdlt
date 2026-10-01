@@ -17,7 +17,7 @@ use anyhow::Context as _;
 const PROTO_DIR: &str = "crates/rdlt-wire/proto";
 
 /// The generated file, relative to the repository root.
-const GENERATED: &str = "crates/rdlt-wire/src/generated/rdlt.connector.v1.rs";
+pub(crate) const GENERATED: &str = "crates/rdlt-wire/src/generated/rdlt.connector.v1.rs";
 
 /// Generates the code, writing it, or with `check` comparing it to what is committed.
 #[expect(clippy::print_stdout, reason = "the verdict is the command's output")]
