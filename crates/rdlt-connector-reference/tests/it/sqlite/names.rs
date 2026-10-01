@@ -37,3 +37,23 @@ async fn a_stream_named_like_a_built_in_virtual_table_loads_into_its_own_table()
         (ConnectorErrorKind::Config, Some("table_name_reserved"))
     );
 }
+
+#[tokio::test]
+async fn a_path_sqlite_would_read_as_a_uri_is_refused_where_the_destination_connects() {
+    use rdlt_connector::{ConnectContext, ConnectorErrorKind, destination_factory};
+    use rdlt_connector_reference::SqliteDestination;
+    for path in [
+        "file:orders.db",
+        "file:orders.db?nolock=1",
+        "FILE:/var/orders.db",
+        "",
+    ] {
+        let refused = destination_factory::<SqliteDestination>()
+            .connect(serde_json::json!({ "path": path }), ConnectContext::new())
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("{path:?} is refused"));
+        assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{path:?}");
+        assert_eq!(refused.code(), Some("database_path_invalid"), "{path:?}");
+    }
+}

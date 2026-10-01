@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rdlt_connector::sqlgen::Statement;
@@ -104,10 +103,7 @@ fn a_database_others_can_reach_is_refused() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("shared.db");
     drop(connect(&path).expect("the database is created"));
-    let exposed = (
-        ConnectorErrorKind::Config,
-        Some("database_exposed".to_owned()),
-    );
+    let exposed = (ConnectorErrorKind::Config, Some("not_private".to_owned()));
     for mode in [0o644, 0o640, 0o604, 0o660, 0o606, 0o610, 0o601] {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("a mode");
         assert_eq!(refusal(connect(&path)), exposed, "{mode:o}");
@@ -121,18 +117,6 @@ fn a_database_others_can_reach_is_refused() {
     assert_eq!(kind, ConnectorErrorKind::Config);
     let (kind, _) = refusal(connect(&directory.path().join("missing").join("x.db")));
     assert_eq!(kind, ConnectorErrorKind::Config);
-}
-
-#[test]
-fn a_path_is_a_file_name_never_a_uri() {
-    let directory = tempfile::tempdir().expect("a temporary directory");
-    // As a URI this would open a database in memory and create no file.
-    let uri = format!("file:{}/uri.db?mode=memory", directory.path().display());
-    let (kind, _) = refusal(connect(Path::new(&uri)));
-    assert_eq!(kind, ConnectorErrorKind::Config);
-    let named = directory.path().join("named.db?mode=memory");
-    drop(connect(&named).expect("the database opens"));
-    assert!(named.is_file());
 }
 
 #[test]
