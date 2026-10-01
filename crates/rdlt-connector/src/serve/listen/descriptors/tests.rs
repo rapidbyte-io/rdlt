@@ -21,42 +21,26 @@ fn limit() -> (u64, u64) {
     getrlimit(Resource::RLIMIT_NOFILE).expect("the limit reads")
 }
 
+/// One test: each step reads or changes the limit of the process it runs in, which tests run
+/// side by side in one process would share.
 #[test]
-fn a_limit_that_suffices_is_left_as_it_is() {
+fn a_limit_is_left_where_it_suffices_raised_as_far_as_needed_and_refused_beyond_the_hard_one() {
     let (soft, hard) = limit();
+    // What suffices is left as it is.
     assert_eq!(reserve(&needing(soft)), Ok(()));
     assert_eq!(limit(), (soft, hard));
-}
-
-#[test]
-fn a_soft_limit_is_raised_as_far_as_needed_where_the_hard_limit_allows() {
-    let (soft, hard) = limit();
-    if soft == hard {
-        // Nothing to raise: more than the hard limit is refused, and nothing changes.
-        let refused = reserve(&needing(hard + 1));
+    // More than the hard limit is refused, and changes nothing.
+    if hard != u64::MAX {
         let expected = TooFewDescriptors {
             limit: hard,
             needed: hard + 1,
         };
-        assert_eq!(refused, Err(expected));
+        assert_eq!(reserve(&needing(hard + 1)), Err(expected));
         assert_eq!(limit(), (soft, hard));
-        return;
     }
-    assert_eq!(reserve(&needing(soft + 1)), Ok(()));
-    assert_eq!(limit(), (soft + 1, hard));
-}
-
-#[test]
-fn more_than_the_hard_limit_is_refused_and_changes_nothing() {
-    let (soft, hard) = limit();
-    if hard == u64::MAX {
-        return;
+    // A soft limit below the hard one is raised as far as needed, and no further.
+    if soft < hard {
+        assert_eq!(reserve(&needing(soft + 1)), Ok(()));
+        assert_eq!(limit(), (soft + 1, hard));
     }
-    let refused = reserve(&needing(hard + 1));
-    let expected = TooFewDescriptors {
-        limit: hard,
-        needed: hard + 1,
-    };
-    assert_eq!(refused, Err(expected));
-    assert_eq!(limit(), (soft, hard));
 }

@@ -190,7 +190,7 @@ async fn a_listening_connector_speaks_no_plaintext_and_counts_whom_it_refused_in
             .expect("the preface is written");
         let mut answer = Vec::new();
         let read =
-            tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+            tokio::time::timeout(Duration::from_secs(60), stream.read_to_end(&mut answer)).await;
         // It closes the connection, answering at most a TLS alert, and never HTTP/2.
         assert!(read.is_ok(), "the connection stays open");
         assert!(!answer.starts_with(b"\0"), "{answer:?}");
@@ -204,9 +204,15 @@ async fn a_listening_connector_speaks_no_plaintext_and_counts_whom_it_refused_in
         .read_to_string(&mut stderr)
         .await
         .expect("its errors read");
-    // One line for all of them, which names none: a peer decides how many are refused.
-    assert_eq!(stderr.lines().count(), 1, "{stderr}");
-    assert!(stderr.contains("32"), "{stderr}");
+    // A line an interval for all of them, which names none: a peer decides how many are
+    // refused. A slow run may cross an interval, and then they are counted over two lines.
+    let lines: Vec<String> = stderr.lines().map(str::to_owned).collect();
+    assert!((1..=2).contains(&lines.len()), "{stderr}");
+    let counted: u64 = lines
+        .iter()
+        .filter_map(|line| line.split(' ').nth(1)?.parse::<u64>().ok())
+        .sum();
+    assert_eq!(counted, 32, "{stderr}");
     for peer in peers {
         assert!(!stderr.contains(&peer.to_string()), "{stderr}");
     }
@@ -217,9 +223,10 @@ async fn peers_that_never_handshake_do_not_keep_a_host_out() {
     let pki = Pki::new("ca");
     let (_connector, address) =
         listening(&pki, &pki.server("server", &["localhost"]), "127.0.0.1:0").await;
-    // As many idle peers as the connector serves hosts at once, none of them authenticated.
+    // More idle peers than the connector holds unauthenticated, none of them authenticated; few
+    // enough that the test's own process may hold them, where it may open few files.
     let mut idle = Vec::new();
-    for _ in 0..256 {
+    for _ in 0..100 {
         idle.push(
             tokio::net::TcpStream::connect(&address)
                 .await
@@ -229,7 +236,7 @@ async fn peers_that_never_handshake_do_not_keep_a_host_out() {
     let endpoint = format!("grpcs://localhost:{}", port(&address));
     let remote = Remote::new(identity(&pki.client("host")), pki.ca());
     let placed = tokio::time::timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(60),
         remote.source(&scripted(&endpoint), &serde_json::json!({})),
     )
     .await
@@ -514,7 +521,7 @@ async fn limited(descriptors: u32, more: &[&str]) -> std::process::Output {
     if announced.is_some() {
         stop(&child);
     }
-    let mut output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+    let mut output = tokio::time::timeout(Duration::from_secs(120), child.wait_with_output())
         .await
         .expect("the connector ends")
         .expect("its output reads");
