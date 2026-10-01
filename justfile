@@ -19,9 +19,15 @@ fmt:
 # Run every static check CI runs
 lint: checks pins
 
+# Fail when the workspace's lockfile is behind its manifests. It runs before any other cargo
+# command, xtask's included, since each would bring the lockfile up to date instead; the other
+# workspaces' lockfiles are held by `cargo xtask deny`
+locked:
+    cargo metadata --locked --format-version 1 > /dev/null
+
 # Every static check that needs no credential: these build and run the workspace's and its
 # dependencies' code
-checks:
+checks: locked
     cargo fmt --all --check
     taplo fmt --check
     typos
@@ -43,7 +49,7 @@ pins:
 
 # Check every workspace's locked dependencies, the fuzzing crate's included, for advisories, bans,
 # licenses and sources; a lockfile behind its manifest fails
-deny:
+deny: locked
     cargo xtask deny
 
 # Run the test suite; extra arguments go to nextest
