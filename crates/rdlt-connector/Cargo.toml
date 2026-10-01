@@ -34,7 +34,7 @@ serve = [
   "dep:nix",
   "dep:rdlt-adopt",
 ]
-sqlgen = []
+sqlgen = ["dep:sha2"]
 
 [dependencies]
 arrow-array.workspace = true
@@ -55,6 +55,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
+sha2 = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true

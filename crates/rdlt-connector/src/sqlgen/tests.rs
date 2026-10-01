@@ -5,8 +5,7 @@ use rusqlite::Connection;
 use rusqlite::types::Value;
 
 use super::{
-    CATALOG_TABLES, Column, SqlDialect, SqlPlanner, SqlValue, Sqlite, Staged, Statement, micros,
-    receipt,
+    Column, Owned, SqlDialect, SqlPlanner, SqlValue, Sqlite, Staged, Statement, micros, receipt,
 };
 use crate::commit::SegmentSet;
 use crate::destination::{MergeKey, RootKey, TableChange, TableRef};
@@ -103,28 +102,273 @@ impl<const MAX: usize> SqlDialect for Short<MAX> {
 
 #[test]
 fn tables_whose_derived_tables_would_share_a_name_are_refused() {
-    let planner = SqlPlanner::try_new(Short::<30>).unwrap();
-    // Cut to 30 bytes, both staging tables end in the same hash of their whole names.
-    let clashing = ["orders_0775246_by_region", "orders_1034780_by_region"];
-    assert_eq!(
-        planner.staging_table(clashing[0]),
-        planner.staging_table(clashing[1])
-    );
-    let error = planner
-        .distinct(clashing[1], &[clashing[0].to_owned()])
-        .unwrap_err();
-    assert_eq!(
-        (error.kind(), error.code()),
-        (ConnectorErrorKind::Config, Some("table_name_clash"))
-    );
+    let planner = SqlPlanner::try_new(Short::<63>).unwrap();
+    let clash = |outcome: crate::error::Result<()>| {
+        let error = outcome.unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Config, Some("table_name_clash"))
+        );
+    };
+    // The index of this table's staging is the index a table named as that staging would take.
+    let staging = planner.staging_table("y");
+    clash(planner.distinct(&table("y"), std::slice::from_ref(&staging), &[]));
+    // A generation table of another base under the name of this table's staging, tombstones or
+    // generation table is in its way too.
+    let generation = TableRef {
+        generation: Some(GenerationId(7)),
+        ..table("y")
+    };
+    let taken = [
+        planner.staging_table("y"),
+        planner.tombstone_table("y"),
+        planner.generation_table("y", GenerationId(7)),
+    ];
+    for name in taken {
+        let filling = [(name, "other".to_owned())];
+        clash(planner.distinct(&generation, &[], &filling));
+    }
+    // The table's own generation is no clash, and neither is the generation of a table that
+    // fills none itself.
+    let own = [(
+        planner.generation_table("y", GenerationId(7)),
+        "y".to_owned(),
+    )];
+    planner.distinct(&generation, &[], &own).unwrap();
+    let other = [(
+        planner.generation_table("y", GenerationId(7)),
+        "other".to_owned(),
+    )];
+    planner.distinct(&table("y"), &[], &other).unwrap();
     // Names whose derived tables differ, and a table registered again, are not refused.
     let distinct = ["orders_by_region_north", "orders_by_region_south"];
     planner
-        .distinct(distinct[0], &[distinct[1].to_owned()])
+        .distinct(&table(distinct[0]), &[distinct[1].to_owned()], &[])
         .unwrap();
     planner
-        .distinct(clashing[0], &[clashing[0].to_owned()])
+        .distinct(&table("y"), &["y".to_owned()], &[])
         .unwrap();
+}
+
+#[test]
+fn every_name_derived_from_a_table_is_compared() {
+    let planner = SqlPlanner::try_new(Short::<63>).unwrap();
+    let generation = TableRef {
+        generation: Some(GenerationId(7)),
+        ..table("y")
+    };
+    let data = [
+        planner.staging_table("y"),
+        planner.tombstone_table("y"),
+        planner.generation_table("y", GenerationId(7)),
+    ];
+    let mut derived = vec![planner.key_index_name("y"), planner.root_index_name("y")];
+    for table in data {
+        derived.extend([
+            planner.key_index_name(&table),
+            planner.root_index_name(&table),
+        ]);
+        derived.push(table);
+    }
+    assert_eq!(derived.len(), 11);
+    for name in derived {
+        // An index of another base's generation table would take the name too.
+        let filling = [(name.clone(), "other".to_owned())];
+        let error = planner.distinct(&generation, &[], &filling).unwrap_err();
+        assert_eq!(error.code(), Some("table_name_clash"), "{name}");
+    }
+    // The generation table is the generation's own: the table itself does not take its name.
+    let named = planner.generation_table("y", GenerationId(7));
+    let filling = [(named, "other".to_owned())];
+    planner.distinct(&table("y"), &[], &filling).unwrap();
+}
+
+#[test]
+fn a_commit_publishes_child_tables_first_and_those_listed_that_follow_a_staged_root() {
+    let (_, planner) = database();
+    let child = |root: &str| MergeKey {
+        columns: vec!["root".into()],
+        seq: "seq".into(),
+        root: Some(RootKey {
+            table: root.into(),
+            id: "id".into(),
+            seq: "seq".into(),
+        }),
+        changes: None,
+        history: None,
+    };
+    let listed = |name: &str, root: &str| crate::commit::ChildTable {
+        table: name.into(),
+        merge: child(root),
+    };
+    let roots = staged("roots", None, keyed("roots").merge);
+    let items = staged("items", None, Some(child("roots")));
+    let plain = staged("plain", None, None);
+    let published = planner.publishing(
+        vec![roots.clone(), plain.clone(), items.clone()],
+        &[
+            listed("items", "roots"),
+            listed("tags", "roots"),
+            listed("strays", "absent"),
+        ],
+    );
+    let names: Vec<&str> = published
+        .iter()
+        .map(|staged| staged.name.as_str())
+        .collect();
+    assert_eq!(names, ["items", "tags", "roots", "plain"]);
+    assert_eq!(published[1], staged("tags", None, Some(child("roots"))));
+    // Nothing staged, nothing published, whatever the commit lists.
+    assert!(
+        planner
+            .publishing(Vec::new(), &[listed("tags", "roots")])
+            .is_empty()
+    );
+}
+
+#[test]
+fn no_statement_is_planned_for_a_table_from_the_owner_check_of_another() {
+    let (_, planner) = database();
+    let mine = pipeline("mine");
+    let orders = planner.own(&mine, "orders");
+    let (users, columns) = (keyed("users"), [][..].as_ref());
+    let staged = staged("users", None, None);
+    let change = create(&users, &[("id", LogicalType::Int64, false)]);
+    let (epoch, segment, set) = (Epoch(1), SegmentId(1), segments(&[1]));
+    let refused = [
+        planner.register(&orders, &users).map(drop),
+        planner.generation(&orders, &users, columns).map(drop),
+        planner.change(&orders, &change, [columns; 3]).map(drop),
+        planner
+            .change_tables(&orders, &users, [columns; 3])
+            .map(drop),
+        planner.key_indexes(&orders, &users).map(drop),
+        planner.root_index(&orders, &users).map(drop),
+        planner
+            .stage(&orders, &users, epoch, segment, &["id"])
+            .map(drop),
+        planner
+            .record_segment(&orders, &users, epoch, segment, [1, 1])
+            .map(drop),
+        planner
+            .publish(&orders, &staged, columns, epoch, &set)
+            .map(drop),
+    ];
+    for (index, outcome) in refused.into_iter().enumerate() {
+        let error = outcome.unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ConnectorErrorKind::Internal,
+            "statement {index}"
+        );
+    }
+    // A discard removes only the staging of the tables its pipeline's owner checks name.
+    let theirs = planner.own(&pipeline("theirs"), "users");
+    let plan = planner.discard(&mine, epoch, &[orders, theirs]);
+    let touched: Vec<&str> = plan
+        .iter()
+        .map(|statement| statement.sql.as_str())
+        .filter(|sql| sql.contains("_rdlt_staging__"))
+        .collect();
+    assert_eq!(touched.len(), 1, "{touched:?}");
+    assert!(touched[0].contains("_rdlt_staging__orders"), "{touched:?}");
+}
+
+#[test]
+fn only_a_table_its_pipeline_owns_under_a_name_it_may_take_is_changed() {
+    let (_, planner) = database();
+    let mine = pipeline("mine");
+    let code = |outcome: crate::error::Result<Owned>| {
+        let error = outcome.unwrap_err();
+        (error.kind(), error.code().map(str::to_owned))
+    };
+    let config = |code: &str| (ConnectorErrorKind::Config, Some(code.to_owned()));
+    let owned = planner.owned(&mine, "orders", Some("mine")).unwrap();
+    assert_eq!((owned.name(), owned.pipeline()), ("orders", &mine));
+    assert_eq!(
+        code(planner.owned(&mine, "orders", Some("theirs"))),
+        config("table_owned")
+    );
+    assert_eq!(
+        code(planner.owned(&mine, "orders", None)),
+        config("table_unowned")
+    );
+    let reserved = [
+        "",
+        "_rdlt_state",
+        "_rdlt_",
+        "_RDLT_state",
+        "_Rdlt_staging__orders",
+        "sqlite_master",
+        "SQLITE_x",
+        "pragma_table_info",
+        "Pragma_x",
+        "Orders",
+        "ordeRs",
+    ];
+    for name in reserved {
+        let reserved = config("table_name_reserved");
+        assert_eq!(
+            code(planner.owned(&mine, name, Some("mine"))),
+            reserved,
+            "{name}"
+        );
+        assert_eq!(
+            planner.claim(&mine, name).unwrap_err().code(),
+            Some("table_name_reserved")
+        );
+        let dropped = planner.dropped(&mine, name, None, false).unwrap_err();
+        assert_eq!(dropped.code(), Some("table_name_reserved"), "{name}");
+    }
+    // Names that only resemble the reserved ones, and names beyond ASCII, are tables' to take.
+    for name in [
+        "_rdl",
+        "_rdlt",
+        "rdlt_x",
+        "sqlite",
+        "pragma",
+        "ünïcode",
+        "_rdlté",
+    ] {
+        planner.owned(&mine, name, Some("mine")).unwrap();
+        planner.claim(&mine, name).unwrap();
+    }
+    // A dialect that keeps no names leaves the planner's own.
+    let plain = SqlPlanner::try_new(Widening).unwrap();
+    plain.owned(&mine, "sqlite_master", Some("mine")).unwrap();
+    plain.owned(&mine, "Orders", Some("mine")).unwrap();
+    assert!(plain.owned(&mine, "_rdlt_state", Some("mine")).is_err());
+}
+
+#[test]
+fn a_dropped_table_is_owned_or_was_dropped_before() {
+    let (_, planner) = database();
+    let mine = pipeline("mine");
+    assert_eq!(planner.dropped(&mine, "gone", None, false).unwrap(), None);
+    let owned = planner
+        .dropped(&mine, "orders", Some("mine"), true)
+        .unwrap();
+    assert_eq!(
+        owned.map(|owned| owned.name().to_owned()),
+        Some("orders".to_owned())
+    );
+    // An owner record without its table still drops: the record and the derived tables go.
+    assert!(
+        planner
+            .dropped(&mine, "orders", Some("mine"), false)
+            .unwrap()
+            .is_some()
+    );
+    let unowned = planner.dropped(&mine, "customers", None, true).unwrap_err();
+    assert_eq!(unowned.code(), Some("table_unowned"));
+    let theirs = planner
+        .dropped(&mine, "orders", Some("theirs"), true)
+        .unwrap_err();
+    assert_eq!(theirs.code(), Some("table_owned"));
+    let theirs = planner
+        .dropped(&mine, "orders", Some("theirs"), false)
+        .unwrap_err();
+    assert_eq!(theirs.code(), Some("table_owned"));
 }
 
 #[test]
@@ -138,7 +382,7 @@ fn a_dialect_whose_schema_changes_do_not_commit_with_it_swaps_no_generation_tabl
         vec![(generation, GenerationId(2))],
     ] {
         let error = planner
-            .swap("orders", true, GenerationId(1), &generations)
+            .swap_of("orders", true, GenerationId(1), &generations)
             .unwrap_err();
         assert_eq!(error.kind(), ConnectorErrorKind::Unsupported);
     }
@@ -151,7 +395,9 @@ fn a_dialect_whose_schema_changes_do_not_commit_with_it_swaps_no_generation_tabl
         .unwrap();
     run_all(
         &connection,
-        &planner.swap("orders", true, GenerationId(1), &[]).unwrap(),
+        &planner
+            .swap_of("orders", true, GenerationId(1), &[])
+            .unwrap(),
     );
     let count = Statement {
         sql: "SELECT count(*) FROM orders".into(),
@@ -184,38 +430,183 @@ impl SqlDialect for Autocommitting {
 
 #[test]
 fn a_dialect_whose_identifiers_cannot_hold_a_derived_name_is_refused() {
-    let refused = SqlPlanner::try_new(Short::<29>).unwrap_err();
+    let refused = SqlPlanner::try_new(Short::<62>).unwrap_err();
     assert_eq!(refused.kind(), ConnectorErrorKind::Unsupported);
-    assert!(SqlPlanner::try_new(Short::<30>).is_ok());
+    assert!(SqlPlanner::try_new(Short::<63>).is_ok());
 }
 
 #[test]
-fn derived_tables_fit_the_dialect_s_identifiers_and_stay_distinct() {
-    let planner = SqlPlanner::try_new(Short::<30>).unwrap();
-    let long = ["orders_by_region_north", "orders_by_region_south"];
-    let staging = long.map(|name| planner.staging_table(name));
-    let generations = long.map(|name| planner.generation_table(name, GenerationId(12_345)));
-    for name in staging.iter().chain(&generations) {
-        assert!(name.len() <= 30, "{name}");
-        assert!(name.starts_with("_rdlt_"), "{name}");
+fn a_cut_name_is_a_hash_no_uncut_name_can_take() {
+    let planner = SqlPlanner::try_new(Short::<63>).unwrap();
+    let long = [
+        "orders_by_region_and_by_customer_segment_north_of_the_river",
+        "orders_by_region_and_by_customer_segment_south_of_the_river",
+    ];
+    let generation = GenerationId(u64::MAX);
+    let cut: Vec<String> = long
+        .iter()
+        .flat_map(|name| {
+            [
+                planner.staging_table(name),
+                planner.tombstone_table(name),
+                planner.generation_table(name, generation),
+                planner.key_index_name(name),
+                planner.root_index_name(name),
+                planner.key_index_name(&planner.staging_table(name)),
+            ]
+        })
+        .collect();
+    for name in &cut {
+        // The prefix, then the 256 bits of the name's SHA-256 in base 32.
+        assert_eq!(name.len(), 62, "{name}");
+        let hash = name.strip_prefix("_rdlt_fit_").expect(name);
+        assert!(
+            hash.bytes()
+                .all(|byte| matches!(byte, b'a'..=b'z' | b'2'..=b'7')),
+            "{name}"
+        );
+        planner.named(name).unwrap_err();
     }
-    assert_ne!(staging[0], staging[1]);
-    assert_ne!(generations[0], generations[1]);
-    // The hash is FNV-1a of the whole name, so a name derives alike in every build.
-    assert_eq!(staging[0], "_rdlt_staging__orders_5ee09790");
-    // A cut inside a character keeps the whole character out.
-    let index = planner.fitted("ßßßßßßßßßßßß__rdlt_root".to_owned());
-    assert!(index.len() <= 30, "{index}");
-    assert!(index.starts_with("ßßßßßßßßßß_"), "{index}");
-    let accented = planner.staging_table("ßßßßßßßßßßßßßßßßßß");
-    assert!(accented.len() <= 30, "{accented}");
-    assert!(accented.starts_with("_rdlt_staging__"), "{accented}");
-    // Names that fit are derived as always.
-    assert_eq!(planner.staging_table("t"), "_rdlt_staging__t");
+    let distinct: std::collections::BTreeSet<&String> = cut.iter().collect();
+    assert_eq!(distinct.len(), cut.len(), "{cut:?}");
+    // A name derives alike in every build: SHA-256 of the whole derived name.
     assert_eq!(
-        SqlPlanner::try_new(Sqlite).unwrap().staging_table(long[0]),
+        planner.staging_table(long[0]),
+        planner.fitted(format!("_rdlt_staging__{}", long[0]))
+    );
+    assert_eq!(
+        planner.fitted("x".repeat(64)),
+        "_rdlt_fit_ptqqbfy7mttqahup4wsrs47m37q45vbl57t65dk72yqzkbvvhe6a"
+    );
+    // A name of the longest length fits as it is, and so does every name without a limit.
+    assert_eq!(planner.fitted("x".repeat(63)), "x".repeat(63));
+    assert_eq!(planner.staging_table("t"), "_rdlt_staging__t");
+    let unlimited = SqlPlanner::try_new(Sqlite).unwrap();
+    assert_eq!(
+        unlimited.staging_table(long[0]),
         format!("_rdlt_staging__{}", long[0])
     );
+    // No name derived uncut begins as a cut name does.
+    let uncut = [
+        unlimited.staging_table("fit_x"),
+        unlimited.tombstone_table("fit_x"),
+        unlimited.generation_table("fit_x", GenerationId(1)),
+        unlimited.key_index_name("fit_x"),
+        unlimited.root_index_name("fit_x"),
+    ];
+    for name in uncut {
+        assert!(!name.starts_with("_rdlt_fit_"), "{name}");
+    }
+}
+
+/// The planner's statements as a session plans them once its pipeline owns the table: the tests
+/// of what a statement does name the pipeline where they stage and publish, and are `mine`
+/// otherwise.
+impl<D: SqlDialect> SqlPlanner<D> {
+    pub(in crate::sqlgen) fn own(&self, pipeline: &PipelineId, name: &str) -> Owned {
+        self.owned(pipeline, name, Some(pipeline.as_str())).unwrap()
+    }
+
+    pub(in crate::sqlgen) fn publish_as(
+        &self,
+        staged: &Staged,
+        columns: &[Column],
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segments: &SegmentSet,
+    ) -> crate::error::Result<Vec<Statement>> {
+        let owned = self.own(pipeline, &staged.name);
+        self.publish(&owned, staged, columns, epoch, segments)
+    }
+
+    pub(in crate::sqlgen) fn stage_as(
+        &self,
+        table: &TableRef,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segment: SegmentId,
+        columns: &[&str],
+    ) -> Statement {
+        let owned = self.own(pipeline, &table.name);
+        self.stage(&owned, table, epoch, segment, columns).unwrap()
+    }
+
+    pub(in crate::sqlgen) fn record_as(
+        &self,
+        table: &TableRef,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segment: SegmentId,
+        counts: [u64; 2],
+    ) -> Statement {
+        let owned = self.own(pipeline, &table.name);
+        self.record_segment(&owned, table, epoch, segment, counts)
+            .unwrap()
+    }
+
+    pub(in crate::sqlgen) fn register_of(&self, table: &TableRef) -> Vec<Statement> {
+        let owned = self.own(&pipeline("mine"), &table.name);
+        self.register(&owned, table).unwrap()
+    }
+
+    pub(in crate::sqlgen) fn swap_of(
+        &self,
+        base: &str,
+        base_exists: bool,
+        generation: GenerationId,
+        generations: &[(String, GenerationId)],
+    ) -> crate::error::Result<Vec<Statement>> {
+        let owned = self.own(&pipeline("mine"), base);
+        self.swap(&owned, base_exists, generation, generations)
+    }
+
+    pub(in crate::sqlgen) fn key_indexes_of(&self, table: &TableRef) -> Vec<Statement> {
+        let owned = self.own(&pipeline("mine"), &table.name);
+        self.key_indexes(&owned, table).unwrap()
+    }
+
+    pub(in crate::sqlgen) fn root_index_of(
+        &self,
+        table: &TableRef,
+    ) -> crate::error::Result<Option<Statement>> {
+        self.root_index(&self.own(&pipeline("mine"), &table.name), table)
+    }
+
+    pub(in crate::sqlgen) fn change_tables_of(
+        &self,
+        table: &TableRef,
+        tables: [&[Column]; 3],
+    ) -> crate::error::Result<Vec<Statement>> {
+        self.change_tables(&self.own(&pipeline("mine"), &table.name), table, tables)
+    }
+
+    pub(in crate::sqlgen) fn generation_of(
+        &self,
+        table: &TableRef,
+        base: &[Column],
+    ) -> Vec<Statement> {
+        let owned = self.own(&pipeline("mine"), &table.name);
+        self.generation(&owned, table, base).unwrap()
+    }
+
+    pub(in crate::sqlgen) fn change_of(
+        &self,
+        change: &TableChange,
+        tables: [&[Column]; 3],
+    ) -> crate::error::Result<Vec<Statement>> {
+        let owned = self.own(&pipeline("mine"), &change.table().name);
+        self.change(&owned, change, tables)
+    }
+
+    pub(in crate::sqlgen) fn discard_of(
+        &self,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        names: &[String],
+    ) -> Vec<Statement> {
+        let tables: Vec<Owned> = names.iter().map(|name| self.own(pipeline, name)).collect();
+        self.discard(pipeline, epoch, &tables)
+    }
 }
 
 pub(super) fn database() -> (Connection, SqlPlanner<Sqlite>) {
@@ -347,7 +738,7 @@ pub(super) fn apply(
         planner,
         &planner.tombstone_table(&change.table().name),
     );
-    let plan = planner.change(change, [&target, &staging, &tombstones])?;
+    let plan = planner.change_of(change, [&target, &staging, &tombstones])?;
     run_all(connection, &plan);
     Ok(plan)
 }
@@ -364,7 +755,7 @@ fn stage(
     (pipeline, epoch, segment): (&PipelineId, u64, u64),
     rows: &[(i64, &str)],
 ) {
-    let statement = planner.stage(
+    let statement = planner.stage_as(
         table,
         pipeline,
         Epoch(epoch),
@@ -378,7 +769,7 @@ fn stage(
             .execute(&statement.sql, rusqlite::params_from_iter(values))
             .unwrap();
     }
-    let record = planner.record_segment(
+    let record = planner.record_as(
         table,
         pipeline,
         Epoch(epoch),
@@ -413,8 +804,22 @@ fn a_planner_needs_a_dialect_that_stores_text_integers_and_bytes() {
 fn the_catalog_bootstraps_again_without_change() {
     let (connection, planner) = database();
     run_all(&connection, &planner.bootstrap());
-    for table in CATALOG_TABLES {
+    let catalog = [
+        "_rdlt_epochs",
+        "_rdlt_state",
+        "_rdlt_receipts",
+        "_rdlt_tables",
+        "_rdlt_owners",
+        "_rdlt_generations",
+        "_rdlt_segments",
+    ];
+    for table in catalog {
         assert!(!columns(&connection, &planner, table).is_empty(), "{table}");
+        // No destination table takes a catalog table's name.
+        assert_eq!(
+            planner.named(table).unwrap_err().code(),
+            Some("table_name_reserved")
+        );
     }
 }
 
@@ -691,7 +1096,7 @@ fn a_widen_the_column_holds_plans_nothing_and_a_dialect_that_can_redeclares_it()
     }];
     // A change stream's tombstones hold the key, so they widen with it.
     let plan = widening
-        .change(&widen, [&existing, &existing, &existing])
+        .change_of(&widen, [&existing, &existing, &existing])
         .unwrap();
     let sql: Vec<&str> = plan
         .iter()
@@ -705,7 +1110,7 @@ fn a_widen_the_column_holds_plans_nothing_and_a_dialect_that_can_redeclares_it()
             "ALTER TABLE _rdlt_tombstones__orders ALTER COLUMN n TYPE INTEGER",
         ]
     );
-    let lacking = widening.change(&widen, [&existing, &[], &[]]).unwrap();
+    let lacking = widening.change_of(&widen, [&existing, &[], &[]]).unwrap();
     assert_eq!(lacking.len(), 1, "tables without the column are left alone");
 }
 
@@ -779,7 +1184,7 @@ fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
         .unwrap();
     let orders = keyed("orders");
     let mine = pipeline("mine");
-    let statement = planner.stage(
+    let statement = planner.stage_as(
         &orders,
         &mine,
         Epoch(1),
@@ -793,7 +1198,7 @@ fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
         .unwrap();
     run(
         &connection,
-        &planner.record_segment(&orders, &mine, Epoch(1), SegmentId(1), [1, 10]),
+        &planner.record_as(&orders, &mine, Epoch(1), SegmentId(1), [1, 10]),
     );
     let rows = query(
         &connection,
@@ -811,7 +1216,7 @@ fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
     );
     let columns = columns(&connection, &planner, "orders");
     let plan = planner
-        .publish(
+        .publish_as(
             &staged("orders", None, Some(merge)),
             &columns,
             &mine,
@@ -841,7 +1246,7 @@ fn a_recorded_merge_key_keeps_a_change_stream_s_columns_and_earlier_records_read
     }
     run(
         &connection,
-        &planner.record_segment(&orders, &mine, Epoch(1), SegmentId(1), [1, 10]),
+        &planner.record_as(&orders, &mine, Epoch(1), SegmentId(1), [1, 10]),
     );
     let rows = query(
         &connection,
@@ -898,7 +1303,7 @@ fn a_recorded_merge_key_keeps_a_history_table_s_columns() {
         };
         run(
             &connection,
-            &planner.record_segment(&orders, &mine, Epoch(1), SegmentId(segment), [1, 10]),
+            &planner.record_as(&orders, &mine, Epoch(1), SegmentId(segment), [1, 10]),
         );
         let rows = query(
             &connection,
@@ -1015,7 +1420,7 @@ fn a_commit_publishes_exactly_the_rows_its_pipeline_staged_at_its_epoch_in_its_s
     let columns = columns(&connection, &planner, "orders");
     let orders = staged("orders", None, None);
     let plan = planner
-        .publish(&orders, &columns, &mine, Epoch(2), &segments(&[1, 2, 5]))
+        .publish_as(&orders, &columns, &mine, Epoch(2), &segments(&[1, 2, 5]))
         .unwrap();
     run_all(&connection, &plan);
     let published: Vec<i64> = rows_of(&connection, "orders")
@@ -1058,7 +1463,7 @@ fn a_generation_publishes_into_its_own_table() {
     let target = planner.generation_table("orders", GenerationId(3));
     assert_eq!(planner.target(&generation), target);
     let columns = columns(&connection, &planner, &target);
-    let plan = planner.publish(
+    let plan = planner.publish_as(
         &staged("orders", Some(GenerationId(3)), None),
         &columns,
         &mine,
@@ -1089,7 +1494,7 @@ fn a_merge_keeps_the_greatest_sequence_of_each_key_and_replaces_published_rows()
     apply(&connection, &planner, &create(&orders, &fields)).unwrap();
     let mine = pipeline("mine");
     let stage_keyed = |segment: u64, rows: &[(i64, &str, u8)]| {
-        let statement = planner.stage(
+        let statement = planner.stage_as(
             &orders,
             &mine,
             Epoch(1),
@@ -1115,7 +1520,7 @@ fn a_merge_keeps_the_greatest_sequence_of_each_key_and_replaces_published_rows()
         run_all(
             &connection,
             &planner
-                .publish(&merge, &columns, &mine, Epoch(1), &committed)
+                .publish_as(&merge, &columns, &mine, Epoch(1), &committed)
                 .unwrap(),
         );
     }
@@ -1162,7 +1567,7 @@ pub(super) fn stage_values(
     columns: &[&str],
     rows: Vec<Vec<Value>>,
 ) {
-    let statement = planner.stage(table, &pipeline("mine"), Epoch(1), SegmentId(1), columns);
+    let statement = planner.stage_as(table, &pipeline("mine"), Epoch(1), SegmentId(1), columns);
     for row in rows {
         let mut values: Vec<Value> = statement.params.iter().map(value).collect();
         values.extend(row);
@@ -1213,7 +1618,7 @@ fn a_child_table_keeps_only_the_children_of_its_staged_roots_winning_rows() {
     let columns = columns(&connection, &planner, "items");
     let merge = staged("items", None, items.merge.clone());
     let plan = planner
-        .publish(
+        .publish_as(
             &merge,
             &columns,
             &pipeline("mine"),
@@ -1266,7 +1671,7 @@ fn a_child_tables_root_columns_are_read_from_the_root_staging_only() {
     let columns = columns(&connection, &planner, "items");
     let merge = staged("items", None, items.merge.clone());
     let plan = planner
-        .publish(
+        .publish_as(
             &merge,
             &columns,
             &pipeline("mine"),
@@ -1318,10 +1723,10 @@ fn a_child_table_is_indexed_by_its_root_where_its_rows_are_staged_however_it_was
     };
     assert!(indexes().is_empty());
     // Indexed where its rows are staged, however often; a table merging by no root never is.
-    assert_eq!(planner.root_index(&table("items")).unwrap(), None);
+    assert_eq!(planner.root_index_of(&table("items")).unwrap(), None);
     for _ in 0..2 {
         let index = planner
-            .root_index(&items)
+            .root_index_of(&items)
             .unwrap()
             .expect("a child table's index");
         run_all(&connection, &[index]);
@@ -1335,7 +1740,7 @@ fn a_child_table_is_indexed_by_its_root_where_its_rows_are_staged_however_it_was
     let columns = columns(&connection, &planner, "items");
     let merge = staged("items", None, items.merge.clone());
     let plan = planner
-        .publish(
+        .publish_as(
             &merge,
             &columns,
             &pipeline("mine"),
@@ -1368,7 +1773,7 @@ fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
     ];
     apply(&connection, &planner, &create(&keys, &fields)).unwrap();
     let mine = pipeline("mine");
-    let statement = planner.stage(&keys, &mine, Epoch(1), SegmentId(1), &["id", "seq"]);
+    let statement = planner.stage_as(&keys, &mine, Epoch(1), SegmentId(1), &["id", "seq"]);
     for _ in 0..2 {
         let mut values: Vec<Value> = statement.params.iter().map(value).collect();
         values.extend([Value::Integer(1), Value::Integer(1)]);
@@ -1382,7 +1787,7 @@ fn a_merge_of_a_table_of_only_key_columns_keeps_each_key_once() {
         run_all(
             &connection,
             &planner
-                .publish(&merge, &columns, &mine, Epoch(1), &segments(&[1]))
+                .publish_as(&merge, &columns, &mine, Epoch(1), &segments(&[1]))
                 .unwrap(),
         );
     }
@@ -1419,7 +1824,7 @@ fn a_merge_ranks_rows_under_a_name_no_column_of_the_table_has() {
     apply(&connection, &planner, &create(&ranked, &fields)).unwrap();
     let mine = pipeline("mine");
     let names = ["id", "seq", "_rdlt_rank", "_RDLT_RANK_"];
-    let statement = planner.stage(&ranked, &mine, Epoch(1), SegmentId(1), &names);
+    let statement = planner.stage_as(&ranked, &mine, Epoch(1), SegmentId(1), &names);
     for (id, rank) in [(1, 7), (2, 1), (3, 5)] {
         let mut values: Vec<Value> = statement.params.iter().map(value).collect();
         values.extend([id, 1, rank, rank].map(Value::Integer));
@@ -1432,7 +1837,7 @@ fn a_merge_ranks_rows_under_a_name_no_column_of_the_table_has() {
     run_all(
         &connection,
         &planner
-            .publish(&merge, &columns, &mine, Epoch(1), &segments(&[1]))
+            .publish_as(&merge, &columns, &mine, Epoch(1), &segments(&[1]))
             .unwrap(),
     );
     let ids = query(
@@ -1449,22 +1854,35 @@ fn a_merge_ranks_rows_under_a_name_no_column_of_the_table_has() {
 fn registered_tables_are_found_by_path_with_their_generations() {
     let (connection, planner) = database();
     let orders = keyed("orders");
-    run_all(&connection, &planner.register(&orders));
-    run_all(&connection, &planner.register(&orders));
+    run_all(&connection, &planner.register_of(&orders));
+    run_all(&connection, &planner.register_of(&orders));
     let generation = TableRef {
         generation: Some(GenerationId(4)),
         ..table("events")
     };
-    run_all(&connection, &planner.register(&generation));
-    assert_eq!(
-        query(&connection, &planner.tables()),
-        [[text("events")], [text("orders")]]
-    );
-    let found = query(
-        &connection,
-        &planner.table_name(&TablePath::new(["orders"]).unwrap()),
-    );
+    run_all(&connection, &planner.register_of(&generation));
+    let path = TablePath::new(["orders"]).unwrap();
+    let found = query(&connection, &planner.table_name(&pipeline("mine"), &path));
     assert_eq!(found, [[text("orders")]]);
+    // Another pipeline's table of the same path, under another name, answers only for it.
+    let theirs = pipeline("theirs");
+    let namesake = TableRef {
+        name: "orders_abc234".into(),
+        ..keyed("orders")
+    };
+    let owned = planner.own(&theirs, "orders_abc234");
+    run_all(&connection, &planner.register(&owned, &namesake).unwrap());
+    let found = query(&connection, &planner.table_name(&pipeline("mine"), &path));
+    assert_eq!(found, [[text("orders")]]);
+    let found = query(&connection, &planner.table_name(&theirs, &path));
+    assert_eq!(found, [[text("orders_abc234")]]);
+    assert_eq!(
+        query(&connection, &planner.generation_tables()),
+        [[
+            text(&planner.generation_table("events", GenerationId(4))),
+            text("events")
+        ]]
+    );
     let generations = query(&connection, &planner.generations("events"));
     assert_eq!(
         generations,
@@ -1493,7 +1911,7 @@ fn a_swap_replaces_the_table_with_its_generation_and_drops_the_others() {
             ..base.clone()
         };
         apply(&connection, &planner, &create(&generation, &fields)).unwrap();
-        run_all(&connection, &planner.register(&generation));
+        run_all(&connection, &planner.register_of(&generation));
     }
     connection
         .execute(
@@ -1508,7 +1926,7 @@ fn a_swap_replaces_the_table_with_its_generation_and_drops_the_others() {
     run_all(
         &connection,
         &planner
-            .swap("orders", true, GenerationId(2), &generations)
+            .swap_of("orders", true, GenerationId(2), &generations)
             .unwrap(),
     );
     assert_eq!(rows_of(&connection, "orders"), [(2, "new".to_owned())]);
@@ -1533,8 +1951,8 @@ fn a_swapped_in_generation_keeps_no_index_named_after_it() {
         ..base.clone()
     };
     apply(&connection, &planner, &create(&generation, &fields)).unwrap();
-    run_all(&connection, &planner.register(&generation));
-    run_all(&connection, &planner.key_indexes(&generation));
+    run_all(&connection, &planner.register_of(&generation));
+    run_all(&connection, &planner.key_indexes_of(&generation));
     let name = planner.generation_table("orders", GenerationId(2));
     run(
         &connection,
@@ -1550,11 +1968,11 @@ fn a_swapped_in_generation_keeps_no_index_named_after_it() {
     run_all(
         &connection,
         &planner
-            .swap("orders", true, GenerationId(2), &generations)
+            .swap_of("orders", true, GenerationId(2), &generations)
             .unwrap(),
     );
     // The next writer indexes the table under its own name; the generation's leave with it.
-    run_all(&connection, &planner.key_indexes(&base));
+    run_all(&connection, &planner.key_indexes_of(&base));
     let listing = Statement {
         sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'orders'".into(),
         params: Vec::new(),
@@ -1595,11 +2013,13 @@ fn a_swap_of_a_generation_without_a_table_empties_the_table() {
         .unwrap();
     run_all(
         &connection,
-        &planner.swap("orders", true, GenerationId(7), &[]).unwrap(),
+        &planner
+            .swap_of("orders", true, GenerationId(7), &[])
+            .unwrap(),
     );
     assert!(rows_of(&connection, "orders").is_empty());
     let nothing = planner
-        .swap("missing", false, GenerationId(7), &[])
+        .swap_of("missing", false, GenerationId(7), &[])
         .unwrap();
     assert_eq!(
         nothing.len(),
@@ -1643,7 +2063,7 @@ fn discarding_removes_only_what_older_sessions_of_the_pipeline_staged() {
         );
     }
     let names = ["orders".to_owned(), "users".to_owned()];
-    run_all(&connection, &planner.discard(&mine, Epoch(2), &names));
+    run_all(&connection, &planner.discard_of(&mine, Epoch(2), &names));
     for name in ["orders", "users"] {
         let left: Vec<i64> = rows_of(&connection, &planner.staging_table(name))
             .iter()
@@ -1699,7 +2119,7 @@ fn a_generation_never_created_starts_with_its_base_tables_columns() {
     let columns_of_base = columns(&connection, &planner, "orders");
     run_all(
         &connection,
-        &planner.generation(&generation, &columns_of_base),
+        &planner.generation_of(&generation, &columns_of_base),
     );
     let name = planner.generation_table("orders", GenerationId(5));
     let names: Vec<String> = columns(&connection, &planner, &name)
@@ -1712,11 +2132,11 @@ fn a_generation_never_created_starts_with_its_base_tables_columns() {
         [(name, GenerationId(5))]
     );
     assert!(
-        planner.generation(&generation, &[]).is_empty(),
+        planner.generation_of(&generation, &[]).is_empty(),
         "no base, nothing to copy"
     );
     assert!(
-        planner.generation(&base, &columns_of_base).is_empty(),
+        planner.generation_of(&base, &columns_of_base).is_empty(),
         "not a generation"
     );
 }
@@ -1753,7 +2173,7 @@ fn ids_beyond_the_signed_range_keep_their_value() {
         ("name", LogicalType::Utf8, true),
     ];
     apply(&connection, &planner, &create(&generation, &fields)).unwrap();
-    run_all(&connection, &planner.register(&generation));
+    run_all(&connection, &planner.register_of(&generation));
     let mine = pipeline("mine");
     stage(
         &connection,
@@ -1781,7 +2201,7 @@ fn ids_beyond_the_signed_range_keep_their_value() {
 fn publishing_into_a_table_that_does_not_exist_is_a_data_error() {
     let (_, planner) = database();
     let error = planner
-        .publish(
+        .publish_as(
             &staged("missing", None, None),
             &[],
             &pipeline("mine"),
@@ -1811,10 +2231,10 @@ fn a_merge_finds_the_rows_its_keys_replace_through_the_key_s_indexes() {
         ("seq", LogicalType::Binary, false),
     ];
     apply(&connection, &planner, &create(&orders, &fields)).unwrap();
-    run_all(&connection, &planner.key_indexes(&orders));
+    run_all(&connection, &planner.key_indexes_of(&orders));
     let columns = columns(&connection, &planner, "orders");
     let plan = planner
-        .publish(
+        .publish_as(
             &staged("orders", None, orders.merge.clone()),
             &columns,
             &pipeline("mine"),

@@ -159,10 +159,10 @@ impl History {
         ];
         let tables = names.map(|name| columns(&connection, &planner, &name));
         let ready = planner
-            .change_tables(&table, [&tables[0], &tables[1], &tables[2]])
+            .change_tables_of(&table, [&tables[0], &tables[1], &tables[2]])
             .unwrap();
         run_all(&connection, &ready);
-        run_all(&connection, &planner.key_indexes(&table));
+        run_all(&connection, &planner.key_indexes_of(&table));
         Self {
             connection,
             planner,
@@ -182,7 +182,7 @@ impl History {
     /// The statements publishing what the commit staged.
     fn plan(&self) -> crate::error::Result<Vec<Statement>> {
         let columns = columns(&self.connection, &self.planner, "orders");
-        self.planner.publish(
+        self.planner.publish_as(
             &self.staged(None),
             &columns,
             &pipeline("mine"),
@@ -603,7 +603,7 @@ fn a_history_table_never_publishes_into_a_generation() {
         };
         let error = history
             .planner
-            .publish(
+            .publish_as(
                 &staged,
                 &columns,
                 &pipeline("mine"),
@@ -629,7 +629,7 @@ fn a_history_of_partial_updates_is_refused() {
     };
     let error = history
         .planner
-        .publish(
+        .publish_as(
             &staged,
             &columns,
             &pipeline("mine"),

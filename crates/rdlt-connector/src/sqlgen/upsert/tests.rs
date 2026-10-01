@@ -80,8 +80,9 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
     let orders = pipeline("orders");
     run_all(&connection, &planner.open(&orders));
     run_all(&connection, &planner.open(&orders));
-    run_all(&connection, &planner.claim(&orders, "events"));
-    run_all(&connection, &planner.claim(&pipeline("other"), "events"));
+    run_all(&connection, &planner.claim(&orders, "events").unwrap());
+    let other = planner.claim(&pipeline("other"), "events").unwrap();
+    run_all(&connection, &other);
     let put = |value: &'static [u8]| {
         StateChange::Put(StateRecord {
             key: "cursor".to_owned(),
@@ -92,24 +93,29 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
         &connection,
         &planner.state_changes(&orders, &[put(b"1"), put(b"2")]),
     );
-    run_all(&connection, &planner.register(&table("events")));
+    run_all(&connection, &planner.register_of(&table("events")));
     let generation = TableRef {
         generation: Some(GenerationId(3)),
         ..table("events")
     };
-    run_all(&connection, &planner.register(&generation));
-    run_all(&connection, &planner.register(&generation));
+    run_all(&connection, &planner.register_of(&generation));
+    run_all(&connection, &planner.register_of(&generation));
     let renamed = TableRef {
         path: TablePath::new(["events"]).unwrap(),
         name: "events_v2".into(),
         ..table("events")
     };
-    run_all(&connection, &planner.register(&renamed));
+    run_all(&connection, &planner.register_of(&renamed));
     vec![
         query(&connection, &planner.epoch(&orders)),
         query(&connection, &planner.owner("events")),
         query(&connection, &planner.state(&orders)),
-        query(&connection, &planner.tables()),
+        query(
+            &connection,
+            &planner.table_name(&pipeline("mine"), &renamed.path),
+        ),
+        query(&connection, &planner.owned_by(&orders)),
+        query(&connection, &planner.owned_tables()),
         query(&connection, &planner.generations("events")),
     ]
 }
@@ -124,6 +130,8 @@ fn standard_sql_writes_the_catalog_as_on_conflict_does() {
             Value::Blob(b"2".to_vec()),
         ]],
         vec![vec![Value::Text("events_v2".to_owned())]],
+        vec![vec![Value::Text("events".to_owned())]],
+        vec![vec![Value::Text("events".to_owned())]],
         vec![vec![
             Value::Text("_rdlt_generation_3__events".to_owned()),
             Value::Integer(3),
