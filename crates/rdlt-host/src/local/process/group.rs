@@ -96,7 +96,7 @@ pub(super) struct Owned {
     child: Child,
     held: Arc<Held>,
     killed: Option<CancellationToken>,
-    /// Told the leader's exit, once its group is empty.
+    /// Told the leader's exit, once it is reaped.
     exit: watch::Sender<Option<ExitStatus>>,
 }
 
@@ -149,8 +149,7 @@ impl Owned {
             let Ok(mut owned) = take.recv() else {
                 return;
             };
-            let (status, emptied) = owned.ended();
-            owned.exit.send_replace(status);
+            let (_, emptied) = owned.ended(emptied);
             registry::leave(id, emptied);
         };
         if let Err(error) = threaded(reaping, Box::new(owning)) {
@@ -180,9 +179,9 @@ impl Owned {
         }
     }
 
-    /// Owns the group until it has ended: the leader's exit, and whether the group was seen
-    /// empty after it was killed.
-    fn ended(&mut self) -> (Option<ExitStatus>, bool) {
+    /// Owns the group until it has ended: the leader's exit, which is told as soon as it is
+    /// reaped, and whether the group, asked through `emptied` after that, was seen empty.
+    fn ended(&mut self, emptied: impl FnOnce(Pid) -> bool) -> (Option<ExitStatus>, bool) {
         let group = Pid::from_child(&self.child);
         let held = self.held();
         // Until the leader has exited, a kill has come, or a stop's grace has passed.
@@ -201,6 +200,7 @@ impl Owned {
             };
             if due {
                 let status = reap(&mut self.child, group, state);
+                self.exit.send_replace(status);
                 return (status, emptied(group));
             }
             drop(state);

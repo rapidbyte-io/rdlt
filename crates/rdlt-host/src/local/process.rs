@@ -111,7 +111,7 @@ pub(crate) struct Process {
     held: Arc<group::Held>,
     /// What the kill that kills it cancels, when one may.
     killed: Option<CancellationToken>,
-    /// The process's exit, once it has exited and its group is empty.
+    /// The process's exit, once it has exited and is reaped.
     exit: watch::Receiver<Option<ExitStatus>>,
     /// Whether its standard error has closed.
     stderr_closed: watch::Receiver<bool>,
