@@ -358,6 +358,9 @@ impl<'a> Writer<'a> {
         let file = buffered
             .into_inner()
             .map_err(|error| failed(error.into_error()))?;
+        #[cfg(test)]
+        crate::rooted::trace::step(crate::rooted::trace::Step::SyncFile(self.path.clone()))
+            .map_err(&failed)?;
         file.sync_all().map_err(&failed)?;
         let bytes = file.metadata().map_err(&failed)?.len();
         self.dir

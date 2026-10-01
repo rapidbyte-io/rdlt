@@ -60,17 +60,17 @@ fn a_staged_file_s_place_names_its_session_its_segment_its_table_and_its_part() 
 
 #[test]
 fn a_staged_file_s_directory_and_every_directory_made_for_it_are_synced() {
-    use crate::rooted::tests::SYNCED;
+    use crate::rooted::trace;
     let (root, location) = location(FileFormat::Jsonl);
     let pipeline = root.path().join("pipeline");
     let (names, file) = location.staged(&["3".to_owned()], "rows", None, 1);
     location.staging(&names[..3]).unwrap();
-    SYNCED.with(|synced| synced.borrow_mut().clear());
+    trace::clear();
     let dir = location.staging(&names).unwrap();
     let ids: arrow_array::ArrayRef = Arc::new(arrow_array::Int64Array::from(vec![1, 2]));
     let batch = arrow_array::RecordBatch::try_from_iter([("id", ids)]).unwrap();
     location.format.write(&dir, &file, &[batch]).unwrap();
-    let synced = SYNCED.with(|synced| synced.borrow().clone());
+    let synced = trace::synced();
     // Each new directory's entry is synced in its parent, and the file's in its own; the
     // directories that were there are not synced again.
     let load = pipeline.join(names[..3].join("/"));

@@ -81,12 +81,12 @@ fn a_keeper_reads_its_last_whole_file_beside_one_a_crash_left_half_written() {
 
 #[test]
 fn an_advance_makes_its_rename_durable_in_the_keeper_s_directory() {
-    use crate::rooted::tests::SYNCED;
+    use crate::rooted::trace;
     let dir = tempfile::tempdir().unwrap();
     let kept: Kept<u64> = Kept::at(&dir.path().join("slot.json")).unwrap();
-    SYNCED.with(|synced| synced.borrow_mut().clear());
+    trace::clear();
     kept.advance("orders", &partition("p0"), 7).unwrap();
-    let synced = SYNCED.with(|synced| synced.borrow().clone());
+    let synced = trace::synced();
     assert_eq!(synced.last(), Some(&dir.path().to_owned()), "{synced:?}");
 }
 

@@ -105,6 +105,13 @@ fn prefix(owner: &str) -> String {
 }
 
 impl Temporary<'_> {
+    /// Makes the file's bytes durable.
+    fn sync(&self) -> io::Result<()> {
+        #[cfg(test)]
+        super::trace::step(super::trace::Step::SyncFile(self.dir.at(&self.name)))?;
+        self.file.sync_all()
+    }
+
     /// The file, to write.
     pub(crate) fn file(&mut self) -> &mut File {
         &mut self.file
@@ -114,7 +121,9 @@ impl Temporary<'_> {
     /// it linked, the directory's entry durable when it did.
     pub(crate) fn publish(self, name: impl AsRef<OsStr>) -> io::Result<bool> {
         let name = component(name.as_ref())?;
-        self.file.sync_all()?;
+        self.sync()?;
+        #[cfg(test)]
+        super::trace::step(super::trace::Step::Link(self.dir.at(name)))?;
         let (from, into) = (&self.dir.file, &self.dir.file);
         match rustix::fs::linkat(from, self.name.as_os_str(), into, name, AtFlags::empty()) {
             Ok(()) => {}
@@ -128,7 +137,7 @@ impl Temporary<'_> {
     /// Makes the file durable and renames it over `name`, the rename durable too: a crash
     /// leaves what `name` held or what the file holds, never a torn file.
     pub(crate) fn replace(mut self, name: impl AsRef<OsStr>) -> io::Result<()> {
-        self.file.sync_all()?;
+        self.sync()?;
         self.dir.rename(&self.name, self.dir, name)?;
         self.renamed = true;
         self.dir.sync()

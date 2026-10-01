@@ -798,7 +798,7 @@ fn a_file_of_no_batch_or_of_a_taken_name_is_not_written() {
 
 #[test]
 fn a_writer_dropped_unfinished_leaves_no_file_and_a_finished_one_is_synced() {
-    use crate::rooted::tests::SYNCED;
+    use crate::rooted::trace;
     let (root, dir) = scratch();
     let batch = strings(2, 2);
     for format in [FileFormat::Jsonl, FileFormat::Arrow] {
@@ -807,15 +807,12 @@ fn a_writer_dropped_unfinished_leaves_no_file_and_a_finished_one_is_synced() {
         assert!(root.path().join("rows").exists());
         drop(writer);
         assert!(!root.path().join("rows").exists());
-        SYNCED.with(|synced| synced.borrow_mut().clear());
+        trace::clear();
         let mut writer = Writer::create(format, &dir, "kept", batch.schema_ref()).unwrap();
         writer.write(&batch).unwrap();
         writer.write(&batch.slice(0, 0)).unwrap();
         assert_eq!(writer.finish().unwrap().rows, 2);
-        assert_eq!(
-            SYNCED.with(|synced| synced.borrow().clone()),
-            [root.path().to_owned()]
-        );
+        assert_eq!(trace::synced(), [root.path().to_owned()]);
         std::fs::remove_file(root.path().join("kept")).unwrap();
     }
 }

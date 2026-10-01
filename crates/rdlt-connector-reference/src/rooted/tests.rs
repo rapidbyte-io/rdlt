@@ -1,16 +1,10 @@
-use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::io::{ErrorKind, Write as _};
 use std::os::unix::fs::{PermissionsExt as _, symlink};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use super::{Dir, Kind, Limit, Refusal, component, components, private, refusal, unique};
-
-thread_local! {
-    /// Every directory this thread synced, in order.
-    pub(crate) static SYNCED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
-}
+use super::{Dir, Kind, Limit, Refusal, component, components, private, refusal, trace, unique};
 
 const LIMIT: Limit = Limit {
     name: "test bytes",
@@ -195,27 +189,24 @@ fn a_file_beyond_the_limit_is_refused_unread() {
 fn created_directories_and_files_are_their_owner_s_alone() {
     let base = tempfile::tempdir().unwrap();
     let root = base.path().join("a").join("b");
-    SYNCED.with(|synced| synced.borrow_mut().clear());
+    trace::clear();
     let dir = Dir::ambient_created(&root).unwrap();
     assert_eq!(dir.path(), root);
-    let synced = SYNCED.with(|synced| synced.borrow().clone());
+    let synced = trace::synced();
     assert_eq!(synced, [base.path().to_owned(), base.path().join("a")]);
     assert_eq!(mode(&base.path().join("a")), 0o700);
     assert_eq!(mode(&root), 0o700);
     // What exists is opened as it is, and nothing is synced for it.
-    SYNCED.with(|synced| synced.borrow_mut().clear());
+    trace::clear();
     Dir::ambient_created(&root).unwrap();
-    assert!(SYNCED.with(|synced| synced.borrow().is_empty()));
+    assert!(trace::synced().is_empty());
     let made = dir.dir_created("made").unwrap();
     assert_eq!(made.path(), root.join("made"));
     assert_eq!(dir.at("made"), root.join("made"));
     assert_eq!(mode(&root.join("made")), 0o700);
-    assert_eq!(
-        SYNCED.with(|synced| synced.borrow().clone()),
-        std::slice::from_ref(&root)
-    );
+    assert_eq!(trace::synced(), std::slice::from_ref(&root));
     dir.dir_created("made").unwrap();
-    assert_eq!(SYNCED.with(|synced| synced.borrow().len()), 1);
+    assert_eq!(trace::synced().len(), 1);
     let deep = dir.walk_created(["made", "deeper", "deepest"]).unwrap();
     assert_eq!(deep.path(), root.join("made/deeper/deepest"));
     assert_eq!(mode(&root.join("made/deeper/deepest")), 0o700);
@@ -374,16 +365,13 @@ fn a_temporary_is_removed_unless_published() {
     assert_eq!(names(&dir), before);
     // Published under a free name: the name holds the bytes, the temporary is gone, the
     // directory synced.
-    SYNCED.with(|synced| synced.borrow_mut().clear());
+    trace::clear();
     let mut temporary = dir.temporary().unwrap();
     temporary.file().write_all(b"whole").unwrap();
     assert!(temporary.publish("published").unwrap());
     assert_eq!(dir.read("published", LIMIT).unwrap(), b"whole");
     assert_eq!(names(&dir).len(), before.len() + 1);
-    assert_eq!(
-        SYNCED.with(|synced| synced.borrow().clone()),
-        std::slice::from_ref(&root)
-    );
+    assert_eq!(trace::synced(), std::slice::from_ref(&root));
     // A name that exists, a link included, wins: nothing is replaced or followed.
     for taken in ["published", "link", "dangling", "inner"] {
         let mut temporary = dir.temporary().unwrap();
@@ -394,14 +382,14 @@ fn a_temporary_is_removed_unless_published() {
     assert!(!base.path().join("nowhere").exists());
     assert_eq!(names(&dir).len(), before.len() + 1);
     // Renamed over a name: the name holds the bytes, a link there is replaced itself.
-    SYNCED.with(|synced| synced.borrow_mut().clear());
+    trace::clear();
     for replaced in ["published", "link", "fresh"] {
         let mut temporary = dir.temporary().unwrap();
         temporary.file().write_all(b"next").unwrap();
         temporary.replace(replaced).unwrap();
         assert_eq!(dir.read(replaced, LIMIT).unwrap(), b"next", "{replaced}");
     }
-    assert_eq!(SYNCED.with(|synced| synced.borrow().len()), 3);
+    assert_eq!(trace::synced().len(), 3);
     assert_eq!(
         std::fs::read(base.path().join("outside").join("secret")).unwrap(),
         b"secret"
@@ -524,4 +512,49 @@ fn a_file_larger_than_it_was_measured_is_refused_as_it_is_read() {
         ..LIMIT
     };
     assert!(process.read("status", whole).unwrap().len() > 9);
+}
+
+#[test]
+fn every_durable_step_is_recorded_in_order_and_a_fault_refuses_its_step() {
+    use trace::Step;
+    let base = tempfile::tempdir().unwrap();
+    let dir = Dir::ambient(base.path()).unwrap();
+    let at = |name: &str| base.path().join(name);
+    trace::clear();
+    let made = dir.dir_created("made").unwrap();
+    dir.dir_created("made").unwrap();
+    let mut temporary = made.temporary().unwrap();
+    temporary.file().write_all(b"x").unwrap();
+    assert!(temporary.publish("file").unwrap());
+    made.rename("file", &dir, "moved").unwrap();
+    dir.remove_file("moved").unwrap();
+    dir.remove_dir("made").unwrap();
+    let steps = trace::steps();
+    let (Step::Create(temporary) | Step::MakeDir(temporary)) = steps[2].clone() else {
+        panic!("{steps:?}");
+    };
+    let expected = [
+        Step::MakeDir(at("made")),
+        Step::SyncDir(base.path().to_owned()),
+        Step::Create(temporary.clone()),
+        Step::SyncFile(temporary.clone()),
+        Step::Link(at("made").join("file")),
+        Step::SyncDir(at("made")),
+        Step::Remove(temporary),
+        Step::Rename(at("moved")),
+        Step::Remove(at("moved")),
+        Step::RemoveDir(at("made")),
+    ];
+    assert_eq!(steps, expected);
+    // A fault refuses its step alone; a crash refuses it and every step after it.
+    trace::fail_at(1);
+    dir.create("a").unwrap();
+    assert!(dir.create("b").is_err() && !at("b").exists());
+    dir.create("c").unwrap();
+    trace::crash_at(1);
+    dir.create("d").unwrap();
+    assert!(dir.create("e").is_err() && dir.create("f").is_err());
+    assert!(dir.remove_file("d").is_err() && at("d").exists());
+    trace::clear();
+    dir.remove_file("d").unwrap();
 }
