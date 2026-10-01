@@ -28,6 +28,11 @@ pub(super) struct RemoteWriter {
     encoder: Encoder,
     schema: Option<SchemaRef>,
     version: u32,
+    /// Bytes: the batch frames sent since the last flush, header and body, as the connector
+    /// counts what it has staged.
+    staged: u64,
+    /// The stats of the flushes the writer made itself since the last one it was asked for.
+    flushed: WriteStats,
 }
 
 impl RemoteWriter {
@@ -65,6 +70,8 @@ impl RemoteWriter {
             encoder: Encoder::default(),
             schema: None,
             version: table.version.0,
+            staged: 0,
+            flushed: WriteStats::default(),
         })
     }
 
@@ -165,6 +172,18 @@ impl RemoteWriter {
                 }
             };
             for frame in frames {
+                // The connector refuses more than it may stage between two flushes, so a frame
+                // that would pass that is sent after a flush of what is staged.
+                let bytes = frame.header.len().saturating_add(frame.body.len());
+                let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+                let staged = self.staged.saturating_add(bytes);
+                if self.staged > 0 && self.connection.peer.admit_staged(staged).is_err() {
+                    let flushed = self.flush_staged().await;
+                    let stats = flushed.inspect_err(|_| self.schema = None)?;
+                    self.flushed.rows = self.flushed.rows.saturating_add(stats.rows);
+                    self.flushed.bytes = self.flushed.bytes.saturating_add(stats.bytes);
+                }
+                self.staged = self.staged.saturating_add(bytes);
                 let batch = Frame::Batch(v1::WriteBatch {
                     segment: segment.0,
                     data_header: frame.header,
@@ -181,9 +200,22 @@ impl RemoteWriter {
         }
     }
 
+    /// Flushes what the connector has staged, and returns the stats of everything flushed since
+    /// the last flush asked for.
     async fn flush_all(&mut self) -> rdlt_connector::Result<WriteStats> {
+        let stats = self.flush_staged().await?;
+        let before = std::mem::take(&mut self.flushed);
+        Ok(WriteStats {
+            rows: before.rows.saturating_add(stats.rows),
+            bytes: before.bytes.saturating_add(stats.bytes),
+        })
+    }
+
+    /// Asks the connector to flush what it has staged, and waits for its stats.
+    async fn flush_staged(&mut self) -> rdlt_connector::Result<WriteStats> {
         self.send(v1::write_frame::Frame::Flush(v1::Unit {}))
             .await?;
+        self.staged = 0;
         loop {
             match self.ack().await? {
                 v1::write_ack::Ack::Credit(credit) => {
