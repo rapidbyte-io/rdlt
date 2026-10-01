@@ -110,9 +110,7 @@ async fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_
         left(&budget),
         (HELD_BYTES - 9 - HELD_EVENT_BYTES, HELD_ROWS - 1)
     );
-    budget
-        .cursor(&Cursor::new(1, Bytes::from_static(b"abc")).unwrap())
-        .unwrap();
+    budget.cursor(&Cursor::new(1, b"abc").unwrap()).unwrap();
     assert_eq!(
         left(&budget),
         (HELD_BYTES - 12 - 2 * HELD_EVENT_BYTES, HELD_ROWS - 1)
@@ -136,7 +134,7 @@ async fn a_clause_holds_up_to_its_rows_and_its_bytes_and_nothing_once_beyond_eit
     let beyond = budget.push(&empty).await.unwrap_err();
     assert!(beyond.unobserved, "a source that sends more broke nothing");
     // Beyond its bytes, a clause holds no cursor either, nor rows it had room for.
-    let cursor = Cursor::new(1, Bytes::new()).unwrap();
+    let cursor = Cursor::new(1, &[]).unwrap();
     assert!(budget.cursor(&cursor).is_err());
     assert!(budget.push(&nulls(1)).await.is_err());
     let budget = Budget::new();

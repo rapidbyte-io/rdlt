@@ -22,7 +22,10 @@ pub struct Cursor {
 impl Cursor {
     /// A cursor of `bytes` in the connector's format `version`, at most
     /// [`MAX_CURSOR_BYTES`](crate::limits::MAX_CURSOR_BYTES).
-    pub fn new(version: u16, bytes: Bytes) -> Result<Self> {
+    ///
+    /// The bytes are copied into an allocation of their own: a cursor waits for its commit, and
+    /// must not keep the message or buffer it was cut from alive meanwhile.
+    pub fn new(version: u16, bytes: &[u8]) -> Result<Self> {
         let actual = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if actual > MAX_CURSOR_BYTES {
             return Err(ConnectorError::exceeds(LimitExceeded {
@@ -31,13 +34,16 @@ impl Cursor {
                 actual,
             }));
         }
-        Ok(Self { version, bytes })
+        Ok(Self {
+            version,
+            bytes: Bytes::copy_from_slice(bytes),
+        })
     }
 
     /// Encodes `value` as JSON in format `version`.
     pub fn encode<T: Serialize>(version: u16, value: &T) -> Result<Self> {
         let json = serde_json::to_vec(value).internal("encoding a cursor")?;
-        Self::new(version, Bytes::from(json))
+        Self::new(version, &json)
     }
 
     /// Decodes a cursor written by [`Cursor::encode`] in format `version`.
@@ -88,6 +94,6 @@ impl<'de> Deserialize<'de> for Cursor {
         let bytes = STANDARD
             .decode(encoded.base64)
             .map_err(serde::de::Error::custom)?;
-        Self::new(encoded.version, Bytes::from(bytes)).map_err(serde::de::Error::custom)
+        Self::new(encoded.version, &bytes).map_err(serde::de::Error::custom)
     }
 }

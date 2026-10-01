@@ -1,12 +1,16 @@
 //! A remote read: the connector's frames, received within the credit this end grants, become the
 //! events of the engine's partition sink, and the engine's requests go to the connector.
 
+#[cfg(test)]
+mod tests;
+
 use rdlt_connector::wire::{Invalid, frame_error, v1};
 use rdlt_connector::{
     ConnectorError, ConnectorErrorKind, Cursor, LogLevel, PartitionSink, Push, ReadRequest,
     Requested, SourceEvent,
 };
 use rdlt_wire::prost::Message as _;
+use rdlt_wire::prost::bytes::Bytes;
 use rdlt_wire::{Decoder, IpcFrame, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -165,7 +169,10 @@ impl Reader {
                 Frame::Batch(batch) => self.batch(batch)?,
                 Frame::Json(json) => {
                     self.limits.admit_json(json.data.len()).map_err(refused)?;
-                    Read::Event(SourceEvent::Push(Push::Json(json.data)))
+                    // The bytes are a slice of the whole message: copied, the push is charged
+                    // for all it keeps alive.
+                    let json = Bytes::copy_from_slice(&json.data);
+                    Read::Event(SourceEvent::Push(Push::Json(json)))
                 }
                 Frame::Checkpoint(checkpoint) => {
                     let cursor = checkpoint

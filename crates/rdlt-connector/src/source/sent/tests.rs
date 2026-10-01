@@ -1,5 +1,3 @@
-use bytes::Bytes;
-
 use super::{POSITION_UNSENT, Sent};
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
@@ -14,7 +12,7 @@ fn partition(id: &str) -> PartitionId {
 }
 
 fn cursor(version: u16, bytes: &'static [u8]) -> Cursor {
-    Cursor::new(version, Bytes::from_static(bytes)).expect("a cursor within its limit")
+    Cursor::new(version, bytes).expect("a cursor within its limit")
 }
 
 #[test]

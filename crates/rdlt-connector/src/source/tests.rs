@@ -1,7 +1,6 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use bytes::Bytes;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -300,7 +299,7 @@ async fn committed_cursors_reach_the_stream_decoded() {
             .to_string(),
         "whole committed n 99"
     );
-    let malformed = [(whole, Cursor::new(2, Bytes::from_static(b"{")).unwrap())];
+    let malformed = [(whole, Cursor::new(2, b"{").unwrap())];
     assert_eq!(
         source
             .committed(&numbers(), &malformed)

@@ -34,7 +34,7 @@ async fn a_cursor_beyond_the_sources_limit_is_refused_as_exceeding_it() {
     let request = ReadRequest::new(
         StreamName::new("items").expect("a valid stream name"),
         Partition::single(),
-        Some(Cursor::new(1, vec![b'x'; 65].into()).expect("a cursor within the host's")),
+        Some(Cursor::new(1, &[b'x'; 65]).expect("a cursor within the host's")),
     );
     let error = RemoteSource::new(connection)
         .read(request, sink)

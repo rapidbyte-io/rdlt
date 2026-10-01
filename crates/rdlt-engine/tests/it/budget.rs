@@ -7,7 +7,7 @@ use arrow_array::builder::BinaryViewBuilder;
 use arrow_array::types::{Int8Type, Int32Type};
 use arrow_array::{
     ArrayRef, BooleanArray, DictionaryArray, Int8Array, Int32Array, Int64Array, ListArray,
-    ListViewArray, RecordBatch, UInt8Array, new_null_array,
+    ListViewArray, RecordBatch, new_null_array,
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field};
@@ -135,7 +135,8 @@ async fn batches_keeping_large_buffers_alive_load_within_the_budget() {
         if step % 2 == 1 {
             return Some(Step::Checkpoint(8));
         }
-        let whole = UInt8Array::from(vec![1_u8; 4 << 20]);
+        // A type the destination stores as it is, so lowering passes the buffer through.
+        let whole = Int8Array::from(vec![1_i8; 4 << 20]);
         Some(Step::Batch(batch(Arc::new(whole.slice(0, 3)))))
     });
     let source = making("budget_kept", steps).await;

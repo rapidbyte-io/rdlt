@@ -192,7 +192,7 @@ fn capabilities() -> impl Strategy<Value = Capabilities> {
 
 fn cursor() -> impl Strategy<Value = Cursor> {
     (any::<u16>(), proptest::collection::vec(any::<u8>(), 0..16))
-        .prop_map(|(version, bytes)| Cursor::new(version, Bytes::from(bytes)).unwrap())
+        .prop_map(|(version, bytes)| Cursor::new(version, &bytes).unwrap())
 }
 
 fn stream_state() -> impl Strategy<Value = StreamState> {

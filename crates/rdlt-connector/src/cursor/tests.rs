@@ -41,7 +41,7 @@ fn a_cursor_in_another_format_is_a_config_error() {
 
 #[test]
 fn malformed_cursor_bytes_are_a_data_error() {
-    let cursor = Cursor::new(1, Bytes::from_static(b"not json")).unwrap();
+    let cursor = Cursor::new(1, b"not json").unwrap();
     assert_eq!(
         cursor.decode::<Since>(1).unwrap_err().kind(),
         ConnectorErrorKind::Data
@@ -51,8 +51,8 @@ fn malformed_cursor_bytes_are_a_data_error() {
 #[test]
 fn cursors_over_the_limit_are_refused() {
     let limit = usize::try_from(MAX_CURSOR_BYTES).unwrap();
-    assert!(Cursor::new(1, Bytes::from(vec![0; limit])).is_ok());
-    let error = Cursor::new(1, Bytes::from(vec![0; limit + 1])).unwrap_err();
+    assert!(Cursor::new(1, &vec![0; limit]).is_ok());
+    let error = Cursor::new(1, &vec![0; limit + 1]).unwrap_err();
     assert_eq!(error.limit().unwrap().actual, MAX_CURSOR_BYTES + 1);
 }
 
@@ -64,8 +64,20 @@ fn deserializing_refuses_bad_base64() {
 proptest! {
     #[test]
     fn cursors_round_trip_through_json(version in any::<u16>(), bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
-        let cursor = Cursor::new(version, Bytes::from(bytes)).unwrap();
+        let cursor = Cursor::new(version, &bytes).unwrap();
         let json = serde_json::to_string(&cursor).unwrap();
         prop_assert_eq!(serde_json::from_str::<Cursor>(&json).unwrap(), cursor);
     }
+}
+
+#[test]
+fn a_cursor_owns_exactly_its_bytes() {
+    // A few bytes of a large message, as a transport hands them over.
+    let message = Bytes::from(vec![7_u8; 1 << 20]);
+    let cursor = Cursor::new(1, &message.slice(100..104)).unwrap();
+    assert_eq!(cursor.bytes().as_ref(), [7_u8; 4]);
+    assert!(
+        message.is_unique(),
+        "the cursor keeps the message it arrived in alive"
+    );
 }

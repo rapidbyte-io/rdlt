@@ -142,7 +142,7 @@ async fn a_checkpoint_waits_for_admission_and_carries_its_permit() {
     let gate = Arc::new(Gate::default());
     let (mut sink, mut feed) =
         admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
-    let cursor = Cursor::new(1, Bytes::from_static(b"12345")).unwrap();
+    let cursor = Cursor::new(1, b"12345").unwrap();
     let checkpoint = SourceEvent::Checkpoint {
         cursor,
         answers: None,
@@ -248,7 +248,7 @@ async fn a_forwarded_read_learns_of_each_newer_barrier_once() {
 async fn a_forwarded_read_does_not_ask_for_a_barrier_its_checkpoint_answered() {
     let (mut sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
     feed.request_checkpoint(2);
-    let cursor = Cursor::new(1, Bytes::from_static(b"c")).expect("a small cursor");
+    let cursor = Cursor::new(1, b"c").expect("a small cursor");
     sink.send(SourceEvent::Checkpoint {
         cursor,
         answers: Some(2),
@@ -264,7 +264,7 @@ async fn a_forwarded_read_does_not_ask_for_a_barrier_its_checkpoint_answered() {
 async fn a_checkpoint_answering_a_barrier_never_requested_is_refused() {
     let (mut sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
     feed.request_checkpoint(2);
-    let cursor = || Cursor::new(1, Bytes::from_static(b"c")).expect("a small cursor");
+    let cursor = || Cursor::new(1, b"c").expect("a small cursor");
     let refused = sink
         .send(SourceEvent::Checkpoint {
             cursor: cursor(),
