@@ -62,20 +62,37 @@ pub(super) fn commit(
             return Err(error);
         }
     };
-    shared
-        .lock()
-        .staged
-        .retain(|file| !meta.segments.contains(file.segment));
+    {
+        let mut shared = shared.lock();
+        shared
+            .staged
+            .retain(|file| !meta.segments.contains(file.segment));
+        // A dropped table is the session's no longer, until it creates the table again.
+        for dropped in &meta.drop_tables {
+            shared.names.remove(&path_key(&dropped.path));
+        }
+    }
     // The manifest is durable: what it no longer lists is read by nothing that follows it. What
     // cannot be removed now is removed by the next open.
     prune(&location.dir, &held);
-    // The manifest is the truth: a catalog left behind here is removed by the next open.
+    release_dropped(location, shared, &manifest);
+    Ok(receipt)
+}
+
+/// Removes the catalogs of the tables `manifest` lists as dropped, each once in the session.
+///
+/// The manifest is the truth: a catalog left behind here is removed by the next open.
+fn release_dropped(location: &Location, shared: &Mutex<Shared>, manifest: &Manifest) {
     for name in &manifest.dropped {
+        if shared.lock().released.contains(name) {
+            continue;
+        }
         let still = || destination::still_dropped(&location.dir, name);
         let (rdlt, wait) = (&location.rdlt, location.lock_wait);
-        drop(tables::release(rdlt, name, &location.pipeline, wait, still));
+        if tables::release(rdlt, name, &location.pipeline, wait, still).is_ok() {
+            shared.lock().released.insert(name.clone());
+        }
     }
-    Ok(receipt)
 }
 
 /// Removes those of `paths` the latest manifest of the pipeline whose directory `dir` is does
@@ -116,8 +133,17 @@ fn put(
     names: BTreeMap<String, String>,
     meta: &CommitMeta,
 ) -> Result<Receipt> {
+    // A table the session created again since it dropped it is dropped no longer.
+    let dropping = |name: &String| meta.drop_tables.iter().any(|table| *table.name == **name);
+    for name in names.values().filter(|name| !dropping(name)) {
+        manifest.dropped.remove(name);
+    }
     manifest.paths.extend(names);
     finish(location, manifest, meta)?;
+    let published = &manifest.tables;
+    manifest
+        .dropped
+        .retain(|name| !published.contains_key(name));
     manifest.apply(&meta.state_delta);
     let receipt = Receipt {
         load_id: meta.load_id,

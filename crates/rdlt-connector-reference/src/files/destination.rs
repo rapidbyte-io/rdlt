@@ -182,9 +182,11 @@ fn next_epoch(dir: &Dir, rdlt: &Dir, pipeline: &PipelineId, wait: Duration) -> R
 }
 
 /// Whether the latest manifest of the pipeline whose directory `dir` is still lists the table
-/// `name` as dropped: a newer session that removed its catalog no longer does.
+/// `name` as dropped and lists nothing for it: a newer session that removed its catalog no
+/// longer lists it as dropped, and a table that was created again is published.
 pub(super) fn still_dropped(dir: &Dir, name: &str) -> Result<bool> {
-    Ok(manifest::latest(dir)?.is_some_and(|latest| latest.dropped.contains(name)))
+    Ok(manifest::latest(dir)?
+        .is_some_and(|latest| latest.dropped.contains(name) && !latest.tables.contains_key(name)))
 }
 
 /// Removes what sessions of the pipeline whose directory `dir` is, older than `epoch`, staged
