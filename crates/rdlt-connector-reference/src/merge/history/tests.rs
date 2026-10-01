@@ -523,6 +523,81 @@ fn rows_after_a_truncate_in_its_commit_stay() {
 }
 
 #[test]
+fn truncates_of_one_commit_each_close_what_was_current_before_them() {
+    let commits: [&[Row]; 2] = [
+        &[upsert(1, "a", 1, 10), upsert(2, "b", 2, 20)],
+        &[
+            truncate(3, 30),
+            upsert(1, "c", 4, 40),
+            truncate(5, 50),
+            truncate(6, 60),
+            upsert(2, "d", 7, 70),
+        ],
+    ];
+    let hard = history(&commits, Kind::Hard);
+    assert_eq!(
+        versions(&hard),
+        sorted(vec![
+            closed(1, "a", 1, 10, 30),
+            closed(1, "c", 4, 40, 50),
+            closed(2, "b", 2, 20, 30),
+            current(2, "d", 7, 70),
+        ])
+    );
+    assert_eq!(tombstones(&hard), [(None, 6)]);
+    // Where deletes are soft, the first truncate past a version deletes it and the next finds it
+    // deleted already.
+    let soft = history(&commits, Kind::Soft);
+    assert_eq!(
+        versions(&soft),
+        sorted(vec![
+            closed(1, "a", 1, 10, 30),
+            deleted(1, "a", 3, 30, Some(40)),
+            closed(1, "c", 4, 40, 50),
+            deleted(1, "c", 5, 50, None),
+            closed(2, "b", 2, 20, 30),
+            deleted(2, "b", 3, 30, Some(70)),
+            current(2, "d", 7, 70),
+        ])
+    );
+    assert_eq!(tombstones(&soft), []);
+}
+
+/// The least of three timings of `work`, which a busy machine inflates least.
+fn timed<T>(mut work: impl FnMut() -> T) -> std::time::Duration {
+    (0..3)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            std::hint::black_box(work());
+            started.elapsed()
+        })
+        .min()
+        .expect("three timings")
+}
+
+#[test]
+fn truncates_cost_their_count_and_the_keys_not_their_product() {
+    const KEYS: i64 = 10_000;
+    const TRUNCATES: usize = 2_000;
+    for kind in [Kind::Hard, Kind::Soft] {
+        let rows: Vec<Row> = (0..KEYS).map(|id| upsert(id, "a", 100, 10)).collect();
+        let published = history(&[&rows], kind);
+        // Truncates before every version change nothing; those past them close each.
+        for seq in [1, 200] {
+            let truncating = |count: usize| {
+                let truncates: Vec<Row> = (0..count).map(|_| truncate(seq, 50)).collect();
+                timed(|| apply(&published, &[&truncates], kind))
+            };
+            let (one, many) = (truncating(1), truncating(TRUNCATES));
+            assert!(
+                many < one * 15,
+                "at {seq}: one truncate took {one:?}, {TRUNCATES} took {many:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_change_stream_s_history_stores_no_op() {
     let merged = history(&[&[upsert(1, "a", 1, 10)]], Kind::Hard);
     let schema = merged.rows[0].schema();

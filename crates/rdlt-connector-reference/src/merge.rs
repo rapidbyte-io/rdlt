@@ -1,5 +1,6 @@
 //! Merging published rows by key, as the memory and files destinations publish a merge table.
 
+mod aligned;
 mod changes;
 mod history;
 mod retype;
@@ -13,10 +14,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch, UInt32Array, new_null_array};
+use arrow_array::{ArrayRef, BooleanArray, RecordBatch};
 use arrow_row::{RowConverter, SortField};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ConnectorError, MergeKey, RootKey, TableRef};
+
+use aligned::{Nulls, concat, filtered, taken};
 
 /// Refuses a writer of `table` where it is a replace generation of a history table, which merges
 /// into its table only.
@@ -31,29 +34,6 @@ pub(crate) fn refuse_history_generation(table: &TableRef) -> rdlt_connector::Res
         ));
     }
     Ok(())
-}
-
-/// `batch` under `schema`: columns found by name, each as the schema's type where that keeps
-/// every value exactly, and missing columns null; a value the schema's type cannot hold fails.
-pub(crate) fn align(batch: &RecordBatch, schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
-    let columns = schema
-        .fields()
-        .iter()
-        .map(|field| match batch.column_by_name(field.name()) {
-            Some(column) => retype::retyped(column, field.data_type()),
-            None => Ok(new_null_array(field.data_type(), batch.num_rows())),
-        })
-        .collect::<Result<Vec<ArrayRef>, _>>()?;
-    RecordBatch::try_new(Arc::clone(schema), columns)
-}
-
-/// One batch holding `batches` under `schema`.
-fn concat(batches: &[RecordBatch], schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
-    let aligned = batches
-        .iter()
-        .map(|batch| align(batch, schema))
-        .collect::<Result<Vec<_>, _>>()?;
-    arrow_select::concat::concat_batches(schema, &aligned)
 }
 
 /// The schema a change stream's written batches have: `stored`, every column nullable since a
@@ -75,6 +55,9 @@ pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> Sch
 /// each row versions its key in sequence order; for a change stream's table, each row applies in
 /// sequence order as its op says; otherwise an incoming row replaces the published row with its
 /// key, and among incoming rows of one key the greatest sequence wins.
+///
+/// A key `schema` cannot be merged by, one of no column or naming a column it lacks, is an error,
+/// and so is a value a column's type no longer holds: nothing merges then.
 pub(crate) fn merge(
     schema: &SchemaRef,
     published: &[RecordBatch],
@@ -96,10 +79,6 @@ pub(crate) fn merge(
             });
         }
     };
-    let tombstones = [tombstones]
-        .into_iter()
-        .filter(|batch| batch.num_rows() != 0)
-        .collect();
     Ok(Merged { rows, tombstones })
 }
 
@@ -111,6 +90,14 @@ pub(crate) struct Merged {
     pub(crate) tombstones: Vec<RecordBatch>,
 }
 
+/// The batches of `batches` that hold a row.
+fn held(batches: impl IntoIterator<Item = RecordBatch>) -> Vec<RecordBatch> {
+    batches
+        .into_iter()
+        .filter(|batch| batch.num_rows() != 0)
+        .collect()
+}
+
 /// The published rows once `incoming` upserts into `published` by `key`, the greatest sequence
 /// winning among incoming rows of one key.
 fn upsert(
@@ -119,13 +106,11 @@ fn upsert(
     incoming: &[RecordBatch],
     key: &MergeKey,
 ) -> Result<Vec<RecordBatch>, ArrowError> {
-    let incoming = concat(incoming, schema)?;
     let converter = converter(schema, key)?;
+    let mut nulls = Nulls::default();
+    let incoming = concat(incoming, schema, &mut nulls)?;
     let incoming_keys = converter.convert_columns(&key_columns(&incoming, key)?)?;
-    let seq = incoming
-        .column_by_name(&key.seq)
-        .ok_or_else(|| ArrowError::SchemaError(format!("no sequence column {}", key.seq)))?;
-    let seq = arrow_cast::cast(seq, &DataType::Binary)?;
+    let seq = binary(&incoming, &key.seq)?;
     let seq = seq.as_binary::<i32>();
     let mut winners: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
     for row in 0..incoming.num_rows() {
@@ -137,22 +122,16 @@ fn upsert(
             }
         }
     }
-    let mut rows: Vec<u32> = winners
-        .values()
-        .map(|row| u32::try_from(*row).unwrap_or(u32::MAX))
-        .collect();
+    let mut rows: Vec<usize> = winners.values().copied().collect();
     rows.sort_unstable();
-    let incoming = arrow_select::take::take_record_batch(&incoming, &UInt32Array::from(rows))?;
-    let published = concat(published, schema)?;
+    let incoming = taken(&incoming, &rows, &mut nulls)?;
+    let published = concat(published, schema, &mut nulls)?;
     let published_keys = converter.convert_columns(&key_columns(&published, key)?)?;
     let kept: BooleanArray = (0..published.num_rows())
         .map(|row| Some(!winners.contains_key(published_keys.row(row).as_ref())))
         .collect();
-    let published = arrow_select::filter::filter_record_batch(&published, &kept)?;
-    Ok([published, incoming]
-        .into_iter()
-        .filter(|batch| batch.num_rows() != 0)
-        .collect())
+    let published = filtered(&published, &kept, &mut nulls)?;
+    Ok(held([published, incoming]))
 }
 
 /// The published rows of a child table once the roots `roots` publish replace their children:
@@ -166,6 +145,7 @@ pub(crate) fn merge_children(
     root: &RootKey,
     roots: &[RecordBatch],
 ) -> Result<Vec<RecordBatch>, ArrowError> {
+    let column = key.columns.first().ok_or_else(keyless)?;
     let mut winners: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for batch in roots {
         let (ids, seqs) = (binary(batch, &root.id)?, binary(batch, &root.seq)?);
@@ -176,39 +156,46 @@ pub(crate) fn merge_children(
             *best = std::cmp::max(std::mem::take(best), seq.to_vec());
         }
     }
-    let column = key
-        .columns
-        .first()
-        .ok_or_else(|| ArrowError::SchemaError("a child table's key names its root id".into()))?;
-    let published = concat(published, schema)?;
+    let mut nulls = Nulls::default();
+    let published = concat(published, schema, &mut nulls)?;
     let owners = binary(&published, column)?;
     let owners = owners.as_binary::<i32>();
     let kept: BooleanArray = (0..published.num_rows())
         .map(|row| Some(!winners.contains_key(owners.value(row))))
         .collect();
-    let published = arrow_select::filter::filter_record_batch(&published, &kept)?;
-    let incoming = concat(incoming, schema)?;
+    let published = filtered(&published, &kept, &mut nulls)?;
+    let incoming = concat(incoming, schema, &mut nulls)?;
     let (owners, seqs) = (binary(&incoming, column)?, binary(&incoming, &key.seq)?);
     let (owners, seqs) = (owners.as_binary::<i32>(), seqs.as_binary::<i32>());
     let winning: BooleanArray = (0..incoming.num_rows())
         .map(|row| Some(winners.get(owners.value(row)).map(Vec::as_slice) == Some(seqs.value(row))))
         .collect();
-    let incoming = arrow_select::filter::filter_record_batch(&incoming, &winning)?;
-    Ok([published, incoming]
-        .into_iter()
-        .filter(|batch| batch.num_rows() != 0)
-        .collect())
+    let incoming = filtered(&incoming, &winning, &mut nulls)?;
+    Ok(held([published, incoming]))
 }
 
-/// `batch`'s column `name` as `Binary`.
+/// `batch`'s column `name` as `Binary`, which an id or a sequence is.
 fn binary(batch: &RecordBatch, name: &str) -> Result<ArrayRef, ArrowError> {
     let column = batch
         .column_by_name(name)
         .ok_or_else(|| ArrowError::SchemaError(format!("no column {name}")))?;
-    arrow_cast::cast(column, &DataType::Binary)
+    retype::compared(column)
 }
 
+/// The error for a merge key naming no column.
+fn keyless() -> ArrowError {
+    ArrowError::InvalidArgumentError("the table is merged by a key of no column".to_owned())
+}
+
+/// The converter of `key`'s columns of `schema` to comparable rows; a key of no column, or of a
+/// column or a sequence `schema` lacks, merges nothing.
 fn converter(schema: &SchemaRef, key: &MergeKey) -> Result<RowConverter, ArrowError> {
+    if key.columns.is_empty() {
+        return Err(keyless());
+    }
+    schema
+        .field_with_name(&key.seq)
+        .map_err(|_| ArrowError::SchemaError(format!("no sequence column {}", key.seq)))?;
     let fields = key
         .columns
         .iter()

@@ -103,6 +103,17 @@ fn lossless(from: &DataType, to: &DataType) -> bool {
     }
 }
 
+/// The values of `array`, an id or a sequence, as the bytes they compare by: bytes as they are,
+/// and text, which a destination without a type for bytes keeps them as, as the bytes it is.
+pub(super) fn compared(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
+    match array.data_type() {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            checked(array, &DataType::Binary)
+        }
+        _ => retyped(array, &DataType::Binary),
+    }
+}
+
 /// Arrow's cast of `array` to `to`, failing where a value does not fit instead of nulling it.
 fn checked(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
     let options = CastOptions {

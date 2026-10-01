@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{Epoch, GenerationId, MergeKey, PipelineId, RootKey, SegmentId};
+use rdlt_connector::{Deletion, Epoch, GenerationId, MergeKey, PipelineId, RootKey, SegmentId};
 
 use crate::merge::{Merged, merge, merge_children};
 
@@ -33,6 +33,55 @@ pub(super) type Plan = (String, Staged, Option<Merged>);
 
 /// Batches staged under one segment, each for the table itself or for a replace generation.
 pub(super) type Staged = Vec<(Option<GenerationId>, RecordBatch)>;
+
+/// Refuses `key` as the merge key of the table `name` unless it names a key column and, where the
+/// table's columns are known as `schema`, each column it names is the table's: its key columns
+/// (a child table's first alone, its root id), its sequence, where deletes are soft their
+/// deletion time, and a history table's history columns.
+///
+/// A key the rows cannot be merged by is a `Data` error coded `merge_key_invalid`.
+pub(super) fn holds_key(name: &str, key: &MergeKey, schema: Option<&TableSchema>) -> Result<()> {
+    let invalid = |what: String| ConnectorError::data(what).with_code("merge_key_invalid");
+    let Some(root_id) = key.columns.first() else {
+        return Err(invalid(format!(
+            "table {name} is merged by a key of no column"
+        )));
+    };
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+    let keys = match &key.root {
+        Some(_) => std::slice::from_ref(root_id),
+        None => &key.columns[..],
+    };
+    let at = key
+        .changes
+        .as_ref()
+        .and_then(|changes| match &changes.deletion {
+            Deletion::Soft { at } => Some(at),
+            Deletion::Hard => None,
+        });
+    let history = key.history.iter().flat_map(|history| {
+        [
+            &history.valid_from,
+            &history.valid_to,
+            &history.is_current,
+            &history.row_hash,
+        ]
+    });
+    for column in keys.iter().chain([&key.seq]).chain(at).chain(history) {
+        if !schema
+            .fields()
+            .iter()
+            .any(|field| *field.name() == **column)
+        {
+            return Err(invalid(format!(
+                "table {name} has no column {column}, which its merge key names"
+            )));
+        }
+    }
+    Ok(())
+}
 
 impl Table {
     /// The schema rows of the table merge under: its own, or else `staged`'s.

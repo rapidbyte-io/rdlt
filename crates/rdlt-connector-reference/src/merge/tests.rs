@@ -6,6 +6,8 @@ use arrow_array::{Array, ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBat
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
+mod costs;
+
 use super::changes::stored;
 use super::{Merged, merge, tombstone_schema, written_schema};
 
@@ -565,4 +567,109 @@ fn a_stored_value_its_column_s_wider_type_holds_is_kept_exactly() {
             "{zone}"
         );
     }
+}
+
+/// A truncate that does not say when it deleted.
+fn untimed(seq: u8) -> Row {
+    Row {
+        at: None,
+        ..truncate(seq, 0)
+    }
+}
+
+#[test]
+fn a_row_truncated_twice_is_deleted_when_the_first_truncate_that_says_when_says() {
+    let published = apply(&empty(), &[&[row(1, "a", 1), row(2, "b", 6)]], soft());
+    // The first truncate past row 1 does not say when, the next does, and the last gives the
+    // row its sequence; row 2 meets only the truncates past it.
+    let merged = apply(
+        &published,
+        &[&[untimed(3), truncate(5, 50), truncate(7, 70), untimed(9)]],
+        soft(),
+    );
+    assert_eq!(
+        rows(&merged),
+        [
+            (1, Some("a".into()), 9, Some(50)),
+            (2, Some("b".into()), 9, Some(70)),
+        ]
+    );
+    // Of two truncates at one sequence the first written is the truncate; the other finds every
+    // row at its sequence already.
+    let merged = apply(&published, &[&[untimed(3), truncate(3, 30)]], soft());
+    assert_eq!(
+        rows(&merged),
+        [
+            (1, Some("a".into()), 3, None),
+            (2, Some("b".into()), 6, None)
+        ]
+    );
+    // A row no truncate says when for is deleted without a time, at the last one's sequence.
+    let merged = apply(&published, &[&[untimed(3), untimed(4)]], soft());
+    assert_eq!(rows(&merged)[0], (1, Some("a".into()), 4, None));
+}
+
+#[test]
+fn truncates_between_a_key_s_changes_each_apply_to_the_row_before_them() {
+    for deletion in [Deletion::Hard, soft()] {
+        let hard = deletion == Deletion::Hard;
+        let merged = apply(
+            &empty(),
+            &[&[
+                row(1, "a", 1),
+                truncate(2, 20),
+                row(1, "b", 3),
+                row(2, "c", 4),
+                truncate(5, 50),
+                row(2, "d", 6),
+                delete(3, 7, 70),
+            ]],
+            deletion,
+        );
+        let expected = if hard {
+            vec![(2, Some("d".into()), 6, None)]
+        } else {
+            // The update after a truncate sets the row's deletion time as it sets every column.
+            vec![
+                (1, Some("b".into()), 5, Some(50)),
+                (2, Some("d".into()), 6, None),
+            ]
+        };
+        assert_eq!(rows(&merged), expected, "hard: {hard}");
+        let buried = if hard {
+            vec![(Some(3), 7), (None, 5)]
+        } else {
+            Vec::new()
+        };
+        let mut buried = buried;
+        buried.sort();
+        assert_eq!(tombstones(&merged), buried, "hard: {hard}");
+    }
+}
+
+#[test]
+fn a_flag_on_a_key_or_the_sequence_is_refused() {
+    // The written batch's fields are id, value, seq, at, op, unchanged: bits 0 and 2 are the key
+    // and the sequence.
+    for bit in [0_u8, 2] {
+        let flagged = Row {
+            unchanged: Some(vec![1 << bit]),
+            ..row(1, "a", 1)
+        };
+        let refused = merge(
+            &stored_schema(),
+            &[],
+            &[],
+            &[written(&[flagged])],
+            &key(Deletion::Hard),
+        );
+        assert!(refused.is_err(), "bit {bit}");
+    }
+    // A flag on a directive column, which the table does not store, keeps nothing.
+    let flagged = Row {
+        unchanged: Some(vec![1 << 4]),
+        ..row(1, "a", 1)
+    };
+    let merged = apply(&empty(), &[&[flagged]], Deletion::Hard);
+    assert_eq!(rows(&merged), [(1, Some("a".into()), 1, None)]);
 }
