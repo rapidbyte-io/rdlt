@@ -1,4 +1,4 @@
-//! History streams (spec §9.5): every version of each key, a change closing its key's version
+//! History streams: every version of each key, a change closing its key's version
 //! where the next begins, across commits, runs, retries and destinations.
 
 use std::sync::Arc;

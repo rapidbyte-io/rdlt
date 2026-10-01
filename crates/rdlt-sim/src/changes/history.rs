@@ -1,4 +1,4 @@
-//! History change streams (spec §9.5): which merge streams keep history, their whole-row events,
+//! History change streams: which merge streams keep history, their whole-row events,
 //! and the versions their changes leave.
 
 use std::collections::BTreeMap;

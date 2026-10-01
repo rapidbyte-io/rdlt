@@ -33,7 +33,7 @@ pub(crate) struct MetaNames {
     pub(crate) history: Option<HistoryNames>,
 }
 
-/// The identifiers of a history table's columns (spec §9.5), and where its versions' beginnings
+/// The identifiers of a history table's columns, and where its versions' beginnings
 /// come from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HistoryNames {
@@ -42,7 +42,7 @@ pub(crate) struct HistoryNames {
     pub(crate) is_current: Arc<str>,
     pub(crate) row_hash: Arc<str>,
     /// The incoming column naming when each change happened, the stream's change time; `None`
-    /// begins each version when its load started.
+    /// begins each version when its batch arrived.
     pub(crate) change_time: Option<Arc<str>>,
 }
 
@@ -140,7 +140,7 @@ impl MetaNames {
     }
 
     /// These names, with a history table's columns under `naming`'s rules, whose versions begin
-    /// at the incoming `change_time` column, or when their load started.
+    /// at the incoming `change_time` column, or when their batch arrived.
     pub(crate) fn with_history(
         mut self,
         naming: &Naming,

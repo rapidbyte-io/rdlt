@@ -84,7 +84,7 @@ pub struct MergeKey {
     pub history: Option<HistoryColumns>,
 }
 
-/// How a history table keeps every version of each key (spec §9.5, SCD2).
+/// How a history table keeps every version of each key (SCD2).
 ///
 /// Written rows carry, besides their data, `valid_from` (when the version begins), `row_hash` (16
 /// bytes of `Binary`, equal for rows whose data columns are equal, null on a delete), a null

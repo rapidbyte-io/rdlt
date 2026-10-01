@@ -1,4 +1,4 @@
-//! A history table's merge (spec §9.5), as `HistoryColumns` says: each key's versions, one
+//! A history table's merge, as `HistoryColumns` says: each key's versions, one
 //! closed where the next begins, a change equal to the live version changing nothing.
 
 use std::sync::Arc;

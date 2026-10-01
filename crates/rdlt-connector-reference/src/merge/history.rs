@@ -1,5 +1,5 @@
 //! Merging a history table's rows: each key keeps every version, and a change closes its key's
-//! current version where the change begins, or leaves it as it is (spec §9.5, SCD2).
+//! current version where the change begins, or leaves it as it is (SCD2).
 
 #[cfg(test)]
 mod tests;
