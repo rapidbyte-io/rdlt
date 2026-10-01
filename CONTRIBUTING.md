@@ -15,6 +15,28 @@ wins and the code is fixed.
 - Run `just ready` before pushing: lint, tests, and mutation testing of your change, which CI does
   not repeat; CI runs the rest of the pull-request gate.
 
+## Tools
+
+`mise.toml` names every tool and its version; `mise.lock` holds, for Linux x64 and macOS arm64,
+the release archive each installs and its checksum. `mise install --locked` installs only what the
+lockfile holds, and fails on an archive whose checksum differs. CI installs the same way, with a
+mise binary held to the version and checksum in the workflows' `SETUP_MISE_*` variables.
+
+To add or update a tool:
+
+1. Edit its version in `mise.toml`. Use a backend that installs a release archive (`aqua:`,
+   `github:`, or a short name from mise's registry): `cargo:` resolves its download at install
+   time, so nothing can be locked.
+2. Run `mise lock --platform linux-x64,macos-arm64`.
+3. Where a release publishes no digest, `mise lock` records none. Download the archive at the
+   locked `url`, and add `checksum = "sha256:<sha256sum of it>"` to that platform's table.
+4. Run `cargo xtask tools`, which fails on a tool with no download or checksum for a platform,
+   then `mise install --locked`, and commit both files.
+
+To update mise in CI, set `SETUP_MISE_VERSION` in both workflows and the two checksums to those
+of the `mise-v<version>-linux-x64` and `mise-v<version>-macos-arm64` binaries in the release's
+`SHASUMS256.txt`.
+
 ## Vocabulary
 
 Use only these words for these concepts, in code, docs, logs and errors.

@@ -108,6 +108,7 @@ rusqlite = { version = "0.40.2", default-features = false, features = [
   "cache",
 ] } # the reference SQL destination, and running sqlgen's statements in its tests
 tempfile = "3.27.0" # temporary directories in tests
+toml = "1.1.6" # xtask reads the tool lockfile
 walkdir = "2.5.0" # xtask walks the source tree
 
 [workspace.lints.rust]

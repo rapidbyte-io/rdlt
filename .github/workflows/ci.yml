@@ -14,8 +14,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # A tool without a prebuilt binary fails its install instead of compiling for many minutes.
-  MISE_CARGO_BINSTALL_ONLY: "true"
+  # The mise release every job installs, and the SHA-256 of its binary on each runner's platform.
+  SETUP_MISE_VERSION: "2026.9.12"
+  SETUP_MISE_SHA256_LINUX: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+  SETUP_MISE_SHA256_MACOS: f20d7cc555a5b0ee7b8a504acbc2583be1b0848d64115cfbe84119ceb705025b
+  # mise installs a tool only as mise.lock holds it: its version, download and checksum.
+  MISE_LOCKED: "1"
 
 jobs:
   lint:
@@ -26,8 +30,10 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
-          install_args: just typos taplo cargo-deny actionlint shellcheck pinact cargo-binstall cargo:cargo-machete cargo:cargo-hack
-          cache_key_prefix: mise-v1-lint
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          install_args: --locked just typos taplo cargo-deny actionlint shellcheck pinact github:bnjbvr/cargo-machete github:taiki-e/cargo-hack
+          cache_key_prefix: mise-v2-lint
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -47,8 +53,10 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
-          install_args: just cargo-binstall cargo:cargo-nextest
-          cache_key_prefix: mise-v1-test
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
+          cache_key_prefix: mise-v2-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -62,8 +70,10 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
-          install_args: just cargo-binstall cargo:cargo-nextest
-          cache_key_prefix: mise-v1-test
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
+          cache_key_prefix: mise-v2-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -77,8 +87,10 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
-          install_args: just cargo-binstall cargo:cargo-nextest cargo:cargo-llvm-cov
-          cache_key_prefix: mise-v1-coverage
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest aqua:taiki-e/cargo-llvm-cov
+          cache_key_prefix: mise-v2-coverage
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -96,8 +108,10 @@ jobs:
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
-          install_args: committed
-          cache_key_prefix: mise-v1-commits
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          install_args: --locked committed
+          cache_key_prefix: mise-v2-commits
       - run: committed "origin/${BASE_REF}..${HEAD_SHA}"
         env:
           BASE_REF: ${{ github.base_ref }}
