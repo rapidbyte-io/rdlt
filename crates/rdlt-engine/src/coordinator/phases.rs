@@ -195,7 +195,8 @@ impl Coordinator {
     ) -> Result<(), Error> {
         let id = partition.id().clone();
         let stop = self.parts.stop_reads.child_token();
-        let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, stop.clone());
+        let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, stop.clone())
+            .starting(cursor.as_ref());
         let partitions = &mut self.parts.partitions;
         let run = &mut self.parts.streams[stream];
         let ended = run.phases.as_ref().and_then(|phases| {
