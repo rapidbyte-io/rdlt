@@ -131,7 +131,60 @@ async fn a_link_in_the_source_root_is_never_read() {
     symlink(outside.join("tenant"), root.join("inner")).unwrap();
     let (events, ended) = read(source.as_ref(), "inner", None).await;
     assert!(pushed(&events).is_empty());
-    assert!(ended.is_err());
+    let error = ended.unwrap_err();
+    assert_eq!(error.kind(), ConnectorErrorKind::Config);
+    assert_eq!(error.code(), Some("not_a_directory"));
+}
+
+#[tokio::test]
+async fn a_source_root_or_a_stream_s_directory_others_may_write_is_refused() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("inner")).unwrap();
+    std::fs::write(root.path().join("inner").join("a.jsonl"), "{}\n").unwrap();
+    let mode = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    // Whoever may write a directory can plant names in it, hard links to other files among
+    // them: only a directory that is its user's alone is a source's.
+    let inner = root.path().join("inner");
+    let shared = [
+        (root.path(), 0o777),
+        (root.path(), 0o1777),
+        (root.path(), 0o770),
+        (inner.as_path(), 0o777),
+        (inner.as_path(), 0o720),
+    ];
+    for (path, bits) in shared {
+        mode(path, bits);
+        let Err(error) = connect_with(root.path(), json!({})).await else {
+            panic!("{} with mode {bits:o} was read", path.display());
+        };
+        assert_eq!(error.kind(), ConnectorErrorKind::Config, "{bits:o}");
+        mode(path, 0o700);
+    }
+    for bits in [0o700, 0o755, 0o500] {
+        mode(root.path(), bits);
+        let connected = connect_with(root.path(), json!({})).await;
+        mode(root.path(), 0o700);
+        assert!(connected.is_ok(), "{bits:o}");
+    }
+}
+
+#[tokio::test]
+async fn a_file_in_a_private_root_is_read_whoever_else_names_it() {
+    // A hard link is a name like any other: in a root only its operator may write, every name
+    // is the operator's own, and a file with several is read, as snapshots and backups make them.
+    let base = tempfile::tempdir().unwrap();
+    let (root, elsewhere) = (base.path().join("root"), base.path().join("elsewhere"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("orders.jsonl"), "{\"id\":1}\n").unwrap();
+    std::fs::hard_link(elsewhere.join("orders.jsonl"), root.join("orders.jsonl")).unwrap();
+    let source = connect(&root).await;
+    let (events, ended) = read(source.as_ref(), "orders", None).await;
+    ended.expect("the file reads");
+    assert_eq!(pushed(&events), ["{\"id\":1}\n"]);
 }
 
 fn mkfifo(path: &Path) {

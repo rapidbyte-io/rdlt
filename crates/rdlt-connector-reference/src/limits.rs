@@ -55,6 +55,10 @@ pub(crate) const READ_BATCH_ROWS: usize = 1024;
 /// Bytes: the size from which a published file of an append table is merged with no other.
 pub(crate) const COMPACT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Directories: how deep beneath the directory it starts at a tree is entered to remove it or
+/// to discard what it holds; a tree deeper than any the connectors make is refused.
+pub(crate) const TREE_DEPTH: usize = 32;
+
 /// Bytes: bounds the file a keeper of positions is kept in.
 pub(crate) const KEEPER_BYTES: u64 = 4 * 1024 * 1024;
 

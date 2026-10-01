@@ -115,10 +115,17 @@ fn every_call_refuses_a_name_that_is_no_component() {
 fn a_link_is_never_followed_as_a_directory_or_a_file() {
     let (base, dir) = tree();
     for name in ["dirlink", "link", "dangling"] {
-        assert!(dir.dir(name).is_err(), "{name}");
-        assert!(dir.dir_created(name).is_err(), "{name}");
-        assert!(dir.walk([name, "below"]).is_err(), "{name}");
-        assert!(dir.walk_created([name, "made"]).is_err(), "{name}");
+        // Whatever error the platform answers such an open with, it is no directory.
+        for entered in [
+            dir.dir(name),
+            dir.dir_created(name),
+            dir.walk([name, "below"]),
+            dir.walk_created([name, "made"]),
+        ] {
+            let error = entered.unwrap_err();
+            assert_eq!(refusal(&error), Some(Refusal::NotDirectory), "{name}");
+            assert_eq!(error.kind(), ErrorKind::NotADirectory, "{name}");
+        }
         let error = dir.file(name).unwrap_err();
         assert_eq!(refusal(&error), Some(Refusal::NotRegular), "{name}");
         let error = dir.read(name, LIMIT).unwrap_err();
@@ -132,6 +139,11 @@ fn a_link_is_never_followed_as_a_directory_or_a_file() {
     assert_eq!(dir.kind("gone").unwrap(), None);
     assert_eq!(dir.kind("inner").unwrap(), Some(Kind::Dir));
     assert_eq!(dir.kind("file").unwrap(), Some(Kind::File));
+    for name in ["file", "pipe"] {
+        let error = dir.dir(name).unwrap_err();
+        assert_eq!(refusal(&error), Some(Refusal::NotDirectory), "{name}");
+    }
+    assert_eq!(dir.dir("gone").unwrap_err().kind(), ErrorKind::NotFound);
 }
 
 #[test]
@@ -149,7 +161,7 @@ fn a_pipe_a_directory_and_a_device_are_not_files() {
         assert_eq!(refusal(&error), Some(Refusal::NotRegular), "{name}");
         assert_eq!(error.kind(), ErrorKind::InvalidData);
     }
-    let devices = Dir::ambient(Path::new("/dev")).unwrap();
+    let devices = Dir::trusted(Path::new("/dev")).unwrap();
     let error = devices.read("zero", LIMIT).unwrap_err();
     assert_eq!(refusal(&error), Some(Refusal::NotRegular));
     assert_eq!(dir.file("gone").unwrap_err().kind(), ErrorKind::NotFound);
@@ -243,30 +255,105 @@ fn a_relative_directory_whose_parent_is_the_working_directory_is_created() {
 }
 
 #[test]
-fn a_directory_others_may_write_is_not_private() {
+fn a_root_and_every_directory_entered_beneath_it_are_their_user_s_alone() {
     let base = tempfile::tempdir().unwrap();
     let path = base.path().join("shared");
     std::fs::create_dir(&path).unwrap();
+    let parent = Dir::ambient(base.path()).unwrap();
     let set = |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
+    let ours = rustix::process::geteuid().as_raw();
     for (mode, held) in [
         (0o700, true),
         (0o755, true),
+        (0o1755, true),
         (0o775, false),
         (0o757, false),
         (0o722, false),
+        (0o1777, false),
     ] {
         set(mode).unwrap();
-        let checked = Dir::ambient(&path).unwrap().private();
-        assert_eq!(checked.is_ok(), held, "{mode:o}");
-        if let Err(error) = checked {
-            assert_eq!(refusal(&error), Some(Refusal::Shared));
-            assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        // As a root, as a directory entered beneath one, and as one that would be created.
+        let opened = [
+            Dir::ambient(&path),
+            Dir::ambient_created(&path),
+            parent.dir("shared"),
+            parent.dir_created("shared"),
+            parent.walk(["shared"]),
+        ];
+        for entered in opened {
+            assert_eq!(entered.is_ok(), held, "{mode:o}");
+            if let Err(error) = entered {
+                let shared = Refusal::Shared { owner: ours, mode };
+                assert_eq!(refusal(&error), Some(shared));
+                assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+            }
         }
     }
+    set(0o700).unwrap();
     // What another user owns is not private either: the root user's directory, unless the
     // test runs as that user.
-    let roots = Dir::ambient(Path::new("/")).unwrap().private();
+    let roots = Dir::ambient(Path::new("/"));
     assert_eq!(roots.is_ok(), rustix::process::geteuid().is_root());
+    if let Err(error) = roots {
+        assert!(matches!(
+            refusal(&error),
+            Some(Refusal::Shared { owner: 0, .. })
+        ));
+    }
+    // A file's privacy is its own: its owner and its mode.
+    let file = base.path().join("file");
+    std::fs::write(&file, b"").unwrap();
+    for (mode, held) in [(0o600, true), (0o644, true), (0o664, false), (0o646, false)] {
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+        let checked = private(&std::fs::File::open(&file).unwrap());
+        assert_eq!(checked.is_ok(), held, "{mode:o}");
+    }
+}
+
+#[test]
+fn a_mount_point_beneath_a_root_is_not_entered() {
+    // The device file system is mounted beneath the root directory on every Unix.
+    let root = Dir::trusted(Path::new("/")).unwrap();
+    let error = root.dir("dev").unwrap_err();
+    assert_eq!(refusal(&error), Some(Refusal::Mounted));
+    assert_eq!(error.kind(), ErrorKind::NotADirectory);
+}
+
+#[test]
+fn a_tree_deeper_than_any_the_connectors_make_is_not_removed() {
+    use crate::limits::TREE_DEPTH;
+    let base = tempfile::tempdir().unwrap();
+    let dir = Dir::ambient(base.path()).unwrap();
+    let nested = |levels: usize| vec!["d"; levels].join("/");
+    for (name, levels, removed) in [("fits", TREE_DEPTH, true), ("deep", TREE_DEPTH + 1, false)] {
+        std::fs::create_dir_all(base.path().join(name).join(nested(levels - 1))).unwrap();
+        let outcome = dir.remove_tree(name);
+        assert_eq!(outcome.is_ok(), removed, "{name}");
+        assert_eq!(dir.kind(name).unwrap().is_none(), removed, "{name}");
+        if let Err(error) = outcome {
+            let too_deep = Refusal::TooDeep { limit: TREE_DEPTH };
+            assert_eq!(refusal(&error), Some(too_deep));
+        }
+    }
+}
+
+#[test]
+fn bytes_beyond_what_a_file_was_measured_to_hold_refuse_it_as_it_is_read() {
+    // As a file that grows between being measured and being read.
+    for (held, admitted) in [(0_u64, true), (8, true), (9, false), (1 << 20, false)] {
+        let reader = std::io::Read::take(std::io::repeat(b'x'), held);
+        let read = super::within(reader, LIMIT);
+        let expected = admitted.then(|| usize::try_from(held).unwrap());
+        assert_eq!(read.as_ref().ok().map(Vec::len), expected, "{held}");
+        if let Err(error) = read {
+            let too_large = Refusal::TooLarge {
+                name: "test bytes",
+                limit: 8,
+                actual: 9,
+            };
+            assert_eq!(refusal(&error), Some(too_large), "{held}");
+        }
+    }
 }
 
 #[test]
@@ -444,7 +531,20 @@ fn a_sweep_removes_only_temporaries_old_enough() {
     written(".tmp-young", Duration::from_secs(30));
     written("tmp-not-one", Duration::from_secs(600));
     written(".other", Duration::from_secs(600));
-    // What no writer of this connector makes under a temporary's name is not waited for.
+    // Written after now, as a clock that stepped back shows it: not old.
+    written(".tmp-future", Duration::ZERO);
+    let ahead = SystemTime::now() + Duration::from_hours(24);
+    let future = std::fs::File::options()
+        .write(true)
+        .open(base.path().join(".tmp-future"))
+        .unwrap();
+    future.set_modified(ahead).unwrap();
+    // One that cannot be opened is as old as its name says: it is never opened.
+    written(".tmp-closed", Duration::from_secs(600));
+    let closed = std::fs::Permissions::from_mode(0o000);
+    std::fs::set_permissions(base.path().join(".tmp-closed"), closed).unwrap();
+    // What no writer of this connector makes under a temporary's name is left where it is,
+    // never followed and never entered.
     symlink(
         base.path().join("tmp-not-one"),
         base.path().join(".tmp-link"),
@@ -452,6 +552,7 @@ fn a_sweep_removes_only_temporaries_old_enough() {
     .unwrap();
     std::fs::create_dir(base.path().join(".tmp-dir")).unwrap();
     std::fs::write(base.path().join(".tmp-dir").join("file"), b"x").unwrap();
+    mkfifo(&base.path().join(".tmp-pipe"));
     dir.sweep(age).unwrap();
     let left: Vec<String> = dir
         .entries()
@@ -459,7 +560,17 @@ fn a_sweep_removes_only_temporaries_old_enough() {
         .into_iter()
         .map(|(name, _)| name.into_string().unwrap())
         .collect();
-    assert_eq!(left, [".other", ".tmp-young", "tmp-not-one"]);
+    let expected = [
+        ".other",
+        ".tmp-dir",
+        ".tmp-future",
+        ".tmp-link",
+        ".tmp-pipe",
+        ".tmp-young",
+        "tmp-not-one",
+    ];
+    assert_eq!(left, expected);
+    assert!(base.path().join(".tmp-dir").join("file").exists());
 }
 
 #[test]
@@ -486,7 +597,12 @@ fn what_a_descriptor_shows_to_be_no_file_is_refused_though_its_name_was_one() {
     // As when the name is replaced between being inspected and being opened.
     let (_base, dir) = tree();
     for name in ["link", "dirlink", "dangling", "pipe", "inner"] {
-        let error = dir.opened(OsStr::new(name)).unwrap_err();
+        // On a thread of its own, so an open that waited on the pipe fails the test.
+        let (ended, heard) = std::sync::mpsc::channel();
+        let opening = Dir::ambient(dir.path()).unwrap();
+        std::thread::spawn(move || ended.send(opening.opened(OsStr::new(name)).map(drop)));
+        let opened = heard.recv_timeout(Duration::from_secs(20));
+        let error = opened.expect("the open ends").unwrap_err();
         assert_eq!(refusal(&error), Some(Refusal::NotRegular), "{name}");
     }
     assert!(dir.opened(OsStr::new("file")).is_ok());
@@ -498,7 +614,7 @@ fn what_a_descriptor_shows_to_be_no_file_is_refused_though_its_name_was_one() {
 #[test]
 fn a_file_larger_than_it_was_measured_is_refused_as_it_is_read() {
     // A file of the process file system measures no bytes and reads many.
-    let process = Dir::ambient(Path::new("/proc/self")).unwrap();
+    let process = Dir::trusted(Path::new("/proc/self")).unwrap();
     assert_eq!(process.file("status").unwrap().metadata().unwrap().len(), 0);
     let error = process.read("status", LIMIT).unwrap_err();
     let too_large = Refusal::TooLarge {

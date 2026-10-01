@@ -17,11 +17,18 @@ pub(super) const INVALID_NAME: &str = "invalid_name";
 /// The code of an error for a file a manifest or a session's staging lists that is not there.
 pub(super) const FILE_MISSING: &str = "file_missing";
 
+/// The code of an error for a link, a file or a mount point where a directory belongs.
+pub(super) const NOT_A_DIRECTORY: &str = "not_a_directory";
+
+/// The code of an error for a directory or file of another user, or one others may write.
+pub(super) const NOT_PRIVATE: &str = "not_private";
+
 /// The code of an error for a link, a pipe, a device or a directory where a file belongs.
 pub(super) const NOT_A_REGULAR_FILE: &str = "not_a_regular_file";
 
-/// Classifies a filesystem error from `what` on `path`: a path the connector may not use is a
-/// configuration error, a name or a file it refuses a data error, anything else transient.
+/// Classifies a filesystem error from `what` on `path` by what refused, never by the error a
+/// platform happens to answer with: a path the connector may not use is a configuration error,
+/// a name or a file it refuses a data error, anything else transient.
 pub(super) fn failed<'a>(
     what: &'a str,
     path: &'a Path,
@@ -45,12 +52,20 @@ pub(super) fn failed<'a>(
             Some(Refusal::NotRegular) => ConnectorError::data(message)
                 .with_code(NOT_A_REGULAR_FILE)
                 .with_source(error),
-            Some(Refusal::Shared) => ConnectorError::config(message).with_source(error),
+            Some(Refusal::NotDirectory | Refusal::Mounted) => ConnectorError::config(message)
+                .with_code(NOT_A_DIRECTORY)
+                .with_source(error),
+            Some(Refusal::Shared { .. }) => ConnectorError::config(message)
+                .with_code(NOT_PRIVATE)
+                .with_source(error),
+            Some(Refusal::TooDeep { .. }) => ConnectorError::data(message).with_source(error),
             None => {
                 let kind = match error.kind() {
                     ErrorKind::PermissionDenied
                     | ErrorKind::ReadOnlyFilesystem
                     | ErrorKind::NotADirectory => ConnectorErrorKind::Config,
+                    // What was read is not what belongs there: no retry reads it differently.
+                    ErrorKind::InvalidData => ConnectorErrorKind::Data,
                     _ => ConnectorErrorKind::Transient,
                 };
                 ConnectorError::new(kind, message).with_source(error)
