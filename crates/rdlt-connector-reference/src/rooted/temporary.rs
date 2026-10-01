@@ -4,11 +4,11 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs::File;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::os::unix::ffi::OsStrExt as _;
 use std::time::{Duration, SystemTime};
 
-use rustix::fs::AtFlags;
+use rustix::fs::{AtFlags, FileType};
 
 use super::{Dir, Kind, component};
 
@@ -65,32 +65,36 @@ impl Dir {
     }
 
     /// Removes the temporaries of the file `owner` in the directory, as [`Dir::sweep`] does.
+    ///
+    /// A temporary is a regular file of this user's: anything else under a temporary's name is
+    /// left where it is, never opened, followed or entered, and an entry that cannot be
+    /// inspected or removed is left too, so no entry keeps the directory from being used.
     pub(crate) fn sweep_of(&self, owner: &str, age: Duration) -> io::Result<()> {
         let (now, prefix) = (SystemTime::now(), prefix(owner));
         for (name, kind) in self.entries()? {
-            if !name.as_bytes().starts_with(prefix.as_bytes()) {
-                continue;
-            }
-            let stale = match kind {
-                Kind::File => match self
-                    .file(&name)
-                    .and_then(|file| file.metadata()?.modified())
-                {
-                    // Written at least `age` ago; one written in the future is not stale.
-                    Ok(written) => now
-                        .duration_since(written)
-                        .is_ok_and(|since| since.checked_sub(age).is_some()),
-                    Err(error) if error.kind() == ErrorKind::NotFound => false,
-                    Err(error) => return Err(error),
-                },
-                // Nothing this connector makes: no writer is waited for.
-                Kind::Dir | Kind::Other => true,
-            };
-            if stale {
-                self.remove_tree(&name)?;
+            let named = name.as_bytes().starts_with(prefix.as_bytes());
+            if named && kind == Kind::File && self.stale(&name, now, age) {
+                drop(self.remove_file(&name));
             }
         }
         Ok(())
+    }
+
+    /// Whether `name` is a regular file of this user's last written at least `age` before `now`;
+    /// one written after `now` is not.
+    fn stale(&self, name: &OsStr, now: SystemTime, age: Duration) -> bool {
+        let Ok(stat) = rustix::fs::statat(&self.file, name, AtFlags::SYMLINK_NOFOLLOW) else {
+            return false;
+        };
+        let regular = FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile;
+        let ours = stat.st_uid == rustix::process::geteuid().as_raw();
+        let written = u64::try_from(i128::from(stat.st_mtime))
+            .ok()
+            .and_then(|seconds| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds)));
+        let old = written
+            .and_then(|written| now.duration_since(written).ok())
+            .is_some_and(|since| since.checked_sub(age).is_some());
+        regular && ours && old
     }
 }
 

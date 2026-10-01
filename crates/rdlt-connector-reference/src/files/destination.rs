@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
+use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
     CommitKind, DeleteModes, Epoch, IdentifierCase, IdentifierChars, IdentifierRules,
@@ -25,7 +26,7 @@ use super::manifest::{self, Manifest, STAGING};
 use super::session::{FilesSession, Location};
 use super::{io, tables};
 use crate::blocking::blocking;
-use crate::limits::{LOCK_WAIT, TABLE_NAME_BYTES};
+use crate::limits::{LOCK_WAIT, TABLE_NAME_BYTES, TREE_DEPTH};
 use crate::rooted::{Dir, Kind};
 
 /// The destination's private directory under its root: catalogs, locks, manifests and files.
@@ -69,7 +70,12 @@ pub struct FilesDestination {
     root: Arc<Path>,
     format: FileFormat,
     lock_wait: Duration,
+    /// The private directory, opened once: the root's path is resolved no second time.
+    rdlt: Arc<Held>,
 }
+
+/// A destination's root and the private directory in it, once they were opened.
+type Held = Mutex<Option<(Arc<Dir>, Arc<Dir>)>>;
 
 #[destination(id = "io.rapidbyte.files", read_back)]
 impl DestinationConnector for FilesDestination {
@@ -85,12 +91,13 @@ impl DestinationConnector for FilesDestination {
             root: config.root.into(),
             format: config.format,
             lock_wait: Duration::from_millis(config.lock_wait_ms),
+            rdlt: Arc::default(),
         })
     }
 
     async fn check(&self) -> Result<()> {
-        let root = Arc::clone(&self.root);
-        blocking(move || checked(&root)).await
+        let (root, held) = (Arc::clone(&self.root), Arc::clone(&self.rdlt));
+        blocking(move || checked(&*held_or_opened(&root, &held)?)).await
     }
 
     async fn open(&self, context: &OpenContext) -> Result<Opened<FilesSession>> {
@@ -99,8 +106,9 @@ impl DestinationConnector for FilesDestination {
             context.pipeline.clone(),
             self.lock_wait,
         );
+        let held = Arc::clone(&self.rdlt);
         let (rdlt, dir, manifest) = blocking(move || {
-            let rdlt = private(&root)?;
+            let rdlt = held_or_opened(&root, &held)?;
             tables::empty_trash(&rdlt)?;
             let name = manifest::pipeline_dir(&pipeline);
             let dir = rdlt
@@ -112,7 +120,7 @@ impl DestinationConnector for FilesDestination {
         })
         .await?;
         let location = Location {
-            rdlt: Arc::new(rdlt),
+            rdlt,
             pipeline: context.pipeline.clone(),
             dir: Arc::new(dir),
             format: self.format,
@@ -128,16 +136,15 @@ impl DestinationConnector for FilesDestination {
     }
 }
 
-/// Opens the destination's private directory under `root`, creating both where missing; one
-/// another user made, or others may write, is refused.
-fn private(root: &Path) -> Result<Dir> {
+/// Opens the destination's private directory under `root`, creating both where missing; a root
+/// or a private directory another user made, or others may write, is refused.
+fn private(root: &Path) -> Result<(Dir, Dir)> {
     let opened = Dir::ambient_created(root).map_err(io::failed("creating", root))?;
     let path = opened.at(PRIVATE);
     let rdlt = opened
         .dir_created(PRIVATE)
         .map_err(io::failed("creating", &path))?;
-    rdlt.private().map_err(io::failed("opening", &path))?;
-    Ok(rdlt)
+    Ok((opened, rdlt))
 }
 
 /// Opens the private directory under `root` to read, if the destination ever wrote there.
@@ -149,13 +156,11 @@ fn existing(root: &Path) -> Result<Option<Dir>> {
         Err(error) => return Err(io::failed("opening", root)(error)),
     };
     let path = opened.at(PRIVATE);
-    let rdlt = match opened.dir(PRIVATE) {
-        Ok(rdlt) => rdlt,
-        Err(error) if missing(&error) => return Ok(None),
-        Err(error) => return Err(io::failed("opening", &path)(error)),
-    };
-    rdlt.private().map_err(io::failed("opening", &path))?;
-    Ok(Some(rdlt))
+    match opened.dir(PRIVATE) {
+        Ok(rdlt) => Ok(Some(rdlt)),
+        Err(error) if missing(&error) => Ok(None),
+        Err(error) => Err(io::failed("opening", &path)(error)),
+    }
 }
 
 /// Creates the next manifest of the pipeline whose directory `dir` is, with the next epoch,
@@ -217,7 +222,7 @@ pub(super) fn discard(dir: &Dir, epoch: Epoch) -> Result<()> {
             .is_some_and(|staged| staged < epoch.0);
         if older {
             let path = format!("{STAGING}/{}", name.to_string_lossy());
-            remove_unlisted(&staging, &name, kind, &path, &listed)?;
+            remove_unlisted(&staging, &name, kind, &path, &listed, TREE_DEPTH)?;
         }
     }
     Ok(())
@@ -251,7 +256,14 @@ pub(super) fn discard_superseded(dir: &Dir, epoch: Epoch) -> Result<()> {
         for written in WRITTEN {
             if loaded.kind(written).map_err(&listing)? == Some(Kind::Dir) {
                 let path = format!("{}/{load}/{written}", own.join("/"));
-                remove_unlisted(&loaded, written.as_ref(), Kind::Dir, &path, &listed)?;
+                remove_unlisted(
+                    &loaded,
+                    written.as_ref(),
+                    Kind::Dir,
+                    &path,
+                    &listed,
+                    TREE_DEPTH,
+                )?;
             }
         }
     }
@@ -268,6 +280,7 @@ fn remove_unlisted(
     kind: Kind,
     path: &str,
     listed: &BTreeSet<String>,
+    depth: usize,
 ) -> Result<bool> {
     let removing = |error| io::failed("removing", &parent.at(name))(error);
     if kind != Kind::Dir {
@@ -277,13 +290,17 @@ fn remove_unlisted(
         parent.remove_file(name).map_err(removing)?;
         return Ok(true);
     }
+    let entered = depth
+        .checked_sub(1)
+        .ok_or_else(|| std::io::Error::from(crate::rooted::Refusal::TooDeep { limit: TREE_DEPTH }));
+    let depth = entered.map_err(io::failed("listing", &parent.at(name)))?;
     let dir = parent
         .dir(name)
         .map_err(io::failed("listing", &parent.at(name)))?;
     let mut empty = true;
     for (child, kind) in dir.entries().map_err(io::failed("listing", dir.path()))? {
         let below = format!("{path}/{}", child.to_string_lossy());
-        empty &= remove_unlisted(&dir, &child, kind, &below, listed)?;
+        empty &= remove_unlisted(&dir, &child, kind, &below, listed, depth)?;
     }
     if empty {
         parent.remove_dir(name).map_err(removing)?;
@@ -291,9 +308,26 @@ fn remove_unlisted(
     Ok(empty)
 }
 
-/// Checks that the destination can write under `root`, creating its private directory durably.
-fn checked(root: &Path) -> Result<()> {
-    let rdlt = private(root)?;
+/// The destination's private directory under `root`: the one `held` since it was first opened,
+/// or opened now and held from here on.
+///
+/// Held directories are checked again each time: they must still be their user's alone.
+fn held_or_opened(root: &Path, held: &Held) -> Result<Arc<Dir>> {
+    let mut held = held.lock();
+    if let Some((opened, rdlt)) = held.as_ref() {
+        for dir in [opened, rdlt] {
+            dir.private().map_err(io::failed("opening", dir.path()))?;
+        }
+        return Ok(Arc::clone(rdlt));
+    }
+    let (opened, rdlt) = private(root)?;
+    let rdlt = Arc::new(rdlt);
+    *held = Some((Arc::new(opened), Arc::clone(&rdlt)));
+    Ok(rdlt)
+}
+
+/// Checks that the destination can write in its private directory `rdlt`.
+fn checked(rdlt: &Dir) -> Result<()> {
     // The probe goes as it leaves scope, whichever check made it.
     rdlt.temporary()
         .map(drop)
@@ -340,18 +374,32 @@ fn capabilities(format: FileFormat) -> Capabilities {
 impl ReadBack for FilesDestination {
     async fn published(&self, table: &TableRef) -> Result<Vec<RecordBatch>> {
         let (root, name) = (self.root.to_path_buf(), table.name.clone());
-        blocking(move || published(root, &name)).await
+        let held = Arc::clone(&self.rdlt);
+        blocking(move || {
+            // A destination that never opened reads what is there, and creates nothing.
+            if held.lock().is_none() {
+                return published(root, &name);
+            }
+            published_in(&*held_or_opened(&root, &held)?, &name)
+        })
+        .await
     }
 }
 
 /// Every published batch of `table` under `root`, over every pipeline's latest manifest.
 pub fn published(root: impl Into<PathBuf>, table: &str) -> Result<Vec<RecordBatch>> {
     tables::named(table)?;
-    let Some(rdlt) = existing(&root.into())? else {
-        return Ok(Vec::new());
-    };
+    match existing(&root.into())? {
+        Some(rdlt) => published_in(&rdlt, table),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Every published batch of `table` under the private directory `rdlt`.
+fn published_in(rdlt: &Dir, table: &str) -> Result<Vec<RecordBatch>> {
+    tables::named(table)?;
     let schema = Arc::new(
-        tables::read(&rdlt, table)?
+        tables::read(rdlt, table)?
             .map_or_else(arrow_schema::Schema::empty, |schema| schema.to_arrow()),
     );
     let pipelines = match rdlt.dir(PIPELINES) {

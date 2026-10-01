@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 
 use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
 
+use crate::limits::TREE_DEPTH;
+
 pub(crate) use temporary::unique;
 
 /// Bytes: bounds one name, as file systems bound it.
@@ -44,17 +46,37 @@ pub(crate) enum Refusal {
         /// The size seen: the file's, or the first beyond the limit where it grew while read.
         actual: u64,
     },
-    /// The directory or file belongs to another user, or others may write it.
-    #[error("it belongs to another user, or others may write it")]
-    Shared,
+    /// What the name names is a link, a file or anything else that is no directory.
+    #[error("it is not a directory")]
+    NotDirectory,
+    /// The directory or file belongs to another user, or its group or others may write it.
+    #[error(
+        "it belongs to user {owner} with mode {mode:o}: it must be this user's and writable by no other"
+    )]
+    Shared {
+        /// Its owner's user id.
+        owner: u32,
+        /// Its permission bits.
+        mode: u32,
+    },
+    /// The directory is on another file system than the directory it was reached from.
+    #[error("it is a mount point")]
+    Mounted,
+    /// The directory lies deeper beneath its root than a tree is entered.
+    #[error("it lies more than {limit} directories deep")]
+    TooDeep {
+        /// The depth to which a tree is entered.
+        limit: usize,
+    },
 }
 
 impl From<Refusal> for io::Error {
     fn from(refusal: Refusal) -> Self {
         let kind = match refusal {
-            Refusal::Name => ErrorKind::InvalidInput,
+            Refusal::Name | Refusal::TooDeep { .. } => ErrorKind::InvalidInput,
             Refusal::NotRegular | Refusal::TooLarge { .. } => ErrorKind::InvalidData,
-            Refusal::Shared => ErrorKind::PermissionDenied,
+            Refusal::NotDirectory | Refusal::Mounted => ErrorKind::NotADirectory,
+            Refusal::Shared { .. } => ErrorKind::PermissionDenied,
         };
         Self::new(kind, refusal)
     }
@@ -141,23 +163,44 @@ pub(crate) struct Dir {
     path: PathBuf,
 }
 
-/// The flags every open carries: no link is followed and no descriptor outlives an exec.
-const BENEATH: OFlags = OFlags::NOFOLLOW.union(OFlags::CLOEXEC);
+/// The flags every open carries: no link is followed, no descriptor outlives an exec, and no
+/// terminal opened by mistake becomes the process's own.
+const BENEATH: OFlags = OFlags::NOFOLLOW
+    .union(OFlags::CLOEXEC)
+    .union(OFlags::NOCTTY);
 
 /// The mode of a created directory and of a created file: their owner's alone.
 const PRIVATE_DIR: Mode = Mode::RWXU;
 const PRIVATE_FILE: Mode = Mode::RUSR.union(Mode::WUSR);
 
 impl Dir {
-    /// Opens the directory at `path`, which its operator named: the path is resolved as the
-    /// operator wrote it, links included.
+    /// Opens the directory at `path`, a root its operator named: the path is resolved as the
+    /// operator wrote it, links included, and the directory it leads to must be private.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal::Shared`] for a directory of another user, or one its group or others may
+    /// write: whoever can write a root can plant names in it.
     pub(crate) fn ambient(path: &Path) -> io::Result<Self> {
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+        let root = Self::resolved(path)?;
+        root.private()?;
+        Ok(root)
+    }
+
+    /// Opens the directory at `path` as the path resolves, whoever it belongs to.
+    fn resolved(path: &Path) -> io::Result<Self> {
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOCTTY;
         let fd = rustix::fs::openat(CWD, path, flags, Mode::empty())?;
         Ok(Self {
             file: File::from(fd),
             path: path.to_owned(),
         })
+    }
+
+    /// Opens the directory at `path` whoever it belongs to, for tests of what a root holds.
+    #[cfg(test)]
+    pub(crate) fn trusted(path: &Path) -> io::Result<Self> {
+        Self::resolved(path)
     }
 
     /// Opens the directory at `path` as [`Dir::ambient`] does, first creating it and whichever of
@@ -177,7 +220,7 @@ impl Dir {
                 .parent()
                 .filter(|parent| !parent.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            Self::ambient(parent)?.sync()?;
+            Self::resolved(parent)?.sync()?;
         }
         Self::ambient(path)
     }
@@ -192,15 +235,33 @@ impl Dir {
         self.path.join(name.as_ref())
     }
 
-    /// Opens the directory `name`.
+    /// Opens the directory `name`, which must be private as its root is and on its file system.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal::NotDirectory`] for a link or anything else that is no directory, whatever
+    /// error the platform answers such an open with; a [`Refusal::Shared`] for a directory of
+    /// another user or one others may write; a [`Refusal::Mounted`] for a mount point.
     pub(crate) fn dir(&self, name: impl AsRef<OsStr>) -> io::Result<Self> {
+        use rustix::io::Errno;
         let name = component(name.as_ref())?;
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | BENEATH;
-        let fd = rustix::fs::openat(&self.file, name, flags, Mode::empty())?;
-        Ok(Self {
+        let fd = match rustix::fs::openat(&self.file, name, flags, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(Errno::NOTDIR | Errno::LOOP | Errno::MLINK) => {
+                return Err(Refusal::NotDirectory.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let dir = Self {
             file: File::from(fd),
             path: self.path.join(name),
-        })
+        };
+        if dir.file.metadata()?.dev() != self.file.metadata()?.dev() {
+            return Err(Refusal::Mounted.into());
+        }
+        dir.private()?;
+        Ok(dir)
     }
 
     /// Opens the directory `name`, creating it where missing, private to its owner and durable
@@ -279,12 +340,7 @@ impl Dir {
     pub(crate) fn read(&self, name: impl AsRef<OsStr>, limit: Limit) -> io::Result<Vec<u8>> {
         let file = self.file(name)?;
         limit.admit(file.metadata()?.len())?;
-        let mut bytes = Vec::new();
-        // One byte beyond the limit shows a file larger than it was measured.
-        file.take(limit.bytes.saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        limit.admit(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
-        Ok(bytes)
+        within(file, limit)
     }
 
     /// Creates the file `name` to write, private to its owner; a name that exists, a link
@@ -350,8 +406,16 @@ impl Dir {
 
     /// Removes `name` and, where it is a directory, everything beneath it; a link is removed
     /// itself and never followed, and a name already gone is no error.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal::TooDeep`] for a tree deeper than [`TREE_DEPTH`], which is left as it is.
     pub(crate) fn remove_tree(&self, name: impl AsRef<OsStr>) -> io::Result<()> {
-        let name = component(name.as_ref())?;
+        self.remove_within(component(name.as_ref())?, TREE_DEPTH)
+    }
+
+    /// Removes `name` as [`Dir::remove_tree`] does, entering at most `depth` directories.
+    fn remove_within(&self, name: &OsStr, depth: usize) -> io::Result<()> {
         let gone = |removed: io::Result<()>| match removed {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
             removed => removed,
@@ -359,13 +423,16 @@ impl Dir {
         match self.kind(name)? {
             None => Ok(()),
             Some(Kind::Dir) => {
+                let Some(depth) = depth.checked_sub(1) else {
+                    return Err(Refusal::TooDeep { limit: TREE_DEPTH }.into());
+                };
                 let dir = match self.dir(name) {
                     Ok(dir) => dir,
                     Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
                     Err(error) => return Err(error),
                 };
                 for (entry, _) in dir.entries()? {
-                    dir.remove_tree(&entry)?;
+                    dir.remove_within(&entry, depth)?;
                 }
                 gone(self.remove_dir(name))
             }
@@ -401,6 +468,17 @@ impl Dir {
     }
 }
 
+/// Every byte of `reader`, which holds at most `limit`: one byte beyond the limit refuses a
+/// reader that holds more than it was measured to.
+fn within(reader: impl io::Read, limit: Limit) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    limit.admit(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+    Ok(bytes)
+}
+
 /// Checks that the open `file` belongs to the user the process runs as, and that neither its
 /// group nor others may write it.
 pub(crate) fn private(file: &File) -> io::Result<()> {
@@ -409,6 +487,10 @@ pub(crate) fn private(file: &File) -> io::Result<()> {
     if ours && metadata.mode() & 0o022 == 0 {
         Ok(())
     } else {
-        Err(Refusal::Shared.into())
+        Err(Refusal::Shared {
+            owner: metadata.uid(),
+            mode: metadata.mode() & 0o7777,
+        }
+        .into())
     }
 }

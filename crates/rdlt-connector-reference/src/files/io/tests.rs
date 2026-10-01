@@ -3,7 +3,9 @@ use std::path::Path;
 
 use rdlt_connector::{ConnectorErrorKind, LimitExceeded};
 
-use super::{INVALID_NAME, NOT_A_REGULAR_FILE, failed, listed, retried};
+use super::{
+    INVALID_NAME, NOT_A_DIRECTORY, NOT_A_REGULAR_FILE, NOT_PRIVATE, failed, listed, retried,
+};
 use crate::limits::PUBLISH_ATTEMPTS;
 use crate::rooted::Refusal;
 
@@ -32,7 +34,6 @@ fn a_filesystem_error_is_classified_by_what_refused() {
         ErrorKind::AlreadyExists,
         ErrorKind::Other,
         ErrorKind::InvalidInput,
-        ErrorKind::InvalidData,
     ] {
         assert_eq!(classified(kind.into()), (transient, None), "{kind:?}");
     }
@@ -44,7 +45,6 @@ fn a_filesystem_error_is_classified_by_what_refused() {
         classified(Refusal::NotRegular.into()),
         (data, Some(NOT_A_REGULAR_FILE.to_owned()))
     );
-    assert_eq!(classified(Refusal::Shared.into()), (config, None));
     let too_large = Refusal::TooLarge {
         name: "manifest bytes",
         limit: 8,
@@ -59,6 +59,36 @@ fn a_filesystem_error_is_classified_by_what_refused() {
         actual: 9,
     };
     assert_eq!(error.limit(), Some(limit));
+}
+
+#[test]
+fn a_refusal_is_classified_by_what_was_found() {
+    let path = Path::new("root/file");
+    let classified = |error: Error| {
+        let error = failed("opening", path)(error);
+        (error.kind(), error.code().map(str::to_owned))
+    };
+    let (config, data) = (ConnectorErrorKind::Config, ConnectorErrorKind::Data);
+    let shared = Refusal::Shared {
+        owner: 0,
+        mode: 0o777,
+    };
+    assert_eq!(
+        classified(shared.into()),
+        (config, Some(NOT_PRIVATE.to_owned()))
+    );
+    for refusal in [Refusal::NotDirectory, Refusal::Mounted] {
+        assert_eq!(
+            classified(refusal.into()),
+            (config, Some(NOT_A_DIRECTORY.to_owned()))
+        );
+    }
+    assert_eq!(
+        classified(Refusal::TooDeep { limit: 3 }.into()),
+        (data, None)
+    );
+    // What was read is not what belongs there: no retry helps.
+    assert_eq!(classified(ErrorKind::InvalidData.into()), (data, None));
 }
 
 #[test]

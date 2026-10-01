@@ -399,21 +399,66 @@ async fn everything_the_destination_creates_is_private() {
 }
 
 #[tokio::test]
-async fn a_catalog_directory_another_user_made_is_refused() {
-    // Only another user's directory can show this; where the test cannot make one, the mode
-    // check stands in: a catalog directory others may write is refused as one others made.
-    let root = tempfile::tempdir().unwrap();
-    std::fs::create_dir(root.path().join("_rdlt")).unwrap();
-    std::fs::set_permissions(
-        root.path().join("_rdlt"),
-        std::fs::Permissions::from_mode(0o777),
-    )
-    .unwrap();
-    let destination = connect(root.path(), "jsonl").await;
-    let Err(error) = destination.open(&crate::fixtures::context(1)).await else {
-        panic!("a catalog others may write was opened");
+async fn a_root_or_a_directory_beneath_it_that_others_may_write_is_refused() {
+    // Only another user's directory can show the owner's half; a directory others may write is
+    // refused as one others made, on the root and on every directory entered beneath it.
+    let base = tempfile::tempdir().unwrap();
+    let root = base.path().join("root");
+    let destination = connect(&root, "jsonl").await;
+    let mut opened = open(destination.as_ref(), 1).await;
+    let (schema, batch) = ids(&[1]);
+    stage(&mut opened, &table("rows"), &schema, batch, 1).await;
+    opened
+        .session
+        .commit(&meta(&opened, 1, CommitSeq::FIRST, &[1]))
+        .await
+        .unwrap();
+    let mode = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     };
-    assert_eq!(error.kind(), ConnectorErrorKind::Config);
+    let rdlt = root.join("_rdlt");
+    for shared in [
+        root.clone(),
+        rdlt.clone(),
+        rdlt.join("pipelines"),
+        pipeline_dir(&root),
+        pipeline_dir(&root).join("manifests"),
+    ] {
+        for bits in [0o777, 0o1777, 0o770] {
+            mode(&shared, bits);
+            let Err(error) = destination.open(&crate::fixtures::context(2)).await else {
+                panic!("{} with mode {bits:o} was opened", shared.display());
+            };
+            assert_eq!(error.kind(), ConnectorErrorKind::Config, "{shared:?}");
+            assert_eq!(error.code(), Some("not_private"), "{shared:?}");
+            let read = files::published(&root, "rows").expect_err("the reader refuses it too");
+            assert_eq!(read.code(), Some("not_private"), "{shared:?}");
+            mode(&shared, 0o700);
+        }
+    }
+    // The catalog and the locks, which a writer and a reader enter.
+    let tables = rdlt.join("tables");
+    for shared in [rdlt.join("locks"), tables.clone(), tables.join("rows")] {
+        mode(&shared, 0o777);
+        let Err(error) = opened.session.writer(&table("rows")).await else {
+            panic!(
+                "{} was entered though others may write it",
+                shared.display()
+            );
+        };
+        assert_eq!(error.code(), Some("not_private"), "{shared:?}");
+        if shared.starts_with(&tables) {
+            let read = files::published(&root, "rows").expect_err("the reader refuses it too");
+            assert_eq!(read.code(), Some("not_private"), "{shared:?}");
+        }
+        mode(&shared, 0o700);
+    }
+    mode(&rdlt, 0o777);
     let error = destination.check().await.expect_err("the check refuses it");
-    assert_eq!(error.kind(), ConnectorErrorKind::Config);
+    assert_eq!(error.code(), Some("not_private"));
+    mode(&rdlt, 0o755);
+    destination
+        .check()
+        .await
+        .expect("a directory others only read is the user's alone");
 }

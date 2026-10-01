@@ -87,7 +87,9 @@ fn a_discard_keeps_what_the_latest_manifest_lists_and_enters_no_link() {
 fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe() {
     let root = tempfile::tempdir().expect("a temporary directory");
     trace::clear();
-    checked(root.path()).expect("the check passes");
+    let held = parking_lot::Mutex::new(None);
+    let rdlt = super::held_or_opened(root.path(), &held).expect("the directory opens");
+    checked(&rdlt).expect("the check passes");
     let synced = trace::synced();
     assert!(synced.contains(&root.path().to_owned()), "{synced:?}");
     assert!(root.path().join("_rdlt").is_dir());
@@ -97,6 +99,14 @@ fn a_check_makes_the_private_directory_durable_in_the_root_and_leaves_no_probe()
             .count(),
         0
     );
+    // The directory is held from its first open: the root's path is not resolved again.
+    let moved = root.path().with_extension("moved");
+    std::fs::rename(root.path(), &moved).unwrap();
+    let again = super::held_or_opened(root.path(), &held).expect("the held directory");
+    assert!(Arc::ptr_eq(&rdlt, &again));
+    checked(&again).expect("the check passes where the directory now is");
+    assert!(!root.path().exists());
+    std::fs::rename(&moved, root.path()).unwrap();
 }
 
 #[test]
