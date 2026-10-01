@@ -4,7 +4,8 @@ use std::path::Path;
 use rdlt_connector::{ConnectorErrorKind, LimitExceeded};
 
 use super::{
-    INVALID_NAME, NOT_A_DIRECTORY, NOT_A_REGULAR_FILE, NOT_PRIVATE, failed, listed, retried,
+    INVALID_NAME, NOT_A_DIRECTORY, NOT_A_REGULAR_FILE, NOT_PRIVATE, TOO_DEEP, failed, listed,
+    retried,
 };
 use crate::limits::PUBLISH_ATTEMPTS;
 use crate::rooted::Refusal;
@@ -85,7 +86,7 @@ fn a_refusal_is_classified_by_what_was_found() {
     }
     assert_eq!(
         classified(Refusal::TooDeep { limit: 3 }.into()),
-        (data, None)
+        (data, Some(TOO_DEEP.to_owned()))
     );
     // What was read is not what belongs there: no retry helps.
     assert_eq!(classified(ErrorKind::InvalidData.into()), (data, None));
