@@ -163,14 +163,17 @@ impl Outbox {
                 ipc_schema,
             }));
         }
-        let frames = self
-            .encoder
-            .batch(batch)
-            .map_err(|error| status(&frame_error(&error)))?;
+        // A batch beyond the host's limits goes as several, in order, ahead of what the source
+        // sends next; a row beyond them fails the read here.
+        let frames = match self.encoder.batch_within(batch, &self.host) {
+            Ok(frames) => frames,
+            Err(error) => {
+                // What is sent next starts a schema epoch of its own.
+                self.schema = None;
+                return Err(status(&frame_error(&error)));
+            }
+        };
         for frame in frames {
-            self.host
-                .admit_frame(frame.header.len().saturating_add(frame.body.len()))
-                .map_err(refused)?;
             self.push(Frame::Batch(v1::BatchFrame {
                 schema_epoch: self.epoch,
                 kind: kind as i32,

@@ -20,7 +20,7 @@ use crate::error::{Frame, Problem, WireError};
 use crate::limits::Limits;
 
 /// The batch `drawn` describes.
-fn batch((columns, rows): &Drawn) -> RecordBatch {
+pub(crate) fn batch((columns, rows): &Drawn) -> RecordBatch {
     let arrays: Vec<ArrayRef> = columns
         .iter()
         .enumerate()

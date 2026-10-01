@@ -242,19 +242,40 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
 }
 
 #[tokio::test]
-async fn a_write_beyond_the_connectors_frame_limit_is_refused_typed() {
+async fn a_row_beyond_the_connectors_frame_limit_is_refused_typed() {
     let limits = Limits {
         frame_bytes: 64 * 1024,
         ..Limits::default()
     };
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let mut writer = writer(served, limits, "flow_limit", Options::default()).await;
-    let error = write_until_failed(writer.as_mut(), &ids(200_000), 1).await;
+    // Rows that fit a frame go, as many frames as they need; a row that fits none is refused
+    // before any of its batch is sent.
+    let small: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 20_000]));
+    let rows = RecordBatch::try_from_iter([("b", small)]).expect("a valid batch");
+    writer
+        .write(SegmentId(1), rows)
+        .await
+        .expect("a batch of small rows is cut to the limit");
+    let blob: ArrayRef = Arc::new(StringArray::from(vec!["b".repeat(128 * 1024)]));
+    let row = RecordBatch::try_from_iter([("b", blob)]).expect("a valid batch");
+    let error = write_until_failed(writer.as_mut(), &row, 1).await;
     assert_eq!(
-        error.limit().map(|limit| (limit.name, limit.limit)),
-        Some(("frame bytes", 64 * 1024))
+        (
+            error.code(),
+            error.limit().map(|limit| (limit.name, limit.limit))
+        ),
+        (Some("limit_exceeded"), Some(("frame bytes", 64 * 1024)))
     );
     assert_ne!(error.code(), Some(CONNECTOR_LOST));
+    // The write goes on: a row of the refused row's schema that fits is written.
+    let short: ArrayRef = Arc::new(StringArray::from(vec!["b"]));
+    let row = RecordBatch::try_from_iter([("b", short)]).expect("a valid batch");
+    writer
+        .write(SegmentId(2), row)
+        .await
+        .expect("a row within the limit is written");
+    writer.flush().await.expect("the rows are staged");
 }
 
 #[tokio::test]

@@ -63,6 +63,9 @@ pub(crate) struct TicksConfig {
     /// Whether the read, its rows sent, waits for more that never come.
     #[serde(default)]
     pub(crate) idle: bool,
+    /// Columns of flags: where not zero, the rows go as one batch of them, see [`flagged`].
+    #[serde(default)]
+    pub(crate) flags: usize,
 }
 
 /// A source of numbered rows in one stream, `ticks`, that checkpoints only when the engine asks.
@@ -123,6 +126,19 @@ pub(crate) struct Tick {
     pub(crate) next: u64,
 }
 
+/// Rows `0..rows` as one batch: their ids, then `flags` columns of flags, a bit a value.
+pub(crate) fn flagged(rows: u64, flags: usize) -> arrow_array::RecordBatch {
+    use arrow_array::{ArrayRef, BooleanArray, Int64Array};
+    let rows = i64::try_from(rows).expect("ticks fit an i64");
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
+    let flag: ArrayRef = Arc::new(BooleanArray::from_iter(
+        (0..rows).map(|row| Some(row % 3 == 0)),
+    ));
+    let columns = (0..flags).map(|at| (format!("f{at}"), Arc::clone(&flag)));
+    arrow_array::RecordBatch::try_from_iter(std::iter::once(("id".to_owned(), ids)).chain(columns))
+        .expect("a valid batch")
+}
+
 /// Row `id` as a batch; with `extra`, a second column too.
 fn tick_batch(id: u64, extra: bool) -> arrow_array::RecordBatch {
     use arrow_array::{ArrayRef, Int64Array, StringArray};
@@ -163,6 +179,10 @@ impl ReadStream<Ticks> for TickStream {
             out.metric("ticks.started", 1.5).await?;
             out.behind(7).await?;
             out.replan().await?;
+        }
+        if let Some(rows) = config.rows.filter(|_| config.flags > 0) {
+            out.batch(flagged(rows, config.flags)).await?;
+            return out.checkpoint(&Tick { next: rows }).await;
         }
         let pace = Duration::from_millis(config.pace_ms);
         let mut next = cursor.next;
@@ -322,7 +342,13 @@ pub(crate) enum Writing {
     Stalls,
     /// Each write panics.
     Panics,
+    /// Each write is kept in [`KEPT`].
+    Keeps,
 }
+
+/// The writes a [`Writes`] destination that keeps them was given, in order, each with its segment.
+pub(crate) static KEPT: std::sync::Mutex<Vec<(u64, arrow_array::RecordBatch)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// The memory destination, whose writers go wrong as `writing` says.
 pub(crate) struct Writes {
@@ -420,8 +446,8 @@ struct WrongWriter(Writing);
 impl DestinationWriter for WrongWriter {
     fn write(
         &mut self,
-        _segment: rdlt_connector::SegmentId,
-        _batch: arrow_array::RecordBatch,
+        segment: rdlt_connector::SegmentId,
+        batch: arrow_array::RecordBatch,
     ) -> BoxFuture<'_, Result<()>> {
         let writing = self.0;
         Box::pin(async move {
@@ -429,6 +455,11 @@ impl DestinationWriter for WrongWriter {
                 Writing::Fails => Err(ConnectorError::data("the write was refused")),
                 Writing::Stalls => std::future::pending().await,
                 Writing::Panics => panic!("the writer panicked"),
+                Writing::Keeps => {
+                    let mut kept = KEPT.lock().expect("the lock is not poisoned");
+                    kept.push((segment.0, batch));
+                    Ok(())
+                }
             }
         })
     }
