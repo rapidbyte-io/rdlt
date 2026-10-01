@@ -3,11 +3,11 @@ use std::time::{Duration, UNIX_EPOCH};
 use rdlt_connector::{CommitSeq, ConnectorErrorKind, Epoch, LoadId, PipelineId, Receipt};
 
 use super::{
-    Listed, MANIFEST_INVALID, MANIFESTS, Manifest, RECEIPT_FORGOTTEN, TableFiles, format_of,
-    latest, located, pipeline_dir, put, read, staged, sweep, truncated,
+    Listed, MANIFEST_INVALID, MANIFESTS, Manifest, TableFiles, format_of, latest, located,
+    pipeline_dir, put, read, staged, sweep, truncated,
 };
 use crate::files::FileFormat;
-use crate::limits::{KEPT_VERSIONS, MANIFEST_BYTES, RECEIPT_LOADS, RECEIPTS_PER_LOAD};
+use crate::limits::{KEPT_VERSIONS, MANIFEST_BYTES, RECEIPT_LOADS};
 use crate::rooted::Dir;
 
 fn receipt(load: u128, commit_seq: CommitSeq) -> Receipt {
@@ -48,48 +48,32 @@ fn a_manifest_keeps_the_receipts_of_the_most_recent_loads() {
         manifest.record(&receipt(load, CommitSeq::FIRST.next()));
     }
     let oldest = LoadId::from_parts(UNIX_EPOCH, 0);
-    assert_eq!(manifest.receipt(oldest, CommitSeq::FIRST).unwrap(), None);
+    assert_eq!(manifest.receipt(oldest, CommitSeq::FIRST), None);
     for seq in [CommitSeq::FIRST, CommitSeq::FIRST.next()] {
         let kept = manifest.receipt(LoadId::from_parts(UNIX_EPOCH, 1), seq);
-        assert_eq!(kept.unwrap(), Some(receipt(1, seq)));
+        assert_eq!(kept, Some(receipt(1, seq)));
     }
     assert_eq!(manifest.receipts.len(), RECEIPT_LOADS * 2);
 }
 
 #[test]
-fn a_manifest_keeps_the_receipts_of_each_load_s_most_recent_commits() {
+fn a_manifest_keeps_every_receipt_of_a_load_it_keeps() {
     let mut manifest = Manifest::default();
-    let commits = u64::try_from(RECEIPTS_PER_LOAD).unwrap() + 3;
-    // Two loads committing in turn: each keeps its own most recent commits.
-    for commit in 1..=commits {
+    // Two loads committing in turn, far more often than loads are kept.
+    for commit in 1..=100 {
         for load in [1, 2] {
             manifest.record(&receipt(load, seq(commit)));
         }
     }
-    assert_eq!(manifest.receipts.len(), 2 * RECEIPTS_PER_LOAD);
+    assert_eq!(manifest.receipts.len(), 200);
     for load in [1, 2] {
         let load_id = LoadId::from_parts(UNIX_EPOCH, load);
-        for commit in 1..=commits {
+        for commit in 1..=100 {
             let kept = manifest.receipt(load_id, seq(commit));
-            if commit <= 3 {
-                // It happened: it is refused, neither answered nor taken for a new commit.
-                let error = kept.unwrap_err();
-                assert_eq!(error.kind(), ConnectorErrorKind::Data, "{commit}");
-                assert_eq!(error.code(), Some(RECEIPT_FORGOTTEN), "{commit}");
-            } else {
-                assert_eq!(kept.unwrap(), Some(receipt(load, seq(commit))), "{commit}");
-            }
+            assert_eq!(kept, Some(receipt(load, seq(commit))), "{commit}");
         }
-        // The commit after the load's last is a new one.
-        assert_eq!(manifest.receipt(load_id, seq(commits + 1)).unwrap(), None);
+        assert_eq!(manifest.receipt(load_id, seq(101)), None);
     }
-    // Receipts stay in the order their commits happened.
-    let order: Vec<u64> = manifest
-        .receipts
-        .iter()
-        .map(|stored| stored.commit_seq.get())
-        .collect();
-    assert!(order.is_sorted(), "{order:?}");
 }
 
 #[test]

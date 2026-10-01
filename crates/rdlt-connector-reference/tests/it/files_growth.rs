@@ -174,35 +174,34 @@ async fn an_append_table_whose_schema_changed_keeps_every_row() {
 }
 
 #[tokio::test]
-async fn a_load_keeps_a_bounded_number_of_receipts() {
+async fn a_commit_repeated_however_far_back_in_its_load_is_answered_with_its_receipt() {
+    // A replay repeats a commit whose frame its log still holds, however many commits its load
+    // made since: each is answered, none refused and none published again.
     let root = tempfile::tempdir().unwrap();
-    let (destination, _) = connect_with(root.path(), json!({})).await;
+    let (destination, reader) = connect_with(root.path(), json!({})).await;
     let mut opened = open(destination.as_ref(), 1).await;
+    let rows = table("rows");
     let mut seq = CommitSeq::FIRST;
-    let mut seqs = Vec::new();
-    for _ in 0..40 {
-        let committing = meta(&opened, 1, seq, &[]);
-        opened.session.commit(&committing).await.unwrap();
-        seqs.push(seq);
+    let mut receipts = Vec::new();
+    for commit in 0..40_i64 {
+        let (schema, batch) = ids(&[commit]);
+        let segment = u64::try_from(commit).unwrap() + 1;
+        stage(&mut opened, &rows, &schema, batch, segment).await;
+        let committing = meta(&opened, 1, seq, &[segment]);
+        receipts.push((
+            committing.clone(),
+            opened.session.commit(&committing).await.unwrap(),
+        ));
         seq = seq.next();
     }
-    let (_, manifest) = latest_manifest(root.path());
-    assert_eq!(manifest["receipts"].as_array().unwrap().len(), 16);
-    // The latest commits are answered again with their receipts, as a retry needs.
-    for seq in &seqs[24..] {
-        let again = meta(&opened, 1, *seq, &[]);
-        let receipt = opened.session.commit(&again).await.unwrap();
-        assert_eq!(receipt.commit_seq, *seq);
-    }
-    // An older commit happened, and is neither answered nor published again.
     let version = latest_manifest(root.path()).1["version"].clone();
-    for seq in &seqs[..24] {
-        let again = meta(&opened, 1, *seq, &[]);
-        let error = opened.session.commit(&again).await.unwrap_err();
-        assert_eq!(error.kind(), ConnectorErrorKind::Data);
-        assert_eq!(error.code(), Some("receipt_forgotten"));
+    for (committing, receipt) in &receipts {
+        let again = opened.session.commit(committing).await.unwrap();
+        assert_eq!(&again, receipt);
     }
     assert_eq!(latest_manifest(root.path()).1["version"], version);
+    let all: Vec<i64> = (0..40).collect();
+    assert_eq!(published_ids(reader.as_ref(), &rows).await, all);
 }
 
 #[tokio::test]

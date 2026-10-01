@@ -34,7 +34,7 @@ pub(super) fn commit(
             manifest.epoch, location.epoch
         )));
     }
-    if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq)? {
+    if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq) {
         return Ok(receipt);
     }
     named(meta)?;
