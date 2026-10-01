@@ -26,8 +26,10 @@ use crate::factory::{RoleFactory, Serve};
 /// DNS name or URI in its certificate; `--tls-client-crl <path>` refuses the certificates its
 /// revocation lists name, and `--max-sessions <count>` serves fewer sessions at once than
 /// [`ListenLimits`](crate::limits::ListenLimits) does, for a process that may open few files: it
-/// refuses to listen where its limits need more file descriptors than it may open. The first
-/// `SIGTERM` or `SIGINT` stops it gracefully; a second, at once.
+/// refuses to listen where its limits need more file descriptors than it may open. Each named
+/// host holds an equal share of the sessions, or `--max-host-sessions <count>`; it refuses to
+/// listen where the hosts could leave one of them no session. The first `SIGTERM` or `SIGINT`
+/// stops it gracefully; a second, at once.
 pub fn serve<C: Serve>() -> ExitCode {
     Served::from(C::factory()).serve()
 }

@@ -14,8 +14,8 @@ use std::time::Duration;
 pub struct ListenLimits {
     /// Connections: how many are unauthenticated at once.
     ///
-    /// A further connection closes one of them, drawn at random, so peers that never authenticate
-    /// hold no more than these.
+    /// A further connection closes one of them, the oldest of the origin that holds the most, so
+    /// peers that never authenticate hold no more than these, and mostly close their own.
     pub unauthenticated: usize,
     /// How long a connection has to complete its TLS handshake, and then again to send HTTP/2's
     /// preface, before it is closed.
