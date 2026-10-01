@@ -89,7 +89,7 @@ coverage:
     cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/' -E 'not (package(rdlt-engine) & binary(crashes))'
     cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
 
-# Run the audited crate's test of its `unsafe` code under Miri (§20.14): the workspace's only
+# Run the audited crate's test of its `unsafe` code under Miri: the workspace's only
 # `unsafe` code
 miri:
     rustup toolchain install {{ nightly }} --profile minimal --component miri

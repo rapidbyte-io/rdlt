@@ -113,7 +113,8 @@ walkdir = "2.5.0" # xtask walks the source tree
 
 [workspace.lints.rust]
 # Every target's root forbids unsafe code, which nothing below it can lift, but rdlt-adopt's: the
-# audited crate, which allows it where it needs it (§20.14); `cargo xtask lint` checks both.
+# audited crate, which allows it where it needs it; `cargo xtask lint` checks both, and reports
+# the keyword where the compiler does not look: in a macro's body.
 unsafe_code = "deny"
 missing_docs = "warn"
 unreachable_pub = "warn"
