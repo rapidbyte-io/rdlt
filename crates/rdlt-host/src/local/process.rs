@@ -29,7 +29,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::kills::Kills;
-pub use group::{Interrupts, Lingering, spawned, stop_spawned};
+pub use group::{Interrupts, Lingering, StopsSpawned, spawned, stop_spawned};
 
 /// Bytes of a connector's standard error kept for the errors of its transport.
 pub(crate) const TAIL_BYTES: usize = 8 * 1024;

@@ -14,7 +14,7 @@ use sha2::Digest as _;
 
 use crate::kills::Kills;
 use crate::supervise::{Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
-pub use process::{Interrupts, LastWords, Lingering, Witness, spawned, stop_spawned};
+pub use process::{Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawned, stop_spawned};
 use process::{Launch, Process, executable};
 
 use crate::provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};

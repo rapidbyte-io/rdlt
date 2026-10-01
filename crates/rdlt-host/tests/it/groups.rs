@@ -155,36 +155,95 @@ async fn a_host_out_of_patience_kills_what_it_spawned_before_it_returns() {
     drop(source);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn an_interrupted_or_terminated_host_stops_its_connectors_groups_before_it_exits() {
-    use nix::sys::signal::Signal;
+/// A host of two connectors the launcher in `directory` becomes, started in `mode`, once it is
+/// ready, with the members its connectors started.
+async fn hosting(directory: &Path, mode: &str) -> (tokio::process::Child, Vec<i32>) {
     use tokio::io::AsyncBufReadExt as _;
-    for (signal, code) in [(Signal::SIGINT, 130), (Signal::SIGTERM, 143)] {
+    let launched = launcher(directory);
+    let mut host = tokio::process::Command::new(example("connector_host"))
+        .arg(launched.path.as_ref().expect("the launcher's path"))
+        .arg(mode)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("the host starts");
+    let stdout = host.stdout.take().expect("its output is piped");
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let ready = lines.next_line().await.expect("it reads");
+    assert_eq!(ready.as_deref(), Some("ready"));
+    // Each of its two connectors wrote the members it started.
+    (host, members(directory, 2))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_asked_to_end_by_any_signal_it_hears_stops_its_connectors_groups_first() {
+    use nix::sys::signal::Signal;
+    let heard = [
+        (Signal::SIGINT, 130),
+        (Signal::SIGTERM, 143),
+        // A terminal that closes hangs up its foreground group alone, which no connector is in.
+        (Signal::SIGHUP, 129),
+        (Signal::SIGQUIT, 131),
+    ];
+    for (signal, code) in heard {
         let directory = tempfile::tempdir().expect("a temporary directory");
-        let launched = launcher(directory.path());
-        let mut host = tokio::process::Command::new(example("connector_host"))
-            .arg(launched.path.as_ref().expect("the launcher's path"))
-            .stdout(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .expect("the host starts");
-        let stdout = host.stdout.take().expect("its output is piped");
-        let mut lines = tokio::io::BufReader::new(stdout).lines();
-        let ready = lines.next_line().await.expect("it reads");
-        assert_eq!(ready.as_deref(), Some("ready"));
-        // Each of its two connectors wrote the members it started.
-        let members = members(directory.path(), 2);
+        let (mut host, members) = hosting(directory.path(), "wait").await;
         let pid = i32::try_from(host.id().expect("the host runs")).expect("a process id");
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).expect("it is signalled");
         let status = host.wait().await.expect("the host ends");
-        assert_eq!(status.code(), Some(code), "{signal}");
         // Stopped before the host exited: what is waited for is whatever adopted them
         // reaping them.
         assert!(
             all_gone(&members).await,
             "{signal}: a member outlived the host"
         );
+        assert_eq!(status.code(), Some(code), "{signal}");
     }
+}
+
+/// Kills the process group of each of `members`, so that what a member started ends too.
+fn kill_groups(members: &[i32]) {
+    for member in members {
+        let group = nix::unistd::getpgid(Some(nix::unistd::Pid::from_raw(*member)));
+        if let Ok(group) = group {
+            nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL).ok();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_that_drops_its_connectors_and_returns_has_asked_each_group_to_stop() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let (mut host, members) = hosting(directory.path(), "leave").await;
+    let status = host.wait().await.expect("the host ends");
+    assert_eq!(status.code(), Some(0));
+    let [first, ignoring, second, also_ignoring] = members.as_slice() else {
+        panic!("{members:?}");
+    };
+    // Asked before the drop returned, what ends when asked has ended.
+    let asked = all_gone(&[*first, *second]).await;
+    // What ignores being asked is killed only by a host that waits: this one did not.
+    let alive =
+        |member: &i32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(*member), None).is_ok();
+    let left = alive(ignoring) && alive(also_ignoring);
+    kill_groups(&members);
+    assert!(asked, "a member was not asked to stop");
+    assert!(
+        left,
+        "a member that ignores a stop was killed by a host that had gone"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_that_panics_stops_its_connectors_groups_as_it_unwinds() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let (mut host, members) = hosting(directory.path(), "panic").await;
+    let status = host.wait().await.expect("the host ends");
+    let gone = all_gone(&members).await;
+    kill_groups(&members);
+    assert!(gone, "a member outlived a host that panicked");
+    assert_eq!(status.code(), Some(101));
 }
 
 /// A launcher in `directory` whose connector leaves the group it was started to lead for its

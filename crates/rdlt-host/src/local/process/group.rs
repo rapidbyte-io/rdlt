@@ -27,7 +27,7 @@ pub use interrupts::Interrupts;
 pub(super) use registry::has_room;
 #[cfg(test)]
 pub(super) use registry::threads;
-pub use registry::{Lingering, spawned, stop_spawned};
+pub use registry::{Lingering, StopsSpawned, spawned, stop_spawned};
 
 /// How often the thread that owns a group asks whether its leader has exited, a kill was
 /// asked, or a stop's grace has passed.
