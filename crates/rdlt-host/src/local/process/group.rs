@@ -84,6 +84,11 @@ impl Held {
         signal(leader, Signal::TERM);
         state.killing = Instant::now().checked_add(state.grace);
     }
+
+    /// Has the thread that owns the group kill it now, whatever is left of its grace.
+    pub(super) fn kill(&self) {
+        self.state().killing = Some(Instant::now());
+    }
 }
 
 /// A connector's process and the group it leads, with what kills them.

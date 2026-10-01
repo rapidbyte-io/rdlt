@@ -129,12 +129,12 @@ fn connectors_of_a_runtime_that_is_dropped_are_stopped_with_their_groups() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_host_stops_what_it_spawned_and_says_what_it_could_not_stop_in_time() {
+async fn a_host_out_of_patience_kills_what_it_spawned_before_it_returns() {
     let directory = tempfile::tempdir().expect("a temporary directory");
-    // A connector that ends only when killed, given longer to stop than the host waits.
+    // A connector that ends only when killed, given far longer to stop than the host waits.
     let script = serde_json::json!({ "linger": "forever" });
     let source = local()
-        .grace(Duration::from_secs(3))
+        .grace(Duration::from_secs(1000))
         .source(&launcher(directory.path()), &script)
         .await
         .expect("the connector starts")
@@ -142,19 +142,15 @@ async fn a_host_stops_what_it_spawned_and_says_what_it_could_not_stop_in_time() 
     let members = members(directory.path(), 1);
     let spawned = rdlt_host::spawned();
     assert_eq!(spawned.len(), 1, "{spawned:?}");
-    let stopping = tokio::task::spawn_blocking(|| rdlt_host::stop_spawned(Duration::ZERO));
-    let lingering = stopping
-        .await
-        .expect("it returns")
-        .expect_err("none stops in no time");
-    assert_eq!(lingering.groups, spawned);
-    // Asked to stop all the same, the group is gone once its grace has passed.
-    let stopping = tokio::task::spawn_blocking(|| rdlt_host::stop_spawned(ENDING));
-    stopping
-        .await
-        .expect("it returns")
-        .expect("every group is stopped and empty");
-    assert!(rdlt_host::spawned().is_empty());
+    for patience in [Duration::ZERO, Duration::from_millis(300)] {
+        let began = std::time::Instant::now();
+        let stopping = tokio::task::spawn_blocking(move || rdlt_host::stop_spawned(patience));
+        let stopped = stopping.await.expect("it returns");
+        // Its patience over, the host kills: nothing it spawned is left to its grace.
+        assert_eq!(stopped, Ok(()), "{patience:?}");
+        assert!(began.elapsed() < ENDING, "{:?}", began.elapsed());
+        assert!(rdlt_host::spawned().is_empty());
+    }
     assert!(all_gone(&members).await);
     drop(source);
 }
