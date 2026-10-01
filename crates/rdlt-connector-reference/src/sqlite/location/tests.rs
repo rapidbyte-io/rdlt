@@ -1,10 +1,10 @@
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 
 use super::super::database::connect;
-use super::located;
+use super::{SIDE_FILES, located};
 
 fn refusal<T: std::fmt::Debug>(outcome: Result<T, ConnectorError>) -> (ConnectorErrorKind, String) {
     let error = outcome.expect_err("the path is refused");
@@ -33,6 +33,13 @@ fn listed(directory: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// `name` with `suffix` after it.
+fn beside(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    name.into()
 }
 
 // The working directory is the process's: nextest gives each test its own, and every other test
@@ -109,6 +116,79 @@ fn a_name_that_is_no_file_s_is_refused() {
         refusal(located(Path::new(""), true)),
         config("database_path_invalid")
     );
+}
+
+#[test]
+fn a_database_s_directory_is_its_user_s_alone_to_write() {
+    let outer = tempfile::tempdir().expect("a temporary directory");
+    let directory = outer.path().join("data");
+    std::fs::create_dir(&directory).expect("a directory");
+    let path = directory.join("orders.db");
+    for shared in [0o777, 0o775, 0o757, 0o1777, 0o720, 0o702] {
+        mode(&directory, shared);
+        assert_eq!(refusal(connect(&path)), config("not_private"), "{shared:o}");
+        assert!(!path.exists(), "{shared:o}");
+    }
+    for private in [0o700, 0o755, 0o750] {
+        mode(&directory, private);
+        drop(connect(&path).unwrap_or_else(|error| panic!("{private:o}: {error}")));
+    }
+    // A directory that is none, and one that is missing.
+    let file = outer.path().join("file");
+    std::fs::write(&file, b"").expect("a file");
+    let refused = refusal(connect(&file.join("orders.db")));
+    assert_eq!(refused, config("not_a_directory"));
+    let (kind, _) = refusal(connect(&outer.path().join("missing").join("orders.db")));
+    assert_eq!(kind, ConnectorErrorKind::Config);
+}
+
+#[test]
+fn a_database_and_each_file_beside_it_is_a_private_file_and_no_link() {
+    assert_eq!(SIDE_FILES, ["", "-wal", "-shm", "-journal"]);
+    for suffix in SIDE_FILES {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let path = directory.path().join("orders.db");
+        drop(connect(&path).expect("the database is created"));
+        let planted = beside(&path, suffix);
+        let elsewhere = directory.path().join("elsewhere");
+        std::fs::write(&elsewhere, b"").expect("a file");
+        mode(&elsewhere, 0o600);
+        // A file its group or others reach.
+        for exposed in [0o666, 0o644, 0o640, 0o604, 0o660, 0o606, 0o610, 0o601] {
+            if !planted.exists() {
+                std::fs::write(&planted, b"").expect("a file is planted");
+            }
+            mode(&planted, exposed);
+            let refused = refusal(connect(&path));
+            assert_eq!(refused, config("not_private"), "{suffix} {exposed:o}");
+        }
+        // A link, to a private file or to nothing, and what is no file.
+        std::fs::remove_file(&planted).expect("the file is removed");
+        for target in [elsewhere.clone(), directory.path().join("nowhere")] {
+            std::os::unix::fs::symlink(&target, &planted).expect("a link is planted");
+            let refused = refusal(connect(&path));
+            assert_eq!(refused, config("not_a_regular_file"), "{suffix}");
+            std::fs::remove_file(&planted).expect("the link is removed");
+        }
+        std::fs::create_dir(&planted).expect("a directory is planted");
+        let refused = refusal(connect(&path));
+        assert_eq!(refused, config("not_a_regular_file"), "{suffix}");
+    }
+}
+
+#[test]
+fn a_link_at_the_database_s_name_leads_no_load_into_another_database() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let other = directory.path().join("other.db");
+    drop(connect(&other).expect("the other database"));
+    let link = directory.path().join("mine.db");
+    std::os::unix::fs::symlink(&other, &link).expect("a link");
+    assert_eq!(refusal(connect(&link)), config("not_a_regular_file"));
+    let tables: i64 = connect(&other)
+        .expect("the other database opens")
+        .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
+        .expect("the schema counts");
+    assert_eq!(tables, 0);
 }
 
 #[test]
