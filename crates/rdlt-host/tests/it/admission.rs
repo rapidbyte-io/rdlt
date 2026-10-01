@@ -648,3 +648,42 @@ async fn a_connector_is_told_which_host_it_serves_in_either_role_and_with_either
     assert_eq!(ConnectContext::new().host(), None);
     assert_eq!(ConnectContext::serving("named").host(), Some("named"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn hosts_serving_fewer_sessions_each_keep_a_share_no_other_host_can_take() {
+    // What `--max-sessions 8` makes of the limits for two named hosts.
+    let limits = ListenLimits::default()
+        .shared(2, Some(8), None)
+        .expect("two hosts share eight sessions");
+    let connector = Connector::listening(&["host", "other"], limits);
+    let (reference, config) = memory();
+    let host = connector.remote("host");
+    let mut held = Vec::new();
+    // One host takes all it can: its share, and no more.
+    for _ in 0..4 {
+        let placed = host.source(&reference, &config).await;
+        held.push(placed.expect("the connector is placed"));
+    }
+    for _ in 0..4 {
+        let refused = host
+            .source(&reference, &config)
+            .await
+            .err()
+            .expect("refused");
+        assert!(
+            matches!(refused, ProviderError::Unreachable { .. }),
+            "{refused}"
+        );
+    }
+    // The other is served at once, to its own share.
+    let other = connector.remote("other");
+    for _ in 0..4 {
+        let started = tokio::time::Instant::now();
+        let placed = other.source(&reference, &config).await;
+        held.push(placed.expect("another named host is served"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+    for placed in &held {
+        placed.connector.check().await.expect("the check passes");
+    }
+}

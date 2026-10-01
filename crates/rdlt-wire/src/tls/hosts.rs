@@ -33,6 +33,11 @@ impl Hosts {
         Ok(Self(Arc::new(names)))
     }
 
+    /// How many hosts are named: one at least.
+    pub fn count(&self) -> usize {
+        self.0.len()
+    }
+
     /// The listed name `certificate` carries, the first in the list's order; none where it
     /// carries none of them, or cannot be read.
     pub fn named(&self, certificate: &CertificateDer<'_>) -> Option<&str> {

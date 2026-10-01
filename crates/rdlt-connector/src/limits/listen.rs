@@ -23,6 +23,9 @@ pub struct ListenLimits {
     /// Sessions: how many are served at once, each on a connection of its own.
     pub sessions: usize,
     /// Connections: how many one host holds at once, served or waiting; a further is closed.
+    ///
+    /// The default is for one host, which may hold every session: [`ListenLimits::shared`] gives
+    /// each of several hosts its share.
     pub host_sessions: usize,
     /// Connections: how many wait for a session at once; a further is closed.
     pub waiting: usize,
@@ -45,7 +48,7 @@ impl Default for ListenLimits {
             unauthenticated: 64,
             handshake: Duration::from_secs(5),
             sessions: 256,
-            host_sessions: 64,
+            host_sessions: 256,
             waiting: 64,
             wait: Duration::from_secs(10),
             session_descriptors: 4,
@@ -68,7 +71,53 @@ pub struct TooFewDescriptors {
     pub needed: u64,
 }
 
+/// The hosts named to a connector could between them leave one of them no session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "{hosts} hosts are named, and each may hold {host_sessions} of {sessions} sessions: the others \
+     could leave a host none; serve more sessions, or let a host hold fewer"
+)]
+pub struct UnfairSessions {
+    /// Hosts: how many are named.
+    pub hosts: usize,
+    /// Sessions: how many are served at once.
+    pub sessions: usize,
+    /// Connections: how many one host may hold.
+    pub host_sessions: usize,
+}
+
 impl ListenLimits {
+    /// These limits for `hosts` named hosts, serving `sessions` sessions where given, of which
+    /// one host holds `host_sessions` where given and an equal share otherwise.
+    ///
+    /// # Errors
+    ///
+    /// [`UnfairSessions`] where a host may hold none, or where the other hosts, each holding all
+    /// it may, would leave a host no session.
+    pub fn shared(
+        self,
+        hosts: usize,
+        sessions: Option<usize>,
+        host_sessions: Option<usize>,
+    ) -> Result<Self, UnfairSessions> {
+        let hosts = hosts.max(1);
+        let sessions = sessions.unwrap_or(self.sessions);
+        let host_sessions = host_sessions.unwrap_or(sessions / hosts);
+        let others = (hosts - 1).saturating_mul(host_sessions);
+        if host_sessions == 0 || others >= sessions {
+            return Err(UnfairSessions {
+                hosts,
+                sessions,
+                host_sessions,
+            });
+        }
+        Ok(Self {
+            sessions,
+            host_sessions,
+            ..self
+        })
+    }
+
     /// File descriptors: how many a connector listening within these limits may come to hold.
     ///
     /// Every unauthenticated connection, a connection just accepted that closes one of them, every

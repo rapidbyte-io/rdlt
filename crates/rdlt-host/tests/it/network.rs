@@ -542,3 +542,19 @@ async fn a_connector_serving_fewer_sessions_listens_within_fewer_descriptors() {
     assert!(listening.status.success(), "{listening:?}");
     assert!(listening.stdout.starts_with(b"listening on "));
 }
+
+#[tokio::test]
+async fn a_connector_whose_hosts_could_leave_one_no_session_refuses_to_listen() {
+    // Two hosts and one session: whichever holds it leaves the other none.
+    let unfair = limited(4096, &["--tls-allow-host", "other", "--max-sessions", "1"]).await;
+    assert!(!unfair.status.success());
+    assert!(unfair.stdout.is_empty(), "it announced an address");
+    let greedy = ["--tls-allow-host", "other", "--max-host-sessions", "256"];
+    let greedy = limited(4096, &greedy).await;
+    assert!(!greedy.status.success());
+    assert!(greedy.stdout.is_empty(), "it announced an address");
+    let fair = ["--tls-allow-host", "other", "--max-host-sessions", "100"];
+    let fair = limited(4096, &fair).await;
+    assert!(fair.status.success(), "{fair:?}");
+    assert!(fair.stdout.starts_with(b"listening on "));
+}

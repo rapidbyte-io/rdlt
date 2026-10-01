@@ -53,10 +53,13 @@ pub(crate) struct Listen {
     pub(crate) accepted: Accepted,
     /// Sessions served at once, where not the default: `--max-sessions <count>`.
     pub(crate) sessions: Option<NonZeroUsize>,
+    /// Connections one host holds at once, where not its share of the sessions:
+    /// `--max-host-sessions <count>`.
+    pub(crate) host_sessions: Option<NonZeroUsize>,
 }
 
 /// Every argument a connector binary takes.
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 9] = [
     "rdlt-fd",
     "listen",
     "tls-cert",
@@ -65,6 +68,7 @@ const NAMES: [&str; 8] = [
     HOST,
     "tls-client-crl",
     "max-sessions",
+    "max-host-sessions",
 ];
 
 /// The argument given once for each host accepted.
@@ -108,6 +112,17 @@ impl Given {
         self.once.remove(name)
     }
 
+    /// The count of sessions given as `--name`, where it was.
+    fn count(&mut self, name: &str) -> Result<Option<NonZeroUsize>, Failure> {
+        self.take(name)
+            .map(|count| {
+                count
+                    .parse()
+                    .map_err(|_| format!("`--{name} {count}` is not a count of sessions").into())
+            })
+            .transpose()
+    }
+
     /// Whether an argument that goes with `--listen` alone was given.
     fn listens(&self) -> bool {
         let listening = ["tls-cert", "tls-key", "tls-client-ca", "tls-client-crl"];
@@ -132,14 +147,8 @@ impl Given {
             );
         };
         let crl = self.take("tls-client-crl").map(PathBuf::from);
-        let sessions = self
-            .take("max-sessions")
-            .map(|count| {
-                count
-                    .parse()
-                    .map_err(|_| format!("`--max-sessions {count}` is not a count of sessions"))
-            })
-            .transpose()?;
+        let sessions = self.count("max-sessions")?;
+        let host_sessions = self.count("max-host-sessions")?;
         let hosts = Hosts::new(self.hosts).map_err(|_| {
             "`--listen` needs a `--tls-allow-host` naming each host it accepts: a connector \
              accepts the hosts named to it, not every certificate of its CA"
@@ -147,6 +156,7 @@ impl Given {
         Ok(Listen {
             address,
             sessions,
+            host_sessions,
             identity: Identity {
                 cert: cert.into(),
                 key: key.into(),
@@ -168,8 +178,12 @@ pub(crate) fn parse(args: impl Iterator<Item = String>) -> Result<Args, Failure>
             if given.listens() {
                 return Err("the TLS options go with `--listen`, not `--rdlt-fd`".into());
             }
-            if given.take("max-sessions").is_some() {
-                return Err("`--max-sessions` goes with `--listen`, not `--rdlt-fd`".into());
+            if given
+                .take("max-sessions")
+                .or(given.take("max-host-sessions"))
+                .is_some()
+            {
+                return Err("the counts of sessions go with `--listen`, not `--rdlt-fd`".into());
             }
             let fd = fd
                 .parse()
