@@ -173,6 +173,14 @@ impl Reader {
         Ok(Self { path, rows })
     }
 
+    /// The schema an Arrow file's batches are in; none for JSON lines, which hold none.
+    pub(super) fn schema(&self) -> Option<&SchemaRef> {
+        match &self.rows {
+            Rows::Jsonl(_) => None,
+            Rows::Arrow(file) => Some(file.schema()),
+        }
+    }
+
     /// Skips the next `batches` batches of an Arrow file.
     pub(super) fn skip(&mut self, batches: u64) {
         if let Rows::Arrow(file) = &mut self.rows {
@@ -216,6 +224,8 @@ pub(super) struct Writer<'a> {
     name: &'a str,
     path: PathBuf,
     rows: u64,
+    /// The file's schema, which an Arrow file's batches are all in.
+    schema: SchemaRef,
     sink: Option<Sink>,
     finished: bool,
 }
@@ -255,6 +265,7 @@ impl<'a> Writer<'a> {
             name,
             path,
             rows: 0,
+            schema: SchemaRef::clone(schema),
             sink: None,
             finished: false,
         };
@@ -290,6 +301,38 @@ impl<'a> Writer<'a> {
             }),
         };
         written.map_err(|error| self.encoded(error))?;
+        self.count(rows);
+        Ok(())
+    }
+
+    /// Writes the rows of `file`, a regular file of this writer's format which `path` names in
+    /// messages: an Arrow file's batches, which must be in this file's schema, or a JSON lines
+    /// file's lines as they are.
+    pub(super) fn append(&mut self, file: File, path: PathBuf) -> Result<()> {
+        let lines = match self.sink.as_mut().expect("the writer is unfinished") {
+            Sink::Jsonl(lines) => lines,
+            Sink::Arrow(_) => {
+                let mut reader = Reader::over(FileFormat::Arrow, file, path, &self.schema)?;
+                while let Some(batch) = reader.next()? {
+                    self.write(&batch)?;
+                }
+                return Ok(());
+            }
+        };
+        let mut from = lines::Lines::new(std::io::BufReader::new(file), LINE_BYTES);
+        let (mut line, mut rows) = (Vec::new(), 0);
+        while from.next(&mut line).map_err(io::failed("reading", &path))? {
+            if !lines::holds_a_record(&line) {
+                continue;
+            }
+            // A last line without its ending gets one, so the next line starts its own.
+            let ending: &[u8] = if line.ends_with(b"\n") { b"" } else { b"\n" };
+            let copied = lines
+                .write_all(&line)
+                .and_then(|()| lines.write_all(ending));
+            copied.map_err(io::failed("writing", &self.path))?;
+            rows += 1;
+        }
         self.count(rows);
         Ok(())
     }

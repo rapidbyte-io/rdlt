@@ -309,7 +309,7 @@ fn latest(rdlt: &Dir, name: &str) -> Result<Option<(u64, TableSchema)>> {
 }
 
 /// Creates catalog `version` of the table `name` with `schema`, unless it exists; returns whether
-/// it did.
+/// it did, removing the versions older than those kept.
 fn create(rdlt: &Dir, name: &str, version: u64, schema: &TableSchema) -> Result<bool> {
     let dir = catalog_created(rdlt, name)?;
     let json = serde_json::to_vec_pretty(schema).expect("schemas serialize to JSON");
@@ -319,7 +319,12 @@ fn create(rdlt: &Dir, name: &str, version: u64, schema: &TableSchema) -> Result<
         .admit(u64::try_from(json.len()).unwrap_or(u64::MAX))
         .map_err(|refusal| failed(refusal.into()))?;
     dir.sweep(TEMPORARY_AGE).map_err(&failed)?;
-    versions::create(&dir, version, &json).map_err(&failed)
+    if !versions::create(&dir, version, &json).map_err(&failed)? {
+        return Ok(false);
+    }
+    let listed = versions::listed(&dir).map_err(&failed)?;
+    versions::prune(&dir, &listed, version);
+    Ok(true)
 }
 
 /// Creates the file `file` in `dir` holding `bytes`, durably, unless it exists; returns whether

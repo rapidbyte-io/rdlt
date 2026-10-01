@@ -1,16 +1,22 @@
-//! A commit: the files a session staged become part of the pipeline's next manifest.
+//! A commit: the files a session staged become part of the pipeline's next manifest, and what
+//! that manifest no longer lists is removed once it is durable.
 
-use std::collections::BTreeMap;
+#[cfg(test)]
+mod tests;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
 use parking_lot::Mutex;
 use rdlt_connector::GenerationId;
 use rdlt_connector::prelude::*;
 
+use super::compact::compact;
 use super::merged::{follow_root, merged_rows, written};
 use super::{Location, Shared, StagedFile, path_key};
 use crate::files::manifest::{self, Manifest};
 use crate::files::{destination, tables};
+use crate::rooted::Dir;
 
 /// The files a commit publishes, by table and generation.
 pub(super) type Staging<'a> = BTreeMap<(String, Option<GenerationId>), Vec<&'a StagedFile>>;
@@ -28,7 +34,7 @@ pub(super) fn commit(
             manifest.epoch, location.epoch
         )));
     }
-    if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq) {
+    if let Some(receipt) = manifest.receipt(meta.load_id, meta.commit_seq)? {
         return Ok(receipt);
     }
     named(meta)?;
@@ -42,12 +48,27 @@ pub(super) fn commit(
             .collect();
         (staged, shared.names.clone())
     };
-    publish_all(location, &mut manifest, &staged, meta)?;
-    let receipt = put(location, &mut manifest, &staged, names, meta)?;
+    let mut held: Vec<String> = manifest.files().map(|file| file.path.clone()).collect();
+    held.extend(staged.iter().map(|staged| staged.file.path.clone()));
+    let mut created = Vec::new();
+    let published = publish_all(location, &mut manifest, &staged, meta, &mut created)
+        .and_then(|()| put(location, &mut manifest, &staged, names, meta));
+    let receipt = match published {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            // What the failed commit wrote goes, unless its manifest was created after all: a
+            // failure after that leaves the manifest, which lists what was written.
+            prune(&location.dir, &created);
+            return Err(error);
+        }
+    };
     shared
         .lock()
         .staged
         .retain(|file| !meta.segments.contains(file.segment));
+    // The manifest is durable: what it no longer lists is read by nothing that follows it. What
+    // cannot be removed now is removed by the next open.
+    prune(&location.dir, &held);
     // The manifest is the truth: a catalog left behind here is removed by the next open.
     for name in &manifest.dropped {
         let still = || destination::still_dropped(&location.dir, name);
@@ -55,6 +76,20 @@ pub(super) fn commit(
         drop(tables::release(rdlt, name, &location.pipeline, wait, still));
     }
     Ok(receipt)
+}
+
+/// Removes those of `paths` the latest manifest of the pipeline whose directory `dir` is does
+/// not list; where no manifest reads, nothing is removed.
+fn prune(dir: &Dir, paths: &[String]) {
+    let Ok(latest) = manifest::latest(dir) else {
+        return;
+    };
+    let listed: BTreeSet<&String> = latest
+        .iter()
+        .flat_map(Manifest::files)
+        .map(|file| &file.path)
+        .collect();
+    remove(dir, paths.iter().filter(|path| !listed.contains(path)));
 }
 
 /// Checks that every table `meta` names besides those its segments were staged for is an
@@ -107,6 +142,41 @@ fn put(
     Ok(receipt)
 }
 
+/// Names: how many of a staged path's leading names (the staging directory, the epoch and the
+/// load) lead to directories every writer of a session shares, which a commit never removes.
+const SHARED: usize = 3;
+
+/// Removes the files at `paths` under the pipeline's directory `dir`, and the directories of
+/// their own that leaves empty, as far as each goes: a path that cannot be removed is left for
+/// the next open.
+fn remove<'a>(dir: &Dir, paths: impl Iterator<Item = &'a String>) {
+    for path in paths {
+        let Ok(names) = manifest::staged(path) else {
+            continue;
+        };
+        let Some((file, parents)) = names.split_last() else {
+            continue;
+        };
+        // Each directory leading to the file, the pipeline's own first.
+        let mut reached = Vec::with_capacity(parents.len());
+        for name in parents {
+            let parent = reached.last().unwrap_or(dir);
+            let Ok(next) = parent.dir(name) else { break };
+            reached.push(next);
+        }
+        let holds = reached.len() == parents.len();
+        if !holds || reached[parents.len() - 1].remove_file(file).is_err() {
+            continue;
+        }
+        // Each directory the file left empty goes, deepest first, but those writers share.
+        for level in (SHARED..parents.len()).rev() {
+            if reached[level - 1].remove_dir(parents[level]).is_err() {
+                break;
+            }
+        }
+    }
+}
+
 /// Swaps into `manifest` the generations `meta` finishes, and drops from it the tables `meta`
 /// drops, each of which another pipeline must not own.
 fn finish(location: &Location, manifest: &mut Manifest, meta: &CommitMeta) -> Result<()> {
@@ -143,44 +213,50 @@ fn publish(
     files: &[&StagedFile],
     meta: &CommitMeta,
     staged: &Staging<'_>,
+    created: &mut Vec<String>,
 ) -> Result<()> {
     let table = manifest.tables.entry(name.to_owned()).or_default();
     let first = &files[0].table;
     let listed = files.iter().map(|staged| staged.file.clone());
     match (&first.generation, &first.merge) {
-        (Some(generation), _) => table
-            .generations
-            .entry(*generation)
-            .or_default()
-            .extend(listed),
+        (Some(generation), _) => {
+            let filling = table.generations.entry(*generation).or_default();
+            filling.extend(listed);
+            compact(location, name, Some(*generation), filling, meta, created);
+        }
         (None, Some(key)) => {
             let root = key.root.as_ref().map(|root| {
                 let files = staged.get(&(root.table.to_string(), None));
                 (root, files.map(Vec::as_slice).unwrap_or_default())
             });
             let merged = merged_rows(location, name, table, files, key, root)?;
-            table.files = written(location, name, "merged", &merged.rows, meta)?
-                .into_iter()
-                .collect();
+            let rows = written(location, name, "merged", &merged.rows, meta, created)?;
+            table.files = rows.into_iter().collect();
             table.tombstones = match &merged.tombstones {
-                Some(tombstones) => written(location, name, "tombstones", tombstones, meta)?
-                    .into_iter()
-                    .collect(),
+                Some(tombstones) => {
+                    written(location, name, "tombstones", tombstones, meta, created)?
+                        .into_iter()
+                        .collect()
+                }
                 None => Vec::new(),
             };
         }
-        (None, None) => table.files.extend(listed),
+        (None, None) => {
+            table.files.extend(listed);
+            compact(location, name, None, &mut table.files, meta, created);
+        }
     }
     Ok(())
 }
 
 /// Adds the `staged` files of `meta` to what `manifest` lists for their tables, and has the
-/// child tables it lists follow their roots.
+/// child tables it lists follow their roots; `created` gains every file this writes.
 fn publish_all(
     location: &Location,
     manifest: &mut Manifest,
     staged: &[StagedFile],
     meta: &CommitMeta,
+    created: &mut Vec<String>,
 ) -> Result<()> {
     let mut by_table: Staging<'_> = BTreeMap::new();
     for file in staged {
@@ -190,10 +266,10 @@ fn publish_all(
             .push(file);
     }
     for ((name, _), files) in &by_table {
-        publish(location, manifest, name, files, meta, &by_table)?;
+        publish(location, manifest, name, files, meta, &by_table, created)?;
     }
     for child in &meta.child_tables {
-        follow_root(location, manifest, child, meta, &by_table)?;
+        follow_root(location, manifest, child, meta, &by_table, created)?;
     }
     Ok(())
 }

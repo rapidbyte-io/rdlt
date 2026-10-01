@@ -229,3 +229,19 @@ pub(crate) fn plant_manifest(latest: &Path, mut manifest: Value) {
     std::fs::write(path, serde_json::to_vec(&manifest).expect("JSON"))
         .expect("the manifest plants");
 }
+
+/// The `id` column of every published row of `table`, in order.
+pub(crate) async fn published_ids(reader: &dyn PublishedReader, table: &TableRef) -> Vec<i64> {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::Int64Type;
+    reader
+        .published(table)
+        .await
+        .expect("the table reads back")
+        .iter()
+        .flat_map(|batch| {
+            let ids = batch.column_by_name("id").expect("an id column");
+            ids.as_primitive::<Int64Type>().values().to_vec()
+        })
+        .collect()
+}

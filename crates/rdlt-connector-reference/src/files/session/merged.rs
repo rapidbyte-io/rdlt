@@ -21,6 +21,7 @@ pub(super) fn follow_root(
     child: &ChildTable,
     meta: &CommitMeta,
     staged: &Staging<'_>,
+    created: &mut Vec<String>,
 ) -> Result<()> {
     let Some(root) = &child.merge.root else {
         return Ok(());
@@ -39,7 +40,7 @@ pub(super) fn follow_root(
     if merged.rows.num_rows() == merged.held {
         return Ok(());
     }
-    table.files = written(location, &name, "merged", &merged.rows, meta)?
+    table.files = written(location, &name, "merged", &merged.rows, meta, created)?
         .into_iter()
         .collect();
     Ok(())
@@ -117,13 +118,14 @@ pub(super) fn merged_rows(
 }
 
 /// Writes `rows` of the table `name` as commit `meta`'s merge, under `kind`: its rows or its
-/// tombstones; the file written, or none for no rows.
+/// tombstones; the file written, which `created` gains, or none for no rows.
 pub(super) fn written(
     location: &Location,
     name: &str,
     kind: &str,
     rows: &RecordBatch,
     meta: &CommitMeta,
+    created: &mut Vec<String>,
 ) -> Result<Option<Listed>> {
     if rows.num_rows() == 0 {
         return Ok(None);
@@ -131,7 +133,10 @@ pub(super) fn written(
     let segment = [kind.to_owned(), meta.commit_seq.get().to_string()];
     let (names, file) = location.staged(&segment, name, None, 0);
     let dir = location.staging(&names)?;
+    // What an earlier try of this commit left under the name is listed nowhere.
+    drop(dir.remove_file(&file));
     let path = format!("{}/{file}", names.join("/"));
+    created.push(path.clone());
     let mut writer = Writer::create(location.format, &dir, &file, rows.schema_ref())?;
     writer.write(rows)?;
     let written = writer.finish()?;
