@@ -63,9 +63,7 @@ fn metadata() -> Vec<Frame> {
             replayable: true,
             phase: 2,
             from: Some(PartitionState::Done),
-            state: PartitionState::Cursor(
-                Cursor::new(1, bytes::Bytes::from_static(b"{}")).expect("a cursor"),
-            ),
+            state: PartitionState::Cursor(Cursor::new(1, b"{}").expect("a cursor")),
         }),
         Frame::Begun(BegunPhase {
             stream: StreamName::new("orders").expect("a valid stream"),

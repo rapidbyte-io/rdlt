@@ -137,9 +137,7 @@ async fn a_logged_load_reads_back_as_it_was_written() {
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let observed = Arc::clone(&store);
-    let state = PartitionState::Cursor(
-        Cursor::new(1, bytes::Bytes::from_static(b"{\"next\":3}")).expect("a cursor"),
-    );
+    let state = PartitionState::Cursor(Cursor::new(1, b"{\"next\":3}").expect("a cursor"));
     let receipt = Receipt {
         load_id: load(),
         commit_seq: CommitSeq::FIRST,

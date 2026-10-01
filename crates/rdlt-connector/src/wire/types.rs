@@ -326,7 +326,7 @@ impl TryFrom<v1::Cursor> for Cursor {
 
     fn try_from(cursor: v1::Cursor) -> Result<Self, Invalid> {
         let version = narrow("cursor version", cursor.version)?;
-        Self::new(version, cursor.bytes).map_err(|error| Invalid::rejected("cursor", error))
+        Self::new(version, &cursor.bytes).map_err(|error| Invalid::rejected("cursor", error))
     }
 }
 
