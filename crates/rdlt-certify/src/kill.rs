@@ -242,13 +242,23 @@ mod running {
         mixed ^ (mixed >> 31)
     }
 
-    /// Why a load proves nothing of the connector, drawn from `seed`, when `kills` killed nothing
-    /// or no kill interrupted it; `None` when one did.
+    /// Why a load proves nothing of the connector, drawn from `seed`: `kills` killed nothing, no
+    /// connection was seen to end after a kill, or no attempt failed; `None` when a kill landed
+    /// and an attempt failed.
+    ///
+    /// An attempt that failed is no evidence by itself: a clause that loses an answer fails one
+    /// whatever became of the connector.
     pub(crate) fn unproven(kills: &Kills, interrupted: bool, seed: u64) -> Option<Loaded> {
-        (kills.count() == 0 || !interrupted).then(|| {
-            let reason = format!("no kill interrupted the load (kill seed {seed}): it ended first");
-            Loaded::Unseen(reason)
-        })
+        let reason = if kills.count() == 0 {
+            "no kill interrupted the load: it ended first"
+        } else if kills.landed() == 0 {
+            "no kill reached the connector: its connection outlived each"
+        } else if !interrupted {
+            "no kill interrupted the load: no attempt of it failed"
+        } else {
+            return None;
+        };
+        Some(Loaded::Unseen(format!("{reason} (kill seed {seed})")))
     }
 
     /// An engine that commits every [`COMMIT_ROWS`] rows and retries quickly.

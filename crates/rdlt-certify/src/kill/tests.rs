@@ -207,18 +207,41 @@ fn each_fault_reads_apart_and_names_its_row() {
 }
 
 #[test]
-fn a_load_proves_something_only_once_a_kill_interrupted_it() {
+fn a_load_proves_something_only_once_a_kill_landed_and_interrupted_it() {
     let unkilled = rdlt_host::Kills::new();
-    let killed = rdlt_host::Kills::new();
-    killed.kill();
-    for (kills, interrupted) in [(&unkilled, false), (&unkilled, true), (&killed, false)] {
-        assert!(
-            matches!(unproven(kills, interrupted, 9), Some(Loaded::Unseen(reason)) if reason.contains("kill seed 9")),
-            "{} kills, interrupted: {interrupted}",
-            kills.count()
-        );
+    // A kill that reached nothing: no connection was seen to end after it.
+    let unreached = rdlt_host::Kills::new();
+    unreached.kill();
+    // A kill that ended a connection.
+    let landed = rdlt_host::Kills::new();
+    let (_peer, stream) = tokio::io::duplex(8);
+    let mut cut = landed.sever(stream);
+    landed.kill();
+    let met = ready(tokio::io::AsyncWriteExt::write_all(&mut cut, b"x"));
+    assert!(met.is_err() && landed.landed() == 1);
+    let unproven_by = [
+        (&unkilled, false),
+        (&unkilled, true),
+        (&unreached, false),
+        // An attempt failed, as one whose answer the clause lost does: no kill landed.
+        (&unreached, true),
+        (&landed, false),
+    ];
+    let mut reasons = std::collections::BTreeSet::new();
+    for (kills, interrupted) in unproven_by {
+        let Some(Loaded::Unseen(reason)) = unproven(kills, interrupted, 9) else {
+            panic!("{} kills, interrupted: {interrupted}", kills.count());
+        };
+        // Each says the seed that drew its kill points.
+        assert!(reason.contains('9'), "{reason}");
+        reasons.insert(reason);
     }
-    assert!(unproven(&killed, true, 9).is_none());
+    assert_eq!(
+        reasons.len(),
+        3,
+        "each cause has a reason of its own: {reasons:?}"
+    );
+    assert!(unproven(&landed, true, 9).is_none());
 }
 
 /// Runs [`proven`] over loads that `interrupts` says each draw interrupts, returning its outcome and

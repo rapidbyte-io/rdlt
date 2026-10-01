@@ -133,7 +133,7 @@ impl Local {
         let launch = self.launch(reference, &path, None);
         let (stream, process) =
             Process::launched(&launch).map_err(|source| spawn_failed(reference, &path, source))?;
-        Ok(Wire::new(Box::new(stream), Some(process)))
+        Ok(Wire::new(stream, Some(process)))
     }
 
     fn launch(&self, reference: &ConnectorRef, path: &Path, digest: Option<Digest>) -> Launch {
