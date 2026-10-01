@@ -189,9 +189,17 @@ async fn a_run_stopped_between_a_batchs_pieces_publishes_none_of_them_and_the_ne
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_logged_batch_is_cut_again_when_its_commit_is_replayed() {
-    static HOOK: Hook = Hook::at(usize::MAX);
+async fn a_logged_batch_whose_replay_fails_between_its_pieces_is_replayed_and_cut_again() {
+    // The first commit is lost once every piece was staged; its replay stages two pieces and
+    // fails; the replay after it stages all five and commits.
+    static HOOK: Hook = Hook::at(PIECES + 2);
     HOOK.failing_commit.store(true, Ordering::SeqCst);
+    HOOK.then(|| {
+        Err(ConnectorError::new(
+            ConnectorErrorKind::Transient,
+            "the replay's second piece was refused",
+        ))
+    });
     let logs = tempfile::tempdir().expect("a temporary directory");
     let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(logs.path()));
     let destination = destination(&HOOK, "cuts_replayed", &Kills::new()).await;
@@ -199,19 +207,68 @@ async fn a_logged_batch_is_cut_again_when_its_commit_is_replayed() {
     let outcome = engine(Some(wal))
         .run(plan("cuts-replayed").with_wal(true), source, destination)
         .await;
-    succeeded(&outcome, 2);
+    succeeded(&outcome, 3);
     assert_eq!(ids("cuts_replayed"), every_row());
-    // The rows of the commit the destination missed came from the log, uncut there, and were cut
-    // for the destination again: the source sent them once, and the destination staged them twice.
-    assert_eq!(HOOK.writes(), 2 * PIECES);
+    // The rows came from the log, uncut there, and were cut for the destination each time:
+    // the source sent them once, and the destination staged five pieces, two, then five.
+    assert_eq!(HOOK.writes(), PIECES + 2 + PIECES);
     let sent = FLAGGED.lock().expect("the lock is not poisoned");
     assert_eq!(sent.get("cuts_replayed"), Some(&ROWS));
 }
 
-#[tokio::test]
-async fn a_checkpoint_asked_for_while_a_batchs_pieces_wait_follows_its_last_piece() {
-    // The host takes the fewest values a frame the protocol allows, and grants credit for one
-    // frame at a time: the batch's second piece waits for credit while the barrier arrives.
+/// A connection that fails once the host has read `left` bytes of it.
+struct Severed {
+    inner: tokio::net::UnixStream,
+    left: usize,
+}
+
+impl tokio::io::AsyncRead for Severed {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.left == 0 {
+            return std::task::Poll::Ready(Err(std::io::ErrorKind::ConnectionReset.into()));
+        }
+        let before = buffer.filled().len();
+        let read = std::pin::Pin::new(&mut self.inner).poll_read(context, buffer);
+        self.left = self.left.saturating_sub(buffer.filled().len() - before);
+        read
+    }
+}
+
+impl tokio::io::AsyncWrite for Severed {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(context, bytes)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(context)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next_attempt_all() {
+    // The source's rows reach the host as two pieces, of about 160 and 75 kilobytes, a frame
+    // of credit at a time. Its first connection fails once the host has read 200 kilobytes:
+    // the first piece, and part of the second.
+    static SEVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static HOOK: Hook = Hook::at(usize::MAX);
     let options = Options {
         limits: Limits {
             batch_values: MIN_BATCH_VALUES,
@@ -220,9 +277,53 @@ async fn a_checkpoint_asked_for_while_a_batchs_pieces_wait_follows_its_last_piec
         read_window: 1,
         ..Options::default()
     };
-    let source = ticks(options).await;
+    let connect = Connect::new(|| {
+        let inner = served(Served::new().with_source(source_factory::<Ticks>()));
+        let left = if SEVERED.swap(true, Ordering::SeqCst) {
+            usize::MAX
+        } else {
+            200_000
+        };
+        let stream = Severed { inner, left };
+        Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
+    })
+    .options(options);
+    let reference = ConnectorRef::new(ConnectorId::parse("test.ticks").expect("valid"));
+    let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS, "tag": "cuts_lost" });
+    let placed = connect.source(&reference, &config).await;
+    let source: Arc<dyn rdlt_connector::Source> =
+        Arc::from(placed.expect("the source is reached").connector);
+    let destination = destination(&HOOK, "cuts_lost", &Kills::new()).await;
+    let outcome = engine(None)
+        .run(plan("cuts-lost"), source, destination)
+        .await;
+    succeeded(&outcome, 2);
+    // The rows were read twice, the first piece of the first reading among them, and each is
+    // published once: nothing of the reading that was cut off was committed.
+    let sent = FLAGGED.lock().expect("the lock is not poisoned");
+    assert_eq!(sent.get("cuts_lost"), Some(&(2 * ROWS)));
+    assert_eq!(ids("cuts_lost"), every_row());
+    assert_eq!(HOOK.writes(), PIECES);
+}
+
+#[tokio::test]
+async fn a_checkpoint_asked_for_between_a_batchs_pieces_follows_its_last_piece() {
+    // The host takes the fewest values a frame the protocol allows, and grants credit for one
+    // frame at a time: the batch's second piece waits for credit when the host, the first in
+    // hand, asks for a checkpoint. The source answers at once; its answer follows the piece.
+    let options = Options {
+        limits: Limits {
+            batch_values: MIN_BATCH_VALUES,
+            ..Limits::default()
+        },
+        read_window: 1,
+        ..Options::default()
+    };
+    let io = served(Served::new().with_source(source_factory::<Ticks>()));
+    let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS, "pace_ms": 1 });
+    let connection = Connection::connect(io, Role::Source, &config, options);
+    let source = RemoteSource::new(connection.await.expect("the source handshakes"));
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(1).expect("not zero"));
-    feed.request_checkpoint(1);
     let request = ReadRequest::new(
         StreamName::new("ticks").expect("a valid stream name"),
         Partition::single(),
@@ -236,6 +337,9 @@ async fn a_checkpoint_asked_for_while_a_batchs_pieces_wait_follows_its_last_piec
             SourceEvent::Checkpoint { answers, .. } => Err(answers),
             other => panic!("an event other than a push or a checkpoint: {other:?}"),
         });
+        if events.len() == 1 {
+            feed.request_checkpoint(1);
+        }
     }
     tokio::time::timeout(Duration::from_secs(30), reading)
         .await
