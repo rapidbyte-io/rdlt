@@ -88,8 +88,51 @@ pub trait SqlDialect: Send + Sync {
             .is_some_and(|wanted| wanted.eq_ignore_ascii_case(declared))
     }
 
-    /// The statement declaring `column` of `table` as `declared`, if the database changes a column
-    /// in place; `None` makes a widen the column does not hold a conflict.
+    /// The dialect's own rendering of the type an existing column is declared with as `declared`,
+    /// if it is a type the dialect declares columns with; by default, a match without case among
+    /// what [`SqlDialect::column_type`] renders for the types that take no parameter.
+    ///
+    /// The planner copies a column's type into the tables it derives only as this renders it,
+    /// never as the database reports it, so a dialect whose types take parameters reads them here.
+    fn declares(&self, declared: &str) -> Option<String> {
+        use crate::types::TimeUnit as Unit;
+        let units = [
+            Unit::Second,
+            Unit::Millisecond,
+            Unit::Microsecond,
+            Unit::Nanosecond,
+        ];
+        let plain = [
+            LogicalType::Bool,
+            LogicalType::Int8,
+            LogicalType::Int16,
+            LogicalType::Int32,
+            LogicalType::Int64,
+            LogicalType::Float32,
+            LogicalType::Float64,
+            LogicalType::Utf8,
+            LogicalType::Binary,
+            LogicalType::Date,
+            LogicalType::Uuid,
+            LogicalType::Json,
+        ];
+        let timed = units.into_iter().flat_map(|unit| {
+            [
+                LogicalType::Time(unit),
+                LogicalType::Duration(unit),
+                LogicalType::Timestamp(unit, None),
+                LogicalType::Timestamp(unit, Some("UTC".into())),
+            ]
+        });
+        plain
+            .into_iter()
+            .chain(timed)
+            .filter_map(|logical| self.column_type(&logical))
+            .find(|rendered| rendered.eq_ignore_ascii_case(declared))
+    }
+
+    /// The statement declaring `column` of `table`, both quoted, as `declared`, if the database
+    /// changes a column in place; `None` makes a widen the column does not hold a conflict.
     fn widen(&self, _table: &str, _column: &str, _declared: &str) -> Option<String> {
         None
     }

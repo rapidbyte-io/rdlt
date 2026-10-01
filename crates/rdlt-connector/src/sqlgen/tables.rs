@@ -130,10 +130,15 @@ impl<D: SqlDialect> SqlPlanner<D> {
         if table.generation.is_none() || base.is_empty() {
             return Ok(Vec::new());
         }
+        let name = self.target(table);
         let columns = base
             .iter()
-            .map(|column| format!("{} {}", self.quote(&column.name), column.declared));
-        let mut plan = vec![self.create(&self.target(table), columns)];
+            .map(|column| {
+                let declared = self.rendered(&table.name, column)?;
+                Ok(format!("{} {declared}", self.quote(&column.name)))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut plan = vec![self.create(&name, columns.into_iter())];
         plan.extend(self.register(owned, table)?);
         Ok(plan)
     }
@@ -195,7 +200,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
                     if self.dialect.holds(&existing.declared, to) {
                         continue;
                     }
-                    let Some(sql) = self.dialect.widen(name, column, &declared) else {
+                    let (table, widened) = (self.quote(name), self.quote(column));
+                    let Some(sql) = self.dialect.widen(&table, &widened, &declared) else {
                         return Err(conflict(name, existing, to));
                     };
                     plan.push(Statement {
@@ -236,7 +242,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             plan.extend(self.add_missing(target_name, target, &declared));
         }
         if staging.is_empty() {
-            plan.push(self.create_staging(staging_name, target, &declared));
+            plan.push(self.create_staging([target_name, staging_name], target, &declared)?);
         } else {
             plan.extend(self.add_missing(staging_name, staging, &declared));
         }
@@ -260,19 +266,20 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.create(name, columns)
     }
 
-    /// Creates the staging table `name` with the staging columns, the columns `target` has and
-    /// `declared`, all nullable.
+    /// Creates the staging table `name` of the table `target_name` with the staging columns, the
+    /// columns `target` has and `declared`, all nullable.
     fn create_staging(
         &self,
-        name: &str,
+        [target_name, name]: [&String; 2],
         target: &[Column],
         declared: &[(&str, String)],
-    ) -> Statement {
-        let mut columns: Vec<(&str, String)> = target
-            .iter()
-            .map(|column| (column.name.as_str(), column.declared.clone()))
-            .filter(|(column, _)| !declared.iter().any(|(field, _)| field == column))
-            .collect();
+    ) -> Result<Statement> {
+        let mut columns: Vec<(&str, String)> = Vec::new();
+        for column in target {
+            if !declared.iter().any(|(field, _)| *field == column.name) {
+                columns.push((&column.name, self.rendered(target_name, column)?));
+            }
+        }
         columns.extend(
             declared
                 .iter()
@@ -288,7 +295,21 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let data = columns
             .iter()
             .map(|(column, declared)| format!("{} {declared}", self.quote(column)));
-        self.create(name, staging.into_iter().chain(data))
+        Ok(self.create(name, staging.into_iter().chain(data)))
+    }
+
+    /// The type `column` of the table `table` is declared with, as the dialect renders it.
+    ///
+    /// What the database reports is never written into a statement: a type the dialect does not
+    /// declare columns with is a `Data` error coded `schema_conflict`.
+    pub(super) fn rendered(&self, table: &str, column: &Column) -> Result<String, ConnectorError> {
+        self.dialect.declares(&column.declared).ok_or_else(|| {
+            ConnectorError::data(format!(
+                "table {table} has column {} of a type the destination does not declare",
+                column.name
+            ))
+            .with_code("schema_conflict")
+        })
     }
 
     fn create(&self, name: &str, columns: impl Iterator<Item = String>) -> Statement {

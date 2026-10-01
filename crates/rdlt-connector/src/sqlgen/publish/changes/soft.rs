@@ -14,8 +14,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     pub(super) fn soft<'a>(&'a self, changed: &Changed<'_>, at: &str) -> Result<Sql<'a, D>> {
         let at = self.quote(at);
         let Some(at_ordinal) = changed.columns.iter().position(|column| *column == at) else {
-            return Err(ConnectorError::data(format!(
-                "table {} has no column {at} to mark deleted rows in",
+            return Err(ConnectorError::internal(format!(
+                "table {} was checked to hold {at}, which marks its deleted rows",
                 changed.target
             )));
         };

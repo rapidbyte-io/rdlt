@@ -13,28 +13,11 @@
 use super::super::super::tables::STAGING_COLUMNS;
 use super::super::super::{Sql, SqlDialect, SqlPlanner};
 use super::{BOUND, BURIED, CLOSED, OPENED, Versioned};
-use crate::error::{ConnectorError, Result};
 
 impl<D: SqlDialect> SqlPlanner<D> {
     /// The statement computing into staging the versions the commit opens, the closings of the
     /// current versions, and where deletes are hard, the keys it buried and the bound it raised.
-    pub(super) fn chained<'a>(&'a self, versioned: &Versioned<'_>) -> Result<Sql<'a, D>> {
-        let history = [
-            &versioned.valid_from,
-            &versioned.valid_to,
-            &versioned.is_current,
-            &versioned.row_hash,
-        ];
-        let missing = history
-            .into_iter()
-            .chain(&versioned.at)
-            .find(|column| !versioned.columns.contains(column));
-        if let Some(column) = missing {
-            return Err(ConnectorError::data(format!(
-                "table {} has no column {column} to keep its history in",
-                versioned.target
-            )));
-        }
+    pub(super) fn chained<'a>(&'a self, versioned: &Versioned<'_>) -> Sql<'a, D> {
         let mut sql = self.sql();
         let staging_columns: Vec<String> = STAGING_COLUMNS.iter().map(|c| self.quote(c)).collect();
         sql.push(&format!(
@@ -46,7 +29,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.events(&mut sql, versioned);
         sql.push(&chain(versioned));
         outcomes(&mut sql, versioned);
-        Ok(sql)
+        sql
     }
 
     /// Writes the common table expressions of each key's events into `sql`: `_rdlt_admitted`,

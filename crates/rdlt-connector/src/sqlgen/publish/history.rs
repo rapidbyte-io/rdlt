@@ -101,7 +101,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let versioned = Versioned::new(self, target, (key, history), columns, of);
         let codes = [OPENED, CLOSED, BURIED, BOUND];
         let mut plan = vec![
-            self.chained(&versioned)?.finish(),
+            self.chained(&versioned).finish(),
             self.closing(&versioned),
             self.moved_versions(&versioned, &versioned.target, &versioned.names(), &[OPENED]),
         ];

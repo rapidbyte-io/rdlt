@@ -14,8 +14,9 @@ use super::super::values;
 use super::owners::{claim, distinct, owned};
 
 /// Readies `table` for a writer of `pipeline`'s session at `epoch`: claims it, readies a change
-/// stream's tables, creates the generation table it fills where that is missing, and indexes
-/// what a commit finds rows in, which a commit never does itself.
+/// stream's tables, checks that it holds its merge key, creates the generation table it fills
+/// where that is missing, and indexes what a commit finds rows in, which a commit never does
+/// itself.
 pub(super) fn ready(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
@@ -37,9 +38,12 @@ pub(super) fn ready(
         transaction,
         &planner.change_tables(&table_owner, table, tables)?,
     )?;
+    let base = columns(transaction, dialect, &table.name)?;
+    if !base.is_empty() {
+        planner.merges(table, &base)?;
+    }
     if table.generation.is_some() && target.is_empty() {
         distinct(transaction, planner, table)?;
-        let base = columns(transaction, dialect, &table.name)?;
         run_all(
             transaction,
             &planner.generation(&table_owner, table, &base)?,
