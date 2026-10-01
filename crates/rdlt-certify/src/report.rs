@@ -7,7 +7,8 @@ use rdlt_connector::testing::{Outcome, Report};
 use serde_json::{Value, json};
 
 /// `report` as text for a terminal: what the connector said is shown, not obeyed, and on its own
-/// line.
+/// line; a clause that does not apply reads `n/a`, one not observed `skip`, and the last line
+/// gives the verdict and counts.
 pub fn plain(report: &Report) -> String {
     let lines = report.results.iter().map(|result| {
         let id = result.clause.id;
@@ -17,11 +18,13 @@ pub fn plain(report: &Report) -> String {
                 let statement = result.clause.statement;
                 format!("  FAIL {id}: {statement} ({})\n", shown(reason))
             }
-            Outcome::Skipped(reason) => format!("  skip {id}: {}\n", shown(reason)),
+            Outcome::Inapplicable(reason) => format!("  n/a  {id}: {}\n", shown(reason)),
+            Outcome::Unobserved(reason) => format!("  skip {id}: {}\n", shown(reason)),
         }
     });
     std::iter::once(format!("certification of {}\n", shown(&report.connector)))
         .chain(lines)
+        .chain(std::iter::once(format!("{}\n", report.summary())))
         .collect()
 }
 
@@ -52,7 +55,7 @@ fn reorders(c: char) -> bool {
     )
 }
 
-/// `report` as JSON: the connector, whether it passed, and each clause's outcome.
+/// `report` as JSON: the connector, its verdict, whether it passed, and each clause's outcome.
 pub fn json(report: &Report) -> Value {
     let clauses: Vec<Value> = report
         .results
@@ -60,8 +63,9 @@ pub fn json(report: &Report) -> Value {
         .map(|result| {
             let (outcome, reason) = match &result.outcome {
                 Outcome::Passed => ("passed", None),
-                Outcome::Failed(reason) => ("failed", Some(reason)),
-                Outcome::Skipped(reason) => ("skipped", Some(reason)),
+                Outcome::Failed(reason) => ("failed", Some(reason.as_str())),
+                Outcome::Inapplicable(reason) => ("inapplicable", Some(reason.as_str())),
+                Outcome::Unobserved(reason) => ("unobserved", Some(reason.as_str())),
             };
             json!({
                 "id": result.clause.id,
@@ -73,6 +77,7 @@ pub fn json(report: &Report) -> Value {
         .collect();
     json!({
         "connector": report.connector,
+        "verdict": report.verdict().as_str(),
         "passed": report.passed(),
         "clauses": clauses,
     })

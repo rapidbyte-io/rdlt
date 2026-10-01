@@ -39,7 +39,10 @@ async fn each_protocol_clause_fails_a_connector_that_breaks_it_and_only_that() {
                 );
             } else {
                 assert!(
-                    matches!(outcome, Some(Outcome::Passed | Outcome::Skipped(_))),
+                    matches!(
+                        outcome,
+                        Some(Outcome::Passed | Outcome::Inapplicable(_) | Outcome::Unobserved(_))
+                    ),
                     "{fault:?} breaks {broken} alone, not {}: {report}",
                     clause.id
                 );
@@ -52,7 +55,7 @@ async fn each_protocol_clause_fails_a_connector_that_breaks_it_and_only_that() {
 async fn limits_beyond_any_this_host_sends_are_not_exceeded() {
     let target = Target::connected(|| Box::pin(async { served(Fault::Vast) }));
     let report = certify_source(&target, serde_json::json!({})).await;
-    let Some(Outcome::Skipped(reason)) = report.outcome("P-LIMITS") else {
+    let Some(Outcome::Inapplicable(reason)) = report.outcome("P-LIMITS") else {
         panic!("P-LIMITS ran: {report}");
     };
     // The reason carries the limit the connector declares.
@@ -72,7 +75,7 @@ async fn limits_this_host_keeps_below_the_connectors_are_not_exceeded() {
     let served = Served::new().with_source(source_factory::<MemorySource>());
     let target = Target::served(served).options(options);
     let report = certify_source(&target, serde_json::json!({ "streams": { "items": [] } })).await;
-    let Some(Outcome::Skipped(reason)) = report.outcome("P-LIMITS") else {
+    let Some(Outcome::Inapplicable(reason)) = report.outcome("P-LIMITS") else {
         panic!("P-LIMITS ran: {report}");
     };
     // The reason carries the limit this host keeps.

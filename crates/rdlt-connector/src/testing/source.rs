@@ -2,6 +2,8 @@
 
 mod acks;
 mod partition;
+pub(super) mod recording;
+pub(super) mod resume;
 mod stop;
 
 use std::collections::BTreeSet;
@@ -9,16 +11,14 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use bytes::Bytes;
-
+use super::limits::CLAUSE_TIMEOUT;
 use super::{
-    CLAUSE_TIMEOUT, Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call,
-    outcome, timed,
+    Clause, ClauseResult, Outcome, Reason, Report, Violation, bounded_call, outcome, timed,
 };
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::cursor::Cursor;
 use crate::id::StreamName;
-use crate::sink::{Push, SourceEvent, partition_channel};
+use crate::sink::partition_channel;
 use crate::source::{
     ACKNOWLEDGED_CODE, AcknowledgedReader, Partition, PartitionPlan, ReadRequest, Source,
     SourceConnector, SourceFactory, source_factory,
@@ -26,46 +26,51 @@ use crate::source::{
 use crate::spec::ConnectContext;
 use crate::state::{PartitionState, StreamState};
 
-/// Resumes are checked from at most this many checkpoints per partition.
-const RESUME_SAMPLES: usize = 5;
-
 /// The clauses [`certify_source`] checks, in order.
 pub const SOURCE_CLAUSES: &[Clause] = &[
     Clause {
         id: "S-CHECK",
         statement: "check succeeds exactly when a read does, and both do for a valid \
                     configuration",
+        unless: "",
     },
     Clause {
         id: "S-DISCOVER",
         statement: "discover lists at least one stream and is stable across calls",
+        unless: "",
     },
     Clause {
         id: "S-PLAN",
         statement: "every stream plans at least one partition, with distinct ids",
+        unless: "",
     },
     Clause {
         id: "S-RESUME",
         statement: "a read resumed from a checkpoint yields exactly the data after it",
+        unless: "",
     },
     Clause {
         id: "S-PARTITION",
         statement: "a stream's planned partitions cover it exactly once, and those planned again \
                     from where they stood cover what is left exactly once",
+        unless: "every stream plans a partition that never ends",
     },
     Clause {
         id: "S-STOP",
         statement: "a read asked to stop ends promptly and cleanly, a following read of a \
                     partition that never ends too, while it waits for data",
+        unless: "",
     },
     Clause {
         id: "S-BARRIER",
         statement: "an on-demand stream answers a pending barrier with a checkpoint",
+        unless: "no stream checkpoints on demand",
     },
     Clause {
         id: "S-ACK",
         statement: "a stream's position outside the engine moves only when the engine \
                     tells it a cursor is committed, and then to that cursor",
+        unless: "the source does not tell where it stands, or reads no stream as changes or incrementally",
     },
 ];
 
@@ -83,13 +88,14 @@ pub async fn certify_source_factory(
     let connector = factory.spec().id.to_string();
     let results = match connected(factory, config).await {
         Ok((source, told)) => check_all(source.as_ref(), told).await,
-        Err(Violation(reason)) => SOURCE_CLAUSES
-            .iter()
-            .map(|clause| ClauseResult {
+        Err(violation) => {
+            let outcome = violation.of("connect failed").outcome();
+            let failed = |clause: &Clause| ClauseResult {
                 clause: *clause,
-                outcome: Outcome::Failed(format!("connect failed: {reason}")),
-            })
-            .collect(),
+                outcome: outcome.clone(),
+            };
+            SOURCE_CLAUSES.iter().map(failed).collect()
+        }
     };
     Report { connector, results }
 }
@@ -120,9 +126,10 @@ async fn connected(
         match bounded_call("connect", asked).await {
             Ok(Some((source, reader))) => return Ok((source, Some(Ok(reader)))),
             Ok(None) => {}
-            Err(Violation(reason)) => {
-                let failed = format!("connecting what tells where the source stands: {reason}");
-                told = Some(Err(Violation::from(failed)));
+            Err(violation) => {
+                told = Some(Err(
+                    violation.of("connecting what tells where the source stands")
+                ));
             }
         }
     }
@@ -151,9 +158,13 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
             (_, "S-DISCOVER") => {
                 outcome(timed(discover_is_stable(source, catalog.as_ref().ok())).await)
             }
-            (Err(Violation(reason)), _) => Outcome::Failed(format!("discover failed: {reason}")),
+            (Err(Violation { reason, .. }), _) => {
+                Outcome::Failed(Reason::new(format_args!("discover failed: {reason}")))
+            }
             (Ok(catalog), "S-PLAN") => outcome(timed(plans_are_valid(source, catalog)).await),
-            (Ok(catalog), "S-RESUME") => outcome(timed(resumes_are_exact(source, catalog)).await),
+            (Ok(catalog), "S-RESUME") => {
+                outcome(timed(resume::resumes_are_exact(source, catalog)).await)
+            }
             (Ok(catalog), "S-PARTITION") => {
                 within(partition::partitions_cover_exactly_once(source, catalog)).await
             }
@@ -184,7 +195,8 @@ async fn within(clause: impl Future<Output = Outcome>) -> Outcome {
     tokio::time::timeout(CLAUSE_TIMEOUT, clause)
         .await
         .unwrap_or_else(|_| {
-            Outcome::Failed(format!("the clause took longer than {CLAUSE_TIMEOUT:?}"))
+            let reason = format_args!("the clause took longer than {CLAUSE_TIMEOUT:?}");
+            Outcome::Failed(Reason::new(reason))
         })
 }
 
@@ -209,7 +221,7 @@ async fn plan(
     bounded_call("plan", source.plan(stream, &fresh))
         .await
         .map(|planned| placed(&planned, &fresh))
-        .map_err(|Violation(reason)| Violation::from(format!("plan {stream}: {reason}")))
+        .map_err(|violation| violation.of(format_args!("plan {stream}")))
 }
 
 /// The partitions of `plan`, each from where the engine would read it from `state`, which records
@@ -248,112 +260,6 @@ async fn plans_are_valid(source: &dyn Source, catalog: &Catalog) -> Result<(), V
     Ok(())
 }
 
-/// Everything one partition read produced, split at checkpoints.
-#[derive(Default)]
-struct Recording {
-    /// Data sealed by each checkpoint, in order.
-    segments: Vec<Vec<Push>>,
-    /// The checkpoint that sealed each segment.
-    checkpoints: Vec<Cursor>,
-    /// Data after the last checkpoint.
-    tail: Vec<Push>,
-    /// Barriers the checkpoints answered.
-    answered: Vec<u64>,
-}
-
-async fn record(
-    source: &dyn Source,
-    stream: &StreamSpec,
-    partition: &Partition,
-    cursor: Option<Cursor>,
-    barrier: Option<u64>,
-) -> Result<Recording, Violation> {
-    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("64 is non-zero"));
-    if let Some(barrier) = barrier {
-        feed.request_checkpoint(barrier);
-    }
-    let request = ReadRequest::new(stream.name().clone(), partition.clone(), cursor);
-    let collect = async {
-        let mut recording = Recording::default();
-        while let Some(event) = feed.recv().await {
-            match event {
-                SourceEvent::Push(push) => recording.tail.push(normalize(push)),
-                SourceEvent::Checkpoint { cursor, answers } => {
-                    recording.segments.push(std::mem::take(&mut recording.tail));
-                    recording.checkpoints.push(cursor);
-                    recording.answered.extend(answers);
-                }
-                SourceEvent::Log { .. }
-                | SourceEvent::Metric { .. }
-                | SourceEvent::Replan
-                | SourceEvent::Behind { .. } => {}
-            }
-        }
-        recording
-    };
-    let what = format!("reading {} partition {}", stream.name(), partition.id());
-    let (read, recording) = bounded(&what, async {
-        tokio::join!(source.read(request, sink), collect)
-    })
-    .await?;
-    read.map_err(|error| Violation::from(format!("{what}: {error}")))?;
-    Ok(recording)
-}
-
-/// Rewrites JSON pushes canonically, so equal rows compare equal whatever their formatting.
-pub(super) fn normalize(push: Push) -> Push {
-    match push {
-        Push::Json(bytes) => {
-            let rows: Vec<serde_json::Value> =
-                match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    Ok(serde_json::Value::Array(rows)) => rows,
-                    _ => serde_json::Deserializer::from_slice(&bytes)
-                        .into_iter()
-                        .filter_map(Result::ok)
-                        .collect(),
-                };
-            Push::Json(Bytes::from(
-                serde_json::to_vec(&rows).expect("JSON values serialize"),
-            ))
-        }
-        other => other,
-    }
-}
-
-async fn resumes_are_exact(source: &dyn Source, catalog: &Catalog) -> Result<(), Violation> {
-    for stream in catalog.iter() {
-        for (partition, start) in plan(source, stream.name()).await? {
-            let full = record(source, stream, &partition, start, None).await?;
-            for (index, cursor) in full.checkpoints.iter().enumerate().take(RESUME_SAMPLES) {
-                let resumed =
-                    record(source, stream, &partition, Some(cursor.clone()), None).await?;
-                let expected: Vec<&Push> = full.segments[index + 1..]
-                    .iter()
-                    .flatten()
-                    .chain(&full.tail)
-                    .collect();
-                let actual: Vec<&Push> = resumed
-                    .segments
-                    .iter()
-                    .flatten()
-                    .chain(&resumed.tail)
-                    .collect();
-                if expected != actual {
-                    return Err(format!(
-                        "stream {} partition {}: resuming from checkpoint {} yielded {} pushes, expected {}",
-                        stream.name(),
-                        partition.id(),
-                        index + 1,
-                        actual.len(),
-                        expected.len()
-                    ).into());
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Checks the source, and starts a read of its first stream's first partition; they must agree.
 async fn check_agrees_with_read(
     source: &dyn Source,
@@ -362,17 +268,17 @@ async fn check_agrees_with_read(
     let checked = bounded_call("check", source.check()).await;
     let read = match catalog {
         Ok(catalog) => read_starts(source, catalog).await,
-        Err(Violation(reason)) => Err(format!("discover failed: {reason}").into()),
+        Err(Violation { reason, .. }) => Err(format!("discover failed: {reason}").into()),
     };
     match (checked, read) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(Violation(reason)), Ok(())) => {
+        (Err(Violation { reason, .. }), Ok(())) => {
             Err(format!("check failed ({reason}), yet a read succeeded").into())
         }
-        (Ok(()), Err(Violation(reason))) => {
+        (Ok(()), Err(Violation { reason, .. })) => {
             Err(format!("check succeeded, yet a read failed: {reason}").into())
         }
-        (Err(Violation(reason)), Err(_)) => Err(format!("check failed: {reason}").into()),
+        (Err(violation), Err(_)) => Err(violation.of("check failed")),
     }
 }
 
@@ -415,12 +321,13 @@ async fn barriers_are_answered(source: &dyn Source, catalog: &Catalog) -> Outcom
         .filter(|stream| stream.checkpointing() == Checkpointing::OnDemand)
         .collect();
     if on_demand.is_empty() {
-        return Outcome::Skipped("no stream checkpoints on demand".to_owned());
+        return Outcome::Inapplicable("no stream checkpoints on demand".into());
     }
     let check = async {
         for stream in on_demand {
             for (partition, start) in plan(source, stream.name()).await? {
-                let recording = record(source, stream, &partition, start, Some(1)).await?;
+                let recording =
+                    recording::record(source, stream, &partition, start, Some(1)).await?;
                 let pushed = recording
                     .segments
                     .iter()

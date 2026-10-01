@@ -15,13 +15,13 @@ impl Bench<'_> {
         };
         match (checked, opened) {
             (Ok(()), Ok(())) => Ok(()),
-            (Err(Violation(reason)), Ok(())) => {
+            (Err(Violation { reason, .. }), Ok(())) => {
                 Err(format!("check failed ({reason}), yet a session opened").into())
             }
-            (Ok(()), Err(Violation(reason))) => {
+            (Ok(()), Err(Violation { reason, .. })) => {
                 Err(format!("check succeeded, yet opening a session failed: {reason}").into())
             }
-            (Err(Violation(reason)), Err(_)) => Err(format!("check failed: {reason}").into()),
+            (Err(violation), Err(_)) => Err(violation.of("check failed")),
         }
     }
 }

@@ -1,5 +1,7 @@
 use arrow_array::RecordBatch;
-use rdlt_connector::testing::{Outcome, Probe, Unprobed, certify_destination, certify_source};
+use rdlt_connector::testing::{
+    Outcome, Probe, Unprobed, Verdict, certify_destination, certify_source,
+};
 use rdlt_connector::{BoxFuture, Result, TableRef};
 use rdlt_connector_reference::{
     ChangesSource, FilesDestination, FilesSource, GeneratorSource, LogSource, MemoryDestination,
@@ -43,7 +45,7 @@ async fn the_memory_source_is_certified() {
     let report = certify_source::<MemorySource>(config).await;
     report.assert_passed();
     assert!(
-        matches!(report.outcome("S-BARRIER"), Some(Outcome::Skipped(_))),
+        matches!(report.outcome("S-BARRIER"), Some(Outcome::Inapplicable(_))),
         "{report}"
     );
 }
@@ -61,22 +63,30 @@ async fn the_generator_is_certified() {
 }
 
 #[tokio::test]
-async fn a_destination_whose_published_data_cannot_be_read_skips_the_clauses_that_read_it() {
+async fn a_destination_whose_published_data_cannot_be_read_is_certified_incompletely() {
     let report =
         certify_destination::<MemoryDestination>(json!({ "store": "certify_unprobed" }), &Unprobed)
             .await;
-    report.assert_passed();
+    // What nothing read back was not observed: nothing failed, and the report does not pass.
+    report.assert_none_failed();
+    assert_eq!(report.verdict(), Verdict::Incomplete, "{report}");
     // Ownership is checked by the refusals, which need nothing read back.
     let unread = ["D-CHECK", "D-EPOCH", "D-STATE", "D-OWNED", "D-DROP"];
     for id in unread {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{report}");
     }
-    let skipped = report
+    let unseen =
+        |outcome: &Outcome| matches!(outcome, Outcome::Unobserved(_) | Outcome::Inapplicable(_));
+    let unseen = report
         .results
         .iter()
-        .filter(|result| matches!(result.outcome, Outcome::Skipped(_)))
-        .count();
-    assert_eq!(skipped, report.results.len() - unread.len(), "{report}");
+        .filter(|result| unseen(&result.outcome));
+    assert_eq!(
+        unseen.count(),
+        report.results.len() - unread.len(),
+        "{report}"
+    );
+    assert!(report.unobserved().count() >= 10, "{report}");
 }
 
 #[tokio::test]
@@ -222,7 +232,10 @@ async fn the_log_source_is_certified_and_commits_offsets_only_when_told() {
         assert_eq!(report.outcome("S-ACK"), Some(&Outcome::Passed), "{report}");
         // A log's partitions never end: no single read covers one.
         assert!(
-            matches!(report.outcome("S-PARTITION"), Some(Outcome::Skipped(_))),
+            matches!(
+                report.outcome("S-PARTITION"),
+                Some(Outcome::Inapplicable(_))
+            ),
             "{report}"
         );
     }

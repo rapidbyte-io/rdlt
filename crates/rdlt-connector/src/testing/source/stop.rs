@@ -6,7 +6,8 @@ use std::num::NonZeroUsize;
 
 use tokio_util::sync::CancellationToken;
 
-use super::{START_WINDOW, STOP_WINDOW, plan, record};
+use super::recording::record;
+use super::{START_WINDOW, STOP_WINDOW, plan};
 use crate::catalog::{Catalog, StreamSpec};
 use crate::cursor::Cursor;
 use crate::sink::partition_channel;

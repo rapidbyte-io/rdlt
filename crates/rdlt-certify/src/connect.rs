@@ -2,7 +2,7 @@
 //! fresh one to the target, handshaken, with nothing between the clause and the protocol to redial
 //! or retry what the connector did.
 
-use rdlt_connector::testing::{Clause, ClauseResult, Outcome, Report};
+use rdlt_connector::testing::{Clause, ClauseResult, Outcome, Reason, Report};
 use std::sync::Arc;
 
 use rdlt_connector::{
@@ -30,11 +30,14 @@ pub(crate) enum Unmet {
 }
 
 impl Unmet {
-    /// A report of `families`' clauses, each skipped or failed as this says.
+    /// A report of `families`' clauses, each inapplicable or failed as this says.
     pub(crate) fn report(&self, target: &Target, families: &[&[Clause]]) -> Report {
         let outcome = match self {
-            Self::Unserved(error) => Outcome::Skipped(error.to_string()),
-            Self::Failed(error) => Outcome::Failed(format!("connect failed: {}", described(error))),
+            Self::Unserved(error) => Outcome::Inapplicable(Reason::new(error)),
+            Self::Failed(error) => {
+                let failed = format_args!("connect failed: {}", described(error));
+                Outcome::Failed(Reason::new(failed))
+            }
         };
         Report {
             connector: target.describe(),

@@ -36,7 +36,7 @@ pub struct ReadBackProbe<'a> {
 /// when a handshake offering the `published` feature succeeds without accepting it.
 ///
 /// A handshake that fails gives a probe whose every read-back fails, so the clauses that read
-/// published data fail rather than be skipped.
+/// published data fail rather than go unobserved.
 pub async fn read_back<'a>(
     target: &'a Target,
     config: &serde_json::Value,

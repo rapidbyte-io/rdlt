@@ -9,16 +9,18 @@ use std::time::Duration;
 
 use clap::{Parser, ValueEnum};
 use rdlt_certify::{
-    Outcome, Probe, Report, Target, Unprobed, certify_destination, certify_source, json, markdown,
-    plain, read_back,
+    Outcome, Probe, Report, Target, Unprobed, Verdict, certify_destination, certify_source, json,
+    markdown, plain, read_back,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote};
 
-/// Every clause passed, or was skipped.
+/// Every clause that applies to the connector was seen to be met.
 const PASSED: u8 = 0;
 /// A clause failed, or none could run: the connector serves none of the roles asked.
 const FINDINGS: u8 = 1;
+/// No clause failed, yet one that applies was not observed.
+const INCOMPLETE: u8 = 2;
 /// The command line was wrong.
 const USAGE: u8 = 64;
 /// The connector's binary, or a file named, could not be read.
@@ -60,6 +62,10 @@ struct Args {
     /// slower than about two seconds a commit needs more.
     #[arg(long, value_name = "SECONDS")]
     kill_timeout: Option<u64>,
+    /// What exits 0: `complete`, every clause that applies seen to be met; `partial`, none
+    /// failed and one passed, whatever was not observed.
+    #[arg(long, value_enum, default_value_t = Require::Complete)]
+    require: Require,
     /// How to print the reports.
     #[arg(long, value_enum, default_value_t = Output::Plain)]
     output: Output,
@@ -72,6 +78,14 @@ struct Args {
 enum Role {
     Source,
     Destination,
+}
+
+/// What a certification must show to exit 0: every clause that applies seen to be met, or none
+/// failed and one passed, whatever was not observed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum Require {
+    Complete,
+    Partial,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -127,7 +141,7 @@ fn run(args: &Args) -> Result<u8, Ended> {
         }
         if !matches!(args.role, Some(Role::Source)) {
             // What the destination published is read back when it can be; else the clauses
-            // that read it are skipped.
+            // that read it are not observed.
             let read_back = read_back(&target, &config).await;
             let probe: &dyn Probe = match &read_back {
                 Some(read_back) => read_back,
@@ -137,20 +151,23 @@ fn run(args: &Args) -> Result<u8, Ended> {
         }
         reports
     });
-    // A role the connector does not serve skips every clause of it: unless it was asked for,
-    // its report is left out.
+    // No clause of a role the connector does not serve applies: unless it was asked for, its
+    // report is left out.
     if args.role.is_none() && reports.iter().any(ran) {
         reports.retain(ran);
     }
-    let passed = reports.iter().all(Report::passed);
+    let verdict = verdict(&reports);
     let text = match args.output {
         Output::Plain => reports.iter().map(plain).collect::<String>(),
         Output::Json => {
+            let passed = verdict == Verdict::Passed;
             let reports: Vec<_> = reports.iter().map(json).collect();
-            format!(
-                "{}\n",
-                serde_json::json!({ "passed": passed, "reports": reports })
-            )
+            let document = serde_json::json!({
+                "verdict": verdict.as_str(),
+                "passed": passed,
+                "reports": reports,
+            });
+            format!("{document}\n")
         }
     };
     print(&text)?;
@@ -160,15 +177,44 @@ fn run(args: &Args) -> Result<u8, Ended> {
             "the connector serves none of the roles asked, so nothing was certified".to_owned(),
         ));
     }
-    Ok(if passed { PASSED } else { FINDINGS })
+    Ok(code(verdict, args.require, &reports))
 }
 
-/// Whether a clause of `report` ran, rather than every one being skipped.
+/// What `reports` amount to together: failed when one failed, else incomplete when one is.
+fn verdict(reports: &[Report]) -> Verdict {
+    let any = |verdict| reports.iter().any(|report| report.verdict() == verdict);
+    if any(Verdict::Failed) {
+        Verdict::Failed
+    } else if any(Verdict::Incomplete) {
+        Verdict::Incomplete
+    } else {
+        Verdict::Passed
+    }
+}
+
+/// The exit code of a certification whose reports amount to `verdict`, when `require` is asked.
+fn code(verdict: Verdict, require: Require, reports: &[Report]) -> u8 {
+    let passed = |report: &Report| {
+        report
+            .results
+            .iter()
+            .any(|result| result.outcome == Outcome::Passed)
+    };
+    match verdict {
+        Verdict::Passed => PASSED,
+        Verdict::Failed => FINDINGS,
+        // A report none of whose clauses passed certified nothing, whatever is required.
+        Verdict::Incomplete if require == Require::Partial && reports.iter().all(passed) => PASSED,
+        Verdict::Incomplete => INCOMPLETE,
+    }
+}
+
+/// Whether a clause of `report` applies to the connector, rather than none.
 fn ran(report: &Report) -> bool {
     report
         .results
         .iter()
-        .any(|result| !matches!(result.outcome, Outcome::Skipped(_)))
+        .any(|result| !matches!(result.outcome, Outcome::Inapplicable(_)))
 }
 
 /// The configuration the command line gives, as JSON.

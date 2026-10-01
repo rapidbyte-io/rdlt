@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 pub use clauses::DESTINATION_CLAUSES;
 
-use super::{ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
+use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
 use crate::commit::{CommitMeta, SegmentSet};
 use crate::destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
@@ -108,8 +108,8 @@ pub async fn certify_destination_factory(
                 };
                 let unread = !probe.reads() && clauses::PROBED.contains(&clause.id);
                 let outcome = match evolving::skipped(destination.as_ref(), clause.id) {
-                    Some(reason) => Outcome::Skipped(reason.to_owned()),
-                    None if unread => Outcome::Skipped(UNREAD.to_owned()),
+                    Some(reason) => Outcome::Inapplicable(reason.into()),
+                    None if unread => Outcome::Unobserved(UNREAD.into()),
                     None => outcome(super::timed(bench.check(clause.id)).await),
                 };
                 results.push(ClauseResult {
@@ -119,18 +119,19 @@ pub async fn certify_destination_factory(
             }
             results
         }
-        Err(Violation(reason)) => DESTINATION_CLAUSES
-            .iter()
-            .map(|clause| ClauseResult {
+        Err(violation) => {
+            let outcome = violation.of("connect failed").outcome();
+            let failed = |clause: &Clause| ClauseResult {
                 clause: *clause,
-                outcome: Outcome::Failed(format!("connect failed: {reason}")),
-            })
-            .collect(),
+                outcome: outcome.clone(),
+            };
+            DESTINATION_CLAUSES.iter().map(failed).collect()
+        }
     };
     Report { connector, results }
 }
 
-/// Why a clause that reads published data is skipped without a probe that reads it.
+/// Why a clause that reads published data is not observed without a probe that reads it.
 const UNREAD: &str = "the destination's published data cannot be read";
 
 /// When this run started: it names the run's pipelines and tables and times its load ids.

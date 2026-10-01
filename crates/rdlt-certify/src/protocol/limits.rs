@@ -24,24 +24,46 @@ pub(super) async fn kept(target: &Target, role: Role, config: &str) -> Found {
     let checked = async {
         let (_, answer) = handshaken(target, role, config).await?;
         let Some(declared) = answer.limits.map(Limits::from) else {
-            return Ok(Some("the connector declares no limits".to_owned()));
+            let reason = "the connector declares no limits";
+            return Ok(Found::Inapplicable(reason.to_owned()));
         };
         let host = target.limits();
-        let mut unchecked = Vec::new();
-        let mut note = |skipped: Option<String>| unchecked.extend(skipped);
-        note(configuration(target, role, declared.config_bytes, host.config_bytes).await?);
-        match role {
+        let configured =
+            configuration(target, role, declared.config_bytes, host.config_bytes).await?;
+        let sent = match role {
             Role::Source => {
-                note(cursor(target, config, declared.cursor_bytes, host.cursor_bytes).await?);
+                cursor(target, config, declared.cursor_bytes, host.cursor_bytes).await?
             }
             Role::Destination => {
-                note(frame(target, config, declared.frame_bytes, host.frame_bytes).await?);
+                frame(target, config, declared.frame_bytes, host.frame_bytes).await?
             }
-        }
-        // Inapplicable only when nothing could be checked.
-        Ok((unchecked.len() == 2).then(|| unchecked.join("; ")))
+        };
+        Ok(found(configured, sent))
     };
     checked.await.into()
+}
+
+/// How one of the connector's limits fared.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Limit {
+    /// What went beyond it was refused as it must be.
+    Kept,
+    /// The connector declares none this host can exceed, for the stated reason.
+    Unexceeded(String),
+    /// Nothing could be sent beyond it, for the stated reason.
+    Unsent(String),
+}
+
+/// What the clause found of the two limits it checks: kept when one was, as before; else not
+/// observed when one could not be sent beyond, and inapplicable when neither can be exceeded.
+pub(super) fn found(first: Limit, second: Limit) -> Found {
+    match (first, second) {
+        (Limit::Kept, _) | (_, Limit::Kept) => Found::Kept,
+        (Limit::Unsent(reason), _) | (_, Limit::Unsent(reason)) => Found::Unobserved(reason),
+        (Limit::Unexceeded(first), Limit::Unexceeded(second)) => {
+            Found::Inapplicable(format!("{first}; {second}"))
+        }
+    }
 }
 
 /// One byte beyond `declared`, when a host keeping `host` can send that much.
@@ -53,11 +75,11 @@ fn beyond(declared: u64, host: u64) -> Option<usize> {
 }
 
 /// Why the connector's `what` limit, `declared`, is not exceeded by a host keeping `host`.
-fn unexceeded(what: &str, declared: u64, host: u64) -> String {
-    format!(
+fn unexceeded(what: &str, declared: u64, host: u64) -> Limit {
+    Limit::Unexceeded(format!(
         "the connector declares no {what} limit this host can exceed ({declared} bytes; this host \
          sends at most {host})"
-    )
+    ))
 }
 
 /// A configuration beyond the connector's limit.
@@ -66,9 +88,9 @@ async fn configuration(
     role: Role,
     declared: u64,
     host: u64,
-) -> Result<Option<String>, Violation> {
+) -> Result<Limit, Violation> {
     let Some(over) = beyond(declared, host) else {
-        return Ok(Some(unexceeded("configuration", declared, host)));
+        return Ok(unexceeded("configuration", declared, host));
     };
     let padded = format!("{{\"padding\":\"{}\"}}", "x".repeat(over));
     // This end sends whatever the size: what refuses it is the connector's.
@@ -87,7 +109,7 @@ async fn configuration(
         LIMIT_EXCEEDED,
         "a configuration beyond the configuration limit",
     )?;
-    Ok(None)
+    Ok(Limit::Kept)
 }
 
 /// A read of the source's first partition from a cursor beyond the connector's limit.
@@ -96,13 +118,15 @@ async fn cursor(
     config: &str,
     declared: u64,
     host: u64,
-) -> Result<Option<String>, Violation> {
+) -> Result<Limit, Violation> {
     let Some(over) = beyond(declared, host) else {
-        return Ok(Some(unexceeded("cursor", declared, host)));
+        return Ok(unexceeded("cursor", declared, host));
     };
     let (mut client, _) = handshaken(target, Role::Source, config).await?;
     let Some((stream, partition)) = first_partition(&mut client).await? else {
-        return Ok(Some("the source has no partition to read".to_owned()));
+        return Ok(Limit::Unsent(
+            "the source has no partition to read".to_owned(),
+        ));
     };
     let (controls, receiver) = mpsc::channel(2);
     let start = v1::read_control::Control::Start(v1::ReadStart {
@@ -134,7 +158,7 @@ async fn cursor(
         LIMIT_EXCEEDED,
         "a read from a cursor beyond the cursor limit",
     )?;
-    Ok(None)
+    Ok(Limit::Kept)
 }
 
 /// A batch frame beyond the connector's frame limit, in a write of a table of its own.
@@ -143,9 +167,9 @@ async fn frame(
     config: &str,
     declared: u64,
     host: u64,
-) -> Result<Option<String>, Violation> {
+) -> Result<Limit, Violation> {
     let Some(over) = beyond(declared, host) else {
-        return Ok(Some(unexceeded("frame", declared, host)));
+        return Ok(unexceeded("frame", declared, host));
     };
     let (client, _) = handshaken(target, Role::Destination, config).await?;
     let mut client = client.max_encoding_message_size(usize::MAX);
@@ -156,7 +180,7 @@ async fn frame(
     };
     let refusal = Writing::start(&mut client).await?.refusal(batch).await?;
     if refusal.code() == Some(LIMIT_EXCEEDED) {
-        Ok(None)
+        Ok(Limit::Kept)
     } else {
         Err(Violation::from(format!(
             "a batch beyond the frame limit was refused with `{refusal}`, not with \

@@ -31,7 +31,9 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
     let checked = async {
         let (mut client, _) = handshaken(target, role, config).await?;
         let Some((stream, partition)) = first_partition(&mut client).await? else {
-            return Ok(Some("the source has no partition to read".to_owned()));
+            return Ok(Found::Unobserved(
+                "the source has no partition to read".to_owned(),
+            ));
         };
         let (controls, receiver) = mpsc::channel(4);
         let start = v1::read_control::Control::Start(v1::ReadStart {
@@ -60,10 +62,12 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
             .ok_or(Violation::from("the read ended without a frame"))?
             .map_err(|status| failed(&status))?;
         if matches!(first.frame, Some(v1::read_frame::Frame::Done(_))) {
-            return Ok(Some("the read ended within its first credit".to_owned()));
+            return Ok(Found::Unobserved(
+                "the read ended within its first credit".to_owned(),
+            ));
         }
         waits_then_resumes(&controls, &mut frames).await?;
-        Ok(None)
+        Ok(Found::Kept)
     };
     checked.await.into()
 }

@@ -29,9 +29,8 @@ impl Bench<'_> {
         )
         .await?;
         for table in [self.table(), child] {
-            expect_rows(&self.rows_of(&table).await?, &[1]).map_err(|Violation(reason)| {
-                Violation(format!("table {}: {reason}", table.name))
-            })?;
+            expect_rows(&self.rows_of(&table).await?, &[1])
+                .map_err(|violation| violation.of(format_args!("table {}", table.name)))?;
         }
         Ok(())
     }

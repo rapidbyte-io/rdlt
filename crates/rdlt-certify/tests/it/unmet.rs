@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use rdlt_certify::{
-    DESTINATION_CLAUSES, Outcome, PROTOCOL_CLAUSES, SOURCE_CLAUSES, Target, Unprobed,
+    DESTINATION_CLAUSES, Outcome, PROTOCOL_CLAUSES, SOURCE_CLAUSES, Target, Unprobed, Verdict,
     certify_destination, certify_source,
 };
 use rdlt_connector::serve::Served;
@@ -64,7 +64,7 @@ async fn a_configuration_the_connector_refuses_fails_every_clause() {
 }
 
 #[tokio::test]
-async fn a_role_the_connector_does_not_serve_skips_every_clause() {
+async fn no_clause_applies_to_a_role_the_connector_does_not_serve() {
     let target = Target::served(Served::new().with_source(source_factory::<MemorySource>()));
     let report = certify_destination(&target, json!({}), &Unprobed).await;
     assert_eq!(
@@ -76,10 +76,14 @@ async fn a_role_the_connector_does_not_serve_skips_every_clause() {
         report
             .results
             .iter()
-            .all(|result| matches!(result.outcome, Outcome::Skipped(_))),
+            .all(|result| matches!(result.outcome, Outcome::Inapplicable(_))),
         "{report}"
     );
-    assert!(!report.passed(), "nothing was certified: {report}");
+    assert_eq!(
+        report.verdict(),
+        Verdict::Incomplete,
+        "nothing was certified: {report}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

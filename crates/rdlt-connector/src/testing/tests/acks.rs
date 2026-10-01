@@ -250,7 +250,7 @@ async fn a_queue_with_nothing_ahead_of_where_it_stands_skips_s_ack() {
         let config = json!({ "name": name, "at": 4, "forgets": forgets });
         let report = certify_source::<Queue>(config).await;
         assert!(
-            matches!(outcome(&report), Outcome::Skipped(_)),
+            matches!(outcome(&report), Outcome::Unobserved(_)),
             "forgets {forgets}: {:?}",
             outcome(&report)
         );
