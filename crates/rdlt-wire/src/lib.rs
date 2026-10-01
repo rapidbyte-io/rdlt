@@ -4,6 +4,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(panic = "abort")]
+compile_error!(
+    "rdlt-wire refuses a frame Arrow panics on by unwinding: build with panic = \"unwind\""
+);
+
 pub mod codec;
 pub mod error;
 pub mod limits;

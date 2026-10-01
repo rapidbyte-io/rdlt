@@ -19,6 +19,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(panic = "abort")]
+compile_error!(
+    "rdlt-engine fails a run whose task or job panics by unwinding: build with panic = \"unwind\""
+);
+
 mod attempt;
 #[cfg(feature = "bench")]
 #[doc(hidden)]

@@ -58,6 +58,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(all(feature = "serve", panic = "abort"))]
+compile_error!(
+    "a served connector fails a call whose task panics by unwinding: build with panic = \"unwind\""
+);
+
 mod capabilities;
 mod catalog;
 mod change;

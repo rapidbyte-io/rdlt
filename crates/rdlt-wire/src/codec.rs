@@ -1,6 +1,7 @@
 //! Arrow batches on the wire, in Arrow Flight's `FlightData` layout: a schema once per schema
 //! epoch, then for each batch the dictionary batches it needs that were not sent, then the batch.
 
+mod contain;
 mod decode;
 mod precheck;
 #[cfg(test)]

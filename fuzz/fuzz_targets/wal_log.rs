@@ -7,12 +7,10 @@
 #![forbid(unsafe_code)]
 #![no_main]
 
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use libfuzzer_sys::fuzz_target;
-
-static QUIET: Once = Once::new();
 
 /// Makes each frame's checksum match its payload again, following its length as it now reads.
 fn rechecked(log: &mut [u8]) {
@@ -29,9 +27,8 @@ fn rechecked(log: &mut [u8]) {
 }
 
 fuzz_target!(|input: (bool, bool, u16, Vec<(u16, u8)>, Vec<u8>)| {
-    // Arrow's panics are contained by the wire's decoder, which refuses them: only one that escapes
-    // it fails the target, as a panic out of the fuzz target itself.
-    QUIET.call_once(|| std::panic::set_hook(Box::new(|_| {})));
+    // Arrow's panics are contained by the wire's decoder, which refuses them without reaching the
+    // panic hook libfuzzer aborts in: only one that escapes it fails the target.
     let (garbled, recheck, cut, edits, bytes) = input;
     let log = if garbled {
         let ids: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
