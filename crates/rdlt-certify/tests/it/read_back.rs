@@ -262,7 +262,8 @@ async fn a_read_back_is_decoded_up_to_the_rows_certification_reads_and_no_furthe
 async fn a_read_back_of_rows_that_cost_no_bytes_fails_every_clause_that_reads_it() {
     let factory = Reads(
         destination_factory::<MemoryDestination>(),
-        Bits(vec![1 << 20; 8]),
+        // Two batches, each of more rows than a read-back decodes of a table.
+        Bits(vec![1 << 17; 2]),
     );
     let target = Target::served(Served::new().with_destination(Box::new(factory)));
     let config = json!({ "store": "certify_flood" });

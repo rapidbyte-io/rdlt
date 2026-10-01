@@ -10,7 +10,9 @@ use crate::target::Target;
 
 #[tokio::test]
 async fn a_source_whose_partition_is_long_is_certified_without_reading_it_all() {
-    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
+        // A source that waits for credit sends nothing, however long it is watched.
+        .credit_watch(Duration::from_millis(50));
     let config = serde_json::json!({
         "seed": 7,
         "streams": [{ "name": "events", "rows": 1_000_000_000_u64, "partitions": 1, "batch_rows": 100 }],

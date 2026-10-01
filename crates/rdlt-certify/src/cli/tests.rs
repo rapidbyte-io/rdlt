@@ -134,3 +134,21 @@ fn a_certification_is_bounded_unless_it_is_asked_not_to_be() {
     );
     assert_eq!(bound(None, true), None);
 }
+
+#[test]
+fn a_complete_certification_is_required_unless_part_is_asked_for() {
+    use clap::Parser as _;
+    let required = |asked: &[&str]| {
+        let args = [&["rdlt-certify", "connector"][..], asked].concat();
+        super::Args::try_parse_from(args)
+            .map(|args| args.require)
+            .ok()
+    };
+    assert_eq!(required(&[]), Some(Require::Complete));
+    assert_eq!(
+        required(&["--require", "complete"]),
+        Some(Require::Complete)
+    );
+    assert_eq!(required(&["--require", "partial"]), Some(Require::Partial));
+    assert_eq!(required(&["--require", "some"]), None);
+}

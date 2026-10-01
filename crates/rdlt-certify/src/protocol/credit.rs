@@ -25,7 +25,7 @@ use super::{Found, Violation, handshaken};
 use crate::target::Target;
 
 /// How long a read whose credit is spent is watched, at first and after each grant too small to
-/// restore it, for frames it must not send.
+/// restore it, for frames it must not send, unless the target chooses.
 const QUIET: Duration = Duration::from_secs(1);
 
 /// How many grants, each too small to restore the credit, a read is watched after.
@@ -79,7 +79,8 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
         }
         // A frame spends its encoded size, as the host that grants credit counts it.
         let spent = u64::try_from(first.encoded_len()).unwrap_or(u64::MAX);
-        waits_then_resumes(&controls, &mut frames, regrants(spent)).await?;
+        let quiet = target.chosen_watch().unwrap_or(QUIET);
+        waits_then_resumes(&controls, &mut frames, regrants(spent), quiet).await?;
         Ok(Found::Kept)
     };
     checked.await.into()
@@ -98,9 +99,12 @@ fn regrants(spent: u64) -> [u64; REGRANTS] {
     })
 }
 
-/// Watches `frames` for [`QUIET`]: a violation when the read, its credit spent, sends a frame.
-async fn stays_quiet(frames: &mut Streaming<v1::ReadFrame>) -> Result<(), Violation> {
-    match tokio::time::timeout(QUIET, frames.next()).await {
+/// Watches `frames` for `quiet`: a violation when the read, its credit spent, sends a frame.
+async fn stays_quiet(
+    frames: &mut Streaming<v1::ReadFrame>,
+    quiet: Duration,
+) -> Result<(), Violation> {
+    match tokio::time::timeout(quiet, frames.next()).await {
         Ok(Some(Ok(_))) => Err(Violation::from(
             "the read sent a frame after its credit was spent",
         )),
@@ -110,22 +114,23 @@ async fn stays_quiet(frames: &mut Streaming<v1::ReadFrame>) -> Result<(), Violat
     }
 }
 
-/// Checks that a read whose credit is spent sends nothing more, whatever it is granted that does
-/// not restore its credit, each of `regrants` in turn, and goes on once granted more; then
-/// stops it, since the rest of the partition, however long, need not be read.
+/// Checks that a read whose credit is spent sends nothing more for `quiet`, whatever it is
+/// granted that does not restore its credit, each of `regrants` in turn, and goes on once granted
+/// more; then stops it, since the rest of the partition, however long, need not be read.
 async fn waits_then_resumes(
     controls: &mpsc::Sender<v1::ReadControl>,
     frames: &mut Streaming<v1::ReadFrame>,
     regrants: [u64; REGRANTS],
+    quiet: Duration,
 ) -> Result<(), Violation> {
-    stays_quiet(frames).await?;
+    stays_quiet(frames, quiet).await?;
     for bytes in regrants {
         send(
             controls,
             v1::read_control::Control::Credit(v1::Credit { bytes }),
         )
         .await?;
-        stays_quiet(frames).await?;
+        stays_quiet(frames, quiet).await?;
     }
     send(
         controls,
