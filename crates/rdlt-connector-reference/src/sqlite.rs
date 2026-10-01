@@ -80,8 +80,8 @@ impl DestinationConnector for SqliteDestination {
 }
 
 /// What the SQLite destination stores: SQLite's storage classes, widened in place within the
-/// integer and float families; tables never take `sqlgen`'s prefix or SQLite's, and columns never
-/// take the staging columns' names.
+/// integer and float families; tables never take `sqlgen`'s prefix, SQLite's or its table-valued
+/// pragmas', and columns never take the staging columns' names.
 fn capabilities() -> Capabilities {
     use TypeKind as K;
     let integers = [K::Int8, K::Int16, K::Int32, K::Int64];
@@ -126,7 +126,9 @@ fn capabilities() -> Capabilities {
             .iter()
             .map(|&name| name.to_owned())
             .collect(),
-        reserved_table_prefixes: [TABLE_PREFIX, "sqlite_"].map(str::to_owned).into(),
+        reserved_table_prefixes: [TABLE_PREFIX, "sqlite_", "pragma_"]
+            .map(str::to_owned)
+            .into(),
     };
     capabilities
 }

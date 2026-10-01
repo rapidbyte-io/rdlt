@@ -107,8 +107,8 @@ fn named(host: Option<&str>, name: &str) -> Arc<Mutex<Store>> {
 struct Store {
     pipelines: BTreeMap<PipelineId, PipelineStore>,
     tables: BTreeMap<String, Table>,
-    /// The name of each table the engine has referred to, by logical path.
-    names: BTreeMap<TablePath, String>,
+    /// The name of each table a pipeline has referred to, by the pipeline and its logical path.
+    names: BTreeMap<(PipelineId, TablePath), String>,
 }
 
 impl Store {
@@ -123,7 +123,7 @@ impl Store {
         epoch: Epoch,
         meta: &CommitMeta,
     ) -> Result<(u64, u64)> {
-        self.owned(pipeline, meta)?;
+        self.owns(pipeline, meta)?;
         let plans = self.plans(pipeline, epoch, meta)?;
         let (mut rows, mut bytes) = (0, 0);
         for table in self.tables.values_mut() {
@@ -151,7 +151,8 @@ impl Store {
             }
         }
         for (path, generation) in &meta.finish_generations {
-            let Some(name) = self.names.get(path).cloned() else {
+            // A path the pipeline registered no table for names one it never created.
+            let Some(name) = self.named(pipeline, path).map(str::to_owned) else {
                 continue;
             };
             let table = self.tables.entry(name).or_default();
@@ -161,6 +162,7 @@ impl Store {
         }
         for dropped in &meta.drop_tables {
             self.tables.remove(&*dropped.name);
+            self.names.retain(|_, name| **name != *dropped.name);
         }
         Ok((rows, bytes))
     }
@@ -177,15 +179,24 @@ impl Store {
                 .flatten()
                 .cloned()
                 .collect();
-            // A child table the commit lists follows its root even where it staged nothing.
+            // A child table the commit lists follows its root's staged rows even where it staged
+            // nothing.
             let listed = meta
                 .child_tables
                 .iter()
                 .find(|child| *child.table == **name)
-                .map(|child| &child.merge);
+                .map(|child| &child.merge)
+                .filter(|key| {
+                    key.root.as_ref().is_some_and(|root| {
+                        !self
+                            .staged_rows(&root.table, pipeline, epoch, meta)
+                            .is_empty()
+                    })
+                });
             if staged.is_empty() && listed.is_none() {
                 continue;
             }
+            self.owned(pipeline, name)?;
             let merge = table.merge.as_ref().or(listed);
             let merged = match merge {
                 Some(key) => match &key.root {
@@ -413,6 +424,8 @@ impl TableWriter for MemoryWriter {
                 self.pipeline, self.epoch
             )));
         }
+        // The table may have been dropped, and claimed by another pipeline, since the writer opened.
+        store.owned(&self.pipeline, &self.table)?;
         let table = store.tables.entry(self.table.clone()).or_default();
         let mut stats = WriteStats::default();
         for (segment, batch) in self.buffered.drain(..) {

@@ -1,5 +1,6 @@
 //! A SQLite session: schema changes, staging writers and commits, each one transaction.
 
+mod commit;
 mod owners;
 #[cfg(test)]
 mod tests;
@@ -9,13 +10,13 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use rdlt_connector::prelude::*;
-use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite, Staged};
-use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId, StateRecord};
-use rusqlite::Transaction;
+use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite};
+use rdlt_connector::{Epoch, PipelineId, StateRecord};
 use rusqlite::types::Value;
 
 use super::database::{Database, columns, integer, query, run, run_all, text};
-use owners::{claim, owned};
+use commit::{drop_tables, finish, publish, stored};
+use owners::{claim, distinct, owned_by};
 
 pub use writer::SqliteWriter;
 
@@ -83,14 +84,10 @@ impl Session for SqliteSession {
         self.database
             .transaction(move |transaction| {
                 let table = change.table();
+                let owned = claim(transaction, &planner, &pipeline, epoch, &table.name)?;
                 if matches!(change, TableChange::Create { .. }) {
-                    let registered = query(transaction, &planner.tables())?
-                        .iter()
-                        .map(|row| row.first().map_or(Ok(String::new()), text))
-                        .collect::<Result<Vec<_>>>()?;
-                    planner.distinct(&table.name, &registered)?;
+                    distinct(transaction, &planner, table)?;
                 }
-                claim(transaction, &planner, &pipeline, epoch, &table.name)?;
                 let target = columns(transaction, planner.dialect(), &planner.target(table))?;
                 let staging = columns(
                     transaction,
@@ -102,10 +99,10 @@ impl Session for SqliteSession {
                     planner.dialect(),
                     &planner.tombstone_table(&table.name),
                 )?;
-                let plan = planner.change(&change, [&target, &staging, &tombstones])?;
+                let plan = planner.change(&owned, &change, [&target, &staging, &tombstones])?;
                 run_all(transaction, &plan)?;
                 if matches!(change, TableChange::Create { .. }) {
-                    run_all(transaction, &planner.register(table))?;
+                    run_all(transaction, &planner.register(&owned, table)?)?;
                 }
                 Ok(())
             })
@@ -113,50 +110,17 @@ impl Session for SqliteSession {
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<SqliteWriter> {
-        let (planner, pipeline, epoch, name) = (
+        let (planner, pipeline, epoch, written) = (
             Arc::clone(&self.planner),
             self.pipeline.clone(),
             self.epoch,
-            table.name.clone(),
+            table.clone(),
         );
         self.database
-            .transaction(move |transaction| claim(transaction, &planner, &pipeline, epoch, &name))
-            .await?;
-        let (planner, changed) = (Arc::clone(&self.planner), table.clone());
-        self.database
             .transaction(move |transaction| {
-                let dialect = planner.dialect();
-                let [target, staging, tombstones] = [
-                    planner.target(&changed),
-                    planner.staging_table(&changed.name),
-                    planner.tombstone_table(&changed.name),
-                ]
-                .map(|name| columns(transaction, dialect, &name));
-                let plan = planner.change_tables(&changed, [&target?, &staging?, &tombstones?])?;
-                run_all(transaction, &plan)
+                writer::ready(transaction, &planner, &pipeline, epoch, &written)
             })
             .await?;
-        if table.generation.is_some() {
-            let (planner, generation) = (Arc::clone(&self.planner), table.clone());
-            self.database
-                .transaction(move |transaction| {
-                    let dialect = planner.dialect();
-                    if !columns(transaction, dialect, &planner.target(&generation))?.is_empty() {
-                        return Ok(());
-                    }
-                    let base = columns(transaction, dialect, &generation.name)?;
-                    run_all(transaction, &planner.generation(&generation, &base))
-                })
-                .await?;
-        }
-        // A commit finds its rows by these indexes, which it never creates itself.
-        let mut indexes = self.planner.key_indexes(table);
-        indexes.extend(self.planner.root_index(table)?);
-        if !indexes.is_empty() {
-            self.database
-                .transaction(move |transaction| run_all(transaction, &indexes))
-                .await?;
-        }
         Ok(SqliteWriter {
             database: self.database.clone(),
             planner: Arc::clone(&self.planner),
@@ -172,11 +136,8 @@ impl Session for SqliteSession {
             (Arc::clone(&self.planner), self.pipeline.clone(), self.epoch);
         self.database
             .transaction(move |transaction| {
-                let names = query(transaction, &planner.tables())?
-                    .iter()
-                    .map(|row| row.first().map_or(Ok(String::new()), text))
-                    .collect::<Result<Vec<_>>>()?;
-                run_all(transaction, &planner.discard(&pipeline, epoch, &names))
+                let tables = owned_by(transaction, &planner, &pipeline)?;
+                run_all(transaction, &planner.discard(&pipeline, epoch, &tables))
             })
             .await
     }
@@ -204,26 +165,8 @@ impl Session for SqliteSession {
                     return Ok(receipt);
                 }
                 let (rows, bytes) = publish(transaction, &planner, &pipeline, epoch, &meta)?;
-                for (path, generation) in &meta.finish_generations {
-                    let found = query(transaction, &planner.table_name(path))?;
-                    let Some(name) = found.first().and_then(|row| row.first()) else {
-                        continue;
-                    };
-                    let name = text(name)?;
-                    owned(transaction, &planner, &pipeline, &name)?;
-                    swap(transaction, &planner, &name, *generation)?;
-                }
-                for dropped in &meta.drop_tables {
-                    owned(transaction, &planner, &pipeline, &dropped.name)?;
-                    let generations = generation_tables(transaction, &planner, &dropped.name)?
-                        .into_iter()
-                        .map(|(table, _)| table)
-                        .collect::<Vec<_>>();
-                    run_all(
-                        transaction,
-                        &planner.drop_table(&dropped.name, &generations)?,
-                    )?;
-                }
+                finish(transaction, &planner, &pipeline, &meta)?;
+                drop_tables(transaction, &planner, &pipeline, &meta)?;
                 run_all(
                     transaction,
                     &planner.state_changes(&pipeline, &meta.state_delta),
@@ -245,150 +188,4 @@ impl Session for SqliteSession {
     async fn close(self) -> Result<()> {
         Ok(())
     }
-}
-
-/// The receipt stored for `(load_id, commit_seq)`, if that commit already happened.
-fn stored(
-    transaction: &Transaction<'_>,
-    planner: &SqlPlanner<Sqlite>,
-    pipeline: &PipelineId,
-    load_id: LoadId,
-    commit_seq: CommitSeq,
-) -> Result<Option<Receipt>> {
-    let rows = query(transaction, &planner.receipt(pipeline, load_id, commit_seq))?;
-    let Some(row) = rows.first() else {
-        return Ok(None);
-    };
-    match &row[..] {
-        [at, count, bytes] => Ok(Some(sqlgen::receipt(
-            load_id,
-            commit_seq,
-            integer(at)?,
-            integer(count)?,
-            integer(bytes)?,
-        ))),
-        _ => Err(ConnectorError::internal(
-            "a stored receipt has missing fields",
-        )),
-    }
-}
-
-/// Publishes what this session staged in `meta`'s segments into each table; returns the rows and
-/// bytes published.
-fn publish(
-    transaction: &Transaction<'_>,
-    planner: &SqlPlanner<Sqlite>,
-    pipeline: &PipelineId,
-    epoch: Epoch,
-    meta: &CommitMeta,
-) -> Result<(i64, i64)> {
-    let (mut rows, mut bytes) = (0, 0);
-    let mut staged = query(
-        transaction,
-        &planner.staged(pipeline, epoch, &meta.segments),
-    )?
-    .iter()
-    .map(|row| staged_segment(row))
-    .collect::<Result<Vec<_>>>()?;
-    // A child table the commit lists follows its root even where it staged nothing.
-    for child in &meta.child_tables {
-        let root = child.merge.root.as_ref().map(|root| root.table.to_string());
-        let root_staged = staged
-            .iter()
-            .any(|(staged, ..)| Some(&staged.name) == root.as_ref());
-        let own_staged = staged
-            .iter()
-            .any(|(staged, ..)| *staged.name == *child.table);
-        if root_staged && !own_staged {
-            let listed = Staged {
-                name: child.table.to_string(),
-                generation: None,
-                merge: Some(child.merge.clone()),
-            };
-            staged.push((listed, 0, 0));
-        }
-    }
-    // Child tables publish first: they read their roots' staged rows, which a root's publish
-    // removes.
-    staged.sort_by_key(|(staged, ..)| staged.merge.as_ref().is_none_or(|key| key.root.is_none()));
-    for (staged, count, size) in staged {
-        let target = match staged.generation {
-            Some(generation) => planner.generation_table(&staged.name, generation),
-            None => staged.name.clone(),
-        };
-        let columns = columns(transaction, planner.dialect(), &target)?;
-        run_all(
-            transaction,
-            &planner.publish(&staged, &columns, pipeline, epoch, &meta.segments)?,
-        )?;
-        rows += count;
-        bytes += size;
-    }
-    run(
-        transaction,
-        &planner.forget(pipeline, epoch, &meta.segments),
-    )?;
-    Ok((rows, bytes))
-}
-
-/// A row of [`SqlPlanner::staged`]: what a table staged, with its rows and bytes.
-fn staged_segment(row: &[Value]) -> Result<(Staged, i64, i64)> {
-    let [name, generation, key, seq, count, size] = row else {
-        return Err(ConnectorError::internal(
-            "a staged segment has missing fields",
-        ));
-    };
-    let generation = match generation {
-        Value::Null => None,
-        other => Some(GenerationId(sqlgen::unsigned(integer(other)?))),
-    };
-    let merge = match (key, seq) {
-        (Value::Text(key), Value::Text(seq)) => Some(sqlgen::merge_key(key, seq)?),
-        _ => None,
-    };
-    let staged = Staged {
-        name: text(name)?,
-        generation,
-        merge,
-    };
-    Ok((staged, integer(count)?, integer(size)?))
-}
-
-/// The generation tables of the table `name`, with their generations.
-fn generation_tables(
-    transaction: &Transaction<'_>,
-    planner: &SqlPlanner<Sqlite>,
-    name: &str,
-) -> Result<Vec<(String, GenerationId)>> {
-    query(transaction, &planner.generations(name))?
-        .iter()
-        .map(|row| match &row[..] {
-            [table, found] => Ok((
-                text(table)?,
-                GenerationId(sqlgen::unsigned(integer(found)?)),
-            )),
-            _ => Err(ConnectorError::internal("a generation has missing fields")),
-        })
-        .collect()
-}
-
-/// Swaps `generation` in as the table `name`.
-fn swap(
-    transaction: &Transaction<'_>,
-    planner: &SqlPlanner<Sqlite>,
-    name: &str,
-    generation: GenerationId,
-) -> Result<()> {
-    let generations = generation_tables(transaction, planner, name)?;
-    let exists = !columns(transaction, planner.dialect(), name)?.is_empty();
-    run_all(
-        transaction,
-        &planner.swap(name, exists, generation, &generations)?,
-    )?;
-    // The rows a change stream removed from the table swapped out never come back to its successor.
-    let tombstones = planner.tombstone_table(name);
-    if !columns(transaction, planner.dialect(), &tombstones)?.is_empty() {
-        run(transaction, &planner.forget_tombstones(name))?;
-    }
-    Ok(())
 }

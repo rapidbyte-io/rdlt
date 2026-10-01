@@ -1,7 +1,9 @@
 //! Destination tables, the staging table beside each, generation tables, and changing their
 //! columns.
 
-use super::{Column, SqlDialect, SqlPlanner, Statement};
+use sha2::{Digest as _, Sha256};
+
+use super::{Column, Owned, SqlDialect, SqlPlanner, Statement};
 use crate::destination::{TableChange, TableRef};
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::GenerationId;
@@ -19,6 +21,10 @@ pub const STAGING_COLUMNS: [&str; 4] = [
 /// The prefix of every table `sqlgen` keeps: the catalog, staging and generation tables.
 pub const TABLE_PREFIX: &str = "_rdlt_";
 
+/// The prefix of a derived name cut to the dialect's identifiers, which no other name the
+/// planner makes begins with.
+const FITTED_PREFIX: &str = "_rdlt_fit_";
+
 impl<D: SqlDialect> SqlPlanner<D> {
     /// The staging table of the table `name`.
     pub fn staging_table(&self, name: &str) -> String {
@@ -31,49 +37,70 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// `derived`, a name derived from a table's, within the dialect's longest identifier: one too
-    /// long keeps what fits of its start and ends with a hash of the whole, so two long names
-    /// sharing a start stay distinct.
+    /// long becomes the reserved prefix of cut names and the SHA-256 of the whole, in base 32.
+    ///
+    /// No name the planner derives uncut and no catalog table begins with that prefix, so a cut
+    /// name meets only another cut name, and only where two names share their SHA-256.
     pub(super) fn fitted(&self, derived: String) -> String {
-        let Some(max) = self.dialect.max_identifier() else {
-            return derived;
-        };
-        if derived.len() <= max {
-            return derived;
+        match self.dialect.max_identifier() {
+            Some(max) if derived.len() > max => {
+                format!(
+                    "{FITTED_PREFIX}{}",
+                    base32(&Sha256::digest(derived.as_bytes()))
+                )
+            }
+            _ => derived,
         }
-        let hash = format!("_{:08x}", fnv1a(derived.as_bytes()));
-        let mut end = max.saturating_sub(hash.len());
-        while !derived.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}{hash}", &derived[..end])
     }
 
-    /// Refuses the table `name` where one of `registered`, the tables already registered, would
-    /// share one of its derived tables or indexes: its staging, tombstones, root index and key
-    /// indexes, whose names are cut to the dialect's longest identifier and end in a hash of the
-    /// whole.
+    /// Refuses `table` where a table of `owned`, the tables pipelines own, or of `generations`,
+    /// every generation table with its base, would share one of the tables or indexes derived
+    /// from its name: its staging, tombstones, root index and key indexes, and for a generation
+    /// its generation table with that table's indexes.
     ///
     /// Two such tables would publish each other's rows, so the clash is a `Config` error, coded
     /// `table_name_clash`, which renaming either table resolves.
-    pub fn distinct(&self, name: &str, registered: &[String]) -> Result<()> {
-        let derived = |table: &str| {
-            let (staging, tombstones) = (self.staging_table(table), self.tombstone_table(table));
+    pub fn distinct(
+        &self,
+        table: &TableRef,
+        owned: &[String],
+        generations: &[(String, String)],
+    ) -> Result<()> {
+        let name = &*table.name;
+        let indexed = |data: String| {
             [
-                self.key_index_name(table),
-                self.key_index_name(&staging),
-                self.key_index_name(&tombstones),
-                staging,
-                tombstones,
-                self.root_index_name(table),
+                self.key_index_name(&data),
+                self.root_index_name(&data),
+                data,
             ]
         };
-        let own = derived(name);
-        let clash = registered
+        let derived = |table: &str| {
+            let (staging, tombstones) = (self.staging_table(table), self.tombstone_table(table));
+            let mut names = vec![self.key_index_name(table), self.root_index_name(table)];
+            names.extend(
+                [indexed(staging), indexed(tombstones)]
+                    .into_iter()
+                    .flatten(),
+            );
+            names
+        };
+        let mut own = derived(name);
+        if table.generation.is_some() {
+            own.extend(indexed(self.target(table)));
+        }
+        let tables = owned
             .iter()
             .filter(|other| other.as_str() != name)
-            .find(|other| derived(other).iter().any(|table| own.contains(table)));
+            .map(|other| (other, derived(other)));
+        let filling = generations
+            .iter()
+            .filter(|(_, base)| base != name)
+            .map(|(generation, base)| (base, indexed(generation.clone()).to_vec()));
+        let clash = tables
+            .chain(filling)
+            .find(|(_, names)| names.iter().any(|derived| own.contains(derived)));
         match clash {
-            Some(other) => Err(ConnectorError::config(format!(
+            Some((other, _)) => Err(ConnectorError::config(format!(
                 "tables {name} and {other} would share the tables derived from their names, which \
                  the destination cuts to its longest identifier"
             ))
@@ -90,22 +117,29 @@ impl<D: SqlDialect> SqlPlanner<D> {
         }
     }
 
-    /// The statements creating the generation table `table` writes with the columns of its base
-    /// table, `base`, where the generation was never created; nothing when the base is missing.
-    pub fn generation(&self, table: &TableRef, base: &[Column]) -> Vec<Statement> {
+    /// The statements creating the generation table `table`, which `owned` names, writes with
+    /// the columns of its base table, `base`, where the generation was never created; nothing
+    /// when the base is missing.
+    pub fn generation(
+        &self,
+        owned: &Owned,
+        table: &TableRef,
+        base: &[Column],
+    ) -> Result<Vec<Statement>> {
+        owned.is(&table.name)?;
         if table.generation.is_none() || base.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let columns = base
             .iter()
             .map(|column| format!("{} {}", self.quote(&column.name), column.declared));
         let mut plan = vec![self.create(&self.target(table), columns)];
-        plan.extend(self.register(table));
-        plan
+        plan.extend(self.register(owned, table)?);
+        Ok(plan)
     }
 
-    /// The statements applying `change`, given the columns its target, staging and tombstones
-    /// tables have now, empty where a table is missing.
+    /// The statements applying `change` to the table `owned` names, given the columns its target,
+    /// staging and tombstones tables have now, empty where a table is missing.
     ///
     /// A widen applies to each of them that has the column: a change stream's tombstones hold
     /// its key.
@@ -115,10 +149,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// then. A change the tables already reflect plans nothing.
     pub fn change(
         &self,
+        owned: &Owned,
         change: &TableChange,
         [target, staging, tombstones]: [&[Column]; 3],
     ) -> Result<Vec<Statement>> {
         let table = change.table();
+        owned.is(&table.name)?;
         let names = [
             self.target(table),
             self.staging_table(&table.name),
@@ -308,10 +344,25 @@ fn conflict(table: &str, existing: &Column, logical: &LogicalType) -> ConnectorE
     .with_code("schema_conflict")
 }
 
-/// The 32-bit FNV-1a hash of `bytes`: stable across builds and platforms, as names derived with
-/// it must be.
-fn fnv1a(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0x811c_9dc5, |hash: u32, byte| {
-        (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193)
-    })
+/// `bytes` in base 32, lower case, without padding: every character one any database keeps in an
+/// identifier, alike in every case.
+fn base32(bytes: &[u8]) -> String {
+    let digit = |bits: u32| match u8::try_from(bits & 31).unwrap_or_default() {
+        letter @ 0..26 => char::from(b'a' + letter),
+        number => char::from(b'2' + (number - 26)),
+    };
+    let mut text = String::with_capacity(bytes.len() * 8 / 5 + 1);
+    let (mut held, mut bits) = (0_u32, 0_u32);
+    for byte in bytes {
+        held = (held << 8) | u32::from(*byte);
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            text.push(digit(held >> bits));
+        }
+    }
+    if bits > 0 {
+        text.push(digit(held << (5 - bits)));
+    }
+    text
 }

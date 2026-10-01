@@ -17,6 +17,7 @@
 
 mod catalog;
 mod changes;
+mod owned;
 mod publish;
 mod sqlite;
 mod tables;
@@ -29,8 +30,9 @@ use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{Epoch, PipelineId};
 use crate::types::LogicalType;
 
-pub use catalog::{CATALOG_TABLES, micros, receipt};
+pub use catalog::{micros, receipt};
 pub use changes::staged_changes;
+pub use owned::Owned;
 pub use publish::{Staged, merge_key};
 pub use sqlite::Sqlite;
 pub use tables::{STAGING_COLUMNS, TABLE_PREFIX};
@@ -133,6 +135,14 @@ pub trait SqlDialect: Send + Sync {
     fn max_identifier(&self) -> Option<usize> {
         None
     }
+
+    /// Whether no destination table may take the name `name`: the database keeps it for itself,
+    /// or would take it for another table's, as one matching names without case takes another
+    /// case of a name; no name by default.
+    fn reserves_table(&self, name: &str) -> bool {
+        let _ = name;
+        false
+    }
 }
 
 /// Plans the statements of a SQL destination for dialect `D`.
@@ -144,9 +154,9 @@ pub struct SqlPlanner<D> {
     blob: String,
 }
 
-/// The fewest bytes a dialect's identifiers may hold: the shortest limit of a supported database,
-/// which fits the reserved prefix of a derived name with its hash and part of the table's name.
-pub const MIN_IDENTIFIER: usize = 30;
+/// Bytes: the fewest a dialect's identifiers may hold, PostgreSQL's limit, which fits the name a
+/// derived table too long for the dialect takes: a reserved prefix and the hash of the whole.
+pub const MIN_IDENTIFIER: usize = 63;
 
 impl<D: SqlDialect> SqlPlanner<D> {
     /// A planner for `dialect`, which must store text, 64-bit integers and bytes, and whose

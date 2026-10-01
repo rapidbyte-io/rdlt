@@ -18,7 +18,7 @@ use arrow_array::types::Int8Type;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
-use super::{Column, SqlDialect, SqlPlanner, Statement};
+use super::{Column, Owned, SqlDialect, SqlPlanner, Statement};
 use crate::change::ChangeOp;
 use crate::destination::{ChangeColumns, MergeKey, TableRef};
 use crate::error::{ConnectorError, Result};
@@ -29,26 +29,30 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.fitted(format!("_rdlt_tombstones__{name}"))
     }
 
-    /// The statement forgetting the tombstones of the table `name`, whose rows were replaced whole.
-    pub fn forget_tombstones(&self, name: &str) -> Statement {
+    /// The statement forgetting the tombstones of the table `owned` names, whose rows were
+    /// replaced whole.
+    pub fn forget_tombstones(&self, owned: &Owned) -> Statement {
+        let tombstones = self.tombstone_table(owned.name());
         Statement {
-            sql: format!("DELETE FROM {}", self.quote(&self.tombstone_table(name))),
+            sql: format!("DELETE FROM {}", self.quote(&tombstones)),
             params: Vec::new(),
         }
     }
 
-    /// The statements readying a change stream's tables before it stages rows for `table`, given
-    /// the columns its target, staging and tombstones tables have now: the staging table gains the
-    /// op and unchanged columns, and the tombstones table is created with the target's key and
-    /// sequence columns; nothing for a table that merges no change stream.
+    /// The statements readying a change stream's tables before it stages rows for `table`, which
+    /// `owned` names, given the columns its target, staging and tombstones tables have now: the
+    /// staging table gains the op and unchanged columns, and the tombstones table is created with
+    /// the target's key and sequence columns; nothing for a table that merges no change stream.
     ///
     /// They run where the stream stages its rows, so a commit changes no table's columns;
     /// [`SqlPlanner::key_indexes`] then indexes the three by the key.
     pub fn change_tables(
         &self,
+        owned: &Owned,
         table: &TableRef,
         [target, staging, tombstones]: [&[Column]; 3],
     ) -> Result<Vec<Statement>> {
+        owned.is(&table.name)?;
         let Some((key, changes)) = changed(table) else {
             return Ok(Vec::new());
         };
@@ -99,15 +103,17 @@ impl<D: SqlDialect> SqlPlanner<D> {
         Ok(plan)
     }
 
-    /// The statements indexing `table`, a merge table, and its staging by its key's columns where
-    /// they are not, and its tombstones too where it merges a change stream; nothing for a table
-    /// that does not merge, or a child table, which [`SqlPlanner::root_index`] indexes.
+    /// The statements indexing `table`, which `owned` names, a merge table, and its staging by
+    /// its key's columns where they are not, and its tombstones too where it merges a change
+    /// stream; nothing for a table that does not merge, or a child table, which
+    /// [`SqlPlanner::root_index`] indexes.
     ///
     /// They run where the table's rows are staged, so a commit finds each staged key's rows by
     /// them and changes no index.
-    pub fn key_indexes(&self, table: &TableRef) -> Vec<Statement> {
+    pub fn key_indexes(&self, owned: &Owned, table: &TableRef) -> Result<Vec<Statement>> {
+        owned.is(&table.name)?;
         let Some(key) = table.merge.as_ref().filter(|key| key.root.is_none()) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let columns: Vec<String> = key
             .columns
@@ -119,7 +125,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         if key.changes.is_some() {
             tables.push(self.tombstone_table(&table.name));
         }
-        tables
+        Ok(tables
             .into_iter()
             .map(|indexed| Statement {
                 sql: self.dialect.create_index(
@@ -129,7 +135,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 ),
                 params: Vec::new(),
             })
-            .collect()
+            .collect())
     }
 
     /// The name of the index of the table `table` by its key.

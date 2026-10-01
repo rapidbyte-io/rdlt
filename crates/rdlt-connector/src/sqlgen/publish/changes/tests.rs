@@ -34,7 +34,7 @@ fn a_change_stream_merges_into_its_table_never_a_generation() {
         merge: Some(key(Deletion::Hard)),
     };
     let error = planner
-        .publish(
+        .publish_as(
             &staged,
             &columns,
             &pipeline("mine"),
@@ -62,7 +62,7 @@ fn soft_deletes_into_a_table_without_their_column_are_refused() {
         })),
     };
     let error = planner
-        .publish(
+        .publish_as(
             &staged,
             &columns,
             &pipeline("mine"),

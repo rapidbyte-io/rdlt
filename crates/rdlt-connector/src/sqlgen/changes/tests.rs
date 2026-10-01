@@ -49,7 +49,7 @@ fn a_change_stream_stages_its_directions_and_keeps_tombstones_of_its_key() {
         .clone()
         .map(|name| columns(&connection, &planner, &name));
     let plan = planner
-        .change_tables(&orders, [&tables[0], &tables[1], &tables[2]])
+        .change_tables_of(&orders, [&tables[0], &tables[1], &tables[2]])
         .unwrap();
     run_all(&connection, &plan);
     let [_, staging, tombstones] = names.map(|name| columns(&connection, &planner, &name));
@@ -68,7 +68,7 @@ fn a_change_stream_stages_its_directions_and_keeps_tombstones_of_its_key() {
     let unmerged = table("orders");
     assert_eq!(
         planner
-            .change_tables(&unmerged, [&tables[0], &tables[1], &[]])
+            .change_tables_of(&unmerged, [&tables[0], &tables[1], &[]])
             .unwrap(),
         []
     );
@@ -83,7 +83,7 @@ fn a_change_stream_merging_by_a_column_its_table_lacks_is_refused() {
     let target = columns(&connection, &planner, "orders");
     let staging = columns(&connection, &planner, &planner.staging_table("orders"));
     let error = planner
-        .change_tables(&orders, [&target, &staging, &[]])
+        .change_tables_of(&orders, [&target, &staging, &[]])
         .unwrap_err();
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
 }
@@ -213,10 +213,10 @@ fn a_commit_finds_the_rows_its_changes_touch_by_their_key() {
     ];
     let tables = names.map(|name| columns(&connection, &planner, &name));
     let ready = planner
-        .change_tables(&orders, [&tables[0], &tables[1], &tables[2]])
+        .change_tables_of(&orders, [&tables[0], &tables[1], &tables[2]])
         .unwrap();
     run_all(&connection, &ready);
-    run_all(&connection, &planner.key_indexes(&orders));
+    run_all(&connection, &planner.key_indexes_of(&orders));
     let columns = columns(&connection, &planner, "orders");
     let staged = Staged {
         name: "orders".into(),
@@ -224,7 +224,7 @@ fn a_commit_finds_the_rows_its_changes_touch_by_their_key() {
         merge: orders.merge.clone(),
     };
     let plan = planner
-        .publish(
+        .publish_as(
             &staged,
             &columns,
             &pipeline("mine"),
@@ -280,13 +280,13 @@ fn a_change_table_its_staging_and_its_tombstones_are_indexed_by_its_key() {
             .clone()
             .map(|name| columns(connection, &planner, &name));
         planner
-            .change_tables(&orders, [&tables[0], &tables[1], &tables[2]])
+            .change_tables_of(&orders, [&tables[0], &tables[1], &tables[2]])
             .unwrap()
     };
     run_all(&connection, &ready(&connection));
     // Indexed again, the tables change nothing: each index is created where it is missing.
     for _ in 0..2 {
-        run_all(&connection, &planner.key_indexes(&orders));
+        run_all(&connection, &planner.key_indexes_of(&orders));
     }
     assert_eq!(ready(&connection), []);
     let listing = Statement {

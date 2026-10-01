@@ -2,24 +2,14 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::owned::OWNERS;
 use super::upsert::Row;
-use super::{SqlDialect, SqlPlanner, SqlValue, Statement, integer};
+use super::{Owned, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
 use crate::commit::Receipt;
 use crate::destination::TableRef;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, TablePath};
 use crate::state::StateChange;
-
-/// The catalog tables, which destination tables must not be named after.
-pub const CATALOG_TABLES: &[&str] = &[
-    EPOCHS,
-    STATE,
-    RECEIPTS,
-    TABLES,
-    GENERATIONS,
-    SEGMENTS,
-    OWNERS,
-];
 
 const EPOCHS: &str = "_rdlt_epochs";
 const STATE: &str = "_rdlt_state";
@@ -27,7 +17,6 @@ const RECEIPTS: &str = "_rdlt_receipts";
 const TABLES: &str = "_rdlt_tables";
 pub(super) const GENERATIONS: &str = "_rdlt_generations";
 pub(super) const SEGMENTS: &str = "_rdlt_segments";
-const OWNERS: &str = "_rdlt_owners";
 
 impl<D: SqlDialect> SqlPlanner<D> {
     /// Creates the catalog tables where they are missing.
@@ -45,7 +34,10 @@ impl<D: SqlDialect> SqlPlanner<D> {
                  rows {integer} NOT NULL, bytes {integer} NOT NULL, \
                  PRIMARY KEY (pipeline, load_id, commit_seq))"
             ),
-            format!("{TABLES} (path {text} PRIMARY KEY, name {text} NOT NULL)"),
+            format!(
+                "{TABLES} (pipeline {text} NOT NULL, path {text} NOT NULL, name {text} NOT NULL, \
+                 PRIMARY KEY (pipeline, path))"
+            ),
             format!("{OWNERS} (name {text} PRIMARY KEY, pipeline {text} NOT NULL)"),
             format!(
                 "{GENERATIONS} (name {text} PRIMARY KEY, base {text} NOT NULL, \
@@ -188,10 +180,16 @@ impl<D: SqlDialect> SqlPlanner<D> {
         sql.finish()
     }
 
-    /// The statements recording that `table` exists, and for a generation the base table it
-    /// replaces.
-    pub fn register(&self, table: &TableRef) -> Vec<Statement> {
-        let key = [("path", SqlValue::Text(path_key(&table.path)))];
+    /// The statements recording that `table`, which `owned` names, exists at its path for its
+    /// pipeline, and for a generation the base table it replaces.
+    ///
+    /// Each pipeline keeps its own paths, so no pipeline's table answers for another's path.
+    pub fn register(&self, owned: &Owned, table: &TableRef) -> Result<Vec<Statement>> {
+        owned.is(&table.name)?;
+        let key = [
+            ("pipeline", SqlValue::Text(owned.pipeline().to_string())),
+            ("path", SqlValue::Text(path_key(&table.path))),
+        ];
         let values = [("name", SqlValue::Text(table.name.to_string()))];
         let row = Row {
             table: TABLES,
@@ -212,29 +210,16 @@ impl<D: SqlDialect> SqlPlanner<D> {
             };
             statements.extend(self.upsert(&row, false));
         }
-        statements
+        Ok(statements)
     }
 
-    /// The statement claiming the table `name` for `pipeline` where no pipeline owns it yet;
-    /// [`SqlPlanner::owner`] then reads who does.
-    pub fn claim(&self, pipeline: &PipelineId, name: &str) -> Vec<Statement> {
-        let key = [("name", SqlValue::Text(name.to_owned()))];
-        let values = [("pipeline", SqlValue::Text(pipeline.to_string()))];
-        let row = Row {
-            table: OWNERS,
-            key: &key,
-            values: &values,
-        };
-        self.upsert(&row, false)
-    }
-
-    /// The statements dropping the table `name` with its generation tables `generations`, its
-    /// staging and its tombstones, and forgetting its registration, generations, staged segments
-    /// and owner, so any pipeline may create a table of that name again.
+    /// The statements dropping the table `owned` names with its generation tables `generations`,
+    /// its staging and its tombstones, and forgetting its registration, generations, staged
+    /// segments and owner, so any pipeline may create a table of that name again.
     ///
     /// Where the dialect's schema changes do not commit with its transactions the drop could not
     /// land with its commit, so it is `Unsupported`.
-    pub fn drop_table(&self, name: &str, generations: &[String]) -> Result<Vec<Statement>> {
+    pub fn drop_table(&self, owned: &Owned, generations: &[String]) -> Result<Vec<Statement>> {
         if !self.swaps_atomically() {
             return Err(ConnectorError::new(
                 ConnectorErrorKind::Unsupported,
@@ -242,6 +227,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
                  cannot be dropped with a commit",
             ));
         }
+        let name = owned.name();
         let data = std::iter::once(name.to_owned()).chain(generations.iter().cloned());
         let kept = [self.staging_table(name), self.tombstone_table(name)];
         let mut plan: Vec<Statement> = data
@@ -265,29 +251,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
         Ok(plan)
     }
 
-    /// The query returning the pipeline that owns the table `name`: the first to claim it.
-    pub fn owner(&self, name: &str) -> Statement {
+    /// The query returning the identifier of the table `pipeline` registered for `path`.
+    pub fn table_name(&self, pipeline: &PipelineId, path: &TablePath) -> Statement {
         let mut sql = self.sql();
-        let name = sql.bind(SqlValue::Text(name.to_owned()));
-        sql.push(&format!(
-            "SELECT pipeline FROM {OWNERS} WHERE name = {name}"
-        ));
-        sql.finish()
-    }
-
-    /// The query returning the identifier of every registered table.
-    pub fn tables(&self) -> Statement {
-        Statement {
-            sql: format!("SELECT name FROM {TABLES} ORDER BY name"),
-            params: Vec::new(),
-        }
-    }
-
-    /// The query returning the identifier of the table registered for `path`.
-    pub fn table_name(&self, path: &TablePath) -> Statement {
-        let mut sql = self.sql();
+        let pipeline = sql.bind(SqlValue::Text(pipeline.to_string()));
         let path = sql.bind(SqlValue::Text(path_key(path)));
-        sql.push(&format!("SELECT name FROM {TABLES} WHERE path = {path}"));
+        sql.push(&format!(
+            "SELECT name FROM {TABLES} WHERE pipeline = {pipeline} AND path = {path}"
+        ));
         sql.finish()
     }
 
@@ -299,6 +270,15 @@ impl<D: SqlDialect> SqlPlanner<D> {
             "SELECT name, generation FROM {GENERATIONS} WHERE base = {base} ORDER BY name"
         ));
         sql.finish()
+    }
+
+    /// The query returning every generation table as a row of its identifier and its base
+    /// table's.
+    pub fn generation_tables(&self) -> Statement {
+        Statement {
+            sql: format!("SELECT name, base FROM {GENERATIONS} ORDER BY name"),
+            params: Vec::new(),
+        }
     }
 }
 
