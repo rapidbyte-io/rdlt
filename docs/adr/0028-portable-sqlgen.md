@@ -73,6 +73,7 @@ Status: accepted, 2026-09-29.
   `ALTER TABLE … RENAME TO` and `DROP TABLE IF EXISTS`, are standard SQL that some databases
   spell otherwise; a dialect for one of those needs a hook for them.
 - Implementing `SqlDialect` requires `transactional_ddl`.
-- `SqlPlanner::claim` returns statements, as a guarded write takes two.
+- `SqlPlanner::claim` returns statements, as a guarded write takes two. Amended 2026-10-02: a
+  claim is no call of its own; creating a table plans it (ADR 0049).
 - A second table whose derived tables would take a first's name fails its first load, where it
   would have mixed rows with the first.

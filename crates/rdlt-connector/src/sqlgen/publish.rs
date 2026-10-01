@@ -324,7 +324,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 
     /// The statements removing what sessions of `pipeline` older than `epoch` staged in
-    /// `tables`: every table the pipeline owns, as [`SqlPlanner::owned_by`] lists them.
+    /// `tables`: the tables the pipeline owns, as [`SqlPlanner::owned_by`] lists them, each
+    /// checked and holding a staging table.
     ///
     /// A newer session's staging stays: a discard can run after a newer session opened and
     /// staged, when it waited behind that session for the database.
