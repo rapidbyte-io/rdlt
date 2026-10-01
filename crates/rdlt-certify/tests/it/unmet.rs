@@ -120,3 +120,58 @@ async fn a_spawned_connector_that_ends_at_once_is_heard_in_every_failure() {
         assert!(reason.contains("DATABASE_URL is not set"), "{id}: {reason}");
     }
 }
+
+#[test]
+fn a_certification_that_was_cut_keeps_what_it_found_and_says_where_it_was_cut() {
+    use rdlt_certify::{ClauseResult, Observed, unfinished};
+    use rdlt_connector::Role;
+    let target = Target::connected(|| Box::pin(std::future::pending()));
+    for found in [0, 1, 9] {
+        let observed = Observed::new();
+        let clauses = PROTOCOL_CLAUSES.iter().chain(SOURCE_CLAUSES);
+        for clause in clauses.clone().take(found) {
+            observed.tell(ClauseResult {
+                clause: *clause,
+                outcome: Outcome::Passed,
+            });
+        }
+        observed.named("io.test.cut");
+        let report = unfinished(&target, Role::Source, &observed, "the bound passed");
+        assert_eq!(report.connector, "io.test.cut");
+        // Every clause of the role, in order: those found, the clause that was cut, and the rest.
+        let ids: Vec<&str> = report
+            .results
+            .iter()
+            .map(|result| result.clause.id)
+            .collect();
+        let every: Vec<&str> = clauses
+            .map(|clause| clause.id)
+            .chain(["K-SOURCE"])
+            .collect();
+        assert_eq!(ids, every);
+        for (index, result) in report.results.iter().enumerate() {
+            match &result.outcome {
+                Outcome::Passed => assert!(index < found, "{report}"),
+                Outcome::Failed(reason) => {
+                    assert_eq!(index, found, "{report}");
+                    assert!(reason.contains("the bound passed"), "{reason}");
+                }
+                Outcome::Unobserved(_) => assert!(index > found, "{report}"),
+                Outcome::Inapplicable(_) => panic!("{report}"),
+            }
+        }
+        assert_eq!(report.verdict(), Verdict::Failed);
+    }
+    // Before the connector's id is known, the report is named as the target is.
+    let unnamed = unfinished(
+        &target,
+        Role::Destination,
+        &Observed::new(),
+        "the bound passed",
+    );
+    assert_eq!(unnamed.connector, target.describe());
+    assert_eq!(
+        unnamed.results.len(),
+        PROTOCOL_CLAUSES.len() + DESTINATION_CLAUSES.len() + 1
+    );
+}

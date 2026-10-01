@@ -11,7 +11,7 @@ mod writing;
 use std::future::Future;
 use std::time::Duration;
 
-use rdlt_connector::testing::{Clause, ClauseResult, Outcome};
+use rdlt_connector::testing::{Clause, ClauseResult, Observed, Outcome};
 use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorError, Role};
 use rdlt_host::remote::Client;
@@ -116,11 +116,13 @@ impl From<Result<Found, Violation>> for Found {
     }
 }
 
-/// Checks every protocol clause against `target` as `role`, with `config`.
+/// Checks every protocol clause against `target` as `role`, with `config`, telling `observed`
+/// each result as its check ends.
 pub(crate) async fn check(
     target: &Target,
     role: Role,
     config: &serde_json::Value,
+    observed: &Observed,
 ) -> Vec<ClauseResult> {
     let config = config.to_string();
     let mut results = Vec::new();
@@ -142,10 +144,12 @@ pub(crate) async fn check(
             Found::Inapplicable(reason) => Outcome::Inapplicable(reason.into()),
             Found::Unobserved(reason) => Outcome::Unobserved(reason.into()),
         };
-        results.push(ClauseResult {
+        let result = ClauseResult {
             clause: *clause,
             outcome,
-        });
+        };
+        observed.tell(result.clone());
+        results.push(result);
     }
     results
 }

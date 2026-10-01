@@ -18,8 +18,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    Clause, ClauseResult, DESTINATION_CLAUSES, Outcome, Probe, Report, SOURCE_CLAUSES, Unprobed,
-    Verdict, certify_destination, certify_source,
+    Clause, ClauseResult, DESTINATION_CLAUSES, Observed, Outcome, Probe, Report, SOURCE_CLAUSES,
+    Unprobed, Verdict, certify_destination, certify_destination_factory_observed, certify_source,
+    certify_source_factory_observed,
 };
 use crate::capabilities::{Capabilities, SchemaChanges};
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
@@ -451,6 +452,52 @@ async fn a_source_planned_again_with_a_gap_or_an_overlap_fails_its_partition_cla
     for replanned in ["renamed", "forgotten"] {
         let report = certify_source::<Pages>(json!({ "replanned": replanned })).await;
         assert_eq!(failed(&report), ["S-PARTITION"], "{replanned}: {report}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_clauses_a_certification_finished_before_it_was_cut_are_kept() {
+    // Its reads wait for data: the first clause that records one takes its whole bound.
+    let observed = Observed::new();
+    let factory = crate::source::source_factory::<Pages>();
+    let certifying =
+        certify_source_factory_observed(factory.as_ref(), json!({ "idle": true }), &observed);
+    let cut = tokio::time::timeout(std::time::Duration::from_secs(20), certifying).await;
+    assert!(cut.is_err(), "the certification ended before it was cut");
+    let finished: Vec<&str> = observed
+        .results()
+        .iter()
+        .map(|result| result.clause.id)
+        .collect();
+    assert_eq!(finished, ["S-CHECK", "S-DISCOVER", "S-PLAN"]);
+    assert_eq!(observed.connector().as_deref(), Some("io.test.pages"));
+    // Left to end, it tells every clause, as its report does.
+    let observed = Observed::new();
+    let report = certify_source_factory_observed(factory.as_ref(), json!({}), &observed).await;
+    assert_eq!(observed.results(), report.results);
+    let observed = Observed::new();
+    let refused = json!({ "refuse_connect": true });
+    let report = certify_source_factory_observed(factory.as_ref(), refused, &observed).await;
+    assert_eq!(observed.results(), report.results);
+    assert_eq!(report.results.len(), SOURCE_CLAUSES.len());
+}
+
+#[tokio::test]
+async fn a_destination_tells_each_clause_as_it_ends_as_its_report_does() {
+    for flag in [None, Some("refuse_connect")] {
+        let observed = Observed::new();
+        let name = format!("observed_{}", flag.is_some());
+        let mut config = json!({ "store": name });
+        if let Some(flag) = flag {
+            config[flag] = json!(true);
+        }
+        let factory = crate::destination::destination_factory::<Vault>();
+        let probe = VaultProbe(vault(&name));
+        let report =
+            certify_destination_factory_observed(factory.as_ref(), config, &probe, &observed).await;
+        assert_eq!(observed.results(), report.results);
+        assert_eq!(observed.connector().as_deref(), Some("io.test.vault"));
+        assert_eq!(report.results.len(), DESTINATION_CLAUSES.len());
     }
 }
 

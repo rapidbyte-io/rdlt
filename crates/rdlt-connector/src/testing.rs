@@ -29,12 +29,14 @@ use std::future::Future;
 
 pub use destination::{
     DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
-    read_back_integers,
+    certify_destination_factory_observed, read_back_integers,
 };
 use limits::{CALL_TIMEOUT, CLAUSE_TIMEOUT};
 pub use limits::{REASON_BYTES, RENDERED_BYTES};
 pub use reason::Reason;
-pub use source::{SOURCE_CLAUSES, certify_source, certify_source_factory};
+pub use source::{
+    SOURCE_CLAUSES, certify_source, certify_source_factory, certify_source_factory_observed,
+};
 
 /// Runs a clause for at most [`CLAUSE_TIMEOUT`].
 async fn timed(check: impl Future<Output = Result<(), Violation>>) -> Result<(), Violation> {
@@ -76,6 +78,47 @@ pub struct ClauseResult {
     pub clause: Clause,
     /// Its outcome.
     pub outcome: Outcome,
+}
+
+/// What a certification has found so far: each clause's result as its check ends, and the
+/// connector's id once it is known.
+///
+/// Whoever cuts a certification short reads it, to report what was found before the cut.
+#[derive(Clone, Debug, Default)]
+pub struct Observed {
+    found: std::sync::Arc<std::sync::Mutex<(Option<String>, Vec<ClauseResult>)>>,
+}
+
+impl Observed {
+    /// Nothing found yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Tells the id of the connector under certification.
+    pub fn named(&self, connector: &str) {
+        self.found().0 = Some(connector.to_owned());
+    }
+
+    /// Tells a clause's result, as its check ends.
+    pub fn tell(&self, result: ClauseResult) {
+        self.found().1.push(result);
+    }
+
+    /// The connector's id, once it is known.
+    pub fn connector(&self) -> Option<String> {
+        self.found().0.clone()
+    }
+
+    /// The results told so far, in the order their checks ended.
+    pub fn results(&self) -> Vec<ClauseResult> {
+        self.found().1.clone()
+    }
+
+    fn found(&self) -> std::sync::MutexGuard<'_, (Option<String>, Vec<ClauseResult>)> {
+        let found = self.found.lock();
+        found.unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// What a report's outcomes amount to.

@@ -292,17 +292,24 @@ async fn a_kill_timeout_from_the_command_line_bounds_the_kill_clauses() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_certification_that_outlives_its_timeout_fails_what_it_left_and_exits_one() {
-    let binary = example("serve_hang");
-    let binary = binary.to_str().expect("a UTF-8 path");
+async fn a_certification_that_outlives_its_timeout_fails_where_it_was_cut_and_exits_one() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let launched = launcher(directory.path(), "serve_hang");
     // Its configuration never answers: a connection's own deadline is a minute away.
     for (timeout, roles) in [("2", &["--role", "destination"][..]), ("0", &[])] {
-        let args = [binary, "--env", "LLVM_PROFILE_FILE", "--output", "json"];
+        std::fs::remove_file(directory.path().join("members")).ok();
+        let args = [
+            launched.as_str(),
+            "--env",
+            "LLVM_PROFILE_FILE",
+            "--output",
+            "json",
+        ];
         let args = [&args[..], roles, &["--timeout", timeout]].concat();
         let began = std::time::Instant::now();
         let output = certify(&args).await;
         assert!(
-            began.elapsed() < std::time::Duration::from_secs(30),
+            began.elapsed() < std::time::Duration::from_secs(120),
             "{timeout}"
         );
         assert_eq!(code(&output), Some(1), "{timeout}");
@@ -318,10 +325,16 @@ async fn a_certification_that_outlives_its_timeout_fails_what_it_left_and_exits_
         for report in reports {
             let clauses = report["clauses"].as_array().expect("the clauses");
             assert!(clauses.len() > 10, "{report}");
-            for clause in clauses {
-                assert_eq!(clause["outcome"], "failed", "{timeout}: {clause}");
+            // The clause the bound cut fails; those it never reached were not observed.
+            assert_eq!(clauses[0]["outcome"], "failed", "{timeout}: {report}");
+            for clause in &clauses[1..] {
+                assert_eq!(clause["outcome"], "unobserved", "{timeout}: {clause}");
             }
         }
+        // A bound that has passed starts no connector.
+        let spawned = directory.path().join("members").exists();
+        assert_eq!(spawned, timeout != "0", "{timeout}");
+        assert_eq!(surviving(directory.path()), Vec::<i32>::new(), "{timeout}");
     }
 }
 

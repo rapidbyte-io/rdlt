@@ -14,7 +14,8 @@ use std::sync::Arc;
 
 use super::limits::CLAUSE_TIMEOUT;
 use super::{
-    Clause, ClauseResult, Outcome, Reason, Report, Violation, bounded_call, outcome, timed,
+    Clause, ClauseResult, Observed, Outcome, Reason, Report, Violation, bounded_call, outcome,
+    timed,
 };
 use crate::catalog::{Catalog, Checkpointing, StreamSpec};
 use crate::cursor::Cursor;
@@ -87,16 +88,32 @@ pub async fn certify_source_factory(
     factory: &dyn SourceFactory,
     config: serde_json::Value,
 ) -> Report {
+    certify_source_factory_observed(factory, config, &Observed::new()).await
+}
+
+/// Certifies the source `factory` creates from `config`, telling `observed` each clause's
+/// result as its check ends: what was found is then known of a certification that is cut.
+pub async fn certify_source_factory_observed(
+    factory: &dyn SourceFactory,
+    config: serde_json::Value,
+    observed: &Observed,
+) -> Report {
     let connector = factory.spec().id.to_string();
+    observed.named(&connector);
     let results = match connected(factory, config).await {
-        Ok((source, told)) => check_all(source.as_ref(), told).await,
+        Ok((source, told)) => check_all(source.as_ref(), told, observed).await,
         Err(violation) => {
             let outcome = violation.of("connect failed").outcome();
             let failed = |clause: &Clause| ClauseResult {
                 clause: *clause,
                 outcome: outcome.clone(),
             };
-            SOURCE_CLAUSES.iter().map(failed).collect()
+            let failed: Vec<ClauseResult> = SOURCE_CLAUSES.iter().map(failed).collect();
+            failed
+                .iter()
+                .cloned()
+                .for_each(|failed| observed.tell(failed));
+            failed
         }
     };
     Report { connector, results }
@@ -163,7 +180,7 @@ async fn stood(
     }
 }
 
-async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
+async fn check_all(source: &dyn Source, told: Told, observed: &Observed) -> Vec<ClauseResult> {
     let catalog = bounded_call("discover", source.discover()).await;
     let mut told = stood(source, told, catalog.as_ref().ok()).await;
     let mut results = Vec::new();
@@ -210,10 +227,12 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
                 within(Box::pin(barriers_are_answered(source, catalog, &budget))).await
             }
         };
-        results.push(ClauseResult {
+        let result = ClauseResult {
             clause: *clause,
             outcome,
-        });
+        };
+        observed.tell(result.clone());
+        results.push(result);
     }
     results
 }
