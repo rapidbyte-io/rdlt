@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
 
+# Every job gets a token that can read the repository and nothing else. No step's environment
+# holds it but the one that is given it by name.
 permissions:
   contents: read
 
@@ -27,17 +29,22 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just typos taplo cargo-deny actionlint shellcheck pinact github:bnjbvr/cargo-machete github:taiki-e/cargo-hack
           cache_key_prefix: mise-v2-lint
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: just lint
+      - run: just checks
+      # The token goes to this step alone, which builds and runs nothing of the workspace's.
+      - run: just pins
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -50,11 +57,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -67,11 +77,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -84,11 +97,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest aqua:taiki-e/cargo-llvm-cov
           cache_key_prefix: mise-v2-coverage
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -105,11 +121,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked committed
           cache_key_prefix: mise-v2-commits
       - run: committed "origin/${BASE_REF}..${HEAD_SHA}"

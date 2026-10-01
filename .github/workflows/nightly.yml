@@ -5,6 +5,8 @@ on:
     - cron: "17 3 * * *"
   workflow_dispatch:
 
+# Every job gets a token that can read the repository and nothing else. No step's environment
+# holds it but the one that is given it by name.
 permissions:
   contents: read
 
@@ -24,11 +26,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just cargo-deny
           cache_key_prefix: mise-v2-deny
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -46,11 +51,14 @@ jobs:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -63,11 +71,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-test
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -80,11 +91,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest aqua:taiki-e/cargo-llvm-cov
           cache_key_prefix: mise-v2-coverage
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -101,11 +115,14 @@ jobs:
         target: [state_record, shred, wire_messages, ipc_frame, wal_log]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just github:rust-fuzz/cargo-fuzz
           cache_key_prefix: mise-v2-fuzz
       - run: just fuzz ${{ matrix.target }} 1200
@@ -123,11 +140,14 @@ jobs:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         timeout-minutes: 5
         with:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
           install_args: --locked just github:sourcefrog/cargo-mutants aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-mutants
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
