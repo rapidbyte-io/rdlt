@@ -33,7 +33,8 @@ use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
 use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
 use super::as_list;
-use canonical::{decimals, nanoseconds, temporal_tag};
+use crate::table::convert::decoded;
+use canonical::{Stored, decimal_scale, temporal_tag, unit_nanoseconds};
 
 /// The ids of `batch`'s rows as roots: of the `key` columns' values in order, or of the whole row
 /// where there is no key.
@@ -117,7 +118,8 @@ const JSON_EXTENSION: &str = "arrow.json";
 enum Encoder {
     Null,
     Boolean(BooleanArray),
-    Integer(Int64Array),
+    /// Integers of any type a signed 64-bit one holds, read as their type stores them.
+    Integer(ArrayRef, Stored),
     Unsigned(UInt64Array),
     Float32(Float32Array),
     Float(Float64Array),
@@ -125,15 +127,15 @@ enum Encoder {
     /// JSON text, encoded as the values it renders.
     Json(StringArray),
     Bytes(BinaryArray),
-    /// Decimals, as their text without trailing zeros after the point.
-    Decimal(Vec<Option<String>>),
+    /// Decimals of this scale, as their text without trailing zeros after the point.
+    Decimal(ArrayRef, Stored, i8),
     /// An object: where it is null, and its fields in name order.
     Object(Option<NullBuffer>, Vec<(String, Encoder)>),
     /// An array, and its items.
     Array(ListArray, Box<Encoder>),
-    /// Dates, timestamps, times of day or durations: their kind's tag and each value in
-    /// nanoseconds.
-    Temporal(u8, Vec<Option<i128>>),
+    /// Dates, timestamps, times of day or durations: their kind's tag, the values as their type
+    /// stores them, and the nanoseconds in one of its units.
+    Temporal(u8, ArrayRef, Stored, i128),
     /// Values of any other type, as their type and text.
     Other(ArrayRef, String),
 }
@@ -142,6 +144,11 @@ impl Encoder {
     /// The encoder of `array`, whose field is `field`.
     fn new(field: &ArrowField, array: &ArrayRef) -> Result<Self, ArrowError> {
         let cast = |to: &DataType| arrow_cast::cast(array, to);
+        let stored = || {
+            Stored::of(array.as_ref()).ok_or_else(|| {
+                ArrowError::CastError(format!("{} holds no stored values", array.data_type()))
+            })
+        };
         let json = field.metadata().get(EXTENSION_NAME).map(String::as_str) == Some(JSON_EXTENSION);
         Ok(match array.data_type() {
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View if json => {
@@ -155,7 +162,7 @@ impl Encoder {
             | DataType::Int64
             | DataType::UInt8
             | DataType::UInt16
-            | DataType::UInt32 => Self::Integer(cast(&DataType::Int64)?.as_primitive().clone()),
+            | DataType::UInt32 => Self::Integer(Arc::clone(array), stored()?),
             DataType::UInt64 => Self::Unsigned(array.as_primitive().clone()),
             DataType::Float16 | DataType::Float32 => {
                 Self::Float32(cast(&DataType::Float32)?.as_primitive().clone())
@@ -170,13 +177,14 @@ impl Encoder {
             | DataType::FixedSizeBinary(_) => {
                 Self::Bytes(cast(&DataType::Binary)?.as_binary::<i32>().clone())
             }
-            DataType::Decimal32(..)
-            | DataType::Decimal64(..)
-            | DataType::Decimal128(..)
-            | DataType::Decimal256(..) => Self::Decimal(decimals(array)?),
+            data_type if decimal_scale(data_type).is_some() => {
+                let scale = decimal_scale(data_type).expect("a decimal type");
+                Self::Decimal(Arc::clone(array), stored()?, scale)
+            }
             data_type if temporal_tag(data_type).is_some() => {
                 let tag = temporal_tag(data_type).expect("a temporal type");
-                Self::Temporal(tag, nanoseconds(array)?)
+                let unit = unit_nanoseconds(data_type).expect("a temporal type");
+                Self::Temporal(tag, Arc::clone(array), stored()?, unit)
             }
             DataType::Struct(_) => {
                 let object = array.as_struct();
@@ -188,19 +196,24 @@ impl Encoder {
             | DataType::FixedSizeList(..)
             | DataType::ListView(_)
             | DataType::LargeListView(_)
-            | DataType::Map(..) => {
-                let list = as_list(array)?;
-                let item = match list.data_type() {
-                    DataType::List(item) => Arc::clone(item),
-                    other => Arc::new(ArrowField::new("item", other.clone(), true)),
-                };
-                let items = Self::new(&item, list.values())?;
-                Self::Array(list, Box::new(items))
+            | DataType::Map(..) => Self::array(array)?,
+            // Decoded by the values the rows name, never the whole dictionary or every run.
+            DataType::Dictionary(..) | DataType::RunEndEncoded(..) => {
+                Self::new(field, &decoded(array)?)?
             }
-            DataType::Dictionary(_, values) => Self::new(field, &cast(values)?)?,
-            DataType::RunEndEncoded(_, values) => Self::new(field, &cast(values.data_type())?)?,
             other => Self::Other(Arc::clone(array), other.to_string()),
         })
+    }
+
+    /// An array of the items of `array`, a list of any kind or a map.
+    fn array(array: &ArrayRef) -> Result<Self, ArrowError> {
+        let list = as_list(array)?;
+        let item = match list.data_type() {
+            DataType::List(item) => Arc::clone(item),
+            other => Arc::new(ArrowField::new("item", other.clone(), true)),
+        };
+        let items = Self::new(&item, list.values())?;
+        Ok(Self::Array(list, Box::new(items)))
     }
 
     /// An object whose fields are `fields`, null where `nulls` says.
@@ -219,15 +232,15 @@ impl Encoder {
         match self {
             Self::Null => true,
             Self::Boolean(values) => values.is_null(index),
-            Self::Integer(values) => values.is_null(index),
+            Self::Integer(values, _)
+            | Self::Decimal(values, ..)
+            | Self::Temporal(_, values, ..)
+            | Self::Other(values, _) => values.is_null(index),
             Self::Unsigned(values) => values.is_null(index),
             Self::Float32(values) => values.is_null(index),
             Self::Float(values) => values.is_null(index),
             Self::Text(values) | Self::Json(values) => values.is_null(index),
             Self::Bytes(values) => values.is_null(index),
-            Self::Decimal(values) => values[index].is_none(),
-            Self::Temporal(_, values) => values[index].is_none(),
-            Self::Other(values, _) => values.is_null(index),
             Self::Object(nulls, _) => nulls.as_ref().is_some_and(|nulls| nulls.is_null(index)),
             Self::Array(list, _) => list.is_null(index),
         }
@@ -242,7 +255,7 @@ impl Encoder {
         match self {
             Self::Null => out.push(NULL),
             Self::Boolean(values) => out.push(if values.value(index) { TRUE } else { FALSE }),
-            Self::Integer(values) => integer(out, values.value(index).into()),
+            Self::Integer(_, values) => integer(out, values.value(index)),
             Self::Unsigned(values) => integer(out, values.value(index).into()),
             Self::Float32(values) => float32(out, values.value(index)),
             Self::Float(values) => float64(out, values.value(index)),
@@ -254,13 +267,13 @@ impl Encoder {
                 out.push(BYTES);
                 length(out, values.value(index));
             }
-            Self::Decimal(values) => {
-                let text = values[index].as_deref().unwrap_or_default();
+            Self::Decimal(_, values, scale) => {
+                let text = values.decimal(*scale, index);
                 number(out, |row| row.write_all(text.as_bytes()));
             }
-            Self::Temporal(tag, values) => {
+            Self::Temporal(tag, _, values, unit) => {
                 out.push(*tag);
-                let nanos = values[index].unwrap_or_default().to_string();
+                let nanos = (values.value(index) * unit).to_string();
                 length(out, nanos.as_bytes());
             }
             Self::Json(values) => json(values.value(index), out),
