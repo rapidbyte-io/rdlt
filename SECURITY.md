@@ -29,7 +29,8 @@ complete, run only connectors you trust. The mechanisms in place today:
   on each change and each night.
 - Development and CI tools are locked to a release archive and its checksum; GitHub Actions are
   pinned to commits that are checked against the versions they claim.
-- CI runs with a read-only token, which no build or test step receives, and with no secrets.
+- CI runs with a read-only token and no secrets. One job has the token in its environment, and
+  it builds nothing.
 
 ADR 0048 records these.
 
