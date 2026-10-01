@@ -128,7 +128,7 @@ jobs:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
           github_token: ""
-          install_args: --locked committed
+          install_args: --locked github:crate-ci/committed
           cache_key_prefix: mise-v2-commits
       - run: committed "origin/${BASE_REF}..${HEAD_SHA}"
         env:

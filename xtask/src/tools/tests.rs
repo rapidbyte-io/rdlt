@@ -239,3 +239,19 @@ fn this_repository_locks_every_tool() {
     assert_eq!(check(&config, &lock).unwrap(), Vec::new());
     assert!(config.contains("[tools]"));
 }
+
+// An archive built for another processor runs only where an emulator is installed.
+#[test]
+fn this_repository_locks_archives_built_for_their_platform() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let lock = fs::read_to_string(root.join("mise.lock")).unwrap();
+    let mut platform = "";
+    for line in lock.lines() {
+        if let Some(table) = line.strip_prefix("[tools.") {
+            platform = table.rsplit("platforms.").next().unwrap();
+        }
+        if line.starts_with("url = ") && platform.starts_with("macos-arm64") {
+            assert!(!line.contains("x86_64"), "{line}");
+        }
+    }
+}

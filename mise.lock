@@ -66,21 +66,6 @@ checksum = "sha256:fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a7209
 url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471597689"
 
-[[tools.committed]]
-version = "1.1.11"
-backend = "aqua:crate-ci/committed"
-specifiers = ["1.1.11"]
-
-[tools.committed."platforms.linux-x64"]
-checksum = "sha256:1e5c20049eeaa4633e6798283913f92dc90a97f2b5c6dfc28e8c4b7e77a67157"
-url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361544963"
-
-[tools.committed."platforms.macos-arm64"]
-checksum = "sha256:b1718d951c8a90539ffb7a81145fdadf81c6c9a1f17560be433a74c5b3f7bfca"
-url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361544941"
-
 [[tools."github:bnjbvr/cargo-machete"]]
 version = "0.9.2"
 backend = "github:bnjbvr/cargo-machete"
@@ -95,6 +80,21 @@ url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397
 checksum = "sha256:63e28fee386d82d33f2d12406c857f98e2d4697f3f7df7f71f34dff07fca0fde"
 url = "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-aarch64-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/bnjbvr/cargo-machete/releases/assets/397131114"
+
+[[tools."github:crate-ci/committed"]]
+version = "1.1.11"
+backend = "github:crate-ci/committed"
+specifiers = ["1.1.11"]
+
+[tools."github:crate-ci/committed"."platforms.linux-x64"]
+checksum = "sha256:1e5c20049eeaa4633e6798283913f92dc90a97f2b5c6dfc28e8c4b7e77a67157"
+url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/361544963"
+
+[tools."github:crate-ci/committed"."platforms.macos-arm64"]
+checksum = "sha256:98eae08e1b0715ef6446c4bd08352f21f3a3ce21535a35687a1e132bcb4fcac1"
+url = "https://github.com/crate-ci/committed/releases/download/v1.1.11/committed-v1.1.11-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/crate-ci/committed/releases/assets/362199688"
 
 [[tools."github:rust-fuzz/cargo-fuzz"]]
 version = "0.13.2"
