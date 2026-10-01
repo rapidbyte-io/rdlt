@@ -16,6 +16,7 @@ use rdlt_host::Kills;
 
 use super::killing::{Killing, Schedule};
 use super::{Loaded, converged};
+use crate::limits::PUBLISHED_ROWS;
 use crate::protocol::Violation;
 use crate::target::Target;
 
@@ -123,6 +124,8 @@ pub(super) enum Fault {
     NotIntegers(String),
     /// Its `id` column holds nulls.
     Nulls,
+    /// It holds more rows than a read-back reads of a table.
+    Beyond,
     /// The row was published more than once.
     Repeated(i64),
     /// The row was never published.
@@ -142,6 +145,10 @@ impl std::fmt::Display for Fault {
                 )
             }
             Self::Nulls => formatter.write_str("the `id` column read back holds nulls"),
+            Self::Beyond => write!(
+                formatter,
+                "the table read back holds more than the {PUBLISHED_ROWS} rows certification reads"
+            ),
             Self::Repeated(row) => write!(formatter, "row {row} was published more than once"),
             Self::Missing(row) => write!(formatter, "row {row} was never published"),
             Self::Stray(row) => write!(formatter, "row {row} was published but never loaded"),
@@ -151,6 +158,12 @@ impl std::fmt::Display for Fault {
 
 /// Whether `batches` hold each generated id exactly once.
 pub(super) fn every_row_once(batches: &[RecordBatch]) -> Result<(), Fault> {
+    let rows = batches
+        .iter()
+        .fold(0_usize, |rows, batch| rows.saturating_add(batch.num_rows()));
+    if rows > PUBLISHED_ROWS {
+        return Err(Fault::Beyond);
+    }
     let mut ids = Vec::new();
     for batch in batches {
         let schema = batch.schema();
