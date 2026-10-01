@@ -103,6 +103,12 @@ pub fn stop_spawned(patience: Duration) -> Result<(), Lingering> {
     }
 }
 
+/// Starts the thread that owns a group.
+pub(super) type Threaded = fn(
+    std::thread::Builder,
+    Box<dyn FnOnce() + Send>,
+) -> std::io::Result<std::thread::JoinHandle<()>>;
+
 /// A connector's process and the group it leads, with what stops and kills them.
 pub(super) struct Owned {
     pub(super) child: Child,
@@ -115,17 +121,20 @@ pub(super) struct Owned {
 }
 
 impl Owned {
-    /// Hands the group to a thread of its own, which stops, kills and reaps it, whatever
-    /// becomes of the runtime that spawned it.
-    pub(super) fn reaped(mut self) -> std::io::Result<()> {
+    /// Hands the group to a thread of its own, started by `threaded`, which stops, kills and
+    /// reaps it, whatever becomes of the runtime that spawned it.
+    ///
+    /// The thread is handed the group once it exists, so a thread that cannot be started leaves
+    /// the group here, to be [discarded](Self::discarded).
+    pub(super) fn reaped(self, threaded: Threaded) -> std::io::Result<()> {
         let id = self.child.id();
-        groups()
-            .get_or_insert_default()
-            .live
-            .insert(id, Arc::clone(&self.stop));
+        let (give, take) = std::sync::mpsc::sync_channel::<Self>(1);
         let reaping = std::thread::Builder::new().name(format!("rdlt-reap-{id}"));
-        let reaped = reaping.spawn(move || {
-            let (status, emptied) = self.ended();
+        let owning = move || {
+            let Ok(mut owned) = take.recv() else {
+                return;
+            };
+            let (status, emptied) = owned.ended();
             let mut groups = groups();
             let groups = groups.get_or_insert_default();
             groups.live.remove(&id);
@@ -133,18 +142,40 @@ impl Owned {
                 tracing::error!(group = id, "a connector's process group kept a member");
                 groups.remaining.push(id);
             }
-            self.exit.send_replace(status);
+            owned.exit.send_replace(status);
             ENDED.notify_all();
-        });
-        reaped.map(drop)
+        };
+        if let Err(error) = threaded(reaping, Box::new(owning)) {
+            self.discarded();
+            return Err(error);
+        }
+        // Listed before its thread has it, so the thread's removal comes after.
+        let stop = Arc::clone(&self.stop);
+        groups().get_or_insert_default().live.insert(id, stop);
+        if let Err(std::sync::mpsc::SendError(owned)) = give.send(self) {
+            groups().get_or_insert_default().live.remove(&id);
+            owned.discarded();
+            return Err(std::io::Error::other(
+                "the thread that owns a connector ended",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Kills the connector and its group, and reaps it: the end of one that started and could
+    /// not be owned.
+    pub(super) fn discarded(mut self) {
+        let group = Pid::from_child(&self.child);
+        if Leader::of(&asked(group)) != Leader::Lost {
+            signal(group, Signal::KILL);
+            self.child.wait().ok();
+        }
     }
 
     /// Owns the group until it has ended: the leader's exit, and whether the group was seen
     /// empty after it was killed.
     fn ended(&mut self) -> (Option<ExitStatus>, bool) {
-        let Some(group) = i32::try_from(self.child.id()).ok().and_then(Pid::from_raw) else {
-            return (self.child.wait().ok(), true);
-        };
+        let group = Pid::from_child(&self.child);
         let mut stdin = self.child.stdin.take();
         let mut killing: Option<Instant> = None;
         // Until the leader has exited, a kill has come, or a stop's grace has passed.
