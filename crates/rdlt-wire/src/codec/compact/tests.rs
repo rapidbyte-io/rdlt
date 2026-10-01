@@ -74,3 +74,27 @@ fn every_part_of_every_odd_column_compacts_to_the_same_rows_of_the_same_type() {
         }
     }
 }
+
+#[test]
+fn copying_what_rows_name_holds_a_bounded_run_of_indices_whatever_they_name() {
+    // Three rows naming the same three hundred thousand items: each row a range of its own.
+    let items = arrow_array::Int8Array::from(vec![7; 300_000]);
+    let field = arrow_schema::Field::new("item", arrow_schema::DataType::Int8, true);
+    let field = std::sync::Arc::new(field);
+    let (offsets, sizes) = (vec![0; 3], vec![300_000; 3]);
+    let lists = arrow_array::ListViewArray::new(
+        field,
+        offsets.into(),
+        sizes.into(),
+        std::sync::Arc::new(items),
+        None,
+    );
+    let batch = batch_of(std::sync::Arc::new(lists));
+    let held = || super::leaf::HELD.replace(0);
+    assert_eq!(compacted(&batch).unwrap(), batch);
+    assert_eq!(held(), super::leaf::INDICES);
+    // Rows naming one stretch of items between them take no indices at all.
+    let apart = batch.slice(0, 1);
+    assert_eq!(compacted(&apart).unwrap(), apart);
+    assert_eq!(held(), 0);
+}

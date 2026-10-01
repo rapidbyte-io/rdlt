@@ -11,6 +11,7 @@ use std::ops::AddAssign;
 use arrow_array::RecordBatch;
 
 use self::column::{Column, Counts};
+use super::compact::plain;
 
 /// What rows weigh.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -87,7 +88,10 @@ impl Weigher {
     pub fn new(batch: &RecordBatch) -> Self {
         let mut counts = Counts::default();
         let columns = batch.columns().iter();
-        let columns = columns.map(|column| Column::of(column.as_ref(), &mut counts));
+        let columns = columns.map(|column| {
+            let rebuilt = !plain(column.data_type());
+            Column::of(column.as_ref(), rebuilt, &mut counts)
+        });
         let columns: Vec<_> = columns.collect();
         Self {
             columns,
