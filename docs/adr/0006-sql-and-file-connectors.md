@@ -1,6 +1,7 @@
 # ADR 0006: SQL and file reference connectors
 
-Status: accepted, 2026-09-24.
+Status: accepted, 2026-09-24; the files connectors' paths, modes, readers and retention are
+amended 2026-10-01 by ADR 0047.
 
 ## Context
 
