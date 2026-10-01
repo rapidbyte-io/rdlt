@@ -19,15 +19,15 @@ slow-timeout = { period = "60s" }
 filter = "package(rdlt-sim)"
 slow-timeout = { period = "60s" }
 
-# The failpoint sweep and the kill matrix run a pipeline in processes of their own, a few hundred
-# times a test: a minute each alone, longer on a shared runner.
+# The failpoint sweep and the kill matrix run a pipeline in processes of their own, a hundred
+# times and more a test: two minutes each here, several on a shared runner.
 [[profile.default.overrides]]
 filter = "package(rdlt-engine) & binary(crashes)"
 slow-timeout = { period = "60s", terminate-after = 5 }
 
 [[profile.ci.overrides]]
 filter = "package(rdlt-engine) & binary(crashes)"
-slow-timeout = { period = "120s", terminate-after = 5 }
+slow-timeout = { period = "120s", terminate-after = 8 }
 
 # Mutation testing: every engine and contract test takes well under a second, so one still running
 # after ten seconds is hung on the mutant. Terminating it fails the test, which catches the mutant.

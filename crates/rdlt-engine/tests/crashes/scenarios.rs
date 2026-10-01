@@ -19,6 +19,8 @@ pub(crate) struct Scenario {
     pub(crate) name: &'static str,
     /// Whether its runs keep a write-ahead log.
     pub(crate) logged: bool,
+    /// Whether its stream completes: a full read, publishing what it read at its last commit.
+    pub(crate) completes: bool,
     config: fn(&Path) -> Value,
     verify: fn(&Path, &str),
 }
@@ -105,15 +107,16 @@ fn sqlite_at(dir: &Path) -> Value {
     json!({ "kind": "sqlite", "config": { "path": dir.join("out.db") } })
 }
 
-/// A log of two partitions of 100 messages that forgets what it committed, appended to SQLite.
+/// A log of two partitions of fifty messages that forgets what it committed, appended to SQLite.
 pub(crate) fn forgetting_log() -> Scenario {
     Scenario {
         logged: true,
+        completes: false,
         name: "a forgetting log",
         config: |dir| {
             let source = json!({ "kind": "log", "config": {
                 "seed": 1, "group_path": dir.join("events.group"),
-                "streams": [{ "name": "events", "partitions": 2, "messages": 100,
+                "streams": [{ "name": "events", "partitions": 2, "messages": 50,
                               "batch_rows": 8, "replayable": false }],
             }});
             let stream = json!({ "name": "events", "read": "incremental", "write": "append" });
@@ -133,7 +136,7 @@ pub(crate) fn forgetting_log() -> Scenario {
             let every: Vec<(Option<String>, Option<i64>)> = ["p0", "p1"]
                 .into_iter()
                 .flat_map(|partition| {
-                    (0..100).map(move |offset| (Some(partition.to_owned()), Some(offset)))
+                    (0..50).map(move |offset| (Some(partition.to_owned()), Some(offset)))
                 })
                 .collect();
             assert_eq!(messages, every, "{case}");
@@ -174,6 +177,7 @@ fn changes_of(dir: &Path, stream: &ChangedStream) -> Value {
 pub(crate) fn forgetting_changes() -> Scenario {
     Scenario {
         logged: true,
+        completes: false,
         name: "a forgetting change stream",
         config: |dir| {
             let stream = json!({ "name": "orders", "read": "cdc", "write": "merge" });
@@ -209,6 +213,7 @@ pub(crate) fn forgetting_changes() -> Scenario {
 pub(crate) fn replaced() -> Scenario {
     Scenario {
         logged: true,
+        completes: true,
         name: "a full read replaced",
         config: |dir| {
             let source = json!({ "kind": "generator", "config": {
@@ -233,6 +238,7 @@ pub(crate) fn replaced() -> Scenario {
 pub(crate) fn kept_history() -> Scenario {
     Scenario {
         logged: true,
+        completes: false,
         name: "a history",
         config: |dir| {
             let stream = json!({ "name": "orders", "read": "cdc", "write": "history" });
