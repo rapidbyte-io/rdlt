@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray as _;
-use arrow_array::types::{Int8Type, Int16Type, Int32Type, Int64Type, RunEndIndexType};
+use arrow_array::types::{
+    Decimal256Type, Int8Type, Int16Type, Int32Type, Int64Type, RunEndIndexType,
+};
 use arrow_array::{
     Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int32Array,
     LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, RunArray, StringArray,
@@ -65,6 +67,13 @@ pub(crate) fn render(array: &dyn Array, row: usize) -> String {
         T::Int64 => array.as_primitive::<Int64Type>().value(row).to_string(),
         T::Utf8 => format!("{:?}", array.as_string::<i32>().value(row)),
         T::Binary => format!("{:?}", array.as_binary::<i32>().value(row)),
+        T::LargeUtf8 => format!("{:?}", array.as_string::<i64>().value(row)),
+        T::LargeBinary => format!("{:?}", array.as_binary::<i64>().value(row)),
+        T::FixedSizeBinary(_) => format!("{:?}", array.as_fixed_size_binary().value(row)),
+        T::Decimal256(..) => array
+            .as_primitive::<Decimal256Type>()
+            .value(row)
+            .to_string(),
         T::Utf8View => format!("{:?}", array.as_string_view().value(row)),
         T::BinaryView => format!("{:?}", array.as_binary_view().value(row)),
         T::List(_) => each(array.as_list::<i32>().value(row).as_ref()),

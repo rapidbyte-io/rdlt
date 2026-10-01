@@ -198,6 +198,15 @@ every_part_of_every_nested_layout_crosses_as_its_rows_and_as_it_was_weighed! {
     every_part_of_every_layout_over_texts_crosses_as_its_rows_and_as_weighed: "utf8",
     every_part_of_every_layout_over_a_part_of_texts_crosses_as_its_rows_and_as_weighed:
         "utf8 sliced",
+    every_part_of_every_layout_over_bytes_crosses_as_its_rows_and_as_weighed: "binary",
+    every_part_of_every_layout_over_a_part_of_large_texts_crosses_as_its_rows_and_as_weighed:
+        "large utf8 sliced",
+    every_part_of_every_layout_over_large_bytes_crosses_as_its_rows_and_as_weighed:
+        "large binary",
+    every_part_of_every_layout_over_a_part_of_fixed_bytes_crosses_as_its_rows_and_as_weighed:
+        "fixed binary sliced",
+    every_part_of_every_layout_over_a_part_of_decimals_crosses_as_its_rows_and_as_weighed:
+        "decimal sliced",
     every_part_of_every_layout_over_views_crosses_as_its_rows_and_as_weighed: "view",
     every_part_of_every_layout_over_views_of_bytes_crosses_as_its_rows_and_as_weighed:
         "binview",
@@ -416,4 +425,35 @@ fn rows_naming_more_runs_than_a_run_end_columns_ends_count_are_refused_typed() {
         ..Limits::default()
     };
     assert_eq!(crossed(&batch, limits).unwrap().frames.len(), 2);
+}
+
+#[test]
+fn values_rebuilt_for_a_dictionary_are_sent_once_for_every_batch_that_names_them() {
+    // Texts as views are rebuilt from their own rows for each batch: equal values are not
+    // sent again.
+    let tags = (0..1000).map(|tag| format!("a tag too long for its view, number {tag}"));
+    let tags: ArrayRef = Arc::new(arrow_array::StringViewArray::from_iter_values(tags));
+    let keys = Int32Array::from_iter_values(0..1000);
+    let keyed = DictionaryArray::try_new(keys, Arc::clone(&tags)).unwrap();
+    let batch = batch_of(Arc::new(keyed));
+    let limits = Limits {
+        batch_rows: 400,
+        ..Limits::default()
+    };
+    let mut encoder = Encoder::default();
+    let mut decoder = Decoder::new(limits);
+    let schema = encoder.schema(&batch.schema()).unwrap();
+    decoder.schema(&schema).unwrap();
+    let mut dictionaries = Vec::new();
+    for part in [
+        batch.clone(),
+        batch.slice(3, 0),
+        batch.slice(100, 500),
+        batch,
+    ] {
+        let sent = deliver(&mut encoder, &mut decoder, &part, limits).unwrap();
+        assert_eq!(sent.rows, rendered(&part));
+        dictionaries.push(sent.dictionaries);
+    }
+    assert_eq!(dictionaries, [1, 0, 0, 0]);
 }
