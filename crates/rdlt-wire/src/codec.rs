@@ -3,7 +3,6 @@
 
 mod compact;
 mod contain;
-mod count;
 mod decode;
 mod framing;
 mod measure;
@@ -13,6 +12,7 @@ mod shape;
 mod split;
 #[cfg(test)]
 mod tests;
+mod weigh;
 
 use std::sync::Arc;
 
@@ -27,6 +27,7 @@ use crate::error::{Frame, Problem, WireError};
 pub use decode::Decoder;
 pub use shape::Shape;
 pub use split::Cut;
+pub use weigh::{Weigher, Weight};
 
 /// One IPC message: its flatbuffer header and its body buffers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

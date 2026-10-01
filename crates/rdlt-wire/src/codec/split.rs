@@ -1,47 +1,62 @@
-//! Cuts a batch by rows into frames its receiver's limits admit, a frame at a time: nothing but
-//! the batch itself is held beyond the frame being sent.
+//! Cuts a batch by rows into frames its receiver's limits admit, a frame at a time: the rows
+//! are weighed once, in order, and each piece is narrowed to what its rows name and encoded
+//! once, so nothing but the batch and the frame being sent is held.
 
 #[cfg(test)]
 mod tests;
 
-use arrow_array::RecordBatch;
+use arrow_array::{Array as _, RecordBatch};
 
 use super::compact::compacted;
-use super::count::counted;
 use super::measure::measured;
+use super::weigh::{Weigher, Weight};
 use super::{Encoder, IpcFrame};
 use crate::error::{Frame, WireError};
 use crate::limits::{Limits, Refusal};
 
-/// The part of a piece's rows its frame may have room left for when the piece is taken as full,
-/// where the frame's bytes bind: a sixty-fourth.
-const SLACK: usize = 64;
+/// How many times the bytes its rows weigh a batch's buffers may hold and still go as they are:
+/// beyond it, a batch sliced from a larger one is narrowed to what its rows name.
+const SHARED: u64 = 2;
 
 /// A batch on its way to a receiver, and how far it has got.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Cut {
     batch: RecordBatch,
     limits: Limits,
+    weigher: Weigher,
     /// Rows already framed.
     sent: usize,
-    /// Rows the last piece held, tried first for the next.
-    guess: usize,
-    /// Whether the batch is still to be tried whole.
-    whole: bool,
     done: bool,
+    /// What the cut has cost, and what a test has it leave out of its weighing.
+    #[cfg(test)]
+    pub(super) probe: Probe,
+}
+
+/// What a cut has cost so far, for tests of its bounds.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Probe {
+    /// Rows weighed.
+    pub(super) weighed: usize,
+    /// Pieces narrowed to what their rows name.
+    pub(super) compactions: usize,
+    /// Pieces encoded again with half the rows.
+    pub(super) halvings: usize,
+    /// Whether the weighing leaves out a frame's padding and header, to fall short.
+    pub(super) unpadded: bool,
 }
 
 impl Cut {
-    /// `batch`, to be sent within `limits`, its receiver's.
+    /// `batch`, to be sent within `limits`: the lesser of its receiver's and its sender's own.
     pub fn new(batch: RecordBatch, limits: Limits) -> Self {
-        let guess = batch.num_rows();
         Self {
+            weigher: Weigher::new(&batch),
             batch,
             limits,
             sent: 0,
-            guess,
-            whole: true,
             done: false,
+            #[cfg(test)]
+            probe: Probe::default(),
         }
     }
 
@@ -49,24 +64,87 @@ impl Cut {
     pub fn is_done(&self) -> bool {
         self.done
     }
+
+    /// Bytes: what a frame takes beside what its rows weigh.
+    fn overhead(&self) -> u64 {
+        #[cfg(test)]
+        if self.probe.unpadded {
+            return 0;
+        }
+        self.weigher.overhead()
+    }
+
+    /// How many of the rows left make the longest piece their weights say the limits admit,
+    /// and what they weigh: at least one row, whatever it weighs in bytes.
+    fn longest(&mut self) -> Result<(usize, Weight), Refusal> {
+        let limits = self.limits;
+        Limits::admit("batch rows", limits.batch_rows, 1)?;
+        let most = usize::try_from(limits.batch_rows).unwrap_or(usize::MAX);
+        let most = most.min(self.batch.num_rows() - self.sent);
+        let overhead = self.overhead();
+        self.weigher.begin();
+        let (mut taken, mut weight) = (0, Weight::default());
+        while taken < most {
+            let mut longer = weight;
+            longer += self.weigher.weigh(self.sent + taken);
+            #[cfg(test)]
+            {
+                self.probe.weighed += 1;
+            }
+            if taken == 0 {
+                // A row's values and view bytes are weighed as its receiver counts them.
+                Limits::admit("batch values", limits.batch_values, longer.values)?;
+                Limits::admit("view bytes", limits.frame_bytes, longer.view_bytes)?;
+            } else if longer.values > limits.batch_values
+                || longer.view_bytes > limits.frame_bytes
+                || longer.frame_bytes().saturating_add(overhead) > limits.frame_bytes
+            {
+                break;
+            }
+            (taken, weight) = (taken + 1, longer);
+        }
+        Ok((taken, weight))
+    }
+
+    /// The next `rows` rows as they go: holding only what they name, unless they are the whole
+    /// batch and its buffers hold little else.
+    fn piece(&mut self, rows: usize, weight: &Weight) -> Result<RecordBatch, WireError> {
+        let piece = self.batch.slice(self.sent, rows);
+        let held = piece.columns().iter();
+        let held = held.fold(0, |held, column| held + column.get_buffer_memory_size());
+        let held = u64::try_from(held).unwrap_or(u64::MAX);
+        let room = self.limits.frame_bytes.saturating_sub(self.overhead());
+        let tight = held <= room.min(SHARED.saturating_mul(weight.frame_bytes()));
+        if tight && rows == self.batch.num_rows() {
+            return Ok(piece);
+        }
+        #[cfg(test)]
+        {
+            self.probe.compactions += 1;
+        }
+        compacted(&piece).map_err(|source| WireError::Arrow {
+            frame: Frame::Batch,
+            encoding: true,
+            source,
+        })
+    }
 }
 
 impl Encoder {
     /// The frames carrying the next rows of `cut`, whose batch must be in the schema last
     /// encoded: the dictionaries they need that differ from those sent, then one batch of as
-    /// many rows as the receiver's limits admit; `None` once every row has been framed.
+    /// many rows as the limits admit; `None` once every row has been framed.
     ///
-    /// The batch goes as it is where it fits. Otherwise each piece holds only what its rows
-    /// name, and is the longest its receiver's rows, values and view bytes admit; where the
-    /// frame's bytes bind, it is full to within a row of its average size, or a sixty-fourth of
-    /// its rows. Each frame is
-    /// measured as its receiver measures it, so none is refused there.
+    /// The rows are weighed as the receiver will count them, so a piece is the longest its
+    /// rows, values and view bytes admit, and the longest whose weight in bytes fits a frame.
+    /// A piece holds only what its rows name. Each frame is measured as its receiver measures
+    /// it before it is handed over, so none is refused there.
     ///
     /// # Errors
     ///
     /// A [`WireError::Refused`] naming the limit when one row, or a dictionary, is beyond it;
-    /// [`WireError::Arrow`] when Arrow cannot encode the batch. Pieces before the row were
-    /// framed; the cut is done, and a batch after it needs its schema encoded again.
+    /// [`WireError::Arrow`] when Arrow cannot encode the batch. The pieces before the row were
+    /// handed over; the cut is done, and a batch after it needs its schema encoded again.
     pub fn piece(&mut self, cut: &mut Cut) -> Result<Option<Vec<IpcFrame>>, WireError> {
         if cut.done {
             return Ok(None);
@@ -81,93 +159,34 @@ impl Encoder {
     }
 
     fn framed(&mut self, cut: &mut Cut) -> Result<Vec<IpcFrame>, WireError> {
-        let (rows, limits) = (cut.batch.num_rows(), cut.limits);
         let mut frames = Vec::new();
-        let mut refused = None;
-        if std::mem::take(&mut cut.whole) {
-            // What an uncut batch's columns count is at least what its frame holds.
-            match admitted(&cut.batch, &limits) {
-                Ok(()) => match self.trial(&cut.batch, &limits, &mut frames)? {
-                    Ok(frame) => {
-                        cut.done = true;
-                        frames.push(frame);
-                        return Ok(frames);
-                    }
-                    Err(refusal) => {
-                        cut.guess = scaled(rows, refusal.limit, refusal.actual);
-                        refused = Some(refusal);
-                    }
-                },
-                Err(refusal) => cut.guess = scaled(rows, refusal.limit, refusal.actual),
-            }
+        if cut.batch.num_rows() == 0 {
+            // A batch of no rows is a frame of its schema's empty columns, whatever buffers the
+            // batch was sliced from.
+            let empty = RecordBatch::new_empty(cut.batch.schema());
+            let frame = self.trial(&empty, &cut.limits, &mut frames)??;
+            cut.done = true;
+            frames.push(frame);
+            return Ok(frames);
         }
-        let rest = cut.batch.slice(cut.sent, rows - cut.sent);
-        if let Some(refusal) = refused.filter(|_| rest.num_rows() == 0) {
-            return Err(refusal.into());
-        }
-        let (taken, frame) = self.longest(&rest, cut.guess, &limits, &mut frames)?;
-        cut.sent += taken;
-        cut.guess = taken;
-        cut.done = cut.sent >= rows;
-        frames.push(frame);
-        Ok(frames)
-    }
-
-    /// The frame of the longest prefix of `rest` that `limits` admit, trying `guess` rows first,
-    /// and how many rows it holds; the dictionaries it needs are queued.
-    fn longest(
-        &mut self,
-        rest: &RecordBatch,
-        guess: usize,
-        limits: &Limits,
-        frames: &mut Vec<IpcFrame>,
-    ) -> Result<(usize, IpcFrame), WireError> {
-        let most = usize::try_from(limits.batch_rows).unwrap_or(usize::MAX);
-        let most = rest.num_rows().min(most.max(1));
-        let guess = guess.clamp(1, most);
-        let (shaped, mut piece) = shaped(rest, guess, most, limits)?;
-        // The most rows whose frame fits, the fewest whose shape or frame does not, and how many
-        // frames did not fit.
-        let (mut fits, mut beyond, mut misses) = (None, shaped + 1, 0_u32);
-        let mut rows = guess.min(shaped);
-        if rows < shaped {
-            piece = compact(&rest.slice(0, rows))?;
-        }
+        let (mut rows, weight) = cut.longest()?;
         loop {
-            match self.trial(&piece, limits, frames)? {
+            let piece = cut.piece(rows, &weight)?;
+            match self.trial(&piece, &cut.limits, &mut frames)? {
                 Ok(frame) => {
-                    // Full when its size says the frame has room for no more rows of its
-                    // average size, or for fewer than a sixty-fourth as many again.
-                    let bytes = frame.header.len().saturating_add(frame.body.len());
-                    let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
-                    let fuller = scaled(rows, limits.frame_bytes, bytes).min(beyond - 1);
-                    if fuller <= rows + rows / SLACK {
-                        return Ok((rows, frame));
-                    }
-                    // Once a frame did not fit, sizes do not tell: no further than halfway.
-                    let halfway = rows + (beyond - rows) / 2;
-                    let next = if misses == 0 {
-                        fuller
-                    } else {
-                        fuller.min(halfway)
-                    };
-                    (fits, rows) = (Some((rows, frame)), next);
+                    cut.sent += rows;
+                    cut.done = cut.sent >= cut.batch.num_rows();
+                    frames.push(frame);
+                    return Ok(frames);
                 }
-                Err(refusal) => {
-                    (beyond, misses) = (rows, misses + 1);
-                    let low = fits.as_ref().map_or(0, |(rows, _)| *rows);
-                    if low + 1 >= beyond {
-                        return fits.ok_or_else(|| refusal.into());
-                    }
-                    // As many rows as the limit is of what these hold, then halfway.
-                    rows = if misses == 1 {
-                        scaled(rows, refusal.limit, refusal.actual).clamp(low + 1, beyond - 1)
-                    } else {
-                        low + (beyond - low) / 2
-                    };
-                }
+                Err(refusal) if rows == 1 => return Err(refusal.into()),
+                // The rows weighed less than their frame takes: half as many.
+                Err(_) => rows /= 2,
             }
-            piece = compact(&rest.slice(0, rows))?;
+            #[cfg(test)]
+            {
+                cut.probe.halvings += 1;
+            }
         }
     }
 
@@ -190,72 +209,4 @@ impl Encoder {
             Err(error) => Err(error),
         }
     }
-}
-
-/// The most rows of `rest`, up to `most`, that hold no more values and view bytes than `limits`
-/// admit, counted without encoding them, with those rows holding only what they name; `guess`
-/// rows are tried first.
-fn shaped(
-    rest: &RecordBatch,
-    guess: usize,
-    most: usize,
-    limits: &Limits,
-) -> Result<(usize, RecordBatch), WireError> {
-    let tried = |rows: usize| -> Result<Result<RecordBatch, Refusal>, WireError> {
-        let piece = compact(&rest.slice(0, rows))?;
-        Ok(admitted(&piece, limits).map(|()| piece))
-    };
-    // The most rows known to fit, or why none does; the fewest known not to, and why.
-    let mut fits = tried(guess)?.map(|piece| (guess, piece));
-    let mut beyond = fits.as_ref().err().map(|refusal| (guess, *refusal));
-    let (mut step, mut misses) = (1_usize, u32::from(fits.is_err()));
-    loop {
-        let low = fits.as_ref().map_or(0, |(rows, _)| *rows);
-        let high = beyond.as_ref().map_or(most + 1, |(rows, _)| *rows);
-        if low + 1 >= high {
-            return fits.map_err(WireError::from);
-        }
-        // Past rows that fit, a row more, then twice as many; past rows that do not, as many
-        // as the limit is of what they hold, then halfway.
-        let rows = match &beyond {
-            Some((rows, refusal)) if misses == 1 => {
-                scaled(*rows, refusal.limit, refusal.actual).clamp(low + 1, high - 1)
-            }
-            Some(_) if misses > 1 => low + (high - low) / 2,
-            _ => low.saturating_add(step).min(high - 1),
-        };
-        match tried(rows)? {
-            Ok(piece) => (fits, misses, step) = (Ok((rows, piece)), 0, step.saturating_mul(2)),
-            Err(refusal) => {
-                if fits.is_err() {
-                    fits = Err(refusal);
-                }
-                (beyond, misses, step) = (Some((rows, refusal)), misses + 1, 1);
-            }
-        }
-    }
-}
-
-/// Admits what the columns of `batch` count, within the values and view bytes of `limits`.
-fn admitted(batch: &RecordBatch, limits: &Limits) -> Result<(), Refusal> {
-    let counted = counted(batch);
-    Limits::admit("batch values", limits.batch_values, counted.values)?;
-    Limits::admit("view bytes", limits.frame_bytes, counted.view_bytes)
-}
-
-/// `piece` holding only what its rows name.
-fn compact(piece: &RecordBatch) -> Result<RecordBatch, WireError> {
-    compacted(piece).map_err(|source| WireError::Arrow {
-        frame: Frame::Batch,
-        encoding: true,
-        source,
-    })
-}
-
-/// How many of `rows` rows a limit of `limit` admits, when they hold `actual` between them: at
-/// least one.
-fn scaled(rows: usize, limit: u64, actual: u64) -> usize {
-    let rows = u128::try_from(rows).unwrap_or(u128::MAX);
-    let scaled = rows.saturating_mul(u128::from(limit)) / u128::from(actual.max(1));
-    usize::try_from(scaled).unwrap_or(usize::MAX).max(1)
 }

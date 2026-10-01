@@ -333,6 +333,10 @@ impl<'a> Walk<'a, '_, '_> {
                 index,
             })
         })?;
+        // Nothing reads what lies under a run-end column of no values.
+        if self.unread > 0 {
+            return Ok(());
+        }
         self.view_bytes = self.view_bytes.saturating_add(named);
         Ok(Limits::admit(
             "view bytes",
