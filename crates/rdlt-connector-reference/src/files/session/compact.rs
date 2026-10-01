@@ -13,6 +13,7 @@ use rdlt_connector::prelude::*;
 use rdlt_connector::{CommitMeta, GenerationId};
 
 use super::Location;
+use crate::files::format::plain::plain;
 use crate::files::format::{FileFormat, Reader, Writer};
 use crate::files::io;
 use crate::files::manifest::{self, Listed};
@@ -74,9 +75,9 @@ fn merged(
 
 /// Where the files to merge start in `files`, if more than the last is to be merged.
 ///
-/// Only files of the session's format merge, an Arrow file only with files of its schema, and
-/// never into a file larger than [`COMPACT_BYTES`]. A file whose schema cannot be read merges
-/// with none.
+/// Only files of the session's format merge, an Arrow file only with files of its schema, a
+/// dictionary column counting as the values it stands for, and never into a file larger than
+/// [`COMPACT_BYTES`]. A file whose schema cannot be read merges with none.
 fn tail(location: &Location, files: &[Listed]) -> Option<usize> {
     let last = files.len().checked_sub(1)?;
     let format = location.format;
@@ -109,7 +110,8 @@ fn tail(location: &Location, files: &[Listed]) -> Option<usize> {
     (from < last).then_some(from)
 }
 
-/// The schema the Arrow file `file` lists holds its batches in; none for JSON lines.
+/// The schema the Arrow file `file` lists holds its batches in, its dictionaries as the values
+/// they stand for, which is what a file merged from it holds; none for JSON lines.
 fn schema_of(location: &Location, file: &Listed) -> Result<Option<SchemaRef>> {
     let format = manifest::format_of(&location.dir, &file.path)?;
     if format != FileFormat::Arrow {
@@ -118,11 +120,12 @@ fn schema_of(location: &Location, file: &Listed) -> Result<Option<SchemaRef>> {
     let (parent, name) = manifest::located(&location.dir, &file.path)?;
     let empty = SchemaRef::new(arrow_schema::Schema::empty());
     let reader = Reader::open(format, &parent, name, &empty)?;
-    Ok(reader.schema().cloned())
+    Ok(reader.schema().map(|schema| plain(schema)))
 }
 
 /// Whether a column of `schema` is dictionary-encoded at any depth: one file holds one
-/// dictionary per such column, which files written apart do not share.
+/// dictionary per such column, which files written apart do not share, so a dictionary that
+/// cannot be written as its values keeps its file from merging.
 fn keyed(schema: &arrow_schema::Schema) -> bool {
     fn holds(data_type: &DataType) -> bool {
         match data_type {

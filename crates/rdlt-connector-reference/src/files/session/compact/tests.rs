@@ -5,6 +5,7 @@ use rdlt_connector::{CommitMeta, CommitSeq, GenerationId, SegmentSet};
 
 use super::{compact, keyed, tail};
 use crate::files::FileFormat;
+use crate::files::format::plain::plain;
 use crate::files::manifest::{self, Listed};
 use crate::files::session::Location;
 use crate::files::session::tests::location;
@@ -206,7 +207,7 @@ fn a_merge_that_fails_leaves_the_list_and_no_file() {
 }
 
 #[test]
-fn arrow_files_merge_only_with_files_of_their_schema_and_never_with_dictionaries() {
+fn arrow_files_merge_only_with_files_of_their_schema() {
     let (_root, location) = location(FileFormat::Arrow);
     let wider = RecordBatch::try_from_iter([
         ("id", Arc::new(Int64Array::from(vec![3])) as ArrayRef),
@@ -222,15 +223,75 @@ fn arrow_files_merge_only_with_files_of_their_schema_and_never_with_dictionaries
     assert_eq!(tail(&location, &files), Some(2));
     assert_eq!(tail(&location, &files[..3]), None);
     assert_eq!(tail(&location, &files[..2]), Some(0));
+}
+
+/// A batch of one column `tag` of `tags`, as a dictionary keyed by `Int8`.
+fn tagged(tags: &[&str]) -> RecordBatch {
     let tags: arrow_array::DictionaryArray<arrow_array::types::Int8Type> =
-        ["a", "b"].into_iter().collect();
-    let tagged = RecordBatch::try_from_iter([("tag", Arc::new(tags) as ArrayRef)]).unwrap();
-    let files = vec![staged(&location, 5, &tagged), staged(&location, 6, &tagged)];
-    assert_eq!(tail(&location, &files), None);
-    assert!(keyed(&tagged.schema()) && !keyed(&wider.schema()));
-    let text: ArrayRef = Arc::new(StringArray::from(vec!["a"]));
+        tags.iter().copied().collect();
+    RecordBatch::try_from_iter([("tag", Arc::new(tags) as ArrayRef)]).unwrap()
+}
+
+#[test]
+fn arrow_files_with_dictionaries_merge_as_the_values_they_stand_for() {
+    // As the engine writes them: each file with a dictionary of its own.
+    let (_root, location) = location(FileFormat::Arrow);
+    let text: ArrayRef = Arc::new(StringArray::from(vec!["plain"]));
     let plain = RecordBatch::try_from_iter([("tag", text)]).unwrap();
-    assert!(!keyed(&plain.schema()));
+    let mut files = vec![
+        staged(&location, 1, &tagged(&["a", "b", "a"])),
+        staged(&location, 2, &tagged(&["c"])),
+        staged(&location, 3, &plain),
+        staged(&location, 4, &tagged(&["b", "d"])),
+    ];
+    assert_eq!(tail(&location, &files), Some(0));
+    let mut created = Vec::new();
+    let seq = CommitSeq::FIRST;
+    compact(
+        &location,
+        "rows",
+        None,
+        &mut files,
+        &meta(&location, seq),
+        &mut created,
+    );
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].rows, 7);
+    let schema = plain.schema();
+    let read = manifest::read(&location.dir, &files[0].path, &schema).unwrap();
+    let merged = arrow_select::concat::concat_batches(&schema, &read).unwrap();
+    let expected: ArrayRef = Arc::new(StringArray::from(vec![
+        "a", "b", "a", "c", "plain", "b", "d",
+    ]));
+    assert_eq!(merged.column(0), &expected);
+    // The merged file merges again with the next file, dictionary or not.
+    files.push(staged(&location, 5, &tagged(&["e"; 4])));
+    assert_eq!(tail(&location, &files), Some(0));
+}
+
+#[test]
+fn a_dictionary_that_cannot_be_written_as_its_values_keeps_its_file_apart() {
+    use arrow_array::builder::{MapBuilder, StringBuilder, StringDictionaryBuilder};
+    use arrow_array::types::Int8Type;
+    let (_root, location) = location(FileFormat::Arrow);
+    let mapped = || {
+        let mut map = MapBuilder::new(
+            None,
+            StringBuilder::new(),
+            StringDictionaryBuilder::<Int8Type>::new(),
+        );
+        map.keys().append_value("k");
+        map.values().append_value("v");
+        map.append(true).unwrap();
+        RecordBatch::try_from_iter([("map", Arc::new(map.finish()) as ArrayRef)]).unwrap()
+    };
+    let files = vec![
+        staged(&location, 1, &mapped()),
+        staged(&location, 2, &mapped()),
+    ];
+    assert!(keyed(&plain(&mapped().schema())));
+    assert_eq!(tail(&location, &files), None);
+    assert!(!keyed(&plain(&tagged(&["a"]).schema())));
 }
 
 #[test]

@@ -6,6 +6,7 @@
 pub(super) mod ipc;
 mod json;
 pub(super) mod lines;
+pub(super) mod plain;
 #[cfg(test)]
 mod tests;
 
@@ -306,14 +307,16 @@ impl<'a> Writer<'a> {
     }
 
     /// Writes the rows of `file`, a regular file of this writer's format which `path` names in
-    /// messages: an Arrow file's batches, which must be in this file's schema, or a JSON lines
-    /// file's lines as they are.
+    /// messages: an Arrow file's batches, their dictionaries as the values they stand for, which
+    /// must then be in this file's schema, or a JSON lines file's lines as they are.
     pub(super) fn append(&mut self, file: File, path: PathBuf) -> Result<()> {
         let lines = match self.sink.as_mut().expect("the writer is unfinished") {
             Sink::Jsonl(lines) => lines,
             Sink::Arrow(_) => {
                 let mut reader = Reader::over(FileFormat::Arrow, file, path, &self.schema)?;
                 while let Some(batch) = reader.next()? {
+                    let batch = plain::unkeyed(&batch, &self.schema)
+                        .map_err(|error| self.encoded(error))?;
                     self.write(&batch)?;
                 }
                 return Ok(());

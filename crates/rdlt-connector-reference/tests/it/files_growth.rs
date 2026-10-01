@@ -415,3 +415,60 @@ async fn a_failed_commit_of_a_reused_number_publishes_nothing() {
     // The commit failed: nothing of it is published.
     assert_eq!(published_ids(reader.as_ref(), &rows).await, [1, 2]);
 }
+
+#[tokio::test]
+async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whole() {
+    use arrow_array::{DictionaryArray, Int8Array, types::Int8Type};
+    let root = tempfile::tempdir().unwrap();
+    let (destination, reader) = connect_with(root.path(), json!({ "format": "arrow" })).await;
+    let mut opened = open(destination.as_ref(), 1).await;
+    let rows = table("rows");
+    let schema = rdlt_connector::TableSchema::new(vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("load", LogicalType::Int64, false),
+    ])
+    .unwrap();
+    let mut seq = CommitSeq::FIRST;
+    for commit in 0..100_i64 {
+        // As the engine prepares a batch: its per-load constant column is a dictionary.
+        let constant = DictionaryArray::<Int8Type>::try_new(
+            Int8Array::from(vec![0_i8]),
+            Arc::new(Int64Array::from(vec![commit / 10])),
+        )
+        .unwrap();
+        let batch = RecordBatch::try_from_iter([
+            ("id", Arc::new(Int64Array::from(vec![commit])) as ArrayRef),
+            ("load", Arc::new(constant) as ArrayRef),
+        ])
+        .unwrap();
+        let segment = u64::try_from(commit).unwrap() + 1;
+        stage(&mut opened, &rows, &schema, batch, segment).await;
+        opened
+            .session
+            .commit(&meta(&opened, 1, seq, &[segment]))
+            .await
+            .unwrap();
+        seq = seq.next();
+    }
+    let files = data_files(root.path(), "arrow");
+    assert!(files.len() <= 10, "{} files", files.len());
+    // Every row is read back once and in order, its dictionary's value with it.
+    let published = reader.published(&rows).await.unwrap();
+    let mut read = Vec::new();
+    for batch in &published {
+        let ids = arrow_cast::cast(batch.column(0), &arrow_schema::DataType::Int64).unwrap();
+        let loads = arrow_cast::cast(batch.column(1), &arrow_schema::DataType::Int64).unwrap();
+        let (ids, loads) = (
+            ids.as_any().downcast_ref::<Int64Array>().unwrap().clone(),
+            loads.as_any().downcast_ref::<Int64Array>().unwrap().clone(),
+        );
+        read.extend(
+            ids.values()
+                .iter()
+                .copied()
+                .zip(loads.values().iter().copied()),
+        );
+    }
+    let expected: Vec<(i64, i64)> = (0..100).map(|commit| (commit, commit / 10)).collect();
+    assert_eq!(read, expected);
+}
