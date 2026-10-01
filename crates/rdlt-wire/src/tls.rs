@@ -61,6 +61,12 @@ pub enum TlsError {
         #[source]
         source: rustls::pki_types::pem::Error,
     },
+    /// A file named for certificates or revocation lists is no regular file.
+    #[error("{} is not a regular file", path.display())]
+    NotAFile {
+        /// The file.
+        path: PathBuf,
+    },
     /// A PEM file holds no certificate.
     #[error("{} holds no certificate", path.display())]
     NoCertificate {
