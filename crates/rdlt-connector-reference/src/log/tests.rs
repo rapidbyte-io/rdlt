@@ -521,3 +521,35 @@ async fn a_log_that_grows_faster_than_a_source_holds_is_refused() {
     assert_eq!(refused.kind(), ConnectorErrorKind::Config);
     assert_eq!(refused.code(), Some("limit_exceeded"));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_the_stream_never_has_is_not_read() {
+    let stream = json!({
+        "name": "events", "partitions": 2, "partitions_later": 1, "messages": 8,
+    });
+    let source = connect(&stream, "read_members").await;
+    for partition in ["p3", "p03", "p", "snapshot-0", "changes", "p4294967296"] {
+        let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+        let id = PartitionId::parse(partition).expect("a valid partition");
+        let request = ReadRequest::new(events(), Partition::new(id).unbounded(), None);
+        let refused = source
+            .read(request, sink)
+            .await
+            .expect_err("no such partition");
+        assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{partition}");
+        assert!(feed.recv().await.is_none(), "{partition}");
+    }
+    // A partition the stream gains is read once it is asked for.
+    let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
+    let request = ReadRequest::new(events(), Partition::new(p(2)).unbounded(), None);
+    let collect = async {
+        let mut pushed = 0;
+        while let Some(event) = feed.recv().await {
+            pushed += usize::from(matches!(event, SourceEvent::Push(_)));
+        }
+        pushed
+    };
+    let (read, pushed) = tokio::join!(source.read(request, sink), collect);
+    read.expect("the partition reads");
+    assert_eq!(pushed, 1);
+}

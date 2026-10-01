@@ -404,6 +404,7 @@ impl ReadStream<LogSource> for Logged {
         out: &mut Emitter<Offset>,
     ) -> Result<()> {
         let id = partition.id();
+        self.member(id)?;
         // A read that does not follow returns at the head as it stood when the read started.
         let head_at_start = self.head(elapsed());
         let earliest = self.accept(source, id, cursor, head_at_start)?;
