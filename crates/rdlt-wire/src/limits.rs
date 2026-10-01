@@ -12,11 +12,21 @@ pub const FRAME_BYTES: u64 = 64 * 1024 * 1024;
 /// Rows: bounds one Arrow batch.
 pub const BATCH_ROWS: u64 = 1024 * 1024;
 
+/// Values: bounds what one frame's columns hold together, nested values and the items of list
+/// views included, whether or not they take bytes of its body.
+///
+/// A frame at [`FRAME_BYTES`] holds this many one-byte values.
+pub const BATCH_VALUES: u64 = 64 * BATCH_ROWS;
+
 /// Columns: bounds one schema's width, counting nested fields.
 pub const SCHEMA_COLUMNS: u64 = 10_000;
 
 /// Levels: bounds how deep a schema's types nest, counting a top-level column as the first.
 pub const NESTING_DEPTH: u64 = 64;
+
+/// Bytes: bounds one schema message, and the names, metadata and time zones it carries, counted
+/// wherever a field repeats them.
+pub const SCHEMA_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Bytes: bounds one JSON push.
 pub const JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;
@@ -49,7 +59,7 @@ pub const HEADER_LIST_BYTES: u32 = 256 * 1024;
 /// The code of every refusal.
 pub const LIMIT_EXCEEDED: &str = "limit_exceeded";
 
-/// The field each refusal names, one per limit; a receiver that decodes a refusal keeps these.
+/// The field each refusal names; a receiver that decodes a refusal keeps these.
 pub const FIELDS: &[&str] = &[
     "frame bytes",
     "batch rows",
@@ -59,7 +69,9 @@ pub const FIELDS: &[&str] = &[
     "cursor bytes",
     "config bytes",
     "control string bytes",
-    "values per node",
+    "batch values",
+    "schema bytes",
+    "view bytes",
 ];
 
 /// The limits one end enforces on what it receives.
@@ -81,6 +93,10 @@ pub struct Limits {
     pub config_bytes: u64,
     /// Bytes in one string field of a control message.
     pub control_string_bytes: u64,
+    /// Values in one frame.
+    pub batch_values: u64,
+    /// Bytes in one schema message.
+    pub schema_bytes: u64,
 }
 
 impl Default for Limits {
@@ -94,6 +110,8 @@ impl Default for Limits {
             cursor_bytes: CURSOR_BYTES,
             config_bytes: CONFIG_BYTES,
             control_string_bytes: CONTROL_STRING_BYTES,
+            batch_values: BATCH_VALUES,
+            schema_bytes: SCHEMA_BYTES,
         }
     }
 }
@@ -145,6 +163,15 @@ impl Limits {
     /// A [`Refusal`] when the frame exceeds [`Limits::frame_bytes`].
     pub fn admit_frame(&self, bytes: usize) -> Result<(), Refusal> {
         Self::admit("frame bytes", self.frame_bytes, len(bytes))
+    }
+
+    /// Admits a schema message of `bytes`.
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`] when the message exceeds [`Limits::schema_bytes`].
+    pub fn admit_schema(&self, bytes: usize) -> Result<(), Refusal> {
+        Self::admit("schema bytes", self.schema_bytes, len(bytes))
     }
 
     /// Admits a string field of a control message.
@@ -204,6 +231,8 @@ impl From<Limits> for v1::Limits {
             cursor_bytes: limits.cursor_bytes,
             config_bytes: limits.config_bytes,
             control_string_bytes: limits.control_string_bytes,
+            batch_values: limits.batch_values,
+            schema_bytes: limits.schema_bytes,
         }
     }
 }
@@ -223,6 +252,8 @@ impl From<v1::Limits> for Limits {
             cursor_bytes: or(limits.cursor_bytes, defaults.cursor_bytes),
             config_bytes: or(limits.config_bytes, defaults.config_bytes),
             control_string_bytes: or(limits.control_string_bytes, defaults.control_string_bytes),
+            batch_values: or(limits.batch_values, defaults.batch_values),
+            schema_bytes: or(limits.schema_bytes, defaults.schema_bytes),
         }
     }
 }

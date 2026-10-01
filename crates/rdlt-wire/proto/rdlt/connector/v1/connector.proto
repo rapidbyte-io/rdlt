@@ -78,6 +78,10 @@ message Limits {
   uint64 config_bytes = 7;
   // Bytes in one string field of a control message.
   uint64 control_string_bytes = 8;
+  // Values in one frame, nested values and the items of list views included.
+  uint64 batch_values = 9;
+  // Bytes in one schema message.
+  uint64 schema_bytes = 10;
 }
 
 // Opens the conversation.

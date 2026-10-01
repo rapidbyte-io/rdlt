@@ -34,6 +34,8 @@ fn each_admission_measures_against_its_own_limit() {
         cursor_bytes: 6,
         config_bytes: 7,
         control_string_bytes: 8,
+        batch_values: 9,
+        schema_bytes: 10,
     };
     let refused =
         |result: Result<(), Refusal>| result.map_err(|refusal| (refusal.field, refusal.limit));
@@ -44,6 +46,8 @@ fn each_admission_measures_against_its_own_limit() {
         refused(limits.admit_string("123456789")),
         Err(("control string bytes", 8))
     );
+    assert_eq!(refused(limits.admit_schema(11)), Err(("schema bytes", 10)));
+    assert_eq!(refused(limits.admit_schema(10)), Ok(()));
     assert_eq!(refused(limits.admit_json(5)), Ok(()));
 }
 
@@ -58,6 +62,8 @@ fn limits_cross_the_wire_unchanged() {
         cursor_bytes: 6,
         config_bytes: 7,
         control_string_bytes: 8,
+        batch_values: 9,
+        schema_bytes: 10,
     };
     assert_eq!(Limits::from(v1::Limits::from(limits)), limits);
 }
@@ -75,6 +81,8 @@ fn the_default_limits_are_the_protocols() {
             cursor_bytes: 4_194_304,
             config_bytes: 8_388_608,
             control_string_bytes: 65_536,
+            batch_values: 67_108_864,
+            schema_bytes: 4_194_304,
         }
     );
 }
@@ -85,12 +93,16 @@ fn a_limit_the_peer_leaves_unset_is_the_protocols_default() {
     assert_eq!(Limits::from(unset), Limits::default());
     let partly = v1::Limits {
         batch_rows: 7,
+        batch_values: 8,
+        schema_bytes: 9,
         ..v1::Limits::default()
     };
     assert_eq!(
         Limits::from(partly),
         Limits {
             batch_rows: 7,
+            batch_values: 8,
+            schema_bytes: 9,
             ..Limits::default()
         }
     );

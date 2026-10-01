@@ -1,18 +1,21 @@
+pub(crate) mod frames;
+pub(crate) mod samples;
+
 use std::sync::Arc;
 
-use arrow_array::Array as _;
+use arrow_array::Array;
+use arrow_array::cast::AsArray as _;
 use arrow_array::types::Int8Type;
 use arrow_array::{
     ArrayRef, DictionaryArray, Int32Array, RecordBatch, RecordBatchOptions, StringArray,
 };
-use arrow_ipc::{MessageHeader, MetadataVersion};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use bytes::Bytes;
 use proptest::prelude::*;
 use rdlt_testkit::drawn::values;
 use rdlt_testkit::drawn::{Drawn, Scalar, array, field};
 
-use super::{Decoder, Encoder, IpcFrame};
+use super::{Decoder, Encoder, IpcFrame, Shape};
 use crate::error::{Frame, Problem, WireError};
 use crate::limits::Limits;
 
@@ -35,15 +38,57 @@ fn batch((columns, rows): &Drawn) -> RecordBatch {
     RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), arrays, &options).unwrap()
 }
 
-/// `batch` sent through a fresh encoder and decoder.
-fn crossed(batch: &RecordBatch) -> RecordBatch {
+/// `batch` sent through a fresh encoder and decoder, and the shape of its last frame.
+fn crossed(batch: &RecordBatch) -> (RecordBatch, Shape) {
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
     decoder.schema(&encoder.schema(&batch.schema())).unwrap();
     let mut last = None;
     for frame in encoder.batch(batch).unwrap() {
-        last = decoder.frame(&frame).unwrap();
+        last = Some(decoder.shaped(&frame).unwrap());
     }
-    last.expect("the last frame is the batch")
+    let (batch, shape) = last.expect("a batch is at least one frame");
+    (batch.expect("the last frame is the batch"), shape)
+}
+
+/// What `array` and the columns nested in it declare, counted from the array itself: its values,
+/// and the bytes its views name in their data buffers.
+fn declared(array: &dyn Array) -> (u64, u64) {
+    let wide = |count: usize| u64::try_from(count).unwrap();
+    let (mut values, mut view_bytes) = (wide(array.len()), 0);
+    let lengths = |views: &[u128]| -> u64 {
+        let lengths = views
+            .iter()
+            .map(|view| u64::try_from(*view & 0xFFFF_FFFF).unwrap());
+        lengths.filter(|length| *length > 12).sum()
+    };
+    match array.data_type() {
+        DataType::Utf8View => view_bytes += lengths(array.as_string_view().views()),
+        DataType::BinaryView => view_bytes += lengths(array.as_binary_view().views()),
+        DataType::ListView(_) => {
+            let sizes = array.as_list_view::<i32>().sizes();
+            values += sizes
+                .iter()
+                .map(|size| wide(usize::try_from(*size).unwrap()))
+                .sum::<u64>();
+        }
+        DataType::LargeListView(_) => {
+            let sizes = array.as_list_view::<i64>().sizes();
+            values += sizes
+                .iter()
+                .map(|size| wide(usize::try_from(*size).unwrap()))
+                .sum::<u64>();
+        }
+        _ => {}
+    }
+    // A dictionary's values travel in a frame of their own.
+    if !matches!(array.data_type(), DataType::Dictionary(..)) {
+        for child in array.to_data().child_data() {
+            let (nested, named) = declared(&arrow_array::make_array(child.clone()));
+            values += nested;
+            view_bytes += named;
+        }
+    }
+    (values, view_bytes)
 }
 
 fn strings(values: &[&str]) -> RecordBatch {
@@ -76,7 +121,14 @@ proptest! {
     #[test]
     fn every_drawn_batch_crosses_the_wire_unchanged(drawn in values::drawn()) {
         let batch = batch(&drawn);
-        prop_assert_eq!(crossed(&batch), batch);
+        let (decoded, shape) = crossed(&batch);
+        let mut expected = (0, 0);
+        for column in decoded.columns() {
+            let (values, view_bytes) = declared(column);
+            expected = (expected.0 + values, expected.1 + view_bytes);
+        }
+        prop_assert_eq!((shape.values, shape.view_bytes), expected);
+        prop_assert_eq!(decoded, batch);
     }
 
     #[test]
@@ -208,56 +260,6 @@ fn a_body_shorter_than_its_header_declares_is_malformed() {
     );
 }
 
-/// A record batch message of one row whose one buffer lies at `offset` for `length` bytes, in a
-/// body of `body` bytes.
-fn framed(offset: i64, length: i64, body: i64) -> Bytes {
-    framed_node(offset, length, body, 1)
-}
-
-/// [`framed`], with one node of `values` values.
-fn framed_node(offset: i64, length: i64, body: i64, values: i64) -> Bytes {
-    let mut fbb = flatbuffers::FlatBufferBuilder::new();
-    let buffers = fbb.create_vector(&[arrow_ipc::Buffer::new(offset, length)]);
-    let nodes = fbb.create_vector(&[arrow_ipc::FieldNode::new(values, 0)]);
-    let mut batch = arrow_ipc::RecordBatchBuilder::new(&mut fbb);
-    batch.add_length(1);
-    batch.add_nodes(nodes);
-    batch.add_buffers(buffers);
-    let batch = batch.finish();
-    let mut message = arrow_ipc::MessageBuilder::new(&mut fbb);
-    message.add_version(MetadataVersion::V5);
-    message.add_header_type(MessageHeader::RecordBatch);
-    message.add_bodyLength(body);
-    message.add_header(batch.as_union_value());
-    let message = message.finish();
-    fbb.finish(message, None);
-    Bytes::copy_from_slice(fbb.finished_data())
-}
-
-#[test]
-fn a_buffer_outside_the_body_is_malformed_before_arrow_reads_it() {
-    let batch = ints(1);
-    let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
-    for (offset, length) in [(8, 16), (-8, 8), (0, -1), (i64::MAX, 1)] {
-        let frame = IpcFrame {
-            header: framed(offset, length, 8),
-            body: Bytes::from(vec![0; 8]),
-        };
-        let error = decoder.frame(&frame).unwrap_err();
-        assert!(
-            matches!(
-                error,
-                WireError::Malformed {
-                    problem: Problem::BufferOutOfBounds { index: 0, .. },
-                    ..
-                }
-            ),
-            "{offset} {length}: {error}"
-        );
-    }
-}
-
 #[test]
 fn batches_beyond_the_row_limit_and_frames_beyond_the_byte_limit_are_refused() {
     let batch = ints(3);
@@ -276,15 +278,26 @@ fn batches_beyond_the_row_limit_and_frames_beyond_the_byte_limit_are_refused() {
         refused(decoder.frame(&frame).unwrap_err()),
         ("batch rows", 2, 3)
     );
-    let small = Limits {
-        frame_bytes: 16,
-        ..Limits::default()
-    };
-    let mut decoder = Decoder::new(small);
-    let error = decoder
-        .schema(&encoder.schema(&batch.schema()))
-        .unwrap_err();
-    assert_eq!(refused(error).0, "frame bytes");
+    let bytes = u64::try_from(frame.header.len() + frame.body.len()).unwrap();
+    let mut decoder = frames::decoder(
+        &batch.schema(),
+        Limits {
+            frame_bytes: bytes - 1,
+            ..Limits::default()
+        },
+    );
+    assert_eq!(
+        refused(decoder.frame(&frame).unwrap_err()),
+        ("frame bytes", bytes - 1, bytes)
+    );
+    let mut decoder = frames::decoder(
+        &batch.schema(),
+        Limits {
+            frame_bytes: bytes,
+            ..Limits::default()
+        },
+    );
+    assert_eq!(decoder.frame(&frame).unwrap(), Some(batch));
 }
 
 #[test]
@@ -329,108 +342,15 @@ fn schemas_beyond_the_column_and_depth_limits_are_refused() {
 }
 
 #[test]
-fn every_kind_of_nested_type_counts_its_columns_and_levels() {
-    use arrow_schema::{UnionFields, UnionMode};
-    let item = || Arc::new(Field::new("item", DataType::Int32, true));
-    let pair = Fields::from(vec![
-        Field::new("k", DataType::Utf8, false),
-        Field::new("v", DataType::Int32, true),
-    ]);
-    let cases: Vec<(DataType, u64, u64)> = vec![
-        (DataType::Int32, 1, 1),
-        (DataType::List(item()), 2, 2),
-        (DataType::LargeList(item()), 2, 2),
-        (DataType::ListView(item()), 2, 2),
-        (DataType::LargeListView(item()), 2, 2),
-        (DataType::FixedSizeList(item(), 2), 2, 2),
-        (
-            DataType::Map(
-                Arc::new(Field::new("entries", DataType::Struct(pair.clone()), false)),
-                false,
-            ),
-            4,
-            3,
-        ),
-        (DataType::Struct(pair), 3, 2),
-        (
-            DataType::Union(
-                UnionFields::try_new(
-                    vec![0, 1],
-                    vec![
-                        Field::new("a", DataType::Int8, true),
-                        Field::new("b", DataType::Utf8, true),
-                    ],
-                )
-                .unwrap(),
-                UnionMode::Dense,
-            ),
-            3,
-            2,
-        ),
-        (
-            DataType::RunEndEncoded(
-                Arc::new(Field::new("run_ends", DataType::Int32, false)),
-                item(),
-            ),
-            3,
-            2,
-        ),
-        (
-            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::List(item()))),
-            2,
-            2,
-        ),
-    ];
-    for (data_type, columns, depth) in cases {
-        let field = Arc::new(Field::new("c", data_type.clone(), true));
-        assert_eq!(
-            super::decode::measure([&field]),
-            (columns, depth),
-            "{data_type}"
-        );
-    }
-}
-
-/// `header`, a dictionary batch message, marked as a delta onto the dictionary sent before it.
-fn as_delta(header: &Bytes) -> Bytes {
-    let message = arrow_ipc::root_as_message(header).unwrap();
-    let dictionary = message.header_as_dictionary_batch().unwrap();
-    let data = dictionary.data().unwrap();
-    let mut fbb = flatbuffers::FlatBufferBuilder::new();
-    let nodes: Vec<_> = data.nodes().unwrap().iter().copied().collect();
-    let buffers: Vec<_> = data.buffers().unwrap().iter().copied().collect();
-    let (nodes, buffers) = (fbb.create_vector(&nodes), fbb.create_vector(&buffers));
-    let mut batch = arrow_ipc::RecordBatchBuilder::new(&mut fbb);
-    batch.add_length(data.length());
-    batch.add_nodes(nodes);
-    batch.add_buffers(buffers);
-    let batch = batch.finish();
-    let mut delta = arrow_ipc::DictionaryBatchBuilder::new(&mut fbb);
-    delta.add_id(dictionary.id());
-    delta.add_data(batch);
-    delta.add_isDelta(true);
-    let delta = delta.finish();
-    let mut rebuilt = arrow_ipc::MessageBuilder::new(&mut fbb);
-    rebuilt.add_version(message.version());
-    rebuilt.add_header_type(MessageHeader::DictionaryBatch);
-    rebuilt.add_bodyLength(message.bodyLength());
-    rebuilt.add_header(delta.as_union_value());
-    let rebuilt = rebuilt.finish();
-    fbb.finish(rebuilt, None);
-    Bytes::copy_from_slice(fbb.finished_data())
-}
-
-#[test]
 fn a_delta_dictionary_is_refused_so_no_peer_can_grow_one_without_bound() {
     let batch = strings(&["a", "bb"]);
     let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
     decoder.schema(&encoder.schema(&batch.schema())).unwrap();
     let frames = encoder.batch(&batch).unwrap();
     assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
-    let delta = IpcFrame {
-        header: as_delta(&frames[0].header),
-        body: frames[0].body.clone(),
-    };
+    let delta = frames::changed(&frames[..1], |parts| {
+        parts.dictionary = parts.dictionary.map(|(id, _)| (id, true));
+    });
     let error = decoder.frame(&delta).unwrap_err();
     assert!(
         matches!(
@@ -442,26 +362,6 @@ fn a_delta_dictionary_is_refused_so_no_peer_can_grow_one_without_bound() {
         ),
         "{error}"
     );
-}
-
-#[test]
-fn a_node_of_more_values_than_its_body_could_hold_is_refused_before_arrow_reads_it() {
-    let batch = ints(1);
-    let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
-    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
-    let frame = IpcFrame {
-        header: framed_node(0, 8, 8, 1 << 40),
-        body: Bytes::from(vec![0; 8]),
-    };
-    match decoder.frame(&frame).unwrap_err() {
-        WireError::Refused(refusal) => {
-            assert_eq!(
-                (refusal.field, refusal.actual),
-                ("values per node", 1 << 40)
-            );
-        }
-        other => panic!("{other}"),
-    }
 }
 
 /// A schema of one column of lists nested `levels` deep, its innermost item an integer.
@@ -491,4 +391,109 @@ fn a_schema_nested_to_the_limit_decodes_and_one_level_deeper_is_refused_by_name(
         WireError::Refused(refusal) => assert_eq!(refusal.field, "nesting depth"),
         other => panic!("{other}"),
     }
+}
+
+/// A dictionary column nested in a column of every type that nests one.
+fn nesting_a_dictionary() -> Vec<ArrayRef> {
+    use arrow_array::{MapArray, RunArray, StructArray, UnionArray};
+    let tags: ArrayRef = Arc::new(strings(&["a", "bb", "a"]).column(0).clone());
+    let item = Arc::new(Field::new("item", tags.data_type().clone(), true));
+    let lengths = arrow_buffer::OffsetBuffer::<i32>::from_lengths([2, 1]);
+    let fields = Fields::from(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v", tags.data_type().clone(), true),
+    ]);
+    let pairs = StructArray::new(
+        fields.clone(),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::clone(&tags)],
+        None,
+    );
+    let union = arrow_schema::UnionFields::try_new(vec![0], vec![item.as_ref().clone()]).unwrap();
+    let entries = Arc::new(Field::new("entries", DataType::Struct(fields), false));
+    let keys = arrow_array::Int8Array::from(vec![0, 2, 1]);
+    let mut nesting = lists_of(&item, &tags);
+    let rest: [ArrayRef; 5] = [
+        Arc::new(MapArray::new(entries, lengths, pairs.clone(), None, false)),
+        Arc::new(pairs.clone()),
+        Arc::new(
+            UnionArray::try_new(union, vec![0; 3].into(), None, vec![Arc::clone(&tags)]).unwrap(),
+        ),
+        Arc::new(RunArray::try_new(&Int32Array::from(vec![1, 2, 3]), &tags).unwrap()),
+        Arc::new(DictionaryArray::try_new(keys, Arc::new(pairs)).unwrap()),
+    ];
+    nesting.extend(rest);
+    nesting
+}
+
+/// A list of every kind whose items are `tags`, three of them.
+fn lists_of(item: &Arc<Field>, tags: &ArrayRef) -> Vec<ArrayRef> {
+    use arrow_array::{
+        FixedSizeListArray, LargeListArray, LargeListViewArray, ListArray, ListViewArray,
+    };
+    use arrow_buffer::OffsetBuffer;
+    let lengths = || OffsetBuffer::<i32>::from_lengths([2, 1]);
+    let long = || OffsetBuffer::<i64>::from_lengths([2, 1]);
+    vec![
+        Arc::new(ListArray::new(
+            Arc::clone(item),
+            lengths(),
+            Arc::clone(tags),
+            None,
+        )),
+        Arc::new(LargeListArray::new(
+            Arc::clone(item),
+            long(),
+            Arc::clone(tags),
+            None,
+        )),
+        Arc::new(ListViewArray::new(
+            Arc::clone(item),
+            vec![0, 2].into(),
+            vec![2, 1].into(),
+            Arc::clone(tags),
+            None,
+        )),
+        Arc::new(LargeListViewArray::new(
+            Arc::clone(item),
+            vec![0, 2].into(),
+            vec![2, 1].into(),
+            Arc::clone(tags),
+            None,
+        )),
+        Arc::new(FixedSizeListArray::new(
+            Arc::clone(item),
+            3,
+            Arc::clone(tags),
+            None,
+        )),
+    ]
+}
+
+#[test]
+fn a_dictionary_nested_in_any_type_reaches_its_column() {
+    for column in nesting_a_dictionary() {
+        let batch = samples::batch_of(column);
+        assert_eq!(crossed(&batch).0, batch, "{}", batch.schema());
+    }
+}
+
+#[test]
+fn a_dictionary_the_schema_does_not_name_is_refused() {
+    let batch = strings(&["a", "bb"]);
+    let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
+    decoder.schema(&encoder.schema(&batch.schema())).unwrap();
+    let frames = encoder.batch(&batch).unwrap();
+    // A schema without dictionaries forgets the ids of the schema before it.
+    decoder.schema(&encoder.schema(&ints(1).schema())).unwrap();
+    let error = decoder.frame(&frames[0]).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            WireError::Malformed {
+                frame: Frame::Dictionary,
+                problem: Problem::UnknownDictionary { .. }
+            }
+        ),
+        "{error}"
+    );
 }

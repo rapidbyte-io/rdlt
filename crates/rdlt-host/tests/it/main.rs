@@ -5,6 +5,7 @@
 mod acknowledged;
 mod admission;
 mod flow;
+mod frames;
 mod groups;
 mod identity;
 mod kills;

@@ -23,6 +23,8 @@ pub(crate) enum Fault {
     Impostor,
     /// Its reads send a schema that is no IPC message.
     GarbageSchema,
+    /// Its reads send the schema message and the batch frames this makes.
+    Sends(fn() -> (Bytes, Vec<rdlt_wire::IpcFrame>)),
     /// It never answers a heartbeat, and its checks never end.
     Silent,
     /// Its reads send the same schema epoch twice.
@@ -151,6 +153,20 @@ impl Connector for Fake {
             )]);
             let ipc = rdlt_wire::Encoder::default().schema(&arrow);
             vec![Ok(schema(ipc.clone())), Ok(schema(ipc))]
+        } else if let Fault::Sends(frames) = self.0 {
+            let (ipc, frames) = frames();
+            let batches = frames.into_iter().map(|frame| v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Batch(v1::BatchFrame {
+                    schema_epoch: 1,
+                    kind: v1::BatchKind::Arrow as i32,
+                    data_header: frame.header,
+                    data_body: frame.body,
+                })),
+            });
+            std::iter::once(schema(ipc))
+                .chain(batches)
+                .map(Ok)
+                .collect()
         } else {
             vec![Ok(schema(Bytes::from_static(b"not an IPC message")))]
         };

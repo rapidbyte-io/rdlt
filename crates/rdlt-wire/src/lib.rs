@@ -35,8 +35,8 @@ pub mod tls;
 #[path = "generated/rdlt.connector.v1.rs"]
 pub mod v1;
 
-pub use codec::{Decoder, Encoder, IpcFrame};
-pub use error::{Frame, Problem, WireError};
+pub use codec::{Decoder, Encoder, IpcFrame, Shape};
+pub use error::{Frame, Part, Problem, WireError};
 pub use limits::{Limits, Refusal};
 pub use prost;
 pub use tonic;

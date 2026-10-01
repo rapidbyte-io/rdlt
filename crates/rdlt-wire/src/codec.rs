@@ -3,7 +3,10 @@
 
 mod contain;
 mod decode;
-mod precheck;
+mod framing;
+mod relocate;
+mod schema;
+mod shape;
 #[cfg(test)]
 mod tests;
 
@@ -15,6 +18,7 @@ use bytes::Bytes;
 use crate::error::{Frame, WireError};
 
 pub use decode::Decoder;
+pub use shape::Shape;
 
 /// One IPC message: its flatbuffer header and its body buffers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

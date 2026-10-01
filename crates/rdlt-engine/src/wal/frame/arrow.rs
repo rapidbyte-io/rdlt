@@ -1,8 +1,8 @@
 //! A batch frame's Arrow data, in the wire's framing (`rdlt_wire::codec`): the IPC schema
 //! message, then the dictionary and record batch messages, each length-prefixed.
 //!
-//! The wire's decoder checks every message against its body before Arrow reads it, so data a
-//! checksum passes but a crash or a bug garbled is refused, never a panic.
+//! The wire's decoder checks every message's shape against its schema and its body before Arrow
+//! reads it, so data a checksum passes but a crash or a bug garbled is refused, never a panic.
 
 use arrow_array::RecordBatch;
 use bytes::{Buf, BufMut, Bytes};
@@ -10,13 +10,16 @@ use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
 
 use crate::error::Error;
 
-/// What a log's batches may hold: whatever the engine wrote, but nested no deeper than the wire
-/// allows any connector's.
+/// What a log's batches may hold: whatever the engine wrote, of any size, but nested no deeper
+/// than the wire allows any connector's.
 fn limits() -> Limits {
     Limits {
         frame_bytes: u64::MAX,
         batch_rows: u64::MAX,
+        batch_values: u64::MAX,
         schema_columns: u64::MAX,
+        schema_bytes: u64::MAX,
+        control_string_bytes: u64::MAX,
         ..Limits::default()
     }
 }
