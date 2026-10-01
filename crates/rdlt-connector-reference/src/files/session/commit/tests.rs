@@ -304,6 +304,18 @@ mod steps {
         trace::clear();
         assert_eq!(sessions.ids("rows"), [1, 2, 3], "the manifest is there");
         assert_eq!(sessions.data_files().len(), 3, "nothing is pruned yet");
+        // Repeated and refused that sync again, the commit fails again and removes nothing:
+        // what its manifest superseded goes only once the manifest's name is durable.
+        trace::fail_at(0);
+        sessions.commit(&meta).expect_err("the sync is refused");
+        assert!(trace::refused());
+        trace::clear();
+        assert_eq!(sessions.data_files().len(), 3, "pruned before the manifest");
+        assert_eq!(
+            sessions.shared.lock().staged.len(),
+            1,
+            "the segment is held"
+        );
         let receipt = sessions.commit(&meta).expect("the commit is answered");
         assert_eq!(receipt.rows, 1);
         let manifests = sessions.location.dir.path().join("manifests");
