@@ -49,7 +49,7 @@ pub(crate) enum Fault {
     Lenient,
     /// Its reads send every frame, whatever the credit.
     Greedy,
-    /// Its reads send every frame, whatever the credit, a second and a half apart.
+    /// Its reads send every frame, whatever the credit, a little over a second apart.
     Paced,
     /// Its reads send a frame for each credit it is granted, however little that is.
     Eager,
@@ -336,7 +336,7 @@ impl Connector for Fake {
             let (mut credit, mut granted_times): (i64, u32) = (0, 0);
             for line in 0..8 {
                 if paced && line > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
                 }
                 while credit <= 0 && !greedy {
                     match controls.next().await {

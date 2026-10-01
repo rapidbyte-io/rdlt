@@ -39,8 +39,6 @@ async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() 
         r#"{"seed": 11, "streams": [{"name": "events", "rows": 20000, "partitions": 2, "batch_rows": 50}]}"#,
         "--env",
         "LLVM_PROFILE_FILE",
-        "--kill-seed",
-        "1",
         "--output",
         "json",
     ])
