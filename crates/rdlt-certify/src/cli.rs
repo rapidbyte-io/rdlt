@@ -328,7 +328,12 @@ fn target(args: &Args) -> Result<Target, Ended> {
         .map_err(|error| Ended(USAGE, error.to_string()))?;
     let usage = |message: &str| Ended(USAGE, message.to_owned());
     if named.starts_with("grpcs://") {
-        Endpoint::parse(named).map_err(|error| Ended(USAGE, error.to_string()))?;
+        Endpoint::parse(named).map_err(|error| {
+            Ended(
+                USAGE,
+                format!("{error}: an endpoint is `grpcs://host:port`"),
+            )
+        })?;
         if !args.env.is_empty() {
             return Err(usage("--env is for a spawned connector, not an endpoint"));
         }

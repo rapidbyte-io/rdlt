@@ -719,3 +719,26 @@ async fn a_second_interrupt_kills_what_a_certification_spawned_and_ends_it_at_on
     // It exits as the last signal it heard would have ended it.
     assert_eq!(status.code(), Some(143));
 }
+#[tokio::test(flavor = "multi_thread")]
+async fn an_endpoint_refused_is_not_repeated_in_what_is_reported() {
+    let tls = [
+        "--tls-cert",
+        "cert.pem",
+        "--tls-key",
+        "key.pem",
+        "--tls-ca",
+        "ca.pem",
+    ];
+    for endpoint in [
+        "grpcs://svc:hunter2@connector:7443",
+        "grpcs://connector:7443/?token=hunter2",
+        "grpcs://connector:7443#hunter2",
+    ] {
+        let args: Vec<&str> = [endpoint].into_iter().chain(tls).collect();
+        let output = certify(&args).await;
+        assert_eq!(code(&output), Some(64), "{endpoint}");
+        let said = [output.stdout, output.stderr].concat();
+        let said = String::from_utf8_lossy(&said);
+        assert!(!said.contains("hunter2"), "{endpoint}");
+    }
+}
