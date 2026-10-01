@@ -24,7 +24,10 @@ use crate::factory::{RoleFactory, Serve};
 /// <path>` and a `--tls-allow-host <name>` for each host it accepts, it serves those hosts over
 /// mutual TLS, and says where on standard output (`listening on <address>`). A host is named by a
 /// DNS name or URI in its certificate; `--tls-client-crl <path>` refuses the certificates its
-/// revocation lists name. The first `SIGTERM` or `SIGINT` stops it gracefully; a second, at once.
+/// revocation lists name, and `--max-sessions <count>` serves fewer sessions at once than
+/// [`ListenLimits`](crate::limits::ListenLimits) does, for a process that may open few files: it
+/// refuses to listen where its limits need more file descriptors than it may open. The first
+/// `SIGTERM` or `SIGINT` stops it gracefully; a second, at once.
 pub fn serve<C: Serve>() -> ExitCode {
     Served::from(C::factory()).serve()
 }
