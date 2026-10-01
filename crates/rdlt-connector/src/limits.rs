@@ -12,10 +12,22 @@ pub const MAX_JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;
 /// Rows: bounds one Arrow or change batch.
 pub const MAX_BATCH_ROWS: u64 = 1024 * 1024;
 
-/// Columns: bounds the width of one batch.
+/// Values: bounds what one batch's columns hold together, nested values and the items of list
+/// views included, whether or not they take bytes.
+pub const MAX_BATCH_VALUES: u64 = 64 * MAX_BATCH_ROWS;
+
+/// Bytes: bounds what the views of one batch name in their data buffers, counted once a view.
+pub const MAX_VIEW_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Bytes: bounds the allocations one batch keeps alive, each counted once: a slice counts the
+/// whole buffer it shares.
+pub const MAX_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Columns: bounds the width of one batch, counting nested fields.
 pub const MAX_COLUMNS: u64 = 10_000;
 
-/// Levels: bounds how deep a JSON value nests, counting the record itself as the first.
+/// Levels: bounds how deep a batch's types or a JSON value nest, counting a top-level column or
+/// the record itself as the first.
 pub const MAX_NESTING_DEPTH: u64 = 64;
 
 /// Bytes: bounds one encoded cursor.

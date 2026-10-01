@@ -2027,6 +2027,7 @@ dependencies = [
  "arrow-array",
  "arrow-buffer",
  "arrow-cast",
+ "arrow-data",
  "arrow-schema",
  "base64 0.22.1",
  "bytes",
