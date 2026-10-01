@@ -104,6 +104,22 @@ async fn a_source_holding_more_than_a_kill_clause_loads_leaves_it_unobserved() {
 }
 
 #[tokio::test]
+async fn a_source_holding_all_a_kill_clause_loads_is_beyond_it_once_a_kill_repeats_a_row() {
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
+        .kill_seed(SETTLED_LATE);
+    // Exactly what a kill clause loads: a load never killed writes each row once, and one
+    // killed writes again what its kills left uncommitted.
+    let config = json!({
+        "seed": 5,
+        "streams": [{ "name": "events", "rows": 100_000, "partitions": 1, "batch_rows": 500 }],
+    });
+    let report = certify_source(&target, config).await;
+    let outcome = report.outcome("K-SOURCE");
+    assert!(matches!(outcome, Some(Outcome::Unobserved(_))), "{report}");
+    assert_eq!(report.failures().count(), 0, "{report}");
+}
+
+#[tokio::test]
 async fn a_source_read_before_any_kill_lands_proves_nothing_of_kills() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
     let config = json!({

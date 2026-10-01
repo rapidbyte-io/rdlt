@@ -341,6 +341,45 @@ fn a_report_passes_only_when_every_clause_that_applies_was_seen_to_be_met() {
     }
 }
 
+#[test]
+fn a_report_ends_with_its_verdict_and_how_many_clauses_fared_each_way() {
+    let result = |outcome: Outcome| ClauseResult {
+        clause: Clause {
+            id: "S-CHECK",
+            statement: "a statement",
+            unless: "",
+        },
+        outcome,
+    };
+    let mut results = vec![result(Outcome::Passed), result(Outcome::Passed)];
+    results.extend((0..3).map(|_| result(Outcome::Unobserved("unseen".into()))));
+    results.extend((0..4).map(|_| result(Outcome::Inapplicable("undeclared".into()))));
+    let mut report = Report {
+        connector: "test.summary".to_owned(),
+        results,
+    };
+    assert_eq!(
+        report.summary(),
+        "incomplete: 2 passed, 0 failed, 3 not observed, 4 not applicable"
+    );
+    report
+        .results
+        .push(result(Outcome::Failed("broken".into())));
+    assert_eq!(
+        report.summary(),
+        "failed: 2 passed, 1 failed, 3 not observed, 4 not applicable"
+    );
+    assert_eq!(
+        report.to_string().lines().last(),
+        Some(report.summary().as_str())
+    );
+    assert_eq!(
+        [Verdict::Passed, Verdict::Incomplete, Verdict::Failed].map(Verdict::as_str),
+        ["passed", "incomplete", "failed"]
+    );
+    assert_eq!(Verdict::Incomplete.to_string(), "incomplete");
+}
+
 #[tokio::test]
 async fn the_barrier_clause_does_not_apply_to_natural_checkpointing() {
     let report = certify_source::<Pages>(json!({ "natural": true })).await;

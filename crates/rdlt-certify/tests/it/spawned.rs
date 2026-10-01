@@ -111,10 +111,13 @@ async fn a_destination_nothing_can_read_is_certified_incompletely() {
     for id in ["D-CHECK", "D-EPOCH", "D-STATE"] {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
-    assert!(
-        matches!(report.outcome("D-COMMIT"), Some(Outcome::Unobserved(_))),
-        "{report}"
-    );
+    for id in ["D-COMMIT", "K-DESTINATION"] {
+        let outcome = report.outcome(id);
+        assert!(
+            matches!(outcome, Some(Outcome::Unobserved(_))),
+            "{id}: {report}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -63,6 +63,8 @@ struct QueueConfig {
     off_by_one: bool,
     /// How many seconds each answer to where a partition stands takes.
     slow: u64,
+    /// How many messages a partition holds, when not four.
+    messages: u64,
 }
 
 /// A queue of four messages a partition, a checkpoint after each, that keeps where it was
@@ -162,7 +164,11 @@ impl ReadStream<Queue> for Messages {
                 "the queue no longer holds what it acknowledged",
             ));
         }
-        for message in cursor..4 {
+        let messages = match source.config.messages {
+            0 => 4,
+            messages => messages,
+        };
+        for message in cursor..messages {
             out.rows(&[json!({ "message": message })]).await?;
             // As a consumer committing on its own does: the rows it hands out are acknowledged.
             if source.config.ack_on_read {
@@ -278,4 +284,18 @@ async fn asking_where_many_slow_partitions_stand_is_bounded_and_fails_s_ack_alon
     assert!(began.elapsed() <= bound, "{:?}", began.elapsed());
     assert!(matches!(outcome(&report), Outcome::Failed(_)), "{report}");
     assert_eq!(report.failures().count(), 1, "{report}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_queue_that_checkpoints_more_than_a_clause_holds_leaves_s_ack_unobserved() {
+    use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES};
+    // More checkpoints than a clause holds, were each no more than what holds it.
+    let messages = HELD_BYTES / HELD_EVENT_BYTES + 1;
+    let config = json!({ "name": "long", "messages": messages });
+    let report = certify_source::<Queue>(config).await;
+    assert!(
+        matches!(outcome(&report), Outcome::Unobserved(_)),
+        "{report}"
+    );
+    assert_eq!(report.failures().count(), 0, "{report}");
 }

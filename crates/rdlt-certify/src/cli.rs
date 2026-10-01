@@ -1,6 +1,9 @@
 //! The command line: which connector, how to reach it and with what configuration, and how to
 //! print what it met.
 
+#[cfg(test)]
+mod tests;
+
 use std::future::Future;
 use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
