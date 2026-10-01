@@ -478,3 +478,106 @@ async fn a_line_limit_beyond_what_one_push_holds_is_a_configuration_error() {
         assert!(connected.is_err(), "{zero}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_that_grows_beyond_the_limit_while_it_is_read_fails_the_read() {
+    use std::io::Write as _;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("events.jsonl");
+    std::fs::write(&path, "{\"id\":1}\n{\"id\":2}\n").unwrap();
+    let settings = json!({ "max_file_bytes": 64, "batch_rows": 1 });
+    let source = connect_with(root.path(), settings).await.unwrap();
+    let stream = StreamName::new("events").unwrap();
+    let plan = source.plan(&stream, &StreamState::default()).await.unwrap();
+    let (sink, mut feed) = partition_channel(NonZeroUsize::MIN);
+    let request = ReadRequest::new(stream, plan.partitions[0].clone(), None);
+    let reading = source.read(request, sink);
+    let collecting = async {
+        let mut events = Vec::new();
+        while let Some(event) = feed.recv().await {
+            // Once the read is under way, the file grows far beyond its limit.
+            if events.is_empty() {
+                let mut file = std::fs::File::options().append(true).open(&path).unwrap();
+                for id in 0..100_000 {
+                    writeln!(file, "{{\"id\":{id}}}").unwrap();
+                }
+            }
+            events.push(event);
+        }
+        events
+    };
+    let (ended, events) = tokio::time::timeout(BOUND, async { tokio::join!(reading, collecting) })
+        .await
+        .expect("the read ends");
+    let error = ended.expect_err("the file is beyond its limit");
+    assert_eq!(error.code(), Some("limit_exceeded"));
+    let limit = error.limit().expect("a limit");
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("file bytes", 64, 65)
+    );
+    // What was pushed is whole records from within the limit: no line cut where the limit fell.
+    let pushes = pushed(&events);
+    let bytes: usize = pushes.iter().map(String::len).sum();
+    assert!(bytes <= 64, "{bytes} bytes pushed");
+    assert!(pushes.iter().all(|push| push.ends_with("}\n")));
+}
+
+#[tokio::test]
+async fn an_arrow_file_beyond_the_file_limit_is_refused_unread() {
+    let root = tempfile::tempdir().unwrap();
+    arrow_file(&root.path().join("orders.arrow"), 2);
+    let size = std::fs::metadata(root.path().join("orders.arrow"))
+        .unwrap()
+        .len();
+    for (limit, reads) in [(size, true), (size - 1, false)] {
+        let source = connect_with(root.path(), json!({ "max_file_bytes": limit }))
+            .await
+            .unwrap();
+        let (events, ended) = read(source.as_ref(), "orders", None).await;
+        assert_eq!(ended.is_ok(), reads, "{limit}");
+        assert_eq!(events.is_empty(), !reads, "{limit}");
+        if let Err(error) = ended {
+            assert_eq!(error.limit().map(|limit| limit.name), Some("file bytes"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_cursor_beyond_what_its_file_now_holds_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let lines = root.path().join("ids.jsonl");
+    std::fs::write(&lines, "{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n").unwrap();
+    arrow_file(&root.path().join("orders.arrow"), 3);
+    let source = connect_with(root.path(), json!({ "batch_rows": 1 }))
+        .await
+        .unwrap();
+    for (stream, shorter) in [("ids", "{\"id\":9}\n{\"id\":8}\n"), ("orders", "")] {
+        let (events, ended) = read(source.as_ref(), stream, None).await;
+        ended.expect("the file reads");
+        let cursors = cursors(&events);
+        assert_eq!(cursors.len(), 3, "{stream}");
+        // A cursor at the file's end reads nothing more, and is no error.
+        let (events, ended) = read(source.as_ref(), stream, cursors.last().cloned()).await;
+        ended.expect("the file is read to its end");
+        assert!(events.is_empty(), "{stream}");
+        // The file is cut, or replaced by a shorter one: the cursor stands beyond it.
+        if stream == "ids" {
+            std::fs::write(&lines, shorter).unwrap();
+        } else {
+            arrow_file(&root.path().join("orders.arrow"), 2);
+        }
+        let (events, ended) = read(source.as_ref(), stream, cursors.last().cloned()).await;
+        assert!(events.is_empty(), "{stream}");
+        let error = ended.expect_err("the cursor is beyond the file");
+        assert_eq!(error.kind(), ConnectorErrorKind::Data, "{stream}");
+        assert_eq!(error.code(), Some("cursor_beyond_file"), "{stream}");
+        // A cursor the shorter file still holds reads on from there.
+        let (events, ended) = read(source.as_ref(), stream, Some(cursors[1].clone())).await;
+        ended.expect("the cursor fits");
+        assert!(events.is_empty(), "{stream}");
+        let (events, ended) = read(source.as_ref(), stream, Some(cursors[0].clone())).await;
+        ended.expect("the cursor fits");
+        assert_eq!(events.len(), 2, "{stream}: a push and its checkpoint");
+    }
+}

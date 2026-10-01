@@ -182,10 +182,12 @@ impl Reader {
         }
     }
 
-    /// Skips the next `batches` batches of an Arrow file.
-    pub(super) fn skip(&mut self, batches: u64) {
-        if let Rows::Arrow(file) = &mut self.rows {
-            file.skip(batches);
+    /// Skips the next `batches` batches of an Arrow file; how many it skipped, fewer where the
+    /// file holds fewer.
+    pub(super) fn skip(&mut self, batches: u64) -> u64 {
+        match &mut self.rows {
+            Rows::Arrow(file) => file.skip(batches),
+            Rows::Jsonl(_) => 0,
         }
     }
 

@@ -89,12 +89,12 @@ impl IpcFile {
         &self.schema
     }
 
-    /// Skips the next `batches` record batches.
-    pub(super) fn skip(&mut self, batches: u64) {
-        let batches = usize::try_from(batches).unwrap_or(usize::MAX);
-        if batches > 0 {
-            self.batches.nth(batches - 1);
-        }
+    /// Skips the next `batches` record batches; how many it skipped, fewer where fewer are
+    /// left.
+    pub(super) fn skip(&mut self, batches: u64) -> u64 {
+        let wanted = usize::try_from(batches).unwrap_or(usize::MAX);
+        let skipped = self.batches.by_ref().take(wanted).count();
+        u64::try_from(skipped).unwrap_or(u64::MAX)
     }
 
     /// The next record batch, none once every batch is read.
