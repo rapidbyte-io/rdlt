@@ -17,7 +17,11 @@ fmt:
     taplo fmt
 
 # Run every static check CI runs
-lint:
+lint: checks pins
+
+# Every static check that needs no credential: these build and run the workspace's and its
+# dependencies' code
+checks:
     cargo fmt --all --check
     taplo fmt --check
     typos
@@ -31,6 +35,10 @@ lint:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
     RUSTFLAGS="-D warnings" cargo hack check --workspace --each-feature --no-dev-deps
     actionlint
+
+# Check that each action is pinned to the commit of the version beside it; GITHUB_TOKEN, where
+# set, keeps the lookups within GitHub's rate limit
+pins:
     pinact run --check --verify-comment
 
 # Check every workspace's locked dependencies, the fuzzing crate's included, for advisories, bans,
