@@ -260,7 +260,8 @@ async fn pump(
             }
         }
         // The next piece of a batch being cut is encoded once the last was sent, and before
-        // anything else the source sends is taken.
+        // anything else the source sends is taken. The host's controls wait meanwhile, for no
+        // longer than the credit lasts or the batch has pieces.
         if outbox.frames.is_empty() && outbox.cutting() {
             if let Err(error) = outbox.refill() {
                 frames.send(Err(error)).await.ok();

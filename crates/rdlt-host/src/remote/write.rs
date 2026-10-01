@@ -164,12 +164,16 @@ impl RemoteWriter {
                 }
             };
             for frame in frames {
-                self.send(Frame::Batch(v1::WriteBatch {
+                let batch = Frame::Batch(v1::WriteBatch {
                     segment: segment.0,
                     data_header: frame.header,
                     data_body: frame.body,
-                }))
-                .await?;
+                });
+                if let Err(error) = self.send(batch).await {
+                    // The connector may not have the frames before this one either.
+                    self.schema = None;
+                    return Err(error);
+                }
             }
             // Encoding a piece is work of its own: other tasks run before the next.
             tokio::task::yield_now().await;
