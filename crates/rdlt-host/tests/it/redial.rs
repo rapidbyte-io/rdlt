@@ -178,7 +178,7 @@ fn posing_noted(
 /// every later host `then`.
 async fn succeeded(pki: &Pki, first: Served, then: Served, lose: oneshot::Receiver<()>) -> u16 {
     let server = pki.server("server", &["localhost"]);
-    let config = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
+    let config = rdlt_wire::tls::server_config(&identity(&server), &crate::network::accepted(pki))
         .expect("the server's configuration builds");
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

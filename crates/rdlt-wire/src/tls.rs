@@ -3,18 +3,25 @@
 //!
 //! Both ends take their configuration from here, so the policy is in one place: a host verifies
 //! the connector's certificate against its CA bundle and the endpoint's name, and a connector
-//! requires every host to present a certificate its own CA bundle issued.
+//! requires every host to present a certificate its own CA bundle issued that names a host the
+//! connector was told to accept. Neither end resumes a session.
 
+mod files;
+mod hosts;
 #[cfg(test)]
 mod tests;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use rustls::pki_types::pem::PemObject as _;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
-use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rustls::client::Resumption;
+use rustls::server::{NoServerSessionStorage, WebPkiClientVerifier};
+use rustls::{ClientConfig, ServerConfig};
+
+pub use hosts::{Hosts, NoHosts};
+
+use files::{certificates, key, revocations, roots};
+use hosts::Named;
 
 /// The application protocol spoken over the TLS, and no other: HTTP/2, for gRPC.
 pub const ALPN: &[u8] = b"h2";
@@ -24,12 +31,26 @@ pub const ALPN: &[u8] = b"h2";
 pub struct Identity {
     /// The certificate chain, leaf first.
     pub cert: PathBuf,
-    /// The private key.
+    /// The private key, a file of the user's alone: one its group or others can read, or another
+    /// user owns, is refused.
     pub key: PathBuf,
+}
+
+/// The hosts a listening connector accepts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Accepted {
+    /// The CA bundle every host's certificate must come from.
+    pub ca: PathBuf,
+    /// The hosts' names: a certificate is accepted where it names one of them.
+    pub hosts: Hosts,
+    /// The revocation lists of the CA bundle's authorities, in one PEM file; none checks no
+    /// revocation.
+    pub crl: Option<PathBuf>,
 }
 
 /// Why a TLS configuration could not be built.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TlsError {
     /// A PEM file could not be read or parsed.
     #[error("reading {} failed", path.display())]
@@ -55,6 +76,38 @@ pub enum TlsError {
         #[source]
         source: rustls::Error,
     },
+    /// A private key file could not be opened or examined.
+    #[error("opening the private key {} failed", path.display())]
+    Key {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A private key file's group or others have access to it.
+    #[error(
+        "the private key {} has mode {mode:03o}: its group or others have access to it",
+        path.display()
+    )]
+    KeyMode {
+        /// The file.
+        path: PathBuf,
+        /// Its permission bits.
+        mode: u32,
+    },
+    /// A private key file is not a regular file the user owns.
+    #[error("the private key {} is not a regular file this user owns", path.display())]
+    KeyOwner {
+        /// The file.
+        path: PathBuf,
+    },
+    /// A revocation list file holds no list.
+    #[error("{} holds no revocation list", path.display())]
+    NoRevocationList {
+        /// The file.
+        path: PathBuf,
+    },
     /// The certificates and key do not make a configuration: a key that does not match its
     /// certificate, for one.
     #[error("the certificates and key do not make a TLS configuration")]
@@ -64,18 +117,29 @@ pub enum TlsError {
     Verifier(#[source] rustls::server::VerifierBuilderError),
 }
 
-/// The configuration a connector serves with: `identity` presented to every host, and a
-/// certificate the CA bundle at `client_ca` issued required of every host.
+/// The configuration a connector serves with: `identity` presented to every host, and of every
+/// host a certificate that `accepted`'s CA bundle issued, that is valid now, that no revocation
+/// list of `accepted` revokes, and that names a host `accepted` lists.
+///
+/// Every connection is a full handshake: no session is resumed, so a certificate is checked each
+/// time it is presented. With revocation lists, every certificate of a host's chain needs a
+/// current list of its issuer.
 ///
 /// # Errors
 ///
-/// A [`TlsError`] when a file cannot be read, holds nothing usable, or the key does not match.
-pub fn server_config(identity: &Identity, client_ca: &Path) -> Result<ServerConfig, TlsError> {
+/// A [`TlsError`] when a file cannot be read, holds nothing usable, the key file is not the
+/// user's alone, or the key does not match.
+pub fn server_config(identity: &Identity, accepted: &Accepted) -> Result<ServerConfig, TlsError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let roots = Arc::new(roots(client_ca)?);
-    let verifier = WebPkiClientVerifier::builder_with_provider(roots, Arc::clone(&provider))
-        .build()
-        .map_err(TlsError::Verifier)?;
+    let roots = Arc::new(roots(&accepted.ca)?);
+    let mut verifier = WebPkiClientVerifier::builder_with_provider(roots, Arc::clone(&provider));
+    if let Some(crl) = &accepted.crl {
+        verifier = verifier
+            .with_crls(revocations(crl)?)
+            .enforce_revocation_expiration();
+    }
+    let verifier = verifier.build().map_err(TlsError::Verifier)?;
+    let verifier = Arc::new(Named::new(verifier, accepted.hosts.clone()));
     let mut config = ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(TlsError::Config)?
@@ -83,16 +147,20 @@ pub fn server_config(identity: &Identity, client_ca: &Path) -> Result<ServerConf
         .with_single_cert(certificates(&identity.cert)?, key(&identity.key)?)
         .map_err(TlsError::Config)?;
     config.alpn_protocols = vec![ALPN.to_vec()];
+    // A resumed session restores the host's certificate without verifying it again.
+    config.session_storage = Arc::new(NoServerSessionStorage {});
+    config.send_tls13_tickets = 0;
     Ok(config)
 }
 
 /// The configuration a host connects with: `identity` presented to every connector, and every
-/// connector's certificate verified against the CA bundle at `ca`.
+/// connector's certificate verified against the CA bundle at `ca`, in a full handshake each time.
 ///
 /// # Errors
 ///
-/// A [`TlsError`] when a file cannot be read, holds nothing usable, or the key does not match.
-pub fn client_config(identity: &Identity, ca: &Path) -> Result<ClientConfig, TlsError> {
+/// A [`TlsError`] when a file cannot be read, holds nothing usable, the key file is not the
+/// user's alone, or the key does not match.
+pub fn client_config(identity: &Identity, ca: &std::path::Path) -> Result<ClientConfig, TlsError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut config = ClientConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -101,43 +169,6 @@ pub fn client_config(identity: &Identity, ca: &Path) -> Result<ClientConfig, Tls
         .with_client_auth_cert(certificates(&identity.cert)?, key(&identity.key)?)
         .map_err(TlsError::Config)?;
     config.alpn_protocols = vec![ALPN.to_vec()];
+    config.resumption = Resumption::disabled();
     Ok(config)
-}
-
-/// Every certificate in the PEM file at `path`; at least one.
-fn certificates(path: &Path) -> Result<Vec<CertificateDer<'static>>, TlsError> {
-    let pem = |source| TlsError::Pem {
-        path: path.to_owned(),
-        source,
-    };
-    let certificates = CertificateDer::pem_file_iter(path)
-        .map_err(pem)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(pem)?;
-    if certificates.is_empty() {
-        return Err(TlsError::NoCertificate {
-            path: path.to_owned(),
-        });
-    }
-    Ok(certificates)
-}
-
-/// The private key in the PEM file at `path`.
-fn key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError> {
-    PrivateKeyDer::from_pem_file(path).map_err(|source| TlsError::Pem {
-        path: path.to_owned(),
-        source,
-    })
-}
-
-/// The trust anchors of the CA bundle at `path`.
-fn roots(path: &Path) -> Result<RootCertStore, TlsError> {
-    let mut roots = RootCertStore::empty();
-    for certificate in certificates(path)? {
-        roots.add(certificate).map_err(|source| TlsError::Anchor {
-            path: path.to_owned(),
-            source,
-        })?;
-    }
-    Ok(roots)
 }

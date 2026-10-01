@@ -25,7 +25,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tower::ServiceExt as _;
 
 pub use binary::serve;
-pub use listen::{Listener, serve_listener};
+pub use listen::{Listener, Listening, serve_listener};
 
 use crate::destination::DestinationFactory;
 use crate::source::SourceFactory;

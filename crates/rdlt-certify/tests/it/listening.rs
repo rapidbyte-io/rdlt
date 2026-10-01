@@ -24,6 +24,7 @@ pub(crate) async fn listening(pki: &Pki) -> (Child, String) {
         .arg(&server.key)
         .arg("--tls-client-ca")
         .arg(pki.ca())
+        .args(["--tls-allow-host", "host"])
         .env(
             "LLVM_PROFILE_FILE",
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),

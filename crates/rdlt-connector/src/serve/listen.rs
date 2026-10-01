@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_wire::Limits;
+use rdlt_wire::tls::Hosts;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -68,7 +69,7 @@ pub(super) async fn listen(
     limits: Limits,
     stop: impl Future<Output = ()>,
 ) -> Result<(), Failure> {
-    let config = rdlt_wire::tls::server_config(&listen.identity, &listen.client_ca)
+    let config = rdlt_wire::tls::server_config(&listen.identity, &listen.accepted)
         .map_err(|error| failure("the TLS configuration", &error))?;
     let listener = TcpListener::bind(listen.address)
         .await
@@ -77,13 +78,26 @@ pub(super) async fn listen(
         .local_addr()
         .map_err(|error| failure("the listening address", &error))?;
     announce(address)?;
-    serve_listener(served, listener, Arc::new(config), limits, stop).await;
+    let listening = Listening {
+        tls: Arc::new(config),
+        hosts: listen.accepted.hosts.clone(),
+    };
+    serve_listener(served, listener, listening, limits, stop).await;
     Ok(())
 }
 
+/// How a connector listens: the TLS it serves with, and the hosts it accepts.
+#[derive(Clone, Debug)]
+pub struct Listening {
+    /// The configuration [`rdlt_wire::tls::server_config`] built.
+    pub tls: Arc<ServerConfig>,
+    /// The hosts that configuration accepts, which name each session's host.
+    pub hosts: Hosts,
+}
+
 /// Serves each host connecting through `listener` one session of the protocol, over mutual TLS
-/// with `tls`, until `stop` ends; then drops `listener`, stops taking connections, and ends when
-/// those in flight have.
+/// as `listening` says, until `stop` ends; then drops `listener`, stops taking connections, and
+/// ends when those in flight have.
 ///
 /// A host has 10 s to complete its TLS handshake, and 10 s more to send HTTP/2's preface; at
 /// most 1024 handshakes run at once. At most 256 sessions are served at once: a further host
@@ -91,12 +105,13 @@ pub(super) async fn listen(
 pub async fn serve_listener<L: Listener>(
     served: Arc<Served>,
     mut listener: L,
-    tls: Arc<ServerConfig>,
+    listening: Listening,
     limits: Limits,
     stop: impl Future<Output = ()>,
 ) {
-    let listening = Arc::new(Listening {
-        acceptor: TlsAcceptor::from(tls),
+    let listening = Arc::new(Shared {
+        acceptor: TlsAcceptor::from(listening.tls),
+        hosts: listening.hosts,
         served,
         limits,
         stopping: CancellationToken::new(),
@@ -137,8 +152,9 @@ pub async fn serve_listener<L: Listener>(
 }
 
 /// What every connection of a listening connector shares.
-struct Listening {
+struct Shared {
     acceptor: TlsAcceptor,
+    hosts: Hosts,
     served: Arc<Served>,
     limits: Limits,
     /// Cancelled once the connector is stopping.
@@ -152,7 +168,7 @@ async fn connection<S>(
     stream: S,
     peer: SocketAddr,
     handshake: OwnedSemaphorePermit,
-    listening: Arc<Listening>,
+    listening: Arc<Shared>,
 ) where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -168,6 +184,13 @@ async fn connection<S>(
         () = listening.stopping.cancelled() => return,
         permit = Arc::clone(&listening.sessions).acquire_owned() => permit.expect("the semaphore is never closed"),
     };
+    let chain = tls.get_ref().1.peer_certificates().unwrap_or_default();
+    let Some(host) = chain.first().and_then(|leaf| listening.hosts.named(leaf)) else {
+        return report(&format!(
+            "refused a connection from {peer}: it names no accepted host"
+        ));
+    };
+    report(&format!("serving host `{host}` from {peer}"));
     let (served, stopping) = (Arc::clone(&listening.served), listening.stopping.clone());
     // A host has as long to send HTTP/2's preface as it had to complete its TLS handshake.
     let tls = Speaking::within(tls, HANDSHAKE);

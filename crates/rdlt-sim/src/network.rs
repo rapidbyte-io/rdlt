@@ -16,7 +16,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::serve::{Listener, Served, serve_listener};
+use rdlt_connector::serve::{Listener, Listening, Served, serve_listener};
 use rdlt_connector::{BoxFuture, Destination, Source, destination_factory, source_factory};
 use rdlt_host::{
     ConnectorRef, Deadlines, Identity, Network, Options, Placed, Provider as _, ProviderError,
@@ -24,6 +24,7 @@ use rdlt_host::{
 };
 use rdlt_testkit::tls::{Files, Pki};
 use rdlt_wire::Limits;
+use rdlt_wire::tls::{Accepted, Hosts};
 
 use crate::destination::SimDestination;
 use crate::env::SimEnv;
@@ -158,9 +159,18 @@ const LATENCY: u64 = 0x006c_6174_656e_6379;
 /// Serves `side`'s connector on its host, again after each crash or stop, as the network's
 /// connectors say.
 async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
-    let tls = rdlt_wire::tls::server_config(&identity(&net.server), &net.pki.ca())
-        .map(Arc::new)
-        .map_err(|error| error.to_string())?;
+    // The connectors accept the engine's host alone, by the name in its certificate.
+    let accepted = Accepted {
+        ca: net.pki.ca(),
+        hosts: Hosts::new([ENGINE]).map_err(|error| error.to_string())?,
+        crl: None,
+    };
+    let listening = Listening {
+        tls: rdlt_wire::tls::server_config(&identity(&net.server), &accepted)
+            .map(Arc::new)
+            .map_err(|error| error.to_string())?,
+        hosts: accepted.hosts,
+    };
     loop {
         net.connectors.up(side).await;
         let crashes = net.connectors.crashes(side);
@@ -173,7 +183,7 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
         });
         let stop = net.connectors.stopping(side);
         let limits = Limits::default();
-        let serving = serve_listener(served, Sockets(listener), Arc::clone(&tls), limits, stop);
+        let serving = serve_listener(served, Sockets(listener), listening.clone(), limits, stop);
         tokio::select! {
             biased;
             // Dropping the serving drops its listener and every connection at once, as a crashed

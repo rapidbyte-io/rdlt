@@ -19,6 +19,15 @@ pub(crate) fn identity(files: &Files) -> Identity {
     }
 }
 
+/// The hosts a connector of `pki` accepts in these tests: the one named `host`.
+pub(crate) fn accepted(pki: &Pki) -> rdlt_wire::tls::Accepted {
+    rdlt_wire::tls::Accepted {
+        ca: pki.ca(),
+        hosts: rdlt_wire::tls::Hosts::new(["host"]).expect("a host is named"),
+        crl: None,
+    }
+}
+
 /// The scripted connector, listening at `address` over mutual TLS with `server`'s certificate
 /// and `pki`'s CA; its process, and the address it announced.
 pub(crate) async fn listening(pki: &Pki, server: &Files, address: &str) -> (Child, String) {
@@ -30,6 +39,7 @@ pub(crate) async fn listening(pki: &Pki, server: &Files, address: &str) -> (Chil
         .arg(&server.key)
         .arg("--tls-client-ca")
         .arg(pki.ca())
+        .args(["--tls-allow-host", "host"])
         .env(
             "LLVM_PROFILE_FILE",
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
@@ -121,6 +131,49 @@ async fn a_host_whose_certificate_the_connector_does_not_trust_is_refused() {
 }
 
 #[tokio::test]
+async fn a_host_the_connector_was_not_told_to_accept_is_refused() {
+    let pki = Pki::new("ca");
+    let (_connector, address) =
+        listening(&pki, &pki.server("server", &["localhost"]), "127.0.0.1:0").await;
+    let endpoint = format!("grpcs://localhost:{}", port(&address));
+    // Its certificate comes from the connector's CA, and names a host the connector was not told.
+    let remote = Remote::new(identity(&pki.client("another-host")), pki.ca());
+    let refused = remote
+        .source(&scripted(&endpoint), &serde_json::json!({}))
+        .await
+        .err()
+        .expect("refused");
+    assert!(matches!(refused, ProviderError::Tls { .. }), "{refused}");
+}
+
+#[tokio::test]
+async fn a_listening_connector_says_once_which_host_a_session_serves() {
+    let pki = Pki::new("ca");
+    let (mut connector, address) =
+        listening(&pki, &pki.server("server", &["localhost"]), "127.0.0.1:0").await;
+    let endpoint = format!("grpcs://localhost:{}", port(&address));
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca());
+    let placed = remote
+        .source(&scripted(&endpoint), &serde_json::json!({}))
+        .await
+        .expect("the connector is placed");
+    for _ in 0..3 {
+        placed.connector.check().await.expect("the check passes");
+    }
+    stop(&connector);
+    let mut stderr = String::new();
+    connector
+        .stderr
+        .take()
+        .expect("its errors are piped")
+        .read_to_string(&mut stderr)
+        .await
+        .expect("its errors read");
+    let named = stderr.lines().filter(|line| line.contains("`host`"));
+    assert_eq!(named.count(), 1, "{stderr}");
+}
+
+#[tokio::test]
 async fn a_listening_connector_speaks_no_plaintext_and_says_whom_it_refused() {
     let pki = Pki::new("ca");
     let (mut connector, address) =
@@ -205,7 +258,7 @@ async fn a_connector_that_drops_the_connection_after_its_handshake_is_unreachabl
 async fn dropped_after_handshake(reset: bool) {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["localhost"]);
-    let config = rdlt_wire::tls::server_config(&identity(&server), &pki.ca())
+    let config = rdlt_wire::tls::server_config(&identity(&server), &accepted(&pki))
         .expect("the server's configuration builds");
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

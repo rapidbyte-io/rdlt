@@ -50,6 +50,7 @@ pub(crate) async fn listening(
         .arg(&server.key)
         .arg("--tls-client-ca")
         .arg(pki.ca())
+        .args(["--tls-allow-host", "host"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)

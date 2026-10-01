@@ -70,6 +70,9 @@ rustls = { version = "0.23.45", default-features = false, features = [
   "ring",
   "std",
 ] } # TLS 1.3 for connectors reached over the network
+webpki = { package = "rustls-webpki", version = "0.103.15", default-features = false, features = [
+  "std",
+] } # the names a host's certificate carries, for a listening connector's allowlist
 tokio-rustls = { version = "0.26.5", default-features = false, features = [
   "ring",
 ] } # rustls over tokio's sockets
