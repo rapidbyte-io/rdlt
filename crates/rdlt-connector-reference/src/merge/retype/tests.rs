@@ -17,6 +17,7 @@ use arrow_array::{
 use arrow_buffer::i256;
 use arrow_schema::{DataType, Field, Fields, TimeUnit};
 
+use super::super::refused::code;
 use super::{raw, retyped};
 
 const UNITS: [TimeUnit; 4] = [
@@ -214,16 +215,24 @@ fn a_wall_clock_time_in_a_named_zone_is_the_instant_it_names_there() {
 }
 
 #[test]
-fn a_date_with_a_time_of_day_is_no_date() {
+fn a_date_counted_in_milliseconds_is_the_day_they_fall_in() {
     let whole: ArrayRef = Arc::new(Date64Array::from(vec![Some(-86_400_000), None, Some(0)]));
     let seconds = DataType::Timestamp(TimeUnit::Second, None);
     assert_eq!(
         raw(&retyped(&whole, &seconds).unwrap()),
         [Some(-86_400), None, Some(0)]
     );
-    for part in [1, -1, 86_399_999, -86_400_001] {
+    // Milliseconds that are no whole day name the day they are within, before 1970 too.
+    for (part, day) in [
+        (1, 0),
+        (-1, -1),
+        (86_399_999, 0),
+        (-86_400_001, -2),
+        (86_400_001, 1),
+    ] {
         let partial: ArrayRef = Arc::new(Date64Array::from(vec![part]));
-        assert!(retyped(&partial, &seconds).is_err(), "{part}");
+        let placed = raw(&retyped(&partial, &seconds).unwrap());
+        assert_eq!(placed, [Some(day * 86_400)], "{part}");
     }
 }
 
@@ -510,6 +519,10 @@ fn a_struct_converts_field_by_field() {
     assert_eq!(n.iter().collect::<Vec<_>>(), [Some(1), None, Some(3)]);
     // A value a field's wider type cannot hold fails the whole struct, under a null struct too.
     assert!(retyped(&stored(i64::MAX), &wider).is_err());
+    // A field the wider struct lacks has nowhere to go: its values are not dropped.
+    let narrower = DataType::Struct(Fields::from(vec![field("n", DataType::Int64)]));
+    let refused = retyped(&stored(4), &narrower).unwrap_err();
+    assert_eq!(code(&refused), Some("type_unconvertible"));
 }
 
 #[test]
@@ -573,4 +586,50 @@ fn an_id_or_a_sequence_kept_as_text_compares_as_the_bytes_it_is() {
     // A number is no id or sequence.
     let number: ArrayRef = Arc::new(Int64Array::from(vec![1]));
     assert!(super::compared(&number).is_err());
+}
+
+#[test]
+fn a_refused_conversion_says_whether_the_types_or_a_value_refuse_it() {
+    use arrow_array::Int64Array;
+    let seconds: ArrayRef = Arc::new(TimestampSecondArray::from(vec![i64::MAX]));
+    let nanos = DataType::Timestamp(TimeUnit::Nanosecond, None);
+    let beyond = retyped(&seconds, &nanos).unwrap_err();
+    assert_eq!(code(&beyond), Some("value_unholdable"));
+    let wide: ArrayRef = Arc::new(Int64Array::from(vec![i64::MAX]));
+    let narrow = retyped(&wide, &DataType::Int8).unwrap_err();
+    assert_eq!(code(&narrow), Some("value_unholdable"));
+    for to in [DataType::Utf8, DataType::Boolean, DataType::Float32] {
+        let refused = retyped(&wide, &to).unwrap_err();
+        assert_eq!(code(&refused), Some("type_unconvertible"), "{to}");
+    }
+    let coarser = retyped(
+        &retyped(&seconds, &seconds.data_type().clone()).unwrap(),
+        &nanos,
+    );
+    assert!(coarser.is_err());
+    let zoned = DataType::Timestamp(TimeUnit::Second, Some("Nowhere/Land".into()));
+    let small: ArrayRef = Arc::new(TimestampSecondArray::from(vec![1]));
+    let nowhere = retyped(&small, &zoned).unwrap_err();
+    assert_eq!(code(&nowhere), Some("type_unconvertible"));
+    // What the rows hold is checked against a schema before a column takes its type.
+    let batch = arrow_array::RecordBatch::try_from_iter([("until", seconds), ("n", wide)]).unwrap();
+    let schema = |until: DataType| {
+        Arc::new(arrow_schema::Schema::new(vec![
+            Field::new("until", until, true),
+            Field::new("other", DataType::Utf8, true),
+        ]))
+    };
+    let refused = super::holds([&batch], &schema(nanos)).unwrap_err();
+    assert_eq!(code(&refused), Some("value_unholdable"));
+    super::holds(
+        [&batch],
+        &schema(DataType::Timestamp(TimeUnit::Millisecond, None)),
+    )
+    .unwrap_err();
+    super::holds(
+        [&batch],
+        &schema(DataType::Timestamp(TimeUnit::Second, None)),
+    )
+    .unwrap();
+    super::holds(std::iter::empty(), &schema(DataType::Utf8)).unwrap();
 }

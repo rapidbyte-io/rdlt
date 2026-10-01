@@ -3,12 +3,17 @@
 mod aligned;
 mod changes;
 mod history;
+mod refused;
 mod retype;
 #[cfg(test)]
 mod tests;
 mod tombstones;
+mod written;
 
+pub(crate) use refused::failed;
+pub(crate) use retype::holds;
 pub(crate) use tombstones::schema as tombstone_schema;
+pub(crate) use written::admitted;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -65,6 +70,13 @@ pub(crate) fn merge(
     incoming: &[RecordBatch],
     key: &MergeKey,
 ) -> Result<Merged, ArrowError> {
+    let stored = match &key.changes {
+        Some(changes) => changes::stored(schema, changes),
+        None => Arc::clone(schema),
+    };
+    for batch in incoming {
+        admitted(batch, Some(&stored), key)?;
+    }
     let (rows, tombstones) = match (&key.history, &key.changes) {
         (Some(history), _) => {
             history::merge_history(schema, published, buried, incoming, key, history)?
@@ -178,13 +190,18 @@ pub(crate) fn merge_children(
 fn binary(batch: &RecordBatch, name: &str) -> Result<ArrayRef, ArrowError> {
     let column = batch
         .column_by_name(name)
-        .ok_or_else(|| ArrowError::SchemaError(format!("no column {name}")))?;
+        .ok_or_else(|| unkeyed(format!("the rows have no column {name}")))?;
     retype::compared(column)
 }
 
 /// The error for a merge key naming no column.
 fn keyless() -> ArrowError {
-    ArrowError::InvalidArgumentError("the table is merged by a key of no column".to_owned())
+    unkeyed("the table is merged by a key of no column")
+}
+
+/// The refusal of a merge key the rows cannot be merged by.
+fn unkeyed(message: impl Into<String>) -> ArrowError {
+    refused::refused(refused::MERGE_KEY_INVALID, message)
 }
 
 /// The converter of `key`'s columns of `schema` to comparable rows; a key of no column, or of a
@@ -195,14 +212,14 @@ fn converter(schema: &SchemaRef, key: &MergeKey) -> Result<RowConverter, ArrowEr
     }
     schema
         .field_with_name(&key.seq)
-        .map_err(|_| ArrowError::SchemaError(format!("no sequence column {}", key.seq)))?;
+        .map_err(|_| unkeyed(format!("the table has no sequence column {}", key.seq)))?;
     let fields = key
         .columns
         .iter()
         .map(|column| {
             let field = schema
                 .field_with_name(column)
-                .map_err(|_| ArrowError::SchemaError(format!("no key column {column}")))?;
+                .map_err(|_| unkeyed(format!("the table has no key column {column}")))?;
             Ok(SortField::new(field.data_type().clone()))
         })
         .collect::<Result<Vec<_>, ArrowError>>()?;
@@ -216,7 +233,7 @@ fn key_columns(batch: &RecordBatch, key: &MergeKey) -> Result<Vec<ArrayRef>, Arr
             batch
                 .column_by_name(column)
                 .cloned()
-                .ok_or_else(|| ArrowError::SchemaError(format!("no key column {column}")))
+                .ok_or_else(|| unkeyed(format!("the rows have no key column {column}")))
         })
         .collect()
 }

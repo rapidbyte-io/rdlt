@@ -10,15 +10,16 @@ mod table;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::Int8Type;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_row::Rows;
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
 use super::aligned::{Nulls, aligned, concat};
+use super::refused::{FLAG_ON_KEY, SEQUENCE_MISSING, refused};
 use super::retype::retyped;
 use super::tombstones::{self, Tombstones};
+use super::written::ops;
 use super::{binary, converter, held, key_columns};
 use table::{Applied, At, Change, Columns, Table};
 
@@ -125,24 +126,6 @@ pub(super) fn nullable(schema: &SchemaRef) -> SchemaRef {
     ))
 }
 
-/// The op of every row of `batch`, a written batch, as the column `changes` names holds it.
-pub(super) fn ops(
-    batch: &RecordBatch,
-    changes: &ChangeColumns,
-) -> Result<Vec<ChangeOp>, ArrowError> {
-    let ops = batch
-        .column_by_name(&changes.op)
-        .ok_or_else(|| ArrowError::SchemaError(format!("no op column {}", changes.op)))?;
-    let ops = retyped(ops, &DataType::Int8)?;
-    ops.as_primitive::<Int8Type>()
-        .iter()
-        .map(|op| {
-            op.and_then(ChangeOp::from_code)
-                .ok_or_else(|| ArrowError::InvalidArgumentError(format!("{op:?} is no op")))
-        })
-        .collect()
-}
-
 /// Every row of `incoming`, with its op and sequence.
 fn changed_rows(
     incoming: &[RecordBatch],
@@ -156,9 +139,7 @@ fn changed_rows(
         let seqs = seqs.as_binary::<i32>();
         for (row, op) in ops(raw, changes)?.into_iter().enumerate() {
             if seqs.is_null(row) {
-                return Err(ArrowError::InvalidArgumentError(
-                    "a change has no sequence".to_owned(),
-                ));
+                return Err(refused(SEQUENCE_MISSING, "a change has no sequence"));
             }
             rows.push(Change {
                 at: At {
@@ -240,9 +221,8 @@ impl Flags {
                 continue;
             };
             if self.set_always[*column] {
-                return Err(ArrowError::InvalidArgumentError(
-                    "a change flags its key or sequence column unchanged".to_owned(),
-                ));
+                let message = "a change flags its key or sequence column unchanged";
+                return Err(refused(FLAG_ON_KEY, message));
             }
             mask[*column] = true;
             flagged = true;

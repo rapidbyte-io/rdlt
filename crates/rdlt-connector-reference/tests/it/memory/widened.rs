@@ -1,4 +1,4 @@
-//! Rows a memory table holds are converted to a wider type exactly, or the merge fails.
+//! Rows a memory table holds are converted to a wider type exactly, or the widen is refused.
 
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ async fn staged(session: &mut OpenedSession, segment: u64, id: i64, until: Array
 }
 
 /// Commits one row whose `until` is `stored` seconds, widens `until` to nanoseconds, and commits
-/// another row; returns the second commit's outcome.
+/// another row at the unit the column then has; returns the widen's outcome.
 async fn widened(store_name: &str, stored: i64) -> Result<(), rdlt_connector::ConnectorError> {
     let destination = store(store_name).await;
     let mut session = open(destination.as_ref(), "p", 1).await;
@@ -87,34 +87,40 @@ async fn widened(store_name: &str, stored: i64) -> Result<(), rdlt_connector::Co
         from: seconds,
         to: nanos,
     };
-    session
-        .session
-        .apply_schema(&widen)
-        .await
-        .expect("the column widens");
-    let second: ArrayRef = Arc::new(TimestampNanosecondArray::from(vec![5]));
+    let widening = session.session.apply_schema(&widen).await;
+    let second: ArrayRef = match &widening {
+        Ok(()) => Arc::new(TimestampNanosecondArray::from(vec![5])),
+        Err(_) => Arc::new(TimestampSecondArray::from(vec![5])),
+    };
     staged(&mut session, 2, 2, second).await;
     session
         .session
         .commit(&meta(&session, 1, 2, &[2]))
         .await
-        .map(drop)
+        .expect("the table merges at the type it has");
+    widening
 }
 
 #[tokio::test]
-async fn a_stored_value_a_finer_unit_cannot_hold_fails_the_merge_and_changes_nothing() {
+async fn a_widen_a_stored_value_does_not_fit_is_refused_and_the_table_merges_as_it_was() {
     // The last day of the year 9999, which nanoseconds do not reach.
     let error = widened("widened-beyond", 253_402_214_400)
         .await
         .expect_err("the stored value does not fit");
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
-    let held = published("widened-beyond", "events");
-    let [batch] = &held[..] else {
-        panic!("{held:?}")
-    };
-    let until = batch.column_by_name("until").expect("the column");
-    let until = until.as_primitive::<TimestampSecondType>();
-    assert_eq!(until.iter().collect::<Vec<_>>(), [Some(253_402_214_400)]);
+    assert_eq!(error.code(), Some("schema_conflict"));
+    let mut values: Vec<Option<i64>> = published("widened-beyond", "events")
+        .iter()
+        .flat_map(|batch| {
+            let until = batch.column_by_name("until").expect("the column");
+            until
+                .as_primitive::<TimestampSecondType>()
+                .iter()
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    values.sort_unstable();
+    assert_eq!(values, [Some(5), Some(253_402_214_400)]);
 }
 
 #[tokio::test]

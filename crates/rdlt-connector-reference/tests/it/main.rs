@@ -18,6 +18,7 @@ mod generator;
 mod history;
 mod memory;
 mod read_back;
+mod refusals;
 mod sqlite;
 mod switch;
 mod tombstones;

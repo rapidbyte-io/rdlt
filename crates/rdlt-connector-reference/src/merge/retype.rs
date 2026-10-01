@@ -13,6 +13,7 @@ mod tests;
 
 use std::sync::Arc;
 
+use super::refused::{TYPE_UNCONVERTIBLE, VALUE_UNHOLDABLE, refused};
 use arrow_array::cast::AsArray;
 use arrow_array::temporal_conversions::as_datetime;
 use arrow_array::timezone::Tz;
@@ -42,7 +43,7 @@ pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, Arrow
         }
         (DataType::Date32 | DataType::Date64, DataType::Timestamp(unit, zone)) => {
             let per_day = 86_400 * per_second(*unit);
-            let local = scaled(days(array)?, per_day)?;
+            let local = scaled(days(array), per_day)?;
             let values = placed(local, *unit, zone.as_deref())?;
             Ok(timestamps(values, *unit, zone.clone()))
         }
@@ -76,6 +77,22 @@ pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, Arrow
         _ if lossless(from, to) => checked(array, to),
         _ => Err(inexact(from, to)),
     }
+}
+
+/// Refuses `batches` unless every column of theirs that `schema` names converts to its type
+/// there with every value kept: what a table holds must fit a type before a column takes it.
+pub(crate) fn holds<'a>(
+    batches: impl IntoIterator<Item = &'a arrow_array::RecordBatch>,
+    schema: &arrow_schema::SchemaRef,
+) -> Result<(), ArrowError> {
+    for batch in batches {
+        for field in schema.fields() {
+            if let Some(column) = batch.column_by_name(field.name()) {
+                retyped(column, field.data_type())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether Arrow's checked cast from `from` to `to` keeps every value it does not refuse: wider
@@ -120,17 +137,20 @@ fn checked(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
         safe: false,
         ..CastOptions::default()
     };
+    // Every pair cast here keeps the values it takes: what it refuses is a value that does
+    // not fit.
     arrow_cast::cast_with_options(array, to, &options)
+        .map_err(|error| refused(VALUE_UNHOLDABLE, error.to_string()))
 }
 
 fn inexact(from: &DataType, to: &DataType) -> ArrowError {
-    ArrowError::CastError(format!(
-        "no conversion from {from} to {to} keeps every value"
-    ))
+    let message = format!("no conversion from {from} to {to} keeps every value");
+    refused(TYPE_UNCONVERTIBLE, message)
 }
 
 fn overflow(value: impl std::fmt::Display) -> ArrowError {
-    ArrowError::CastError(format!("value {value} is beyond what its wider type holds"))
+    let message = format!("value {value} is beyond what its wider type holds");
+    refused(VALUE_UNHOLDABLE, message)
 }
 
 /// Units of `unit` in a second.
@@ -199,19 +219,20 @@ fn raw(array: &ArrayRef) -> Vec<Option<i64>> {
     }
 }
 
-/// The days `array`, dates, holds; a `Date64` that is no whole day is refused.
-fn days(array: &ArrayRef) -> Result<Vec<Option<i64>>, ArrowError> {
+/// The days `array`, dates, holds: a `Date64`, which counts milliseconds, is the day its
+/// milliseconds fall in.
+///
+/// Arrow has a `Date64` hold whole days alone; one that does not names the day it is within, as
+/// the engine reads it.
+fn days(array: &ArrayRef) -> Vec<Option<i64>> {
     const DAY: i64 = 86_400_000;
     let values = raw(array);
     if *array.data_type() != DataType::Date64 {
-        return Ok(values);
+        return values;
     }
     values
         .into_iter()
-        .map(|millis| match millis {
-            Some(millis) if millis % DAY != 0 => Err(overflow(millis)),
-            other => Ok(other.map(|millis| millis / DAY)),
-        })
+        .map(|millis| millis.map(|millis| millis.div_euclid(DAY)))
         .collect()
 }
 
@@ -225,7 +246,9 @@ fn placed(
     let Some(zone) = zone else {
         return Ok(local);
     };
-    let tz: Tz = zone.parse()?;
+    let tz: Tz = zone
+        .parse()
+        .map_err(|_| refused(TYPE_UNCONVERTIBLE, format!("{zone} is no time zone")))?;
     local
         .into_iter()
         .map(|value| {
@@ -346,8 +369,17 @@ fn times(values: Vec<Option<i64>>, to: &DataType) -> Result<ArrayRef, ArrowError
     })
 }
 
-/// `source` as a struct of `fields`: each field its column of that name, converted, or nulls.
+/// `source` as a struct of `fields`: each field its column of that name, converted, or nulls;
+/// a struct holding a field `fields` lacks is refused, since its values would go.
 fn structs(source: &StructArray, fields: &Fields) -> Result<ArrayRef, ArrowError> {
+    if let Some(extra) = source
+        .fields()
+        .iter()
+        .find(|held| fields.find(held.name()).is_none())
+    {
+        let message = format!("field {} has no place in the wider struct", extra.name());
+        return Err(refused(TYPE_UNCONVERTIBLE, message));
+    }
     let columns = fields
         .iter()
         .map(|field| match source.column_by_name(field.name()) {

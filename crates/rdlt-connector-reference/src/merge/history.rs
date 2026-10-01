@@ -14,9 +14,10 @@ use arrow_schema::{ArrowError, DataType, SchemaRef};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey};
 
 use super::aligned::{Nulls, aligned, concat, interleaved};
-use super::changes::{nullable, ops, stored};
+use super::changes::{nullable, stored};
 use super::retype::retyped;
 use super::tombstones::{self, Tombstones};
+use super::written::ops;
 use super::{binary, converter, held, key_columns};
 
 /// A row a version's values come from.
