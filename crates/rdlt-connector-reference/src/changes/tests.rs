@@ -1,3 +1,5 @@
+mod bounds;
+
 use std::num::NonZeroUsize;
 
 use arrow_array::cast::AsArray;

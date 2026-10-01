@@ -1,5 +1,6 @@
 //! A source of seeded change streams: a snapshot of a keyed table, then the changes made to it.
 
+mod bounds;
 mod history;
 mod model;
 mod slot;
@@ -25,6 +26,8 @@ pub use history::{Version, history};
 pub use model::{Change, Row, change, expected, snapshot};
 use slot::Slot;
 
+use crate::positions::keeper_path;
+
 /// Configuration of [`ChangesSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +43,8 @@ pub struct ChangesConfig {
     pub slot: Option<String>,
     /// The file the slot is kept in instead, which outlives the process as a replication slot
     /// outlives its clients; `slot` names none then.
+    ///
+    /// A path from the root, each directory on its way by its name, to a file named `*.slot`.
     #[serde(default)]
     pub slot_path: Option<std::path::PathBuf>,
 }
@@ -50,9 +55,10 @@ pub struct ChangesConfig {
 pub struct ChangedStream {
     /// The stream's name.
     pub name: String,
-    /// The keys the table holds when the snapshot is taken: `0..keys`.
+    /// The keys the table holds when the snapshot is taken: `0..keys`, at most a million.
     pub keys: u64,
-    /// Partitions the snapshot is read in; key `k` belongs to partition `k % snapshot_partitions`.
+    /// Partitions the snapshot is read in, at most 1024; key `k` belongs to partition
+    /// `k % snapshot_partitions`.
     #[serde(default = "one")]
     pub snapshot_partitions: u64,
     /// Changes after the snapshot, at positions `1..=changes`.
@@ -60,11 +66,11 @@ pub struct ChangedStream {
     /// Rows per pushed batch; a checkpoint follows each batch.
     #[serde(default = "ten")]
     pub batch_rows: u64,
-    /// The positions of changes that truncate the table.
+    /// The positions of changes that truncate the table, at most 1024.
     #[serde(default)]
     pub truncates: Vec<u64>,
     /// How many changes the snapshot holds: it is taken at position `captured`, its rows carry
-    /// that position, and the changes after it are read.
+    /// that position, and the changes after it are read; at most a million.
     #[serde(default)]
     pub captured: u64,
     /// Whether the source serves again the changes its slot acknowledged; one that does not
@@ -125,12 +131,10 @@ impl SourceConnector for ChangesSource {
     async fn connect(config: ChangesConfig, _context: &ConnectContext) -> Result<Self> {
         for stream in &config.streams {
             StreamName::new(&stream.name).config(format!("stream name {:?}", stream.name))?;
-            if stream.snapshot_partitions == 0 || stream.batch_rows == 0 {
-                return Err(ConnectorError::config(format!(
-                    "stream {}: snapshot_partitions and batch_rows must be at least 1",
-                    stream.name
-                )));
-            }
+            stream.bounded()?;
+        }
+        if let Some(path) = &config.slot_path {
+            keeper_path(path, "slot")?;
         }
         Ok(Self {
             seed: config.seed,
@@ -240,7 +244,7 @@ impl ReadStream<ChangesSource> for Changed {
         let start = Cursor::encode(
             1,
             &Position {
-                next: self.0.captured + 1,
+                next: self.0.captured.saturating_add(1),
                 done: false,
             },
         )?;
@@ -256,6 +260,9 @@ impl ReadStream<ChangesSource> for Changed {
         source: &ChangesSource,
         cursors: &[(PartitionId, Position)],
     ) -> Result<()> {
+        for (partition, _) in cursors {
+            self.0.member(partition)?;
+        }
         for (partition, position) in cursors {
             let kept = source.slot.advance(&self.0.name, partition, *position);
             kept.transient("keeping the slot")?;
@@ -295,13 +302,10 @@ impl ReadStream<ChangesSource> for Changed {
             }
             return self.read_changes(source.seed, cursor, out).await;
         }
-        let index = id
-            .strip_prefix("snapshot-")
-            .and_then(|index| index.parse::<u64>().ok())
-            .filter(|index| *index < self.0.snapshot_partitions)
-            .ok_or_else(|| {
-                ConnectorError::data(format!("stream {} has no partition {id}", self.0.name))
-            })?;
+        let index = self
+            .0
+            .snapshot_index(id)
+            .ok_or_else(|| self.0.no_partition(id))?;
         self.read_snapshot(source.seed, id, index, cursor, out)
             .await
     }
@@ -331,7 +335,7 @@ impl Changed {
         }
         let mut next = cursor.next;
         while next < total {
-            let last = (next + self.0.batch_rows).min(total);
+            let last = next.saturating_add(self.0.batch_rows).min(total);
             let batch = rows[to_index(next)..to_index(last)]
                 .iter()
                 .map(|(id, row)| {
@@ -370,7 +374,9 @@ impl Changed {
     ) -> Result<()> {
         let mut next = cursor.next.max(1);
         while next <= self.0.changes {
-            let last = (next + self.0.batch_rows - 1).min(self.0.changes);
+            let last = next
+                .saturating_add(self.0.batch_rows - 1)
+                .min(self.0.changes);
             let rows = (next..=last)
                 .map(|position| {
                     let seq = position;
@@ -388,7 +394,8 @@ impl Changed {
                 .collect::<Vec<_>>();
             out.changes(changes_batch(&rows, self.0.changed_at)?)
                 .await?;
-            next = last + 1;
+            // A stream's changes end below the last position a number holds.
+            next = last.saturating_add(1);
             out.checkpoint(&Position { next, done: false }).await?;
         }
         Ok(())

@@ -16,6 +16,8 @@ use tokio::time::Instant;
 
 use crate::generator::mix;
 use crate::kept::{Kept, Registry};
+use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, within};
+use crate::positions::keeper_path;
 
 /// Configuration of [`LogSource`].
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -32,6 +34,8 @@ pub struct LogConfig {
     pub group: Option<String>,
     /// The file the group's offsets are kept in instead, which outlives the process as a
     /// broker keeps them; `group` names none then.
+    ///
+    /// A path from the root, each directory on its way by its name, to a file named `*.group`.
     #[serde(default)]
     pub group_path: Option<std::path::PathBuf>,
 }
@@ -43,7 +47,7 @@ pub struct LogConfig {
 pub struct LoggedStream {
     /// The stream's name.
     pub name: String,
-    /// Partitions `p0..p{partitions - 1}`.
+    /// Partitions `p0..p{partitions - 1}`; with the ones the stream gains, at most 1024.
     pub partitions: u32,
     /// Messages each partition holds when the process first reads any log.
     pub messages: u64,
@@ -77,7 +81,7 @@ pub struct LoggedStream {
     /// to read from before its committed offset.
     #[serde(default = "replayable")]
     pub replayable: bool,
-    /// Messages per pushed batch.
+    /// Messages per pushed batch, at most 100000.
     #[serde(default = "ten")]
     pub batch_rows: u64,
     /// Batches a checkpoint: one follows every so many batches, each batch where it is one.
@@ -112,6 +116,11 @@ fn elapsed() -> Duration {
     Instant::now().saturating_duration_since(origin())
 }
 
+/// The most partitions `stream` ever has: its first and the ones it gains.
+fn most(stream: &LoggedStream) -> u64 {
+    u64::from(stream.partitions) + u64::from(stream.partitions_later)
+}
+
 /// Consumer groups by name, for as long as the process runs.
 static GROUPS: Registry<u64> = Registry::new();
 
@@ -141,6 +150,16 @@ impl SourceConnector for LogSource {
                     stream.name
                 )));
             }
+            within(&stream.name, "partitions", most(stream), MAX_PARTITIONS)?;
+            within(
+                &stream.name,
+                "batch_rows",
+                stream.batch_rows,
+                MAX_MESSAGE_ROWS,
+            )?;
+        }
+        if let Some(path) = &config.group_path {
+            keeper_path(path, "group")?;
         }
         origin();
         Ok(Self {
@@ -194,6 +213,24 @@ impl Logged {
             .saturating_add(later)
             .saturating_sub(retired)
             .max(1)
+    }
+
+    /// Checks that `partition` is one the stream ever has: `p` and an index below its first
+    /// partitions and the ones it gains, written the way the stream plans it.
+    fn member(&self, partition: &PartitionId) -> Result<()> {
+        let index = partition
+            .as_str()
+            .strip_prefix('p')
+            .and_then(|index| index.parse::<u32>().ok())
+            .filter(|index| u64::from(*index) < most(&self.0))
+            .filter(|index| partition.as_str() == format!("p{index}"));
+        match index {
+            Some(_) => Ok(()),
+            None => Err(ConnectorError::data(format!(
+                "stream {} has no partition {partition}",
+                self.0.name
+            ))),
+        }
     }
 
     /// The offset past the last message each partition holds `elapsed` after the logs began.
@@ -267,7 +304,7 @@ impl Logged {
         if self.0.per_second == 0 {
             return None;
         }
-        let grown = offset.saturating_sub(self.0.messages) + 1;
+        let grown = offset.saturating_sub(self.0.messages).saturating_add(1);
         let at = Duration::from_millis(grown.saturating_mul(1000).div_ceil(self.0.per_second));
         Some(at.saturating_sub(elapsed))
     }
@@ -399,6 +436,9 @@ impl ReadStream<LogSource> for Logged {
 
     /// Commits each partition's offset in the source's consumer group.
     async fn committed(&self, source: &LogSource, cursors: &[(PartitionId, Offset)]) -> Result<()> {
+        for (partition, _) in cursors {
+            self.member(partition)?;
+        }
         for (partition, offset) in cursors {
             let kept = source.group.advance(&self.0.name, partition, offset.next);
             kept.transient("keeping the group's offsets")?;
