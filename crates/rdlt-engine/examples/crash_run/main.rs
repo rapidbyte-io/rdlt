@@ -4,9 +4,10 @@
 //!
 //! `crash_run <config.json>` runs the pipeline the file describes once, retrying, and exits 0
 //! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names. It
-//! tells each read as it begins (`read 2`), each commit as it lands (`commit 3`), a kill as it
-//! makes it (`killed reading 1`, the source's reads then in flight), and last its report, as JSON;
-//! told to pause after a read or commit, it waits there to be killed.
+//! tells each connector it spawns by its process id (`connector 4321`), each read as it begins
+//! (`read 2`), each commit as it lands (`commit 3`), a kill as it makes it (`killed reading 1`,
+//! the source's reads then in flight), and last its report, as JSON; told to pause after a read
+//! or commit, it waits there to be killed. Before it exits it stops what it spawned.
 
 #![forbid(unsafe_code)]
 
@@ -51,7 +52,12 @@ fn main() -> ExitCode {
         .enable_all()
         .build()
         .expect("a runtime starts");
-    match runtime.block_on(run(&config)) {
+    let ran = runtime.block_on(run(&config));
+    drop(runtime);
+    // A host owns the process groups of the connectors it spawned: each is stopped, and seen
+    // empty, before the host exits.
+    let stopped = rdlt_host::stop_spawned(std::time::Duration::from_secs(20));
+    match ran.and(stopped.map_err(|lingering| lingering.to_string())) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             writeln!(std::io::stderr(), "crash_run: {error}").ok();
@@ -70,6 +76,7 @@ async fn run(config: &Config) -> Result<(), String> {
         (killed == Some(Victim::Destination)).then_some(&kills),
     )
     .await?;
+    watch::tell_spawned();
     let kill = config.kill.map(|kill| (kills, kill));
     let watch = Arc::new(Watch::new(kill, config.pause));
     let source = watch::source(source, Arc::clone(&watch));
@@ -101,7 +108,7 @@ async fn source(config: &Config, kills: Option<&Kills>) -> Result<Arc<dyn Source
     };
     if place.spawned {
         let placed = host(kills)
-            .source(&reference(id, served)?, &place.config)
+            .source(&reference(id, served, place)?, &place.config)
             .await
             .map_err(|error| error.to_string())?;
         return Ok(Arc::from(placed.connector));
@@ -131,7 +138,7 @@ async fn destination(
     };
     if place.spawned {
         let placed = host(kills)
-            .destination(&reference(id, served)?, &place.config)
+            .destination(&reference(id, served, place)?, &place.config)
             .await
             .map_err(|error| error.to_string())?;
         return Ok(Arc::from(placed.connector));
@@ -156,13 +163,15 @@ fn host(kills: Option<&Kills>) -> Local {
     }
 }
 
-/// The reference to the connector `id`, served by the example `served` beside this one.
-fn reference(id: &str, served: &str) -> Result<ConnectorRef, String> {
+/// The reference to the connector `id`, served by the example `served` beside this one, or
+/// started by `place`'s launcher where it names one.
+fn reference(id: &str, served: &str, place: &config::Place) -> Result<ConnectorRef, String> {
     let id = rdlt_connector::ConnectorId::parse(id).map_err(|error| error.to_string())?;
     let here = std::env::current_exe().map_err(|error| error.to_string())?;
-    let path: PathBuf = here
+    let beside: PathBuf = here
         .parent()
         .ok_or("this example has no directory")?
         .join(served);
+    let path = place.launcher.clone().unwrap_or(beside);
     Ok(ConnectorRef::new(id).path(path))
 }

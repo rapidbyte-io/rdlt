@@ -47,6 +47,7 @@ impl Watch {
     /// Tells `line`, a read begun or a commit landed, and holds what told it for good where the run
     /// pauses after it, so a kill finds the run there.
     async fn tell(&self, line: String) {
+        tell_spawned();
         writeln!(std::io::stdout(), "{line}").ok();
         let told = self.told.fetch_add(1, Ordering::SeqCst) + 1;
         if self.pause == Some(told) {
@@ -193,5 +194,20 @@ impl DestinationSession for Session {
 
     fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
         self.inner.close()
+    }
+}
+
+/// Tells each connector spawned since the last telling, by its process id: the id of the process
+/// group it leads, which what watches the run checks is gone once the run has ended.
+pub(crate) fn tell_spawned() {
+    static TOLD: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+    let mut told = TOLD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for connector in rdlt_host::spawned() {
+        if !told.contains(&connector) {
+            told.push(connector);
+            writeln!(std::io::stdout(), "connector {connector}").ok();
+        }
     }
 }
