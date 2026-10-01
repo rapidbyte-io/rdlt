@@ -137,7 +137,7 @@ pub use secret::Secret;
 pub use serve::serve;
 pub use sink::{
     Admission, LogLevel, PartitionFeed, PartitionSink, Permit, Push, Requested, SourceEvent,
-    admitted_partition_channel, decoded_bytes, decoded_rows, partition_channel,
+    admitted_partition_channel, partition_channel,
 };
 pub use source::{
     ACKNOWLEDGED_CODE, POSITION_UNSENT, Partition, PartitionPlan, ReadRequest, ReadStream, Sent,

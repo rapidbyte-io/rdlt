@@ -178,6 +178,7 @@ async fn launch(
         lanes: lanes.clone(),
         tables: Arc::clone(&tables),
         budget: context.budget.clone(),
+        rendering: Arc::new(crate::cost::rendering(context.destination.capabilities())),
         progress,
         barrier: barrier_feed,
         stop: stop_reads.clone(),

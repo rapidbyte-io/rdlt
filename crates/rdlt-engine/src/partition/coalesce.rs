@@ -31,7 +31,7 @@ pub(crate) enum Unit {
 pub(crate) struct Flushed {
     pub(crate) unit: Unit,
     pub(crate) permits: Vec<Permit>,
-    /// Bytes of the pushes.
+    /// Bytes the pushes were charged.
     pub(crate) bytes: u64,
 }
 
@@ -56,10 +56,15 @@ impl Coalescer {
         }
     }
 
-    /// Adds `pushed`, which arrived at `now` holding `permit`; returns what to write first, in
-    /// order: the pushes gathered before when `pushed` cannot join them, and every push gathered
-    /// once a threshold is reached.
-    pub(crate) fn add(&mut self, pushed: Pushed, permit: Permit, now: Instant) -> Vec<Flushed> {
+    /// Adds `pushed`, which arrived at `now` holding `permit` for the `bytes` it was charged;
+    /// returns what to write first, in order: the pushes gathered before when `pushed` cannot
+    /// join them, and every push gathered once a threshold is reached.
+    pub(crate) fn add(
+        &mut self,
+        pushed: Pushed,
+        (bytes, permit): (u64, Permit),
+        now: Instant,
+    ) -> Vec<Flushed> {
         let mut flushed = Vec::new();
         if self
             .pending
@@ -68,13 +73,10 @@ impl Coalescer {
         {
             flushed.extend(self.flush());
         }
-        // A JSON push's rows are only known once it is shredded, so JSON counts by its bytes.
-        let (bytes, rows) = match &pushed {
-            Pushed::Json(json) => (count(json.len()), 0),
-            Pushed::Arrow(batch) => (
-                rdlt_connector::decoded_bytes(batch),
-                count(batch.num_rows()),
-            ),
+        // A JSON push's rows are only known once it is shredded, so JSON counts none.
+        let rows = match &pushed {
+            Pushed::Json(_) => 0,
+            Pushed::Arrow(batch) => count(batch.num_rows()),
         };
         let pending = self.pending.get_or_insert_with(|| Pending {
             flushed: Flushed {

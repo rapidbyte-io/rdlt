@@ -9,7 +9,6 @@ use std::future::Future;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use rdlt_connector::{Admission, BoxFuture, Permit};
 use tokio::sync::oneshot;
 
 use crate::watch;
@@ -139,12 +138,6 @@ impl fmt::Debug for MemoryBudget {
             .field("capacity", &ledger.capacity)
             .field("reserved", &ledger.reserved)
             .finish_non_exhaustive()
-    }
-}
-
-impl Admission for MemoryBudget {
-    fn admit(&self, bytes: u64) -> BoxFuture<'_, Permit> {
-        Box::pin(async move { Box::new(self.acquire(bytes).await) as Permit })
     }
 }
 

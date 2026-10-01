@@ -9,6 +9,7 @@ use arrow_array::{
 use bytes::Bytes;
 
 use super::{Budget, spend};
+use crate::cost::Rendering;
 use crate::cursor::Cursor;
 use crate::sink::Push;
 use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES, HELD_ROWS};
@@ -90,7 +91,8 @@ async fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_
         for push in [arrow, changes] {
             let budget = Budget::new();
             budget.push(&push).await.unwrap();
-            let bytes = usize::try_from(push.bytes()).unwrap() + HELD_EVENT_BYTES;
+            let cost = Rendering::native().charge(&push, u64::MAX);
+            let bytes = usize::try_from(cost).unwrap() + HELD_EVENT_BYTES;
             assert_eq!(
                 left(&budget),
                 (HELD_BYTES - bytes, HELD_ROWS - rows),

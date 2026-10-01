@@ -3,6 +3,7 @@
 
 mod barriers;
 mod coalesce;
+mod progress;
 #[cfg(test)]
 mod tests;
 mod write;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
+use rdlt_connector::cost::Rendering;
 use rdlt_connector::{
     Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, RETENTION_LOST,
     ReadRequest, SegmentId, Source, SourceEvent, StreamName, admitted_partition_channel,
@@ -21,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
 use crate::config::BatchPolicy;
+use crate::cost::{Admitted, Charging};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
@@ -30,82 +33,8 @@ use crate::watch;
 
 use barriers::Barriers;
 use coalesce::{Coalescer, Pushed};
+pub(crate) use progress::{Progress, Seal};
 use write::write_flushed;
-
-/// What a partition tells the commit coordinator.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Progress {
-    /// The partition started reading.
-    Started {
-        /// The partition's index in the attempt.
-        partition: usize,
-    },
-    /// Rows were queued for staging.
-    Written {
-        /// Rows queued.
-        rows: u64,
-        /// Their bytes in memory.
-        bytes: u64,
-    },
-    /// A segment was sealed.
-    Sealed(Seal),
-    /// The stream's source said its partitions changed.
-    Replan {
-        /// The partition's index in the attempt.
-        partition: usize,
-    },
-    /// The partition's read is `records` behind its source's newest.
-    Behind {
-        /// The partition's index in the attempt.
-        partition: usize,
-        records: u64,
-    },
-    /// The partition's source had dropped where its read would resume, and it read again from
-    /// its earliest.
-    RetentionReset {
-        /// The partition's index in the attempt.
-        partition: usize,
-    },
-    /// Rows were staged to a segment no commit will take: no checkpoint sealed them.
-    Abandoned {
-        /// Rows abandoned.
-        rows: u64,
-        /// Their bytes in memory.
-        bytes: u64,
-    },
-    /// The partition stopped reading; a partition that was not stopped sealed its end first.
-    Ended {
-        /// The partition's index in the attempt.
-        partition: usize,
-        /// Whether the read ended because the engine asked it to stop.
-        stopped: bool,
-    },
-}
-
-/// A sealed segment: every row written to it, and where to resume after it.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Seal {
-    /// The partition's index in the attempt.
-    pub(crate) partition: usize,
-    /// The segment.
-    pub(crate) segment: SegmentId,
-    /// Rows written to the segment.
-    pub(crate) rows: u64,
-    /// Their bytes in memory.
-    pub(crate) bytes: u64,
-    /// Where the partition resumes once the segment is committed.
-    pub(crate) state: PartitionState,
-    /// The barrier this seal answers.
-    pub(crate) answers: Option<u64>,
-    /// Rows the schema policy dropped from the segment.
-    pub(crate) discarded_rows: u64,
-    /// Values the schema policy nulled in the segment.
-    pub(crate) discarded_values: u64,
-    /// Deletes the stream ignores, dropped from the segment.
-    pub(crate) deletes_ignored: u64,
-    /// Truncates the stream ignores, dropped from the segment.
-    pub(crate) truncates_ignored: u64,
-}
 
 /// One partition to read.
 #[derive(Clone, Debug)]
@@ -153,6 +82,8 @@ pub(crate) struct PartitionContext {
     pub(crate) lanes: Lanes,
     pub(crate) tables: Arc<Tables>,
     pub(crate) budget: MemoryBudget,
+    /// How the destination renders values, which decides what a batch costs.
+    pub(crate) rendering: Arc<Rendering>,
     pub(crate) progress: mpsc::UnboundedSender<Progress>,
     pub(crate) barrier: watch::Receiver<u64>,
     /// Fires when reads must stop; the partitions end without sealing their open segments.
@@ -280,9 +211,12 @@ async fn read_and_ingest(
     job: &PartitionJob,
     context: &PartitionContext,
 ) -> Result<(Ingested, rdlt_connector::Result<()>), Error> {
-    // Each push reserves its bytes before it enters the channel, so a source buffers nothing
-    // outside the budget (spec §7.5).
-    let admission = Arc::new(context.budget.clone());
+    // Each push and checkpoint reserves what it costs before it enters the channel, so a source
+    // buffers nothing outside the budget (spec §7.5).
+    let admission = Arc::new(Charging::new(
+        context.budget.clone(),
+        Arc::clone(&context.rendering),
+    ));
     let (sink, feed) = admitted_partition_channel(context.buffer, admission);
     let request = ReadRequest::new(
         job.stream.clone(),
@@ -500,8 +434,11 @@ impl Ingested {
             }
         };
         // Every push on an admitted channel carries the permit that reserved its bytes.
-        let permit = permit.ok_or_else(|| Error::internal("a push arrived without its permit"))?;
-        for flushed in self.coalescer.add(pushed, permit, context.env.instant()) {
+        let admitted = permit
+            .and_then(Admitted::of)
+            .ok_or_else(|| Error::internal("a push arrived without its permit"))?;
+        let held: (u64, Permit) = (admitted.bytes, admitted);
+        for flushed in self.coalescer.add(pushed, held, context.env.instant()) {
             write_flushed(job, context, &mut self.open, flushed).await?;
         }
         Ok(())
