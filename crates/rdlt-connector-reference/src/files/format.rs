@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{ArrowError, SchemaRef};
@@ -29,7 +30,8 @@ use crate::rooted::Dir;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FileFormat {
-    /// One JSON object per line; types JSON has no form for are stored as text.
+    /// One JSON object per line; types JSON has no form for are stored as text, and a float
+    /// that is not finite as the string naming it: `NaN`, `Infinity` or `-Infinity`.
     #[default]
     Jsonl,
     /// Arrow IPC files, which keep every type.
@@ -276,7 +278,9 @@ impl<'a> Writer<'a> {
         let rows = batch.num_rows();
         let written = match self.sink.as_mut().expect("the writer is unfinished") {
             Sink::Jsonl(lines) => {
-                let mut writer = arrow_json::LineDelimitedWriter::new(lines);
+                let mut writer = arrow_json::WriterBuilder::new()
+                    .with_encoder_factory(Arc::new(json::ExactFloats))
+                    .build::<_, arrow_json::writer::LineDelimited>(lines);
                 writer.write(batch).and_then(|()| writer.finish())
             }
             Sink::Arrow(writer) => chunks(batch).try_for_each(|chunk| {
