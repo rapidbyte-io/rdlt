@@ -723,6 +723,11 @@ fn a_batch_of_no_rows_sliced_from_a_large_one_is_a_frame_of_its_empty_schema() {
     let mut columns = sharing();
     columns.push(lists);
     columns.extend(crate::codec::tests::samples::columns());
+    columns.extend(
+        crate::codec::tests::odd::columns()
+            .into_iter()
+            .map(|(_, odd)| odd),
+    );
     for column in columns {
         let rows = column.len();
         for start in [0, rows / 2, rows] {
