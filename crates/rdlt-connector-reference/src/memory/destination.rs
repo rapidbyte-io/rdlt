@@ -15,7 +15,6 @@ use rdlt_connector::{
     StateChange, StateRecord, TablePath, TypeKind,
 };
 
-use crate::columns::changed;
 use crate::merge::Merged;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -318,8 +317,7 @@ impl Session for MemorySession {
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let mut store = self.store.lock();
         let entry = store.table(&self.pipeline, self.epoch, change.table())?;
-        entry.schema = Some(changed(entry.schema.as_ref(), change)?);
-        Ok(())
+        entry.change(change)
     }
 
     async fn writer(&mut self, table: &TableRef) -> Result<MemoryWriter> {
@@ -433,6 +431,10 @@ impl TableWriter for MemoryWriter {
         // The table may have been dropped, and claimed by another pipeline, since the writer opened.
         store.owned(&self.pipeline, &self.table)?;
         let table = store.tables.entry(self.table.clone()).or_default();
+        // Nothing of a flush is staged where a batch of it is refused.
+        for (_, batch) in &self.buffered {
+            table.admits(batch)?;
+        }
         let mut stats = WriteStats::default();
         for (segment, batch) in self.buffered.drain(..) {
             stats.rows += batch.num_rows() as u64;

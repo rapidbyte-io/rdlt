@@ -8,7 +8,8 @@ use arrow_schema::SchemaRef;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Deletion, Epoch, GenerationId, MergeKey, PipelineId, RootKey, SegmentId};
 
-use crate::merge::{Merged, merge, merge_children};
+use crate::columns::changed;
+use crate::merge::{Merged, failed, merge, merge_children};
 
 #[derive(Debug, Default)]
 pub(super) struct Table {
@@ -84,6 +85,44 @@ pub(super) fn holds_key(name: &str, key: &MergeKey, schema: Option<&TableSchema>
 }
 
 impl Table {
+    /// Applies `change` to the table's schema, where every row and tombstone the table holds
+    /// converts to the changed schema with its value kept.
+    ///
+    /// A change the held rows do not fit, as a widen to a type one of them is beyond, is a
+    /// `Data` error coded `schema_conflict`, and leaves the table as it was.
+    pub(super) fn change(&mut self, change: &TableChange) -> Result<()> {
+        let next = changed(self.schema.as_ref(), change)?;
+        let arrow = Arc::new(next.to_arrow());
+        let held = self
+            .published
+            .iter()
+            .chain(self.generations.values().flatten())
+            .chain(&self.tombstones);
+        crate::merge::holds(held, &arrow).map_err(|error| {
+            let name = &change.table().name;
+            ConnectorError::data(format!(
+                "table {name} holds a row the change does not fit: {error}"
+            ))
+            .with_code("schema_conflict")
+        })?;
+        self.schema = Some(next);
+        Ok(())
+    }
+
+    /// Refuses `batch`, written for the table, where its rows cannot be merged into it: a merge
+    /// table's rows each have a sequence, and a change stream's an op and flags it may carry.
+    pub(super) fn admits(&self, batch: &RecordBatch) -> Result<()> {
+        let Some(key) = &self.merge else {
+            return Ok(());
+        };
+        let stored = self
+            .schema
+            .as_ref()
+            .map(|schema| Arc::new(schema.to_arrow()));
+        crate::merge::admitted(batch, stored.as_ref(), key)
+            .map_err(|error| failed("staging rows", &error))
+    }
+
     /// The schema rows of the table merge under: its own, or else `staged`'s.
     fn merge_schema(&self, staged: &Staged) -> Result<SchemaRef> {
         match &self.schema {
@@ -100,7 +139,7 @@ impl Table {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
         let schema = self.merge_schema(staged)?;
         merge(&schema, &self.published, &self.tombstones, &incoming, key)
-            .map_err(|error| ConnectorError::data(format!("merging rows: {error}")))
+            .map_err(|error| failed("merging rows", &error))
     }
 
     /// The child table's rows once `staged` replaces the children of the roots `roots` publish.
@@ -114,6 +153,6 @@ impl Table {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
         let schema = self.merge_schema(staged)?;
         merge_children(&schema, &self.published, &incoming, key, root, roots)
-            .map_err(|error| ConnectorError::data(format!("merging child rows: {error}")))
+            .map_err(|error| failed("merging child rows", &error))
     }
 }

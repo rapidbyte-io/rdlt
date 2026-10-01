@@ -8,6 +8,7 @@ use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, Str
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey, RootKey};
 
+use super::super::refused::code;
 use super::super::{Merged, merge, merge_children};
 use super::{key, soft, stored_schema};
 
@@ -211,7 +212,8 @@ fn a_key_the_rows_cannot_be_merged_by_is_refused() {
                 std::slice::from_ref(&batch),
                 &key,
             );
-            assert!(refused.is_err(), "{key:?}");
+            let refused = refused.expect_err("the key merges nothing");
+            assert_eq!(code(&refused), Some("merge_key_invalid"), "{key:?}");
         }
     }
     // A child table is keyed by its root id, the first of its key's columns.
@@ -228,7 +230,8 @@ fn a_key_the_rows_cannot_be_merged_by_is_refused() {
         };
         let children = std::slice::from_ref(&batch);
         let refused = merge_children(&stored_schema(), &[], children, &key, &root, children);
-        assert!(refused.is_err(), "{key:?}");
+        let refused = refused.expect_err("the key merges nothing");
+        assert_eq!(code(&refused), Some("merge_key_invalid"), "{key:?}");
     }
 }
 

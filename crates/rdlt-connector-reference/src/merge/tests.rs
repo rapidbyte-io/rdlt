@@ -7,6 +7,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
 mod costs;
+mod refusals;
 
 use super::changes::stored;
 use super::{Merged, merge, tombstone_schema, written_schema};
@@ -531,7 +532,12 @@ fn a_stored_value_its_column_s_wider_type_cannot_hold_fails_the_merge() {
     for (stored, to) in beyond {
         let from = stored.data_type().clone();
         let refused = widened(stored, &to);
-        assert!(refused.is_err(), "{from} to {to}: {refused:?}");
+        let refused = refused.expect_err("the value is beyond its wider type");
+        assert_eq!(
+            super::refused::code(&refused),
+            Some("value_unholdable"),
+            "{from} to {to}"
+        );
     }
 }
 
@@ -645,31 +651,4 @@ fn truncates_between_a_key_s_changes_each_apply_to_the_row_before_them() {
         buried.sort();
         assert_eq!(tombstones(&merged), buried, "hard: {hard}");
     }
-}
-
-#[test]
-fn a_flag_on_a_key_or_the_sequence_is_refused() {
-    // The written batch's fields are id, value, seq, at, op, unchanged: bits 0 and 2 are the key
-    // and the sequence.
-    for bit in [0_u8, 2] {
-        let flagged = Row {
-            unchanged: Some(vec![1 << bit]),
-            ..row(1, "a", 1)
-        };
-        let refused = merge(
-            &stored_schema(),
-            &[],
-            &[],
-            &[written(&[flagged])],
-            &key(Deletion::Hard),
-        );
-        assert!(refused.is_err(), "bit {bit}");
-    }
-    // A flag on a directive column, which the table does not store, keeps nothing.
-    let flagged = Row {
-        unchanged: Some(vec![1 << 4]),
-        ..row(1, "a", 1)
-    };
-    let merged = apply(&empty(), &[&[flagged]], Deletion::Hard);
-    assert_eq!(rows(&merged), [(1, Some("a".into()), 1, None)]);
 }
