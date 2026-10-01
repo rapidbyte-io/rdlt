@@ -1,28 +1,54 @@
-//! The panic hook is the process's, so each of these tests needs a process of its own, as
-//! nextest gives it.
+//! The panic hook is the process's: these tests take turns at it, each installing a hook that
+//! counts its own panics and passes on any other, with the decoder's wrapped around it as on
+//! the decoder's first use.
 
 use std::panic::{self, PanicHookInfo};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 use arrow_schema::ArrowError;
 
-use super::contained;
+use super::{contained, quieted};
 use crate::error::{Frame, WireError};
 use crate::limits::PANIC_TEXT_BYTES;
 
-/// Counts the panics of this thread that reach the hook it installs, as the process's hook.
-fn counting() -> Arc<AtomicUsize> {
-    let (count, thread) = (Arc::new(AtomicUsize::new(0)), thread::current().id());
-    let seen = Arc::clone(&count);
-    let hook = move |_: &PanicHookInfo<'_>| {
-        if thread::current().id() == thread {
+/// Held by the test whose hook is installed.
+static TURN: Mutex<()> = Mutex::new(());
+
+/// The panics that reached a test's hook, while it has its turn at the process's.
+struct Reached {
+    count: Arc<AtomicUsize>,
+    _turn: MutexGuard<'static, ()>,
+}
+
+impl Reached {
+    fn count(&self) -> usize {
+        self.count.load(Ordering::SeqCst)
+    }
+}
+
+/// Counts the panics that reach the hook of threads `counted` holds for; those of other threads,
+/// other tests' among them, go to the hook installed before.
+fn counting(counted: impl Fn(&thread::Thread) -> bool + Send + Sync + 'static) -> Reached {
+    let turn = TURN.lock().unwrap_or_else(PoisonError::into_inner);
+    let count = Arc::new(AtomicUsize::new(0));
+    let (seen, before) = (Arc::clone(&count), panic::take_hook());
+    panic::set_hook(Box::new(move |info: &PanicHookInfo<'_>| {
+        if counted(&thread::current()) {
             seen.fetch_add(1, Ordering::SeqCst);
+        } else {
+            before(info);
         }
-    };
-    panic::set_hook(Box::new(hook));
-    count
+    }));
+    quieted();
+    Reached { count, _turn: turn }
+}
+
+/// Counts the panics of the calling thread.
+fn counting_mine() -> Reached {
+    let mine = thread::current().id();
+    counting(move |thread| thread.id() == mine)
 }
 
 fn panicking(text: &str) -> WireError {
@@ -35,7 +61,7 @@ fn panicking(text: &str) -> WireError {
 
 #[test]
 fn a_contained_panic_does_not_reach_the_panic_hook() {
-    let reached = counting();
+    let reached = counting_mine();
     let error = panicking("a reader's panic");
     assert!(matches!(
         error,
@@ -44,16 +70,16 @@ fn a_contained_panic_does_not_reach_the_panic_hook() {
             ..
         }
     ));
-    assert_eq!(reached.load(Ordering::SeqCst), 0);
+    assert_eq!(reached.count(), 0);
 }
 
 #[test]
 fn a_panic_outside_the_decoder_reaches_the_hook_installed_before_it() {
-    let reached = counting();
+    let reached = counting_mine();
     drop(panicking("contained"));
     let escaped = panic::catch_unwind(|| panic!("not the decoder's"));
     assert!(escaped.is_err());
-    assert_eq!(reached.load(Ordering::SeqCst), 1);
+    assert_eq!(reached.count(), 1);
     // The decoder's own results never touch the hook either.
     let fine = contained(Frame::Batch, || Ok::<_, ArrowError>(7));
     assert_eq!(fine.ok(), Some(7));
@@ -61,25 +87,20 @@ fn a_panic_outside_the_decoder_reaches_the_hook_installed_before_it() {
         Err::<(), _>(ArrowError::IpcError("refused".to_owned()))
     });
     assert!(matches!(refused, Err(WireError::Arrow { .. })));
-    assert_eq!(reached.load(Ordering::SeqCst), 1);
+    assert_eq!(reached.count(), 1);
 }
 
 #[test]
 fn a_panic_on_another_thread_reaches_the_hook_while_one_is_contained() {
-    let (count, seen) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-    let counted = Arc::clone(&count);
-    panic::set_hook(Box::new(move |_| {
-        counted.fetch_add(1, Ordering::SeqCst);
-    }));
-    let inner = Arc::clone(&seen);
-    let contained = contained(Frame::Batch, move || -> Result<(), ArrowError> {
-        let other = thread::spawn(|| panic!("another thread's"));
+    const OTHER: &str = "another thread, panicking while a decode is contained";
+    let reached = counting(|thread| thread.name() == Some(OTHER));
+    let contained = contained(Frame::Batch, || -> Result<usize, ArrowError> {
+        let other = thread::Builder::new().name(OTHER.to_owned());
+        let other = other.spawn(|| panic!("another thread's")).unwrap();
         assert!(other.join().is_err());
-        inner.store(count.load(Ordering::SeqCst), Ordering::SeqCst);
-        Ok(())
+        Ok(reached.count())
     });
-    assert!(contained.is_ok());
-    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    assert_eq!(contained.ok(), Some(1));
 }
 
 #[test]
