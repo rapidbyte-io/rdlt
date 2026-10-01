@@ -10,7 +10,7 @@ mod descriptors;
 mod refusals;
 mod speaking;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::io::Write as _;
 use std::net::SocketAddr;
@@ -159,7 +159,7 @@ pub async fn serve_listener<L: Listener>(
             () = &mut stop => break,
             // Connections that have ended come before new ones, so a flood of new connections
             // delays neither a host that has authenticated nor the count of those that left.
-            Some(ended) = doors.sessions.join_next() => doors.left(ended.ok()),
+            Some(ended) = doors.sessions.join_next_with_id() => doors.left(ended),
             handshaken = doors.unauthenticated.next() => doors.authenticated(handshaken),
             _ = reports.tick() => doors.report(),
             () = &mut pause, if paused => paused = false,
@@ -181,8 +181,8 @@ pub async fn serve_listener<L: Listener>(
         Unauthenticated::new(1, 0),
     ));
     doors.shared.stopping.cancel();
-    while let Some(ended) = doors.sessions.join_next().await {
-        doors.left(ended.ok());
+    while let Some(ended) = doors.sessions.join_next_with_id().await {
+        doors.left(ended);
     }
     doors.report();
 }
@@ -194,8 +194,12 @@ type Handshake<S> = dyn Future<Output = Result<(TlsStream<S>, SocketAddr), Refus
 struct Doors<S> {
     shared: Arc<Shared>,
     unauthenticated: Unauthenticated<Handshake<S>>,
-    /// The connections of accepted hosts, waiting or served; each ends with its host.
-    sessions: JoinSet<(Arc<str>, Option<Refused>)>,
+    /// The connections of accepted hosts, waiting or served; each ends with why it was refused,
+    /// where it was.
+    sessions: JoinSet<Option<Refused>>,
+    /// The host of each of those connections, by its task: however a task ends, its host is
+    /// known.
+    serving: HashMap<tokio::task::Id, Arc<str>>,
     /// How many connections each host holds.
     hosts: BTreeMap<Arc<str>, usize>,
     refusals: Refusals,
@@ -224,6 +228,7 @@ where
         Self {
             unauthenticated: Unauthenticated::new(limits.unauthenticated, admission::seed()),
             sessions: JoinSet::new(),
+            serving: HashMap::new(),
             hosts: BTreeMap::new(),
             refusals: Refusals::default(),
             shared: Arc::new(Shared {
@@ -281,20 +286,24 @@ where
             },
         };
         self.hosts.insert(Arc::clone(&host), held + 1);
-        let shared = Arc::clone(&self.shared);
-        self.sessions.spawn(async move {
-            let refused = session(tls, peer, &host, slot, &shared).await;
-            (host, refused)
-        });
+        let (shared, served) = (Arc::clone(&self.shared), Arc::clone(&host));
+        let task = self
+            .sessions
+            .spawn(async move { session(tls, peer, &served, slot, &shared).await });
+        self.serving.insert(task.id(), host);
     }
 
-    /// Counts out a connection that ended as `ended` says; none where its task did not end.
-    fn left(&mut self, ended: Option<(Arc<str>, Option<Refused>)>) {
-        let Some((host, refused)) = ended else {
-            return;
+    /// Counts out the connection whose task ended as `ended` says: its host holds one fewer,
+    /// whether the task returned, panicked or was aborted.
+    fn left(&mut self, ended: Result<(tokio::task::Id, Option<Refused>), tokio::task::JoinError>) {
+        let (task, refused) = match ended {
+            Ok((task, refused)) => (task, refused),
+            Err(failed) => (failed.id(), Some(Refused::Transport)),
         };
         // An entry stays once its host holds none: the hosts are those named to the connector.
-        if let Some(held) = self.hosts.get_mut(&host) {
+        if let Some(host) = self.serving.remove(&task)
+            && let Some(held) = self.hosts.get_mut(&host)
+        {
             *held = held.saturating_sub(1);
         }
         if let Some(why) = refused {
