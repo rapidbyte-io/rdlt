@@ -182,6 +182,13 @@ pub fn staged_changes(
         ConnectorError::data("a change stream's unchanged flags are not a bitmap of bytes")
     })?;
     let schema = batch.schema();
+    // Where each of the batch's fields is among the table's columns, worked out once for every
+    // row: its ordinal there, or why a row may not flag it.
+    let ordinals: Vec<std::result::Result<usize, Unflaggable>> = schema
+        .fields()
+        .iter()
+        .map(|field| ordinal_of(field.name(), key, target))
+        .collect();
     let mut texts = StringBuilder::new();
     for row in 0..batch.num_rows() {
         let bitmap = if flags.is_null(row) {
@@ -190,14 +197,16 @@ pub fn staged_changes(
             flags.value(row)
         };
         let mut text = String::from(",");
-        for (ordinal, field) in schema.fields().iter().enumerate() {
+        for (ordinal, position) in ordinals.iter().enumerate() {
             let flagged = bitmap
                 .get(ordinal / 8)
                 .is_some_and(|byte| byte & (1 << (ordinal % 8)) != 0);
-            if flagged {
-                let name = field.name().as_str();
-                let position = ordinal_of(name, key, target)?;
-                write!(text, "{position},").expect("writing to a string succeeds");
+            if !flagged {
+                continue;
+            }
+            match position {
+                Ok(position) => write!(text, "{position},").expect("writing to a string succeeds"),
+                Err(why) => return Err(why.refused(schema.field(ordinal).name())),
             }
         }
         if text.len() > 1 {
@@ -232,19 +241,40 @@ fn ops(batch: &RecordBatch, changes: &ChangeColumns) -> Result<()> {
     }
 }
 
-/// The ordinal of the `target` column `name`, which a row flags unchanged.
-fn ordinal_of(name: &str, key: &MergeKey, target: &[Column]) -> Result<usize> {
+/// Why a row may not flag a field unchanged.
+#[derive(Clone, Copy)]
+enum Unflaggable {
+    /// It is a key column or the sequence, which a change always sets.
+    SetAlways,
+    /// The table has no such column.
+    Missing,
+}
+
+impl Unflaggable {
+    /// The `Data` error for a row flagging the field `name`.
+    fn refused(self, name: &str) -> ConnectorError {
+        ConnectorError::data(match self {
+            Self::SetAlways => {
+                format!("a change flags its key or sequence column {name} unchanged")
+            }
+            Self::Missing => {
+                format!("a change flags column {name} unchanged, which the table lacks")
+            }
+        })
+    }
+}
+
+/// The ordinal of the `target` column `name`, which a row may flag unchanged.
+fn ordinal_of(
+    name: &str,
+    key: &MergeKey,
+    target: &[Column],
+) -> std::result::Result<usize, Unflaggable> {
     if *key.seq == *name || key.columns.iter().any(|column| **column == *name) {
-        return Err(ConnectorError::data(format!(
-            "a change flags its key or sequence column {name} unchanged"
-        )));
+        return Err(Unflaggable::SetAlways);
     }
     target
         .iter()
         .position(|column| column.name == name)
-        .ok_or_else(|| {
-            ConnectorError::data(format!(
-                "a change flags column {name} unchanged, which the table lacks"
-            ))
-        })
+        .ok_or(Unflaggable::Missing)
 }

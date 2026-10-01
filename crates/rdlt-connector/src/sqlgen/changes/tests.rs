@@ -241,7 +241,7 @@ fn a_commit_finds_the_rows_its_changes_touch_by_their_key() {
         "_rdlt_tombstones__orders",
         "_rdlt_t",
     ];
-    for index in [0, 1, 4] {
+    for index in [0, 1, 5] {
         let explain = Statement {
             sql: format!("EXPLAIN QUERY PLAN {}", plan[index].sql),
             params: plan[index].params.clone(),
@@ -306,4 +306,59 @@ fn a_change_table_its_staging_and_its_tombstones_are_indexed_by_its_key() {
     ]
     .map(|table| Value::Text(table.to_owned()));
     assert_eq!(indexed, keyed);
+}
+
+#[test]
+fn staging_flags_costs_a_pass_over_a_row_s_fields_not_a_search_for_each() {
+    const WIDTH: usize = 1_000;
+    const ROWS: usize = 300;
+    let orders = changed("orders");
+    let names: Vec<String> = (0..WIDTH).map(|column| format!("c{column}")).collect();
+    let mut target = vec!["id".to_owned(), "seq".to_owned()];
+    target.extend(names.iter().cloned());
+    let target: Vec<super::super::Column> = target
+        .into_iter()
+        .map(|name| super::super::Column {
+            name,
+            declared: "INTEGER".to_owned(),
+        })
+        .collect();
+    let rows = i64::try_from(ROWS).unwrap();
+    let values = || Arc::new(Int64Array::from_iter_values(0..rows)) as ArrayRef;
+    let batch = |flagged: bool| {
+        let mut columns: Vec<(&str, ArrayRef)> = vec![("id", values()), ("seq", values())];
+        columns.extend(names.iter().map(|name| (name.as_str(), values())));
+        // Every data column flagged: fields 2 to `WIDTH` + 1.
+        let mut bitmap = vec![0_u8; (WIDTH + 2).div_ceil(8)];
+        for field in 2..WIDTH + 2 {
+            bitmap[field / 8] |= 1 << (field % 8);
+        }
+        let flags = vec![flagged.then_some(bitmap.as_slice()); ROWS];
+        columns.push(("op", Arc::new(Int8Array::from(vec![1; ROWS]))));
+        columns.push(("unchanged", Arc::new(BinaryArray::from(flags))));
+        RecordBatch::try_from_iter(columns).unwrap()
+    };
+    let timed = |batch: &RecordBatch| {
+        (0..3)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                std::hint::black_box(staged_changes(batch, &orders, &target).unwrap());
+                started.elapsed()
+            })
+            .min()
+            .unwrap()
+    };
+    let (plain, flagged) = (timed(&batch(false)), timed(&batch(true)));
+    // Each flagged row also writes its thousand ordinals as text.
+    assert!(
+        flagged < plain * 40 + std::time::Duration::from_millis(200),
+        "unflagged rows took {plain:?}, rows flagging every column {flagged:?}"
+    );
+    let staged = staged_changes(&batch(true), &orders, &target).unwrap();
+    let flags = staged
+        .column_by_name("unchanged")
+        .unwrap()
+        .as_string::<i32>();
+    assert!(flags.value(0).starts_with(",2,3,4,"));
+    assert!(flags.value(ROWS - 1).ends_with(&format!(",{},", WIDTH + 1)));
 }
