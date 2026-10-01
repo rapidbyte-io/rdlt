@@ -14,21 +14,34 @@ use rustls::{CertificateError, DigitallySignedStruct, DistinguishedName, Signatu
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hosts(Arc<BTreeSet<String>>);
 
-/// A list of accepted hosts that names none, or holds an empty name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("a connector accepts the hosts named to it: at least one, and none with an empty name")]
-pub struct NoHosts;
+/// A list of accepted hosts that names none, or holds a name no certificate can carry.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum InvalidHosts {
+    /// No host is named.
+    #[error("a connector accepts the hosts named to it, and none is named")]
+    None,
+    /// A name is neither a DNS name nor a URI, so no certificate names a host by it.
+    #[error(
+        "`{0}` names no host: a host is named by a DNS name, an international one in its \
+         `xn--` form and none with a wildcard or a final dot, or by a URI"
+    )]
+    Name(String),
+}
 
 impl Hosts {
     /// The hosts `names` name.
     ///
     /// # Errors
     ///
-    /// [`NoHosts`] when `names` is empty, or holds an empty name.
-    pub fn new<N: Into<String>>(names: impl IntoIterator<Item = N>) -> Result<Self, NoHosts> {
+    /// [`InvalidHosts`] when `names` is empty, or holds a name no certificate can carry.
+    pub fn new<N: Into<String>>(names: impl IntoIterator<Item = N>) -> Result<Self, InvalidHosts> {
         let names: BTreeSet<String> = names.into_iter().map(Into::into).collect();
-        if names.is_empty() || names.iter().any(String::is_empty) {
-            return Err(NoHosts);
+        if names.is_empty() {
+            return Err(InvalidHosts::None);
+        }
+        if let Some(name) = names.iter().find(|name| !nameable(name)) {
+            return Err(InvalidHosts::Name(name.clone()));
         }
         Ok(Self(Arc::new(names)))
     }
@@ -52,6 +65,39 @@ impl Hosts {
             })
             .map(String::as_str)
     }
+}
+
+/// Whether a certificate can name a host `name`: by a DNS name, or by a URI.
+fn nameable(name: &str) -> bool {
+    dns(name) || uri(name)
+}
+
+/// Whether `name` is a DNS name as a certificate carries one: labels of letters, digits, hyphens
+/// and underscores, no wildcard, no final dot, and no IP address.
+fn dns(name: &str) -> bool {
+    let labelled = name.split('.').all(|label| {
+        !label.is_empty()
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    });
+    labelled
+        && name.parse::<std::net::IpAddr>().is_err()
+        && rustls::pki_types::DnsName::try_from(name).is_ok()
+}
+
+/// Whether `name` is a URI: a scheme, a colon, and printable ASCII without a space after it.
+fn uri(name: &str) -> bool {
+    let Some((scheme, rest)) = name.split_once(':') else {
+        return false;
+    };
+    let schemed = scheme.starts_with(|first: char| first.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'));
+    // A host and a port is no URI, though it has a colon.
+    let ported = !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit());
+    schemed && !rest.is_empty() && !ported && rest.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 /// `inner`, which then accepts only a certificate that names one of `hosts`.

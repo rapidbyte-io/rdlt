@@ -4,7 +4,9 @@ use rdlt_testkit::tls::{Files, Pki};
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
 
-use super::{ALPN, Accepted, Hosts, Identity, NoHosts, TlsError, client_config, server_config};
+use super::{
+    ALPN, Accepted, Hosts, Identity, InvalidHosts, TlsError, client_config, server_config,
+};
 
 fn identity(files: &Files) -> Identity {
     Identity {
@@ -329,14 +331,55 @@ fn only_a_host_named_to_the_connector_is_accepted() {
 }
 
 #[test]
-fn a_list_of_hosts_names_at_least_one_and_none_emptily() {
-    assert_eq!(Hosts::new(Vec::<String>::new()), Err(NoHosts));
-    assert_eq!(Hosts::new(["host", ""]), Err(NoHosts));
+fn a_list_of_hosts_names_at_least_one_and_only_names_a_certificate_can_carry() {
+    assert_eq!(Hosts::new(Vec::<String>::new()), Err(InvalidHosts::None));
     assert_eq!(Hosts::new(["host"]).map(|hosts| hosts.count()), Ok(1));
     assert_eq!(
         Hosts::new(["b", "a", "b"]).map(|hosts| hosts.count()),
         Ok(2)
     );
+    let named = [
+        "host",
+        "loader.example",
+        "LOADER-1.Example.ORG",
+        "xn--bcher-kva.example",
+        "a_b.example",
+        "spiffe://example.org/loader",
+        "urn:example:loader",
+        "https://loader.example/path?query#fragment",
+    ];
+    for name in named {
+        assert!(Hosts::new([name]).is_ok(), "{name}");
+    }
+    // What no certificate's name can equal names no host: it would be refused for ever, unseen.
+    let never = [
+        "",
+        " ",
+        "host ",
+        " host",
+        "host.",
+        ".host",
+        "a..b",
+        "bücher.example",
+        "*.example.com",
+        "*",
+        "192.0.2.7",
+        "::1",
+        "host:7443",
+        "spiffe://example.org/a loader",
+        "spiffe://bücher.example/loader",
+        "://loader",
+        "1scheme://loader",
+        "line\nbreak",
+    ];
+    for name in never {
+        let refused = Hosts::new(["host", name]);
+        assert_eq!(
+            refused,
+            Err(InvalidHosts::Name(name.to_owned())),
+            "{name:?}"
+        );
+    }
 }
 
 #[test]

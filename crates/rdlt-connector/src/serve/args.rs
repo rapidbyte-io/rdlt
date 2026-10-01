@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use rdlt_wire::tls::{Accepted, Hosts, Identity};
+use rdlt_wire::tls::{Accepted, Hosts, Identity, InvalidHosts};
 
 /// Why a connector binary could not serve.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -149,9 +149,11 @@ impl Given {
         let crl = self.take("tls-client-crl").map(PathBuf::from);
         let sessions = self.count("max-sessions")?;
         let host_sessions = self.count("max-host-sessions")?;
-        let hosts = Hosts::new(self.hosts).map_err(|_| {
-            "`--listen` needs a `--tls-allow-host` naming each host it accepts: a connector \
-             accepts the hosts named to it, not every certificate of its CA"
+        let hosts = Hosts::new(self.hosts).map_err(|error| match error {
+            InvalidHosts::Name(_) => format!("`--tls-allow-host`: {error}"),
+            _ => "`--listen` needs a `--tls-allow-host` naming each host it accepts: a connector \
+                  accepts the hosts named to it, not every certificate of its CA"
+                .to_owned(),
         })?;
         Ok(Listen {
             address,

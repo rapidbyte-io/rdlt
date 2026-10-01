@@ -18,7 +18,7 @@ use rustls::client::Resumption;
 use rustls::server::{NoServerSessionStorage, WebPkiClientVerifier};
 use rustls::{ClientConfig, ServerConfig};
 
-pub use hosts::{Hosts, NoHosts};
+pub use hosts::{Hosts, InvalidHosts};
 
 use files::{certificates, key, revocations, roots};
 use hosts::Named;
