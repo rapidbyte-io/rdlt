@@ -26,7 +26,6 @@ use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun,
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
-use crate::limits::CURSOR_SHARE;
 use crate::naming::Naming;
 use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob};
 use crate::plan::PipelinePlan;
@@ -212,7 +211,7 @@ async fn launch(
         partitions,
         progress: progress_feed,
         latest,
-        cursor_limit: context.budget.capacity() / CURSOR_SHARE,
+        budget: context.budget.clone(),
         barrier,
         stop_reads,
         stop: context.stop.clone(),

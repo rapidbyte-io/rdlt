@@ -96,7 +96,7 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
         log.batch(&Inline, &budget, 1, &items, SegmentId(1), &ids(10))
             .await
             .expect("logged");
-        log.commit(vec![sealed(1)], Vec::new(), &meta(1, &[1]))
+        log.commit(&budget, vec![sealed(1)], Vec::new(), &meta(1, &[1]))
             .await
             .expect("durable");
         let receipt = Receipt {
@@ -112,7 +112,7 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
         log.batch(&Inline, &budget, 0, &orders, SegmentId(2), &ids(20))
             .await
             .expect("logged");
-        log.commit(vec![sealed(2)], begun, &meta(2, &[2]))
+        log.commit(&budget, vec![sealed(2)], begun, &meta(2, &[2]))
             .await
             .expect("durable");
         drop(log);

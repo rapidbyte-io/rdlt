@@ -142,11 +142,13 @@ impl LoadLog {
     }
 
     /// Logs `sealed`, then the phases `begun` that `meta`'s commit begins with it and the commit,
-    /// and returns once the commit's frame is durable.
+    /// and returns once the commit's frame is durable; `budget` holds each frame's bytes until
+    /// it is appended.
     ///
     /// The phase frames go in one append with the commit's, so a crash tears them with it.
     pub(crate) async fn commit(
         &self,
+        budget: &MemoryBudget,
         sealed: Vec<Sealed>,
         begun: Vec<frame::BegunPhase>,
         meta: &CommitMeta,
@@ -169,19 +171,27 @@ impl LoadLog {
                 state: seal.state,
             })
             .encode()?;
-            self.writer.send(Command::Seal { segment, frame }).await?;
+            let held = Box::new(budget.charge(frame.len() as u64));
+            let seal = Command::Seal {
+                segment,
+                frame,
+                held,
+            };
+            self.writer.send(seal).await?;
         }
         let mut frames = Vec::new();
         for begun in begun {
             frames.extend_from_slice(&Frame::Begun(begun).encode()?);
         }
-        frames.extend_from_slice(&Frame::Commit(Box::new(meta.clone())).encode()?);
+        frames.extend_from_slice(&frame::commit(meta)?);
+        let held = Box::new(budget.charge(frames.len() as u64));
         let (durable, answer) = oneshot::channel();
         self.writer
             .send(Command::Commit {
                 seq: meta.commit_seq,
                 segments,
                 frame: Bytes::from(frames),
+                held,
                 durable,
             })
             .await?;

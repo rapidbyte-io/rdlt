@@ -121,7 +121,7 @@ impl Frame {
             Self::Schema(_) => 2,
             Self::Batch(_) => 3,
             Self::Seal(_) => 4,
-            Self::Commit(_) => 5,
+            Self::Commit(_) => COMMIT,
             Self::Committed(_) => 6,
             Self::Closed => 7,
             Self::Begun(_) => 8,
@@ -136,19 +136,32 @@ impl Frame {
             Self::Batch(batch) => batch_payload(batch)?,
             Self::Seal(seal) => json(seal)?,
             Self::Begun(begun) => json(begun)?,
-            Self::Commit(meta) => json(meta)?,
+            Self::Commit(meta) => return commit(meta),
             Self::Committed(receipt) => json(receipt)?,
             Self::Closed => Vec::new(),
         };
-        let len = u32::try_from(payload.len())
-            .map_err(|_| Error::internal("a write-ahead log frame beyond 4 GiB"))?;
-        let mut frame = BytesMut::with_capacity(HEAD + payload.len());
-        frame.put_u8(self.kind());
-        frame.put_u32_le(len);
-        frame.put_u32_le(crc32c::crc32c(&payload));
-        frame.put_slice(&payload);
-        Ok(frame.freeze())
+        framed(self.kind(), &payload)
     }
+}
+
+/// The kind a commit frame is marked with.
+const COMMIT: u8 = 5;
+
+/// The bytes of the frame of the commit `meta` describes, encoded from where it lies.
+pub(crate) fn commit(meta: &CommitMeta) -> Result<Bytes, Error> {
+    framed(COMMIT, &json(meta)?)
+}
+
+/// A frame of `kind` holding `payload`.
+fn framed(kind: u8, payload: &[u8]) -> Result<Bytes, Error> {
+    let len = u32::try_from(payload.len())
+        .map_err(|_| Error::internal("a write-ahead log frame beyond 4 GiB"))?;
+    let mut frame = BytesMut::with_capacity(HEAD + payload.len());
+    frame.put_u8(kind);
+    frame.put_u32_le(len);
+    frame.put_u32_le(crc32c::crc32c(payload));
+    frame.put_slice(payload);
+    Ok(frame.freeze())
 }
 
 fn json(value: &impl Serialize) -> Result<Vec<u8>, Error> {

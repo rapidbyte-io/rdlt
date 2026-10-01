@@ -4,6 +4,7 @@ mod error;
 mod names;
 #[cfg(test)]
 mod tests;
+mod value_text;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -27,7 +28,9 @@ const STATE_VERSION: u16 = 1;
 pub struct StateRecord {
     /// The record's key; a commit's `Put` replaces the record with the same key.
     pub key: String,
-    /// The record's value.
+    /// The record's value; base64 text where the record is written as JSON, a third longer than
+    /// its bytes, where a number a byte would be four times them.
+    #[serde(with = "value_text")]
     pub value: Bytes,
 }
 

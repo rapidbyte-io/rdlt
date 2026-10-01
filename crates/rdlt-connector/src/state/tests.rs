@@ -506,3 +506,28 @@ fn deleting_entries_that_do_not_exist_changes_nothing() {
             .is_err()
     );
 }
+
+#[test]
+fn a_records_value_is_json_text_a_third_longer_than_its_bytes() {
+    let value: Vec<u8> = (0..=255).cycle().take(30_000).collect();
+    let record = StateRecord {
+        key: "k".to_owned(),
+        value: Bytes::from(value),
+    };
+    let json = serde_json::to_vec(&record).unwrap();
+    // Base64 text, not a number a byte.
+    assert!(json.len() <= 30_000 * 4 / 3 + 64, "{} bytes", json.len());
+    assert_eq!(
+        serde_json::from_slice::<StateRecord>(&json).unwrap(),
+        record
+    );
+    // Text that is not base64 is no record.
+    assert!(serde_json::from_str::<StateRecord>(r#"{"key":"k","value":"*"}"#).is_err());
+    let empty = StateRecord {
+        key: "k".to_owned(),
+        value: Bytes::new(),
+    };
+    let json = serde_json::to_string(&empty).unwrap();
+    assert_eq!(json, r#"{"key":"k","value":""}"#);
+    assert_eq!(serde_json::from_str::<StateRecord>(&json).unwrap(), empty);
+}

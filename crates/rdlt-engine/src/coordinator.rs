@@ -26,11 +26,13 @@ use rdlt_connector::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::budget::MemoryBudget;
 use crate::config::CommitPolicy;
 use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
 use crate::error::{Error, Side};
 use crate::lane::Lanes;
+use crate::limits::CURSOR_SHARE;
 use crate::partition::{CursorHold, Latest, Progress};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
@@ -155,9 +157,9 @@ pub(crate) struct CoordinatorParts {
     pub(crate) progress: mpsc::UnboundedReceiver<Progress>,
     /// What each partition last said of which only the newest matters.
     pub(crate) latest: Arc<Latest>,
-    /// Bytes: the cursors of waiting seals that make a commit due, so cursors a source
-    /// checkpoints with never fill the budget they are charged to.
-    pub(crate) cursor_limit: u64,
+    /// The memory budget: the log's frames are charged to it until they are written, and the
+    /// cursors of waiting seals make a commit due once they hold their share of it.
+    pub(crate) budget: MemoryBudget,
     pub(crate) barrier: watch::Sender<u64>,
     /// Asks every partition to stop reading.
     pub(crate) stop_reads: CancellationToken,
@@ -182,6 +184,9 @@ pub(crate) struct Coordinator {
     parts: CoordinatorParts,
     seq: CommitSeq,
     sealed: WaitingSeals,
+    /// Bytes: the cursors of waiting seals that make a commit due, so cursors a source
+    /// checkpoints with never fill the budget they are charged to.
+    cursor_limit: u64,
     /// Rows and bytes written but not yet committed.
     pending_rows: u64,
     pending_bytes: u64,
@@ -196,6 +201,7 @@ pub(crate) struct Coordinator {
 impl Coordinator {
     pub(crate) fn new(parts: CoordinatorParts) -> Self {
         Self {
+            cursor_limit: parts.budget.capacity() / CURSOR_SHARE,
             parts,
             seq: CommitSeq::FIRST,
             sealed: WaitingSeals::default(),
@@ -287,7 +293,7 @@ impl Coordinator {
         self.parts
             .policy
             .is_due(self.pending_rows, self.pending_bytes)
-            || self.sealed.cursor_bytes() >= self.parts.cursor_limit.max(1)
+            || self.sealed.cursor_bytes() >= self.cursor_limit.max(1)
     }
 
     fn timer(&self) -> Sleep {
@@ -442,7 +448,8 @@ impl Coordinator {
         if let Some(log) = &self.parts.wal {
             // Every batch of the commit's segments was queued for the log before its partition
             // sealed it: the commit's frame, queued now, follows them all.
-            log.commit(collected.sealed, begun, &meta).await?;
+            log.commit(&self.parts.budget, collected.sealed, begun, &meta)
+                .await?;
             crash_point!("engine.ack.early");
             self.acknowledge(&collected.reported, false).await?;
         }
