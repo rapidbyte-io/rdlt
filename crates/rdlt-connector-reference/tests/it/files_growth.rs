@@ -88,7 +88,9 @@ async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_
         let rows = table("rows");
         let mut seq = CommitSeq::FIRST;
         let mut expected = Vec::new();
-        for commit in 0..200_i64 {
+        // Enough commits to tell a list that grows with them from one that grows with their
+        // logarithm, and no more: each takes a dozen syncs, which some file systems make slowly.
+        for commit in 0..48_i64 {
             // Three checkpointed batches a commit, each its own segment.
             let mut segments = Vec::new();
             for part in 0..3 {
@@ -112,7 +114,8 @@ async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_
             "{format}"
         );
         let files = data_files(root.path(), format);
-        assert!(files.len() <= 12, "{format}: {} files", files.len());
+        // 144 rows in files that at least halve: at most eight.
+        assert!(files.len() <= 8, "{format}: {} files", files.len());
         let (_, manifest) = latest_manifest(root.path());
         let listed = manifest["tables"]["rows"]["files"]
             .as_array()
@@ -121,7 +124,7 @@ async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_
         assert_eq!(listed, files.len(), "{format}");
         let staging = dirs_under(&pipeline_dir(root.path()).join("staging"));
         assert!(
-            staging.len() <= 12 * 6,
+            staging.len() <= 8 * 6,
             "{format}: {} directories",
             staging.len()
         );
