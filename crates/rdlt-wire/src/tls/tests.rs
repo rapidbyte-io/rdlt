@@ -332,7 +332,11 @@ fn only_a_host_named_to_the_connector_is_accepted() {
 fn a_list_of_hosts_names_at_least_one_and_none_emptily() {
     assert_eq!(Hosts::new(Vec::<String>::new()), Err(NoHosts));
     assert_eq!(Hosts::new(["host", ""]), Err(NoHosts));
-    assert!(Hosts::new(["host"]).is_ok());
+    assert_eq!(Hosts::new(["host"]).map(|hosts| hosts.count()), Ok(1));
+    assert_eq!(
+        Hosts::new(["b", "a", "b"]).map(|hosts| hosts.count()),
+        Ok(2)
+    );
 }
 
 #[test]

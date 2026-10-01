@@ -4,7 +4,7 @@ mod listen;
 #[cfg(test)]
 mod tests;
 
-pub use listen::{ListenLimits, TooFewDescriptors};
+pub use listen::{ListenLimits, TooFewDescriptors, UnfairSessions};
 
 /// Bytes: bounds one JSON push.
 pub const MAX_JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;

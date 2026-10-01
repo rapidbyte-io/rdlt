@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::io::Write as _;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -79,12 +80,16 @@ pub struct Listening {
 }
 
 impl Listening {
-    /// Listens with `tls` for `hosts`, within the default limits, reporting on standard error.
+    /// Listens with `tls` for `hosts`, within the default limits, each host holding its share
+    /// of the sessions, reporting on standard error.
     pub fn new(tls: Arc<ServerConfig>, hosts: Hosts) -> Self {
+        let limits = ListenLimits::default();
+        // The default sessions outnumber any hosts a command line names.
+        let limits = limits.shared(hosts.count(), None, None).unwrap_or(limits);
         Self {
             tls,
             hosts,
-            limits: ListenLimits::default(),
+            limits,
             log: Log::stderr(),
         }
     }
@@ -100,10 +105,17 @@ pub(super) async fn listen(
 ) -> Result<(), Failure> {
     let config = rdlt_wire::tls::server_config(&listen.identity, &listen.accepted)
         .map_err(|error| failure("the TLS configuration", &error))?;
-    let mut listening = Listening::new(Arc::new(config), listen.accepted.hosts.clone());
-    if let Some(sessions) = listen.sessions {
-        listening.limits.sessions = sessions.get();
-    }
+    let shares = ListenLimits::default()
+        .shared(
+            listen.accepted.hosts.count(),
+            listen.sessions.map(NonZeroUsize::get),
+            listen.host_sessions.map(NonZeroUsize::get),
+        )
+        .map_err(|error| failure("listening", &error))?;
+    let listening = Listening {
+        limits: shares,
+        ..Listening::new(Arc::new(config), listen.accepted.hosts.clone())
+    };
     descriptors::reserve(&listening.limits).map_err(|error| failure("listening", &error))?;
     let listener = TcpListener::bind(listen.address)
         .await

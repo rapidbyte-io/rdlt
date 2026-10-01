@@ -30,6 +30,7 @@ fn a_listening_connector_names_its_address_and_its_tls() {
         identity,
         accepted,
         sessions,
+        host_sessions,
     })) = listen
     else {
         panic!("{listen:?}");
@@ -45,7 +46,7 @@ fn a_listening_connector_names_its_address_and_its_tls() {
     );
     let hosts = Hosts::new(["loader.example", "spiffe://example.org/loader"]);
     assert_eq!(Ok(accepted.hosts), hosts);
-    assert_eq!((accepted.crl, sessions), (None, None));
+    assert_eq!((accepted.crl, sessions, host_sessions), (None, None, None));
 }
 
 #[test]
@@ -65,18 +66,21 @@ fn a_listening_connector_names_its_revocation_lists_and_its_sessions() {
         "revoked.crl",
         "--max-sessions",
         "8",
+        "--max-host-sessions=3",
     ]);
     let Ok(Args::Listen(Listen {
         address,
         accepted,
         sessions,
+        host_sessions,
         ..
     })) = ipv6
     else {
         panic!("{ipv6:?}");
     };
     assert_eq!(address.port(), 7443);
-    assert_eq!(sessions.map(std::num::NonZeroUsize::get), Some(8));
+    let counts = [sessions, host_sessions].map(|count| count.map(std::num::NonZeroUsize::get));
+    assert_eq!(counts, [Some(8), Some(3)]);
     assert_eq!(
         accepted.crl.as_deref(),
         Some(std::path::Path::new("revoked.crl"))
@@ -134,7 +138,11 @@ fn what_goes_with_listening_is_refused_with_the_hosts_socket() {
         ),
         (
             vec!["--rdlt-fd", "3", "--max-sessions", "4"],
-            "goes with `--listen`",
+            "go with `--listen`",
+        ),
+        (
+            vec!["--rdlt-fd", "3", "--max-host-sessions", "4"],
+            "go with `--listen`",
         ),
     ];
     for option in [
