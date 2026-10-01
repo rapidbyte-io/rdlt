@@ -110,11 +110,6 @@ fn parse_args(args: TokenStream, role: Role) -> syn::Result<Args> {
             Ok(())
         } else if meta.path.is_ident("acknowledged") {
             Err(meta.error("only a source tells where it stands"))
-        } else if meta.path.is_ident("read_back") {
-            Err(meta.error(
-                "a destination that reads back implements `ReadBack`, and is served reading \
-                 back by `readable_destination_factory`",
-            ))
         } else {
             Err(meta.error("expected `id = \"...\"`"))
         }

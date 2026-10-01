@@ -71,6 +71,7 @@ fn serves_no_probe_whatever_the_attribute_says() {
             .contains("RoleFactory :: Source (:: rdlt_connector :: source_factory :: < Self > ())"),
         "{acknowledging}"
     );
+    // Nothing but the id and a source's `acknowledged` is taken.
     for role in [Role::Source, Role::Destination] {
         let trait_name = match role {
             Role::Source => quote!(SourceConnector),
@@ -82,7 +83,7 @@ fn serves_no_probe_whatever_the_attribute_says() {
             role,
         );
         assert!(
-            refused.starts_with("error:") && refused.contains("readable_destination_factory"),
+            refused.starts_with("error:") && refused.contains("expected `id"),
             "{refused}"
         );
     }
