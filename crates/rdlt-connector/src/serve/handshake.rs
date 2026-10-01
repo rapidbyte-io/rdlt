@@ -79,7 +79,8 @@ impl Service {
         if self.agreed.set(Agreed { role, probed }).is_err() {
             return Err(repeated());
         }
-        let _ = self.host.set(host);
+        // What this end sends keeps within the host's limits and its own.
+        let _ = self.host.set(host.lesser(&self.limits));
         Ok(spec)
     }
 

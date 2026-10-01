@@ -196,6 +196,24 @@ impl Limits {
         Self::admit("frame bytes", self.frame_bytes, len(bytes))
     }
 
+    /// The lesser of each of these limits and of `other`'s: what a sender keeps within, of its
+    /// receiver's limits and its own.
+    #[must_use]
+    pub fn lesser(&self, other: &Self) -> Self {
+        Self {
+            frame_bytes: self.frame_bytes.min(other.frame_bytes),
+            batch_rows: self.batch_rows.min(other.batch_rows),
+            schema_columns: self.schema_columns.min(other.schema_columns),
+            nesting_depth: self.nesting_depth.min(other.nesting_depth),
+            json_push_bytes: self.json_push_bytes.min(other.json_push_bytes),
+            cursor_bytes: self.cursor_bytes.min(other.cursor_bytes),
+            config_bytes: self.config_bytes.min(other.config_bytes),
+            control_string_bytes: self.control_string_bytes.min(other.control_string_bytes),
+            batch_values: self.batch_values.min(other.batch_values),
+            schema_bytes: self.schema_bytes.min(other.schema_bytes),
+        }
+    }
+
     /// Admits these limits as a peer's: each limit a sender cuts batches to is at least the
     /// protocol's minimum, so no peer makes its sender send frames of mostly padding.
     ///

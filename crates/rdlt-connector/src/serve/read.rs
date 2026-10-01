@@ -26,7 +26,7 @@ use crate::wire::{Invalid, frame_error, status, v1};
 const EVENTS: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
 
 /// Starts serving the read the host's first message asks for, whose cursor keeps within `own`,
-/// this end's limits; what it sends keeps within `host`, the host's.
+/// this end's limits; what it sends keeps within `host`, the lesser of the host's and its own.
 ///
 /// Answers its frames, and which stream and partition it reads.
 pub(super) async fn serve(

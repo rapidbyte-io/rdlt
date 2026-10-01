@@ -148,10 +148,11 @@ impl RemoteWriter {
             }))
             .await?;
         }
-        // A batch beyond the connector's limits goes as several, each of the same segment and
-        // encoded only once the piece before it was sent; a row beyond them is refused here,
-        // typed, rather than by the connector or its transport.
-        let mut cut = Cut::new(batch, self.connection.peer);
+        // A batch beyond what the connector takes or this end sends goes as several, each of the
+        // same segment and encoded only once the piece before it was sent; a row beyond them is
+        // refused here, typed.
+        let limits = self.connection.peer.lesser(&self.connection.options.limits);
+        let mut cut = Cut::new(batch, limits);
         loop {
             let frames = match self.encoder.piece(&mut cut) {
                 Ok(Some(frames)) => frames,
