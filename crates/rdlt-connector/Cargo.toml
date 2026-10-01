@@ -40,6 +40,7 @@ sqlgen = ["dep:sha2"]
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast = { workspace = true, optional = true }
+arrow-data.workspace = true
 arrow-schema.workspace = true
 base64.workspace = true
 bytes.workspace = true

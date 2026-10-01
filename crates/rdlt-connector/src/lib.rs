@@ -68,6 +68,7 @@ mod catalog;
 mod change;
 mod commit;
 mod config;
+pub mod cost;
 mod cursor;
 mod destination;
 mod emitter;
