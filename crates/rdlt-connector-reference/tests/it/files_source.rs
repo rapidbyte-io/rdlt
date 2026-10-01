@@ -159,6 +159,7 @@ async fn a_source_root_or_a_stream_s_directory_others_may_write_is_refused() {
             panic!("{} with mode {bits:o} was read", path.display());
         };
         assert_eq!(error.kind(), ConnectorErrorKind::Config, "{bits:o}");
+        assert_eq!(error.code(), Some("not_private"), "{bits:o}");
         mode(path, 0o700);
     }
     for bits in [0o700, 0o755, 0o500] {

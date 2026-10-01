@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -107,10 +107,7 @@ impl SourceConnector for FilesSource {
             )));
         }
         let (root, streams) = blocking(move || {
-            let root = Dir::ambient(&config.root).map_err(|error| {
-                let error = io::failed("opening", &config.root)(error);
-                ConnectorError::config(error.to_string())
-            })?;
+            let root = Dir::ambient(&config.root).map_err(unusable("opening", &config.root))?;
             let streams = discover(&root)?;
             Ok((root, streams))
         })
@@ -202,12 +199,22 @@ fn partition(name: String) -> Option<(PartitionId, String, FileFormat)> {
     Some((id, name, format))
 }
 
+/// Classifies a filesystem error from `what` on `path`, a directory the configuration names or
+/// one beneath it, as a configuration error: one the connector refuses keeps its code.
+fn unusable<'a>(what: &'a str, path: &'a Path) -> impl Fn(std::io::Error) -> ConnectorError + 'a {
+    move |error| {
+        let error = io::failed(what, path)(error);
+        if error.kind() == ConnectorErrorKind::Config {
+            error
+        } else {
+            ConnectorError::config(error.to_string()).with_source(error)
+        }
+    }
+}
+
 /// The entries of `dir` that are not hidden and whose names are text, in name order.
 fn entries(dir: &Dir) -> Result<Vec<(String, Kind)>> {
-    let listed = dir.entries().map_err(|error| {
-        let error = io::failed("listing", dir.path())(error);
-        ConnectorError::config(error.to_string())
-    })?;
+    let listed = dir.entries().map_err(unusable("listing", dir.path()))?;
     Ok(listed
         .into_iter()
         .filter_map(|(name, kind)| Some((name.into_string().ok()?, kind)))
@@ -300,7 +307,7 @@ const CURSOR_BEYOND_FILE: &str = "cursor_beyond_file";
 /// A cursor that read `read` records or batches of the file at `path`, which holds fewer: the
 /// file was cut or replaced since, and the source cannot vouch for what a read from there would
 /// skip.
-fn beyond(path: &std::path::Path, read: u64) -> ConnectorError {
+fn beyond(path: &Path, read: u64) -> ConnectorError {
     ConnectorError::data(format!(
         "reading {}: the cursor stands after {read} records or batches, more than the file holds",
         path.display()
