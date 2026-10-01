@@ -14,34 +14,53 @@ use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Statement};
 use rdlt_connector::{ConnectorError, Result};
 use rusqlite::Connection;
-use rusqlite::types::Value;
+use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 
 use super::database::{columns, failed};
 
+#[cfg(test)]
+mod tests;
+
 /// Runs `statement` once for each row of `batch`, binding the row's values after the statement's
-/// own parameters.
+/// own parameters, each straight from its Arrow array: only the row being bound is held.
+///
+/// A column of a type the destination does not store is refused before any row runs; a float
+/// SQLite would store as another value, `NaN` or negative zero, where its row is bound: a `Data`
+/// error coded `float_unstorable`.
 pub(super) fn stage(
     connection: &Connection,
     statement: &Statement,
     batch: &RecordBatch,
 ) -> Result<()> {
+    let schema = batch.schema();
     let columns = batch
         .columns()
         .iter()
-        .zip(batch.schema().fields())
-        .map(|(column, field)| cells(column).map_err(|error| error.in_column(field.name())))
+        .zip(schema.fields())
+        .map(|(column, field)| {
+            let cells = Cells::of(column.as_ref())
+                .map_err(|unstorable| unstorable.in_column(field.name()))?;
+            Ok((field.name().as_str(), cells))
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut prepared = connection
         .prepare_cached(&statement.sql)
         .map_err(failed("preparing to stage rows"))?;
     let fixed: Vec<Value> = statement.params.iter().map(fixed).collect();
+    let mut bound: Vec<ToSqlOutput<'_>> = Vec::with_capacity(fixed.len() + columns.len());
     for row in 0..batch.num_rows() {
-        let values = fixed
-            .iter()
-            .cloned()
-            .chain(columns.iter().map(|column| column[row].clone()));
+        bound.clear();
+        bound.extend(
+            fixed
+                .iter()
+                .map(|value| ToSqlOutput::Borrowed(value.into())),
+        );
+        for (name, cells) in &columns {
+            let value = cells.value(row).map_err(|float| float.in_column(name))?;
+            bound.push(ToSqlOutput::Borrowed(value));
+        }
         prepared
-            .execute(rusqlite::params_from_iter(values))
+            .execute(rusqlite::params_from_iter(bound.iter()))
             .map_err(failed("staging a row"))?;
     }
     Ok(())
@@ -68,82 +87,115 @@ impl Unstorable {
     }
 }
 
-/// The values of `array`, one per row.
-fn cells(array: &ArrayRef) -> std::result::Result<Vec<Value>, Unstorable> {
-    let integers = |values: Vec<Option<i64>>| {
-        values
-            .into_iter()
-            .map(|value| value.map_or(Value::Null, Value::Integer))
-            .collect()
-    };
-    let reals = |values: Vec<Option<f64>>| {
-        values
-            .into_iter()
-            .map(|value| value.map_or(Value::Null, Value::Real))
-            .collect()
-    };
-    let values = match array.data_type() {
-        // A column the engine sends as a dictionary is stored as the values it encodes.
-        DataType::Dictionary(_, value) => {
-            let decoded = arrow_cast::cast(array, value)
-                .map_err(|_| Unstorable(array.data_type().clone()))?;
-            return cells(&decoded);
+/// A float SQLite stores as another value: `NaN` as a null, negative zero as zero.
+struct Changed(f64);
+
+impl Changed {
+    fn in_column(self, column: &str) -> ConnectorError {
+        ConnectorError::data(format!(
+            "column {column} holds {:?}, which sqlite would store as another value",
+            self.0
+        ))
+        .with_code("float_unstorable")
+    }
+}
+
+/// One column's values, read from its array a row at a time.
+enum Cells<'a> {
+    /// Every value is null.
+    Null,
+    Integer(&'a dyn Array, Box<dyn Fn(usize) -> i64 + 'a>),
+    Real(&'a dyn Array, Box<dyn Fn(usize) -> f64 + 'a>),
+    Text(&'a dyn Array, Box<dyn Fn(usize) -> &'a str + 'a>),
+    Blob(&'a dyn Array, Box<dyn Fn(usize) -> &'a [u8] + 'a>),
+    /// A column the engine sends as a dictionary is stored as the values its keys name.
+    Dictionary(&'a dyn Array, Vec<usize>, Box<Cells<'a>>),
+}
+
+impl<'a> Cells<'a> {
+    /// The cells of `array`, where the destination stores its type.
+    fn of(array: &'a dyn Array) -> std::result::Result<Self, Unstorable> {
+        fn integers<T>(array: &dyn Array) -> Cells<'_>
+        where
+            T: arrow_array::ArrowPrimitiveType,
+            T::Native: Into<i64>,
+        {
+            let values = array.as_primitive::<T>();
+            Cells::Integer(array, Box::new(|row| values.value(row).into()))
         }
-        DataType::Null => vec![Value::Null; array.len()],
-        DataType::Boolean => integers(
-            array
-                .as_boolean()
-                .iter()
-                .map(|v| v.map(i64::from))
-                .collect(),
-        ),
-        DataType::Int8 => integers(widen::<Int8Type>(array)),
-        DataType::Int16 => integers(widen::<Int16Type>(array)),
-        DataType::Int32 => integers(widen::<Int32Type>(array)),
-        DataType::Int64 => integers(widen::<Int64Type>(array)),
-        DataType::UInt8 => integers(widen::<UInt8Type>(array)),
-        DataType::UInt16 => integers(widen::<UInt16Type>(array)),
-        DataType::UInt32 => integers(widen::<UInt32Type>(array)),
-        DataType::Float32 => reals(
-            array
-                .as_primitive::<Float32Type>()
-                .iter()
-                .map(|v| v.map(f64::from))
-                .collect(),
-        ),
-        DataType::Float64 => reals(array.as_primitive::<Float64Type>().iter().collect()),
-        DataType::Utf8 => texts(array.as_string::<i32>().iter()),
-        DataType::LargeUtf8 => texts(array.as_string::<i64>().iter()),
-        DataType::Binary => blobs(array.as_binary::<i32>().iter()),
-        DataType::LargeBinary => blobs(array.as_binary::<i64>().iter()),
-        DataType::FixedSizeBinary(_) => blobs(array.as_fixed_size_binary().iter()),
-        other => return Err(Unstorable(other.clone())),
-    };
-    Ok(values)
-}
+        Ok(match array.data_type() {
+            DataType::Null => Self::Null,
+            DataType::Boolean => {
+                let values = array.as_boolean();
+                Self::Integer(array, Box::new(|row| i64::from(values.value(row))))
+            }
+            DataType::Int8 => integers::<Int8Type>(array),
+            DataType::Int16 => integers::<Int16Type>(array),
+            DataType::Int32 => integers::<Int32Type>(array),
+            DataType::Int64 => integers::<Int64Type>(array),
+            DataType::UInt8 => integers::<UInt8Type>(array),
+            DataType::UInt16 => integers::<UInt16Type>(array),
+            DataType::UInt32 => integers::<UInt32Type>(array),
+            DataType::Float32 => {
+                let values = array.as_primitive::<Float32Type>();
+                Self::Real(array, Box::new(|row| f64::from(values.value(row))))
+            }
+            DataType::Float64 => {
+                let values = array.as_primitive::<Float64Type>();
+                Self::Real(array, Box::new(|row| values.value(row)))
+            }
+            DataType::Utf8 => {
+                let values = array.as_string::<i32>();
+                Self::Text(array, Box::new(|row| values.value(row)))
+            }
+            DataType::LargeUtf8 => {
+                let values = array.as_string::<i64>();
+                Self::Text(array, Box::new(|row| values.value(row)))
+            }
+            DataType::Binary => {
+                let values = array.as_binary::<i32>();
+                Self::Blob(array, Box::new(|row| values.value(row)))
+            }
+            DataType::LargeBinary => {
+                let values = array.as_binary::<i64>();
+                Self::Blob(array, Box::new(|row| values.value(row)))
+            }
+            DataType::FixedSizeBinary(_) => {
+                let values = array.as_fixed_size_binary();
+                Self::Blob(array, Box::new(|row| values.value(row)))
+            }
+            DataType::Dictionary(..) => {
+                let encoded = array
+                    .as_any_dictionary_opt()
+                    .ok_or_else(|| Unstorable(array.data_type().clone()))?;
+                let values = Self::of(encoded.values().as_ref())
+                    .map_err(|_| Unstorable(array.data_type().clone()))?;
+                Self::Dictionary(array, encoded.normalized_keys(), Box::new(values))
+            }
+            other => return Err(Unstorable(other.clone())),
+        })
+    }
 
-fn widen<T>(array: &ArrayRef) -> Vec<Option<i64>>
-where
-    T: arrow_array::ArrowPrimitiveType,
-    T::Native: Into<i64>,
-{
-    array
-        .as_primitive::<T>()
-        .iter()
-        .map(|value| value.map(Into::into))
-        .collect()
-}
-
-fn texts<'a>(values: impl Iterator<Item = Option<&'a str>>) -> Vec<Value> {
-    values
-        .map(|value| value.map_or(Value::Null, |text| Value::Text(text.to_owned())))
-        .collect()
-}
-
-fn blobs<'a>(values: impl Iterator<Item = Option<&'a [u8]>>) -> Vec<Value> {
-    values
-        .map(|value| value.map_or(Value::Null, |blob| Value::Blob(blob.to_vec())))
-        .collect()
+    /// The value at `row`, as it is bound.
+    fn value(&self, row: usize) -> std::result::Result<ValueRef<'_>, Changed> {
+        let null = |array: &dyn Array| array.is_null(row);
+        Ok(match self {
+            Self::Integer(array, value) if !null(*array) => ValueRef::Integer(value(row)),
+            Self::Real(array, value) if !null(*array) => {
+                let real = value(row);
+                if real.is_nan() || (real == 0.0 && real.is_sign_negative()) {
+                    return Err(Changed(real));
+                }
+                ValueRef::Real(real)
+            }
+            Self::Text(array, value) if !null(*array) => ValueRef::Text(value(row).as_bytes()),
+            Self::Blob(array, value) if !null(*array) => ValueRef::Blob(value(row)),
+            Self::Dictionary(array, keys, values) if !null(*array) => {
+                return values.value(keys[row]);
+            }
+            _ => ValueRef::Null,
+        })
+    }
 }
 
 /// Rows: the most one batch of a table read back holds.
