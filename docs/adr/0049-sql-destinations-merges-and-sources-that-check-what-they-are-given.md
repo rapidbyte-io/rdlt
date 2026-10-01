@@ -196,5 +196,7 @@ given:
   implementation in the connector SDK would serve both.
 - The files destination shares the reference merge, and still writes a merged table column by
   column, so a table that widened costs it rows times width there.
-- Cost tests compare the least of three timings of many operations with one operation, so they
-  hold on a loaded machine.
+- Cost tests of a SQL plan count the steps SQLite's virtual machine takes, many operations
+  against one, and depend on no clock. Those of the reference merge and of staging, which is
+  code and no statement, compare the least of three timings of many operations with one, so
+  they hold on a loaded machine.
