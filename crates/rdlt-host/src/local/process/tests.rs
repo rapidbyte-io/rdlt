@@ -59,12 +59,16 @@ async fn a_connector_whose_owning_fails_at_any_step_is_killed_reaped_and_forgott
         // And none is listed as one it spawned, to be waited for by whoever stops them.
         assert_eq!(super::spawned(), Vec::<u32>::new(), "step {step}");
         assert_eq!(super::stop_spawned(Duration::ZERO), Ok(()), "step {step}");
+        assert_eq!(super::group::threads(), 0, "step {step}");
     }
     // With every step taken the connector is owned, and ends when it is dropped.
     let process = Process::spawn_by(&launch, socket(), &Steps::TAKEN).expect("it starts");
     assert_eq!(super::spawned().len(), 1);
     drop(process);
+    assert_eq!(super::group::threads(), 1);
     assert_eq!(super::stop_spawned(Duration::from_secs(20)), Ok(()));
+    // The thread that owned it is joined: none outlives the group it owned.
+    assert_eq!(super::group::threads(), 0);
     assert_eq!(
         waitpid(None, Some(WaitPidFlag::WNOHANG)),
         Err(Errno::ECHILD)

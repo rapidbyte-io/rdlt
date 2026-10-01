@@ -150,6 +150,7 @@ impl Process {
     /// Spawns `launch`'s binary as [`spawn`](Self::spawn) does, taking `steps`: a connector
     /// that started and a step then fails is killed and reaped before the failure is returned.
     fn spawn_by(launch: &Launch, socket: OwnedFd, steps: &Steps) -> std::io::Result<Self> {
+        group::has_room()?;
         let mut command = command(launch, socket)?;
         let child = command.spawn()?;
         // The command holds this process's copy of the connector's end: dropped, the connector's

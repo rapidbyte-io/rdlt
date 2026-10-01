@@ -24,6 +24,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 pub use interrupts::Interrupts;
+pub(super) use registry::has_room;
+#[cfg(test)]
+pub(super) use registry::threads;
 pub use registry::{Lingering, spawned, stop_spawned};
 
 /// How often the thread that owns a group asks whether its leader has exited, a kill was
@@ -152,14 +155,17 @@ impl Owned {
             let (_, emptied) = owned.ended(emptied);
             registry::leave(id, emptied);
         };
-        if let Err(error) = threaded(reaping, Box::new(owning)) {
-            self.discarded();
-            return Err(error);
-        }
+        let thread = match threaded(reaping, Box::new(owning)) {
+            Ok(thread) => thread,
+            Err(error) => {
+                self.discarded();
+                return Err(error);
+            }
+        };
         // Listed before its thread has it, so the thread's removal comes after.
-        registry::enter(id, self.held());
+        registry::enter(id, self.held(), thread);
         if let Err(std::sync::mpsc::SendError(owned)) = give.send(self) {
-            registry::leave(id, true);
+            registry::disown(id);
             owned.discarded();
             return Err(std::io::Error::other(
                 "the thread that owns a connector ended",
