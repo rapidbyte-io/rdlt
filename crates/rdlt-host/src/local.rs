@@ -29,6 +29,7 @@ pub struct Local {
     env_passthrough: Vec<String>,
     options: Options,
     kills: Option<Kills>,
+    told: Option<process::Told>,
 }
 
 impl Default for Local {
@@ -39,6 +40,7 @@ impl Default for Local {
             env_passthrough: Vec::new(),
             options: Options::default(),
             kills: None,
+            told: None,
         }
     }
 }
@@ -122,6 +124,17 @@ impl Local {
     /// spawned with the connection's other end on file descriptor 3, stops once the wire is
     /// dropped.
     ///
+    /// Tells `told` the process id of each connector as it is spawned, one spawned again after
+    /// it was lost too: the id of the process group it leads.
+    ///
+    /// [`spawned`] lists only the connectors that run; what is told here is every connector
+    /// there was, before it has answered anything.
+    #[must_use]
+    pub fn on_spawn(mut self, told: impl Fn(u32) + Send + Sync + 'static) -> Self {
+        self.told = Some(process::Told::new(told));
+        self
+    }
+
     /// Call it within a tokio runtime, which drains and reaps the process.
     ///
     /// # Errors
@@ -144,6 +157,7 @@ impl Local {
             env_passthrough: self.env_passthrough.clone(),
             grace: self.grace,
             kills: self.kills.clone(),
+            told: self.told.clone(),
         }
     }
 

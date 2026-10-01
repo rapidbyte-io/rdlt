@@ -20,6 +20,7 @@ fn sleeper(directory: &std::path::Path) -> Launch {
         env_passthrough: Vec::new(),
         grace: Duration::from_millis(100),
         kills: None,
+        told: None,
     }
 }
 

@@ -250,3 +250,36 @@ async fn a_cut_connection_lands_its_kill_once_and_a_kill_of_nothing_lands_nowher
     // The connection that ended is counted once, however often it is asked of after.
     assert_eq!(landed_after_a_while(&kills).await, 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_is_told_each_connector_it_spawns_one_spawned_again_too() {
+    let kills = Kills::new();
+    let told = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let telling = Arc::clone(&told);
+    let local = local()
+        .kills(&kills)
+        .on_spawn(move |pid| telling.lock().expect("unpoisoned").push(pid));
+    let source = local
+        .source(&scripted(), &serde_json::json!({}))
+        .await
+        .expect("the connector starts")
+        .connector;
+    let first = rdlt_host::spawned();
+    assert_eq!(*told.lock().expect("unpoisoned"), first);
+    kills.kill();
+    // Once the killed connector has ended, the next call spawns another.
+    for _ in 0..3000 {
+        if !rdlt_host::spawned().contains(&first[0]) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    checks_again(source.as_ref()).await;
+    // The connector that runs is another: both were told, though only one is listed.
+    let again = rdlt_host::spawned();
+    assert_eq!(again.len(), 1, "{again:?}");
+    let told = told.lock().expect("unpoisoned").clone();
+    assert_eq!(told, [first[0], again[0]]);
+    assert_ne!(first, again);
+    drop(source);
+}
