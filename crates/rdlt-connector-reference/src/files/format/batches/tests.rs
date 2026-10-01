@@ -143,3 +143,124 @@ fn a_row_larger_than_a_frame_is_refused_unwritten() {
     let batch = single(Arc::new(StringArray::from(vec![text.as_str()])));
     assert_eq!(refused(&batch), "frame bytes");
 }
+
+/// How a skewed column holds its rows.
+#[derive(Clone, Copy, Debug)]
+enum Held {
+    Plain,
+    Keyed,
+    Nested,
+}
+
+/// 4000 rows of 64 bytes each but the row at `at`, which holds `large` bytes.
+fn skewed(held: Held, at: usize, large: usize) -> RecordBatch {
+    let (small, large) = ("s".repeat(64), "L".repeat(large));
+    let text = |row: usize| {
+        if row == at {
+            large.as_str()
+        } else {
+            small.as_str()
+        }
+    };
+    let rows = 4000;
+    let column: ArrayRef = match held {
+        Held::Plain => Arc::new(StringArray::from_iter_values((0..rows).map(text))),
+        Held::Keyed => {
+            let values = StringArray::from(vec![small.as_str(), large.as_str()]);
+            let keys = Int32Array::from_iter_values((0..rows).map(|row| i32::from(row == at)));
+            Arc::new(DictionaryArray::<Int32Type>::try_new(keys, Arc::new(values)).unwrap())
+        }
+        Held::Nested => {
+            let items = StringArray::from_iter_values((0..rows).map(text));
+            let field = Arc::new(Field::new("item", items.data_type().clone(), true));
+            let offsets = OffsetBuffer::from_lengths(std::iter::repeat_n(1, rows));
+            Arc::new(ListArray::new(field, offsets, Arc::new(items), None))
+        }
+    };
+    single(column)
+}
+
+#[test]
+fn a_row_far_larger_than_the_rows_beside_it_is_written_in_a_batch_it_fits() {
+    // One row a few kibibytes short of a frame among thousands of small ones: by the rows'
+    // average size it is cut into a batch with hundreds of them, which no frame holds.
+    let large = usize::try_from(FRAME_BYTES).unwrap() - 4096;
+    for held in [Held::Plain, Held::Keyed, Held::Nested] {
+        for at in [0, 2000, 3999] {
+            let read = written(&skewed(held, at, large)).unwrap_or_else(|error| {
+                panic!("{held:?} with the large row at {at}: {error}");
+            });
+            assert!(read.len() > 1, "{held:?} {at}");
+        }
+    }
+}
+
+#[test]
+fn a_row_larger_than_a_frame_is_refused_among_small_rows_and_leaves_no_file() {
+    let large = usize::try_from(FRAME_BYTES).unwrap() + 1;
+    for held in [Held::Plain, Held::Keyed, Held::Nested] {
+        for at in [0, 3999] {
+            assert_eq!(
+                refused(&skewed(held, at, large)),
+                "frame bytes",
+                "{held:?} {at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_batch_is_halved_until_its_parts_fit_and_refused_only_as_one_row() {
+    use super::fitted;
+    let limits = Limits {
+        frame_bytes: 4096,
+        ..Limits::default()
+    };
+    let rows = |sizes: &[usize]| {
+        let texts: Vec<String> = sizes.iter().map(|size| "x".repeat(*size)).collect();
+        single(Arc::new(StringArray::from(texts)))
+    };
+    let parts = |sizes: &[usize]| -> Result<Vec<usize>> {
+        let mut parts = Vec::new();
+        fitted(rows(sizes), &limits, &mut |part| {
+            parts.push(part.num_rows());
+            Ok(())
+        })?;
+        Ok(parts)
+    };
+    // What fits is written whole, in order, and what does not in the halves that do.
+    assert_eq!(parts(&[100; 8]).unwrap(), [8]);
+    assert_eq!(parts(&[1000; 8]).unwrap(), [2, 2, 2, 2]);
+    assert_eq!(
+        parts(&[3500, 10, 10, 10, 10, 10, 10, 3500]).unwrap(),
+        [4, 4]
+    );
+    assert_eq!(
+        parts(&[3500, 3500, 10, 10, 10, 10, 10, 10]).unwrap(),
+        [1, 1, 2, 4]
+    );
+    assert_eq!(
+        parts(&[10, 10, 10, 3500, 3500, 10, 10, 10]).unwrap(),
+        [4, 4]
+    );
+    // One row that alone fits no frame is refused, wherever it stands.
+    for at in 0..4 {
+        let mut sizes = [10; 4];
+        sizes[at] = 5000;
+        let error = parts(&sizes).expect_err("no frame holds the row");
+        assert_eq!(error.limit().map(|limit| limit.name), Some("frame bytes"));
+    }
+    // Halving takes as many steps as the rows halve, each part measured once.
+    let mut measured = 0;
+    let many = rows(&vec![3; 1024]);
+    let tight = Limits {
+        frame_bytes: 600,
+        ..Limits::default()
+    };
+    fitted(many, &tight, &mut |_| {
+        measured += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert!(measured > 1 && measured <= 1024, "{measured}");
+}
