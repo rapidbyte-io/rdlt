@@ -18,19 +18,32 @@ use std::process::{Command, ExitStatus};
 
 use scenarios::Scenario;
 
-/// Every durability step a fresh run passes, in the order a commit does.
-const POINTS: [&str; 11] = [
-    "engine.wal.append",
-    "engine.flush.before",
-    "engine.flush.after",
-    "engine.wal.sync.before",
-    "engine.wal.sync.after",
-    "engine.ack.early",
-    "engine.commit.before",
-    "engine.commit.after",
-    "engine.receipt.after",
-    "engine.ack.before",
-    "engine.ack.after",
+/// How often a run passes a point, and so the hits the sweep crashes it at.
+#[derive(Clone, Copy)]
+enum Hits {
+    /// Many times a run: its first hit and its third.
+    Each,
+    /// Once a run, as its load ends.
+    Once,
+}
+
+/// Every durability step a fresh run passes, in the order a commit does, then the load's end.
+const POINTS: [(&str, Hits); 15] = [
+    ("engine.wal.append", Hits::Each),
+    ("engine.flush.before", Hits::Each),
+    ("engine.flush.after", Hits::Each),
+    ("engine.wal.sync.before", Hits::Each),
+    ("engine.wal.sync.after", Hits::Each),
+    ("engine.ack.early", Hits::Each),
+    ("engine.commit.before", Hits::Each),
+    ("engine.commit.after", Hits::Each),
+    ("engine.receipt.after", Hits::Each),
+    ("engine.wal.remove", Hits::Each),
+    ("engine.ack.before", Hits::Each),
+    ("engine.ack.after", Hits::Each),
+    ("engine.wal.close.before", Hits::Once),
+    ("engine.wal.close.after", Hits::Once),
+    ("engine.wal.removed", Hits::Once),
 ];
 
 /// The harness binary, built beside this test.
@@ -85,14 +98,23 @@ fn crashes(scenario: &Scenario, failpoints: &[String], case: &str) {
     scenario.verify(dir.path(), case);
 }
 
+/// The failpoint crashing a run at the `hit`th time it passes `point`.
+fn failpoint(point: &str, hit: u64) -> String {
+    match hit {
+        1 => format!("{point}=return"),
+        hit => format!("{point}={}*off->return", hit - 1),
+    }
+}
+
 /// Crashes `scenario` at every point, its first time and its third, and in a replay.
 fn sweep(scenario: &Scenario) {
-    for point in POINTS {
-        for (hits, failpoint) in [
-            (1, format!("{point}=return")),
-            (3, format!("{point}=2*off->return")),
-        ] {
-            crashes(scenario, &[failpoint], &format!("{point} at hit {hits}"));
+    for (point, hits) in POINTS {
+        let at: &[u64] = match hits {
+            Hits::Each => &[1, 3],
+            Hits::Once => &[1],
+        };
+        for hit in at {
+            crashes(scenario, &[failpoint(point, *hit)], &format!("{point} at hit {hit}"));
         }
     }
     // A crash before a commit lands leaves it to replay, which crashes too, before and after it

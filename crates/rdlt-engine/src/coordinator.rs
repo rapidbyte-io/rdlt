@@ -426,7 +426,6 @@ impl Coordinator {
         if let Some(log) = &self.parts.wal {
             log.committed(&receipt).await?;
             self.parts.positions.apply(&meta.state_delta);
-            crash_point!("engine.receipt.after");
         }
         Ok(receipt)
     }
