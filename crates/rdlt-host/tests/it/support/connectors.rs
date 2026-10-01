@@ -66,6 +66,9 @@ pub(crate) struct TicksConfig {
     /// Columns of flags: where not zero, the rows go as one batch of them, see [`flagged`].
     #[serde(default)]
     pub(crate) flags: usize,
+    /// What [`FLAGGED`] counts this source's rows under.
+    #[serde(default)]
+    pub(crate) tag: String,
 }
 
 /// A source of numbered rows in one stream, `ticks`, that checkpoints only when the engine asks.
@@ -126,13 +129,23 @@ pub(crate) struct Tick {
     pub(crate) next: u64,
 }
 
+/// How many rows reads of [`Ticks`] sent as batches of flags, by the tag of their configuration.
+pub(crate) static FLAGGED: std::sync::Mutex<std::collections::BTreeMap<String, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
 /// Rows `0..rows` as one batch: their ids, then `flags` columns of flags, a bit a value.
 pub(crate) fn flagged(rows: u64, flags: usize) -> arrow_array::RecordBatch {
+    flagged_from(0, rows, flags)
+}
+
+/// Rows `first..rows` as one batch, as [`flagged`] makes it.
+fn flagged_from(first: u64, rows: u64, flags: usize) -> arrow_array::RecordBatch {
     use arrow_array::{ArrayRef, BooleanArray, Int64Array};
+    let first = i64::try_from(first).expect("ticks fit an i64");
     let rows = i64::try_from(rows).expect("ticks fit an i64");
-    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(first..rows));
     let flag: ArrayRef = Arc::new(BooleanArray::from_iter(
-        (0..rows).map(|row| Some(row % 3 == 0)),
+        (first..rows).map(|row| Some(row % 3 == 0)),
     ));
     let columns = (0..flags).map(|at| (format!("f{at}"), Arc::clone(&flag)));
     arrow_array::RecordBatch::try_from_iter(std::iter::once(("id".to_owned(), ids)).chain(columns))
@@ -181,7 +194,14 @@ impl ReadStream<Ticks> for TickStream {
             out.replan().await?;
         }
         if let Some(rows) = config.rows.filter(|_| config.flags > 0) {
-            out.batch(flagged(rows, config.flags)).await?;
+            if cursor.next < rows {
+                {
+                    let mut flagged = FLAGGED.lock().expect("the lock is not poisoned");
+                    *flagged.entry(config.tag.clone()).or_default() += rows - cursor.next;
+                }
+                out.batch(flagged_from(cursor.next, rows, config.flags))
+                    .await?;
+            }
             return out.checkpoint(&Tick { next: rows }).await;
         }
         let pace = Duration::from_millis(config.pace_ms);
@@ -344,6 +364,87 @@ pub(crate) enum Writing {
     Panics,
     /// Each write is kept where the test that asked for it looks.
     Keeps(&'static Kept),
+    /// Each write and commit goes to the memory destination, past what the test hooked in.
+    Hooked(&'static Hook),
+}
+
+/// What a test has a [`Writes`] destination do at one of its writes, once, and at its next
+/// commit.
+pub(crate) struct Hook {
+    /// The write, counted from one, at which `then` runs before the write is staged.
+    pub(crate) at: usize,
+    /// The writes so far.
+    pub(crate) writes: std::sync::atomic::AtomicUsize,
+    /// What runs at that write, once; an error fails the write.
+    then: std::sync::Mutex<Option<Then>>,
+    /// Whether the next commit fails before it lands.
+    pub(crate) failing_commit: std::sync::atomic::AtomicBool,
+}
+
+type Then = Box<dyn FnOnce() -> Result<()> + Send>;
+
+impl std::fmt::Debug for Hook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a hook at write {}", self.at)
+    }
+}
+
+impl Hook {
+    /// A hook that does nothing until a test sets what it does.
+    pub(crate) const fn at(at: usize) -> Self {
+        Self {
+            at,
+            writes: std::sync::atomic::AtomicUsize::new(0),
+            then: std::sync::Mutex::new(None),
+            failing_commit: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Sets what runs at the hooked write.
+    pub(crate) fn then(&self, then: impl FnOnce() -> Result<()> + Send + 'static) {
+        *self.then.lock().expect("the lock is not poisoned") = Some(Box::new(then));
+    }
+
+    /// The writes so far.
+    pub(crate) fn writes(&self) -> usize {
+        self.writes.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A writer of the memory destination that runs its hook at the hooked write.
+struct HookedWriter {
+    inner: Box<dyn DestinationWriter>,
+    hook: &'static Hook,
+}
+
+impl DestinationWriter for HookedWriter {
+    fn write(
+        &mut self,
+        segment: rdlt_connector::SegmentId,
+        batch: arrow_array::RecordBatch,
+    ) -> BoxFuture<'_, Result<()>> {
+        use std::sync::atomic::Ordering;
+        let write = self.hook.writes.fetch_add(1, Ordering::SeqCst) + 1;
+        let then = (write == self.hook.at)
+            .then(|| {
+                self.hook
+                    .then
+                    .lock()
+                    .expect("the lock is not poisoned")
+                    .take()
+            })
+            .flatten();
+        Box::pin(async move {
+            if let Some(then) = then {
+                then()?;
+            }
+            self.inner.write(segment, batch).await
+        })
+    }
+
+    fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
+        self.inner.flush()
+    }
 }
 
 /// The writes a [`Writes`] destination that keeps them was given, in order, each with its segment.
@@ -425,13 +526,28 @@ impl DestinationSession for WrongSession {
 
     fn writer<'a>(
         &'a mut self,
-        _table: &'a TableRef,
+        table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
         let writing = self.writing;
-        Box::pin(async move { Ok(Box::new(WrongWriter(writing)) as Box<dyn DestinationWriter>) })
+        Box::pin(async move {
+            Ok(match writing {
+                Writing::Hooked(hook) => {
+                    let inner = self.inner.writer(table).await?;
+                    Box::new(HookedWriter { inner, hook }) as Box<dyn DestinationWriter>
+                }
+                _ => Box::new(WrongWriter(writing)),
+            })
+        })
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
+        use std::sync::atomic::Ordering;
+        if let Writing::Hooked(hook) = self.writing
+            && hook.failing_commit.swap(false, Ordering::SeqCst)
+        {
+            let lost = ConnectorError::new(ConnectorErrorKind::Transient, "the commit was lost");
+            return Box::pin(async { Err(lost) });
+        }
         self.inner.commit(meta)
     }
 
@@ -454,6 +570,7 @@ impl DestinationWriter for WrongWriter {
                 Writing::Fails => Err(ConnectorError::data("the write was refused")),
                 Writing::Stalls => std::future::pending().await,
                 Writing::Panics => panic!("the writer panicked"),
+                Writing::Hooked(_) => Ok(()),
                 Writing::Keeps(kept) => {
                     let mut kept = kept.lock().expect("the lock is not poisoned");
                     kept.push((segment.0, batch));
