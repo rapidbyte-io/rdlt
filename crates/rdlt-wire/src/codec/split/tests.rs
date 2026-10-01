@@ -1,4 +1,5 @@
 mod crossing;
+mod weighing;
 
 use std::sync::Arc;
 
@@ -508,6 +509,8 @@ struct Cost {
     encodes: usize,
     /// What the cut itself counted.
     probe: Probe,
+    /// How many columns, rows, runs and keys the cut's weighing looked at.
+    visits: u64,
     /// The bytes of the largest frame encoded, and of all the frames sent.
     largest: usize,
     sent: usize,
@@ -528,6 +531,7 @@ fn cost(batch: &RecordBatch, limits: Limits) -> Cost {
             pieces: 0,
             encodes: 0,
             probe: Probe::default(),
+            visits: 0,
             largest: 0,
             sent: 0,
         },
@@ -547,18 +551,19 @@ fn cost(batch: &RecordBatch, limits: Limits) -> Cost {
     assert_eq!(start, batch.num_rows());
     assert_eq!(encoder.piece(&mut cut).unwrap(), None);
     (cost.encodes, cost.probe) = (encoder.encodes, cut.probe);
+    cost.visits = cut.weigher.visits();
     cost
 }
 
-/// Checks a cut cost one weighing of each row, and of the first row of each piece after the
-/// first again, and one narrowing and one encoding of each piece.
+/// Checks a cut cost a few weighings of each row, the stretches that did not fit among them,
+/// and one narrowing and one encoding of each piece.
 fn costs_a_scan_and_an_encode_a_piece(batch: &RecordBatch, cost: &Cost) {
     assert!(cost.pieces > 1, "{cost:?}");
     assert_eq!(cost.encodes, cost.pieces, "{cost:?}");
     assert_eq!(cost.probe.compactions, cost.pieces, "{cost:?}");
     assert_eq!(cost.probe.halvings, 0, "{cost:?}");
-    // A piece that ends at the row limit ends without weighing the row after it.
-    let weighed = batch.num_rows()..batch.num_rows() + cost.pieces;
+    // A stretch that did not fit is under twice the rows before it, and each after it half.
+    let weighed = batch.num_rows()..=4 * batch.num_rows() + 4 * cost.pieces;
     assert!(weighed.contains(&cost.probe.weighed), "{cost:?}");
 }
 

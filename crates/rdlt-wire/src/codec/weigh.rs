@@ -1,12 +1,14 @@
-//! Weighs a batch row by row, without copying it: what each row adds to a frame holding only
-//! what its rows name, and what it takes once its dictionary keys and runs are replaced by the
+//! Weighs the rows of a batch without copying it: what they add to a frame holding only what
+//! its rows name, and what they take once their dictionary keys and runs are replaced by the
 //! values they name.
 
+mod build;
 mod column;
+mod span;
 #[cfg(test)]
 mod tests;
 
-use std::ops::AddAssign;
+use std::ops::{AddAssign, Range};
 
 use arrow_array::RecordBatch;
 
@@ -52,13 +54,48 @@ impl AddAssign for Weight {
     }
 }
 
+/// What weighing keeps between rows.
+#[derive(Clone, Debug)]
+struct State {
+    /// The run each run-end column last weighed in the piece begun.
+    runs: Vec<Option<usize>>,
+    /// The values beyond which a stretch of rows is weighed no further.
+    most: u64,
+    /// How many columns, rows, runs and keys were looked at, for tests of what weighing costs.
+    #[cfg(test)]
+    visits: u64,
+}
+
+impl State {
+    /// Counts one column, row, run or key looked at.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "the count is kept for tests alone")
+    )]
+    fn visit(&mut self) {
+        #[cfg(test)]
+        {
+            self.visits += 1;
+        }
+    }
+
+    /// Whether `weight` already holds more values than rows are weighed for.
+    fn over(&self, weight: &Weight) -> bool {
+        weight.values > self.most
+    }
+}
+
 /// Weighs the rows of a batch, in order, as the rows of consecutive pieces of it.
 ///
 /// A row's weight follows what it names, through offsets, views, list views, unions, runs and
-/// dictionary keys, whatever buffers its batch shares or was sliced from; nothing is copied, and
-/// what the weigher keeps beside the batch's own buffers does not grow with its rows. Rows of
-/// one piece are weighed in order, since a run-end column's run is weighed with the first row of
-/// the piece that names it.
+/// dictionary keys, whatever buffers its batch shares or was sliced from, and nothing is copied.
+///
+/// - Rows of one piece are weighed in order, since a run-end column's run is weighed with the
+///   first row of the piece that names it.
+/// - Weighing is linear in the rows and the items they name. A stretch of fixed-width values,
+///   of bytes by offsets, or of structs and lists of those is weighed by arithmetic, however
+///   long it is. What a dictionary value or a run takes expanded is found once, when a row
+///   first names it, and kept: eight bytes for each such value.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -72,13 +109,16 @@ impl AddAssign for Weight {
 /// weigher.begin();
 /// let row = weigher.weigh(0);
 /// assert_eq!((row.values, row.frame_bytes()), (1, 5));
+/// let rest = weigher.weigh_rows(1..3);
+/// assert_eq!((rest.values, rest.frame_bytes()), (2, 9));
 /// # Ok::<(), arrow_schema::ArrowError>(())
 /// ```
 #[derive(Debug)]
 pub struct Weigher {
     columns: Vec<Column>,
-    /// The run each run-end column last weighed in the piece begun.
-    runs: Vec<Option<usize>>,
+    state: State,
+    /// The runs last weighed when the weigher was marked.
+    marked: Vec<Option<usize>>,
     counts: Counts,
     rows: usize,
 }
@@ -86,6 +126,12 @@ pub struct Weigher {
 impl Weigher {
     /// A weigher of `batch`'s rows.
     pub fn new(batch: &RecordBatch) -> Self {
+        Self::within(batch, u64::MAX)
+    }
+
+    /// A weigher of `batch`'s rows that weighs a stretch of rows no further once it holds more
+    /// than `most` values: what it then returns is beyond `most`, and no more is known of it.
+    pub(super) fn within(batch: &RecordBatch, most: u64) -> Self {
         let mut counts = Counts::default();
         let columns = batch.columns().iter();
         let columns = columns.map(|column| {
@@ -95,7 +141,13 @@ impl Weigher {
         let columns: Vec<_> = columns.collect();
         Self {
             columns,
-            runs: vec![None; counts.runs],
+            state: State {
+                runs: vec![None; counts.runs],
+                most,
+                #[cfg(test)]
+                visits: 0,
+            },
+            marked: vec![None; counts.runs],
             counts,
             rows: batch.num_rows(),
         }
@@ -108,19 +160,40 @@ impl Weigher {
 
     /// Begins a piece: the next row weighed is its first.
     pub fn begin(&mut self) {
-        self.runs.fill(None);
+        self.state.runs.fill(None);
     }
 
     /// What `row` adds to the piece begun, weighed after the rows of the piece before it; a row
     /// the batch does not hold weighs nothing.
     pub fn weigh(&mut self, row: usize) -> Weight {
+        self.weigh_rows(row..row.saturating_add(1))
+    }
+
+    /// What `rows` add to the piece begun, weighed after the rows of the piece before them;
+    /// rows the batch does not hold weigh nothing.
+    pub fn weigh_rows(&mut self, rows: Range<usize>) -> Weight {
         let mut weight = Weight::default();
-        if row < self.rows {
-            for column in &self.columns {
-                column.weigh(row, true, &mut self.runs, &mut weight);
-            }
+        let end = rows.end.min(self.rows);
+        for column in &mut self.columns {
+            column.span(rows.start, end, true, &mut self.state, &mut weight);
         }
         weight
+    }
+
+    /// Remembers which runs the piece begun has weighed, for [`Weigher::rewind`].
+    pub(super) fn mark(&mut self) {
+        self.marked.clone_from(&self.state.runs);
+    }
+
+    /// Forgets the rows weighed since the last [`Weigher::mark`].
+    pub(super) fn rewind(&mut self) {
+        self.state.runs.clone_from(&self.marked);
+    }
+
+    /// How many columns, rows, runs and keys weighing has looked at.
+    #[cfg(test)]
+    pub(super) fn visits(&self) -> u64 {
+        self.state.visits
     }
 
     /// Bytes: the most a frame of this batch's schema takes beside what its rows weigh: each
