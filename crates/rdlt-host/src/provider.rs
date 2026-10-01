@@ -11,7 +11,7 @@ use rdlt_connector::{BoxFuture, ConnectorError, ConnectorId, ConnectorSpec, Dest
 
 /// What a pipeline names as its source or destination: a connector's id, the versions it accepts,
 /// and where to find it when that is not the provider's choice.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ConnectorRef {
     /// The connector's id.
     pub id: ConnectorId,
@@ -23,6 +23,27 @@ pub struct ConnectorRef {
     pub endpoint: Option<String>,
     /// The digest its binary must have, for a process placement; any binary when absent.
     pub digest: Option<Digest>,
+}
+
+impl fmt::Debug for ConnectorRef {
+    /// Shows the endpoint by its host and port, and not at all where it is none: what makes an
+    /// endpoint wrong may be a credential written into it.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let endpoint = self.endpoint.as_deref().map(|endpoint| {
+            crate::network::Endpoint::parse(endpoint).map_or_else(
+                |_| "<no endpoint>".to_owned(),
+                |endpoint| endpoint.to_string(),
+            )
+        });
+        formatter
+            .debug_struct("ConnectorRef")
+            .field("id", &self.id)
+            .field("version_req", &self.version_req)
+            .field("path", &self.path)
+            .field("endpoint", &endpoint)
+            .field("digest", &self.digest)
+            .finish()
+    }
 }
 
 impl ConnectorRef {

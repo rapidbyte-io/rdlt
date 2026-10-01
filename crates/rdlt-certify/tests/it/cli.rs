@@ -742,3 +742,19 @@ async fn an_endpoint_refused_is_not_repeated_in_what_is_reported() {
         assert!(!said.contains("hunter2"), "{endpoint}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_target_that_is_no_file_is_not_repeated_in_what_is_reported() {
+    // Each an endpoint mistyped, so read as a path, with a credential in it.
+    for target in [
+        "grpcs:/svc:hunter2@connector:7443",
+        "grpcs//svc:hunter2@connector:7443",
+        "svc:hunter2@connector:7443",
+    ] {
+        let output = certify(&[target]).await;
+        assert_eq!(code(&output), Some(74), "{target}");
+        let said = [output.stdout, output.stderr].concat();
+        let said = String::from_utf8_lossy(&said);
+        assert!(!said.contains("hunter2"), "{target}: {said}");
+    }
+}
