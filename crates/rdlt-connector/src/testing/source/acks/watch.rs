@@ -130,6 +130,9 @@ impl Probed<'_> {
             match event {
                 None => break Ok(()),
                 Some(SourceEvent::Checkpoint { cursor, .. }) => {
+                    if let Err(beyond) = self.budget.cursor(&cursor) {
+                        break Err(beyond);
+                    }
                     read.checkpoints.push(cursor);
                     read.tail = false;
                     quiet = Instant::now() + QUIET;

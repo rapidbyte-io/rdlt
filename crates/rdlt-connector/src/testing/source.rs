@@ -25,6 +25,7 @@ use crate::source::{
 };
 use crate::spec::ConnectContext;
 use crate::state::{PartitionState, StreamState};
+use recording::Budget;
 
 /// The clauses [`certify_source`] checks, in order.
 pub const SOURCE_CLAUSES: &[Clause] = &[
@@ -137,12 +138,15 @@ async fn connected(
     Ok((Arc::from(source), told))
 }
 
-async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
-    let catalog = bounded_call("discover", source.discover()).await;
-    // Where the source stands before any clause reads it, which S-ACK, last, checks: asked
-    // within a clause's bound, however many partitions the source plans.
-    let mut told = match (told, &catalog) {
-        (Some(Ok(reader)), Ok(catalog)) => {
+/// Where the source stands before any clause reads it, which `S-ACK`, last, checks: asked within
+/// a clause's bound, however many partitions the source plans.
+async fn stood(
+    source: &dyn Source,
+    told: Told,
+    catalog: Option<&Catalog>,
+) -> Option<Result<acks::Told, Violation>> {
+    match (told, catalog) {
+        (Some(Ok(reader)), Some(catalog)) => {
             let standing = acks::standing(source, reader.as_ref(), catalog);
             let standing = tokio::time::timeout(CLAUSE_TIMEOUT, standing).await;
             let standing = standing.unwrap_or_else(|_| {
@@ -155,9 +159,16 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
         }
         (Some(Err(violation)), _) => Some(Err(violation)),
         _ => None,
-    };
+    }
+}
+
+async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
+    let catalog = bounded_call("discover", source.discover()).await;
+    let mut told = stood(source, told, catalog.as_ref().ok()).await;
     let mut results = Vec::new();
     for clause in SOURCE_CLAUSES {
+        // What a clause holds of the source's reads, all of them together.
+        let budget = Budget::new();
         let outcome = match (&catalog, clause.id) {
             (_, "S-CHECK") => {
                 outcome(timed(check_agrees_with_read(source, catalog.as_ref())).await)
@@ -170,13 +181,16 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
             }
             (Ok(catalog), "S-PLAN") => outcome(timed(plans_are_valid(source, catalog)).await),
             (Ok(catalog), "S-RESUME") => {
-                outcome(timed(resume::resumes_are_exact(source, catalog)).await)
+                outcome(timed(resume::resumes_are_exact(source, catalog, &budget)).await)
             }
             (Ok(catalog), "S-PARTITION") => {
-                within(partition::partitions_cover_exactly_once(source, catalog)).await
+                within(partition::partitions_cover_exactly_once(
+                    source, catalog, &budget,
+                ))
+                .await
             }
             (Ok(catalog), "S-STOP") => {
-                outcome(timed(stop::stops_are_prompt(source, catalog)).await)
+                outcome(timed(stop::stops_are_prompt(source, catalog, &budget)).await)
             }
             (Ok(catalog), "S-ACK") => {
                 // Boxed: its reads' state would otherwise weigh on every certification's future.
@@ -184,10 +198,11 @@ async fn check_all(source: &dyn Source, told: Told) -> Vec<ClauseResult> {
                     source,
                     told.take(),
                     catalog,
+                    &budget,
                 )))
                 .await
             }
-            (Ok(catalog), _) => within(barriers_are_answered(source, catalog)).await,
+            (Ok(catalog), _) => within(barriers_are_answered(source, catalog, &budget)).await,
         };
         results.push(ClauseResult {
             clause: *clause,
@@ -322,7 +337,7 @@ const START_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
 /// How long a read asked to stop has to end, or fail, before it counts as started.
 const STOP_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
-async fn barriers_are_answered(source: &dyn Source, catalog: &Catalog) -> Outcome {
+async fn barriers_are_answered(source: &dyn Source, catalog: &Catalog, budget: &Budget) -> Outcome {
     let on_demand: Vec<&StreamSpec> = catalog
         .iter()
         .filter(|stream| stream.checkpointing() == Checkpointing::OnDemand)
@@ -333,8 +348,8 @@ async fn barriers_are_answered(source: &dyn Source, catalog: &Catalog) -> Outcom
     let check = async {
         for stream in on_demand {
             for (partition, start) in plan(source, stream.name()).await? {
-                let recording =
-                    recording::record(source, stream, &partition, start, Some(1)).await?;
+                let read = (stream, &partition);
+                let recording = recording::record(source, read, start, Some(1), budget).await?;
                 let pushed = recording
                     .segments
                     .iter()

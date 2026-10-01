@@ -1,7 +1,7 @@
 //! `S-RESUME`: a read resumed from a checkpoint yields exactly the data after it.
 
 use super::plan;
-use super::recording::record;
+use super::recording::{Budget, record};
 use crate::catalog::Catalog;
 use crate::sink::Push;
 use crate::source::Source;
@@ -23,16 +23,17 @@ pub(in crate::testing) fn sampled(sent: usize) -> Vec<usize> {
 pub(super) async fn resumes_are_exact(
     source: &dyn Source,
     catalog: &Catalog,
+    budget: &Budget,
 ) -> Result<(), Violation> {
     let mut observed = false;
     for stream in catalog.iter() {
         for (partition, start) in plan(source, stream.name()).await? {
-            let full = record(source, stream, &partition, start, None).await?;
+            let read = (stream, &partition);
+            let full = record(source, read, start, None, budget).await?;
             for index in sampled(full.checkpoints.len()) {
                 observed = true;
                 let cursor = &full.checkpoints[index];
-                let resumed =
-                    record(source, stream, &partition, Some(cursor.clone()), None).await?;
+                let resumed = record(source, read, Some(cursor.clone()), None, budget).await?;
                 let expected: Vec<&Push> = full.segments[index + 1..]
                     .iter()
                     .flatten()

@@ -4,35 +4,20 @@
 use std::cmp::Ordering;
 
 use arrow_array::RecordBatch;
-use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use rdlt_connector::META_PREFIX;
+use rdlt_connector::testing::render::{RenderError, Rendering};
 
-use crate::protocol::Violation;
-
-/// Every row of `batches`, each rendered as its columns by name, without the engine's metadata
-/// columns, which differ between loads; sorted.
-pub(crate) fn rendered(batches: &[RecordBatch]) -> Result<Vec<String>, Violation> {
-    let options = FormatOptions::default().with_null("null");
+/// Every row of `batches`, each rendered within `rendering`'s limit as its columns by name,
+/// without the engine's metadata columns, which differ between loads; sorted.
+pub(crate) async fn rendered(
+    batches: &[RecordBatch],
+    rendering: &mut Rendering,
+) -> Result<Vec<String>, RenderError> {
     let mut rows = Vec::new();
     for batch in batches {
-        let schema = batch.schema();
-        let mut columns = Vec::new();
-        for (field, column) in schema.fields().iter().zip(batch.columns()) {
-            if field.name().starts_with(META_PREFIX) {
-                continue;
-            }
-            let formatter = ArrayFormatter::try_new(column.as_ref(), &options)
-                .map_err(|error| format!("column `{}` does not render: {error}", field.name()))?;
-            columns.push((field.name().as_str(), formatter));
-        }
-        columns.sort_by(|left, right| left.0.cmp(right.0));
-        for row in 0..batch.num_rows() {
-            let values: Vec<String> = columns
-                .iter()
-                .map(|(name, formatter)| format!("{name}={}", formatter.value(row)))
-                .collect();
-            rows.push(values.join(", "));
-        }
+        let stored = |name: &str| !name.starts_with(META_PREFIX);
+        rows.extend(rendering.rows(batch, stored).await?);
+        tokio::task::yield_now().await;
     }
     rows.sort_unstable();
     Ok(rows)

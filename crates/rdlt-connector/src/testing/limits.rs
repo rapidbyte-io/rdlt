@@ -25,3 +25,23 @@ pub(super) const PUBLISHED_ROWS: usize = 10_000;
 /// Bytes the columns a clause reads of one read-back may take once each row holds its own value,
 /// whatever encoding shared it: the rows times each column's widest value, summed.
 pub(super) const PUBLISHED_BYTES: usize = 16 << 20;
+
+/// Bytes a source clause holds of what its reads send, all its reads together: each push's
+/// bytes as a budget charges them, each cursor's, and [`HELD_EVENT_BYTES`] for each.
+///
+/// A source that sends more leaves the clause unobserved, its read stopped.
+pub(super) const HELD_BYTES: usize = 64 << 20;
+
+/// Bytes each push and checkpoint a clause holds is charged beside its own, for what holds it.
+pub(super) const HELD_EVENT_BYTES: usize = 256;
+
+/// Rows a source clause holds of what its reads send, all its reads together: rows of nothing
+/// cost no bytes, and comparing them costs time all the same.
+pub(super) const HELD_ROWS: usize = 1 << 20;
+
+/// Bytes of text a clause renders of the rows it compares, at most: rendering stops there, and
+/// the clause is left unobserved.
+pub const RENDERED_BYTES: usize = 64 << 20;
+
+/// Rows rendered between two yields to the runtime, so a clause's bound can end the rendering.
+pub(super) const YIELD_ROWS: usize = 4096;

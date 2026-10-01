@@ -89,6 +89,21 @@ async fn a_source_served_in_process_killed_as_it_loads_resumes_where_it_was() {
 }
 
 #[tokio::test]
+async fn a_source_holding_more_than_a_kill_clause_loads_leaves_it_unobserved() {
+    let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()))
+        .kill_seed(SETTLED_LATE);
+    // A hundred rows more than a kill clause loads.
+    let config = json!({
+        "seed": 5,
+        "streams": [{ "name": "events", "rows": 100_100, "partitions": 1, "batch_rows": 500 }],
+    });
+    let report = certify_source(&target, config).await;
+    let outcome = report.outcome("K-SOURCE");
+    assert!(matches!(outcome, Some(Outcome::Unobserved(_))), "{report}");
+    assert_eq!(report.failures().count(), 0, "{report}");
+}
+
+#[tokio::test]
 async fn a_source_read_before_any_kill_lands_proves_nothing_of_kills() {
     let target = Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
     let config = json!({

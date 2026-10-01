@@ -11,11 +11,14 @@ use rdlt_connector_reference::{MemoryDestination, published, tables};
 use rdlt_engine::{PipelinePlan, StreamPlan, WriteMode};
 use rdlt_host::Kills;
 
+use super::bounded::{Beyond, Bounded};
 use super::killing::{Killing, Schedule};
 use super::rows::{Parted, parted, rendered};
 use super::{Loaded, converged};
 use crate::protocol::Violation;
 use crate::target::Target;
+use rdlt_connector::testing::RENDERED_BYTES;
+use rdlt_connector::testing::render::{RenderError, Rendering};
 
 /// `K-SOURCE` against the source `target` reaches, which answers to `id`, with `config`.
 pub(crate) async fn resumed(
@@ -54,23 +57,25 @@ async fn compared(
     let pipeline = PipelineId::parse(&name).map_err(Violation::of)?;
     let plan = PipelinePlan::new(pipeline, streams).map_err(Violation::of)?;
     let (clean, killed) = (format!("{name}_clean"), format!("{name}_killed"));
-    converged(&plan, &source, &memory(&clean).await?)
-        .await
-        .map_err(|Violation(reason)| format!("a load never killed failed: {reason}"))?;
+    let (store, beyond) = memory(&clean).await?;
+    let loaded = converged(&plan, &source, &store).await;
+    if let Some(reason) = beyond.unobserved() {
+        return Ok(Loaded::Unobserved(reason));
+    }
+    loaded.map_err(|Violation(reason)| format!("a load never killed failed: {reason}"))?;
     let kills = Kills::new();
     let source = placed(target, id, config, &kills).await?;
-    let killing = Killing::new(
-        memory(&killed).await?,
-        &kills,
-        Schedule::seeded(seed, false),
-    );
+    let (store, beyond) = memory(&killed).await?;
+    let killing = Killing::new(store, &kills, Schedule::seeded(seed, false));
     let destination: Arc<dyn Destination> = Arc::new(killing);
-    let interrupted = converged(&plan, &source, &destination).await?;
-    if let Some(unproven) = super::unproven(&kills, interrupted, seed) {
+    let interrupted = converged(&plan, &source, &destination).await;
+    if let Some(reason) = beyond.unobserved() {
+        return Ok(Loaded::Unobserved(reason));
+    }
+    if let Some(unproven) = super::unproven(&kills, interrupted?, seed) {
         return Ok(unproven);
     }
-    same(&clean, &killed)?;
-    Ok(Loaded::Kept)
+    same(&clean, &killed).await
 }
 
 /// The source `target` reaches, placed as an engine's placement places it, killed by `kills`.
@@ -103,17 +108,22 @@ fn planned(stream: &StreamSpec) -> Option<StreamPlan> {
     }
 }
 
-/// A memory destination writing to `store`.
-async fn memory(store: &str) -> Result<Arc<dyn Destination>, Violation> {
-    destination_factory::<MemoryDestination>()
+/// A memory destination writing to `store`, taking as much as a kill clause loads, and what
+/// tells whether a load wrote beyond that.
+async fn memory(store: &str) -> Result<(Arc<dyn Destination>, Beyond), Violation> {
+    let memory = destination_factory::<MemoryDestination>()
         .connect(serde_json::json!({ "store": store }), ConnectContext::new())
         .await
-        .map(Arc::from)
-        .map_err(|error| Violation(format!("the memory destination did not connect: {error}")))
+        .map_err(|error| Violation(format!("the memory destination did not connect: {error}")))?;
+    let bounded = Bounded::new(Arc::from(memory));
+    let beyond = bounded.witness();
+    Ok((Arc::new(bounded), beyond))
 }
 
-/// Whether the stores `clean` and `killed` hold the same tables, with the same rows.
-fn same(clean: &str, killed: &str) -> Result<(), Violation> {
+/// Whether the stores `clean` and `killed` hold the same tables, with the same rows: kept when
+/// they do, and not observed when their rows cannot be rendered to compare.
+async fn same(clean: &str, killed: &str) -> Result<Loaded, Violation> {
+    let mut rendering = Rendering::new(RENDERED_BYTES);
     let names = tables(clean);
     let killed_names = tables(killed);
     if names != killed_names {
@@ -123,8 +133,14 @@ fn same(clean: &str, killed: &str) -> Result<(), Violation> {
         )));
     }
     for table in &names {
-        let rows = rendered(&published(clean, table))?;
-        let killed_rows = rendered(&published(killed, table))?;
+        let rows = rendered(&published(clean, table), &mut rendering).await;
+        let (rows, killed_rows) = match rows {
+            Ok(rows) => match rendered(&published(killed, table), &mut rendering).await {
+                Ok(killed_rows) => (rows, killed_rows),
+                Err(error) => return Ok(Loaded::Unobserved(uncompared(table, &error))),
+            },
+            Err(error) => return Ok(Loaded::Unobserved(uncompared(table, &error))),
+        };
         if let Some(parted) = parted(&rows, &killed_rows) {
             let example = match parted {
                 Parted::Missing(row) => format!("the row {row} is missing"),
@@ -137,5 +153,10 @@ fn same(clean: &str, killed: &str) -> Result<(), Violation> {
             )));
         }
     }
-    Ok(())
+    Ok(Loaded::Kept)
+}
+
+/// Why the clause is not observed when `table`'s rows cannot be rendered to compare.
+fn uncompared(table: &str, error: &RenderError) -> String {
+    format!("table `{table}` cannot be compared: {error}")
 }
