@@ -30,9 +30,10 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - It shuts down gracefully once its standard input ends or it receives `SIGTERM`.
   - It ignores `SIGINT`: the host stops its connectors itself. Amended 2026-10-01 (ADR 0050):
     a spawned connector leads a process group of its own, which the host owns, so a terminal's
-    Ctrl-C no longer reaches it. A host listens for `SIGINT` and `SIGTERM`
-    (`rdlt_host::Interrupts`) and stops what it spawned (`rdlt_host::stop_spawned`) before it
-    exits; `rdlt-certify` does.
+    Ctrl-C no longer reaches it, and neither does its hanging up. A host listens for `SIGINT`,
+    `SIGTERM`, `SIGHUP` and `SIGQUIT` (`rdlt_host::Interrupts`) and stops what it spawned
+    (`rdlt_host::stop_spawned`, or the guard `rdlt_host::StopsSpawned`) before it exits;
+    `rdlt-certify` does.
   - On Linux, it asks for `SIGTERM` when its parent dies (`PR_SET_PDEATHSIG`). Standard input
     ending covers a host that died before it asked. A host killed outright runs no code: these
     two end the connector, and nothing ends what the connector started and left in its group.
@@ -81,8 +82,11 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - The last 8 KiB of standard error, and the exit status, are kept. A transport failure of that
     connector (`connector_lost` or `transport`) carries them as its source (`LastWords`), from
     its source's and destination's calls and from its sessions' and writers'.
-  - Dropping a placed connector stops it on a reaper task: its standard input closes, it
-    receives `SIGTERM`, and after the grace period (10 s by default) `SIGKILL`.
+  - Dropping a placed connector stops it: before the drop returns its standard input closes
+    and its process group receives `SIGTERM`, and after the grace period (10 s by default) the
+    thread that owns the group sends `SIGKILL`. Amended 2026-10-02 (ADR 0050): the reaper is a
+    thread, not a task, and the kill after the grace needs a host that is still running, so a
+    host calls `rdlt_host::stop_spawned` before it exits.
   - A connector whose binary serves another id, or another version than accepted, is refused.
 - **Supervision** (§13.5).
   - A connector is lost when its transport fails, it misses heartbeats, or it exits. An exit loses
@@ -105,9 +109,11 @@ only at its end. The owner also asked for the host to be simulated over a networ
 
 ## Consequences
 
-- The reaper and the output drains are tasks that outlive the call that spawned them, as a
-  dedicated reaper must. Each ends when its process does, and `kill_on_drop` stops a process
-  whose runtime ends first.
+- The output drains are tasks that outlive the call that spawned them, and each ends when its
+  process does. Amended 2026-10-02 (ADR 0050): the reaper is a thread of the host, which
+  outlives the runtime that spawned the connector, and stops a process whose runtime ends
+  first; nothing relies on `kill_on_drop`. The groups a process owns are one list for the
+  whole process: `stop_spawned` stops the connectors of every `Local` in it.
 - A debug build's binaries are hundreds of megabytes, and hashing one took seconds, so `sha2` is
   optimised in the dev profile.
 - The spawned leg adds about a minute of wall-clock time to the tests. Mutation testing gives it,
