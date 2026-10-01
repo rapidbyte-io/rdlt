@@ -402,7 +402,10 @@ impl Coordinator {
             crash_point!("engine.ack.early");
             self.acknowledge(&collected.positions, false).await?;
         }
+        // The commit completing a stream publishes it: a replace swaps its generation in.
+        crash_point!("engine.complete.before", !completing.is_empty());
         let receipt = self.committed(&meta).await?;
+        crash_point!("engine.complete.after", !completing.is_empty());
         self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing);
         self.record_positions(&collected.positions);

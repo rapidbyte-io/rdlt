@@ -23,39 +23,57 @@ use scenarios::Scenario;
 enum Hits {
     /// Many times a run: its first hit and its third.
     Each,
-    /// Once a run, as its load ends.
+    /// Once a commit, at the destination's own commit: every hit the run reaches, so the commits
+    /// where a truncate lands, and every other, crash too.
+    Landing,
+    /// Once a run: as its load ends, or as a commit completes its stream.
     Once,
 }
 
-/// A crash point: its name, how often a run passes it, and whether only a run keeping a log
-/// does.
+/// More commits than any swept run makes.
+const MOST_COMMITS: u64 = 100;
+
+/// Which runs pass a point.
+#[derive(Clone, Copy)]
+enum Passed {
+    /// Every run.
+    Always,
+    /// Runs keeping a log.
+    Logged,
+    /// Runs whose stream completes: a full read, publishing what it read.
+    Completing,
+}
+
+/// A crash point: its name, how often a run passes it, and which runs do.
 struct Point {
     name: &'static str,
     hits: Hits,
-    logged: bool,
+    passed: Passed,
 }
 
-const fn point(name: &'static str, hits: Hits, logged: bool) -> Point {
-    Point { name, hits, logged }
+const fn point(name: &'static str, hits: Hits, passed: Passed) -> Point {
+    Point { name, hits, passed }
 }
 
 /// Every durability step a fresh run passes, in the order a commit does, then the load's end.
-const POINTS: [Point; 15] = [
-    point("engine.wal.append", Hits::Each, true),
-    point("engine.flush.before", Hits::Each, false),
-    point("engine.flush.after", Hits::Each, false),
-    point("engine.wal.sync.before", Hits::Each, true),
-    point("engine.wal.sync.after", Hits::Each, true),
-    point("engine.ack.early", Hits::Each, true),
-    point("engine.commit.before", Hits::Each, false),
-    point("engine.commit.after", Hits::Each, false),
-    point("engine.receipt.after", Hits::Each, true),
-    point("engine.wal.remove", Hits::Each, true),
-    point("engine.ack.before", Hits::Each, false),
-    point("engine.ack.after", Hits::Each, false),
-    point("engine.wal.close.before", Hits::Once, true),
-    point("engine.wal.close.after", Hits::Once, true),
-    point("engine.wal.removed", Hits::Once, true),
+const POINTS: [Point; 17] = [
+    point("engine.wal.append", Hits::Each, Passed::Logged),
+    point("engine.flush.before", Hits::Each, Passed::Always),
+    point("engine.flush.after", Hits::Each, Passed::Always),
+    point("engine.wal.sync.before", Hits::Each, Passed::Logged),
+    point("engine.wal.sync.after", Hits::Each, Passed::Logged),
+    point("engine.ack.early", Hits::Each, Passed::Logged),
+    point("engine.complete.before", Hits::Once, Passed::Completing),
+    point("engine.commit.before", Hits::Landing, Passed::Always),
+    point("engine.commit.after", Hits::Landing, Passed::Always),
+    point("engine.receipt.after", Hits::Each, Passed::Logged),
+    point("engine.complete.after", Hits::Once, Passed::Completing),
+    point("engine.wal.remove", Hits::Each, Passed::Logged),
+    point("engine.ack.before", Hits::Each, Passed::Always),
+    point("engine.ack.after", Hits::Each, Passed::Always),
+    point("engine.wal.close.before", Hits::Once, Passed::Logged),
+    point("engine.wal.close.after", Hits::Once, Passed::Logged),
+    point("engine.wal.removed", Hits::Once, Passed::Logged),
 ];
 
 /// The harness binary, built beside this test.
@@ -68,18 +86,25 @@ fn harness() -> PathBuf {
         .join("crash_run")
 }
 
-/// Runs the harness on `config`, crashing where `failpoints` says; its exit.
-fn run(config: &Path, failpoints: Option<&str>) -> ExitStatus {
+/// Runs the harness on `config`, crashing where `failpoints` says; its exit, and the commits it
+/// reported where it ran to its end.
+fn run(config: &Path, failpoints: Option<&str>) -> (ExitStatus, Option<u64>) {
     let mut command = Command::new(harness());
     command.arg(config).env_remove("FAILPOINTS");
     if let Some(failpoints) = failpoints {
         command.env("FAILPOINTS", failpoints);
     }
-    command
-        .stdout(std::process::Stdio::null())
+    let output = command
         .stderr(std::process::Stdio::null())
-        .status()
-        .expect("the harness runs")
+        .output()
+        .expect("the harness runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let commits = stdout
+        .lines()
+        .last()
+        .and_then(|report| serde_json::from_str::<serde_json::Value>(report).ok())
+        .and_then(|report| report["commits"].as_u64());
+    (output.status, commits)
 }
 
 /// Whether `status` is a crash: the process aborted.
@@ -94,20 +119,48 @@ fn crashes(scenario: &Scenario, failpoints: &[String], case: &str) {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let config = scenario.write(dir.path());
     for failpoint in failpoints {
-        let status = run(&config, Some(failpoint));
+        let (status, _) = run(&config, Some(failpoint));
         assert!(
             crashed(status),
             "{} {case}: {failpoint} did not crash the run: {status}",
             scenario.name
         );
     }
-    let status = run(&config, None);
+    again(scenario, dir.path(), &config, case);
+}
+
+/// Runs `scenario` in `dir` cleanly after its crashes, and checks what it loaded.
+fn again(scenario: &Scenario, dir: &Path, config: &Path, case: &str) {
+    let (status, _) = run(config, None);
     assert!(
         status.success(),
         "{} {case}: the run again ended {status}",
         scenario.name
     );
-    scenario.verify(dir.path(), case);
+    scenario.verify(dir, case);
+}
+
+/// Crashes `scenario` at each commit its runs make at `point`, until a run ends before it reaches
+/// the hit: every hit a run reaches must crash it.
+fn every_commit(scenario: &Scenario, point: &str) {
+    for hit in 1..=MOST_COMMITS {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let config = scenario.write(dir.path());
+        let case = format!("{point} at hit {hit}");
+        let (status, commits) = run(&config, Some(&failpoint(point, hit)));
+        if status.success() {
+            let commits = commits.expect("a run to its end reports its commits");
+            assert!(
+                commits < hit,
+                "{} {case}: the run made {commits} commits and did not crash",
+                scenario.name
+            );
+            return;
+        }
+        assert!(crashed(status), "{} {case}: the run ended {status}", scenario.name);
+        again(scenario, dir.path(), &config, &case);
+    }
+    panic!("{}: {point} crashed {MOST_COMMITS} commits and the run never ended", scenario.name);
 }
 
 /// The failpoint crashing a run at the `hit`th time it passes `point`.
@@ -121,13 +174,19 @@ fn failpoint(point: &str, hit: u64) -> String {
 /// Crashes `scenario` at every point its runs pass, at the hits each is passed, and in a replay
 /// where its runs keep a log.
 fn sweep(scenario: &Scenario) {
-    let passed = POINTS
-        .iter()
-        .filter(|point| scenario.logged || !point.logged);
+    let passed = POINTS.iter().filter(|point| match point.passed {
+        Passed::Always => true,
+        Passed::Logged => scenario.logged,
+        Passed::Completing => scenario.completes,
+    });
     for point in passed {
         let at: &[u64] = match point.hits {
             Hits::Each => &[1, 3],
             Hits::Once => &[1],
+            Hits::Landing => {
+                every_commit(scenario, point.name);
+                continue;
+            }
         };
         for hit in at {
             let case = format!("{} at hit {hit}", point.name);
