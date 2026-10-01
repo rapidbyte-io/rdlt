@@ -1,4 +1,4 @@
-//! The kill matrix (spec §20.6): the process running a pipeline, its spawned source or its spawned
+//! The kill matrix: the process running a pipeline, its spawned source or its spawned
 //! destination is killed as it loads, the pipeline runs again, every row lands once, and no
 //! connector outlives the run that spawned it.
 
