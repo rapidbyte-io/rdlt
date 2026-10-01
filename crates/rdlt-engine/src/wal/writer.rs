@@ -280,6 +280,7 @@ impl Log {
 
     async fn committed(&mut self, seq: CommitSeq, frame: Bytes) -> Result<(), Error> {
         self.append(frame).await?;
+        crash_point!("engine.receipt.after");
         if let Some(segments) = self.pending.remove(&seq) {
             self.settled.settle(segments.iter());
         }
@@ -316,6 +317,7 @@ impl Log {
                 .await
                 .map_err(Error::from_wal)?;
             self.written.remove(&number);
+            crash_point!("engine.wal.remove");
         }
         Ok(())
     }
@@ -324,10 +326,12 @@ impl Log {
     /// waits for a receipt.
     async fn close(&mut self, frame: Bytes) -> Result<(), Error> {
         self.append(frame).await?;
+        crash_point!("engine.wal.close.before");
         self.store
             .sync(&self.pipeline, self.chunk)
             .await
             .map_err(Error::from_wal)?;
+        crash_point!("engine.wal.close.after");
         if !self.pending.is_empty() {
             return Ok(());
         }
@@ -335,6 +339,8 @@ impl Log {
         self.store
             .remove_log(&self.pipeline, self.chunk.load)
             .await
-            .map_err(Error::from_wal)
+            .map_err(Error::from_wal)?;
+        crash_point!("engine.wal.removed");
+        Ok(())
     }
 }
