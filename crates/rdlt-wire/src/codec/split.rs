@@ -13,6 +13,10 @@ use super::{Encoder, IpcFrame};
 use crate::error::{Frame, WireError};
 use crate::limits::{Limits, Refusal};
 
+/// The part of a piece's rows its frame may have room left for when the piece is taken as full,
+/// where the frame's bytes bind: a sixty-fourth.
+const SLACK: usize = 64;
+
 /// A batch on its way to a receiver, and how far it has got.
 #[derive(Clone, Debug)]
 pub struct Cut {
@@ -54,7 +58,8 @@ impl Encoder {
     ///
     /// The batch goes as it is where it fits. Otherwise each piece holds only what its rows
     /// name, and is the longest its receiver's rows, values and view bytes admit; where the
-    /// frame's bytes bind, it is full to within a row of its average size. Each frame is
+    /// frame's bytes bind, it is full to within a row of its average size, or a sixty-fourth of
+    /// its rows. Each frame is
     /// measured as its receiver measures it, so none is refused there.
     ///
     /// # Errors
@@ -121,8 +126,9 @@ impl Encoder {
         let most = rest.num_rows().min(most.max(1));
         let guess = guess.clamp(1, most);
         let (shaped, mut piece) = shaped(rest, guess, most, limits)?;
-        // The most rows whose frame fits, and the fewest whose shape or frame does not.
-        let (mut fits, mut beyond) = (None, shaped + 1);
+        // The most rows whose frame fits, the fewest whose shape or frame does not, and how many
+        // frames did not fit.
+        let (mut fits, mut beyond, mut misses) = (None, shaped + 1, 0_u32);
         let mut rows = guess.min(shaped);
         if rows < shaped {
             piece = compact(&rest.slice(0, rows))?;
@@ -130,23 +136,35 @@ impl Encoder {
         loop {
             match self.trial(&piece, limits, frames)? {
                 Ok(frame) => {
-                    // Full when a row more of the piece's average size would not fit.
+                    // Full when its size says the frame has room for no more rows of its
+                    // average size, or for fewer than a sixty-fourth as many again.
                     let bytes = frame.header.len().saturating_add(frame.body.len());
                     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
                     let fuller = scaled(rows, limits.frame_bytes, bytes).min(beyond - 1);
-                    if fuller <= rows {
+                    if fuller <= rows + rows / SLACK {
                         return Ok((rows, frame));
                     }
-                    (fits, rows) = (Some((rows, frame)), fuller);
+                    // Once a frame did not fit, sizes do not tell: no further than halfway.
+                    let halfway = rows + (beyond - rows) / 2;
+                    let next = if misses == 0 {
+                        fuller
+                    } else {
+                        fuller.min(halfway)
+                    };
+                    (fits, rows) = (Some((rows, frame)), next);
                 }
                 Err(refusal) => {
-                    beyond = rows;
+                    (beyond, misses) = (rows, misses + 1);
                     let low = fits.as_ref().map_or(0, |(rows, _)| *rows);
                     if low + 1 >= beyond {
                         return fits.ok_or_else(|| refusal.into());
                     }
-                    let fewer = scaled(rows, refusal.limit, refusal.actual);
-                    rows = fewer.clamp(low + 1, beyond - 1);
+                    // As many rows as the limit is of what these hold, then halfway.
+                    rows = if misses == 1 {
+                        scaled(rows, refusal.limit, refusal.actual).clamp(low + 1, beyond - 1)
+                    } else {
+                        low + (beyond - low) / 2
+                    };
                 }
             }
             piece = compact(&rest.slice(0, rows))?;

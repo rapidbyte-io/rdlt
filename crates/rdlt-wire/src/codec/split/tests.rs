@@ -367,7 +367,8 @@ proptest! {
                 let received = received(&batch, &frames, limits);
                 let pieces = in_order(&batch, &received);
                 // No piece but the last could have taken the row after it, unless the frame's
-                // bytes bind: then a row more of its average size would not have fitted.
+                // bytes bind: then a row more of its average size, or a sixty-fourth of its
+                // rows more, would not have fitted.
                 let batches = frames.iter().filter(|frame| {
                     let message = arrow_ipc::root_as_message(&frame.header).unwrap();
                     message.header_type() == arrow_ipc::MessageHeader::RecordBatch
@@ -380,7 +381,8 @@ proptest! {
                     let full = !part_fits(&batch, start, piece + 1, limits);
                     let size = u64::try_from(sizes[at]).unwrap();
                     let average = size / u64::try_from(*piece).unwrap();
-                    prop_assert!(full || size + average > limits.frame_bytes);
+                    let more = 1 + u64::try_from(*piece).unwrap() / 64;
+                    prop_assert!(full || size + more * average > limits.frame_bytes);
                     start += piece;
                 }
             }
@@ -527,7 +529,20 @@ fn a_cut_costs_about_an_encode_a_piece() {
         ..Limits::default()
     };
     assert_eq!(cost(&flags(65, 20_000), &of_values), (200, 200));
-    // Bytes bind: the batch is encoded whole to learn its size, then each piece once or twice.
+    // Bytes bind: the batch is encoded whole to learn its size, then each piece once where rows
+    // are of one size.
+    let alike = batch_of(Arc::new(Int32Array::from_iter_values(0..200_000)));
+    let whole = cut(&alike, &Limits::default()).unwrap();
+    let tenth = Limits {
+        frame_bytes: u64::try_from(bytes(&whole)).unwrap() / 10,
+        ..Limits::default()
+    };
+    let (encodes, pieces) = cost(&alike, &tenth);
+    assert!((10..=11).contains(&pieces), "{pieces}");
+    // One for the whole batch, and one for the first guess, which a frame's header puts a
+    // little over.
+    assert!(encodes <= pieces + 2, "{encodes} for {pieces}");
+    // Rows whose sizes drift, as text of growing numbers does, cost a piece a try more.
     let batch = self::rows(20_000);
     let whole = cut(&batch, &Limits::default()).unwrap();
     let of_bytes = Limits {
@@ -536,7 +551,7 @@ fn a_cut_costs_about_an_encode_a_piece() {
     };
     let (encodes, pieces) = cost(&batch, &of_bytes);
     assert!((10..=12).contains(&pieces), "{pieces}");
-    assert!(encodes <= 2 * pieces + 1, "{encodes} for {pieces}");
+    assert!(encodes <= 3 * pieces, "{encodes} for {pieces}");
     // Rows of very different sizes: a thousand of a byte, then one of sixty thousand, fifty
     // times over. No piece costs more than a few encodes.
     let mut texts = Vec::new();
@@ -664,4 +679,32 @@ proptest! {
         // The second time, the dictionaries the first sent are not sent again.
         prop_assert!(sent[1] <= sent[0]);
     }
+}
+
+#[test]
+fn a_row_that_needs_a_frame_of_its_own_costs_its_piece_a_logarithm_of_encodes() {
+    // A thousand rows of a byte, then one that fits no frame with them, twenty times over: where
+    // the size of a prefix says nothing of the next row, the cut is found by halving.
+    let mut texts = Vec::new();
+    for _ in 0..20 {
+        texts.extend(std::iter::repeat_n("x".to_owned(), 1_000));
+        texts.push("y".repeat(60_000));
+    }
+    let batch = batch_of(Arc::new(StringArray::from(texts)));
+    let limits = Limits {
+        frame_bytes: 60_600,
+        ..Limits::default()
+    };
+    let mut encoder = Encoder::default();
+    encoder.schema(&batch.schema()).unwrap();
+    let frames = stepped(&mut encoder, &batch, &limits).unwrap();
+    let pieces = in_order(&batch, &received(&batch, &frames, limits));
+    assert!((40..=41).contains(&pieces.len()), "{pieces:?}");
+    // Two to the tenth is over a thousand rows; a halving and a guess for each.
+    assert!(
+        encoder.encodes <= 22 * pieces.len(),
+        "{} for {}",
+        encoder.encodes,
+        pieces.len()
+    );
 }
