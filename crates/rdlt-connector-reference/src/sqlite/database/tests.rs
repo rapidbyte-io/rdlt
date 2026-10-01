@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rdlt_connector::sqlgen::Statement;
@@ -196,4 +197,64 @@ fn sqlite_errors_are_classified_by_what_a_retry_would_change() {
         (ConnectorErrorKind::Transient, Some("disk_full"))
     );
     assert_eq!(failed("running")(code(ffi::SQLITE_BUSY)).code(), None);
+}
+
+/// A database at `path` in which another program planted a trigger that empties `kept` when
+/// `written` gains a row, a view of `kept`, and a row of `child` that goes with its parent.
+fn planted(path: &Path) {
+    let raw = Connection::open(path).expect("the database opens");
+    raw.execute_batch(
+        "CREATE TABLE kept (a INTEGER); INSERT INTO kept VALUES (1); \
+         CREATE TABLE written (a INTEGER); \
+         CREATE TRIGGER emptying AFTER INSERT ON written BEGIN DELETE FROM kept; END; \
+         CREATE VIEW seen AS SELECT a FROM kept; \
+         CREATE TABLE parent (id INTEGER PRIMARY KEY); INSERT INTO parent VALUES (1); \
+         CREATE TABLE child (id INTEGER REFERENCES parent (id) ON DELETE CASCADE); \
+         INSERT INTO child VALUES (1)",
+    )
+    .expect("the schema is planted");
+}
+
+/// What a connection finds after writing a row and deleting a parent in a planted database:
+/// the rows left in `kept` and in `child`, and whether the view reads.
+fn after_writing(connection: &Connection) -> (i64, i64, bool) {
+    connection
+        .execute_batch("INSERT INTO written VALUES (1); DELETE FROM parent")
+        .expect("the rows are written");
+    let count = |table: &str| -> i64 {
+        connection
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("the table counts")
+    };
+    let view = connection.execute_batch("SELECT a FROM seen").is_ok();
+    (count("kept"), count("child"), view)
+}
+
+#[test]
+fn a_trigger_a_view_or_a_foreign_key_planted_in_the_file_does_nothing() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    // A connection that is not hardened runs all three.
+    let open = directory.path().join("open.db");
+    drop(connect(&open).expect("the database is created"));
+    planted(&open);
+    let raw = Connection::open(&open).expect("the database opens");
+    raw.pragma_update(None, "foreign_keys", true)
+        .expect("the keys are on");
+    assert_eq!(after_writing(&raw), (0, 0, true));
+    // The connector's connection runs none.
+    let hard = directory.path().join("hard.db");
+    drop(connect(&hard).expect("the database is created"));
+    planted(&hard);
+    let connection = connect(&hard).expect("the database opens");
+    assert_eq!(after_writing(&connection), (1, 1, false));
+    let set = |config| connection.db_config(config).expect("the setting reads");
+    for off in [
+        DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER,
+        DbConfig::SQLITE_DBCONFIG_ENABLE_VIEW,
+        DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY,
+    ] {
+        assert!(!set(off), "{off:?}");
+    }
 }

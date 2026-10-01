@@ -86,8 +86,8 @@ fn connect_waiting(path: &Path, wait: Duration) -> Result<Connection> {
 }
 
 /// Sets `connection` to trust nothing its database file holds beyond tables and their rows:
-/// the schema cannot be written as rows, nothing a schema names runs with the connection's
-/// rights, a double-quoted name is an identifier or an error, no other database attaches, and
+/// the schema cannot be written as rows, no trigger fires, no view resolves, no foreign key
+/// acts, a double-quoted name is an identifier or an error, no other database attaches, and
 /// every page read is checked.
 fn harden(connection: &Connection) -> rusqlite::Result<()> {
     let settings = [
@@ -97,6 +97,11 @@ fn harden(connection: &Connection) -> rusqlite::Result<()> {
         (DbConfig::SQLITE_DBCONFIG_DQS_DDL, false),
         (DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false),
         (DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false),
+        // The destination creates no trigger, view or foreign key: one in the file is another
+        // program's, and would run or resolve with the connection's rights.
+        (DbConfig::SQLITE_DBCONFIG_ENABLE_TRIGGER, false),
+        (DbConfig::SQLITE_DBCONFIG_ENABLE_VIEW, false),
+        (DbConfig::SQLITE_DBCONFIG_ENABLE_FKEY, false),
     ];
     for (setting, on) in settings {
         connection.set_db_config(setting, on)?;

@@ -90,6 +90,13 @@ given:
     DML, no attached database (`SQLITE_LIMIT_ATTACHED` 0, and none created or written),
     `cell_size_check` on, no memory map, and the write-ahead log cut back to 64 MiB once its
     content is in the database.
+  - Triggers, views and foreign keys are off (`ENABLE_TRIGGER`, `ENABLE_VIEW`, `ENABLE_FKEY`).
+    The destination creates none, so one in the file is another program's: a trigger would
+    change other tables during a load with the connection's rights, and a foreign key would
+    delete rows with a drop. Whoever plants one can write the file already; the setting keeps
+    a load from doing what its statements do not say.
+  - Loading extensions is left as the build has it: the SQL function is off, and rusqlite has
+    no safe call for the C switch, which nothing reachable from SQL uses.
   - The path is a file's name. The bundled SQLite reads a name starting with `file:` as a URI
     whatever flags it is opened with, and a URI's parameters choose another file, switch its
     locks off or keep it in memory. A path starting so, in any case, is refused as
