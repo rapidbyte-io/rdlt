@@ -13,7 +13,7 @@ implementation had silent correctness bugs, a serial data path and inconsistent 
 | Topic | Decision |
 |---|---|
 | Deployment | Open-core library and CLI; the managed cloud runs the same engine as stateless workers |
-| Trust | Connectors are trusted code; their output is untrusted data; isolation is the platform's job |
+| Trust | Connectors are trusted code; their output is untrusted data; isolation is the platform's job. Amended 2026-10-01: ADR 0037 makes connectors untrusted code |
 | Runtime | A purpose-built Arrow dataflow with engine-driven checkpoint barriers; DataFusion only as an optional transform stage |
 | Exactly-once | Segments sealed by checkpoints, published atomically with state; epoch fencing in the destination |
 | Determinism | All nondeterminism (time, randomness, scheduling) enters through `Env`, so the engine runs under deterministic simulation |
