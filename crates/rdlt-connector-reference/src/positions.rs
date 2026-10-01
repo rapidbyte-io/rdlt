@@ -43,3 +43,20 @@ pub(crate) fn unnamed(stream: &str, keeper: &str) -> ConnectorError {
     );
     ConnectorError::config(message).with_code("keeper_unnamed")
 }
+
+/// Refuses `name` as a keeper's, a `group` or a `slot` as `keeper` says, where it is empty or
+/// starts as the key of a keeper kept in a file does.
+///
+/// The default keeper, which sources naming none share, has the empty name, and a keeper kept
+/// in a file is known by a key that starts with `file:`: a name of either kind would be that
+/// keeper, not one of its own.
+pub(crate) fn keeper_name(name: Option<&str>, keeper: &str) -> Result<(), ConnectorError> {
+    match name {
+        Some(name) if name.is_empty() || name.starts_with("file:") => {
+            let message =
+                format!("{name:?} is no {keeper}'s name: it is empty or starts with file:");
+            Err(ConnectorError::config(message).with_code("keeper_name_invalid"))
+        }
+        _ => Ok(()),
+    }
+}

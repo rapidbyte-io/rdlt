@@ -168,7 +168,11 @@ given:
   - A keeper's file is named from the root, each directory by its name, as `*.group` or
     `*.slot` (`keeper_path_invalid`): one way to write each file, and no file replaced that is
     not named as a keeper's. How the file is opened and written is ADR 0047's.
-  - A source acknowledges only partitions its stream has, all of a call's or none.
+  - A group's or a slot's name is neither empty nor one starting with `file:`
+    (`keeper_name_invalid`): the first is the default keeper's, and the second is how a keeper
+    kept in a file is known, so neither names a keeper of its own.
+  - A source acknowledges only partitions its stream has, all of a call's or none, and the log
+    source reads no other.
   - A stream that does not serve again what it acknowledged needs a named group or slot
     (`keeper_unnamed`): the default keeper is shared by every source of a process naming none.
 

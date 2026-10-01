@@ -553,3 +553,28 @@ async fn a_partition_the_stream_never_has_is_not_read() {
     read.expect("the partition reads");
     assert_eq!(pushed, 1);
 }
+
+#[tokio::test]
+async fn a_group_s_name_is_neither_empty_nor_a_file_keeper_s() {
+    let forgets = json!({ "name": "events", "partitions": 1, "messages": 8, "replayable": false });
+    let serves_again = json!({ "name": "events", "partitions": 1, "messages": 8 });
+    for stream in [&forgets, &serves_again] {
+        for name in [
+            "",
+            "file:",
+            "file:/var/lib/events.group",
+            "file:1:2:events.group",
+        ] {
+            let refused = source_factory::<LogSource>()
+                .connect(config(stream, name), ConnectContext::new())
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{name:?} is refused"));
+            assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{name:?}");
+            assert_eq!(refused.code(), Some("keeper_name_invalid"), "{name:?}");
+        }
+    }
+    for name in ["f", "File:x", "files", " ", "group/of:many"] {
+        connect(&forgets, name).await;
+    }
+}

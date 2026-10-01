@@ -141,3 +141,33 @@ async fn a_source_that_forgets_names_the_slot_it_keeps_its_positions_in() {
     let config = json!({ "seed": 3, "streams": [serves_again] });
     connect(config).await.expect("the default slot");
 }
+
+#[tokio::test]
+async fn a_slot_s_name_is_neither_empty_nor_a_file_keeper_s() {
+    for replayable in [true, false] {
+        for name in [
+            "",
+            "file:",
+            "file:/var/lib/orders.slot",
+            "file:1:2:orders.slot",
+        ] {
+            let config = json!({
+                "seed": 3, "slot": name,
+                "streams": [{ "name": "orders", "keys": 6, "changes": 40,
+                              "replayable": replayable }],
+            });
+            let refused = connect(config).await.err().expect("the name is refused");
+            assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{name:?}");
+            assert_eq!(refused.code(), Some("keeper_name_invalid"), "{name:?}");
+        }
+    }
+    for name in ["f", "File:x", "files", " "] {
+        let config = json!({
+            "seed": 3, "slot": name,
+            "streams": [{ "name": "orders", "keys": 6, "changes": 40, "replayable": false }],
+        });
+        connect(config)
+            .await
+            .unwrap_or_else(|error| panic!("{name:?}: {error}"));
+    }
+}
