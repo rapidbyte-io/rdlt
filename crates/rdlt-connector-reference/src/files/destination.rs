@@ -308,8 +308,8 @@ fn remove_unlisted(
     Ok(empty)
 }
 
-/// The destination's private directory under `root`: the one `held` since it was first opened,
-/// or opened now and held from here on.
+/// The destination's private directory under `root`: `held` since it was first opened, or
+/// opened now and held from here on.
 ///
 /// Held directories are checked again each time: they must still be their user's alone.
 fn held_or_opened(root: &Path, held: &Held) -> Result<Arc<Dir>> {
