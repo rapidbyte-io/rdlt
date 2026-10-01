@@ -170,9 +170,10 @@ fn certified(
 ) -> Result<Vec<Report>, Ended> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
+    // A timeout too far ahead for the clock to hold is none.
     let until = args
         .timeout
-        .map(|seconds| Instant::now() + Duration::from_secs(seconds));
+        .and_then(|seconds| Instant::now().checked_add(Duration::from_secs(seconds)));
     let overdue = |role| unfinished(target, role, OVERDUE);
     let mut printed = Printed {
         output: args.output,

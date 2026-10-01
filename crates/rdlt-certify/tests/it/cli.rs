@@ -326,6 +326,23 @@ async fn a_certification_that_outlives_its_timeout_fails_what_it_left_and_exits_
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_timeout_beyond_what_a_clock_holds_bounds_nothing() {
+    let binary = example("serve_source");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    let forever = u64::MAX.to_string();
+    let args = [binary, "--config", config, "--env", "LLVM_PROFILE_FILE"];
+    let bounded = ["--timeout", forever.as_str(), "--require", "partial"];
+    let output = certify(&[&args[..], &bounded].concat()).await;
+    assert_eq!(
+        code(&output),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_listening_connector_is_certified_from_the_command_line() {
     let pki = Pki::new("ca");
     let (_connector, endpoint) = listening(&pki).await;
