@@ -143,7 +143,7 @@ fn wide_dates(data_type: &DataType) -> DataType {
 ///
 /// Filtering rows out of a dictionary or run-end encoding leaves their values in it, and a value
 /// no row holds must not fail a conversion: decoded, only the values rows hold remain.
-fn decoded(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
+pub(crate) fn decoded(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     let decoded = decoded_type(array.data_type());
     if decoded == *array.data_type() {
         Ok(Arc::clone(array))
