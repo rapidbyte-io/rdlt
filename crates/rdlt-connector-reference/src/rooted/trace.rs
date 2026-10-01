@@ -1,8 +1,13 @@
 //! A record, for tests, of every step a directory handle makes durable or undoes, in order, and
 //! a fault to end them at a chosen step.
 //!
-//! A step is recorded before it is taken. A fault refuses the step it is set at; a crash refuses
-//! that step and every step after it, as a process that died there takes none.
+//! A step is recorded once it has taken place, so the record is the order of what happened to
+//! the disk and not of what was asked for. A fault refuses the step it is set at before the
+//! step takes place; a crash refuses that step and every step after it, as a process that died
+//! there takes none.
+//!
+//! The record holds that a step was taken and in which order. It cannot hold that the call
+//! behind a recorded sync reached the disk: nothing in a test can see that.
 
 use std::cell::{Cell, RefCell};
 use std::io;
@@ -37,8 +42,8 @@ thread_local! {
     static REFUSED: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Records `step`, and refuses it where a fault says so.
-pub(crate) fn step(step: Step) -> io::Result<()> {
+/// Counts `step` as the next to take, and refuses it where a fault says so.
+pub(crate) fn attempt(step: &Step) -> io::Result<()> {
     let taken = TAKEN.get();
     TAKEN.set(taken + 1);
     let refused = FAULT
@@ -48,8 +53,12 @@ pub(crate) fn step(step: Step) -> io::Result<()> {
         REFUSED.set(true);
         return Err(io::Error::other(format!("a fault refused {step:?}")));
     }
-    STEPS.with(|steps| steps.borrow_mut().push(step));
     Ok(())
+}
+
+/// Records `step`, which took place.
+pub(crate) fn done(step: Step) {
+    STEPS.with(|steps| steps.borrow_mut().push(step));
 }
 
 /// Forgets the steps recorded and any fault.
