@@ -40,3 +40,8 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 summaries, `biased;` in every `select!`, no `mod.rs`. The workspace's clippy lints require
 `#[expect(.., reason = "..")]` instead of `allow`. Run `just lint` rather than guessing what they
 accept.
+
+Every target's root file (a library's, a binary's, an example's, a test's, a bench's, a fuzz
+target's) starts with `#![forbid(unsafe_code)]`, and `cargo xtask lint` fails on one that does
+not. `unsafe` code lives in `rdlt-adopt` alone, which holds its two audited files and nothing
+else (ADR 0048).

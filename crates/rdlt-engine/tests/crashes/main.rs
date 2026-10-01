@@ -5,6 +5,7 @@
 //! The harness is the `crash_run` example, which `cargo test` builds with the crate's examples; a
 //! run naming this target alone uses whichever harness was built last.
 
+#![forbid(unsafe_code)]
 #![expect(
     clippy::disallowed_methods,
     reason = "the harness runs in processes of its own, on the real clock"

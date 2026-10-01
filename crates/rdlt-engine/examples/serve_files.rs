@@ -1,6 +1,8 @@
 //! The files reference source and destination, served to a host that spawns them: the engine's
 //! integration suite runs against them in a process of their own.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 use rdlt_connector::serve::Served;

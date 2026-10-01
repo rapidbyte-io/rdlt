@@ -1,4 +1,5 @@
-//! `cargo xtask lint`: runs the rules over every Rust file in the repository.
+//! `cargo xtask lint`: runs the rules over every Rust file in the repository, and checks where
+//! `unsafe` code may be.
 
 #[cfg(test)]
 mod tests;
@@ -13,6 +14,7 @@ use walkdir::WalkDir;
 use crate::codegen::GENERATED;
 use crate::lexer::scan;
 use crate::rules::{self, FileRole, Finding, Severity};
+use crate::unsafe_code;
 
 /// Paths never scanned, relative to the repository root: the fuzzing build's output, and the code
 /// generated from the protocol's definitions.
@@ -51,7 +53,8 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
 /// Prints every finding under `root` and fails when any has error severity.
 #[expect(clippy::print_stdout, reason = "findings are the command's output")]
 pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
-    let findings = lint_tree(root)?;
+    let mut findings = lint_tree(root)?;
+    findings.extend(unsafe_code::check(root)?);
     let mut errors = 0;
     for (path, finding) in &findings {
         let level = match finding.rule.severity() {

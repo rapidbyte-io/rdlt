@@ -1,5 +1,7 @@
 //! Integration tests for the reference connectors.
 
+#![forbid(unsafe_code)]
+
 mod binaries;
 mod capabilities;
 mod certify;

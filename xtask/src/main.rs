@@ -8,6 +8,7 @@ mod deps;
 mod lexer;
 mod lint;
 mod rules;
+mod unsafe_code;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,7 +24,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Check comments, structure and error style in every Rust file.
+    /// Check comments, structure and error style in every Rust file, and where `unsafe` code is.
     Lint,
     /// Check that workspace crates depend only on what the architecture allows.
     Deps,

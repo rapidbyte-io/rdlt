@@ -1,6 +1,7 @@
 # ADR 0017: Placing connectors in processes of their own
 
-Status: accepted, 2026-09-26.
+Status: accepted, 2026-09-26; where the audited `unsafe` lives and what forbids the rest are
+amended by ADR 0048.
 
 ## Context
 
@@ -47,7 +48,8 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - Miri runs the module's test (`just miri`, in CI's coverage job).
   - The workspace denies `unsafe` code, and every crate root but `rdlt-connector`'s forbids it.
     `cargo xtask lint` fails on `unsafe` anywhere but that module, and on a crate root that does
-    not forbid it.
+    not forbid it. Amended 2026-10-01: the module is a crate of its own, `rdlt-adopt`, and every
+    other target's root forbids `unsafe` code, `rdlt-connector`'s included (ADR 0048).
   - The host passes the descriptor with `command-fds`, whose API is safe.
 - **Providers** (§13.1).
   - A `Provider` places the source or destination a `ConnectorRef` names. A `ConnectorRef` has an

@@ -1,5 +1,7 @@
 //! Certification over the wire: connectors served in this process, spawned, and listening.
 
+#![forbid(unsafe_code)]
+
 mod cli;
 mod faults;
 mod killed;

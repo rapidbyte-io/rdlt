@@ -56,6 +56,8 @@
 //! assert_eq!(source_factory::<Numbers>().spec().id.as_str(), "io.example.numbers");
 //! ```
 
+#![forbid(unsafe_code)]
+
 mod capabilities;
 mod catalog;
 mod change;

@@ -1,16 +1,18 @@
-//! The workspace's one audited `unsafe`: taking ownership of the socket a host passed a spawned
+//! The workspace's audited `unsafe` code: taking ownership of the socket a host passed a spawned
 //! connector at a file descriptor.
 //!
 //! Rust cannot know that a file descriptor number names an open file nothing else owns, so
-//! turning it into an owned socket is `unsafe`. [`adopt`] establishes both before [`own`] does:
-//! the descriptor is an open socket; it is not close-on-exec, so this process did not open it, as
+//! turning it into an owned socket is `unsafe`. [`adopt`] establishes both before it owns the
+//! descriptor: it is an open socket; it is not close-on-exec, so this process did not open it, as
 //! the standard library opens everything close-on-exec; and it is taken once per process.
-
-#![expect(
-    unsafe_code,
-    reason = "adopting an inherited file descriptor needs `OwnedFd::from_raw_fd`; the one audited \
-              module the workspace allows"
-)]
+//!
+//! Every other crate of the workspace forbids `unsafe` code. This one holds nothing else, and
+//! allows it only at the two places that need it.
+//!
+//! ```no_run
+//! let socket = rdlt_adopt::adopt(3)?;
+//! # Ok::<(), std::io::Error>(())
+//! ```
 
 #[cfg(test)]
 mod tests;
@@ -35,7 +37,7 @@ static ADOPTED: AtomicBool = AtomicBool::new(false);
 /// (it is close-on-exec, as everything the standard library opens is), or a socket was adopted
 /// already.
 /// The socket returned is a close-on-exec duplicate: `fd` itself is closed.
-pub(crate) fn adopt(fd: RawFd) -> io::Result<UnixStream> {
+pub fn adopt(fd: RawFd) -> io::Result<UnixStream> {
     if fd <= 2 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -80,6 +82,10 @@ pub(crate) fn adopt(fd: RawFd) -> io::Result<UnixStream> {
 /// Whether open descriptor `fd` is close-on-exec.
 fn close_on_exec(fd: RawFd) -> io::Result<bool> {
     use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+    #[expect(
+        unsafe_code,
+        reason = "reading an inherited descriptor's flags borrows it"
+    )]
     // SAFETY: `adopt` checked that `fd` is open; it is borrowed for this call only, which reads
     // its flags and neither closes nor keeps it.
     let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
@@ -88,6 +94,10 @@ fn close_on_exec(fd: RawFd) -> io::Result<bool> {
 }
 
 /// Owns `fd`.
+#[expect(
+    unsafe_code,
+    reason = "adopting an inherited descriptor needs `OwnedFd::from_raw_fd`"
+)]
 fn own(fd: RawFd) -> OwnedFd {
     // SAFETY: `adopt` checked that `fd` is open and not a standard stream, which the standard
     // library owns; it adopts once per process, and is called before the process opens anything,

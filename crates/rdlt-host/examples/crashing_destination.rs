@@ -1,6 +1,8 @@
 //! The memory destination, except that it crashes as it commits: it writes its last words to
 //! standard error and exits with status 3.
 
+#![forbid(unsafe_code)]
+
 use std::io::Write as _;
 use std::process::ExitCode;
 use std::sync::Arc;

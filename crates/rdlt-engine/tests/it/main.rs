@@ -1,5 +1,6 @@
 //! Integration tests for the engine.
 
+#![forbid(unsafe_code)]
 #![expect(
     clippy::disallowed_methods,
     reason = "tests drive tokio's paused clock directly"

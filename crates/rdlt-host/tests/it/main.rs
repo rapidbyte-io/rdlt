@@ -1,5 +1,7 @@
 //! The engine loading through connectors served over sockets.
 
+#![forbid(unsafe_code)]
+
 mod acknowledged;
 mod flow;
 mod identity;

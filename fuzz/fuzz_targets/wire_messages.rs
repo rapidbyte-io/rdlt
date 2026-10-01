@@ -1,6 +1,7 @@
 //! Decoding untrusted protocol messages never panics, and whatever converts into the contract's
 //! types converts back to the same message.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

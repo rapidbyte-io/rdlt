@@ -31,8 +31,9 @@ pub(crate) enum Rule {
     FileLength,
     StringlyError,
     UnbiasedSelect,
-    Unsafe,
     UnforbiddenUnsafe,
+    UnauditedFile,
+    IncludedCode,
 }
 
 impl Rule {
@@ -59,25 +60,7 @@ pub(crate) struct FileRole {
     pub(crate) test: bool,
     /// A file named `mod.rs`.
     pub(crate) mod_rs: bool,
-    /// What the file may say about `unsafe` code.
-    pub(crate) unsafe_code: UnsafeCode,
 }
-
-/// What a file may say about `unsafe` code (§20.14).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UnsafeCode {
-    /// The audited module, the only one that may hold it.
-    Audited,
-    /// A crate's root (a library's, or a binary's, `src/bin` ones included), which forbids it:
-    /// every crate's but the audited module's.
-    CrateRoot,
-    /// Any other file, which may not hold it.
-    Other,
-}
-
-/// The audited module, the only one that may hold `unsafe` code, and the crate it belongs to.
-const AUDITED_UNSAFE: &str = "crates/rdlt-connector/src/serve/inherited.rs";
-const AUDITED_CRATE: &str = "crates/rdlt-connector";
 
 impl FileRole {
     pub(crate) fn of(path: &Path) -> Self {
@@ -86,41 +69,9 @@ impl FileRole {
             path.components()
                 .any(|c| c.as_os_str().to_str().is_some_and(|c| dirs.contains(&c)))
         };
-        let crate_root = {
-            let parts: Vec<_> = path
-                .components()
-                .map(std::path::Component::as_os_str)
-                .collect();
-            let root = match parts.as_slice() {
-                [crates, _, src, file] => {
-                    *crates == "crates"
-                        && *src == "src"
-                        && (*file == "lib.rs" || *file == "main.rs")
-                }
-                [crates, _, src, bin, _] => {
-                    *crates == "crates"
-                        && *src == "src"
-                        && *bin == "bin"
-                        && path.extension().is_some_and(|ext| ext == "rs")
-                }
-                [crates, _, src, bin, _, file] => {
-                    *crates == "crates" && *src == "src" && *bin == "bin" && *file == "main.rs"
-                }
-                [xtask, src, file] => *xtask == "xtask" && *src == "src" && *file == "main.rs",
-                _ => false,
-            };
-            root && !path.starts_with(AUDITED_CRATE)
-        };
         Self {
             test: named("tests.rs") || under(&["tests", "benches", "examples"]),
             mod_rs: named("mod.rs"),
-            unsafe_code: if path == Path::new(AUDITED_UNSAFE) {
-                UnsafeCode::Audited
-            } else if crate_root {
-                UnsafeCode::CrateRoot
-            } else {
-                UnsafeCode::Other
-            },
         }
     }
 }
@@ -167,10 +118,6 @@ const STRING_ERRORS: &[&str] = &[
     "&str",
 ];
 static SELECT: LazyLock<Regex> = LazyLock::new(|| pattern(r"select!\s*\{"));
-static UNSAFE: LazyLock<Regex> = LazyLock::new(|| pattern(r"\bunsafe\b"));
-static FORBIDS_UNSAFE: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r"#!\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]"));
-
 /// Checks one scanned file against every rule.
 pub(crate) fn check(role: FileRole, scan: &Scan) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -321,28 +268,6 @@ fn check_code(role: FileRole, scan: &Scan, findings: &mut Vec<Finding>) {
                 "use a typed error, not a string",
             ));
         }
-    }
-    if role.unsafe_code != UnsafeCode::Audited
-        && let Some(m) = UNSAFE.find(&scan.code)
-    {
-        let line = line_of(&scan.code, m.start());
-        let message = format!("`unsafe` code lives only in {AUDITED_UNSAFE}");
-        findings.push(finding(line, Rule::Unsafe, &message));
-    }
-    // Only a crate-level forbid, outside every module and item, reaches the whole crate.
-    let crate_level = |start: usize| {
-        let before = &scan.code[..start];
-        before.matches('{').count() == before.matches('}').count()
-    };
-    let forbidden = FORBIDS_UNSAFE
-        .find_iter(&scan.code)
-        .any(|m| crate_level(m.start()));
-    if role.unsafe_code == UnsafeCode::CrateRoot && !forbidden {
-        findings.push(finding(
-            1,
-            Rule::UnforbiddenUnsafe,
-            "a crate root forbids unsafe code: `#![forbid(unsafe_code)]`",
-        ));
     }
     for m in SELECT.find_iter(&scan.code) {
         if !scan.code[m.end()..].trim_start().starts_with("biased;") {

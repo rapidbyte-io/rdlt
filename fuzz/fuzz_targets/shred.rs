@@ -1,6 +1,7 @@
 //! Shredding untrusted JSON never panics and never fails inside the shredder, whatever the bytes
 //! and however they are cut into chunks.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use bytes::Bytes;

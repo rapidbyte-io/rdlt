@@ -2,6 +2,8 @@
 //! tests that certify a spawned or listening connector: the SQLite store outlives each process,
 //! and the destination reads back what it published.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 use rdlt_connector::serve::Served;
