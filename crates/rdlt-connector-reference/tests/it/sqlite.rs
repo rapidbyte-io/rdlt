@@ -1,4 +1,5 @@
 mod kit;
+mod names;
 mod owned;
 mod receipts;
 mod text;

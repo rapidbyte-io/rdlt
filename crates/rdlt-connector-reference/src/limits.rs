@@ -1,5 +1,5 @@
-//! Limits the reference connectors enforce on what they read back from disk and keep there, and
-//! the defaults of those a configuration sets.
+//! Limits the reference connectors enforce on what they read, write and keep, the waits they
+//! bound, and the defaults of those a configuration sets.
 
 use std::time::Duration;
 
@@ -65,3 +65,11 @@ pub(crate) const KEEPER_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Positions: bounds the partitions one keeper holds a position for.
 pub(crate) const KEEPER_POSITIONS: usize = 4096;
+
+/// How long a statement of the SQLite destination waits for another connection's write to
+/// finish before it fails as transient.
+pub(crate) const BUSY_WAIT: Duration = Duration::from_secs(30);
+
+/// Bytes: the size the SQLite destination's write-ahead log file is cut back to once its content
+/// is in the database, so a large commit does not leave its log's size behind.
+pub(crate) const JOURNAL_BYTES: u64 = 64 * 1024 * 1024;

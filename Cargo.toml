@@ -112,6 +112,7 @@ regex = "1.13.1" # xtask lint patterns
 rusqlite = { version = "0.40.2", default-features = false, features = [
   "bundled",
   "cache",
+  "limits",
 ] } # the reference SQL destination, and running sqlgen's statements in its tests
 tempfile = "3.27.0" # temporary directories in tests
 toml = "1.1.6" # xtask reads the tool lockfile
