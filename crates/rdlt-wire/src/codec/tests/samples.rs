@@ -253,3 +253,33 @@ pub(crate) fn batch() -> RecordBatch {
         .collect();
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
+
+/// Columns holding a run-end column of no values, as slicing and empty lists leave one.
+pub(crate) fn without_runs() -> Vec<ArrayRef> {
+    let values = StringArray::from(vec![Some("x"), None, Some("z")]);
+    let runs = RunArray::<Int32Type>::try_new(&vec![2, 3, 5].into(), &values).unwrap();
+    let runs: ArrayRef = Arc::new(runs);
+    let item = Arc::new(Field::new("item", runs.data_type().clone(), true));
+    let lists = |offsets: Vec<i32>| -> ArrayRef {
+        let offsets = OffsetBuffer::new(offsets.into());
+        Arc::new(ListArray::new(
+            Arc::clone(&item),
+            offsets,
+            Arc::clone(&runs),
+            None,
+        ))
+    };
+    let field = Field::new("r", runs.data_type().clone(), true);
+    let parent: ArrayRef = Arc::new(StructArray::from(vec![(
+        Arc::new(field),
+        Arc::clone(&runs),
+    )]));
+    vec![
+        runs.slice(0, 0),
+        runs.slice(5, 0),
+        lists(vec![0, 0, 0]),
+        lists(vec![5, 5, 5]),
+        lists(vec![0, 2, 5]).slice(1, 0),
+        parent.slice(2, 0),
+    ]
+}

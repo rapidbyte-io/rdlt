@@ -164,7 +164,11 @@ fn views_naming_more_than_a_frame_may_hold_are_cut_between_rows() {
         ..Limits::default()
     };
     let frames = cut(&batch, &limits).unwrap();
-    assert_eq!(in_order(&batch, &received(&batch, &frames, limits)), [3, 2]);
+    // A piece holds a copy of the bytes each of its views names: two views' worth fit.
+    assert_eq!(
+        in_order(&batch, &received(&batch, &frames, limits)),
+        [2, 2, 1]
+    );
 }
 
 #[test]
@@ -303,6 +307,15 @@ fn a_batch_before_any_schema_is_refused_by_its_sender() {
     );
 }
 
+/// Whether a receiver within `limits` decodes rows `start..start + rows` of `batch` sent as one
+/// frame holding only what they name.
+fn part_fits(batch: &RecordBatch, start: usize, rows: usize, limits: Limits) -> bool {
+    let part = batch.slice(start, rows);
+    let whole = start == 0 && rows == batch.num_rows();
+    fits(&crate::codec::compact::compacted(&part).unwrap(), limits)
+        || (whole && fits(&part, limits))
+}
+
 /// Whether a receiver within `limits` decodes `batch` sent whole.
 fn fits(batch: &RecordBatch, limits: Limits) -> bool {
     let mut encoder = Encoder::default();
@@ -328,11 +341,11 @@ proptest! {
             ..Limits::default()
         };
         let rows = batch.num_rows();
-        let each_fits = (0..rows).all(|row| fits(&batch.slice(row, 1), limits));
+        let each_fits = (0..rows).all(|row| part_fits(&batch, row, 1, limits));
         match cut(&batch, &limits) {
             Err(error) => {
                 prop_assert!(matches!(error, WireError::Refused(_)), "{}", error);
-                prop_assert!(!each_fits || !fits(&batch.slice(0, 0), limits));
+                prop_assert!(!each_fits || !part_fits(&batch, 0, 0, limits));
             }
             Ok(frames) => {
                 prop_assert!(each_fits);
@@ -340,10 +353,105 @@ proptest! {
                 // No piece could have taken the row after it.
                 let mut start = 0;
                 for piece in &pieces[..pieces.len() - 1] {
-                    prop_assert!(!fits(&batch.slice(start, piece + 1), limits));
+                    prop_assert!(!part_fits(&batch, start, piece + 1, limits));
                     start += piece;
                 }
             }
         }
+    }
+}
+
+/// Columns whose pieces Arrow's writer would send with buffers their rows do not name: views of
+/// shared data, list views and dense unions of shared children, alone and nested.
+fn sharing() -> Vec<ArrayRef> {
+    use arrow_array::types::Int32Type;
+    use arrow_array::{
+        Int64Array, ListViewArray, RunArray, StringViewArray, StructArray, UnionArray,
+    };
+    let rows = 2_000;
+    let texts = (0..rows).map(|row| format!("{row:0100}"));
+    let views: ArrayRef = Arc::new(StringViewArray::from_iter_values(texts));
+    let item = |data_type: &DataType| Arc::new(Field::new("item", data_type.clone(), true));
+    let numbers: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10 * 2_000));
+    let tens = || (0..2_000).map(|row| row * 10).collect::<Vec<i32>>();
+    let list_views = ListViewArray::new(
+        item(&DataType::Int64),
+        tens().into(),
+        vec![10; rows].into(),
+        Arc::clone(&numbers),
+        None,
+    );
+    let ones = OffsetBuffer::<i32>::from_lengths(vec![1; rows]);
+    let listed = ListArray::new(item(views.data_type()), ones, Arc::clone(&views), None);
+    let field = Field::new("v", views.data_type().clone(), true);
+    let fields = arrow_schema::UnionFields::try_new(vec![0], vec![field.clone()]).unwrap();
+    let ids = vec![0_i8; rows];
+    let offsets: Vec<i32> = (0..2_000).collect();
+    let dense = UnionArray::try_new(
+        fields.clone(),
+        ids.clone().into(),
+        Some(offsets.into()),
+        vec![Arc::clone(&views)],
+    );
+    let sparse = UnionArray::try_new(fields, ids.into(), None, vec![Arc::clone(&views)]);
+    let ends = Int32Array::from_iter_values(1..=2_000);
+    let runs = RunArray::<Int32Type>::try_new(&ends, &views).unwrap();
+    let parent = StructArray::from(vec![(Arc::new(field), Arc::clone(&views))]);
+    vec![
+        Arc::clone(&views),
+        Arc::new(list_views),
+        Arc::new(listed),
+        Arc::new(dense.unwrap()),
+        Arc::new(sparse.unwrap()),
+        Arc::new(runs),
+        Arc::new(parent),
+    ]
+}
+
+fn bytes(frames: &[IpcFrame]) -> usize {
+    let sizes = frames
+        .iter()
+        .map(|frame| frame.header.len() + frame.body.len());
+    sizes.sum()
+}
+
+#[test]
+fn the_pieces_of_a_batch_carry_only_what_their_rows_name() {
+    for column in sharing() {
+        let batch = batch_of(column);
+        let whole = bytes(&cut(&batch, &Limits::default()).unwrap());
+        let limits = Limits {
+            batch_rows: 100,
+            ..Limits::default()
+        };
+        let frames = cut(&batch, &limits).unwrap();
+        assert_eq!(frames.len(), 20, "{}", batch.schema());
+        in_order(&batch, &received(&batch, &frames, limits));
+        // A frame's buffers are each padded, so twenty frames may take twice one's bytes.
+        let pieces = bytes(&frames);
+        assert!(
+            pieces <= 2 * whole,
+            "{pieces} of {whole}: {}",
+            batch.schema()
+        );
+    }
+}
+
+#[test]
+fn rows_naming_shared_buffers_larger_than_a_frame_are_cut_and_cross() {
+    for column in sharing() {
+        let batch = batch_of(column);
+        let whole = bytes(&cut(&batch, &Limits::default()).unwrap());
+        let limits = Limits {
+            frame_bytes: u64::try_from(whole).unwrap() / 2,
+            ..Limits::default()
+        };
+        let frames = cut(&batch, &limits).unwrap();
+        let pieces = in_order(&batch, &received(&batch, &frames, limits));
+        assert!(
+            (2..=4).contains(&pieces.len()),
+            "{pieces:?}: {}",
+            batch.schema()
+        );
     }
 }
