@@ -23,6 +23,8 @@ use scenarios::Scenario;
 enum Hits {
     /// Many times a run: its first hit and its third.
     Each,
+    /// Once a commit: its first hit, and its third where a run makes three commits.
+    Commit,
     /// Once a commit, at the destination's own commit: every hit the run reaches, so the commits
     /// where a truncate lands, and every other, crash too.
     Landing,
@@ -58,19 +60,19 @@ const fn point(name: &'static str, hits: Hits, passed: Passed) -> Point {
 /// Every durability step a fresh run passes, in the order a commit does, then the load's end.
 const POINTS: [Point; 17] = [
     point("engine.wal.append", Hits::Each, Passed::Logged),
-    point("engine.flush.before", Hits::Each, Passed::Always),
-    point("engine.flush.after", Hits::Each, Passed::Always),
-    point("engine.wal.sync.before", Hits::Each, Passed::Logged),
-    point("engine.wal.sync.after", Hits::Each, Passed::Logged),
-    point("engine.ack.early", Hits::Each, Passed::Logged),
+    point("engine.flush.before", Hits::Commit, Passed::Always),
+    point("engine.flush.after", Hits::Commit, Passed::Always),
+    point("engine.wal.sync.before", Hits::Commit, Passed::Logged),
+    point("engine.wal.sync.after", Hits::Commit, Passed::Logged),
+    point("engine.ack.early", Hits::Commit, Passed::Logged),
     point("engine.complete.before", Hits::Once, Passed::Completing),
     point("engine.commit.before", Hits::Landing, Passed::Always),
     point("engine.commit.after", Hits::Landing, Passed::Always),
-    point("engine.receipt.after", Hits::Each, Passed::Logged),
+    point("engine.receipt.after", Hits::Commit, Passed::Logged),
     point("engine.complete.after", Hits::Once, Passed::Completing),
-    point("engine.wal.remove", Hits::Each, Passed::Logged),
-    point("engine.ack.before", Hits::Each, Passed::Always),
-    point("engine.ack.after", Hits::Each, Passed::Always),
+    point("engine.wal.remove", Hits::Commit, Passed::Logged),
+    point("engine.ack.before", Hits::Commit, Passed::Always),
+    point("engine.ack.after", Hits::Commit, Passed::Always),
     point("engine.wal.close.before", Hits::Once, Passed::Logged),
     point("engine.wal.close.after", Hits::Once, Passed::Logged),
     point("engine.wal.removed", Hits::Once, Passed::Logged),
@@ -140,31 +142,38 @@ fn again(scenario: &Scenario, dir: &Path, config: &Path, case: &str) {
     scenario.verify(dir, case);
 }
 
+/// Crashes a run of `scenario` at the `hit`th time it passes `point`, once a commit, then runs it
+/// cleanly and checks what it loaded; whether the run got there, as it must unless it made fewer
+/// commits than `hit`.
+fn at_commit(scenario: &Scenario, point: &str, hit: u64) -> bool {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let config = scenario.write(dir.path());
+    let case = format!("{point} at hit {hit}");
+    let (status, commits) = run(&config, Some(&failpoint(point, hit)));
+    if status.success() {
+        let commits = commits.expect("a run to its end reports its commits");
+        assert!(
+            commits < hit,
+            "{} {case}: the run made {commits} commits and did not crash",
+            scenario.name
+        );
+        return false;
+    }
+    assert!(
+        crashed(status),
+        "{} {case}: the run ended {status}",
+        scenario.name
+    );
+    again(scenario, dir.path(), &config, &case);
+    true
+}
+
 /// Crashes `scenario` at each commit its runs make at `point`, until a run ends before it reaches
 /// the hit: every hit a run reaches must crash it.
 fn every_commit(scenario: &Scenario, point: &str) {
-    for hit in 1..=MOST_COMMITS {
-        let dir = tempfile::tempdir().expect("a temporary directory");
-        let config = scenario.write(dir.path());
-        let case = format!("{point} at hit {hit}");
-        let (status, commits) = run(&config, Some(&failpoint(point, hit)));
-        if status.success() {
-            let commits = commits.expect("a run to its end reports its commits");
-            assert!(
-                commits < hit,
-                "{} {case}: the run made {commits} commits and did not crash",
-                scenario.name
-            );
-            return;
-        }
-        assert!(
-            crashed(status),
-            "{} {case}: the run ended {status}",
-            scenario.name
-        );
-        again(scenario, dir.path(), &config, &case);
-    }
-    panic!(
+    let reached = (1..=MOST_COMMITS).take_while(|hit| at_commit(scenario, point, *hit));
+    assert!(
+        reached.count() < usize::try_from(MOST_COMMITS).expect("a count"),
         "{}: {point} crashed {MOST_COMMITS} commits and the run never ended",
         scenario.name
     );
@@ -190,6 +199,12 @@ fn sweep(scenario: &Scenario) {
         let at: &[u64] = match point.hits {
             Hits::Each => &[1, 3],
             Hits::Once => &[1],
+            Hits::Commit => {
+                let first = at_commit(scenario, point.name, 1);
+                assert!(first, "{}: {} crashed no run", scenario.name, point.name);
+                at_commit(scenario, point.name, 3);
+                continue;
+            }
             Hits::Landing => {
                 every_commit(scenario, point.name);
                 continue;
