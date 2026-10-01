@@ -54,7 +54,7 @@ async fn a_history_table_takes_no_generation() {
     let refused = (true, Some(ConnectorErrorKind::Internal));
     let memory = writers::<MemoryDestination>(json!({ "store": "history_generation" })).await;
     assert_eq!(memory, refused, "memory");
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::fixtures::tempdir().expect("a temporary directory");
     let config = json!({ "root": root.path(), "format": "jsonl" });
     assert_eq!(writers::<FilesDestination>(config).await, refused, "files");
 }

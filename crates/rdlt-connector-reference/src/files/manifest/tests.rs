@@ -26,7 +26,7 @@ fn seq(n: u64) -> CommitSeq {
 
 /// A pipeline's directory.
 fn pipeline() -> (tempfile::TempDir, Dir) {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     (root, dir)
 }

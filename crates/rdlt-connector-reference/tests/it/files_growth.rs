@@ -28,7 +28,7 @@ fn data_files(root: &Path, extension: &str) -> Vec<std::path::PathBuf> {
 #[tokio::test]
 async fn a_merge_commit_removes_the_copy_it_replaced() {
     for format in ["jsonl", "arrow"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
         let mut opened = open(destination.as_ref(), 1).await;
         let rows = merge_table("rows");
@@ -58,7 +58,7 @@ async fn a_merge_commit_removes_the_copy_it_replaced() {
 
 #[tokio::test]
 async fn a_finished_generation_removes_the_files_it_replaced() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
     let mut opened = open(destination.as_ref(), 1).await;
     let rows = table("rows");
@@ -82,7 +82,7 @@ async fn a_finished_generation_removes_the_files_it_replaced() {
 #[tokio::test]
 async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_order() {
     for format in ["jsonl", "arrow"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
         let mut opened = open(destination.as_ref(), 1).await;
         let rows = table("rows");
@@ -130,7 +130,7 @@ async fn an_append_table_lists_a_bounded_number_of_files_and_keeps_every_row_in_
 
 #[tokio::test]
 async fn an_append_table_whose_schema_changed_keeps_every_row() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({ "format": "arrow" })).await;
     let mut opened = open(destination.as_ref(), 1).await;
     let rows = table("rows");
@@ -175,7 +175,7 @@ async fn an_append_table_whose_schema_changed_keeps_every_row() {
 async fn a_commit_repeated_however_far_back_in_its_load_is_answered_with_its_receipt() {
     // A replay repeats a commit whose frame its log still holds, however many commits its load
     // made since: each is answered, none refused and none published again.
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
     let mut opened = open(destination.as_ref(), 1).await;
     let rows = table("rows");
@@ -204,7 +204,7 @@ async fn a_commit_repeated_however_far_back_in_its_load_is_answered_with_its_rec
 
 #[tokio::test]
 async fn superseded_catalog_versions_are_removed() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, _) = connect_with(root.path(), json!({})).await;
     let mut opened = open(destination.as_ref(), 1).await;
     let (schema, batch) = ids(&[1]);
@@ -237,7 +237,7 @@ async fn read_back(reader: &dyn PublishedReader, table: &TableRef) -> Option<Con
 #[tokio::test(flavor = "multi_thread")]
 async fn a_published_arrow_file_whose_block_lies_outside_it_is_refused() {
     for (field, value) in poisons() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": "arrow" })).await;
         let mut opened = open(destination.as_ref(), 1).await;
         let rows = merge_table("rows");
@@ -273,7 +273,7 @@ async fn a_published_arrow_file_whose_block_lies_outside_it_is_refused() {
 async fn a_commit_that_fails_leaves_no_file_it_wrote_and_its_retry_lands() {
     use std::os::unix::fs::PermissionsExt as _;
     for format in ["jsonl", "arrow"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
         let mut opened = open(destination.as_ref(), 1).await;
         let rows = merge_table("rows");
@@ -308,7 +308,7 @@ async fn a_commit_that_fails_leaves_no_file_it_wrote_and_its_retry_lands() {
 
 #[tokio::test]
 async fn a_table_written_in_both_formats_reads_back_whole_and_is_merged_in_neither() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let rows = table("rows");
     let mut seq = CommitSeq::FIRST;
     let mut expected = Vec::new();
@@ -341,7 +341,7 @@ async fn a_table_written_in_both_formats_reads_back_whole_and_is_merged_in_neith
 #[tokio::test]
 async fn two_loads_commits_of_one_number_in_one_session_keep_every_row() {
     for format in ["jsonl", "arrow"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         let (destination, reader) = connect_with(root.path(), json!({ "format": format })).await;
         let mut opened = open(destination.as_ref(), 9).await;
         let rows = table("rows");
@@ -387,7 +387,7 @@ async fn two_loads_commits_of_one_number_in_one_session_keep_every_row() {
 #[tokio::test]
 async fn a_failed_commit_of_a_reused_number_publishes_nothing() {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
     let mut opened = open(destination.as_ref(), 9).await;
     let rows = merge_table("rows");
@@ -417,7 +417,7 @@ async fn a_failed_commit_of_a_reused_number_publishes_nothing() {
 #[tokio::test]
 async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whole() {
     use arrow_array::{DictionaryArray, Int8Array, types::Int8Type};
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({ "format": "arrow" })).await;
     let mut opened = open(destination.as_ref(), 1).await;
     let rows = table("rows");
@@ -473,7 +473,7 @@ async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whol
 
 #[tokio::test]
 async fn a_table_created_again_after_its_drop_keeps_its_catalog() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let (destination, reader) = connect_with(root.path(), json!({})).await;
     let mut opened = open(destination.as_ref(), 1).await;
     let rows = table("rows");

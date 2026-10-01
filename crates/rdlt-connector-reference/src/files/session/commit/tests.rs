@@ -12,7 +12,7 @@ fn touch(root: &Path, path: &str) {
 
 #[test]
 fn a_removed_file_takes_the_directories_of_its_own_it_left_empty() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     let gone = "staging/7/load/3/rows/table/1.jsonl".to_owned();
     let sibling = "staging/7/load/3/other/table/1.jsonl".to_owned();
@@ -33,8 +33,8 @@ fn a_removed_file_takes_the_directories_of_its_own_it_left_empty() {
 
 #[test]
 fn a_path_that_cannot_be_removed_is_left_and_the_others_still_go() {
-    let root = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
+    let outside = crate::scratch::tempdir().unwrap();
     std::fs::write(outside.path().join("kept"), b"x").unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     let real = "staging/7/load/3/rows/table/1.jsonl".to_owned();
@@ -60,7 +60,7 @@ fn a_path_that_cannot_be_removed_is_left_and_the_others_still_go() {
 
 #[test]
 fn only_what_the_latest_manifest_does_not_list_is_pruned() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     let listed = "staging/7/load/1/rows/table/1.jsonl".to_owned();
     let unlisted = "staging/7/load/2/rows/table/1.jsonl".to_owned();
@@ -92,7 +92,7 @@ fn only_what_the_latest_manifest_does_not_list_is_pruned() {
     assert!(root.path().join(&listed).exists());
     assert!(!root.path().join(&unlisted).exists());
     // A pipeline with no manifest lists nothing.
-    let fresh = tempfile::tempdir().unwrap();
+    let fresh = crate::scratch::tempdir().unwrap();
     touch(fresh.path(), &unlisted);
     prune(&Dir::ambient(fresh.path()).unwrap(), &paths);
     assert!(!fresh.path().join(&unlisted).exists());

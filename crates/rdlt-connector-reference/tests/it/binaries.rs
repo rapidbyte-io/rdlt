@@ -12,7 +12,7 @@ fn reference(id: &str, binary: &str) -> ConnectorRef {
 #[tokio::test(flavor = "multi_thread")]
 async fn each_binary_serves_its_connectors_in_their_roles() {
     let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
-    let dir = tempfile::tempdir().expect("a temporary directory");
+    let dir = crate::fixtures::tempdir().expect("a temporary directory");
     let sources = [
         (
             "io.rapidbyte.memory",

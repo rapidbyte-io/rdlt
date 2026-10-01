@@ -103,7 +103,7 @@ async fn the_memory_destination_reads_back_what_it_published() {
 
 #[tokio::test]
 async fn the_sqlite_destination_reads_back_what_it_published() {
-    let directory = tempfile::tempdir().expect("a temporary directory");
+    let directory = crate::fixtures::tempdir().expect("a temporary directory");
     let path = directory.path().join("read_back.db");
     let ids = read_back::<SqliteDestination>(json!({ "path": path })).await;
     assert_eq!(ids, [1, 2]);

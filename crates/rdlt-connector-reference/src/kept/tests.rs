@@ -8,7 +8,7 @@ fn partition(id: &str) -> PartitionId {
 
 #[test]
 fn a_keeper_at_a_path_holds_its_positions_for_the_next_process() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("slot.json");
     let kept: Kept<u64> = Kept::keeping(&path).unwrap();
     assert_eq!(kept.position("orders", &partition("p0")), None);
@@ -31,7 +31,7 @@ fn a_keeper_at_a_path_holds_its_positions_for_the_next_process() {
 
 #[test]
 fn a_keeper_whose_file_is_damaged_is_refused_rather_than_found_empty() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("slot.json");
     let kept: Kept<u64> = Kept::keeping(&path).unwrap();
     kept.advance("orders", &partition("p0"), 7).unwrap();
@@ -50,13 +50,13 @@ fn a_keeper_without_a_path_writes_nothing() {
 #[test]
 fn a_keeper_whose_file_cannot_be_read_is_refused_rather_than_found_empty() {
     // A directory where the file should be reads as no file of positions.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     assert!(Kept::<u64>::keeping(dir.path()).is_err());
 }
 
 #[test]
 fn a_keeper_reads_its_last_whole_file_beside_one_a_crash_left_half_written() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("slot.json");
     let kept: Kept<u64> = Kept::keeping(&path).unwrap();
     kept.advance("orders", &partition("p0"), 7).unwrap();
@@ -91,7 +91,7 @@ fn a_keeper_reads_its_last_whole_file_beside_one_a_crash_left_half_written() {
 #[test]
 fn an_advance_makes_its_rename_durable_in_the_keeper_s_directory() {
     use crate::rooted::trace;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let kept: Kept<u64> = Kept::keeping(&dir.path().join("slot.json")).unwrap();
     trace::clear();
     kept.advance("orders", &partition("p0"), 7).unwrap();
@@ -102,7 +102,7 @@ fn an_advance_makes_its_rename_durable_in_the_keeper_s_directory() {
 #[test]
 fn a_keeper_whose_directory_cannot_be_written_is_refused_its_advance() {
     use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let keeping = dir.path().join("keeping");
     std::fs::create_dir(&keeping).unwrap();
     let kept: Kept<u64> = Kept::keeping(&keeping.join("slot.json")).unwrap();
@@ -118,8 +118,8 @@ fn a_keeper_whose_directory_cannot_be_written_is_refused_its_advance() {
 
 #[test]
 fn a_link_at_a_temporary_name_or_at_the_keeper_is_never_written_through() {
-    let dir = tempfile::tempdir().unwrap();
-    let elsewhere = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
+    let elsewhere = crate::scratch::tempdir().unwrap();
     let victim = elsewhere.path().join("authorized_keys");
     std::fs::write(&victim, b"precious").unwrap();
     let path = dir.path().join("slot.json");
@@ -151,7 +151,7 @@ fn a_link_at_a_temporary_name_or_at_the_keeper_is_never_written_through() {
 #[test]
 fn a_keeper_file_is_private() {
     use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("slot.json");
     let kept: Kept<u64> = Kept::keeping(&path).unwrap();
     kept.advance("orders", &partition("p0"), 7).unwrap();
@@ -161,7 +161,7 @@ fn a_keeper_file_is_private() {
 
 #[test]
 fn a_keeper_file_that_is_too_large_or_no_regular_file_is_refused_unread() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let huge = dir.path().join("huge.json");
     std::fs::File::create(&huge)
         .unwrap()
@@ -228,7 +228,7 @@ fn a_keeper_holds_a_bounded_number_of_positions() {
 #[test]
 fn an_acknowledgement_that_moves_nothing_writes_nothing() {
     use std::os::unix::fs::MetadataExt as _;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("slot.json");
     let kept: Kept<u64> = Kept::keeping(&path).unwrap();
     kept.advance("orders", &partition("p0"), 7).unwrap();
@@ -243,7 +243,7 @@ fn an_acknowledgement_that_moves_nothing_writes_nothing() {
 
 #[test]
 fn a_keeper_file_of_more_positions_than_a_keeper_holds_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let positions = |count: usize| -> Vec<(String, String, u64)> {
         (0..count)
             .map(|index| ("orders".to_owned(), format!("p{index}"), 1))
@@ -265,9 +265,14 @@ fn a_keeper_file_of_more_positions_than_a_keeper_holds_is_refused() {
 fn a_keeper_names_a_file_in_a_directory_that_exists() {
     assert!(Kept::<u64>::keeping(std::path::Path::new("/")).is_err());
     assert!(Kept::<u64>::keeping(std::path::Path::new("..")).is_err());
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     assert!(Kept::<u64>::keeping(&dir.path().join("missing").join("slot.json")).is_err());
-    // A path of one name is a file of the working directory.
+    // A path of one name is a file of the working directory, which a keeper takes only where
+    // it is its user's alone: a checkout others may write, or another user's, has no such file.
+    if crate::rooted::Dir::ambient(std::path::Path::new(".")).is_err() {
+        assert!(Kept::<u64>::keeping(std::path::Path::new("slot.json")).is_err());
+        return;
+    }
     let scratch = tempfile::Builder::new().tempdir_in(".").unwrap();
     let name = format!(
         "{}.json",
@@ -284,7 +289,7 @@ fn a_keeper_names_a_file_in_a_directory_that_exists() {
 #[test]
 fn an_acknowledgement_whose_write_failed_is_kept_when_it_is_made_again() {
     use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("keeper.json");
     let kept = Kept::<u64>::keeping(&path).unwrap();
     kept.advance("s", &partition("p"), 1).unwrap();
@@ -310,7 +315,7 @@ fn an_acknowledgement_whose_write_failed_is_kept_when_it_is_made_again() {
 #[test]
 fn an_acknowledgement_is_durable_step_by_step_and_stands_only_once_its_file_does() {
     use crate::rooted::trace::{self, Step};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("keeper.json");
     let kept = Kept::<u64>::keeping(&path).unwrap();
     kept.advance("s", &partition("p"), 1).unwrap();
@@ -371,7 +376,7 @@ fn an_acknowledgement_is_durable_step_by_step_and_stands_only_once_its_file_does
 fn a_keeper_trusts_only_a_file_and_a_directory_that_are_its_user_s_alone() {
     use std::io::ErrorKind;
     use std::os::unix::fs::PermissionsExt as _;
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let shared = base.path().join("shared");
     std::fs::create_dir(&shared).unwrap();
     let path = shared.join("slot.json");
@@ -413,7 +418,7 @@ fn a_keeper_trusts_only_a_file_and_a_directory_that_are_its_user_s_alone() {
 
 #[test]
 fn every_path_to_one_keeper_file_names_one_keeper() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let dir = base.path().join("keepers");
     std::fs::create_dir(&dir).unwrap();
     std::os::unix::fs::symlink(&dir, base.path().join("linked")).unwrap();
@@ -430,7 +435,7 @@ fn every_path_to_one_keeper_file_names_one_keeper() {
     // Another file of the directory, and the same name in another directory, are other keepers.
     let other = registry.at(&dir.join("other.json")).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&first, &other));
-    let elsewhere = tempfile::tempdir().unwrap();
+    let elsewhere = crate::scratch::tempdir().unwrap();
     let apart = registry.at(&elsewhere.path().join("slot.json")).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&first, &apart));
 }
@@ -438,7 +443,7 @@ fn every_path_to_one_keeper_file_names_one_keeper() {
 #[test]
 fn a_keeper_file_is_one_keeper_s_for_as_long_as_the_keeper_is_held() {
     use std::io::ErrorKind;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let path = dir.path().join("slot.json");
     let kept: Kept<u64> = Kept::keeping(&path).unwrap();
     kept.advance("orders", &partition("p0"), 7).unwrap();
@@ -463,8 +468,8 @@ fn a_keeper_file_is_one_keeper_s_for_as_long_as_the_keeper_is_held() {
 
 #[test]
 fn a_lock_a_link_stands_in_for_is_refused() {
-    let dir = tempfile::tempdir().unwrap();
-    let outside = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
+    let outside = crate::scratch::tempdir().unwrap();
     let target = outside.path().join("target");
     std::fs::write(&target, b"").unwrap();
     std::os::unix::fs::symlink(&target, dir.path().join(".slot.json.lock")).unwrap();
@@ -477,7 +482,7 @@ fn a_lock_a_link_stands_in_for_is_refused() {
 
 #[test]
 fn a_group_and_a_file_never_share_a_keeper_whatever_they_are_named() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let registry: super::Registry<u64> = super::Registry::new();
     let file = registry.at(&dir.path().join("slot.json")).unwrap();
     file.advance("orders", &partition("p0"), 7).unwrap();
@@ -497,7 +502,7 @@ fn a_keeper_file_whose_name_is_no_text_is_refused() {
     use std::os::unix::ffi::OsStrExt as _;
     // Its temporaries and its lock are named after it, as text: two such names could not be
     // told apart there.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::scratch::tempdir().unwrap();
     let registry: super::Registry<u64> = super::Registry::new();
     let named = dir.path().join(OsStr::from_bytes(b"slot\xff.json"));
     let Err(error) = registry.at(&named) else {

@@ -174,7 +174,7 @@ fn merged_files(dir: &Path, seq: u64, table: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn a_child_table_none_of_whose_roots_changed_is_not_rewritten() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
+    let dir = crate::fixtures::tempdir().expect("a temporary directory");
     let destination: Box<dyn Destination> = destination_factory::<FilesDestination>()
         .connect(
             json!({ "root": dir.path(), "format": "jsonl" }),
@@ -211,7 +211,7 @@ async fn a_child_table_none_of_whose_roots_changed_is_not_rewritten() {
 
 #[tokio::test]
 async fn a_sqlite_child_table_follows_a_root_that_merged_where_the_child_staged_nothing() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
+    let dir = crate::fixtures::tempdir().expect("a temporary directory");
     let path = dir.path().join("children.db");
     let destination: Box<dyn Destination> = destination_factory::<SqliteDestination>()
         .connect(json!({ "path": path }), ConnectContext::new())

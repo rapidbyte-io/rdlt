@@ -30,7 +30,7 @@ fn mkfifo(path: &Path) {
 /// A directory holding a file, a directory, a pipe, and links to a file and to a directory
 /// outside it.
 fn tree() -> (tempfile::TempDir, Dir) {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let root = base.path().join("root");
     std::fs::create_dir_all(root.join("inner")).unwrap();
     std::fs::create_dir_all(base.path().join("outside").join("below")).unwrap();
@@ -199,7 +199,7 @@ fn a_file_beyond_the_limit_is_refused_unread() {
 
 #[test]
 fn created_directories_and_files_are_their_owner_s_alone() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let root = base.path().join("a").join("b");
     trace::clear();
     let dir = Dir::ambient_created(&root).unwrap();
@@ -256,7 +256,7 @@ fn a_relative_directory_whose_parent_is_the_working_directory_is_created() {
 
 #[test]
 fn a_root_and_every_directory_entered_beneath_it_are_their_user_s_alone() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let path = base.path().join("shared");
     std::fs::create_dir(&path).unwrap();
     let parent = Dir::ambient(base.path()).unwrap();
@@ -322,7 +322,7 @@ fn a_mount_point_beneath_a_root_is_not_entered() {
 #[test]
 fn a_tree_deeper_than_any_the_connectors_make_is_not_removed() {
     use crate::limits::TREE_DEPTH;
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(base.path()).unwrap();
     let nested = |levels: usize| vec!["d"; levels].join("/");
     for (name, levels, removed) in [("fits", TREE_DEPTH, true), ("deep", TREE_DEPTH + 1, false)] {
@@ -490,7 +490,7 @@ fn temporaries_are_named_apart_and_those_of_one_file_are_told_from_others() {
     let second = unique("p-").unwrap().into_string().unwrap();
     assert!(first.starts_with("p-") && first.len() == 34 && first != second);
     assert!(first[2..].bytes().all(|byte| byte.is_ascii_hexdigit()));
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(base.path()).unwrap();
     let own = dir.temporary_of("keeper.json").unwrap();
     let other = dir.temporary_of("other.json").unwrap();
@@ -518,7 +518,7 @@ fn temporaries_are_named_apart_and_those_of_one_file_are_told_from_others() {
 
 #[test]
 fn a_sweep_removes_only_temporaries_old_enough() {
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(base.path()).unwrap();
     let age = Duration::from_secs(60);
     let written = |name: &str, ago: Duration| {
@@ -633,7 +633,7 @@ fn a_file_larger_than_it_was_measured_is_refused_as_it_is_read() {
 #[test]
 fn every_durable_step_is_recorded_in_order_and_a_fault_refuses_its_step() {
     use trace::Step;
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(base.path()).unwrap();
     let at = |name: &str| base.path().join(name);
     trace::clear();

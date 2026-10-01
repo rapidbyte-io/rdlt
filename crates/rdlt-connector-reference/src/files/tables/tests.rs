@@ -12,7 +12,7 @@ const WAIT: Duration = Duration::from_secs(20);
 
 /// A destination's private directory.
 fn private() -> (tempfile::TempDir, Dir) {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let dir = Dir::ambient(root.path()).unwrap();
     (root, dir)
 }
@@ -345,7 +345,7 @@ fn a_lock_another_holds_is_waited_for_no_longer_than_its_wait() {
 #[test]
 fn a_lock_file_is_this_user_s_regular_file_or_refused() {
     let (root, rdlt) = private();
-    let base = tempfile::tempdir().unwrap();
+    let base = crate::scratch::tempdir().unwrap();
     locked(&rdlt, "made", WAIT, || Ok(())).unwrap();
     let locks = root.path().join("locks");
     // A link, to a file or to nothing, is not opened and its target not created.

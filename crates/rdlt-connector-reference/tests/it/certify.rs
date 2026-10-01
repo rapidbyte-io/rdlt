@@ -102,7 +102,7 @@ async fn the_memory_destination_is_certified() {
 
 #[tokio::test]
 async fn the_sqlite_destination_is_certified() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::fixtures::tempdir().unwrap();
     let path = directory.path().join("certify.db");
     let config = json!({ "path": path });
     let probe = SqliteProbe(path.clone());
@@ -117,7 +117,7 @@ async fn the_sqlite_destination_is_certified() {
 #[tokio::test]
 async fn the_files_destination_is_certified_in_both_formats() {
     for format in ["jsonl", "arrow"] {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::fixtures::tempdir().unwrap();
         let config = json!({ "root": directory.path(), "format": format });
         let probe = FilesProbe(directory.path().to_owned());
         for _ in 0..2 {
@@ -149,7 +149,7 @@ fn arrow_file(path: &std::path::Path, rows: i64) {
 
 #[tokio::test]
 async fn the_files_source_is_certified() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let lines =
         "{\"id\": 0}\n{\"id\": 1, \"name\": \"b\"}\n{\"id\": 2}\n{\"id\": 3}\n{\"id\": 4}\n";
     std::fs::write(root.path().join("users.jsonl"), lines).unwrap();

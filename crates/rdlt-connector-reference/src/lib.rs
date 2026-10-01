@@ -35,6 +35,8 @@ pub mod log;
 mod memory;
 mod merge;
 mod rooted;
+#[cfg(test)]
+mod scratch;
 pub mod sqlite;
 
 pub use changes::{ChangedStream, ChangesConfig, ChangesSource};

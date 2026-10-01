@@ -199,7 +199,7 @@ async fn files(root: &Path, format: &str) -> Vec<i64> {
 
 #[tokio::test]
 async fn a_replayed_change_never_brings_back_a_row_the_sqlite_destination_removed() {
-    let directory = tempfile::tempdir().expect("a temporary directory");
+    let directory = crate::fixtures::tempdir().expect("a temporary directory");
     let path = directory.path().join("tombstones.db");
     let ids = replayed::<SqliteDestination>(json!({ "path": path })).await;
     assert_eq!(ids, [3, 4]);
@@ -210,7 +210,7 @@ async fn a_table_replaced_whole_forgets_the_tombstones_of_the_rows_it_held() {
     let ids = replaced::<MemoryDestination>(json!({ "store": "replaced_tombstones" })).await;
     assert_eq!(ids, [1, 9], "memory");
     for format in ["jsonl", "arrow"] {
-        let root = tempfile::tempdir().expect("a temporary directory");
+        let root = crate::fixtures::tempdir().expect("a temporary directory");
         let config = json!({ "root": root.path(), "format": format });
         assert_eq!(
             replaced::<FilesDestination>(config).await,
@@ -218,7 +218,7 @@ async fn a_table_replaced_whole_forgets_the_tombstones_of_the_rows_it_held() {
             "{format}"
         );
     }
-    let directory = tempfile::tempdir().expect("a temporary directory");
+    let directory = crate::fixtures::tempdir().expect("a temporary directory");
     let path = directory.path().join("replaced.db");
     assert_eq!(
         replaced::<SqliteDestination>(json!({ "path": path })).await,
@@ -236,7 +236,7 @@ async fn a_replayed_change_never_brings_back_a_row_the_memory_destination_remove
 #[tokio::test]
 async fn a_replayed_change_never_brings_back_a_row_the_files_destination_removed() {
     for format in ["jsonl", "arrow"] {
-        let root = tempfile::tempdir().expect("a temporary directory");
+        let root = crate::fixtures::tempdir().expect("a temporary directory");
         assert_eq!(files(root.path(), format).await, [3, 4], "{format}");
     }
 }

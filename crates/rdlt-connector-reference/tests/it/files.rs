@@ -17,7 +17,7 @@ use crate::fixtures::{connect, files_under, ids, meta, open, stage, table};
 
 #[tokio::test]
 async fn a_new_session_removes_what_older_sessions_staged_and_never_published() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "jsonl").await;
     let (schema, batch) = ids(&[1, 2]);
     let mut first = open(destination.as_ref(), 1).await;
@@ -54,7 +54,7 @@ async fn a_new_session_removes_what_older_sessions_staged_and_never_published() 
 
 #[tokio::test]
 async fn only_the_most_recent_manifests_are_kept() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let destination = connect(root.path(), "arrow").await;
     let mut opened = open(destination.as_ref(), 1).await;
     let mut seq = CommitSeq::FIRST;
@@ -73,7 +73,7 @@ async fn only_the_most_recent_manifests_are_kept() {
 #[tokio::test]
 async fn nested_values_and_times_read_back_as_they_were_written() {
     for format in ["jsonl", "arrow"] {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::fixtures::tempdir().unwrap();
         let destination = connect(root.path(), format).await;
         let mut opened = open(destination.as_ref(), 1).await;
         let (schema, batch) = nested(format);
@@ -116,7 +116,7 @@ fn nested(format: &str) -> (TableSchema, RecordBatch) {
 
 #[tokio::test]
 async fn a_root_that_cannot_be_written_is_a_configuration_error() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let file = root.path().join("file");
     std::fs::write(&file, b"").unwrap();
     let destination = connect(&file.join("below"), "jsonl").await;
@@ -126,7 +126,7 @@ async fn a_root_that_cannot_be_written_is_a_configuration_error() {
 
 #[tokio::test]
 async fn a_source_root_that_cannot_be_listed_is_a_configuration_error() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     let missing = json!({ "root": root.path().join("missing") });
     let error = source_factory::<FilesSource>()
         .connect(missing, ConnectContext::new())
@@ -138,7 +138,7 @@ async fn a_source_root_that_cannot_be_listed_is_a_configuration_error() {
 
 #[tokio::test]
 async fn a_partition_the_source_does_not_list_is_never_opened() {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::fixtures::tempdir().unwrap();
     std::fs::write(root.path().join("users.jsonl"), "{\"id\": 1}\n").unwrap();
     let outside = root.path().join("outside.jsonl");
     std::fs::write(&outside, "{\"id\": 2}\n").unwrap();
@@ -160,7 +160,7 @@ async fn a_partition_the_source_does_not_list_is_never_opened() {
 
 #[tokio::test]
 async fn a_files_writer_s_flush_counts_the_bytes_of_the_files_it_staged() {
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::fixtures::tempdir().expect("a temporary directory");
     let destination = connect(root.path(), "jsonl").await;
     let mut opened = open(destination.as_ref(), 1).await;
     let (schema, batch) = ids(&[1, 2, 3]);
@@ -206,7 +206,7 @@ fn a_files_source_pushes_1024_rows_a_batch_by_default() {
 
 #[tokio::test]
 async fn the_files_destination_reads_back_what_it_published() {
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::fixtures::tempdir().expect("a temporary directory");
     let (destination, reader) = rdlt_connector::readable_destination_factory::<FilesDestination>()
         .connect_reading(json!({ "root": root.path() }), ConnectContext::new())
         .await
@@ -232,7 +232,7 @@ async fn the_files_destination_reads_back_what_it_published() {
 
 #[tokio::test]
 async fn the_files_source_reads_every_row_of_both_formats() {
-    let root = tempfile::tempdir().expect("a temporary directory");
+    let root = crate::fixtures::tempdir().expect("a temporary directory");
     std::fs::write(
         root.path().join("lines.jsonl"),
         "{\"id\": 1}\n{\"id\": 2}\n",

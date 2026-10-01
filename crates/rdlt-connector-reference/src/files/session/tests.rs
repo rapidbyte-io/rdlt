@@ -10,7 +10,7 @@ use crate::rooted::Dir;
 /// A session's location under a fresh root: the private directory is the root itself, the
 /// pipeline's directory `pipeline` in it.
 pub(crate) fn location(format: FileFormat) -> (tempfile::TempDir, Location) {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::scratch::tempdir().unwrap();
     let rdlt = Dir::ambient(root.path()).unwrap();
     let dir = rdlt.dir_created("pipeline").unwrap();
     let location = Location {

@@ -141,7 +141,7 @@ async fn merging_follows_the_writer_whatever_the_table_was_before() {
     let expected = ["c", "d"];
     switch::<MemoryDestination>(json!({ "store": "switch" })).await;
     assert_eq!(values(&published("switch", "switch")), expected, "memory");
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::fixtures::tempdir().unwrap();
     let path = directory.path().join("switch.db");
     switch::<SqliteDestination>(json!({ "path": path })).await;
     assert_eq!(
