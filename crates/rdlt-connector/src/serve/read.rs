@@ -9,7 +9,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::tonic::{Status, Streaming};
-use rdlt_wire::{Encoder, Limits};
+use rdlt_wire::{Cut, Encoder, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -82,6 +82,8 @@ pub(super) struct Outbox {
     epoch: u64,
     /// The host's limits, which every frame sent keeps within.
     host: Limits,
+    /// The batch whose pieces are being sent, and its kind.
+    cutting: Option<(Cut, v1::BatchKind)>,
 }
 
 /// A frame the host's limits refuse, as the status the read fails with.
@@ -99,6 +101,7 @@ impl Outbox {
             schema: None,
             epoch: 0,
             host,
+            cutting: None,
         }
     }
 
@@ -163,17 +166,32 @@ impl Outbox {
                 ipc_schema,
             }));
         }
-        // A batch beyond the host's limits goes as several, in order, ahead of what the source
-        // sends next; a row beyond them fails the read here.
-        let frames = match self.encoder.batch_within(batch, &self.host) {
-            Ok(frames) => frames,
-            Err(error) => {
-                // What is sent next starts a schema epoch of its own.
-                self.schema = None;
-                return Err(status(&frame_error(&error)));
-            }
+        self.cutting = Some((Cut::new(batch.clone(), self.host), kind));
+        self.refill()
+    }
+
+    /// Whether a batch is still being cut: its next piece is queued by [`Outbox::refill`], and
+    /// nothing else may be queued before its last.
+    pub(super) fn cutting(&self) -> bool {
+        self.cutting.is_some()
+    }
+
+    /// Queues the next piece of the batch being cut.
+    ///
+    /// A batch beyond the host's limits goes as several, in order, each encoded only once the
+    /// piece before it was sent; a row beyond them fails the read.
+    pub(super) fn refill(&mut self) -> Result<(), Status> {
+        use v1::read_frame::Frame;
+        let Some((cut, kind)) = &mut self.cutting else {
+            return Ok(());
         };
-        for frame in frames {
+        let kind = *kind;
+        let piece = self.encoder.piece(cut);
+        if cut.is_done() {
+            self.cutting = None;
+        }
+        let frames = piece.map_err(|error| status(&frame_error(&error)))?;
+        for frame in frames.into_iter().flatten() {
             self.push(Frame::Batch(v1::BatchFrame {
                 schema_epoch: self.epoch,
                 kind: kind as i32,
@@ -236,6 +254,17 @@ async fn pump(
                 feed.stop();
                 return;
             }
+        }
+        // The next piece of a batch being cut is encoded once the last was sent, and before
+        // anything else the source sends is taken.
+        if outbox.frames.is_empty() && outbox.cutting() {
+            if let Err(error) = outbox.refill() {
+                frames.send(Err(error)).await.ok();
+                feed.stop();
+                return;
+            }
+            tokio::task::yield_now().await;
+            continue;
         }
         if done && outbox.frames.is_empty() {
             return;

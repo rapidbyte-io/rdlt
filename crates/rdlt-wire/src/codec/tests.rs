@@ -523,12 +523,11 @@ fn a_dictionary_of_dictionaries_is_refused_by_its_sender() {
     for batch in [twice, samples::batch_of(Arc::new(listed))] {
         let mut encoder = Encoder::default();
         encoder.schema(&batch.schema());
-        for sent in [
-            encoder.batch(&batch),
-            encoder.batch_within(&batch, &Limits::default()),
-        ] {
-            assert_eq!(frames::problem(sent), Problem::DictionaryOfDictionaries);
-        }
+        let whole = encoder.batch(&batch);
+        assert_eq!(frames::problem(whole), Problem::DictionaryOfDictionaries);
+        let mut cut = super::Cut::new(batch.clone(), Limits::default());
+        let piece = encoder.piece(&mut cut);
+        assert_eq!(frames::problem(piece), Problem::DictionaryOfDictionaries);
     }
 }
 

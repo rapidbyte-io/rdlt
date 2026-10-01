@@ -9,9 +9,10 @@ use arrow_schema::{DataType, Field};
 use proptest::prelude::*;
 use rdlt_testkit::drawn::values;
 
+use crate::codec::compact::compacted;
 use crate::codec::tests::frames::refusal;
 use crate::codec::tests::samples::batch_of;
-use crate::codec::{Decoder, Encoder, IpcFrame};
+use crate::codec::{Cut, Decoder, Encoder, IpcFrame};
 use crate::error::WireError;
 use crate::limits::{BATCH_ROWS, BATCH_VALUES, Limits};
 
@@ -19,7 +20,22 @@ use crate::limits::{BATCH_ROWS, BATCH_VALUES, Limits};
 fn cut(batch: &RecordBatch, limits: &Limits) -> Result<Vec<IpcFrame>, WireError> {
     let mut encoder = Encoder::default();
     encoder.schema(&batch.schema());
-    encoder.batch_within(batch, limits)
+    stepped(&mut encoder, batch, limits)
+}
+
+/// Every frame `encoder` cuts `batch` into within `limits`, a piece at a time.
+fn stepped(
+    encoder: &mut Encoder,
+    batch: &RecordBatch,
+    limits: &Limits,
+) -> Result<Vec<IpcFrame>, WireError> {
+    let mut cut = Cut::new(batch.clone(), *limits);
+    let mut all = Vec::new();
+    while let Some(frames) = encoder.piece(&mut cut)? {
+        all.extend(frames);
+    }
+    assert!(cut.is_done());
+    Ok(all)
 }
 
 /// The batches a receiver within `limits` decodes from `frames` of `batch`'s schema.
@@ -240,14 +256,14 @@ fn a_dictionary_goes_once_ahead_of_the_batches_cut_from_its_batch() {
     };
     let mut encoder = Encoder::default();
     encoder.schema(&batch.schema());
-    let frames = encoder.batch_within(&batch, &limits).unwrap();
+    let frames = stepped(&mut encoder, &batch, &limits).unwrap();
     assert_eq!(frames.len(), 1 + 3);
     assert_eq!(
         in_order(&batch, &received(&batch, &frames, limits)),
         [3, 3, 1]
     );
     // The same dictionary is not sent again with the next batch.
-    assert_eq!(encoder.batch_within(&batch, &limits).unwrap().len(), 3);
+    assert_eq!(stepped(&mut encoder, &batch, &limits).unwrap().len(), 3);
     // A dictionary cannot be cut: one beyond a limit is refused.
     let small = Limits {
         batch_values: 2,
@@ -266,17 +282,17 @@ fn a_dictionary_goes_once_ahead_of_the_batches_cut_from_its_batch() {
         ..Limits::default()
     };
     assert_eq!(
-        refusal(encoder.batch_within(&both, &few)).field,
+        refusal(stepped(&mut encoder, &both, &few)).field,
         "batch values"
     );
     // The schema epoch ended with the refusal: the next begins with its dictionary.
-    let unsent = encoder.batch_within(&both, &Limits::default());
+    let unsent = stepped(&mut encoder, &both, &Limits::default());
     assert_eq!(
         crate::codec::tests::frames::problem(unsent),
         crate::error::Problem::NoSchema
     );
     encoder.schema(&both.schema());
-    let frames = encoder.batch_within(&both, &Limits::default()).unwrap();
+    let frames = stepped(&mut encoder, &both, &Limits::default()).unwrap();
     assert_eq!(frames.len(), 1 + 1);
     assert_eq!(received(&both, &frames, Limits::default()), [both]);
 }
@@ -292,9 +308,7 @@ fn a_batch_of_no_rows_is_one_frame() {
 
 #[test]
 fn a_batch_before_any_schema_is_refused_by_its_sender() {
-    let error = Encoder::default()
-        .batch_within(&rows(1), &Limits::default())
-        .unwrap_err();
+    let error = stepped(&mut Encoder::default(), &rows(1), &Limits::default()).unwrap_err();
     assert!(
         matches!(
             error,
@@ -308,12 +322,11 @@ fn a_batch_before_any_schema_is_refused_by_its_sender() {
 }
 
 /// Whether a receiver within `limits` decodes rows `start..start + rows` of `batch` sent as one
-/// frame holding only what they name.
+/// frame: as they are when they are the whole batch, else holding only what they name.
 fn part_fits(batch: &RecordBatch, start: usize, rows: usize, limits: Limits) -> bool {
     let part = batch.slice(start, rows);
     let whole = start == 0 && rows == batch.num_rows();
-    fits(&crate::codec::compact::compacted(&part).unwrap(), limits)
-        || (whole && fits(&part, limits))
+    (whole && fits(&part, limits)) || fits(&compacted(&part).unwrap(), limits)
 }
 
 /// Whether a receiver within `limits` decodes `batch` sent whole.
@@ -329,7 +342,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
 
     #[test]
-    fn every_drawn_batch_is_cut_into_the_fewest_frames_its_receiver_admits(
+    fn every_drawn_batch_is_cut_into_full_frames_its_receiver_admits(
         drawn in values::drawn(),
         (most_rows, most_values, most_bytes) in (1_u64..8, 1_u64..64, 0_u64..4),
     ) {
@@ -349,11 +362,23 @@ proptest! {
             }
             Ok(frames) => {
                 prop_assert!(each_fits);
-                let pieces = in_order(&batch, &received(&batch, &frames, limits));
-                // No piece could have taken the row after it.
+                let received = received(&batch, &frames, limits);
+                let pieces = in_order(&batch, &received);
+                // No piece but the last could have taken the row after it, unless the frame's
+                // bytes bind: then a row more of its average size would not have fitted.
+                let batches = frames.iter().filter(|frame| {
+                    let message = arrow_ipc::root_as_message(&frame.header).unwrap();
+                    message.header_type() == arrow_ipc::MessageHeader::RecordBatch
+                });
+                let sizes: Vec<usize> =
+                    batches.map(|frame| bytes(std::slice::from_ref(frame))).collect();
+                prop_assert_eq!(sizes.len(), pieces.len());
                 let mut start = 0;
-                for piece in &pieces[..pieces.len() - 1] {
-                    prop_assert!(!part_fits(&batch, start, piece + 1, limits));
+                for (at, piece) in pieces[..pieces.len() - 1].iter().enumerate() {
+                    let full = !part_fits(&batch, start, piece + 1, limits);
+                    let size = u64::try_from(sizes[at]).unwrap();
+                    let average = size / u64::try_from(*piece).unwrap();
+                    prop_assert!(full || size + average > limits.frame_bytes);
                     start += piece;
                 }
             }
@@ -454,4 +479,98 @@ fn rows_naming_shared_buffers_larger_than_a_frame_are_cut_and_cross() {
             batch.schema()
         );
     }
+}
+
+#[test]
+fn each_step_hands_over_one_piece_no_larger_than_a_frame() {
+    // Twenty thousand rows of 65 flags, a frame for each 1024 rows: what the sender holds
+    // beyond the batch is the piece it is sending.
+    let batch = flags(65, 20_000);
+    let limits = Limits {
+        batch_rows: 1_024,
+        frame_bytes: 64 * 1_024,
+        ..Limits::default()
+    };
+    let mut encoder = Encoder::default();
+    encoder.schema(&batch.schema());
+    let whole = bytes(&encoder.batch(&batch).unwrap());
+    let mut cut = Cut::new(batch.clone(), limits);
+    let (mut steps, mut sent) = (0, 0);
+    while let Some(frames) = encoder.piece(&mut cut).unwrap() {
+        assert_eq!(frames.len(), 1);
+        assert!(bytes(&frames) <= 64 * 1_024, "{}", bytes(&frames));
+        (steps, sent) = (steps + 1, sent + bytes(&frames));
+    }
+    assert_eq!(steps, 20_000_usize.div_ceil(1_024));
+    assert!(sent <= 2 * whole, "{sent} of {whole}");
+    assert_eq!(encoder.piece(&mut cut).unwrap(), None);
+}
+
+/// How many batches `encoder` encodes to cut `batch` within `limits`, and into how many pieces.
+fn cost(batch: &RecordBatch, limits: &Limits) -> (usize, usize) {
+    let mut encoder = Encoder::default();
+    encoder.schema(&batch.schema());
+    let frames = stepped(&mut encoder, batch, limits).unwrap();
+    (encoder.encodes, frames.len())
+}
+
+#[test]
+fn a_cut_costs_about_an_encode_a_piece() {
+    // Values bind: the cut is found by counting, and each piece is encoded once.
+    let rows = usize::try_from(BATCH_ROWS).unwrap();
+    assert_eq!(cost(&flags(65, rows), &Limits::default()), (2, 2));
+    assert_eq!(cost(&flags(64, rows), &Limits::default()), (1, 1));
+    let of_values = Limits {
+        batch_values: 6_500,
+        ..Limits::default()
+    };
+    assert_eq!(cost(&flags(65, 20_000), &of_values), (200, 200));
+    // Bytes bind: the batch is encoded whole to learn its size, then each piece once or twice.
+    let batch = self::rows(20_000);
+    let whole = cut(&batch, &Limits::default()).unwrap();
+    let of_bytes = Limits {
+        frame_bytes: u64::try_from(bytes(&whole)).unwrap() / 10,
+        ..Limits::default()
+    };
+    let (encodes, pieces) = cost(&batch, &of_bytes);
+    assert!((10..=12).contains(&pieces), "{pieces}");
+    assert!(encodes <= 2 * pieces + 1, "{encodes} for {pieces}");
+    // Rows of very different sizes: a thousand of a byte, then one of sixty thousand, fifty
+    // times over. No piece costs more than a few encodes.
+    let mut texts = Vec::new();
+    for _ in 0..50 {
+        texts.extend(std::iter::repeat_n("x".to_owned(), 1_000));
+        texts.push("y".repeat(60_000));
+    }
+    let skewed = batch_of(Arc::new(StringArray::from(texts)));
+    let of_bytes = Limits {
+        frame_bytes: 64 * 1_024,
+        ..Limits::default()
+    };
+    let (encodes, pieces) = cost(&skewed, &of_bytes);
+    assert!(encodes <= 6 * pieces, "{encodes} for {pieces}");
+}
+
+#[test]
+fn a_refused_row_ends_its_batchs_cut_after_the_pieces_before_it() {
+    let small = rows(10).column(1).clone();
+    let blob: ArrayRef = Arc::new(StringArray::from(vec!["b".repeat(8_192)]));
+    let texts = arrow_select::concat::concat(&[small.as_ref(), blob.as_ref()]).unwrap();
+    let batch = batch_of(texts);
+    let limits = Limits {
+        frame_bytes: 4_096,
+        ..Limits::default()
+    };
+    let mut encoder = Encoder::default();
+    encoder.schema(&batch.schema());
+    let mut cut = Cut::new(batch.clone(), limits);
+    let first = encoder.piece(&mut cut).unwrap().unwrap();
+    assert_eq!(
+        in_order(&batch.slice(0, 10), &received(&batch, &first, limits)),
+        [10]
+    );
+    assert!(!cut.is_done());
+    assert_eq!(refusal(encoder.piece(&mut cut)).field, "frame bytes");
+    assert!(cut.is_done());
+    assert_eq!(encoder.piece(&mut cut).unwrap(), None);
 }
