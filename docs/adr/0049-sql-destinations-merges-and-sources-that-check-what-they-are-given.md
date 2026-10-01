@@ -19,7 +19,7 @@ given:
 - Statements carried text the database or the host supplied: a column's declared type copied
   from the catalog into DDL, and a merge key's columns, whether or not the table held them.
 - SQLite was opened as its defaults leave it: a file readable by whoever the process's mask
-  allowed, a path read as a URI where it looked like one, a schema that could carry triggers and
+  allowed, a path read as a URI where it started with `file:`, a schema that could carry triggers and
   views run with the connection's rights, and double-quoted text taken for a string where no
   column matched.
 - SQLite binds a float that is no number as `NULL` and stores negative zero in a `REAL` column
@@ -69,9 +69,14 @@ given:
     DML, no attached database (`SQLITE_LIMIT_ATTACHED` 0, and none created or written),
     `cell_size_check` on, no memory map, and the write-ahead log cut back to 64 MiB once its
     content is in the database.
-  - The path is a file name: URI names are off. A new database is created for its user alone
-    (0600). One that exists and its group or others can reach is refused as `database_exposed`
-    and not re-moded: tightening it would hide that it had been exposed. SQLite gives its log
+  - The path is a file's name. The bundled SQLite reads a name starting with `file:` as a URI
+    whatever flags it is opened with, and a URI's parameters choose another file, switch its
+    locks off or keep it in memory. A path starting so, in any case, is refused as
+    `database_path_invalid`, and SQLite is handed the path from the root, which starts with a
+    separator: `?`, `%` and `#` in it are characters of the name. A path that ends in no file's
+    name is refused the same way.
+  - A new database is created for its user alone (0600). One that exists and its group or
+    others can reach is refused as `not_private` and not re-moded: tightening it would hide that it had been exposed. SQLite gives its log
     and lock file the database's mode, and whoever can read the lock file can hold every writer
     out, which is why the mode matters to more than readers.
   - A statement waits thirty seconds for another connection's write, then fails as transient. A

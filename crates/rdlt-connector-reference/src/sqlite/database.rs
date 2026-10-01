@@ -17,6 +17,7 @@ use rusqlite::limits::Limit;
 use rusqlite::types::Value;
 use rusqlite::{Connection, ErrorCode, OpenFlags, TransactionBehavior};
 
+use super::location::located;
 use crate::blocking::blocking;
 
 /// One connection to the database, used only on the blocking thread pool.
@@ -53,19 +54,24 @@ impl Database {
 /// A connection to the database at `path`, created when missing and private to its user, in
 /// write-ahead-log mode so readers never wait for a writer, and hardened against a database
 /// file another program wrote.
+///
+/// SQLite is handed the path from the root, which it reads as a file's name and never as a URI.
 pub(super) fn connect(path: &Path) -> Result<Connection> {
     connect_waiting(path, BUSY_WAIT)
 }
 
 /// As [`connect`], each statement waiting `wait` for another connection's write to finish.
 fn connect_waiting(path: &Path, wait: Duration) -> Result<Connection> {
-    private(path)?;
-    // No URI flag: the path names a file, whatever it looks like.
+    let Some(path) = located(path, true)? else {
+        return Err(ConnectorError::internal(
+            "a database asked for was not created",
+        ));
+    };
     let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
         | OpenFlags::SQLITE_OPEN_CREATE
         | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let connection =
-        Connection::open_with_flags(path, flags).map_err(failed("opening the database"))?;
+        Connection::open_with_flags(&path, flags).map_err(failed("opening the database"))?;
     let configuring = failed("configuring the database");
     harden(&connection).map_err(&configuring)?;
     connection.busy_timeout(wait).map_err(&configuring)?;
@@ -98,50 +104,6 @@ fn harden(connection: &Connection) -> rusqlite::Result<()> {
     connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
     connection.pragma_update(None, "cell_size_check", true)?;
     connection.pragma_update_and_check(None, "mmap_size", 0, |_| Ok(()))
-}
-
-/// Creates the database file at `path`, for its user alone, where it is missing, and refuses
-/// one that exists and its group or others can reach: SQLite gives its log and its lock file
-/// the database's mode, and whoever reads the lock file can hold every writer out.
-#[cfg(unix)]
-fn private(path: &Path) -> Result<()> {
-    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-    let unusable = |error: std::io::Error| {
-        ConnectorError::config(format!("opening the database: {error}")).with_source(error)
-    };
-    let created = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path);
-    match created {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let found = std::fs::metadata(path).map_err(unusable)?;
-            if !found.is_file() {
-                return Err(ConnectorError::config(format!(
-                    "{} is not a database file",
-                    path.display()
-                )));
-            }
-            let mode = found.permissions().mode() & 0o777;
-            if mode & 0o077 != 0 {
-                return Err(ConnectorError::config(format!(
-                    "{} has mode {mode:o}: a database is its user's alone, mode 600",
-                    path.display()
-                ))
-                .with_code("database_exposed"));
-            }
-            Ok(())
-        }
-        Err(error) => Err(unusable(error)),
-    }
-}
-
-/// File modes are Unix's: elsewhere the database is created as the system creates files.
-#[cfg(not(unix))]
-fn private(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 /// Runs `statement`; returns the number of rows it changed.

@@ -1,6 +1,7 @@
 //! A transactional destination that writes to a SQLite database file, through `sqlgen`.
 
 mod database;
+mod location;
 mod session;
 #[cfg(test)]
 mod tests;
@@ -54,6 +55,8 @@ impl DestinationConnector for SqliteDestination {
     }
 
     async fn connect(config: SqliteDestinationConfig, _context: &ConnectContext) -> Result<Self> {
+        // A path SQLite would read as a URI is refused before anything is opened.
+        location::named(&config.path)?;
         Ok(Self {
             path: config.path,
             planner: Arc::new(SqlPlanner::try_new(Sqlite)?),
