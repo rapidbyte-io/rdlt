@@ -28,7 +28,7 @@ data is replayed from the source.
   - **M5e**, history (SCD2) and `D-HIST`. Amended 2026-09-30: ADR 0035 leaves history for
     normalized streams and updates leaving columns unchanged to M5e2.
   - **M5f**, the failpoint sweep, the kill matrix with spawned connectors, and M5's exit
-    criterion.
+    criterion (ADR 0036).
 - **The WAL has one store, `LocalWal`** (owner, 2026-09-28). §15.6's `ObjectStoreWal` is dropped:
   a worker that loses its disk replays from the source, which every replayable source can do. A
   non-replayable source still needs the WAL, and a stateless worker reading one keeps its WAL on
