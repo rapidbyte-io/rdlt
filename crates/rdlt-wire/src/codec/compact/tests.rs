@@ -6,6 +6,7 @@ use arrow_array::RecordBatch;
 use super::compacted;
 use crate::codec::count::{Counted, counted};
 use crate::codec::tests::frames::sent;
+use crate::codec::tests::odd;
 use crate::codec::tests::samples::{self, ROWS, batch_of};
 use crate::limits::Limits;
 
@@ -56,5 +57,39 @@ proptest! {
         let compact = compacted(&part).unwrap();
         prop_assert_eq!(counted(&compact), walked(&compact));
         prop_assert_eq!(compact, part);
+    }
+}
+
+#[test]
+fn every_part_of_every_odd_column_compacts_to_the_same_rows_of_the_same_type() {
+    for (name, column) in odd::columns() {
+        let batch = batch_of(column);
+        let rows = odd::rendered(&batch);
+        for start in 0..=batch.num_rows() {
+            for length in 0..=batch.num_rows() - start {
+                let part = batch.slice(start, length);
+                let compact = match compacted(&part) {
+                    Ok(compact) => compact,
+                    Err(error) => panic!("{name} {start}+{length}: {error}"),
+                };
+                assert_eq!(compact.schema(), part.schema(), "{name} {start}+{length}");
+                assert_eq!(
+                    odd::rendered(&compact),
+                    rows[start..start + length],
+                    "{name} {start}+{length}"
+                );
+                // The rows cross the wire as they were.
+                let (mut decoder, frames) = sent(&compact, Limits::default());
+                let mut crossed = None;
+                for frame in &frames {
+                    crossed = decoder.frame(frame).unwrap();
+                }
+                assert_eq!(
+                    odd::rendered(&crossed.unwrap()),
+                    rows[start..start + length],
+                    "{name} {start}+{length}"
+                );
+            }
+        }
     }
 }
