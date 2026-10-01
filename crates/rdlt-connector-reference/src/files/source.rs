@@ -1,5 +1,6 @@
 //! A source that reads JSON lines and Arrow IPC files under a root directory.
 
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::num::{NonZeroU64, NonZeroUsize};
@@ -135,7 +136,10 @@ impl SourceConnector for FilesSource {
 /// The streams under `root`, in name order.
 fn discover(root: &Dir) -> Result<Vec<FileStream>> {
     let mut streams = Vec::new();
+    // The entry each stream was found in: two entries are never read as one stream.
+    let mut found = BTreeMap::<String, String>::new();
     for (entry, kind) in entries(root)? {
+        let named = entry.clone();
         let (stream, dir, files) = match kind {
             Kind::Dir => {
                 let listed = root
@@ -167,6 +171,9 @@ fn discover(root: &Dir) -> Result<Vec<FileStream>> {
             continue;
         };
         if !files.is_empty() {
+            if let Some(first) = found.insert(stream.clone(), named.clone()) {
+                return Err(duplicate(&stream, &first, &named));
+            }
             streams.push(FileStream {
                 name,
                 dir,
@@ -175,6 +182,17 @@ fn discover(root: &Dir) -> Result<Vec<FileStream>> {
         }
     }
     Ok(streams)
+}
+
+/// The code of two entries of a root that name the same stream.
+const DUPLICATE_STREAM: &str = "duplicate_stream";
+
+/// The error of the entries `first` and `second` both naming the stream `stream`.
+fn duplicate(stream: &str, first: &str, second: &str) -> ConnectorError {
+    ConnectorError::config(format!(
+        "the entries {first:?} and {second:?} both name the stream {stream:?}: keep one of them"
+    ))
+    .with_code(DUPLICATE_STREAM)
 }
 
 /// The file `name` as a partition, if its extension is a format's and its name a partition's.
