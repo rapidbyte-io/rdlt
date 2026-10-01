@@ -52,7 +52,8 @@ pub(crate) const CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 /// Rows: bounds one batch read back from a JSON lines file of the files destination.
 pub(crate) const READ_BATCH_ROWS: usize = 1024;
 
-/// Bytes: the size from which a published file of an append table is merged with no other.
+/// Bytes: the most a merge of an append table's files reads into one file; files that would
+/// together be larger are merged with no other.
 pub(crate) const COMPACT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Directories: how deep beneath the directory it starts at a tree is entered to remove it or

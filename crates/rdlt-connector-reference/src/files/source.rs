@@ -65,6 +65,10 @@ const LINE_ENDING: u64 = 2;
 /// records are pushed as JSON, as they are written, for the engine to type; an Arrow file's
 /// batches are pushed as written. Every push is followed by a checkpoint, so a read resumes
 /// after the last committed push.
+///
+/// The root and every stream's directory must belong to the user the source runs as and be
+/// writable by no other: a directory another user owns is refused even where this user may
+/// only read it, and two entries that name one stream are refused by both names.
 #[derive(Debug)]
 pub struct FilesSource {
     root: Arc<Dir>,
