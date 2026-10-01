@@ -50,8 +50,13 @@ impl SqlDialect for Sqlite {
     }
 
     fn columns(&self, table: &str) -> Statement {
+        // Only a table the schema holds has columns: the pragma alone would also answer for the
+        // virtual tables SQLite has without anyone creating them.
         Statement {
-            sql: "SELECT name, type FROM pragma_table_info(?1) ORDER BY cid".to_owned(),
+            sql: "SELECT _rdlt_c.name, _rdlt_c.type FROM sqlite_schema _rdlt_t, \
+                  pragma_table_info(_rdlt_t.name) _rdlt_c WHERE _rdlt_t.type = 'table' AND \
+                  _rdlt_t.name = ?1 ORDER BY _rdlt_c.cid"
+                .to_owned(),
             params: vec![SqlValue::Text(table.to_owned())],
         }
     }

@@ -7,16 +7,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::limits::{BUSY_WAIT, JOURNAL_BYTES};
+
 use parking_lot::Mutex;
 use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Statement};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
+use rusqlite::config::DbConfig;
+use rusqlite::limits::Limit;
 use rusqlite::types::Value;
-use rusqlite::{Connection, ErrorCode, TransactionBehavior};
+use rusqlite::{Connection, ErrorCode, OpenFlags, TransactionBehavior};
 
 use crate::blocking::blocking;
-
-/// How long a statement waits for another connection's write to finish.
-const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One connection to the database, used only on the blocking thread pool.
 #[derive(Clone, Debug)]
@@ -49,17 +50,98 @@ impl Database {
     }
 }
 
-/// A connection to the database at `path`, created when missing, in write-ahead-log mode so
-/// readers never wait for a writer.
+/// A connection to the database at `path`, created when missing and private to its user, in
+/// write-ahead-log mode so readers never wait for a writer, and hardened against a database
+/// file another program wrote.
 pub(super) fn connect(path: &Path) -> Result<Connection> {
-    let connection = Connection::open(path).map_err(failed("opening the database"))?;
-    connection
-        .busy_timeout(BUSY_TIMEOUT)
-        .map_err(failed("configuring the database"))?;
+    connect_waiting(path, BUSY_WAIT)
+}
+
+/// As [`connect`], each statement waiting `wait` for another connection's write to finish.
+fn connect_waiting(path: &Path, wait: Duration) -> Result<Connection> {
+    private(path)?;
+    // No URI flag: the path names a file, whatever it looks like.
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_CREATE
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection =
+        Connection::open_with_flags(path, flags).map_err(failed("opening the database"))?;
+    let configuring = failed("configuring the database");
+    harden(&connection).map_err(&configuring)?;
+    connection.busy_timeout(wait).map_err(&configuring)?;
     connection
         .pragma_update(None, "journal_mode", "WAL")
-        .map_err(failed("configuring the database"))?;
+        .map_err(&configuring)?;
+    let journal = i64::try_from(JOURNAL_BYTES).unwrap_or(i64::MAX);
+    connection
+        .pragma_update_and_check(None, "journal_size_limit", journal, |_| Ok(()))
+        .map_err(&configuring)?;
     Ok(connection)
+}
+
+/// Sets `connection` to trust nothing its database file holds beyond tables and their rows:
+/// the schema cannot be written as rows, nothing a schema names runs with the connection's
+/// rights, a double-quoted name is an identifier or an error, no other database attaches, and
+/// every page read is checked.
+fn harden(connection: &Connection) -> rusqlite::Result<()> {
+    let settings = [
+        (DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true),
+        (DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false),
+        (DbConfig::SQLITE_DBCONFIG_DQS_DML, false),
+        (DbConfig::SQLITE_DBCONFIG_DQS_DDL, false),
+        (DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE, false),
+        (DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE, false),
+    ];
+    for (setting, on) in settings {
+        connection.set_db_config(setting, on)?;
+    }
+    connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    connection.pragma_update(None, "cell_size_check", true)?;
+    connection.pragma_update_and_check(None, "mmap_size", 0, |_| Ok(()))
+}
+
+/// Creates the database file at `path`, for its user alone, where it is missing, and refuses
+/// one that exists and its group or others can reach: SQLite gives its log and its lock file
+/// the database's mode, and whoever reads the lock file can hold every writer out.
+#[cfg(unix)]
+fn private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+    let unusable = |error: std::io::Error| {
+        ConnectorError::config(format!("opening the database: {error}")).with_source(error)
+    };
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path);
+    match created {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let found = std::fs::metadata(path).map_err(unusable)?;
+            if !found.is_file() {
+                return Err(ConnectorError::config(format!(
+                    "{} is not a database file",
+                    path.display()
+                )));
+            }
+            let mode = found.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                return Err(ConnectorError::config(format!(
+                    "{} has mode {mode:o}: a database is its user's alone, mode 600",
+                    path.display()
+                ))
+                .with_code("database_exposed"));
+            }
+            Ok(())
+        }
+        Err(error) => Err(unusable(error)),
+    }
+}
+
+/// File modes are Unix's: elsewhere the database is created as the system creates files.
+#[cfg(not(unix))]
+fn private(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 /// Runs `statement`; returns the number of rows it changed.
@@ -143,12 +225,14 @@ fn value(value: &SqlValue) -> Value {
     }
 }
 
-/// Classifies a SQLite error from `what`: contention is transient, an unusable file is a
-/// configuration error, a refused value is a data error, and anything else a bug.
+/// Classifies a SQLite error from `what`: contention is transient, and so is a full disk, coded
+/// `disk_full`, which may have room again; an unusable file is a configuration error, a refused
+/// value is a data error, and anything else a bug.
 pub(super) fn failed(what: &'static str) -> impl Fn(rusqlite::Error) -> ConnectorError {
     move |error| {
-        let kind = match error.sqlite_error_code() {
-            Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
+        let code = error.sqlite_error_code();
+        let kind = match code {
+            Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked | ErrorCode::DiskFull) => {
                 ConnectorErrorKind::Transient
             }
             Some(
@@ -162,6 +246,10 @@ pub(super) fn failed(what: &'static str) -> impl Fn(rusqlite::Error) -> Connecto
             }
             _ => ConnectorErrorKind::Internal,
         };
-        ConnectorError::new(kind, format!("{what}: {error}")).with_source(error)
+        let failed = ConnectorError::new(kind, format!("{what}: {error}")).with_source(error);
+        match code {
+            Some(ErrorCode::DiskFull) => failed.with_code("disk_full"),
+            _ => failed,
+        }
     }
 }
