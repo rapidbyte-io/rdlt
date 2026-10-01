@@ -631,3 +631,37 @@ fn a_dictionary_is_bounded_by_the_values_of_a_frame_not_the_rows_of_a_batch() {
         ("batch values", 99, 100)
     );
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    #[test]
+    fn a_part_of_a_drawn_batch_is_cut_and_sent_again_on_the_same_encoder(
+        drawn in values::drawn(),
+        (start, rows, most_rows) in (0_usize..6, 0_usize..8, 1_u64..4),
+    ) {
+        let whole = crate::codec::tests::batch(&drawn);
+        let start = start.min(whole.num_rows());
+        let batch = whole.slice(start, rows.min(whole.num_rows() - start));
+        let limits = Limits {
+            batch_rows: most_rows,
+            ..Limits::default()
+        };
+        let mut encoder = Encoder::default();
+        let mut decoder = Decoder::new(limits);
+        decoder.schema(&encoder.schema(&batch.schema()).unwrap()).unwrap();
+        let mut sent = Vec::new();
+        for _ in 0..2 {
+            let frames = stepped(&mut encoder, &batch, &limits).unwrap();
+            let decoded = frames.iter().map(|frame| decoder.frame(frame).unwrap());
+            let pieces: Vec<_> = decoded.flatten().collect();
+            in_order(&batch, &pieces);
+            // Every piece but the last is as many rows as the receiver takes.
+            let full = usize::try_from(most_rows).unwrap();
+            prop_assert!(pieces.iter().rev().skip(1).all(|piece| piece.num_rows() == full));
+            sent.push(bytes(&frames));
+        }
+        // The second time, the dictionaries the first sent are not sent again.
+        prop_assert!(sent[1] <= sent[0]);
+    }
+}
