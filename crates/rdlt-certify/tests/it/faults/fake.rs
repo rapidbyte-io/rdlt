@@ -30,6 +30,9 @@ pub(crate) enum Fault {
     MistypedVersion,
     /// It answers its handshake without its limits.
     Limitless,
+    /// It declares a limit of one row a batch, below the protocol's minimum: no host connects
+    /// to it, so no clause passes.
+    FewRows,
     /// It answers calls before its handshake or configuration, and a second handshake or
     /// configuration.
     Unordered,
@@ -228,6 +231,7 @@ impl Connector for Fake {
             config_bytes,
             cursor_bytes,
             frame_bytes: FRAME_BYTES,
+            batch_rows: u64::from(!self.keeps(Fault::FewRows)),
             ..rdlt_wire::Limits::default().into()
         };
         Ok(Response::new(v1::HandshakeResponse {

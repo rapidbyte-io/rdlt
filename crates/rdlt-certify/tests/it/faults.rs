@@ -52,6 +52,17 @@ async fn each_protocol_clause_fails_a_connector_that_breaks_it_and_only_that() {
 }
 
 #[tokio::test]
+async fn a_connector_declaring_a_limit_below_the_protocols_minimum_is_not_certified() {
+    let target = Target::connected(|| Box::pin(async { served(Fault::FewRows) }));
+    let report = certify_source(&target, serde_json::json!({})).await;
+    assert!(!report.passed(), "{report}");
+    assert!(
+        matches!(report.outcome("P-HANDSHAKE"), Some(Outcome::Failed(_))),
+        "{report}"
+    );
+}
+
+#[tokio::test]
 async fn limits_beyond_any_this_host_sends_are_not_exceeded() {
     let target =
         Target::connected(|| Box::pin(async { served(Fault::Vast) })).credit_watch(crate::BRIEF);
