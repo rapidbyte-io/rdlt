@@ -10,7 +10,7 @@ use rdlt_connector::{DecimalType, Field, LogicalType, TableSchema};
 
 use super::differential::shredded;
 use super::reference::Code;
-use super::{Records, chunks, parse, shred};
+use super::{chunks, parse, shred};
 use crate::compute::RayonPool;
 
 /// The batch `pushes` shred into, in chunks of `chunk_bytes`.
@@ -549,8 +549,8 @@ fn rows_repeating_their_keys_order_find_every_key_without_a_search() {
     let lines: Vec<String> = (0..100)
         .map(|n| format!(r#"{{"a":{n},"b":"x","c":{{"d":{n}}}}}"#))
         .collect();
-    let records = Records::of(Bytes::from(lines.join("\n"))).unwrap();
-    let parsed = parse(chunks(&[records], 1 << 20).remove(0)).unwrap();
+    let records = Bytes::from(lines.join("\n"));
+    let parsed = parse(chunks(&[records], 1 << 20).unwrap().remove(0)).unwrap();
     // Only the first row searches, for the keys it adds.
     assert_eq!(parsed.record.searches(), 3);
 }
@@ -586,8 +586,8 @@ fn every_kind_keeps_its_type_across_chunks() {
 #[test]
 fn only_a_chunk_whose_columns_stopped_building_is_parsed_again() {
     let parsed = |text: &str| {
-        let records = Records::of(Bytes::from(text.to_owned())).unwrap();
-        parse(chunks(&[records], 1 << 20).remove(0)).unwrap()
+        let records = Bytes::from(text.to_owned());
+        parse(chunks(&[records], 1 << 20).unwrap().remove(0)).unwrap()
     };
     assert!(!parsed("{\"a\":1}\n{\"a\":2.5}\n{\"b\":[1]}").spoiled);
     assert!(parsed("{\"a\":1}\n{\"a\":\"x\"}").spoiled);
@@ -702,8 +702,10 @@ fn cells_are_bounded_at_the_limit() {
 #[test]
 fn only_columns_holding_values_count_toward_the_cells() {
     let shape = |text: &str| {
-        let records = Records::of(Bytes::from(text.to_owned())).unwrap();
-        parse(chunks(&[records], 1 << 20).remove(0)).unwrap().shape
+        let records = Bytes::from(text.to_owned());
+        parse(chunks(&[records], 1 << 20).unwrap().remove(0))
+            .unwrap()
+            .shape
     };
     assert_eq!(
         shape(r#"{"a":1,"b":null,"c":{"d":"x","e":null},"l":[true],"x":{}}"#).leaves(),
@@ -718,8 +720,8 @@ fn only_columns_holding_values_count_toward_the_cells() {
 #[test]
 fn chunks_that_lack_columns_or_hold_them_in_another_order_are_fitted_without_parsing_again() {
     let parsed = |text: &str| {
-        let records = Records::of(Bytes::from(text.to_owned())).unwrap();
-        parse(chunks(&[records], 1 << 20).remove(0)).unwrap()
+        let records = Bytes::from(text.to_owned());
+        parse(chunks(&[records], 1 << 20).unwrap().remove(0)).unwrap()
     };
     let chunks = [
         parsed(r#"{"a":1,"o":{"x":1}}"#),

@@ -1,7 +1,7 @@
 //! JSON shredding: pushes of JSON records become Arrow batches, on the compute pool.
 //!
-//! Each push of a coalesced unit is split into its records on the pool, and the records are
-//! grouped into chunks. Each chunk is parsed on the pool, its values observed and, speculatively, built into columns typed by what the chunk
+//! The pushes of a coalesced unit are scanned on the pool for where their records lie, grouped
+//! into chunks. Each chunk is parsed on the pool, its values observed and, speculatively, built into columns typed by what the chunk
 //! held. The observations are joined in push order into one shape; a chunk whose own shape is
 //! that shape keeps its columns, and any other is parsed again and built against it, on the
 //! pool. The join is the same whatever the order chunks finish in, so the batches are too.
@@ -12,6 +12,7 @@ mod conform;
 mod differential;
 mod exact;
 mod observe;
+mod records;
 #[cfg(test)]
 mod reference;
 mod render;
@@ -19,7 +20,6 @@ mod render;
 mod tests;
 mod visit;
 
-use std::ops::Range;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -32,6 +32,7 @@ use crate::compute::{ComputePool, run_all};
 
 use build::Record;
 use observe::Shape;
+use records::{Chunk, chunks};
 use visit::{Context, Row};
 
 /// Why a JSON push cannot be shredded.
@@ -79,184 +80,6 @@ impl ShredError {
             Self::Internal(_) => "shred_internal",
         }
     }
-}
-
-/// A JSON push and where each of its records lies in it.
-#[derive(Clone, Debug)]
-struct Records {
-    push: Bytes,
-    ranges: Vec<Range<usize>>,
-}
-
-impl Records {
-    /// The records of `push`: a JSON array of objects, or objects on their own lines, blank lines
-    /// skipped.
-    ///
-    /// Each record is checked when it is parsed.
-    fn of(push: Bytes) -> Result<Self, ShredError> {
-        let ranges = records(&push)?;
-        Ok(Self { push, ranges })
-    }
-}
-
-/// Whole records of some pushes: where each lies in its push.
-struct Chunk {
-    parts: Vec<(Bytes, Vec<Range<usize>>)>,
-    rows: usize,
-    /// How many records of the pushes come before the chunk's first.
-    before: usize,
-}
-
-impl Chunk {
-    /// The records, in order.
-    fn records(&self) -> impl Iterator<Item = &[u8]> {
-        self.parts
-            .iter()
-            .flat_map(|(push, records)| records.iter().map(|record| &push[record.clone()]))
-    }
-}
-
-/// The records of `pushes`, grouped into chunks of about `chunk_bytes` each.
-fn chunks(pushes: &[Records], chunk_bytes: usize) -> Vec<Chunk> {
-    let mut chunks = Vec::new();
-    let mut chunk = Chunk {
-        parts: Vec::new(),
-        rows: 0,
-        before: 0,
-    };
-    let mut size = 0;
-    for push in pushes {
-        let mut records = Vec::new();
-        for record in &push.ranges {
-            size += record.len();
-            records.push(record.clone());
-            if size >= chunk_bytes {
-                chunk.rows += records.len();
-                chunk
-                    .parts
-                    .push((push.push.clone(), std::mem::take(&mut records)));
-                let before = chunk.before + chunk.rows;
-                chunks.push(std::mem::replace(
-                    &mut chunk,
-                    Chunk {
-                        parts: Vec::new(),
-                        rows: 0,
-                        before,
-                    },
-                ));
-                size = 0;
-            }
-        }
-        if !records.is_empty() {
-            chunk.rows += records.len();
-            chunk.parts.push((push.push.clone(), records));
-        }
-    }
-    if chunk.rows > 0 {
-        chunks.push(chunk);
-    }
-    chunks
-}
-
-/// Where each record of `push` lies in it.
-fn records(push: &[u8]) -> Result<Vec<Range<usize>>, ShredError> {
-    let Some(first) = push.iter().position(|byte| !json_whitespace(*byte)) else {
-        return Ok(Vec::new());
-    };
-    if push[first] == b'[' {
-        return elements(push, first);
-    }
-    let base = push.as_ptr() as usize;
-    let mut records = Vec::new();
-    let mut start = 0;
-    // Each line but the first starts with the line end before it, which trimming drops.
-    for end in memchr::memchr_iter(b'\n', push).chain(std::iter::once(push.len())) {
-        let trimmed = trim(&push[start..end]);
-        if !trimmed.is_empty() {
-            let offset = trimmed.as_ptr() as usize - base;
-            records.push(offset..offset + trimmed.len());
-        }
-        start = end;
-    }
-    Ok(records)
-}
-
-/// Where each element of the JSON array opening at `open` in `push` lies, found without
-/// recursing however deep the elements nest; each element is parsed, and so checked, later.
-fn elements(push: &[u8], open: usize) -> Result<Vec<Range<usize>>, ShredError> {
-    let invalid = |what: &str| ShredError::Invalid(format!("the push is not a JSON array: {what}"));
-    let mut elements = Vec::new();
-    let mut start = open + 1;
-    let mut depth = 0_usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut close = None;
-    for (index, &byte) in push.iter().enumerate().skip(open + 1) {
-        if in_string {
-            match byte {
-                _ if escaped => escaped = false,
-                b'\\' => escaped = true,
-                b'"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'[' | b'{' => depth += 1,
-            b']' if depth == 0 => {
-                close = Some(index);
-                break;
-            }
-            b']' | b'}' => {
-                depth = depth
-                    .checked_sub(1)
-                    .ok_or_else(|| invalid("unbalanced brackets"))?;
-            }
-            b',' if depth == 0 => {
-                elements
-                    .push(element(push, start..index).ok_or_else(|| invalid("an empty element"))?);
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    let close = close.ok_or_else(|| invalid("it does not end"))?;
-    match element(push, start..close) {
-        Some(last) => elements.push(last),
-        None if !elements.is_empty() => return Err(invalid("an empty element")),
-        None => {}
-    }
-    if !trim(&push[close + 1..]).is_empty() {
-        return Err(invalid("more follows it"));
-    }
-    Ok(elements)
-}
-
-/// The range `range` of `push` without its surrounding whitespace, unless nothing is left.
-fn element(push: &[u8], range: Range<usize>) -> Option<Range<usize>> {
-    let bytes = &push[range.clone()];
-    let trimmed = trim(bytes);
-    let start = range.start + (trimmed.as_ptr() as usize - bytes.as_ptr() as usize);
-    (!trimmed.is_empty()).then(|| start..start + trimmed.len())
-}
-
-/// Whether `byte` is whitespace in JSON: a space, tab, line feed or carriage return.
-fn json_whitespace(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
-}
-
-/// `bytes` without the JSON whitespace around them.
-fn trim(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !json_whitespace(*byte))
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !json_whitespace(*byte))
-        .map_or(start, |last| last + 1);
-    &bytes[start..end]
 }
 
 /// One chunk, parsed, with the columns built from it and the shape its values were observed to
@@ -423,14 +246,13 @@ pub(crate) async fn shred(
     pushes: &[Bytes],
     chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, ShredError> {
-    let records: Vec<Records> = run_all(
-        pool,
-        pushes.iter().cloned().map(|push| move || Records::of(push)),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<_, _>>()?;
-    let chunks = chunks(&records, chunk_bytes);
+    let scanned = pushes.to_vec();
+    let chunks = run_all(pool, [move || chunks(&scanned, chunk_bytes)])
+        .await
+        .pop()
+        .ok_or_else(|| {
+            ShredError::Internal("the scan of the pushes returned nothing".to_owned())
+        })??;
     let parsed: Vec<Parsed> = run_all(
         pool,
         chunks.into_iter().map(|chunk| move || job(|| parse(chunk))),

@@ -308,3 +308,33 @@ async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
     let grown = held.load(Ordering::SeqCst);
     assert!(grown < 1 << 20, "the signals held {grown} bytes");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_push_of_very_many_small_records_loads_within_the_budget() {
+    const BUDGET: u64 = 16 << 20;
+    const RECORDS: usize = 2_000_000;
+    // Two million records of nine bytes each: a range a record would take twice the push.
+    let steps = Arc::new(|step: usize| {
+        (step < 1).then(|| Step::Json("{\"a\":1}\n".repeat(RECORDS).into()))
+    });
+    let source = making("budget_records", steps).await;
+    let config = commit_every(10_000_000).memory(BUDGET).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(
+            pipeline("records", [stream("events")]),
+            source,
+            null().await,
+        )
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 2_000_000);
+    assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+}
