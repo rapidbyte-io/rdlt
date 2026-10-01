@@ -15,14 +15,18 @@ use rdlt_connector::{
 use rdlt_connector_reference::{MemoryDestination, published};
 use serde_json::json;
 
-async fn store(name: &str) -> Box<dyn Destination> {
+pub(super) async fn store(name: &str) -> Box<dyn Destination> {
     destination_factory::<MemoryDestination>()
         .connect(json!({ "store": name }), ConnectContext::new())
         .await
         .expect("the memory destination connects")
 }
 
-async fn open(destination: &dyn Destination, pipeline: &str, load: u128) -> OpenedSession {
+pub(super) async fn open(
+    destination: &dyn Destination,
+    pipeline: &str,
+    load: u128,
+) -> OpenedSession {
     let context = OpenContext {
         pipeline: PipelineId::parse(pipeline).expect("a valid pipeline id"),
         load_id: LoadId::from_parts(UNIX_EPOCH, load),
@@ -31,7 +35,7 @@ async fn open(destination: &dyn Destination, pipeline: &str, load: u128) -> Open
 }
 
 /// The table `name` at the path `path`, merging by `key` where one is given.
-fn table(name: &str, path: &str, key: Option<&str>) -> TableRef {
+pub(super) fn table(name: &str, path: &str, key: Option<&str>) -> TableRef {
     TableRef {
         path: TablePath::new([path]).expect("a valid table path"),
         name: name.into(),
@@ -64,7 +68,12 @@ fn rows(ids: &[i64]) -> RecordBatch {
     .expect("a valid batch")
 }
 
-async fn stage(session: &mut OpenedSession, table: &TableRef, segment: u64, ids: &[i64]) {
+pub(super) async fn stage(
+    session: &mut OpenedSession,
+    table: &TableRef,
+    segment: u64,
+    ids: &[i64],
+) {
     let create = TableChange::Create {
         table: table.clone(),
         schema: TableSchema::from_arrow(&rows(ids).schema()).expect("a schema"),
@@ -82,7 +91,7 @@ async fn stage(session: &mut OpenedSession, table: &TableRef, segment: u64, ids:
     writer.flush().await.expect("the flush stages");
 }
 
-fn meta(session: &OpenedSession, load: u128, seq: u64, segments: &[u64]) -> CommitMeta {
+pub(super) fn meta(session: &OpenedSession, load: u128, seq: u64, segments: &[u64]) -> CommitMeta {
     let mut commit_seq = CommitSeq::FIRST;
     for _ in 1..seq {
         commit_seq = commit_seq.next();
@@ -99,7 +108,7 @@ fn meta(session: &OpenedSession, load: u128, seq: u64, segments: &[u64]) -> Comm
     }
 }
 
-fn ids(store: &str, table: &str) -> Vec<i64> {
+pub(super) fn ids(store: &str, table: &str) -> Vec<i64> {
     let mut ids: Vec<i64> = published(store, table)
         .iter()
         .flat_map(|batch| {
@@ -115,7 +124,7 @@ fn ids(store: &str, table: &str) -> Vec<i64> {
     ids
 }
 
-fn refusal<T: std::fmt::Debug>(
+pub(super) fn refusal<T: std::fmt::Debug>(
     outcome: Result<T, ConnectorError>,
 ) -> (ConnectorErrorKind, Option<String>) {
     let error = outcome.expect_err("the call is refused");
@@ -261,7 +270,7 @@ async fn a_generation_finished_for_a_table_dropped_since_creates_nothing() {
         .await
         .expect("the commit lands");
     assert!(rdlt_connector_reference::tables("owned-finished").is_empty());
-    // A table another pipeline creates since is not the one the path named either.
+    // A table another pipeline creates since is not what the path named either.
     let mut other = open(destination.as_ref(), "b", 2).await;
     stage(&mut other, &orders, 1, &[5]).await;
     other
