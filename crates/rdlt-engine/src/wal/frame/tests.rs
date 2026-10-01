@@ -309,3 +309,29 @@ fn a_batch_whose_buffers_share_bytes_is_refused_whatever_its_size() {
     shared[at..at + 8].copy_from_slice(&0_i64.to_le_bytes());
     assert!(super::arrow::decode(&shared).is_err());
 }
+
+#[test]
+fn a_batch_of_empty_lists_of_runs_reads_back_as_the_engine_logged_it() {
+    use arrow_array::types::Int32Type;
+    use arrow_array::{Int32Array, ListArray, RunArray};
+    use arrow_buffer::OffsetBuffer;
+    // Arrow's writer describes a run ending at zero for the lists' unused items, which its own
+    // reader refuses; the log must still replay.
+    let runs = RunArray::<Int32Type>::try_new(&vec![2, 5].into(), &Int32Array::from(vec![7, 8]))
+        .expect("runs");
+    let item = Arc::new(arrow_schema::Field::new(
+        "item",
+        arrow_array::Array::data_type(&runs).clone(),
+        true,
+    ));
+    let lists = ListArray::new(
+        item,
+        OffsetBuffer::from_lengths([0, 0, 0]),
+        Arc::new(runs),
+        None,
+    );
+    let batch = RecordBatch::try_from_iter([("l", Arc::new(lists) as arrow_array::ArrayRef)])
+        .expect("a batch of empty lists");
+    let (frame, read) = round_trip(batch);
+    assert_eq!(read, [frame]);
+}

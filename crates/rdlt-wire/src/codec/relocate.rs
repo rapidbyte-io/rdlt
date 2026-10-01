@@ -7,7 +7,7 @@ mod tests;
 use arrow_buffer::{Buffer, MutableBuffer};
 use arrow_ipc::RecordBatch;
 
-use super::shape::Placed;
+use super::shape::{Placed, Walked};
 
 /// A frame's buffers in an allocation of their own, and the message describing them there.
 pub(super) struct Relocated {
@@ -23,8 +23,9 @@ impl Relocated {
     }
 }
 
-/// Copies `placed`, the buffers `batch` describes in order, into one allocation.
-pub(super) fn relocated(batch: RecordBatch<'_>, placed: &[Placed<'_>]) -> Relocated {
+/// Copies `walked`'s buffers, those `batch` describes in order, into one allocation.
+pub(super) fn relocated(batch: RecordBatch<'_>, walked: &Walked<'_>) -> Relocated {
+    let placed = &walked.placed;
     let end = |end: usize, buffer: &Placed<'_>| {
         let start = end.next_multiple_of(buffer.alignment);
         (start, start.saturating_add(buffer.bytes.len()))
@@ -39,13 +40,12 @@ pub(super) fn relocated(batch: RecordBatch<'_>, placed: &[Placed<'_>]) -> Reloca
         buffers.push(arrow_ipc::Buffer::new(int(start), int(buffer.bytes.len())));
     }
     let mut fbb = flatbuffers::FlatBufferBuilder::new();
-    let nodes: Vec<_> = batch.nodes().unwrap_or_default().iter().copied().collect();
     let variadic: Vec<_> = batch
         .variadicBufferCounts()
         .unwrap_or_default()
         .iter()
         .collect();
-    let nodes = fbb.create_vector(&nodes);
+    let nodes = fbb.create_vector(&walked.nodes);
     let buffers = fbb.create_vector(&buffers);
     let variadic = fbb.create_vector(&variadic);
     let mut rebuilt = arrow_ipc::RecordBatchBuilder::new(&mut fbb);

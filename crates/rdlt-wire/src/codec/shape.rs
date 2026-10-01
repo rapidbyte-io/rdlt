@@ -35,9 +35,12 @@ pub(super) struct Placed<'a> {
     pub(super) alignment: usize,
 }
 
-/// A frame's buffers in order, and what it holds.
+/// A frame's nodes and buffers in order, and what it holds.
 pub(super) struct Walked<'a> {
-    /// Every buffer the frame describes.
+    /// Every node the frame describes, as Arrow is to read it: those under a run-end column of
+    /// no values hold none.
+    pub(super) nodes: Vec<FieldNode>,
+    /// Every buffer the frame describes; those under a run-end column of no values are empty.
     pub(super) placed: Vec<Placed<'a>>,
     /// The values its nodes and list views declare.
     pub(super) values: u64,
@@ -65,8 +68,9 @@ pub(super) fn walk<'a, 't>(
         nodes: batch.nodes().unwrap_or_default().iter(),
         buffers: batch.buffers().unwrap_or_default().iter(),
         variadic: batch.variadicBufferCounts().unwrap_or_default().iter(),
-        node: 0,
+        unread: 0,
         end: 0,
+        read: Vec::new(),
         placed: Vec::new(),
         values: 0,
         view_bytes: 0,
@@ -83,6 +87,7 @@ pub(super) fn walk<'a, 't>(
         return Err(WireError::malformed(frame, Problem::Unused { part }));
     }
     Ok(Walked {
+        nodes: walk.read,
         placed: walk.placed,
         values: walk.values,
         view_bytes: walk.view_bytes,
@@ -104,10 +109,13 @@ struct Walk<'a, 'm, 'l> {
     nodes: VectorIter<'m, FieldNode>,
     buffers: VectorIter<'m, Buffer>,
     variadic: VectorIter<'m, i64>,
-    /// The next node's position.
-    node: usize,
+    /// How many run-end columns of no values the walk is under: Arrow's writer describes a run
+    /// ending at zero there, which its reader refuses, so what they hold is not read.
+    unread: usize,
     /// Where the last buffer ended.
     end: u64,
+    /// The nodes so far, as Arrow is to read them.
+    read: Vec<FieldNode>,
     placed: Vec<Placed<'a>>,
     values: u64,
     view_bytes: u64,
@@ -130,11 +138,15 @@ impl<'a> Walk<'a, '_, '_> {
 
     /// The next node, its values counted.
     fn node(&mut self) -> Result<Node, WireError> {
-        let index = self.node;
+        let index = self.read.len();
         let Some(node) = self.nodes.next() else {
             return Err(self.malformed(Problem::Missing { part: Part::Node }));
         };
-        self.node += 1;
+        self.read.push(if self.unread == 0 {
+            *node
+        } else {
+            FieldNode::new(0, 0)
+        });
         let (length, nulls) = (node.length(), node.null_count());
         let counted = u64::try_from(length)
             .ok()
@@ -191,7 +203,11 @@ impl<'a> Walk<'a, '_, '_> {
             }));
         }
         self.end = offset.saturating_add(length);
-        self.placed.push(Placed { bytes, alignment });
+        let kept = if self.unread == 0 { bytes } else { &[] };
+        self.placed.push(Placed {
+            bytes: kept,
+            alignment,
+        });
         Ok(bytes)
     }
 
@@ -270,7 +286,12 @@ impl<'a> Walk<'a, '_, '_> {
                 }
                 self.columns(fields.iter().map(|(_, field)| field.data_type()))?;
             }
-            Layout::RunEnd { ends, values } => self.columns([ends, values])?,
+            Layout::RunEnd { ends, values } => {
+                let empty = usize::from(node.length == 0);
+                self.unread += empty;
+                self.columns([ends, values])?;
+                self.unread -= empty;
+            }
         }
         Ok(node.length)
     }
