@@ -306,19 +306,17 @@ impl<'a> Writer<'a> {
     }
 
     /// Writes `batch` to an Arrow file as batches a reader accepts, each checked against every
-    /// limit a reader holds a batch to.
+    /// limit a reader holds a batch to and halved until it is within them.
     fn write_arrow(&mut self, batch: &RecordBatch) -> Result<()> {
         let limits = Limits::default();
         for chunk in batches::chunks(batch, &limits) {
-            batches::admitted(&chunk, &limits)?;
-            let Some(Sink::Arrow(writer)) = self.sink.as_mut() else {
-                unreachable!("the writer writes an Arrow file");
-            };
-            let before = writer.get_ref().written;
-            let written = writer.write(&chunk);
-            let bytes = writer.get_ref().written - before;
-            written.map_err(|error| self.encoded(error))?;
-            batches::framed(bytes, &limits)?;
+            batches::fitted(chunk, &limits, &mut |part| {
+                let Some(Sink::Arrow(writer)) = self.sink.as_mut() else {
+                    unreachable!("the writer writes an Arrow file");
+                };
+                let written = writer.write(part);
+                written.map_err(|error| self.encoded(error))
+            })?;
         }
         self.count(batch.num_rows());
         Ok(())

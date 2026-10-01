@@ -121,8 +121,11 @@ when it is read and never written in a form its reader refuses.
 - **Nothing is written that its reader refuses.** An Arrow file is written as batches of about
   8 MiB and of at most the rows a reader takes in one, each checked against every limit the
   reader holds a batch to: its frame, the values of each dictionary, which a reader takes as a
-  batch of its own, and nested values that take no bytes. A batch no reader accepts, one row
-  larger than a frame among them, fails the write and leaves no file. JSON lines hold a
+  batch of its own, and nested values that take no bytes. A batch is first cut by its rows'
+  average size; one whose encoding no frame holds, as when a few rows are far larger than the
+  rest, is measured before it is written and halved by its rows until its parts fit, in as
+  many steps as its rows halve. Only what no halving changes fails the write, and leaves no
+  file: one row that alone is beyond a limit, or a dictionary that is. JSON lines hold a
   dictionary's rows as the values they stand for, null where the key is null or the value it
   stands for is.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
@@ -181,8 +184,6 @@ What remains by design:
   not seen.
 - The private rule holds for a source root too: a directory another user owns is refused even
   where this user may only read it, so a source reads what its own user keeps.
-- An Arrow batch is cut by its rows' average size, so rows of very uneven size can make a batch
-  larger than a frame, which fails the write.
 - The default keeper of the log and change sources is shared by every source of a process that
   names none: certification reads a source's position through a second connection, which only
   a shared keeper serves.
