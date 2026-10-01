@@ -343,6 +343,27 @@ impl Dir {
         within(file, limit)
     }
 
+    /// The bytes of the regular file `name`, as [`Dir::read`] reads them, which must be this
+    /// user's alone to write: what another user wrote or may write is not taken for the file's
+    /// owner's.
+    pub(crate) fn read_private(
+        &self,
+        name: impl AsRef<OsStr>,
+        limit: Limit,
+    ) -> io::Result<Vec<u8>> {
+        let file = self.file(name)?;
+        private(&file)?;
+        limit.admit(file.metadata()?.len())?;
+        within(file, limit)
+    }
+
+    /// The file system and the file on it that the directory is, which no two directories
+    /// share and every path to one directory leads to.
+    pub(crate) fn identity(&self) -> io::Result<(u64, u64)> {
+        let metadata = self.file.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+
     /// Creates the file `name` to write, private to its owner; a name that exists, a link
     /// included, is refused.
     pub(crate) fn create(&self, name: impl AsRef<OsStr>) -> io::Result<File> {

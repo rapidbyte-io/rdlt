@@ -124,10 +124,19 @@ fn a_link_at_a_temporary_name_or_at_the_keeper_is_never_written_through() {
     // A link where the keeper's own file belongs is refused, read or written.
     let linked = dir.path().join("linked.json");
     std::os::unix::fs::symlink(&victim, &linked).unwrap();
-    assert!(Kept::<u64>::at(&linked).is_err());
+    let refused = Kept::<u64>::at(&linked).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(
+        crate::rooted::refusal(&refused),
+        Some(crate::rooted::Refusal::NotRegular)
+    );
     let dangling = dir.path().join("dangling.json");
     std::os::unix::fs::symlink(elsewhere.path().join("made"), &dangling).unwrap();
-    assert!(Kept::<u64>::at(&dangling).is_err());
+    let refused = Kept::<u64>::at(&dangling).unwrap_err();
+    assert_eq!(
+        crate::rooted::refusal(&refused),
+        Some(crate::rooted::Refusal::NotRegular)
+    );
     assert!(!elsewhere.path().join("made").exists());
     assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
 }
@@ -153,7 +162,14 @@ fn a_keeper_file_that_is_too_large_or_no_regular_file_is_refused_unread() {
         .unwrap()
         .set_len(1 << 40)
         .unwrap();
-    assert!(Kept::<u64>::at(&huge).is_err());
+    let refused = Kept::<u64>::at(&huge).unwrap_err();
+    assert!(matches!(
+        crate::rooted::refusal(&refused),
+        Some(crate::rooted::Refusal::TooLarge {
+            name: "keeper bytes",
+            ..
+        })
+    ));
     let pipe = dir.path().join("pipe.json");
     let made = std::process::Command::new("mkfifo")
         .arg(&pipe)
@@ -161,9 +177,13 @@ fn a_keeper_file_that_is_too_large_or_no_regular_file_is_refused_unread() {
         .unwrap();
     assert!(made.success());
     let (ended, heard) = std::sync::mpsc::channel();
-    std::thread::spawn(move || ended.send(Kept::<u64>::at(&pipe).is_err()));
+    std::thread::spawn(move || {
+        let refused = Kept::<u64>::at(&pipe).err();
+        ended.send(refused.as_ref().and_then(crate::rooted::refusal))
+    });
     let refused = heard.recv_timeout(std::time::Duration::from_secs(20));
-    assert_eq!(refused, Ok(true), "a pipe was waited on");
+    let not_regular = crate::rooted::Refusal::NotRegular;
+    assert_eq!(refused, Ok(Some(not_regular)), "a pipe was waited on");
 }
 
 #[test]
@@ -229,7 +249,11 @@ fn a_keeper_file_of_more_positions_than_a_keeper_holds_is_refused() {
     for (count, held) in [(most, true), (most + 1, false)] {
         let path = dir.path().join(format!("{count}.json"));
         std::fs::write(&path, serde_json::to_vec(&positions(count)).unwrap()).unwrap();
-        assert_eq!(Kept::<u64>::at(&path).is_ok(), held, "{count}");
+        let kept = Kept::<u64>::at(&path);
+        assert_eq!(kept.is_ok(), held, "{count}");
+        if let Err(error) = kept {
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        }
     }
 }
 
@@ -337,4 +361,72 @@ fn an_acknowledgement_is_durable_step_by_step_and_stands_only_once_its_file_does
         let expected = if renamed { Some(103) } else { before };
         assert_eq!(after, expected, "step {step}");
     }
+}
+
+#[test]
+fn a_keeper_trusts_only_a_file_and_a_directory_that_are_its_user_s_alone() {
+    use std::io::ErrorKind;
+    use std::os::unix::fs::PermissionsExt as _;
+    let base = tempfile::tempdir().unwrap();
+    let shared = base.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let path = shared.join("slot.json");
+    let mode = |path: &std::path::Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    // As another user would plant it where they may write: a keeper standing far ahead.
+    std::fs::write(&path, b"[[\"orders\",\"p0\",999999]]").unwrap();
+    for (directory, file, trusted) in [
+        (0o700, 0o600, true),
+        (0o755, 0o644, true),
+        (0o1777, 0o600, false),
+        (0o777, 0o600, false),
+        (0o770, 0o600, false),
+        (0o700, 0o666, false),
+        (0o700, 0o660, false),
+    ] {
+        mode(&shared, directory);
+        mode(&path, file);
+        let kept = Kept::<u64>::at(&path);
+        assert_eq!(kept.is_ok(), trusted, "{directory:o} {file:o}");
+        if let Err(error) = kept {
+            assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        }
+    }
+    mode(&shared, 0o700);
+    mode(&path, 0o600);
+    // What is named as a temporary of the keeper's and is no file of this user's is left where
+    // it is: never entered, never followed.
+    let planted = shared.join(".slot.json.tmp-anything");
+    std::fs::create_dir_all(planted.join("deep")).unwrap();
+    std::fs::write(planted.join("deep").join("data"), b"x").unwrap();
+    std::os::unix::fs::symlink(base.path(), shared.join(".slot.json.tmp-link")).unwrap();
+    let kept = Kept::<u64>::at(&path).unwrap();
+    assert_eq!(kept.position("orders", &partition("p0")), Some(999_999));
+    assert!(planted.join("deep").join("data").exists());
+    assert!(std::fs::symlink_metadata(shared.join(".slot.json.tmp-link")).is_ok());
+}
+
+#[test]
+fn every_path_to_one_keeper_file_names_one_keeper() {
+    let base = tempfile::tempdir().unwrap();
+    let dir = base.path().join("keepers");
+    std::fs::create_dir(&dir).unwrap();
+    std::os::unix::fs::symlink(&dir, base.path().join("linked")).unwrap();
+    let registry: super::Registry<u64> = super::Registry::new();
+    let first = registry.at(&dir.join("slot.json")).unwrap();
+    for spelled in [
+        dir.join(".").join("slot.json"),
+        dir.join("..").join("keepers").join("slot.json"),
+        base.path().join("linked").join("slot.json"),
+    ] {
+        let again = registry.at(&spelled).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "{spelled:?}");
+    }
+    // Another file of the directory, and the same name in another directory, are other keepers.
+    let other = registry.at(&dir.join("other.json")).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &other));
+    let elsewhere = tempfile::tempdir().unwrap();
+    let apart = registry.at(&elsewhere.path().join("slot.json")).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &apart));
 }
