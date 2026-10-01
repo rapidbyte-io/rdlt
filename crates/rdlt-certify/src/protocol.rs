@@ -157,16 +157,12 @@ async fn within(checking: impl Future<Output = Found>) -> Found {
         .unwrap_or_else(|_| Found::Broken(Violation(format!("took longer than {CLAUSE_TIME:?}"))))
 }
 
-/// A feature no host defines, which every handshake of certification offers.
-pub(crate) const UNKNOWN_FEATURE: &str = "rdlt.certify.unknown";
-
-/// A handshake as `role`, at `major`.
+/// A handshake as `role`, at `major`, offering no feature, as an engine's does.
 pub(crate) fn request(role: Role, major: u32) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: major,
         protocol_minor: PROTOCOL_MINOR,
-        // A connector takes the features it knows and ignores the rest (§12.7).
-        features: vec![UNKNOWN_FEATURE.to_owned()],
+        features: Vec::new(),
         role: wire_role(role) as i32,
         traceparent: String::new(),
         limits: Some(rdlt_wire::Limits::default().into()),
