@@ -147,13 +147,14 @@ fn is_ident(c: Option<&char>) -> bool {
     c.is_some_and(|c| c.is_alphanumeric() || *c == '_')
 }
 
-/// The number of `#`s when a raw string literal (`r"`, `r#"`, `br#"`) starts at `i`.
+/// The number of `#`s when a raw string literal (`r"`, `r#"`, `br#"`, `cr#"`) starts at `i`.
 fn raw_string_start(chars: &[char], i: usize) -> Option<usize> {
     if chars[i] != 'r' {
         return None;
     }
     let before = |back: usize| i.checked_sub(back).and_then(|p| chars.get(p));
-    let prefix_ok = !is_ident(before(1)) || (before(1) == Some(&'b') && !is_ident(before(2)));
+    let prefix_ok =
+        !is_ident(before(1)) || (matches!(before(1), Some('b' | 'c')) && !is_ident(before(2)));
     if !prefix_ok {
         return None;
     }
