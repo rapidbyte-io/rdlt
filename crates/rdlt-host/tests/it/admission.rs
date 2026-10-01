@@ -855,6 +855,37 @@ async fn a_session_that_panics_gives_its_host_its_place_back() {
     drop(connections);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_host_that_does_not_ask_for_http2_is_refused_and_no_session_served() {
+    use rdlt_host::Network as _;
+    let connector = Connector::listening(&["host"], ListenLimits::default());
+    let mut tls = rdlt_wire::tls::client_config(
+        &identity(&connector.pki.client("host")),
+        &connector.pki.ca(),
+    )
+    .expect("the host's configuration builds");
+    // A named host, whose handshake asks for no protocol.
+    tls.alpn_protocols.clear();
+    let stream = Pipes(connector.connections.clone())
+        .connect("connector", 7443)
+        .await
+        .expect("the pipe connects");
+    let name = rustls::pki_types::ServerName::try_from("connector").expect("a valid name");
+    let mut host = tokio_rustls::TlsConnector::from(Arc::new(tls))
+        .connect(name, stream)
+        .await
+        .expect("the host's handshake completes");
+    // The connector closes the connection: it answers nothing, and serves no session.
+    let mut answer = Vec::new();
+    let read = tokio::io::AsyncReadExt::read_to_end(&mut host, &mut answer);
+    let closed = tokio::time::timeout(Duration::from_secs(1), read).await;
+    assert!(closed.is_ok(), "the connection stays open");
+    assert!(answer.is_empty(), "{answer:?}");
+    settle(ListenLimits::default().report_every + Duration::from_millis(1)).await;
+    let lines = connector.lines();
+    assert_eq!((lines.len(), connector.refused()), (1, 1), "{lines:?}");
+}
+
 /// The line a connector whose hosts' revocation lists are `crl` reports once its named host was
 /// refused.
 async fn refusal_line(pki: &Pki, crl: Option<std::path::PathBuf>, host: &str) -> String {
