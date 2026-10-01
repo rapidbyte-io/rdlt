@@ -5,7 +5,7 @@ nightly := "nightly-2026-09-20"
 # The crates mutation testing mutates, and the crates whose tests may catch a mutant: the
 # protocol's served end is tested from the host, where a client exists, and the reference
 # connectors from the engine and certification too
-mutated := "--package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --package rdlt-certify --package rdlt-connector-reference --test-package rdlt-engine --test-package rdlt-connector --test-package rdlt-wire --test-package rdlt-host --test-package rdlt-certify --test-package rdlt-connector-reference"
+mutated := "--package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --package rdlt-connector-reference --test-package rdlt-engine --test-package rdlt-connector --test-package rdlt-adopt --test-package rdlt-wire --test-package rdlt-host --test-package rdlt-certify --test-package rdlt-connector-reference"
 
 # List the recipes
 default:
@@ -59,20 +59,21 @@ stress seeds="20":
 # write-ahead log's local-directory and in-memory stores: the simulation keeps logs in its own)
 sim-coverage seeds="1000":
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    RDLT_SIM_SEEDS="{{ seeds }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|registry|connect|kills|sink|wire)|rdlt-certify/|serve/(args|binary|inherited)|wal/(local|memory)\.rs' -E 'package(rdlt-sim) & test(through_faults)'
+    RDLT_SIM_SEEDS="{{ seeds }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|registry|connect|kills|sink|wire)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)\.rs' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 81 --branches 73
 
 # Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and
 # one killed as its test ends leaves a truncated profile, which the merge skips
 coverage:
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-wire --package rdlt-host --package rdlt-certify --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/' -E 'not (package(rdlt-engine) & binary(crashes))'
+    cargo +{{ nightly }} llvm-cov nextest --failure-mode all --branch --package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --all-features --json --summary-only --output-path target/coverage.json --ignore-filename-regex '/generated/' -E 'not (package(rdlt-engine) & binary(crashes))'
     cargo xtask coverage-gate target/coverage.json --lines 90 --branches 85
 
-# Run the audited `unsafe` module's tests under Miri (§20.14): the workspace's only `unsafe` code
+# Run the audited crate's test of its `unsafe` code under Miri (§20.14): the workspace's only
+# `unsafe` code
 miri:
     rustup toolchain install {{ nightly }} --profile minimal --component miri
-    cargo +{{ nightly }} miri test --package rdlt-connector --features serve --lib -- --exact serve::inherited::tests::an_owned_descriptor_is_its_socket
+    cargo +{{ nightly }} miri test --package rdlt-adopt --lib -- --exact tests::an_owned_descriptor_is_its_socket
 
 # Mutation testing; extra arguments go to cargo-mutants, for example --in-diff pr.diff
 mutants *args:
@@ -92,6 +93,7 @@ mutants-diff base="origin/main" jobs="4":
     catching() {
         case "$1" in
             rdlt-connector) echo "rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host rdlt-certify" ;;
+            rdlt-adopt) echo "rdlt-adopt rdlt-host" ;;
             rdlt-connector-reference) echo "rdlt-connector-reference rdlt-engine" ;;
             rdlt-wire) echo "rdlt-wire rdlt-host" ;;
             rdlt-host) echo "rdlt-host rdlt-certify" ;;
@@ -99,7 +101,7 @@ mutants-diff base="origin/main" jobs="4":
         esac
     }
     failed=0
-    for crate in rdlt-engine rdlt-connector rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
+    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
         tests=()
         for package in $(catching "$crate"); do tests+=(--test-package "$package"); done

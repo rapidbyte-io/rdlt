@@ -4,6 +4,8 @@
 //! `RDLT_SHRED_CORPUS` names a JSON lines file to measure as one more corpus, such as the corpus
 //! of the comparison with the old engine (docs/perf/shred.md).
 
+#![forbid(unsafe_code)]
+
 use std::fmt::Write as _;
 use std::hint::black_box;
 use std::num::NonZeroUsize;

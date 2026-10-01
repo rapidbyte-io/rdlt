@@ -1,6 +1,8 @@
 //! A host of two spawned connectors that runs until it is killed, for the test that a killed host
 //! leaves no connector running: `connector_host <connector binary>`.
 
+#![forbid(unsafe_code)]
+
 use std::io::Write as _;
 use std::path::PathBuf;
 

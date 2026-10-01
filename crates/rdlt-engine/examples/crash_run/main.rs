@@ -8,6 +8,8 @@
 //! makes it (`killed reading 1`, the source's reads then in flight), and last its report, as JSON;
 //! told to pause after a read or commit, it waits there to be killed.
 
+#![forbid(unsafe_code)]
+
 mod config;
 mod watch;
 

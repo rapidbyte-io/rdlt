@@ -4,6 +4,7 @@
 //! checksums made to match again where it says so, so garbled payloads reach the decoders. A log
 //! is read up to where it was torn, or refused as one the engine did not write.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use std::sync::{Arc, Once};

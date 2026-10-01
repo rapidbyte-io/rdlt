@@ -1988,6 +1988,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rdlt-adopt"
+version = "0.0.0"
+dependencies = [
+ "nix",
+]
+
+[[package]]
 name = "rdlt-certify"
 version = "0.0.0"
 dependencies = [
@@ -2029,6 +2036,7 @@ dependencies = [
  "nix",
  "proptest",
  "prost",
+ "rdlt-adopt",
  "rdlt-connector-macros",
  "rdlt-wire",
  "rusqlite",
@@ -3369,11 +3377,13 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "clap",
+ "proc-macro2",
  "proptest",
  "protox",
  "regex",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "tempfile",
  "tonic-prost-build",
  "walkdir",

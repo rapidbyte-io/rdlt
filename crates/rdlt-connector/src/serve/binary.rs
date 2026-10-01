@@ -10,7 +10,7 @@ use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
 
 use super::args::{Args, Failure, parse};
-use super::{Served, inherited, listen, serve_until};
+use super::{Served, listen, serve_until};
 use crate::factory::{RoleFactory, Serve};
 
 /// Serves `C` as a whole binary's `main` does: `fn main() -> ExitCode { serve::<C>() }`.
@@ -77,8 +77,8 @@ fn run(served: Served) -> Result<(), Failure> {
 
 /// Serves the socket the host passed at `fd`.
 fn inherited_socket(served: Served, fd: i32) -> Result<(), Failure> {
-    // First, before anything in this process opens a file: see `inherited::adopt`.
-    let socket = inherited::adopt(fd)
+    // First, before anything in this process opens a file: see `rdlt_adopt::adopt`.
+    let socket = rdlt_adopt::adopt(fd)
         .map_err(|error| format!("taking the host's socket failed: {error}"))?;
     #[cfg(target_os = "linux")]
     nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGTERM)

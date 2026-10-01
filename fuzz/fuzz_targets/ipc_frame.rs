@@ -4,6 +4,7 @@
 //! The frames are real encodings of a few batches, corrupted by the fuzzer's bytes, so the
 //! corruption reaches the framing checks and Arrow's readers rather than stopping at the header.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use std::sync::{Arc, Once, OnceLock};

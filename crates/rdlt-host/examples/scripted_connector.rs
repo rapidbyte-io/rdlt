@@ -2,6 +2,8 @@
 //! it behaves: what it writes to its standard output and error, when it crashes, and what its
 //! environment must hold.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::PathBuf;

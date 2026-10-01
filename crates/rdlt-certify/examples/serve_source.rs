@@ -1,5 +1,7 @@
 //! The reference generator, served as a connector binary that serves the source role alone.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 use rdlt_connector::serve::Served;

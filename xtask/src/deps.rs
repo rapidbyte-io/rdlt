@@ -12,7 +12,11 @@ use cargo_metadata::{DependencyKind, MetadataCommand};
 
 /// The workspace crates each crate may use as a normal or build dependency.
 const RULES: &[(&str, &[&str])] = &[
-    ("rdlt-connector", &["rdlt-connector-macros", "rdlt-wire"]),
+    ("rdlt-adopt", &[]),
+    (
+        "rdlt-connector",
+        &["rdlt-adopt", "rdlt-connector-macros", "rdlt-wire"],
+    ),
     ("rdlt-connector-macros", &[]),
     ("rdlt-wire", &[]),
     ("rdlt-host", &["rdlt-connector", "rdlt-wire"]),

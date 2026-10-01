@@ -1,5 +1,6 @@
 //! Decoding untrusted state records never panics, and whatever decodes re-encodes losslessly.
 
+#![forbid(unsafe_code)]
 #![no_main]
 
 use bytes::Bytes;

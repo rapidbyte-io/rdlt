@@ -28,6 +28,7 @@ serve = [
   "tokio/rt-multi-thread",
   "tokio/signal",
   "dep:nix",
+  "dep:rdlt-adopt",
 ]
 sqlgen = []
 
@@ -56,10 +57,8 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, optional = true, features = ["fs", "process", "signal"] }
-
-[target.'cfg(unix)'.dev-dependencies]
-nix = { workspace = true, features = ["fs"] }
+nix = { workspace = true, optional = true, features = ["process", "signal"] }
+rdlt-adopt = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
