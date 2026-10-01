@@ -75,39 +75,65 @@ log.
   - Each end cuts to the lesser, limit by limit (`Limits::lesser`), of what its peer advertised
     at the handshake and what it was configured with. A peer advertising more than a sender's
     transport carries, or than the sender may hold, then gets frames the sender can send.
-  - **A piece is self-contained: it holds what its rows name and nothing else.** Arrow's writer
-    sends the data buffers of views and the children of list views, dense unions and run-end
-    columns whole however few rows name them, so a piece is first narrowed: views keep copies of
-    their bytes, list views and unions the items they name, run-end columns the runs reaching
-    into their rows, at every nesting and under the column's own type. Bytes that rows share are
-    therefore sent once for each piece naming them, and for each row naming them where list
-    views overlap: the pieces of a batch take about the logical bytes of the batch, not the
-    bytes it holds, and a batch whose rows alias one buffer crosses at its logical size. A
-    dictionary is the exception: it goes whole, in a frame of its own, ahead of the first piece
-    that needs it, and is not sent again while it is unchanged.
-  - **Cuts come from one weighing of the rows.** `Weigher` walks the batch's own buffers once,
-    in order, copying nothing, and gives for each row what it adds to a narrowed frame: its
-    values and view bytes exactly as the receiver's walk counts them, and its bytes before
-    padding. A piece is the longest run of rows within the limit on rows, on values, on view
-    bytes, and whose bytes with a bound on the frame's overhead (each buffer's padding, an
-    offset more than rows, the header: computed from the schema) fit a frame.
-  - **Each piece then costs one narrowing and one encoding**, of at most a frame, and the batch
-    is never encoded or narrowed whole to learn its size. A batch of n rows cut into p pieces
-    costs n rows weighed, p narrowings and p encodings; tests count all three, for plain columns
-    and for views, list views and dense unions. The limit on rows is applied before anything is
-    encoded.
-  - The weight in bytes is an upper bound, so the encoded piece fits. Were it ever to fall
-    short, the piece is encoded again with half its rows, at most the logarithm of its rows
-    times, and one row that still does not fit is refused; a test forces this by leaving the
-    overhead out.
-  - A batch that goes as one piece is narrowed too when its buffers hold more than twice what
-    its rows weigh, or more than a frame, as a slice of a larger batch does; a batch holding
-    little else goes as it is, uncopied.
-  - A batch of no rows goes as one frame of empty columns of its schema, whatever it was sliced
-    from: Arrow's writer and reader disagree on empty slices of some layouts.
+  - **What crosses is what was weighed, and equals the rows.** A piece holds what its rows name
+    and nothing else, and its receiver counts in its frame exactly the values and view bytes
+    its sender weighed.
+    - Arrow's writer does not send every layout so. It sends the data buffers of views and the
+      children of list views and dense unions whole, however few rows name them, and the
+      receiver counts what is sent. In arrow 59 it also sends a union wrongly under a list, a
+      large list or a map whose first offset is not zero: it does not move the union's children
+      to where the list's items begin, so a dense union's rows arrive as other rows and a
+      sparse union's frame does not decode. Arrow's own stream writer and reader show the same.
+    - So a column goes as it is only when its type is on a list of layouts the writer sends as
+      the rows named: fixed-width values, bytes by offsets, and structs, lists, large lists,
+      fixed-size lists and dictionaries of those. The list allows; it does not forbid: a type
+      nobody thought of is rebuilt. A test crosses every part of every layout nested in every
+      other, at offsets that are not zero at each level, and holds each frame to its rows, its
+      types and its weight.
+    - Every other column is rebuilt from the ranges of items its rows name: each layout hands
+      the ranges its rows name to the columns nested in it, a null list or map names none, a
+      run is kept for each stretch of rows in it, and views keep copies of their bytes. Nothing
+      is copied by index but a column that nests nothing, sixty-five thousand items at a time,
+      so what rebuilding holds beside the piece is two words for each range named, at most one
+      for each row of a list view or dense union, and for a moment a second copy of one such
+      column where its ranges are many.
+    - A dictionary's values go whole, in a frame of their own, ahead of the first piece that
+      needs them, and not again while they are unchanged. Values of a layout on the list go as
+      the writer sends them; any other are rebuilt from their own rows, once for every piece of
+      the batch, so no part of a larger array and no layout the writer sends wrongly crosses as
+      it is. A batch of no rows is narrowed like any other, and sends no empty dictionary for the
+      next batch to replace.
+    - Bytes that rows share are sent once for each piece naming them, and for each row naming
+      them where list views overlap: the pieces of a batch take about the logical bytes of the
+      batch, not the bytes it holds.
+  - **Cuts come from weighing the rows.** `Weigher` reads the batch's own buffers, copying
+    nothing, and gives for a stretch of rows what it adds to such a frame: its values and view
+    bytes exactly as the receiver's walk counts them, and its bytes before padding, which are
+    never more than the frame's and with a bound on the frame's overhead (each buffer's
+    padding, an offset more than rows, the header: computed from the schema) never less.
+    - Weighing is linear in the rows and the items they name. A stretch of fixed-width values,
+      of bytes by offsets, or of structs and lists of those is weighed from its widths and
+      offsets, however long it is. What a dictionary value or a run takes expanded is found
+      once, when a row first names it, and kept, eight bytes a value.
+    - A piece is the longest run of rows within the limit on rows, on values, on view bytes,
+      and whose bytes with the overhead fit a frame. The cut weighs stretches each twice as
+      long as the last while they fit, and half as long once one did not, so a piece costs a
+      few weighings of its own rows; a stretch already beyond a frame's values is weighed no
+      further, so the work between two pieces is bounded by the limits.
+    - One row beyond a limit is refused from its weight, before anything is rebuilt or
+      encoded.
+  - **Each piece then costs one rebuilding and one encoding**, of at most a frame, and the
+    batch is never encoded or rebuilt whole to learn its size. Tests count the columns, rows,
+    runs and keys weighing looks at, and the pieces rebuilt and encoded, for plain columns, for
+    views, list views and dense unions, and for many keys or rows naming one long value.
+  - The weight in bytes with the overhead is an upper bound, so the encoded piece fits. Were
+    it ever to fall short, the piece is encoded again with half its rows, at most the logarithm
+    of its rows times, and one row that still does not fit is refused; a test forces this by
+    leaving the overhead out.
   - `Encoder::piece` hands over the frames of the next rows of a `Cut`. A sender encodes the
     next piece only once the last was sent, and yields to its runtime between them, so beyond
-    the batch itself it holds one piece, of at most the frame limit it cuts to.
+    the batch itself it holds one piece, of at most the frame limit it cuts to, and while that
+    piece is rebuilt, the ranges it is rebuilt from.
   - Every frame is then measured by the receiver's own walk before it is sent, so no frame a
     sender cut is refused by its receiver.
   - The pieces are consecutive rows in order. On a read they are pushes of the segment the batch
@@ -122,14 +148,18 @@ log.
     - A refused write leaves the rows of the pieces before it staged under the batch's segment.
       The writer itself stays usable, in a schema epoch of its own, but its caller must not
       commit that segment: the engine ends the attempt, and the next discards its staging.
+      A schema or a frame that could not be sent ends the epoch too: the schema is sent again
+      with what is written next.
     - A read ends there: the rows already pushed are in a segment no checkpoint closes, and go
       with the attempt.
     - A batch the sender itself cannot narrow or encode fails with `unencodable_batch`, which
       blames the sender's batch and no peer.
   - `Weigher` and `Weight` are public, for whoever must charge a batch by what it will take
-    without copying it. Beside values, view bytes and frame bytes a weight carries the rows'
-    expanded bytes: what they take once each dictionary key and run is replaced by the value it
-    names.
+    without copying it; `Weigher::weigh_rows` weighs a range of rows. Beside values, view bytes
+    and frame bytes a weight carries the rows' expanded bytes: what they take once each
+    dictionary key and run is replaced by the value it names. A batch a receiver decoded holds
+    at most a frame's values in each of its frames, a dictionary's included, which bounds what
+    weighing it looks at.
   - Certification's read-back queues every piece of the table it already holds whole; the
     minimums below bound that to about twice the table.
 - **What the engine writes is plain.** Lowering stores every column as the Arrow type of its
@@ -138,9 +168,9 @@ log.
   metadata columns are dictionaries of one entry under sliced keys. Batches of no rows are
   dropped before they are queued or logged. So the host's writer meets no view, list view,
   union or run-end column and no empty batch from the engine, though it does meet slices that
-  share their parent's buffers. The writer is a public trait all the same, and a served
-  connector and read-back send whatever a source built, so the cut is correct for every layout
-  and for empty slices, and is tested on each.
+  share their parent's buffers, all of layouts that go as they are. The writer is a public
+  trait all the same, and a served connector and read-back send whatever a source built, so
+  the cut is correct for every layout and for empty slices, and is tested on each.
 - **A peer's limits have minimums.** A sender cuts to the limits its peer advertised at the
   handshake, and every frame costs it each buffer's padding whatever its rows hold, so a peer
   asking for tiny frames would have it send mostly padding, many times the batch. A peer's
