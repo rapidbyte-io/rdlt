@@ -17,15 +17,39 @@ use serde_json::{Value, json};
 /// what the directory's destination holds.
 pub(crate) struct Scenario {
     pub(crate) name: &'static str,
+    /// Whether its runs keep a write-ahead log.
+    pub(crate) logged: bool,
     config: fn(&Path) -> Value,
     verify: fn(&Path, &str),
 }
 
 impl Scenario {
+    /// This pipeline named `name`, run without a write-ahead log, as a replayable source runs by
+    /// default.
+    pub(crate) fn unlogged(self, name: &'static str) -> Self {
+        Self {
+            name,
+            logged: false,
+            ..self
+        }
+    }
+
+    /// The harness configuration in `dir`.
+    fn configured(&self, dir: &Path) -> Value {
+        let mut config = (self.config)(dir);
+        if !self.logged {
+            config
+                .as_object_mut()
+                .expect("a configuration is an object")
+                .remove("wal");
+        }
+        config
+    }
+
     /// Writes the harness configuration into `dir`; its path.
     pub(crate) fn write(&self, dir: &Path) -> PathBuf {
         let path = dir.join("run.json");
-        let config = serde_json::to_vec(&(self.config)(dir)).expect("configurations serialize");
+        let config = serde_json::to_vec(&self.configured(dir)).expect("configurations serialize");
         std::fs::write(&path, config).expect("the configuration is written");
         path
     }
@@ -33,7 +57,7 @@ impl Scenario {
     /// Writes the harness configuration into `dir` with its source and destination spawned in
     /// processes of their own, and `kill` where given; its path.
     pub(crate) fn write_spawned(&self, dir: &Path, kill: Option<Value>) -> PathBuf {
-        let mut config = (self.config)(dir);
+        let mut config = self.configured(dir);
         config["source"]["spawned"] = json!(true);
         config["destination"]["spawned"] = json!(true);
         if let Some(kill) = kill {
@@ -45,9 +69,18 @@ impl Scenario {
         path
     }
 
-    /// Checks what `dir`'s destination holds, and that no log is left to replay.
+    /// Checks what `dir`'s destination holds, and that no log is left to replay, or none was
+    /// written where the runs keep none.
     pub(crate) fn verify(&self, dir: &Path, case: &str) {
         (self.verify)(dir, &format!("{}: {case}", self.name));
+        if !self.logged {
+            assert!(
+                !dir.join("wal").exists(),
+                "{}: {case}: a log was written",
+                self.name
+            );
+            return;
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("a runtime starts");
@@ -75,6 +108,7 @@ fn sqlite_at(dir: &Path) -> Value {
 /// A log of two partitions of 100 messages that forgets what it committed, appended to SQLite.
 pub(crate) fn forgetting_log() -> Scenario {
     Scenario {
+        logged: true,
         name: "a forgetting log",
         config: |dir| {
             let source = json!({ "kind": "log", "config": {
@@ -139,6 +173,7 @@ fn changes_of(dir: &Path, stream: &ChangedStream) -> Value {
 /// A change stream whose slot forgets what it acknowledged, merged into JSON-lines files.
 pub(crate) fn forgetting_changes() -> Scenario {
     Scenario {
+        logged: true,
         name: "a forgetting change stream",
         config: |dir| {
             let stream = json!({ "name": "orders", "read": "cdc", "write": "merge" });
@@ -173,6 +208,7 @@ pub(crate) fn forgetting_changes() -> Scenario {
 /// third.
 pub(crate) fn replaced() -> Scenario {
     Scenario {
+        logged: true,
         name: "a full read replaced",
         config: |dir| {
             let source = json!({ "kind": "generator", "config": {
@@ -196,6 +232,7 @@ pub(crate) fn replaced() -> Scenario {
 /// A timed change stream of whole rows kept as history in SQLite.
 pub(crate) fn kept_history() -> Scenario {
     Scenario {
+        logged: true,
         name: "a history",
         config: |dir| {
             let stream = json!({ "name": "orders", "read": "cdc", "write": "history" });

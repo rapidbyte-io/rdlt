@@ -27,23 +27,35 @@ enum Hits {
     Once,
 }
 
+/// A crash point: its name, how often a run passes it, and whether only a run keeping a log
+/// does.
+struct Point {
+    name: &'static str,
+    hits: Hits,
+    logged: bool,
+}
+
+const fn point(name: &'static str, hits: Hits, logged: bool) -> Point {
+    Point { name, hits, logged }
+}
+
 /// Every durability step a fresh run passes, in the order a commit does, then the load's end.
-const POINTS: [(&str, Hits); 15] = [
-    ("engine.wal.append", Hits::Each),
-    ("engine.flush.before", Hits::Each),
-    ("engine.flush.after", Hits::Each),
-    ("engine.wal.sync.before", Hits::Each),
-    ("engine.wal.sync.after", Hits::Each),
-    ("engine.ack.early", Hits::Each),
-    ("engine.commit.before", Hits::Each),
-    ("engine.commit.after", Hits::Each),
-    ("engine.receipt.after", Hits::Each),
-    ("engine.wal.remove", Hits::Each),
-    ("engine.ack.before", Hits::Each),
-    ("engine.ack.after", Hits::Each),
-    ("engine.wal.close.before", Hits::Once),
-    ("engine.wal.close.after", Hits::Once),
-    ("engine.wal.removed", Hits::Once),
+const POINTS: [Point; 15] = [
+    point("engine.wal.append", Hits::Each, true),
+    point("engine.flush.before", Hits::Each, false),
+    point("engine.flush.after", Hits::Each, false),
+    point("engine.wal.sync.before", Hits::Each, true),
+    point("engine.wal.sync.after", Hits::Each, true),
+    point("engine.ack.early", Hits::Each, true),
+    point("engine.commit.before", Hits::Each, false),
+    point("engine.commit.after", Hits::Each, false),
+    point("engine.receipt.after", Hits::Each, true),
+    point("engine.wal.remove", Hits::Each, true),
+    point("engine.ack.before", Hits::Each, false),
+    point("engine.ack.after", Hits::Each, false),
+    point("engine.wal.close.before", Hits::Once, true),
+    point("engine.wal.close.after", Hits::Once, true),
+    point("engine.wal.removed", Hits::Once, true),
 ];
 
 /// The harness binary, built beside this test.
@@ -106,16 +118,24 @@ fn failpoint(point: &str, hit: u64) -> String {
     }
 }
 
-/// Crashes `scenario` at every point, its first time and its third, and in a replay.
+/// Crashes `scenario` at every point its runs pass, at the hits each is passed, and in a replay
+/// where its runs keep a log.
 fn sweep(scenario: &Scenario) {
-    for (point, hits) in POINTS {
-        let at: &[u64] = match hits {
+    let passed = POINTS
+        .iter()
+        .filter(|point| scenario.logged || !point.logged);
+    for point in passed {
+        let at: &[u64] = match point.hits {
             Hits::Each => &[1, 3],
             Hits::Once => &[1],
         };
         for hit in at {
-            crashes(scenario, &[failpoint(point, *hit)], &format!("{point} at hit {hit}"));
+            let case = format!("{} at hit {hit}", point.name);
+            crashes(scenario, &[failpoint(point.name, *hit)], &case);
         }
+    }
+    if !scenario.logged {
+        return;
     }
     // A crash before a commit lands leaves it to replay, which crashes too, before and after it
     // lands, and the next run replays it again.
@@ -145,4 +165,14 @@ fn a_full_read_replaces_its_table_once_through_every_crash() {
 #[test]
 fn a_history_keeps_each_version_once_through_every_crash() {
     sweep(&scenarios::kept_history());
+}
+
+#[test]
+fn a_full_read_without_a_log_replaces_its_table_once_through_every_crash() {
+    sweep(&scenarios::replaced().unlogged("a full read replaced without a log"));
+}
+
+#[test]
+fn a_history_without_a_log_keeps_each_version_once_through_every_crash() {
+    sweep(&scenarios::kept_history().unlogged("a history without a log"));
 }

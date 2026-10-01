@@ -69,7 +69,10 @@ async fn run(config: &Config) -> Result<(), String> {
     }
     let pool =
         RayonPool::new(NonZeroUsize::new(2).expect("two")).map_err(|error| error.to_string())?;
-    let env = SystemEnv::new(pool).with_wal(Arc::new(LocalWal::new(&config.wal)));
+    let mut env = SystemEnv::new(pool);
+    if let Some(wal) = &config.wal {
+        env = env.with_wal(Arc::new(LocalWal::new(wal)));
+    }
     let engine = Engine::new(config.engine()?, Arc::new(env));
     let outcome = engine.run(config.plan()?, source, destination).await;
     let report = serde_json::to_string(&outcome.report).map_err(|error| error.to_string())?;
