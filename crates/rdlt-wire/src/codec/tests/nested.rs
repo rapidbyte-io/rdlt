@@ -8,11 +8,12 @@ use arrow_array::types::{
     UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow_array::{
-    Array, ArrayRef, BinaryViewArray, BooleanArray, DictionaryArray, FixedSizeListArray,
-    Int32Array, LargeListArray, LargeListViewArray, ListArray, ListViewArray, MapArray, NullArray,
+    Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, Decimal256Array, DictionaryArray,
+    FixedSizeBinaryArray, FixedSizeListArray, Int32Array, LargeBinaryArray, LargeListArray,
+    LargeListViewArray, LargeStringArray, ListArray, ListViewArray, MapArray, NullArray,
     PrimitiveArray, RunArray, StringArray, StringViewArray, StructArray, UnionArray,
 };
-use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer, i256};
 use arrow_schema::{DataType, Field, Fields, UnionFields};
 
 /// A column and what it nests, outermost first.
@@ -30,6 +31,20 @@ fn narrow(count: usize) -> i32 {
 fn ints(count: usize) -> ArrayRef {
     let values = (0..narrow(count)).map(|at| (at % 4 != 3).then_some(at));
     Arc::new(Int32Array::from_iter(values))
+}
+
+/// `count` values of three bytes, every fourth null.
+fn fixed_binary(count: usize) -> ArrayRef {
+    let values = (0..narrow(count)).map(|at| (at % 4 != 3).then(|| at.to_le_bytes()));
+    let values = values.map(|value| value.map(|bytes| [bytes[0], bytes[1], 7]));
+    Arc::new(FixedSizeBinaryArray::try_from_sparse_iter_with_size(values, 3).unwrap())
+}
+
+/// `count` decimals of 256 bits, every fourth null.
+fn decimals(count: usize) -> ArrayRef {
+    let values = (0..narrow(count)).map(|at| (at % 4 != 3).then(|| i256::from(at)));
+    let values = Decimal256Array::from_iter(values);
+    Arc::new(values.with_precision_and_scale(40, 2).unwrap())
 }
 
 /// Nine texts: long enough to leave a view, null, and short.
@@ -60,6 +75,17 @@ fn leaves() -> Vec<Named> {
             "utf8 sliced",
             Arc::new(StringArray::from(texts.clone()).slice(2, 6)),
         ),
+        ("binary", Arc::new(BinaryArray::from_iter(bytes.clone()))),
+        (
+            "large utf8 sliced",
+            Arc::new(LargeStringArray::from(texts.clone()).slice(1, 7)),
+        ),
+        (
+            "large binary",
+            Arc::new(LargeBinaryArray::from_iter(bytes.clone())),
+        ),
+        ("fixed binary sliced", fixed_binary(12).slice(3, 9)),
+        ("decimal sliced", decimals(12).slice(1, 9)),
         ("view", Arc::new(StringViewArray::from(texts.clone()))),
         (
             "binview",
