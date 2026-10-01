@@ -458,3 +458,111 @@ fn a_change_at_a_truncate_s_own_sequence_follows_it() {
         ]
     );
 }
+
+/// The outcome of merging nothing into one stored row whose column `c` holds `stored`, once the
+/// table's `c` is `to`: the row's `c` then, or the merge's refusal.
+fn widened(stored: ArrayRef, to: &DataType) -> Result<ArrayRef, arrow_schema::ArrowError> {
+    let batch = |c: ArrayRef, id: i64| {
+        RecordBatch::try_from_iter([
+            ("id", Arc::new(Int64Array::from(vec![id])) as ArrayRef),
+            ("c", c),
+            (
+                "seq",
+                Arc::new(BinaryArray::from_iter_values([sequence(1)])) as ArrayRef,
+            ),
+        ])
+        .expect("a valid batch")
+    };
+    let published = batch(stored, 1);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, true),
+        Field::new("c", to.clone(), true),
+        Field::new("seq", DataType::Binary, true),
+    ]));
+    let key = MergeKey {
+        changes: None,
+        ..key(Deletion::Hard)
+    };
+    let incoming = batch(arrow_array::new_null_array(to, 1), 2);
+    let merged = merge(&schema, &[published], &[], &[incoming], &key)?;
+    let rows = arrow_select::concat::concat_batches(&schema, &merged.rows)?;
+    let ids = rows.column(0).as_primitive::<Int64Type>();
+    let stored = (0..rows.num_rows())
+        .find(|row| ids.value(*row) == 1)
+        .expect("the stored row is kept");
+    Ok(rows.column(1).slice(stored, 1))
+}
+
+#[test]
+fn a_stored_value_its_column_s_wider_type_cannot_hold_fails_the_merge() {
+    use arrow_array::{
+        Date32Array, DurationSecondArray, Time64MicrosecondArray, TimestampSecondArray,
+    };
+    use arrow_schema::TimeUnit;
+    let nanos =
+        |zone: Option<&str>| DataType::Timestamp(TimeUnit::Nanosecond, zone.map(Into::into));
+    let beyond: Vec<(ArrayRef, DataType)> = vec![
+        // The last day of year 9999 is past what nanoseconds hold.
+        (
+            Arc::new(TimestampSecondArray::from(vec![253_402_214_400])),
+            nanos(None),
+        ),
+        (Arc::new(Date32Array::from(vec![2_932_896])), nanos(None)),
+        (
+            Arc::new(DurationSecondArray::from(vec![10_000_000_000])),
+            DataType::Duration(TimeUnit::Nanosecond),
+        ),
+        (
+            Arc::new(Time64MicrosecondArray::from(vec![9_223_372_036_854_776])),
+            DataType::Time64(TimeUnit::Nanosecond),
+        ),
+        // The greatest date is past what nanoseconds hold in any zone.
+        (
+            Arc::new(Date32Array::from(vec![i32::MAX])),
+            nanos(Some("Asia/Kolkata")),
+        ),
+        (
+            Arc::new(Date32Array::from(vec![i32::MAX])),
+            nanos(Some("+00:01")),
+        ),
+    ];
+    for (stored, to) in beyond {
+        let from = stored.data_type().clone();
+        let refused = widened(stored, &to);
+        assert!(refused.is_err(), "{from} to {to}: {refused:?}");
+    }
+}
+
+#[test]
+fn a_stored_value_its_column_s_wider_type_holds_is_kept_exactly() {
+    use arrow_array::types::{TimestampNanosecondType, TimestampSecondType};
+    use arrow_array::{Date32Array, TimestampSecondArray};
+    use arrow_schema::TimeUnit;
+    let stored: ArrayRef = Arc::new(TimestampSecondArray::from(vec![9_223_372_036]));
+    let to = DataType::Timestamp(TimeUnit::Nanosecond, None);
+    let kept = widened(stored, &to).expect("the value fits");
+    assert_eq!(
+        kept.as_primitive::<TimestampNanosecondType>().value(0),
+        9_223_372_036_000_000_000
+    );
+    // The least date a calendar holds, at midnight in a zone ahead of UTC, is an instant before
+    // any the calendar holds: seconds hold it all the same, in fixed zones and named ones.
+    let zones = [
+        ("UTC", 0),
+        ("-05:00", 5 * 3_600),
+        ("+00:01", -60),
+        ("+14:00", -14 * 3_600),
+        ("Asia/Kolkata", -21_208),
+    ];
+    for (zone, behind) in zones {
+        let stored: ArrayRef = Arc::new(Date32Array::from(vec![-96_465_292]));
+        let to = DataType::Timestamp(TimeUnit::Second, Some(zone.into()));
+        let kept = widened(stored, &to).expect("the value fits");
+        assert_eq!(kept.data_type(), &to);
+        assert_eq!(
+            kept.as_primitive::<TimestampSecondType>().value(0),
+            -96_465_292 * 86_400 + behind,
+            "{zone}"
+        );
+    }
+}
