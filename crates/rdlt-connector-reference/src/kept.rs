@@ -97,7 +97,10 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     }
 
     /// Acknowledges `position` of `partition` of `stream`, unless the keeper stands at or past
-    /// it, and writes the keeper it moved to its file, whole, in place of what it held.
+    /// it: writes the keeper as it then stands to its file, whole, in place of what it held.
+    ///
+    /// The keeper stands at a position only once its file durably does: an acknowledgement
+    /// whose write fails leaves the keeper where it stood, to be acknowledged again.
     ///
     /// # Errors
     ///
@@ -110,24 +113,25 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
     ) -> io::Result<()> {
         let mut positions = self.positions.lock();
         let key = (stream.to_owned(), partition.clone());
-        let held = positions.len();
-        match positions.get_mut(&key) {
+        match positions.get(&key) {
             Some(standing) if *standing >= position => return Ok(()),
-            Some(standing) => *standing = position,
-            None if held >= KEEPER_POSITIONS => {
+            None if positions.len() >= KEEPER_POSITIONS => {
                 return Err(io::Error::new(
                     ErrorKind::InvalidInput,
                     format!("a keeper holds at most {KEEPER_POSITIONS} positions"),
                 ));
             }
-            None => {
-                positions.insert(key, position);
-            }
+            _ => {}
         }
-        match &self.file {
-            Some(file) => write(file, &positions),
-            None => Ok(()),
-        }
+        let Some(file) = &self.file else {
+            positions.insert(key, position);
+            return Ok(());
+        };
+        let mut moved = positions.clone();
+        moved.insert(key, position);
+        write(file, &moved)?;
+        *positions = moved;
+        Ok(())
     }
 
     /// Where `partition` of `stream` stands.
