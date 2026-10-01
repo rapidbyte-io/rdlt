@@ -136,8 +136,8 @@ when it is read and never written in a form its reader refuses.
   whose files never reach that size lists at most as many files as the logarithm of its rows,
   and one more; a larger table lists at most that many for each 32 MiB it holds. A row is
   written again only into a file half as large again as the file it was in, so merges write a
-  table over at most twice and about 1.7 times the base-two logarithm of its rows, not once a
-  commit. Tests hold
+  table's rows at most two times and 1.7 times the base-two logarithm of its rows over, the
+  two added together, not once a commit. Tests hold
   both bounds for steady sources of several shapes and for random ones. The bound is on what a
   merge reads: only files of one format and one schema merge, a change of schema starting a
   run of its own, and dictionary columns merge as their values, since each file carries
