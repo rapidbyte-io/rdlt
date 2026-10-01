@@ -21,7 +21,7 @@ use rdlt_wire::limits::MIN_FRAME_BYTES;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::support::connectors::{Writes, Writing};
+use crate::support::connectors::{Gate, Writes, Writing};
 use crate::support::{served, served_within};
 
 /// Options that notice a lost connector within a few tenths of a second.
@@ -260,6 +260,46 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
     .await
     .expect("the writer does not hang past its deadline");
     assert_eq!(written.code(), Some(DEADLINE_EXCEEDED));
+}
+
+#[tokio::test]
+async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
+    static GATE: Gate = Gate::new();
+    let served = Served::new().with_destination(Writes::factory(Writing::Gated(&GATE)));
+    let options = Options {
+        deadlines: Deadlines {
+            write_ack: Duration::from_millis(300),
+            ..Deadlines::default()
+        },
+        ..Options::default()
+    };
+    let mut writer = writer(served, Limits::default(), "flow_gated", options).await;
+    // One frame beyond the connector's credit, which its writer keeps while it waits.
+    writer
+        .write(SegmentId(1), ids(600_000))
+        .await
+        .expect("the frame goes on the credit left");
+    // A batch of another schema: its schema waits for credit, and its deadline passes.
+    let texts: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 10]));
+    let texts = RecordBatch::try_from_iter([("t", texts)]).expect("a valid batch");
+    let late = writer
+        .write(SegmentId(1), texts.clone())
+        .await
+        .expect_err("no credit returns in time");
+    assert_eq!(late.code(), Some(DEADLINE_EXCEEDED));
+    // Written again once the connector's writer goes on, the batch follows its schema.
+    GATE.open();
+    writer
+        .write(SegmentId(1), texts)
+        .await
+        .expect("the batch is written");
+    writer
+        .flush()
+        .await
+        .expect("the connector decoded every frame");
+    let kept = GATE.kept.lock().expect("the lock is not poisoned");
+    let rows: Vec<_> = kept.iter().map(|(_, batch)| batch.num_rows()).collect();
+    assert_eq!(rows, [600_000, 10]);
 }
 
 #[tokio::test]

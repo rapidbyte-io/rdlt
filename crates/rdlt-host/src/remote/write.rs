@@ -141,12 +141,13 @@ impl RemoteWriter {
                 .encoder
                 .schema(&batch.schema())
                 .map_err(|error| frame_error(&error))?;
-            self.schema = Some(batch.schema());
-            self.send(Frame::Schema(v1::WriteSchema {
+            let schema = Frame::Schema(v1::WriteSchema {
                 version: self.version,
                 ipc_schema,
-            }))
-            .await?;
+            });
+            // A schema that could not be sent is sent again with what is written next.
+            self.send(schema).await?;
+            self.schema = Some(batch.schema());
         }
         // A batch beyond what the connector takes or this end sends goes as several, each of the
         // same segment and encoded only once the piece before it was sent; a row beyond them is

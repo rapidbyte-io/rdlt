@@ -370,6 +370,35 @@ pub(crate) enum Writing {
     Keeps(&'static Kept),
     /// Each write and commit goes to the memory destination, past what the test hooked in.
     Hooked(&'static Hook),
+    /// Each write waits for the test to open its gate, and is then kept.
+    Gated(&'static Gate),
+}
+
+/// Where a [`Writes`] destination's writes wait until a test lets them through.
+pub(crate) struct Gate {
+    open: std::sync::atomic::AtomicBool,
+    /// The writes let through.
+    pub(crate) kept: Kept,
+}
+
+impl Gate {
+    pub(crate) const fn new() -> Self {
+        Self {
+            open: std::sync::atomic::AtomicBool::new(false),
+            kept: Kept::new(Vec::new()),
+        }
+    }
+
+    /// Lets every write through from now on.
+    pub(crate) fn open(&self) {
+        self.open.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl std::fmt::Debug for Gate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a gate")
+    }
 }
 
 /// What a test has a [`Writes`] destination do at one of its writes, once, and at its next
@@ -577,6 +606,14 @@ impl DestinationWriter for WrongWriter {
                 Writing::Hooked(_) => Ok(()),
                 Writing::Keeps(kept) => {
                     let mut kept = kept.lock().expect("the lock is not poisoned");
+                    kept.push((segment.0, batch));
+                    Ok(())
+                }
+                Writing::Gated(gate) => {
+                    while !gate.open.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    let mut kept = gate.kept.lock().expect("the lock is not poisoned");
                     kept.push((segment.0, batch));
                     Ok(())
                 }
