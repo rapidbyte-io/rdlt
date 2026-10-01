@@ -251,6 +251,8 @@ mod steps {
 
     #[test]
     fn a_commit_that_dies_at_any_step_publishes_all_of_it_or_none_and_lands_once_when_repeated() {
+        // Hundreds of commits, each of many steps: their syncs are recorded and not made.
+        trace::without_syncs();
         for format in [FileFormat::Jsonl, FileFormat::Arrow] {
             for merge in [true, false] {
                 let mut died = 0;
@@ -359,6 +361,8 @@ mod steps {
 
     #[test]
     fn a_drop_that_dies_at_any_step_leaves_the_table_whole_or_gone_once_the_pipeline_opens() {
+        // Hundreds of commits, each of many steps: their syncs are recorded and not made.
+        trace::without_syncs();
         let catalog = |sessions: &Sessions| sessions.root.path().join("tables").join("rows");
         let mut died = 0;
         for step in 0.. {
@@ -422,3 +426,5 @@ mod steps {
         );
     }
 }
+
+mod crashes;
