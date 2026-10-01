@@ -672,9 +672,28 @@ proptest! {
         let mut encoder = Encoder::default();
         let mut decoder = Decoder::new(limits);
         decoder.schema(&encoder.schema(&batch.schema()).unwrap()).unwrap();
+        // The frame of the batch sent uncut, holding only what its rows name.
+        let uncut = {
+            let mut encoder = Encoder::default();
+            encoder.schema(&batch.schema()).unwrap();
+            let frames = encoder.batch(&compacted(&batch).unwrap()).unwrap();
+            bytes(&frames[frames.len() - 1..])
+        };
         let mut sent = Vec::new();
         for _ in 0..2 {
             let frames = stepped(&mut encoder, &batch, &limits).unwrap();
+            // No piece carries more than the whole batch would: nothing its rows do not name. A
+            // batch that goes uncut goes as it is.
+            let batches: Vec<_> = frames
+                .iter()
+                .filter(|frame| {
+                    let message = arrow_ipc::root_as_message(&frame.header).unwrap();
+                    message.header_type() == arrow_ipc::MessageHeader::RecordBatch
+                })
+                .collect();
+            for frame in batches.iter().filter(|_| batches.len() > 1) {
+                prop_assert!(bytes(std::slice::from_ref(*frame)) <= uncut);
+            }
             let decoded = frames.iter().map(|frame| decoder.frame(frame).unwrap());
             let pieces: Vec<_> = decoded.flatten().collect();
             in_order(&batch, &pieces);

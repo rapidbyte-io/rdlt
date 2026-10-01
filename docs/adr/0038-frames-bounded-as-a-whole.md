@@ -84,7 +84,9 @@ log.
     batch, and a batch whose shared buffers exceed a frame can be cut.
   - What a narrowed piece's frame will hold is counted from its columns, with the counts the
     receiver's walk makes of the frame, and without encoding it; a property test over every drawn
-    type and encoding holds the two counts equal. The longest prefix within the receiver's rows,
+    type and encoding holds the two counts equal. Narrowing a prefix to count it copies what its
+    views, list views and unions name, so for such columns a count costs about what an encoding
+    does; for the others it copies nothing. The longest prefix within the receiver's rows,
     values and view bytes is found by that count, and encoded once: a batch cut by those limits
     costs one encoding a piece, and has the fewest pieces they admit.
   - The bytes of a frame are known only once it is encoded: its padding and header are Arrow's
