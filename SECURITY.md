@@ -40,8 +40,10 @@ ADR 0048 records these.
 the connector sends is bounded before it is held or rendered, and a clause passes only when the
 behaviour it names was seen. It is no control against a connector built to pass: a connector can
 tell a certification from an engine's load, and a destination's read-back is its own account of
-what it published (`docs/certify/clauses.md`). What holds against a hostile connector is the
-engine's limits, deadlines and confinement.
+what it published (`docs/certify/clauses.md`). What holds against an untrusted connector is the
+trust model above: the engine's limits, deadlines and confinement.
+
+ADR 0050 records this.
 
 ## Reporting a vulnerability
 

@@ -24,3 +24,10 @@ pub(crate) const LOADED_ROWS: usize = 100_000;
 /// written take them in memory.
 #[cfg(feature = "kill")]
 pub(crate) const LOADED_BYTES: usize = 64 << 20;
+
+/// How long the `rdlt-certify` binary lets a whole certification take, every role together,
+/// unless its `--timeout` says otherwise or `--no-timeout` lifts it.
+///
+/// The clauses of a connector that answers take seconds each, and its kill clauses their 300 s
+/// at most; the clauses' own bounds, each for a connector that never answers, add up to hours.
+pub const RUN_TIMEOUT: Duration = Duration::from_secs(3600);

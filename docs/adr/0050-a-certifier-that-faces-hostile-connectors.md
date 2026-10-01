@@ -6,8 +6,8 @@ Status: accepted, 2026-10-01.
 
 `rdlt-certify` and the clauses of `rdlt_connector::testing` are run against connectors nobody
 trusts yet. ADR 0020 to 0022 wrote them for a connector that is trusted code with untrusted
-output; the trust model now holds every connector that is not compiled into its host to be
-untrusted. Four things did not hold to that:
+output; ADR 0037 holds every connector that is not compiled into its host to be untrusted. Four
+things did not hold to that:
 
 - some waits had no deadline, and synchronous work could outlast a clause's bound;
 - what a connector sent was bounded in wire bytes at most, then held, expanded and rendered
@@ -38,9 +38,11 @@ untrusted. Four things did not hold to that:
   configurations of the read-back and acknowledged probes keep the connection deadline. The
   question of where a source stands, asked before the clauses, runs under a clause's bound. What
   a clause computes of connector data is bounded by limits on the data, below, and rendering
-  yields between pieces. `--timeout` bounds a whole run; it has no default, since the clauses'
-  own bounds add up to hours for a slow, honest connector. The binary prints each role's report
-  as it ends.
+  yields between pieces. The binary bounds a whole run at an hour: an honest connector's
+  clauses take seconds each and its kill clauses 300 s at most, while the clauses' own bounds,
+  each for a connector that never answers, add up to hours. `--timeout` chooses another bound
+  and `--no-timeout` lifts it; a role still certifying at the bound fails every clause. The
+  binary prints each role's report as it ends.
 - **What a connector sends is charged before it is held, expanded or rendered.** The limits live
   in `testing/limits.rs` and `rdlt-certify/src/limits.rs`.
   - A source clause holds 64 MiB and 2^20 rows of its reads, all of them together, charged as

@@ -124,8 +124,9 @@ const LIMITS: &str = "
 ## What certification bounds
 
 - Every call has a deadline, each clause a bound on all its work (30 s a protocol clause, 600 s a \
-source or destination clause, 300 s a kill clause unless `--kill-timeout` says), and `--timeout` \
-bounds a whole run.
+source or destination clause, 300 s a kill clause unless `--kill-timeout` says). A whole run \
+takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts the bound; a \
+role still certifying then fails every clause.
 - A source clause holds at most 64 MiB and 1,048,576 rows of what its reads send, all its reads \
 together, and renders at most 64 MiB of text; a kill clause loads at most 100,000 rows and \
 64 MiB. A source that holds more leaves the clause unobserved.
