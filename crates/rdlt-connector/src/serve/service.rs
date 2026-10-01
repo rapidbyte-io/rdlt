@@ -1,25 +1,24 @@
 //! The protocol's calls, served for one connection: the handshake agrees a role, the
 //! configuration connects the connector for it, and every later call works on it.
 
-use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use rdlt_wire::Limits;
 use rdlt_wire::tonic::codegen::tokio_stream::Stream;
 use rdlt_wire::tonic::{self, Request, Response, Status, Streaming};
 use rdlt_wire::v1::connector_server::Connector;
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
 use super::acknowledgeable::{Noted, Read};
 use super::handshake::{Agreed, no_handshake, not_configured, unsupported};
 use super::probes::Probes;
+use super::sessions::{SessionSlot, Sessions, closed};
 use super::until::Until;
 use super::{Served, read, write};
-use crate::destination::{Destination, DestinationSession, OpenContext, TableChange, TableRef};
+use crate::destination::{Destination, OpenContext, TableChange, TableRef};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::{PartitionId, PipelineId, StreamName};
 use crate::source::Source;
@@ -32,9 +31,6 @@ pub(super) enum Connected {
     Source(Arc<dyn Source>),
     Destination(Arc<dyn Destination>),
 }
-
-/// A destination session, until its close takes it.
-pub(super) type SessionSlot = Arc<Mutex<Option<Box<dyn DestinationSession>>>>;
 
 /// The protocol served on one connection.
 pub(super) struct Service {
@@ -49,8 +45,7 @@ pub(super) struct Service {
     pub(super) probes: Probes,
     /// The host's limits, which what this end sends must keep within.
     pub(super) host: OnceCell<Limits>,
-    pub(super) sessions: Mutex<BTreeMap<u64, SessionSlot>>,
-    pub(super) next_session: AtomicU64,
+    pub(super) sessions: Sessions,
     /// Cancelled once the connection is stopping, which ends every heartbeat stream.
     pub(super) stopping: CancellationToken,
 }
@@ -60,6 +55,7 @@ impl Service {
         served: Arc<Served>,
         limits: Limits,
         host_name: Option<Arc<str>>,
+        sessions: usize,
         stopping: CancellationToken,
     ) -> Self {
         Self {
@@ -70,8 +66,7 @@ impl Service {
             connected: OnceCell::new(),
             probes: Probes::default(),
             host: OnceCell::new(),
-            sessions: Mutex::new(BTreeMap::new()),
-            next_session: AtomicU64::new(1),
+            sessions: Sessions::holding(sessions),
             stopping,
         }
     }
@@ -102,12 +97,7 @@ impl Service {
     }
 
     async fn session(&self, id: u64) -> Result<SessionSlot, Status> {
-        self.sessions.lock().await.get(&id).cloned().ok_or_else(|| {
-            status(
-                &ConnectorError::new(ConnectorErrorKind::Internal, format!("no session {id}"))
-                    .with_code("no_session"),
-            )
-        })
+        self.sessions.session(id).await
     }
 }
 
@@ -331,11 +321,7 @@ impl Connector for Service {
             .open(&context)
             .await
             .map_err(|error| status(&error))?;
-        let id = self.next_session.fetch_add(1, Ordering::Relaxed);
-        self.sessions
-            .lock()
-            .await
-            .insert(id, Arc::new(Mutex::new(Some(opened.session))));
+        let id = self.sessions.open(opened.session).await;
         Ok(Response::new(v1::OpenResponse {
             session: id,
             epoch: opened.epoch.0,
@@ -402,13 +388,7 @@ impl Connector for Service {
         request: Request<v1::CloseRequest>,
     ) -> Result<Response<v1::CloseResponse>, Status> {
         let id = request.into_inner().session;
-        let slot = self
-            .sessions
-            .lock()
-            .await
-            .remove(&id)
-            .ok_or_else(|| closed(id))?;
-        let session = slot.lock().await.take().ok_or_else(|| closed(id))?;
+        let session = self.sessions.take(id).await?;
         session.close().await.map_err(|error| status(&error))?;
         Ok(Response::new(v1::CloseResponse {}))
     }
@@ -439,14 +419,4 @@ impl Service {
         let session = session.as_mut().ok_or_else(|| closed(id))?;
         session.writer(table).await.map_err(|error| status(&error))
     }
-}
-
-fn closed(id: u64) -> Status {
-    status(
-        &ConnectorError::new(
-            ConnectorErrorKind::Internal,
-            format!("session {id} is closed"),
-        )
-        .with_code("no_session"),
-    )
 }

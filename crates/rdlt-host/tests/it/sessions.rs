@@ -357,3 +357,32 @@ async fn a_schema_epoch_that_does_not_grow_is_refused() {
     drain.abort();
     assert_eq!(error.code(), Some("malformed_frame"));
 }
+
+#[tokio::test]
+async fn a_connection_holds_a_few_sessions_open_and_a_further_closes_its_oldest() {
+    let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
+    let (mut client, first) = raw_session(served, "few_sessions").await;
+    // As many as a connection's descriptors allow are open at once.
+    let holds = rdlt_connector::limits::ListenLimits::default().connection_sessions();
+    assert_eq!(holds, 3);
+    let mut sessions = vec![first];
+    for pipeline in 0..10 {
+        let open = v1::OpenRequest {
+            pipeline: format!("pipeline-{pipeline}"),
+            load_id: context().load_id.as_bytes().to_vec().into(),
+        };
+        let opened = client.open(open).await.expect("the session opens");
+        sessions.push(opened.into_inner().session);
+    }
+    // The newest are served; each older was closed for one of them.
+    let (closed, open) = sessions.split_at(sessions.len() - holds);
+    for session in closed {
+        let refused = client.close(v1::CloseRequest { session: *session }).await;
+        let refused = carried(&refused.expect_err("the session is closed"));
+        assert_eq!(refused.code(), Some("no_session"), "{session}");
+    }
+    for session in open {
+        let closing = client.close(v1::CloseRequest { session: *session });
+        closing.await.expect("the session is open");
+    }
+}
