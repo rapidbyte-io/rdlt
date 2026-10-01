@@ -284,7 +284,7 @@ async fn a_following_run_stopped_before_its_deadline_is_stopped() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_partition_dropped_with_rows_it_never_sealed_holds_no_log_chunk_back() {
     // p2 checkpoints nothing, so its rows sit in an open segment until the source retires it.
     let stream = json!({
