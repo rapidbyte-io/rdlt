@@ -57,7 +57,17 @@ fn ids(count: i64) -> arrow_array::RecordBatch {
 
 /// A raw client of a destination `served` over `store`, handshaken, and a session it opened.
 pub(crate) async fn raw_session(served: Served, store: &str) -> (ConnectorClient<Channel>, u64) {
-    let mut client = raw_client(crate::support::served(served)).await;
+    raw_session_within(served, store, Limits::default()).await
+}
+
+/// A raw client of a destination `served` over `store` enforcing `limits`, handshaken, and a
+/// session it opened.
+pub(crate) async fn raw_session_within(
+    served: Served,
+    store: &str,
+    limits: Limits,
+) -> (ConnectorClient<Channel>, u64) {
+    let mut client = raw_client(served_within(served, limits)).await;
     let config = serde_json::json!({ "store": store });
     client
         .handshake(handshake(v1::Role::Destination))

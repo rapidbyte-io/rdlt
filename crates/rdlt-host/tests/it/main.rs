@@ -29,6 +29,7 @@ mod redial;
 mod sandbox;
 mod secrets;
 mod sessions;
+mod staging;
 mod started;
 mod support;
 mod wires;

@@ -58,7 +58,11 @@ async fn pump(
     use v1::write_ack::Ack;
     // The window never exceeds a frame, so a small frame limit keeps the engine close behind.
     let window = rdlt_wire::limits::CREDIT_WINDOW.min(limits.frame_bytes);
-    let mut decoder = Decoder::new(limits);
+    let mut staging = Staging {
+        decoder: Decoder::new(limits),
+        limits,
+        staged: 0,
+    };
     let mut answer = Some(Ack::Credit(v1::Credit { bytes: window }));
     while let Some(ack) = answer.take() {
         let failed = matches!(ack, Ack::Error(_));
@@ -74,7 +78,7 @@ async fn pump(
             return;
         };
         let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
-        answer = Some(match stage(frame, &mut decoder, writer.as_mut()).await {
+        answer = Some(match staging.stage(frame, writer.as_mut()).await {
             Ok(Some(stats)) => Ack::Flushed(stats),
             Ok(None) => Ack::Credit(v1::Credit { bytes: size }),
             Err(error) => Ack::Error(v1::Error::from(&error)),
@@ -82,35 +86,62 @@ async fn pump(
     }
 }
 
-/// Applies one frame: a schema, a batch staged, or a flush and its stats.
-async fn stage(
-    frame: v1::WriteFrame,
-    decoder: &mut Decoder,
-    writer: &mut dyn DestinationWriter,
-) -> Result<Option<v1::WriteStats>, ConnectorError> {
-    use v1::write_frame::Frame;
-    match frame.frame {
-        Some(Frame::Schema(schema)) => {
-            decoder
-                .schema(&schema.ipc_schema)
-                .map_err(|error| frame_error(&error))?;
-            Ok(None)
-        }
-        Some(Frame::Batch(batch)) => {
-            let frame = IpcFrame {
-                header: batch.data_header,
-                body: batch.data_body,
-            };
-            if let Some(decoded) = decoder.frame(&frame).map_err(|error| frame_error(&error))? {
-                writer.write(SegmentId(batch.segment), decoded).await?;
+/// What a write has staged since its last flush, and the decoder of its frames.
+///
+/// A writer may keep what it stages until it flushes, so the frames a host sends between two
+/// flushes are bounded together.
+struct Staging {
+    decoder: Decoder,
+    limits: Limits,
+    /// Bytes: the batch frames staged since the last flush, header and body.
+    staged: u64,
+}
+
+impl Staging {
+    /// Applies one frame: a schema, a batch staged, or a flush and its stats.
+    async fn stage(
+        &mut self,
+        frame: v1::WriteFrame,
+        writer: &mut dyn DestinationWriter,
+    ) -> Result<Option<v1::WriteStats>, ConnectorError> {
+        use v1::write_frame::Frame;
+        match frame.frame {
+            Some(Frame::Schema(schema)) => {
+                self.decoder
+                    .schema(&schema.ipc_schema)
+                    .map_err(|error| frame_error(&error))?;
+                Ok(None)
             }
-            Ok(None)
+            Some(Frame::Batch(batch)) => {
+                let frame = IpcFrame {
+                    header: batch.data_header,
+                    body: batch.data_body,
+                };
+                let bytes = frame.header.len().saturating_add(frame.body.len());
+                let staged = self
+                    .staged
+                    .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+                // Refused before it is decoded: nothing more is held than the limit allows.
+                self.limits
+                    .admit_staged(staged)
+                    .map_err(|refusal| frame_error(&rdlt_wire::WireError::Refused(refusal)))?;
+                let decoded = self.decoder.frame(&frame);
+                if let Some(decoded) = decoded.map_err(|error| frame_error(&error))? {
+                    writer.write(SegmentId(batch.segment), decoded).await?;
+                }
+                self.staged = staged;
+                Ok(None)
+            }
+            Some(Frame::Flush(_)) => {
+                let stats = writer.flush().await?;
+                self.staged = 0;
+                Ok(Some(v1::WriteStats::from(stats)))
+            }
+            Some(Frame::Start(_)) | None => Err(ConnectorError::new(
+                crate::error::ConnectorErrorKind::Internal,
+                "a write frame other than the first started the write",
+            )
+            .with_code("invalid_message")),
         }
-        Some(Frame::Flush(_)) => Ok(Some(v1::WriteStats::from(writer.flush().await?))),
-        Some(Frame::Start(_)) | None => Err(ConnectorError::new(
-            crate::error::ConnectorErrorKind::Internal,
-            "a write frame other than the first started the write",
-        )
-        .with_code("invalid_message")),
     }
 }
