@@ -77,3 +77,51 @@ fn a_leader_something_else_reaped_is_neither_signalled_nor_waited_for() {
     assert!(alive, "the group was signalled after its leader was reaped");
     assert_eq!(ended, (None, false));
 }
+
+#[test]
+fn a_group_is_living_while_a_member_that_has_not_ended_is_in_it() {
+    let (mut child, member) = leading("exit 0");
+    let group = rustix::process::Pid::from_child(&child);
+    while Leader::of(&super::asked(group)) == Leader::Running {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // The leader has ended and is unreaped; its member lives.
+    assert!(super::members::living(group));
+    kill(member, Signal::SIGKILL).expect("the member is killed");
+    // The member is reaped by whatever adopted it, and the leader stays, ended: on Linux the
+    // null signal still answers for it, and it is no living member.
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while kill(member, None).is_ok() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(rustix::process::test_kill_process_group(group).is_ok());
+        assert!(!super::members::living(group));
+    }
+    child.wait().expect("it is reaped");
+    assert!(!super::members::living(group));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_says_its_state_and_its_group_at_each_depth_of_namespaces() {
+    use super::members::member;
+    let status = "Name:\tsleep (a)\nState:\tS (sleeping)\nNSpid:\t900\t7\nNSpgid:\t880\t3\n";
+    // At the depth this process is at, the group is what its namespace numbers it.
+    assert_eq!(member(status, 1), Some((880, true)));
+    assert_eq!(member(status, 2), Some((3, true)));
+    // A process of a namespace above this one's has no group in it.
+    assert_eq!(member(status, 3), None);
+    for (state, living) in [
+        ("Z (zombie)", false),
+        ("X (dead)", false),
+        ("R (running)", true),
+    ] {
+        let status = format!("State:\t{state}\nNSpgid:\t5\n");
+        assert_eq!(member(&status, 1), Some((5, living)), "{state}");
+    }
+    assert_eq!(member("State:\tS (sleeping)\n", 1), None);
+    assert_eq!(member("NSpgid:\t5\n", 1), None);
+    assert_eq!(member("State:\tS\nNSpgid:\tfive\n", 1), None);
+}

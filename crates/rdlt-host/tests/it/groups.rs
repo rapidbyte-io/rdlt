@@ -246,3 +246,40 @@ async fn a_connector_that_left_the_group_it_led_is_stopped_and_killed_all_the_sa
         assert_eq!(stopped, Ok(()), "killed: {killed}");
     }
 }
+
+/// The state letter of process `pid` in `/proc`: `Z` for one that ended and nothing reaped.
+#[cfg(target_os = "linux")]
+fn state(pid: i32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?.1.trim_start().chars().next()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn members_killed_and_never_reaped_do_not_make_a_stopped_group_linger() {
+    // This process adopts what its connectors orphan and reaps none of it, as a host that is
+    // the first process of a container with no init does.
+    let adopting = rustix::process::Pid::from_raw(1);
+    rustix::process::set_child_subreaper(adopting).expect("this process adopts orphans");
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+    let local = local().grace(Duration::from_millis(200));
+    let (launched, config) = (launcher(directory.path()), serde_json::json!({}));
+    let source = runtime
+        .block_on(local.source(&launched, &config))
+        .expect("the connector starts");
+    let members = members(directory.path());
+    drop(source);
+    let began = std::time::Instant::now();
+    let stopped = rdlt_host::stop_spawned(ENDING);
+    // Every member ended, and stays as what nothing reaped.
+    let states: Vec<Option<char>> = members.iter().map(|member| state(*member)).collect();
+    assert_eq!(states, [Some('Z'), Some('Z')]);
+    assert_eq!(stopped, Ok(()), "a group of the dead was taken for living");
+    // And telling so does not wait out what a living member is given.
+    assert!(
+        began.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        began.elapsed()
+    );
+}
