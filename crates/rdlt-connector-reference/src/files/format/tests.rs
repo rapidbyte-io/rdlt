@@ -1271,9 +1271,13 @@ fn an_arrow_file_s_first_message_starts_within_the_alignment_writers_use() {
     });
     let error = read_bytes(&moved, &schema).expect_err("the first message is too far");
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    let message = error.to_string();
+    assert!(message.contains("does not start as one"), "{message}");
     // Padding that is not zeros is no padding.
     let mut padded = bytes.clone();
     padded[9] = 1;
     let error = read_bytes(&padded, &schema).expect_err("the padding holds a byte");
     assert_eq!(error.kind(), ConnectorErrorKind::Data);
+    let message = error.to_string();
+    assert!(message.contains("does not start as one"), "{message}");
 }
