@@ -8,8 +8,8 @@ use rdlt_connector::{
 };
 use serde_json::{Value, json};
 
-use super::{LogSource, Logged, LoggedStream, Offset, message};
-use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS};
+use super::{LogSource, Logged, LoggedStream, MIN_WAIT, Offset, message};
+use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, MAX_PER_SECOND};
 
 fn events() -> StreamName {
     StreamName::new("events").expect("a valid stream")
@@ -321,12 +321,12 @@ async fn a_stream_of_more_partitions_or_messages_a_batch_than_a_source_holds_is_
 }
 
 #[test]
-fn the_last_offset_a_number_holds_arrives_later_never_at_once() {
+fn an_offset_at_the_end_of_what_a_number_holds_arrives_later_never_at_once() {
     let stream: LoggedStream = serde_json::from_value(json!({
         "name": "events", "partitions": 1, "messages": 0, "per_second": 1,
     }))
     .expect("a valid stream");
-    let wait = Logged(stream).arrives(u64::MAX, Duration::ZERO);
+    let wait = Logged(stream).arrives(u64::MAX - 1, Duration::ZERO);
     assert!(wait.expect("the log grows") > Duration::from_secs(3600));
 }
 
@@ -420,4 +420,104 @@ async fn a_log_that_forgets_names_the_group_it_keeps_its_offsets_in() {
         .connect(config, ConnectContext::new())
         .await;
     connected.expect("the default group");
+}
+
+/// A stream of one partition that holds no message at first and gains `per_second` a second.
+fn growing(per_second: u64) -> Logged {
+    let stream = json!({ "name": "events", "partitions": 1, "messages": 0, "per_second": 1 });
+    let mut stream: LoggedStream = serde_json::from_value(stream).expect("a valid stream");
+    stream.per_second = per_second;
+    Logged(stream)
+}
+
+#[test]
+fn an_offset_past_the_head_arrives_after_a_wait_however_fast_the_log_grows() {
+    let rates = [1, 3, 1000, MAX_PER_SECOND, 1_000_000_000_000_000, u64::MAX];
+    let offsets = [1, 100_000_000_000_000_000, u64::MAX - 1];
+    for per_second in rates {
+        let logged = growing(per_second);
+        for seconds in [0, 19, 60, 3600, 18_000] {
+            let elapsed = Duration::from_millis(seconds * 1000 + 7);
+            for offset in offsets {
+                if offset < logged.head(elapsed) {
+                    continue;
+                }
+                let wait = logged
+                    .arrives(offset, elapsed)
+                    .unwrap_or_else(|| panic!("{per_second} {seconds} {offset}"));
+                assert!(
+                    wait >= MIN_WAIT,
+                    "{per_second} {seconds} {offset}: {wait:?}"
+                );
+                // Once the wait has passed the log holds the offset, unless the wait is the
+                // longest there is.
+                let Some(then) = elapsed.checked_add(wait) else {
+                    continue;
+                };
+                let held = logged.head(then) > offset || then.as_millis() >= u128::from(u64::MAX);
+                assert!(held, "{per_second} {seconds} {offset}: {wait:?}");
+            }
+            // No log reaches the last offset a number holds: nothing is waited for.
+            assert_eq!(logged.arrives(u64::MAX, elapsed), None, "{per_second}");
+        }
+    }
+    assert_eq!(growing(0).arrives(5, Duration::ZERO), None);
+}
+
+/// Four hundred days: by then a log at its fastest has grown past what a product of an offset
+/// and a thousand holds in a number, and holds far fewer messages than a number counts.
+const LATE: Duration = Duration::from_hours(400 * 24);
+
+/// How a following read from `cursor` of a log gaining `per_second` ended, stopped after five
+/// seconds of the paused clock, [`LATE`] into the log; none where it never ended.
+fn followed(per_second: u64, cursor: u64) -> Option<(bool, Vec<u64>)> {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let stream = json!({
+                "name": "events", "partitions": 1, "messages": 0, "per_second": per_second,
+            });
+            let source = connect(&stream, "past_the_head").await;
+            tokio::time::advance(LATE).await;
+            let stop = Some(Duration::from_secs(5));
+            let (outcome, sent) = read(source.as_ref(), Some(offset(cursor)), stop).await;
+            // Nobody listens once the test gave the read up.
+            drop(done.send((outcome.is_ok(), sent.offsets)));
+        });
+    });
+    // A read that spins never lets the paused clock reach its stop: the wall clock bounds it.
+    finished.recv_timeout(Duration::from_secs(20)).ok()
+}
+
+#[test]
+fn a_following_read_past_the_head_of_a_fast_log_waits_and_stops_when_asked() {
+    for cursor in [u64::MAX, u64::MAX - 1, 100_000_000_000_000_000] {
+        let ended = followed(MAX_PER_SECOND, cursor);
+        let (ok, offsets) = ended.unwrap_or_else(|| panic!("the read from {cursor} never ended"));
+        assert!(ok, "{cursor}");
+        assert!(offsets.is_empty(), "{cursor}: {offsets:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_log_that_grows_faster_than_a_source_holds_is_refused() {
+    let stream = json!({
+        "name": "events", "partitions": 1, "messages": 0, "per_second": MAX_PER_SECOND,
+    });
+    connect(&stream, "fast").await;
+    let stream = json!({
+        "name": "events", "partitions": 1, "messages": 0, "per_second": MAX_PER_SECOND + 1,
+    });
+    let refused = source_factory::<LogSource>()
+        .connect(config(&stream, "too_fast"), ConnectContext::new())
+        .await
+        .err()
+        .expect("past the limit");
+    assert_eq!(refused.kind(), ConnectorErrorKind::Config);
+    assert_eq!(refused.code(), Some("limit_exceeded"));
 }

@@ -84,6 +84,9 @@ pub(crate) const MAX_PARTITIONS: u64 = 1024;
 /// within the bytes one JSON push may hold.
 pub(crate) const MAX_MESSAGE_ROWS: u64 = 100_000;
 
+/// Messages: bounds what each partition of the log source gains a second.
+pub(crate) const MAX_PER_SECOND: u64 = 1_000_000_000;
+
 /// Keys: bounds the table a change stream snapshots, which a snapshot read builds whole, and the
 /// changes its snapshot may hold, each of which that read applies.
 pub(crate) const MAX_SNAPSHOT_KEYS: u64 = 1_000_000;

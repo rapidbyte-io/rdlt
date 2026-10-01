@@ -16,7 +16,7 @@ use tokio::time::Instant;
 
 use crate::generator::mix;
 use crate::kept::{Kept, Registry};
-use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, within};
+use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, MAX_PER_SECOND, within};
 use crate::positions::{keeper_path, unnamed};
 
 /// Configuration of [`LogSource`].
@@ -51,7 +51,7 @@ pub struct LoggedStream {
     pub partitions: u32,
     /// Messages each partition holds when the process first reads any log.
     pub messages: u64,
-    /// Messages each partition gains a second after that.
+    /// Messages each partition gains a second after that, at most a thousand million.
     #[serde(default)]
     pub per_second: u64,
     /// Partitions the stream gains `later_after_ms` milliseconds after that, as a topic whose
@@ -122,6 +122,10 @@ fn most(stream: &LoggedStream) -> u64 {
     u64::from(stream.partitions) + u64::from(stream.partitions_later)
 }
 
+/// The least a following read waits for a message it does not hold yet, so that no rounding of
+/// when the message arrives makes the read ask again at once.
+const MIN_WAIT: Duration = Duration::from_millis(1);
+
 /// Consumer groups by name, for as long as the process runs.
 static GROUPS: Registry<u64> = Registry::new();
 
@@ -151,6 +155,12 @@ impl SourceConnector for LogSource {
                     stream.name
                 )));
             }
+            within(
+                &stream.name,
+                "per_second",
+                stream.per_second,
+                MAX_PER_SECOND,
+            )?;
             within(&stream.name, "partitions", most(stream), MAX_PARTITIONS)?;
             within(
                 &stream.name,
@@ -306,14 +316,18 @@ impl Logged {
             .min()
     }
 
-    /// How long after `elapsed` the message at `offset` arrives; none where the log never grows.
+    /// How long after `elapsed` the message at `offset` arrives, at least [`MIN_WAIT`]; none
+    /// where it never does: the log never grows, or the offset is the last a number holds,
+    /// which no head passes.
     fn arrives(&self, offset: u64, elapsed: Duration) -> Option<Duration> {
-        if self.0.per_second == 0 {
+        if self.0.per_second == 0 || offset == u64::MAX {
             return None;
         }
-        let grown = offset.saturating_sub(self.0.messages).saturating_add(1);
-        let at = Duration::from_millis(grown.saturating_mul(1000).div_ceil(self.0.per_second));
-        Some(at.saturating_sub(elapsed))
+        // In numbers twice as wide, no product of an offset and a thousand is cut short.
+        let grown = u128::from(offset.saturating_sub(self.0.messages)) + 1;
+        let at = (grown * 1000).div_ceil(u128::from(self.0.per_second));
+        let at = Duration::from_millis(u64::try_from(at).unwrap_or(u64::MAX));
+        Some(at.saturating_sub(elapsed).max(MIN_WAIT))
     }
 
     /// The messages at `offsets` of partition `partition`.
