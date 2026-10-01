@@ -1,7 +1,10 @@
 //! Limits on what a connector may send or receive; each is checked where the data enters rdlt.
 
+mod listen;
 #[cfg(test)]
 mod tests;
+
+pub use listen::{ListenLimits, TooFewDescriptors};
 
 /// Bytes: bounds one JSON push.
 pub const MAX_JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;

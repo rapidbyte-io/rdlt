@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use rdlt_connector::serve::{Listener, Listening, Served, serve_listener};
+use rdlt_connector::serve::{Listener, Listening, Log, Served, serve_listener};
 use rdlt_connector::{BoxFuture, ConnectorId, source_factory};
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::{ConnectorRef, Kills, Network, Provider as _, Remote, Stream};
@@ -15,18 +15,23 @@ use tokio::sync::{mpsc, oneshot};
 use crate::network::{accepted, identity};
 
 /// How a connector with `server`'s certificate listens for the host of `pki` named `host`.
-fn listening(pki: &Pki, server: &Files) -> Listening {
+pub(crate) fn listening(pki: &Pki, server: &Files) -> Listening {
     let tls = rdlt_wire::tls::server_config(&identity(server), &accepted(pki))
         .expect("the server's configuration builds");
-    Listening {
-        tls: Arc::new(tls),
-        hosts: accepted(pki).hosts,
-    }
+    Listening::new(Arc::new(tls), accepted(pki).hosts)
+}
+
+/// `listening`, reporting to the lines returned.
+fn logged(listening: Listening) -> (Listening, Arc<std::sync::Mutex<Vec<String>>>) {
+    let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let written = Arc::clone(&lines);
+    let log = Log::new(move |line| written.lock().expect("no panic").push(line.to_owned()));
+    (Listening { log, ..listening }, lines)
 }
 
 /// A network in this process: each connection is an in-memory pipe.
 #[derive(Debug)]
-struct Pipes(mpsc::UnboundedSender<DuplexStream>);
+pub(crate) struct Pipes(pub(crate) mpsc::UnboundedSender<DuplexStream>);
 
 impl Network for Pipes {
     fn connect<'a>(
@@ -45,7 +50,7 @@ impl Network for Pipes {
 }
 
 /// The connector's end of [`Pipes`].
-struct Piped(mpsc::UnboundedReceiver<DuplexStream>);
+pub(crate) struct Piped(pub(crate) mpsc::UnboundedReceiver<DuplexStream>);
 
 impl Listener for Piped {
     type Stream = DuplexStream;
@@ -93,7 +98,7 @@ async fn a_connector_served_on_another_network_is_placed_through_it_and_stops_cl
 async fn a_host_that_never_completes_http2_preface_after_its_handshake_is_dropped() {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["connector"]);
-    let tls = listening(&pki, &server);
+    let (tls, lines) = logged(listening(&pki, &server));
     let (connections, accepted) = mpsc::unbounded_channel();
     let (stop, stopped) = oneshot::channel::<()>();
     let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
@@ -131,6 +136,9 @@ async fn a_host_that_never_completes_http2_preface_after_its_handshake_is_droppe
         .expect("the silent host's connection is dropped")
         .expect("the listener stops");
     drop(silent);
+    // Its session is the only refusal reported.
+    let lines = lines.lock().expect("no panic").clone();
+    assert_eq!(crate::admission::refused(&lines), 1, "{lines:?}");
 }
 
 /// A listener whose every accept fails, as one out of file descriptors does; it counts them.
@@ -149,7 +157,7 @@ impl Listener for Failing {
 async fn a_listener_that_keeps_failing_is_tried_again_after_a_pause() {
     let pki = Pki::new("ca");
     let server = pki.server("server", &["connector"]);
-    let tls = listening(&pki, &server);
+    let (tls, lines) = logged(listening(&pki, &server));
     let accepts = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let memory = Arc::new(Served::new().with_source(source_factory::<MemorySource>()));
     let stop = tokio::time::sleep(std::time::Duration::from_secs(1));
@@ -167,6 +175,10 @@ async fn a_listener_that_keeps_failing_is_tried_again_after_a_pause() {
         (9..=11).contains(&accepted),
         "{accepted} accepts in a second"
     );
+    // Each is counted, in a single line written as the listener stops.
+    let lines = lines.lock().expect("no panic").clone();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(crate::admission::refused(&lines), u64::from(accepted));
 }
 
 /// A network whose connections never complete, as one that drops every packet.

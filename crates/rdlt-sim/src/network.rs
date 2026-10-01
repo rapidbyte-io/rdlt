@@ -165,12 +165,10 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
         hosts: Hosts::new([ENGINE]).map_err(|error| error.to_string())?,
         crl: None,
     };
-    let listening = Listening {
-        tls: rdlt_wire::tls::server_config(&identity(&net.server), &accepted)
-            .map(Arc::new)
-            .map_err(|error| error.to_string())?,
-        hosts: accepted.hosts,
-    };
+    let tls = rdlt_wire::tls::server_config(&identity(&net.server), &accepted)
+        .map(Arc::new)
+        .map_err(|error| error.to_string())?;
+    let listening = Listening::new(tls, accepted.hosts);
     loop {
         net.connectors.up(side).await;
         let crashes = net.connectors.crashes(side);

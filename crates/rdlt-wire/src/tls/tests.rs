@@ -247,13 +247,13 @@ fn a_key_file_others_can_read_is_refused() {
         for key in [&server.key, &client.key] {
             std::fs::set_permissions(key, std::fs::Permissions::from_mode(mode)).expect("chmod");
         }
-        let served = server_config(&server, &accepted(&pki, &["client"]));
+        let listening = server_config(&server, &accepted(&pki, &["client"]));
         let dialed = client_config(&client, &pki.ca());
-        if mode & 0o077 == 0 {
-            assert!(served.is_ok() && dialed.is_ok(), "mode {mode:o}");
+        if bit >= 0o100 {
+            assert!(listening.is_ok() && dialed.is_ok(), "mode {mode:o}");
         } else {
             assert!(
-                matches!(served, Err(TlsError::KeyMode { mode: found, .. }) if found == mode),
+                matches!(listening, Err(TlsError::KeyMode { mode: found, .. }) if found == mode),
                 "mode {mode:o}"
             );
             assert!(

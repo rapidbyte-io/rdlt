@@ -19,7 +19,7 @@ pub(crate) fn identity(files: &Files) -> Identity {
     }
 }
 
-/// The hosts a connector of `pki` accepts in these tests: the one named `host`.
+/// The hosts a connector of `pki` accepts in these tests: a single host, named `host`.
 pub(crate) fn accepted(pki: &Pki) -> rdlt_wire::tls::Accepted {
     rdlt_wire::tls::Accepted {
         ca: pki.ca(),
@@ -174,23 +174,27 @@ async fn a_listening_connector_says_once_which_host_a_session_serves() {
 }
 
 #[tokio::test]
-async fn a_listening_connector_speaks_no_plaintext_and_says_whom_it_refused() {
+async fn a_listening_connector_speaks_no_plaintext_and_counts_whom_it_refused_in_one_line() {
     let pki = Pki::new("ca");
     let (mut connector, address) =
         listening(&pki, &pki.server("server", &["localhost"]), "127.0.0.1:0").await;
-    let mut stream = tokio::net::TcpStream::connect(&address)
-        .await
-        .expect("the connector accepts");
-    let peer = stream.local_addr().expect("a local address");
-    stream
-        .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
-        .await
-        .expect("the preface is written");
-    let mut answer = Vec::new();
-    let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
-    // It closes the connection, answering at most a TLS alert, and never HTTP/2.
-    assert!(read.is_ok(), "the connection stays open");
-    assert!(!answer.starts_with(b"\0"), "{answer:?}");
+    let mut peers = Vec::new();
+    for _ in 0..32 {
+        let mut stream = tokio::net::TcpStream::connect(&address)
+            .await
+            .expect("the connector accepts");
+        peers.push(stream.local_addr().expect("a local address"));
+        stream
+            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+            .await
+            .expect("the preface is written");
+        let mut answer = Vec::new();
+        let read =
+            tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut answer)).await;
+        // It closes the connection, answering at most a TLS alert, and never HTTP/2.
+        assert!(read.is_ok(), "the connection stays open");
+        assert!(!answer.starts_with(b"\0"), "{answer:?}");
+    }
     stop(&connector);
     let mut stderr = String::new();
     connector
@@ -200,10 +204,12 @@ async fn a_listening_connector_speaks_no_plaintext_and_says_whom_it_refused() {
         .read_to_string(&mut stderr)
         .await
         .expect("its errors read");
-    assert!(
-        stderr.contains(&format!("refused a connection from {peer}")),
-        "{stderr}"
-    );
+    // One line for all of them, which names none: a peer decides how many are refused.
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.contains("32"), "{stderr}");
+    for peer in peers {
+        assert!(!stderr.contains(&peer.to_string()), "{stderr}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -401,10 +407,11 @@ async fn listening_without_mutual_tls_is_refused_and_a_stop_ends_it_cleanly() {
 
 /// Everything `error` says of itself, its causes and its fields.
 fn said(error: &dyn std::error::Error) -> String {
+    use std::fmt::Write as _;
     let mut said = format!("{error} {error:?}");
     let mut source = error.source();
     while let Some(cause) = source {
-        said.push_str(&format!(" {cause} {cause:?}"));
+        write!(said, " {cause} {cause:?}").expect("a string is written");
         source = cause.source();
     }
     said
@@ -436,11 +443,9 @@ async fn an_endpoint_with_more_than_a_host_and_a_port_is_refused_without_repeati
             "{endpoint}"
         );
         assert!(!said(&refused).contains("hunter2"), "{endpoint}");
-        let wired = remote
-            .wire(&scripted(endpoint))
-            .await
-            .err()
-            .expect("refused");
+        let Err(wired) = remote.wire(&scripted(endpoint)).await else {
+            panic!("{endpoint} is dialed");
+        };
         assert!(!said(&wired).contains("hunter2"), "{endpoint}");
     }
 }
@@ -473,4 +478,67 @@ async fn an_error_about_an_endpoint_names_its_host_and_port_alone() {
         panic!("{untrusted}");
     };
     assert_eq!(endpoint, "[::1]:7443");
+}
+
+/// The scripted connector, asked to listen with `more` arguments in a process that may open
+/// `descriptors` files: its output, once it has announced its address and been stopped, or
+/// ended by itself.
+async fn limited(descriptors: u32, more: &[&str]) -> std::process::Output {
+    let pki = Pki::new("ca");
+    let server = pki.server("server", &["localhost"]);
+    let mut child = Command::new("sh")
+        .args(["-c", "ulimit -n \"$0\" && exec \"$@\""])
+        .arg(descriptors.to_string())
+        .arg(example("scripted_connector"))
+        .args(["--listen", "127.0.0.1:0"])
+        .arg("--tls-cert")
+        .arg(&server.cert)
+        .arg("--tls-key")
+        .arg(&server.key)
+        .arg("--tls-client-ca")
+        .arg(pki.ca())
+        .args(["--tls-allow-host", "host"])
+        .args(more)
+        .env(
+            "LLVM_PROFILE_FILE",
+            std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("the connector starts");
+    let stdout = child.stdout.take().expect("its output is piped");
+    let announced = BufReader::new(stdout).lines().next_line().await;
+    let announced = announced.expect("its output reads");
+    if announced.is_some() {
+        stop(&child);
+    }
+    let mut output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .expect("the connector ends")
+        .expect("its output reads");
+    output.stdout = announced.unwrap_or_default().into_bytes();
+    output
+}
+
+#[tokio::test]
+async fn a_connector_that_may_open_too_few_descriptors_refuses_to_listen() {
+    let refused = limited(256, &[]).await;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty(), "it announced an address");
+    // It says how many it may open, and how many it needs.
+    let said = String::from_utf8_lossy(&refused.stderr);
+    let needed = rdlt_connector::limits::ListenLimits::default().descriptors();
+    assert!(
+        said.contains("256") && said.contains(&needed.to_string()),
+        "{said}"
+    );
+}
+
+#[tokio::test]
+async fn a_connector_serving_fewer_sessions_listens_within_fewer_descriptors() {
+    let listening = limited(256, &["--max-sessions", "8"]).await;
+    assert!(listening.status.success(), "{listening:?}");
+    assert!(listening.stdout.starts_with(b"listening on "));
 }

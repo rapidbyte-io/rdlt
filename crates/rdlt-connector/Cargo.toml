@@ -57,7 +57,7 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, optional = true, features = ["process", "signal"] }
+nix = { workspace = true, optional = true, features = ["process", "resource", "signal"] }
 rdlt-adopt = { workspace = true, optional = true }
 
 [dev-dependencies]

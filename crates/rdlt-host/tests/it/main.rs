@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod acknowledged;
+mod admission;
 mod flow;
 mod groups;
 mod identity;
