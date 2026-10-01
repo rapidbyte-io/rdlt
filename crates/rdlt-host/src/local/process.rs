@@ -1,11 +1,20 @@
-//! A connector's process: spawned with its socket on file descriptor 3, its output drained into
-//! `tracing`, and stopped by a reaper task with `SIGTERM`, then `SIGKILL` after a grace period.
+//! A connector's process: spawned with its socket on file descriptor 3, leading a process group
+//! of its own, its output drained into `tracing`, and reaped by a thread that owns the group.
+//!
+//! The group is the host's for its whole life. It is stopped with `SIGTERM`, then `SIGKILL`
+//! after a grace period; killed at once when a kill says so; and killed when its leader exits
+//! by itself. The thread outlives the runtime that spawned the connector, so a connector whose
+//! runtime is dropped is stopped all the same.
+
+mod group;
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::os::fd::OwnedFd;
+use std::os::unix::process::CommandExt as _;
 use std::path::Path;
-use std::process::{ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,12 +23,12 @@ use rdlt_connector::ConnectorId;
 
 use crate::provider::Digest;
 use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{ChildStderr, ChildStdout};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::kills::Kills;
-use nix::sys::signal::Signal;
+pub use group::{Interrupts, Lingering, spawned, stop_spawned};
 
 /// Bytes of a connector's standard error kept for the errors of its transport.
 pub(crate) const TAIL_BYTES: usize = 8 * 1024;
@@ -68,12 +77,40 @@ impl Tail {
     }
 }
 
-/// A running connector's process, which dropping stops.
+/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with a
+/// cleared environment, in a process group of its own.
+fn command(launch: &Launch, socket: OwnedFd) -> std::io::Result<Command> {
+    let mut command = Command::new(&launch.path);
+    command
+        .arg("--rdlt-fd=3")
+        .env_clear()
+        .envs(
+        launch
+            .env_passthrough
+            .iter()
+            .filter_map(|name| Some((name, std::env::var_os(name)?))),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        // A group of its own, which this host owns: what the connector starts ends with it.
+        .process_group(0);
+    command
+        .fd_mappings(vec![FdMapping {
+            parent_fd: socket,
+            child_fd: 3,
+        }])
+        .map_err(|_| std::io::Error::other("file descriptor 3 is mapped twice"))?;
+    Ok(command)
+}
+
+/// A running connector's process, which dropping stops, with every process of its group.
 pub(crate) struct Process {
-    stop: CancellationToken,
+    /// Set to stop the process; the thread that reaps it reads it.
+    stop: Arc<AtomicBool>,
     /// What the kill that kills it cancels, when one may.
     killed: Option<CancellationToken>,
-    /// The process's exit, once it has exited.
+    /// The process's exit, once it has exited and its group is empty.
     exit: watch::Receiver<Option<ExitStatus>>,
     /// Whether its standard error has closed.
     stderr_closed: watch::Receiver<bool>,
@@ -82,35 +119,14 @@ pub(crate) struct Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        self.stop.cancel();
+        self.stop.store(true, Ordering::SeqCst);
     }
 }
 
 impl Process {
     /// Spawns `launch`'s binary serving the other end of `socket` at file descriptor 3.
     pub(crate) fn spawn(launch: &Launch, socket: OwnedFd) -> std::io::Result<Self> {
-        let mut command = Command::new(&launch.path);
-        command
-            .arg("--rdlt-fd=3")
-            .env_clear()
-            .envs(
-                launch
-                    .env_passthrough
-                    .iter()
-                    .filter_map(|name| Some((name, std::env::var_os(name)?))),
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            // A group of its own, so what the connector starts is stopped and killed with it.
-            .process_group(0)
-            .kill_on_drop(true);
-        command
-            .fd_mappings(vec![FdMapping {
-                parent_fd: socket,
-                child_fd: 3,
-            }])
-            .map_err(|_| std::io::Error::other("file descriptor 3 is mapped twice"))?;
+        let mut command = command(launch, socket)?;
         let mut child = command.spawn()?;
         // The command holds this process's copy of the connector's end: dropped, the connector's
         // exit closes the socket.
@@ -119,23 +135,37 @@ impl Process {
         let tail = Arc::new(Tail::default());
         let (closed, stderr_closed) = watch::channel(false);
         if let Some(stdout) = child.stdout.take() {
-            tokio::spawn(drain(stdout, launch.id.clone(), pid, Stream::Stdout, None));
+            let stdout = ChildStdout::from_std(stdout)?;
+            tokio::spawn(drain(
+                stdout,
+                launch.id.clone(),
+                Some(pid),
+                Stream::Stdout,
+                None,
+            ));
         }
         if let Some(stderr) = child.stderr.take() {
+            let stderr = ChildStderr::from_std(stderr)?;
             let kept = Some((Arc::clone(&tail), closed));
-            tokio::spawn(drain(stderr, launch.id.clone(), pid, Stream::Stderr, kept));
+            tokio::spawn(drain(
+                stderr,
+                launch.id.clone(),
+                Some(pid),
+                Stream::Stderr,
+                kept,
+            ));
         }
-        let stdin = child.stdin.take();
-        let stop = CancellationToken::new();
+        let stop = Arc::new(AtomicBool::new(false));
         let (exit_sender, exit) = watch::channel(None);
         let killed = launch.kills.as_ref().map(Kills::next);
-        tokio::spawn(reap(
+        let owned = group::Owned {
             child,
-            stdin,
-            launch.grace,
-            (stop.clone(), killed.clone()),
-            exit_sender,
-        ));
+            grace: launch.grace,
+            stop: Arc::clone(&stop),
+            killed: killed.clone(),
+            exit: exit_sender,
+        };
+        owned.reaped()?;
         Ok(Self {
             stop,
             killed,
@@ -286,56 +316,6 @@ fn forward(
         }
         Stream::Stderr => tracing::info!(connector = %connector, pid, "{text}"),
     }
-}
-
-/// Waits for `child` to exit, reporting it through `exit`; once `stop` is cancelled, closes its
-/// standard input and sends `SIGTERM`, and after `grace`, `SIGKILL`; once `killed` is, `SIGKILL`
-/// at once.
-///
-/// Each signal goes to the child's whole process group, which the child leads.
-async fn reap(
-    mut child: Child,
-    stdin: Option<ChildStdin>,
-    grace: Duration,
-    (stop, killed): (CancellationToken, Option<CancellationToken>),
-    exit: watch::Sender<Option<ExitStatus>>,
-) {
-    let killing = async {
-        match &killed {
-            Some(killed) => killed.cancelled().await,
-            None => std::future::pending().await,
-        }
-    };
-    let status = tokio::select! {
-        biased;
-        status = child.wait() => status,
-        () = killing => {
-            signal(&child, Signal::SIGKILL);
-            child.wait().await
-        }
-        () = stop.cancelled() => {
-            drop(stdin);
-            signal(&child, Signal::SIGTERM);
-            if let Ok(status) = tokio::time::timeout(grace, child.wait()).await {
-                status
-            } else {
-                signal(&child, Signal::SIGKILL);
-                child.wait().await
-            }
-        }
-    };
-    exit.send_replace(status.ok());
-}
-
-/// Sends `signal` to the process group `child` leads, while `child` is unreaped.
-///
-/// An unreaped child keeps its process id, and so its group's, from any other process: no
-/// reused id is signalled. Once it is reaped, nothing is sent.
-fn signal(child: &Child, signal: Signal) {
-    let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) else {
-        return;
-    };
-    nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid), signal).ok();
 }
 
 /// Whether `path` is a file this process may execute.

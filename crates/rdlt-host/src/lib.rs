@@ -18,7 +18,7 @@ mod wire;
 
 pub use connect::{Connect, Open};
 pub use kills::Kills;
-pub use local::{LastWords, Local, Witness};
+pub use local::{Interrupts, LastWords, Lingering, Local, Witness, spawned, stop_spawned};
 pub use network::{Endpoint, Network, Remote, Stream, Tcp};
 pub use provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
 pub use rdlt_wire::tls::Identity;

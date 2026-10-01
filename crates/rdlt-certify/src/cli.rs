@@ -17,7 +17,7 @@ use rdlt_certify::{
     certify_source, json, markdown, plain, read_back, unfinished,
 };
 use rdlt_connector::ConnectorId;
-use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote};
+use rdlt_host::{ConnectorRef, Endpoint, Identity, Interrupts, Local, Remote};
 
 /// Every clause that applies to the connector was seen to be met.
 const PASSED: u8 = 0;
@@ -143,7 +143,12 @@ fn run(args: &Args) -> Result<u8, Ended> {
         Some(seconds) => target.kill_timeout(Duration::from_secs(seconds)),
         None => target,
     };
-    let reports = certified(args, &target, &config)?;
+    let certified = certified(args, &target, &config);
+    // However the certification ended, each connector it spawned is stopped with its whole
+    // process group, and seen to be, before this process exits.
+    let stopped = rdlt_host::stop_spawned(STOPPING);
+    let reports = certified?;
+    stopped.map_err(|lingering| Ended(IO, lingering.to_string()))?;
     let verdict = verdict(&reports);
     if matches!(args.output, Output::Json) {
         let passed = verdict == Verdict::Passed;
@@ -177,14 +182,28 @@ fn certified(
     let until =
         bound(args.timeout, args.no_timeout).and_then(|bound| Instant::now().checked_add(bound));
     let overdue = |role| unfinished(target, role, OVERDUE);
+    // Heard from here on: an interrupt ends the certification, which then stops what it spawned.
+    let mut interrupts = {
+        let _runtime = runtime.enter();
+        Interrupts::listen().map_err(|error| Ended(IO, format!("no signal is heard: {error}")))?
+    };
+    let mut ran_to = |certifying: std::pin::Pin<&mut dyn Future<Output = Report>>| {
+        runtime.block_on(async {
+            tokio::select! {
+                biased;
+                status = interrupts.heard() => Err(interrupted(status)),
+                report = within(until, certifying) => Ok(report),
+            }
+        })
+    };
     let mut printed = Printed {
         output: args.output,
         held: Vec::new(),
     };
     let mut reports = Vec::new();
     if !matches!(args.role, Some(Role::Destination)) {
-        let certifying = certify_source(target, config.clone());
-        let report = runtime.block_on(within(until, certifying));
+        let certifying = std::pin::pin!(certify_source(target, config.clone()));
+        let report = ran_to(certifying)?;
         let report = report.unwrap_or_else(|| overdue(rdlt_connector::Role::Source));
         // No clause of a role the connector does not serve applies: unless the role was asked
         // for, or no role is served, its report is left out.
@@ -196,7 +215,7 @@ fn certified(
         }
     }
     if !matches!(args.role, Some(Role::Source)) {
-        let certifying = async {
+        let certifying = std::pin::pin!(async {
             // What the destination published is read back when it can be; else the clauses
             // that read it are not observed.
             let read_back = read_back(target, config).await;
@@ -205,8 +224,8 @@ fn certified(
                 None => &Unprobed,
             };
             certify_destination(target, config.clone(), probe).await
-        };
-        let report = runtime.block_on(within(until, certifying));
+        });
+        let report = ran_to(certifying)?;
         let report = report.unwrap_or_else(|| overdue(rdlt_connector::Role::Destination));
         let served = ran(&report);
         if served || reports.is_empty() {
@@ -221,6 +240,17 @@ fn certified(
         }
     }
     Ok(reports)
+}
+
+/// How long the connectors a certification spawned have to stop, each with its group, once the
+/// certification has ended: their grace, and what seeing a killed group empty takes.
+const STOPPING: Duration = Duration::from_secs(20);
+
+/// The end of a certification that was interrupted, or asked to terminate, with the exit
+/// `status` a process so ended has.
+fn interrupted(status: i32) -> Ended {
+    let code = u8::try_from(status).unwrap_or(FINDINGS);
+    Ended(code, "interrupted: nothing more is certified".to_owned())
 }
 
 /// Why a role's clauses fail when the certification's timeout ends it.

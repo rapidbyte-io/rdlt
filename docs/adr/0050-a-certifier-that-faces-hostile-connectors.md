@@ -61,10 +61,26 @@ things did not hold to that:
   text. The renderer reads instants, dates, times and spans as integers, at any depth, so
   Arrow's calendar is never reached. Nothing is caught by unwinding: a typed failure does not
   depend on the build's panic strategy.
-- **A kill clause passes on a kill that landed.** A spawned connector leads a process group, and
-  stop and kill signal the group. The host's end of a connection counts a kill as landed when it
-  sees the connection end after the kill: a socket ends only when no process holds its other
-  end. The answer `K-DESTINATION` loses by itself is no evidence.
+- **A host owns the process group of a connector it spawned, for its whole life.** The
+  connector leads a group of its own, and a thread of the host, which outlives the runtime that
+  spawned the connector, owns it.
+  - The thread sees the leader exit without reaping it (`waitid` with `WNOWAIT`), so the
+    group's id, the leader's, cannot belong to anything else while it signals.
+  - A stop sends `SIGTERM` to the group and, once the leader has exited or its grace has
+    passed, `SIGKILL`; a kill sends `SIGKILL` at once; a leader that exits by itself has its
+    group killed. Only then is the leader reaped, and the group asked, with the null signal,
+    whether a member is left: one left after five seconds is reported
+    (`rdlt_host::Lingering`).
+  - A connector is stopped when it is dropped, when its runtime is, and when its host calls
+    `rdlt_host::stop_spawned`, which `rdlt-certify` does before it exits however it ends: its
+    run complete, cut at its timeout, or interrupted (`SIGINT`, `SIGTERM`, heard through
+    `rdlt_host::Interrupts`, exit 130 or 143).
+  - A host killed outright runs no code. Its connectors end by the end of their input and, on
+    Linux, the parent-death signal; what they started and left in their groups lives on. A
+    sandboxed spawn with a process namespace of its own closes that.
+- **A kill clause passes on a kill that landed.** The host's end of a connection counts a kill
+  as landed when it sees the connection end after the kill: a socket ends only when no process
+  holds its other end. The answer `K-DESTINATION` loses by itself is no evidence.
 - **`P-CREDIT` accounts credit.** It sizes the first frame as the host does and grants a byte
   more, three times, each too little to restore the credit, watching a second after each.
 - **A connector can tell a certification, and the documentation says so.** Certification names

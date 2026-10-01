@@ -524,3 +524,111 @@ fn the_committed_clause_documentation_is_generated_from_the_registry() {
         "regenerate it with `rdlt-certify --clauses`"
     );
 }
+
+/// A launcher in `directory` that starts two members of its group, one that ignores `SIGTERM`,
+/// appends their process ids to `members`, and becomes the example connector `name`.
+fn launcher(directory: &std::path::Path, name: &str) -> String {
+    let path = directory.join("launcher");
+    let script = format!(
+        "#!/bin/sh\nsleep 1000 &\necho $! >> '{members}'\n\
+         sh -c 'trap \"\" TERM; sleep 1000' &\necho $! >> '{members}'\n\
+         exec '{connector}' \"$@\"\n",
+        members = directory.join("members").display(),
+        connector = example(name).display()
+    );
+    std::fs::write(&path, script).expect("the launcher writes");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("the launcher is executable");
+    path.to_str().expect("a UTF-8 path").to_owned()
+}
+
+/// The members the launchers in `directory` started that still live; each is killed, so a
+/// failing test leaves nothing behind.
+fn surviving(directory: &std::path::Path) -> Vec<i32> {
+    let written = std::fs::read_to_string(directory.join("members")).unwrap_or_default();
+    let members = written
+        .lines()
+        .map(|pid| pid.trim().parse::<i32>().expect("a process id"));
+    let alive = |member: &i32| {
+        let member = nix::unistd::Pid::from_raw(*member);
+        let alive = nix::sys::signal::kill(member, None).is_ok();
+        nix::sys::signal::kill(member, nix::sys::signal::Signal::SIGKILL).ok();
+        alive
+    };
+    members.filter(alive).collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_certification_that_ends_leaves_nothing_its_connectors_started() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let launched = launcher(directory.path(), "serve_source");
+    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    let args = [
+        launched.as_str(),
+        "--config",
+        config,
+        "--env",
+        "LLVM_PROFILE_FILE",
+    ];
+    let output = certify(&[&args[..], &["--require", "partial"]].concat()).await;
+    assert_eq!(
+        code(&output),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let started = std::fs::read_to_string(directory.path().join("members")).expect("members");
+    assert!(started.lines().count() >= 4, "{started}");
+    assert_eq!(surviving(directory.path()), Vec::<i32>::new());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_certification_cut_at_its_timeout_leaves_nothing_its_connectors_started() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    // Its configuration never answers: the certification is cut as a connector waits.
+    let launched = launcher(directory.path(), "serve_hang");
+    let args = [launched.as_str(), "--role", "destination", "--timeout", "2"];
+    let output = certify(&[&args[..], &["--env", "LLVM_PROFILE_FILE"]].concat()).await;
+    assert_eq!(code(&output), Some(1));
+    assert!(directory.path().join("members").exists());
+    assert_eq!(surviving(directory.path()), Vec::<i32>::new());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_it_exits() {
+    use nix::sys::signal::Signal;
+    for (signal, exits) in [(Signal::SIGINT, 130), (Signal::SIGTERM, 143)] {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let launched = launcher(directory.path(), "serve_hang");
+        let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+            .args([
+                launched.as_str(),
+                "--role",
+                "destination",
+                "--env",
+                "LLVM_PROFILE_FILE",
+            ])
+            .env(
+                "LLVM_PROFILE_FILE",
+                std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
+            )
+            .stdout(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("rdlt-certify runs");
+        // Once a connector has started its members, the certification waits on it.
+        let members = directory.path().join("members");
+        for _ in 0..600 {
+            let started = std::fs::read_to_string(&members).unwrap_or_default();
+            if started.lines().count() >= 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let pid = i32::try_from(certifying.id().expect("it runs")).expect("a process id");
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).expect("it is signalled");
+        let status = certifying.wait().await.expect("the certification ends");
+        assert_eq!(status.code(), Some(exits), "{signal}");
+        assert_eq!(surviving(directory.path()), Vec::<i32>::new(), "{signal}");
+    }
+}
