@@ -10,11 +10,13 @@ use std::process::ExitCode;
 use anyhow::Context as _;
 use walkdir::WalkDir;
 
+use crate::codegen::GENERATED;
 use crate::lexer::scan;
 use crate::rules::{self, FileRole, Finding, Severity};
 
-/// Directories never scanned: build output, and code generated from other sources.
-const SKIPPED: &[&str] = &["target", "generated"];
+/// Paths never scanned, relative to the repository root: the fuzzing build's output, and the code
+/// generated from the protocol's definitions.
+const SKIPPED: &[&str] = &["fuzz/target", GENERATED];
 
 /// Directories scanned for Rust sources, relative to the repository root.
 const SOURCE_ROOTS: &[&str] = &["crates", "fuzz", "xtask"];
@@ -28,9 +30,8 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
         .filter(|dir| dir.exists())
     {
         let walk = WalkDir::new(&dir).sort_by_file_name().into_iter();
-        for entry in
-            walk.filter_entry(|entry| !SKIPPED.iter().any(|skipped| entry.file_name() == *skipped))
-        {
+        let skipped = |path: &Path| SKIPPED.iter().any(|skipped| path == root.join(skipped));
+        for entry in walk.filter_entry(|entry| !skipped(entry.path())) {
             let entry = entry.with_context(|| format!("walking {}", dir.display()))?;
             let path = entry.path();
             if path.extension().is_none_or(|ext| ext != "rs") {
