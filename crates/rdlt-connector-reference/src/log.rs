@@ -30,6 +30,10 @@ pub struct LogConfig {
     /// where none is named.
     #[serde(default)]
     pub group: Option<String>,
+    /// The file the group's offsets are kept in instead, which outlives the process as a
+    /// broker keeps them; `group` names none then.
+    #[serde(default)]
+    pub group_path: Option<std::path::PathBuf>,
 }
 
 /// One stream: `partitions` offset logs of `messages` messages each, growing by `per_second`
@@ -132,7 +136,12 @@ impl SourceConnector for LogSource {
         Ok(Self {
             seed: config.seed,
             streams: config.streams,
-            group: GROUPS.named(config.group.as_deref()),
+            group: match &config.group_path {
+                Some(path) => GROUPS
+                    .at(path)
+                    .config(format!("group {}", path.display()))?,
+                None => GROUPS.named(config.group.as_deref()),
+            },
         })
     }
 
@@ -352,7 +361,8 @@ impl ReadStream<LogSource> for Logged {
     /// Commits each partition's offset in the source's consumer group.
     async fn committed(&self, source: &LogSource, cursors: &[(PartitionId, Offset)]) -> Result<()> {
         for (partition, offset) in cursors {
-            source.group.advance(&self.0.name, partition, offset.next);
+            let kept = source.group.advance(&self.0.name, partition, offset.next);
+            kept.transient("keeping the group's offsets")?;
         }
         Ok(())
     }

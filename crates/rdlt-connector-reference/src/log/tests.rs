@@ -269,3 +269,22 @@ async fn a_following_read_of_the_first_partition_asks_for_a_plan_as_partitions_a
     read.expect("a stopped read ends cleanly");
     assert_eq!(sent.replans, 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_group_on_disk_keeps_its_committed_offsets_for_its_next_process() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join("events.group");
+    let stream = json!({ "name": "events", "partitions": 1, "messages": 8 });
+    let mut kept = config(&stream, "unused");
+    kept["group_path"] = json!(path);
+    let source = source_factory::<LogSource>()
+        .connect(kept, ConnectContext::new())
+        .await
+        .expect("the source connects");
+    source
+        .committed(&events(), &[(p(0), offset(5))])
+        .await
+        .expect("the offset commits");
+    let found: crate::kept::Kept<u64> = crate::kept::Kept::at(&path).expect("the group reads");
+    assert_eq!(found.position("events", &p(0)), Some(5));
+}
