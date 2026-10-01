@@ -1,4 +1,4 @@
-//! Real crashes (spec §20.6): a pipeline run in a process of its own crashes at each of the
+//! Real crashes: a pipeline run in a process of its own crashes at each of the
 //! engine's durability steps, or is killed with its spawned connectors, then runs again, and its
 //! destination holds every row once.
 //!

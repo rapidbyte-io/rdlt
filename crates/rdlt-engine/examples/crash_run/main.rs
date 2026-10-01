@@ -1,6 +1,6 @@
 //! A pipeline run in a process of its own, as the CLI will run one: the failpoint sweep crashes it
 //! at the engine's durability steps, and the kill matrix kills it or its spawned connectors, then
-//! each runs it again and checks every row landed once (spec §20.6).
+//! each runs it again and checks every row landed once.
 //!
 //! `crash_run <config.json>` runs the pipeline the file describes once, retrying, and exits 0
 //! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names. It

@@ -1,4 +1,4 @@
-//! Crash points at the engine's durability steps (spec §20.6): with the `failpoints` feature, a
+//! Crash points at the engine's durability steps: with the `failpoints` feature, a
 //! test names a point in `FAILPOINTS` (`engine.commit.before=return`, or `=2*off->return` for its
 //! third hit) and the process aborts there, as a crash would; without it they are nothing.
 
