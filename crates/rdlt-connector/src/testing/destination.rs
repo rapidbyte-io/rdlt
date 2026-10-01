@@ -24,7 +24,9 @@ use bytes::Bytes;
 pub use clauses::DESTINATION_CLAUSES;
 pub use read::read_back_integers;
 
-use super::{Clause, ClauseResult, Outcome, Report, Violation, bounded, bounded_call, outcome};
+use super::{
+    Clause, ClauseResult, Observed, Outcome, Report, Violation, bounded, bounded_call, outcome,
+};
 use crate::commit::{CommitMeta, SegmentSet};
 use crate::destination::{
     Destination, DestinationConnector, DestinationFactory, DestinationSession, DestinationWriter,
@@ -86,7 +88,20 @@ pub async fn certify_destination_factory(
     config: serde_json::Value,
     probe: &dyn Probe,
 ) -> Report {
+    certify_destination_factory_observed(factory, config, probe, &Observed::new()).await
+}
+
+/// Certifies the destination `factory` creates from `config`, as
+/// [`certify_destination_factory`] does, telling `observed` each clause's result as its check
+/// ends: what was found is then known of a certification that is cut.
+pub async fn certify_destination_factory_observed(
+    factory: &dyn DestinationFactory,
+    config: serde_json::Value,
+    probe: &dyn Probe,
+    observed: &Observed,
+) -> Report {
     let connector = factory.spec().id.to_string();
+    observed.named(&connector);
     let connections = async {
         let destination = bounded_call(
             "connect",
@@ -117,10 +132,12 @@ pub async fn certify_destination_factory(
                     (None, None) if unread => Outcome::Unobserved(UNREAD.into()),
                     (None, None) => outcome(super::timed(bench.check(clause.id)).await),
                 };
-                results.push(ClauseResult {
+                let result = ClauseResult {
                     clause: *clause,
                     outcome,
-                });
+                };
+                observed.tell(result.clone());
+                results.push(result);
             }
             results
         }
@@ -130,7 +147,12 @@ pub async fn certify_destination_factory(
                 clause: *clause,
                 outcome: outcome.clone(),
             };
-            DESTINATION_CLAUSES.iter().map(failed).collect()
+            let failed: Vec<ClauseResult> = DESTINATION_CLAUSES.iter().map(failed).collect();
+            failed
+                .iter()
+                .cloned()
+                .for_each(|failed| observed.tell(failed));
+            failed
         }
     };
     Report { connector, results }

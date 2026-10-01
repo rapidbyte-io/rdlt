@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use rdlt_certify::{
-    Outcome, Probe, RUN_TIMEOUT, Report, Target, Unprobed, Verdict, certify_destination,
-    certify_source, json, markdown, plain, read_back, unfinished,
+    Observed, Outcome, Probe, RUN_TIMEOUT, Report, Target, Unprobed, Verdict,
+    certify_destination_observed, certify_source_observed, json, markdown, plain, read_back,
+    unfinished,
 };
 use rdlt_connector::ConnectorId;
 use rdlt_host::{ConnectorRef, Endpoint, Identity, Interrupts, Local, Remote};
@@ -169,6 +170,22 @@ fn run(args: &Args) -> Result<u8, Ended> {
     Ok(code(verdict, args.require, &reports))
 }
 
+/// When the certification's bound passes, when it has one: whoever asks for a bound gets one, so
+/// a timeout the clock cannot hold is refused.
+fn until(args: &Args) -> Result<Option<Instant>, Ended> {
+    let Some(bound) = bound(args.timeout, args.no_timeout) else {
+        return Ok(None);
+    };
+    let until = Instant::now().checked_add(bound).ok_or_else(|| {
+        let message = "--timeout is further ahead than the clock holds; see --no-timeout";
+        Ended(USAGE, message.to_owned())
+    })?;
+    Ok(Some(until))
+}
+
+/// A role's certification, as the command line runs it.
+type Certifying<'a> = std::pin::Pin<&'a mut dyn Future<Output = Report>>;
+
 /// The report of each role asked that the connector serves, or of every role when it serves
 /// none, each printed as text as its certification ends.
 fn certified(
@@ -178,28 +195,26 @@ fn certified(
 ) -> Result<Vec<Report>, Ended> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
-    // Whoever asks for a bound gets one: a timeout the clock cannot hold is refused.
-    let until = match bound(args.timeout, args.no_timeout) {
-        Some(bound) => Some(Instant::now().checked_add(bound).ok_or_else(|| {
-            let message = "--timeout is further ahead than the clock holds; see --no-timeout";
-            Ended(USAGE, message.to_owned())
-        })?),
-        None => None,
-    };
-    let overdue = |role| unfinished(target, role, OVERDUE);
+    let until = until(args)?;
     // Heard from here on: an interrupt ends the certification, which then stops what it spawned.
     let mut interrupts = {
         let _runtime = runtime.enter();
         Interrupts::listen().map_err(|error| Ended(IO, format!("no signal is heard: {error}")))?
     };
-    let mut ran_to = |certifying: std::pin::Pin<&mut dyn Future<Output = Report>>| {
-        runtime.block_on(async {
+    // A role's report: what its certification found, cut where the bound passed. A bound that
+    // has passed already starts no connector.
+    let mut ran_to = |role, observed: &Observed, certifying: Certifying<'_>| {
+        if until.is_some_and(|until| Instant::now() >= until) {
+            return Ok(unfinished(target, role, observed, OVERDUE));
+        }
+        let report = runtime.block_on(async {
             tokio::select! {
                 biased;
                 status = interrupts.heard() => Err(interrupted(status)),
                 report = within(until, certifying) => Ok(report),
             }
-        })
+        })?;
+        Ok(report.unwrap_or_else(|| unfinished(target, role, observed, OVERDUE)))
     };
     let mut printed = Printed {
         output: args.output,
@@ -207,9 +222,9 @@ fn certified(
     };
     let mut reports = Vec::new();
     if !matches!(args.role, Some(Role::Destination)) {
-        let certifying = std::pin::pin!(certify_source(target, config.clone()));
-        let report = ran_to(certifying)?;
-        let report = report.unwrap_or_else(|| overdue(rdlt_connector::Role::Source));
+        let observed = Observed::new();
+        let certifying = std::pin::pin!(certify_source_observed(target, config.clone(), &observed));
+        let report = ran_to(rdlt_connector::Role::Source, &observed, certifying)?;
         // No clause of a role the connector does not serve applies: unless the role was asked
         // for, or no role is served, its report is left out.
         if args.role.is_some() || ran(&report) {
@@ -220,6 +235,7 @@ fn certified(
         }
     }
     if !matches!(args.role, Some(Role::Source)) {
+        let observed = Observed::new();
         let certifying = std::pin::pin!(async {
             // What the destination published is read back when it can be; else the clauses
             // that read it are not observed.
@@ -228,10 +244,9 @@ fn certified(
                 Some(read_back) => read_back,
                 None => &Unprobed,
             };
-            certify_destination(target, config.clone(), probe).await
+            certify_destination_observed(target, config.clone(), probe, &observed).await
         });
-        let report = ran_to(certifying)?;
-        let report = report.unwrap_or_else(|| overdue(rdlt_connector::Role::Destination));
+        let report = ran_to(rdlt_connector::Role::Destination, &observed, certifying)?;
         let served = ran(&report);
         if served || reports.is_empty() {
             if !served {
