@@ -7,7 +7,7 @@ mod merged;
 #[cfg(test)]
 pub(super) mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +53,8 @@ struct Shared {
     staged: Vec<StagedFile>,
     /// The identifier of each table path the session wrote or changed, by the path's JSON.
     names: BTreeMap<String, String>,
+    /// The dropped tables whose catalogs the session removed, until it creates one again.
+    released: BTreeSet<String>,
     parts: u64,
 }
 
@@ -72,8 +74,9 @@ impl FilesSession {
     }
 
     fn learn(&self, table: &TableRef) {
-        self.shared
-            .lock()
+        let mut shared = self.shared.lock();
+        shared.released.remove(&*table.name);
+        shared
             .names
             .insert(path_key(&table.path), table.name.to_string());
     }

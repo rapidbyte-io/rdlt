@@ -223,3 +223,25 @@ fn a_manifest_at_the_end_of_its_versions_or_epochs_is_followed_by_none() {
     let first = next_epoch(&fresh, &rdlt, &pipeline, WAIT).unwrap();
     assert_eq!((first.version, first.epoch), (1, Epoch(1)));
 }
+
+#[test]
+fn a_table_is_still_dropped_only_while_the_latest_manifest_lists_nothing_for_it() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = Dir::ambient(root.path()).unwrap();
+    assert!(!super::still_dropped(&dir, "t").unwrap(), "no manifest");
+    let mut manifest = Manifest {
+        version: 1,
+        dropped: ["t".to_owned()].into(),
+        ..Manifest::default()
+    };
+    assert!(manifest::put(&dir, &manifest).unwrap());
+    assert!(super::still_dropped(&dir, "t").unwrap());
+    assert!(!super::still_dropped(&dir, "u").unwrap());
+    // Listed as dropped and as published: it was created again, and is dropped no longer.
+    manifest.version = 2;
+    manifest
+        .tables
+        .insert("t".to_owned(), TableFiles::default());
+    assert!(manifest::put(&dir, &manifest).unwrap());
+    assert!(!super::still_dropped(&dir, "t").unwrap());
+}

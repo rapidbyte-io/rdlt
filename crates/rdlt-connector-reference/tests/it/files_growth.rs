@@ -472,3 +472,65 @@ async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whol
     let expected: Vec<(i64, i64)> = (0..100).map(|commit| (commit, commit / 10)).collect();
     assert_eq!(read, expected);
 }
+
+#[tokio::test]
+async fn a_table_created_again_after_its_drop_keeps_its_catalog() {
+    let root = tempfile::tempdir().unwrap();
+    let (destination, reader) = connect_with(root.path(), json!({})).await;
+    let mut opened = open(destination.as_ref(), 1).await;
+    let rows = table("rows");
+    let (schema, batch) = ids(&[1]);
+    stage(&mut opened, &rows, &schema, batch, 1).await;
+    let seq1 = CommitSeq::FIRST;
+    opened
+        .session
+        .commit(&meta(&opened, 1, seq1, &[1]))
+        .await
+        .unwrap();
+    let mut dropping = meta(&opened, 1, seq1.next(), &[]);
+    dropping.drop_tables = vec![rdlt_connector::DroppedTable {
+        path: rows.path.clone(),
+        name: rows.name.clone(),
+    }];
+    opened.session.commit(&dropping).await.unwrap();
+    // The same session creates the table again and publishes a row.
+    let (schema, batch) = ids(&[2]);
+    stage(&mut opened, &rows, &schema, batch, 2).await;
+    let seq3 = seq1.next().next();
+    opened
+        .session
+        .commit(&meta(&opened, 1, seq3, &[2]))
+        .await
+        .unwrap();
+    let catalog = root.path().join("_rdlt").join("tables").join("rows");
+    let (_, manifest) = latest_manifest(root.path());
+    assert!(catalog.exists(), "the catalog of a published table is gone");
+    assert!(manifest.get("dropped").is_none(), "{manifest}");
+    assert_eq!(published_ids(reader.as_ref(), &rows).await, [2]);
+    // Dropped again, its catalog goes again; created again and not yet written, its catalog
+    // stays through another table's commit.
+    let seq4 = seq3.next();
+    let mut dropping = meta(&opened, 1, seq4, &[]);
+    dropping.drop_tables = vec![rdlt_connector::DroppedTable {
+        path: rows.path.clone(),
+        name: rows.name.clone(),
+    }];
+    opened.session.commit(&dropping).await.unwrap();
+    assert!(!catalog.exists(), "the catalog of a dropped table stays");
+    let create = TableChange::Create {
+        table: rows.clone(),
+        schema: ids(&[]).0,
+    };
+    opened.session.apply_schema(&create).await.unwrap();
+    let (schema, batch) = ids(&[3]);
+    stage(&mut opened, &table("other"), &schema, batch, 3).await;
+    opened
+        .session
+        .commit(&meta(&opened, 1, seq4.next(), &[3]))
+        .await
+        .unwrap();
+    assert!(
+        catalog.exists(),
+        "the catalog of a table created again is gone"
+    );
+}
