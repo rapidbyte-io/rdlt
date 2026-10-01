@@ -24,8 +24,13 @@ pub(in crate::testing) struct Budget {
 impl Budget {
     /// A clause's budget: [`HELD_BYTES`] and [`HELD_ROWS`].
     pub(in crate::testing) fn new() -> Self {
+        Self::holding(HELD_BYTES)
+    }
+
+    /// A budget of `bytes` and [`HELD_ROWS`].
+    pub(in crate::testing) fn holding(bytes: usize) -> Self {
         Self {
-            bytes: AtomicUsize::new(HELD_BYTES),
+            bytes: AtomicUsize::new(bytes),
             rows: AtomicUsize::new(HELD_ROWS),
         }
     }

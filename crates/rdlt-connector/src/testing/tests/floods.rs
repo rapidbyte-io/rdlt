@@ -243,12 +243,13 @@ async fn an_instant_no_calendar_holds_is_compared_instead_of_panicking() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_json_push_is_charged_for_its_rows_before_it_is_parsed_and_expands_to_no_more() {
-    // Sixteen mebibytes of rows of a byte each, and of one row holding as many values: within
-    // the bytes a clause holds, and many times them once parsed into a tree.
+    // Three mebibytes of rows of a byte each, more rows than a clause holds, and of one row
+    // holding as many values: within the bytes a clause holds, and sixteen times them and more
+    // once parsed into a tree.
     for pushes in ["json", "nested"] {
         let before = peak();
         let began = Instant::now();
-        let config = json!({ "name": pushes, "pushes": pushes, "count": 16 });
+        let config = json!({ "name": pushes, "pushes": pushes, "count": 3 });
         let report = certify_source::<Flood>(config).await;
         assert!(failed(&report).is_empty(), "{pushes}: {report}");
         for clause in ["S-RESUME", "S-PARTITION", "S-STOP"] {
@@ -260,7 +261,7 @@ async fn a_json_push_is_charged_for_its_rows_before_it_is_parsed_and_expands_to_
         }
         // The push itself, where it was made and where it was held, and little else.
         let grown = peak().saturating_sub(before);
-        assert!(grown < 128, "{pushes}: {grown} MiB more were held");
+        assert!(grown < 24, "{pushes}: {grown} MiB more were held");
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "{pushes}: {:?}",

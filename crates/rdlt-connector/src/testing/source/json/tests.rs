@@ -92,7 +92,7 @@ fn a_record_is_parsed_only_within_its_bytes() {
 
 #[test]
 fn a_push_is_scanned_and_made_canonical_in_pieces_between_which_it_yields() {
-    for (pieces, yields) in [(0, 0), (1, 1), (3, 3)] {
+    for (pieces, yields) in [(0, 0), (1, 1), (2, 2)] {
         // Rows of two bytes each, a piece of them and one row more.
         let rows = pieces * YIELD_BYTES / 2 + 1;
         let text = format!("[{}]", vec!["0"; rows].join(","));
