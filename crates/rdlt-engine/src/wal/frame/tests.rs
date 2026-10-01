@@ -349,3 +349,34 @@ fn a_batch_that_cannot_be_encoded_fails_with_the_encoders_error_as_its_cause() {
     assert_eq!(report.causes.len(), 1, "{report:?}");
     assert!(report.causes[0].contains("dictionary"), "{report:?}");
 }
+
+#[test]
+fn a_commit_frame_takes_little_more_than_the_state_it_records() {
+    let cursor = Cursor::new(1, &vec![b'c'; 300_000]).expect("a cursor within the limit");
+    let entry = rdlt_connector::StateEntry::Partition {
+        stream: StreamName::new("orders").expect("a valid stream"),
+        partition: PartitionId::parse("p0").expect("a valid partition"),
+        state: PartitionState::Cursor(cursor),
+    };
+    let meta = CommitMeta {
+        load_id: load(),
+        commit_seq: CommitSeq::FIRST,
+        epoch: Epoch(1),
+        segments: rdlt_connector::SegmentSet::new(),
+        state_delta: vec![StateChange::Put(entry.to_record())],
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    let frame = Frame::Commit(Box::new(meta.clone()))
+        .encode()
+        .expect("the frame encodes");
+    // The cursor is base64 in its state value, and the value base64 in the frame: under twice
+    // the cursor, where a number a byte took five times it.
+    assert!(frame.len() < 2 * 300_000, "{} bytes", frame.len());
+    assert_eq!(super::commit(&meta).expect("the frame encodes"), frame);
+    let decoded: Vec<Frame> = Frames::new(&frame)
+        .map(|frame| frame.expect("the frame decodes").1)
+        .collect();
+    assert_eq!(decoded, [Frame::Commit(Box::new(meta))]);
+}

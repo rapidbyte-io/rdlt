@@ -31,14 +31,19 @@ pub(crate) enum Command {
         frame: Bytes,
         held: Permit,
     },
-    /// A seal frame of `segment`.
-    Seal { segment: SegmentId, frame: Bytes },
-    /// The frame of commit `seq` of `segments`: appended, made durable, then answered; the chunk
-    /// after it starts a new one.
+    /// A seal frame of `segment`, and the memory it holds until it is appended.
+    Seal {
+        segment: SegmentId,
+        frame: Bytes,
+        held: Permit,
+    },
+    /// The frame of commit `seq` of `segments`, and the memory it holds until it is appended:
+    /// appended, made durable, then answered; the chunk after it starts a new one.
     Commit {
         seq: CommitSeq,
         segments: SegmentSet,
         frame: Bytes,
+        held: Permit,
         durable: oneshot::Sender<Result<(), Error>>,
     },
     /// The receipt frame of commit `seq`.
@@ -186,8 +191,13 @@ impl Log {
                 drop(held);
                 self.note(&result);
             }
-            Command::Seal { segment, frame } => {
+            Command::Seal {
+                segment,
+                frame,
+                held,
+            } => {
                 let result = self.append(frame).await;
+                drop(held);
                 self.note(&result);
                 self.current().segments.insert(segment);
             }
@@ -195,9 +205,11 @@ impl Log {
                 seq,
                 segments,
                 frame,
+                held,
                 durable,
             } => {
                 let result = self.commit(seq, segments, frame).await;
+                drop(held);
                 self.note(&result);
                 drop(durable.send(result));
             }

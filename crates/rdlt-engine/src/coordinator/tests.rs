@@ -153,8 +153,9 @@ struct Setup {
     schema: Option<TableSchema>,
     /// Where the load keeps its write-ahead log, if it keeps one.
     wal: Option<Arc<MemoryWal>>,
-    /// The cursor bytes of waiting seals that make a commit due.
-    cursor_limit: u64,
+    /// The memory budget's bytes, a quarter of which waiting cursors may hold before a commit
+    /// is due.
+    budget: u64,
 }
 
 impl Setup {
@@ -171,7 +172,7 @@ impl Setup {
             fail_commit: false,
             schema: None,
             wal: None,
-            cursor_limit: u64::MAX,
+            budget: u64::MAX,
         }
     }
 
@@ -262,7 +263,7 @@ impl Setup {
             partitions: self.partitions,
             progress: progress_feed,
             latest: Arc::clone(&harness.latest),
-            cursor_limit: self.cursor_limit,
+            budget: crate::budget::MemoryBudget::new(self.budget),
             barrier: barrier_sender,
             stop_reads: harness.stop_reads.clone(),
             stop: harness.stop.clone(),

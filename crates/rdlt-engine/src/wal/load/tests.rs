@@ -89,7 +89,7 @@ async fn each_table_version_is_described_once_before_its_first_batch() {
         log.batch(&Inline, &budget, 1, &at(&items, 1), SegmentId(4), &ids(20))
             .await
             .expect("the batch is logged");
-        log.commit(Vec::new(), Vec::new(), &meta(&[0, 1, 2, 3, 4]))
+        log.commit(&budget, Vec::new(), Vec::new(), &meta(&[0, 1, 2, 3, 4]))
             .await
             .expect("the commit is durable");
         drop(log);
@@ -158,7 +158,7 @@ async fn a_logged_load_reads_back_as_it_was_written() {
             from: None,
             state: state.clone(),
         }];
-        log.commit(sealed, Vec::new(), &meta(&[1]))
+        log.commit(&budget, sealed, Vec::new(), &meta(&[1]))
             .await
             .expect("durable");
         let kinds: Vec<_> = frames(&observed).into_iter().skip(2).collect();
@@ -236,9 +236,14 @@ async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segme
             // An idle partition seals an empty segment, which no commit publishes.
             let mut commit = meta(&[full]);
             commit.commit_seq = seq;
-            log.commit(vec![sealed_at(full), sealed_at(empty)], Vec::new(), &commit)
-                .await
-                .expect("durable");
+            log.commit(
+                &budget,
+                vec![sealed_at(full), sealed_at(empty)],
+                Vec::new(),
+                &commit,
+            )
+            .await
+            .expect("durable");
             let receipt = Receipt {
                 load_id: load(),
                 commit_seq: seq,
@@ -252,6 +257,51 @@ async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segme
         // Every commit has its receipt: at most the chunk the last receipt went to is left.
         let kept = observed.stored(&pipeline()).len();
         assert!(kept <= 1, "{kept} chunks kept");
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
+#[tokio::test]
+async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
+        .await
+        .expect("the log starts");
+    let observed = Arc::clone(&store);
+    let written = async move {
+        // A seal whose cursor makes its frame far larger than the commit's.
+        let cursor = Cursor::new(1, &[b'c'; 10_000]).expect("a cursor");
+        let large = Sealed {
+            state: PartitionState::Cursor(cursor),
+            ..sealed_at(1)
+        };
+        let sealing = MemoryBudget::new(1 << 20);
+        log.commit(&sealing, vec![large], Vec::new(), &meta(&[1]))
+            .await
+            .expect("durable");
+        let lengths: Vec<u64> = frames(&observed)
+            .iter()
+            .skip(1)
+            .map(|frame| frame.encode().expect("the frame encodes").len() as u64)
+            .collect();
+        let [seal, commit] = lengths[..] else {
+            panic!("a seal and the commit: {lengths:?}");
+        };
+        assert!(seal > commit && seal > 10_000);
+        assert!(sealing.peak() >= seal, "{} of {seal}", sealing.peak());
+        assert_eq!(sealing.reserved(), 0, "released once appended");
+        // A commit of no seals is charged its own frame.
+        let committing = MemoryBudget::new(1 << 20);
+        let mut second = meta(&[2]);
+        second.commit_seq = CommitSeq::FIRST.next();
+        log.commit(&committing, Vec::new(), Vec::new(), &second)
+            .await
+            .expect("durable");
+        assert_eq!(committing.peak(), commit);
+        assert_eq!(committing.reserved(), 0);
         drop(log);
     };
     let (ended, ()) = tokio::join!(task, written);

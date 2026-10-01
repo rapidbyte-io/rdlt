@@ -124,7 +124,8 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     );
-    setup.cursor_limit = 3 * bytes;
+    // A quarter of the budget is three cursors.
+    setup.budget = 12 * bytes;
     let (mut coordinator, _harness) = setup.coordinator().await;
     for segment in 1..=2 {
         coordinator.observe(Progress::Sealed(seal(0, segment, 1, segment, None)));
@@ -134,7 +135,7 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
     assert!(coordinator.due());
     // A limit of nothing, as a budget of a few bytes has, is not due without a cursor.
     coordinator.sealed.take();
-    coordinator.parts.cursor_limit = 0;
+    coordinator.cursor_limit = 0;
     assert!(!coordinator.due());
 }
 

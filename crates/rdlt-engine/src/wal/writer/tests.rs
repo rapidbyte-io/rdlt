@@ -105,6 +105,7 @@ fn commit(number: u64, ids: &[u64]) -> (Command, oneshot::Receiver<Result<(), Er
         seq: seq(number),
         segments: segments(ids),
         frame: encoded(&Frame::Commit(Box::new(meta))),
+        held: Box::new(()),
         durable,
     };
     (command, answer)
