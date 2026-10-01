@@ -45,7 +45,7 @@ fn fixtures() -> Vec<(Bytes, Vec<IpcFrame>)> {
             let schema = Schema::new(vec![Field::new(name, array.data_type().clone(), true)]);
             let batch = RecordBatch::try_new(Arc::new(schema), vec![array]).expect("valid");
             let mut encoder = Encoder::default();
-            let schema = encoder.schema(&batch.schema());
+            let schema = encoder.schema(&batch.schema()).expect("the schema encodes");
             (schema, encoder.batch(&batch).expect("the batch encodes"))
         })
         .collect()

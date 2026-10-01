@@ -27,10 +27,9 @@ fn limits() -> Limits {
 /// `batch`'s Arrow data.
 pub(super) fn encode(batch: &RecordBatch) -> Result<Vec<u8>, Error> {
     let mut encoder = Encoder::default();
-    let schema = encoder.schema(batch.schema_ref());
-    let frames = encoder
-        .batch(batch)
-        .map_err(|error| Error::internal(format!("encoding a write-ahead log batch: {error}")))?;
+    let unencoded = |error| Error::internal(format!("encoding a write-ahead log batch: {error}"));
+    let schema = encoder.schema(batch.schema_ref()).map_err(unencoded)?;
+    let frames = encoder.batch(batch).map_err(unencoded)?;
     let mut out = Vec::new();
     put(&mut out, &schema)?;
     out.put_u32_le(length(frames.len())?);

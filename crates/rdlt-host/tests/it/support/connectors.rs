@@ -342,13 +342,12 @@ pub(crate) enum Writing {
     Stalls,
     /// Each write panics.
     Panics,
-    /// Each write is kept in [`KEPT`].
-    Keeps,
+    /// Each write is kept where the test that asked for it looks.
+    Keeps(&'static Kept),
 }
 
 /// The writes a [`Writes`] destination that keeps them was given, in order, each with its segment.
-pub(crate) static KEPT: std::sync::Mutex<Vec<(u64, arrow_array::RecordBatch)>> =
-    std::sync::Mutex::new(Vec::new());
+pub(crate) type Kept = std::sync::Mutex<Vec<(u64, arrow_array::RecordBatch)>>;
 
 /// The memory destination, whose writers go wrong as `writing` says.
 pub(crate) struct Writes {
@@ -455,8 +454,8 @@ impl DestinationWriter for WrongWriter {
                 Writing::Fails => Err(ConnectorError::data("the write was refused")),
                 Writing::Stalls => std::future::pending().await,
                 Writing::Panics => panic!("the writer panicked"),
-                Writing::Keeps => {
-                    let mut kept = KEPT.lock().expect("the lock is not poisoned");
+                Writing::Keeps(kept) => {
+                    let mut kept = kept.lock().expect("the lock is not poisoned");
                     kept.push((segment.0, batch));
                     Ok(())
                 }

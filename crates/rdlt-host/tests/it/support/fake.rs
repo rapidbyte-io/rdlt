@@ -151,7 +151,9 @@ impl Connector for Fake {
                 arrow_schema::DataType::Int64,
                 false,
             )]);
-            let ipc = rdlt_wire::Encoder::default().schema(&arrow);
+            let ipc = rdlt_wire::Encoder::default()
+                .schema(&arrow)
+                .expect("the schema encodes");
             vec![Ok(schema(ipc.clone())), Ok(schema(ipc))]
         } else if let Fault::Sends(frames) = self.0 {
             let (ipc, frames) = frames();

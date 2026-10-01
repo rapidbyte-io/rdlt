@@ -121,7 +121,7 @@ fn as_text(views: BinaryViewArray) -> (Decoder, IpcFrame) {
     let binary = Schema::new(vec![Field::new("c", DataType::BinaryView, false)]);
     let batch = RecordBatch::try_new(Arc::new(binary), vec![Arc::new(views)]).unwrap();
     let mut encoder = Encoder::default();
-    encoder.schema(&batch.schema());
+    encoder.schema(&batch.schema()).unwrap();
     let frame = encoder.batch(&batch).unwrap().remove(0);
     let text = Schema::new(vec![Field::new("c", DataType::Utf8View, false)]);
     (decoder(&text, Limits::default()), frame)

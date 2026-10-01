@@ -32,9 +32,12 @@ impl Writing {
             session,
             table: Some(v1::TableRef::from(&table)),
         });
+        let ipc_schema = rdlt_wire::Encoder::default()
+            .schema(&rows().schema())
+            .map_err(|error| Violation::from(format!("the schema does not encode: {error}")))?;
         let schema = v1::write_frame::Frame::Schema(v1::WriteSchema {
             version: 1,
-            ipc_schema: rdlt_wire::Encoder::default().schema(&rows().schema()),
+            ipc_schema,
         });
         for frame in [start, schema] {
             // The receiver is open until it is dropped with the call, so these sends succeed.

@@ -159,7 +159,11 @@ impl Outbox {
         use v1::read_frame::Frame;
         if self.schema.as_ref() != Some(&batch.schema()) {
             self.epoch += 1;
-            let ipc_schema = self.encoder.schema(&batch.schema());
+            self.schema = None;
+            let ipc_schema = self
+                .encoder
+                .schema(&batch.schema())
+                .map_err(|error| status(&frame_error(&error)))?;
             self.schema = Some(batch.schema());
             self.push(Frame::Schema(v1::SchemaFrame {
                 schema_epoch: self.epoch,

@@ -136,7 +136,11 @@ impl RemoteWriter {
     ) -> rdlt_connector::Result<()> {
         use v1::write_frame::Frame;
         if self.schema.as_ref() != Some(&batch.schema()) {
-            let ipc_schema = self.encoder.schema(&batch.schema());
+            self.schema = None;
+            let ipc_schema = self
+                .encoder
+                .schema(&batch.schema())
+                .map_err(|error| frame_error(&error))?;
             self.schema = Some(batch.schema());
             self.send(Frame::Schema(v1::WriteSchema {
                 version: self.version,

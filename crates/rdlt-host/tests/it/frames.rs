@@ -25,7 +25,7 @@ use rdlt_wire::{Encoder, IpcFrame, Limits};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::sessions::{context, raw_session, table};
-use crate::support::connectors::{KEPT, Ticks, Writes, Writing, flagged};
+use crate::support::connectors::{Kept, Ticks, Writes, Writing, flagged};
 use crate::support::{Fake, Fault, engine, serve_fake, served, served_within};
 
 type Sent = (Bytes, Vec<IpcFrame>);
@@ -33,7 +33,7 @@ type Sent = (Bytes, Vec<IpcFrame>);
 /// `batch`'s schema message and frames, as the wire's encoder sends them.
 fn encoded(batch: &RecordBatch) -> Sent {
     let mut encoder = Encoder::default();
-    let schema = encoder.schema(&batch.schema());
+    let schema = encoder.schema(&batch.schema()).expect("the schema encodes");
     (schema, encoder.batch(batch).expect("the batch encodes"))
 }
 
@@ -250,24 +250,29 @@ async fn a_connector_cuts_a_batch_of_more_values_than_the_hosts_frame_may_hold()
     assert_eq!(pieces, [1_032_444, 16_132]);
 }
 
-#[tokio::test]
-async fn the_host_cuts_a_batch_of_more_values_than_a_connectors_frame_may_hold() {
-    let keeping = Served::new().with_destination(Writes::factory(Writing::Keeps));
+/// A writer of a destination that keeps what it is given in `kept`, served within `limits`.
+async fn keeping(
+    kept: &'static Kept,
+    limits: Limits,
+) -> Box<dyn rdlt_connector::DestinationWriter> {
+    let keeping = Served::new().with_destination(Writes::factory(Writing::Keeps(kept)));
     let config = serde_json::json!({ "store": "frames_kept" });
-    let connection = Connection::connect(
-        served(keeping),
-        Role::Destination,
-        &config,
-        Options::default(),
-    )
-    .await
-    .expect("the destination handshakes");
+    let io = served_within(keeping, limits);
+    let connection = Connection::connect(io, Role::Destination, &config, Options::default())
+        .await
+        .expect("the destination handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities");
     let mut opened = destination
         .open(&context())
         .await
         .expect("the session opens");
-    let mut writer = opened.session.writer(&table()).await.expect("a writer");
+    opened.session.writer(&table()).await.expect("a writer")
+}
+
+#[tokio::test]
+async fn the_host_cuts_a_batch_of_more_values_than_a_connectors_frame_may_hold() {
+    static KEPT: Kept = Kept::new(Vec::new());
+    let mut writer = keeping(&KEPT, Limits::default()).await;
     let whole = flagged(ROWS, FLAGS);
     writer
         .write(SegmentId(7), whole.clone())
@@ -279,6 +284,37 @@ async fn the_host_cuts_a_batch_of_more_values_than_a_connectors_frame_may_hold()
     assert!(kept.iter().all(|(segment, _)| *segment == 7));
     let pieces: Vec<_> = kept.into_iter().map(|(_, batch)| batch).collect();
     assert_eq!(in_order(&whole, &pieces), [1_032_444, 16_132]);
+}
+
+#[tokio::test]
+async fn a_batch_no_schema_message_describes_is_refused_before_any_of_it_is_sent() {
+    use arrow_array::types::Int8Type;
+    use arrow_array::{DictionaryArray, StringArray};
+    static KEPT: Kept = Kept::new(Vec::new());
+    let mut writer = keeping(&KEPT, Limits::default()).await;
+    let tags = StringArray::from(vec!["a", "bb"]);
+    let inner = DictionaryArray::<Int8Type>::try_new(vec![0, 1].into(), Arc::new(tags));
+    let inner = inner.expect("a dictionary");
+    let twice = DictionaryArray::<Int8Type>::try_new(vec![1, 0].into(), Arc::new(inner));
+    let twice: ArrayRef = Arc::new(twice.expect("a dictionary of dictionaries"));
+    let batch = RecordBatch::try_from_iter([("d", twice)]).expect("a batch");
+    let error = writer
+        .write(SegmentId(1), batch)
+        .await
+        .expect_err("the batch is refused");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ConnectorErrorKind::Unsupported, Some("unsendable_type"))
+    );
+    // The write goes on, and the destination was given nothing of the refused batch.
+    let plain = flagged(3, 1);
+    writer
+        .write(SegmentId(2), plain.clone())
+        .await
+        .expect("a batch is written");
+    writer.flush().await.expect("the write is staged");
+    let kept = std::mem::take(&mut *KEPT.lock().expect("the lock is not poisoned"));
+    assert_eq!(kept, [(2, plain)]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
