@@ -1,0 +1,158 @@
+//! A pipeline run in a process of its own, as the CLI will run one: the failpoint sweep crashes it
+//! at the engine's durability steps, and the kill matrix kills it or its spawned connectors, then
+//! each runs it again and checks every row landed once (spec §20.6).
+//!
+//! `crash_run <config.json>` runs the pipeline the file describes once, retrying, and exits 0
+//! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names.
+
+mod config;
+mod killing;
+
+use std::io::Write as _;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
+use std::process::ExitCode;
+use std::sync::Arc;
+
+use rdlt_connector::{ConnectContext, Destination, Source, destination_factory, source_factory};
+use rdlt_connector_reference::{
+    ChangesSource, FilesDestination, GeneratorSource, LogSource, SqliteDestination,
+};
+use rdlt_engine::{Engine, LocalWal, RayonPool, RunStatus, SystemEnv};
+use rdlt_host::{ConnectorRef, Kills, Local, Provider as _};
+
+use config::{Config, Victim};
+
+fn main() -> ExitCode {
+    let _failpoints = fail::FailScenario::setup();
+    let Some(path) = std::env::args().nth(1) else {
+        writeln!(std::io::stderr(), "usage: crash_run <config.json>").ok();
+        return ExitCode::from(2);
+    };
+    let config = std::fs::read(&path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice::<Config>(&bytes).map_err(|error| error.to_string())
+        });
+    let config = match config {
+        Ok(config) => config,
+        Err(error) => {
+            writeln!(std::io::stderr(), "crash_run: {path}: {error}").ok();
+            return ExitCode::from(2);
+        }
+    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime starts");
+    match runtime.block_on(run(&config)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            writeln!(std::io::stderr(), "crash_run: {error}").ok();
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Runs the pipeline `config` describes once.
+async fn run(config: &Config) -> Result<(), String> {
+    let kills = Kills::new();
+    let killed = config.kill.map(|kill| kill.victim);
+    let source = source(config, (killed == Some(Victim::Source)).then_some(&kills)).await?;
+    let mut destination = destination(
+        config,
+        (killed == Some(Victim::Destination)).then_some(&kills),
+    )
+    .await?;
+    if let Some(kill) = config.kill {
+        destination = killing::killing(destination, kills, kill.commit);
+    }
+    let pool =
+        RayonPool::new(NonZeroUsize::new(2).expect("two")).map_err(|error| error.to_string())?;
+    let env = SystemEnv::new(pool).with_wal(Arc::new(LocalWal::new(&config.wal)));
+    let engine = Engine::new(config.engine()?, Arc::new(env));
+    let outcome = engine.run(config.plan()?, source, destination).await;
+    let report = serde_json::to_string(&outcome.report).map_err(|error| error.to_string())?;
+    writeln!(std::io::stdout(), "{report}").ok();
+    match (outcome.report.status, outcome.error) {
+        (RunStatus::Succeeded, _) => Ok(()),
+        (status, error) => Err(format!("the run ended {status:?}: {error:?}")),
+    }
+}
+
+/// The run's source, in this process or a process of its own, killed by `kills` where given.
+async fn source(config: &Config, kills: Option<&Kills>) -> Result<Arc<dyn Source>, String> {
+    let place = &config.source;
+    let (id, served) = match place.kind.as_str() {
+        "generator" => ("io.rapidbyte.generator", "serve_generator"),
+        "changes" => ("io.rapidbyte.changes", "serve_changes"),
+        "log" => ("io.rapidbyte.log", "serve_log"),
+        other => return Err(format!("no source {other}")),
+    };
+    if place.spawned {
+        let placed = host(kills)
+            .source(&reference(id, served)?, &place.config)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(Arc::from(placed.connector));
+    }
+    let factory = match place.kind.as_str() {
+        "generator" => source_factory::<GeneratorSource>(),
+        "log" => source_factory::<LogSource>(),
+        _ => source_factory::<ChangesSource>(),
+    };
+    let connected = factory
+        .connect(place.config.clone(), ConnectContext::new())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Arc::from(connected))
+}
+
+/// The run's destination, in this process or a process of its own, killed by `kills` where given.
+async fn destination(
+    config: &Config,
+    kills: Option<&Kills>,
+) -> Result<Arc<dyn Destination>, String> {
+    let place = &config.destination;
+    let (id, served) = match place.kind.as_str() {
+        "sqlite" => ("io.rapidbyte.sqlite", "serve_sqlite"),
+        "files" => ("io.rapidbyte.files", "serve_files"),
+        other => return Err(format!("no destination {other}")),
+    };
+    if place.spawned {
+        let placed = host(kills)
+            .destination(&reference(id, served)?, &place.config)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(Arc::from(placed.connector));
+    }
+    let factory = match place.kind.as_str() {
+        "sqlite" => destination_factory::<SqliteDestination>(),
+        _ => destination_factory::<FilesDestination>(),
+    };
+    let connected = factory
+        .connect(place.config.clone(), ConnectContext::new())
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Arc::from(connected))
+}
+
+/// The host spawning connectors, killing them by `kills` where given.
+fn host(kills: Option<&Kills>) -> Local {
+    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    match kills {
+        Some(kills) => local.kills(kills),
+        None => local,
+    }
+}
+
+/// The reference to the connector `id`, served by the example `served` beside this one.
+fn reference(id: &str, served: &str) -> Result<ConnectorRef, String> {
+    let id = rdlt_connector::ConnectorId::parse(id).map_err(|error| error.to_string())?;
+    let here = std::env::current_exe().map_err(|error| error.to_string())?;
+    let path: PathBuf = here
+        .parent()
+        .ok_or("this example has no directory")?
+        .join(served);
+    Ok(ConnectorRef::new(id).path(path))
+}
