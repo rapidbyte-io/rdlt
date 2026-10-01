@@ -14,12 +14,13 @@ use crate::process::{example, local, wait_gone};
 const ENDING: Duration = Duration::from_secs(20);
 
 /// A launcher in `directory` that starts two members of its group, one that ignores
-/// `SIGTERM`, writes their process ids to `members`, and becomes the scripted connector.
+/// `SIGTERM`, writes their process ids after those `members` holds, and becomes the scripted
+/// connector.
 fn launcher(directory: &Path) -> ConnectorRef {
     let path = directory.join("launcher");
     let members = directory.join("members");
     let script = format!(
-        "#!/bin/sh\nsleep 1000 &\necho $! > '{members}'\n\
+        "#!/bin/sh\nsleep 1000 &\necho $! >> '{members}'\n\
          sh -c 'trap \"\" TERM; sleep 1000' &\necho $! >> '{members}'\n\
          exec '{connector}' \"$@\"\n",
         members = members.display(),
@@ -32,14 +33,15 @@ fn launcher(directory: &Path) -> ConnectorRef {
     ConnectorRef::new(id).path(path)
 }
 
-/// The process ids the launcher at `directory` wrote for the members it started.
-fn members(directory: &Path) -> Vec<i32> {
+/// The process ids the launcher at `directory` wrote for the members it started, two for each
+/// of the `connectors` it became.
+fn members(directory: &Path, connectors: usize) -> Vec<i32> {
     let written = std::fs::read_to_string(directory.join("members")).expect("ids were written");
     let members: Vec<i32> = written
         .lines()
         .map(|pid| pid.trim().parse().expect("a process id"))
         .collect();
-    assert_eq!(members.len(), 2, "{written:?}");
+    assert_eq!(members.len(), 2 * connectors, "{written:?}");
     members
 }
 
@@ -66,7 +68,7 @@ async fn a_dropped_connector_takes_every_member_of_its_group_one_ignoring_the_st
         .await
         .expect("the connector starts")
         .connector;
-    let members = members(directory.path());
+    let members = members(directory.path(), 1);
     drop(source);
     assert!(all_gone(&members).await, "a member outlived its connector");
 }
@@ -81,7 +83,7 @@ async fn a_connector_that_exits_by_itself_takes_its_group_with_it() {
         .await
         .expect("the connector starts")
         .connector;
-    let members = members(directory.path());
+    let members = members(directory.path(), 1);
     source.check().await.expect_err("the connector exits");
     assert!(all_gone(&members).await, "a member outlived its leader");
     drop(source);
@@ -97,7 +99,7 @@ async fn a_killed_connector_takes_every_member_of_its_group() {
         .await
         .expect("the connector starts")
         .connector;
-    let members = members(directory.path());
+    let members = members(directory.path(), 1);
     kills.kill();
     assert!(all_gone(&members).await, "a member outlived the kill");
     drop(source);
@@ -114,7 +116,7 @@ fn connectors_of_a_runtime_that_is_dropped_are_stopped_with_their_groups() {
     let config = serde_json::json!({});
     let placing = local.source(&launched, &config);
     let source = runtime.block_on(placing).expect("the connector starts");
-    let members = members(directory.path());
+    let members = members(directory.path(), 1);
     assert_eq!(rdlt_host::spawned().len(), 1);
     // As a run cut at its deadline ends: nothing is awaited, and every task is dropped.
     drop(source);
@@ -141,7 +143,7 @@ async fn a_host_stops_what_it_spawned_and_says_what_it_could_not_stop_in_time() 
         .await
         .expect("the connector starts")
         .connector;
-    let members = members(directory.path());
+    let members = members(directory.path(), 1);
     let spawned = rdlt_host::spawned();
     assert_eq!(spawned.len(), 1, "{spawned:?}");
     let stopping = tokio::task::spawn_blocking(|| rdlt_host::stop_spawned(Duration::ZERO));
@@ -178,8 +180,8 @@ async fn an_interrupted_or_terminated_host_stops_its_connectors_groups_before_it
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let ready = lines.next_line().await.expect("it reads");
         assert_eq!(ready.as_deref(), Some("ready"));
-        // The last of its two connectors wrote the members it started.
-        let members = members(directory.path());
+        // Each of its two connectors wrote the members it started.
+        let members = members(directory.path(), 2);
         let pid = i32::try_from(host.id().expect("the host runs")).expect("a process id");
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).expect("it is signalled");
         let status = host.wait().await.expect("the host ends");
@@ -268,7 +270,7 @@ fn members_killed_and_never_reaped_do_not_make_a_stopped_group_linger() {
     let source = runtime
         .block_on(local.source(&launched, &config))
         .expect("the connector starts");
-    let members = members(directory.path());
+    let members = members(directory.path(), 1);
     drop(source);
     let began = std::time::Instant::now();
     let stopped = rdlt_host::stop_spawned(ENDING);
