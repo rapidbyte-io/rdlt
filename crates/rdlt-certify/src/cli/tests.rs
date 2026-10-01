@@ -15,6 +15,7 @@ fn report(outcomes: &[Outcome]) -> Report {
             .map(|outcome| ClauseResult {
                 clause,
                 outcome: outcome.clone(),
+                note: None,
             })
             .collect(),
     }

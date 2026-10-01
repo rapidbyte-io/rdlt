@@ -79,4 +79,12 @@ async fn a_listening_connector_is_certified_over_mutual_tls() {
         Some(&Outcome::Passed),
         "{report}"
     );
+    // A cut is what the report says the clause passed on: no process was seen to stop.
+    let note = report.note("K-DESTINATION").expect("a note");
+    assert!(note.starts_with("cut: "), "{report}");
+    assert!(
+        report
+            .to_string()
+            .contains(&format!("  pass K-DESTINATION ({note})\n"))
+    );
 }

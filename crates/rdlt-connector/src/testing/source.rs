@@ -107,6 +107,7 @@ pub async fn certify_source_factory_observed(
             let failed = |clause: &Clause| ClauseResult {
                 clause: *clause,
                 outcome: outcome.clone(),
+                note: None,
             };
             let failed: Vec<ClauseResult> = SOURCE_CLAUSES.iter().map(failed).collect();
             failed
@@ -230,6 +231,7 @@ async fn check_all(source: &dyn Source, told: Told, observed: &Observed) -> Vec<
         let result = ClauseResult {
             clause: *clause,
             outcome,
+            note: None,
         };
         observed.tell(result.clone());
         results.push(result);

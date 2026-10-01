@@ -6,7 +6,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
 use super::rows::{Parted, parted, rendered};
-use super::{DRAWS, Loaded, drawn, proven, unproven};
+use super::{DRAWS, Loaded, Proof, drawn, proven, unproven};
 use rdlt_connector::testing::render::Rendering;
 
 /// The rows of `batches`, rendered with no limit.
@@ -253,6 +253,15 @@ fn a_load_proves_something_only_once_a_kill_landed_and_interrupted_it() {
         "each cause has a reason of its own: {reasons:?}"
     );
     assert!(unproven(&landed, true, 9).is_none());
+    // What landed only on connections this host cut proves less, and says so.
+    assert_eq!((landed.landed(), landed.cut()), (1, 1));
+    assert_eq!(Proof::of(&landed), Proof::Cut);
+    assert_eq!(Proof::seen(1, 1), Proof::Cut);
+    assert_eq!(Proof::seen(7, 7), Proof::Cut);
+    // One connection that ended without being cut is a connector seen to stop.
+    assert_eq!(Proof::seen(1, 0), Proof::Ended);
+    assert_eq!(Proof::seen(7, 6), Proof::Ended);
+    assert_ne!(Proof::Cut.note(), Proof::Ended.note());
 }
 
 /// Runs [`proven`] over loads that `interrupts` says each draw interrupts, returning its outcome and
@@ -265,7 +274,7 @@ fn drew(chosen: Option<u64>, interrupts: impl Fn(usize) -> bool) -> (Loaded, Vec
         let interrupted = interrupts(loads.len());
         async move {
             if interrupted {
-                Loaded::Kept
+                Loaded::Kept(Proof::Ended)
             } else {
                 Loaded::Unseen(format!("kill seed {seed}"))
             }
@@ -287,7 +296,7 @@ fn ready<F: Future>(future: F) -> F::Output {
 fn a_clause_loads_again_with_new_kill_points_until_a_kill_interrupts_a_load() {
     // The third load is the first a kill interrupts: each is named and killed apart.
     let (outcome, loads) = drew(None, |load| load == 3);
-    assert!(matches!(outcome, Loaded::Kept));
+    assert!(matches!(outcome, Loaded::Kept(Proof::Ended)));
     assert_eq!(loads.len(), 3);
     let runs: std::collections::BTreeSet<_> = loads.iter().map(|(run, _)| *run).collect();
     let seeds: std::collections::BTreeSet<_> = loads.iter().map(|(_, seed)| *seed).collect();

@@ -78,6 +78,9 @@ pub struct ClauseResult {
     pub clause: Clause,
     /// Its outcome.
     pub outcome: Outcome,
+    /// What is worth saying of an outcome beside its reason: of a clause that passed, the
+    /// proof it passed on, where a clause passes on more than one.
+    pub note: Option<Reason>,
 }
 
 /// What a certification has found so far: each clause's result as its check ends, and the
@@ -216,6 +219,12 @@ impl Report {
             .map(|result| &result.outcome)
     }
 
+    /// What the clause with `id` is noted to have passed on.
+    pub fn note(&self, id: &str) -> Option<&str> {
+        let result = self.results.iter().find(|result| result.clause.id == id)?;
+        result.note.as_ref().map(Reason::as_str)
+    }
+
     /// Panics with the whole report unless it [passed](Self::passed).
     ///
     /// # Panics
@@ -244,7 +253,10 @@ impl fmt::Display for Report {
         for result in &self.results {
             let id = result.clause.id;
             match &result.outcome {
-                Outcome::Passed => writeln!(f, "  pass {id}")?,
+                Outcome::Passed => match &result.note {
+                    Some(note) => writeln!(f, "  pass {id} ({note})")?,
+                    None => writeln!(f, "  pass {id}")?,
+                },
                 Outcome::Failed(reason) => {
                     writeln!(f, "  FAIL {id}: {} ({reason})", result.clause.statement)?;
                 }

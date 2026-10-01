@@ -133,6 +133,7 @@ fn a_certification_that_was_cut_keeps_what_it_found_and_says_where_it_was_cut() 
             observed.tell(ClauseResult {
                 clause: *clause,
                 outcome: Outcome::Passed,
+                note: None,
             });
         }
         observed.named("io.test.cut");

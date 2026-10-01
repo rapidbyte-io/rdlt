@@ -47,6 +47,7 @@ impl Unmet {
                 .map(|clause| ClauseResult {
                     clause: *clause,
                     outcome: outcome.clone(),
+                    note: None,
                 })
                 .collect(),
         }

@@ -30,6 +30,7 @@ pub struct Kills {
 struct Generation {
     count: u64,
     landed: u64,
+    cut: u64,
     next: CancellationToken,
 }
 
@@ -59,21 +60,31 @@ impl Kills {
         self.lock().landed
     }
 
-    /// Counts a connection a kill ended.
-    fn land(&self) {
-        self.lock().landed += 1;
+    /// How many of the connections that [landed](Self::landed) a kill this host cut itself,
+    /// which is all it can do to a connector it did not start: a cut says nothing of what held
+    /// the connection's other end.
+    pub fn cut(&self) -> u64 {
+        self.lock().cut
+    }
+
+    /// Counts a connection a kill ended: one this host `cut`, or one that ended by itself.
+    fn land(&self, cut: bool) {
+        let mut generation = self.lock();
+        generation.landed += 1;
+        generation.cut += u64::from(cut);
     }
 
     /// `stream`, the host's end of a connection to what `killed`, the next kill, kills, whose
     /// end after that kill counts it as landed.
     pub(crate) fn watch<S: Stream>(&self, stream: S, killed: CancellationToken) -> Box<dyn Stream> {
-        Box::new(Landing::new(stream, killed, self.clone()))
+        Box::new(Landing::new(stream, killed, self.clone(), false))
     }
 
     /// `stream`, cut by the next kill.
     pub fn sever<S: Stream>(&self, stream: S) -> Box<dyn Stream> {
         let killed = self.next();
-        self.watch(Severed::new(stream, killed.clone()), killed)
+        let severed = Severed::new(stream, killed.clone());
+        Box::new(Landing::new(severed, killed, self.clone(), true))
     }
 
     /// What the next kill cancels.
