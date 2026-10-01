@@ -3,6 +3,7 @@
 //! Nothing is written that the reader would refuse: a line or a batch beyond the reader's limits
 //! fails the write, and the file is removed.
 
+mod batches;
 pub(super) mod ipc;
 mod json;
 pub(super) mod lines;
@@ -24,7 +25,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::io;
-use crate::limits::{CHUNK_BYTES, LINE_BYTES};
+use crate::limits::LINE_BYTES;
 use crate::rooted::Dir;
 
 /// How a table's files store its rows.
@@ -297,14 +298,29 @@ impl<'a> Writer<'a> {
                     .build::<_, arrow_json::writer::LineDelimited>(lines);
                 writer.write(batch).and_then(|()| writer.finish())
             }
-            Sink::Arrow(writer) => chunks(batch).try_for_each(|chunk| {
-                let before = writer.get_ref().written;
-                writer.write(&chunk)?;
-                framed(writer.get_ref().written - before)
-            }),
+            Sink::Arrow(_) => return self.write_arrow(batch),
         };
         written.map_err(|error| self.encoded(error))?;
         self.count(rows);
+        Ok(())
+    }
+
+    /// Writes `batch` to an Arrow file as batches a reader accepts, each checked against every
+    /// limit a reader holds a batch to.
+    fn write_arrow(&mut self, batch: &RecordBatch) -> Result<()> {
+        let limits = Limits::default();
+        for chunk in batches::chunks(batch, &limits) {
+            batches::admitted(&chunk, &limits)?;
+            let Some(Sink::Arrow(writer)) = self.sink.as_mut() else {
+                unreachable!("the writer writes an Arrow file");
+            };
+            let before = writer.get_ref().written;
+            let written = writer.write(&chunk);
+            let bytes = writer.get_ref().written - before;
+            written.map_err(|error| self.encoded(error))?;
+            batches::framed(bytes, &limits)?;
+        }
+        self.count(batch.num_rows());
         Ok(())
     }
 
@@ -393,30 +409,6 @@ impl Drop for Writer<'_> {
             drop(self.dir.remove_file(self.name));
         }
     }
-}
-
-/// `batch` as batches of about [`CHUNK_BYTES`] each, by its rows' average size.
-fn chunks(batch: &RecordBatch) -> impl Iterator<Item = RecordBatch> + '_ {
-    let rows = batch.num_rows();
-    let bytes = u64::try_from(batch.get_array_memory_size()).unwrap_or(u64::MAX);
-    let row = (bytes / u64::try_from(rows).unwrap_or(u64::MAX).max(1)).max(1);
-    let step = usize::try_from(CHUNK_BYTES / row)
-        .unwrap_or(usize::MAX)
-        .max(1);
-    (0..rows)
-        .step_by(step)
-        .map(move |from| batch.slice(from, step.min(rows - from)))
-}
-
-/// Checks that a batch written as `bytes` is a frame a reader accepts.
-fn framed(bytes: u64) -> Result<(), ArrowError> {
-    let limit = crate::rooted::Limit {
-        name: "frame bytes",
-        bytes: Limits::default().frame_bytes,
-    };
-    limit
-        .admit(bytes)
-        .map_err(|refusal| ArrowError::from(std::io::Error::from(refusal)))
 }
 
 /// A writer that counts the bytes written through it.
