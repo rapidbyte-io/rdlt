@@ -354,7 +354,6 @@ pub trait SourceFactory: Send + Sync {
     ) -> BoxFuture<'_, Result<Box<dyn Source>>>;
 
     /// Whether the source tells where it stands outside the engine, for certification.
-    #[cfg(feature = "certify")]
     fn acknowledges(&self) -> bool {
         false
     }

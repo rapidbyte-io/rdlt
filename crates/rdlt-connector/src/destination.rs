@@ -419,8 +419,7 @@ pub trait DestinationFactory: Send + Sync {
         context: ConnectContext,
     ) -> BoxFuture<'_, Result<Box<dyn Destination>>>;
 
-    /// Whether the destination can read back what it published.
-    #[cfg(feature = "certify")]
+    /// Whether the destination can read back what it published, for certification.
     fn reads_back(&self) -> bool {
         false
     }
