@@ -38,7 +38,7 @@ pub enum EndpointError {
     /// It has a fragment.
     #[error("the endpoint has a fragment")]
     Fragment,
-    /// It has no port, or one that is no number up to 65535.
+    /// It has no port, or one that is not a number from 1 to 65535 written in digits alone.
     #[error("the endpoint has no valid port")]
     Port,
     /// Its host is empty, or is neither a DNS name nor an IP address, an IPv6 one in brackets.
@@ -87,7 +87,14 @@ impl Endpoint {
                 host
             }
         };
-        let port = port.parse().map_err(|_| EndpointError::Port)?;
+        // Digits alone, as a port is written: the integer parser would take a sign, and a
+        // leading zero is no port anyone names.
+        let written = !port.starts_with('0') && port.bytes().all(|digit| digit.is_ascii_digit());
+        let port = port
+            .parse()
+            .ok()
+            .filter(|_| written)
+            .ok_or(EndpointError::Port)?;
         Ok(Self {
             host: host.to_owned(),
             port,
