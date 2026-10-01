@@ -8,7 +8,7 @@ use rusqlite::Transaction;
 use rusqlite::types::Value;
 
 use super::super::database::{columns, integer, query, run, run_all, text};
-use super::owners::{owned, owner};
+use super::owners::{owned, standing};
 
 /// The receipt stored for `(load_id, commit_seq)`, if that commit already happened.
 pub(super) fn stored(
@@ -128,11 +128,7 @@ pub(super) fn drop_tables(
     meta: &CommitMeta,
 ) -> Result<()> {
     for dropped in &meta.drop_tables {
-        planner.named(&dropped.name)?;
-        let owner = owner(transaction, planner, &dropped.name)?;
-        let exists = !columns(transaction, planner.dialect(), &dropped.name)?.is_empty();
-        let Some(table) = planner.dropped(pipeline, &dropped.name, owner.as_deref(), exists)?
-        else {
+        let Some(table) = standing(transaction, planner, &dropped.name)?.dropped(pipeline)? else {
             continue;
         };
         let generations = generation_tables(transaction, planner, table.name())?
@@ -166,7 +162,7 @@ fn generation_tables(
 fn swap(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
-    table: &Owned,
+    table: &Owned<'_>,
     generation: GenerationId,
 ) -> Result<()> {
     let generations = generation_tables(transaction, planner, table.name())?;

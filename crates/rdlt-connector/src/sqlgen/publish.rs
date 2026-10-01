@@ -40,7 +40,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// `columns`.
     pub fn stage(
         &self,
-        owned: &Owned,
+        owned: &Owned<'_>,
         table: &TableRef,
         epoch: Epoch,
         segment: SegmentId,
@@ -81,7 +81,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// `owned` names, in `segment`, with how the writer's table merges.
     pub fn record_segment(
         &self,
-        owned: &Owned,
+        owned: &Owned<'_>,
         table: &TableRef,
         epoch: Epoch,
         segment: SegmentId,
@@ -176,7 +176,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// root id where its rows are staged, as each such commit deletes its rows by it.
     pub fn publish(
         &self,
-        owned: &Owned,
+        owned: &Owned<'_>,
         staged: &Staged,
         columns: &[Column],
         epoch: Epoch,
@@ -253,7 +253,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// It runs where the table's rows are staged, so a commit changes no table's indexes, and each
     /// commit deleting the table's rows by its root id finds them by the index. The index's name
     /// takes the prefix no user table has.
-    pub fn root_index(&self, owned: &Owned, table: &TableRef) -> Result<Option<Statement>> {
+    pub fn root_index(&self, owned: &Owned<'_>, table: &TableRef) -> Result<Option<Statement>> {
         owned.is(&table.name)?;
         let Some(key) = table.merge.as_ref().filter(|key| key.root.is_some()) else {
             return Ok(None);
@@ -328,7 +328,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
     ///
     /// A newer session's staging stays: a discard can run after a newer session opened and
     /// staged, when it waited behind that session for the database.
-    pub fn discard(&self, pipeline: &PipelineId, epoch: Epoch, tables: &[Owned]) -> Vec<Statement> {
+    pub fn discard(
+        &self,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        tables: &[Owned<'_>],
+    ) -> Vec<Statement> {
         let older = |table: String, [pipeline_column, epoch_column]: [String; 2]| {
             let mut sql = self.sql();
             let pipeline = sql.bind(SqlValue::Text(pipeline.to_string()));

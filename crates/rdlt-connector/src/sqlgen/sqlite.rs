@@ -49,6 +49,21 @@ impl SqlDialect for Sqlite {
         under("sqlite_") || under("pragma_") || name.bytes().any(|byte| byte.is_ascii_uppercase())
     }
 
+    fn resolves(&self, name: &str) -> Statement {
+        // SQLite keeps tables, views and indexes under one set of names, matched without ASCII
+        // case.
+        Statement {
+            sql: "SELECT name FROM sqlite_schema WHERE name = ?1 COLLATE NOCASE AND type IN \
+                  ('table', 'view', 'index') ORDER BY name"
+                .to_owned(),
+            params: vec![SqlValue::Text(name.to_owned())],
+        }
+    }
+
+    fn folds(&self, name: &str) -> String {
+        name.to_ascii_lowercase()
+    }
+
     fn columns(&self, table: &str) -> Statement {
         // Only a table the schema holds has columns: the pragma alone would also answer for the
         // virtual tables SQLite has without anyone creating them.

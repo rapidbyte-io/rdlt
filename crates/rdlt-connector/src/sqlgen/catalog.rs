@@ -18,6 +18,17 @@ const TABLES: &str = "_rdlt_tables";
 pub(super) const GENERATIONS: &str = "_rdlt_generations";
 pub(super) const SEGMENTS: &str = "_rdlt_segments";
 
+/// Every table of the catalog.
+pub(super) const CATALOG: [&str; 7] = [
+    EPOCHS,
+    STATE,
+    RECEIPTS,
+    TABLES,
+    OWNERS,
+    GENERATIONS,
+    SEGMENTS,
+];
+
 impl<D: SqlDialect> SqlPlanner<D> {
     /// Creates the catalog tables where they are missing.
     pub fn bootstrap(&self) -> Vec<Statement> {
@@ -184,8 +195,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// pipeline, and for a generation the base table it replaces.
     ///
     /// Each pipeline keeps its own paths, so no pipeline's table answers for another's path.
-    pub fn register(&self, owned: &Owned, table: &TableRef) -> Result<Vec<Statement>> {
-        owned.is(&table.name)?;
+    pub(super) fn register(&self, owned: &Owned<'_>, table: &TableRef) -> Result<Vec<Statement>> {
+        owned.names(&table.name)?;
         let key = [
             ("pipeline", SqlValue::Text(owned.pipeline().to_string())),
             ("path", SqlValue::Text(path_key(&table.path))),
@@ -219,7 +230,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
     ///
     /// Where the dialect's schema changes do not commit with its transactions the drop could not
     /// land with its commit, so it is `Unsupported`.
-    pub fn drop_table(&self, owned: &Owned, generations: &[String]) -> Result<Vec<Statement>> {
+    pub fn drop_table(&self, owned: &Owned<'_>, generations: &[String]) -> Result<Vec<Statement>> {
+        owned.is(owned.name())?;
         if !self.swaps_atomically() {
             return Err(ConnectorError::new(
                 ConnectorErrorKind::Unsupported,
@@ -249,6 +261,21 @@ impl<D: SqlDialect> SqlPlanner<D> {
             plan.push(forget.finish());
         }
         Ok(plan)
+    }
+
+    /// The statements forgetting the owner record of the table `owned` names, with its
+    /// registration and generations, where the database holds no table for it: nothing is
+    /// dropped, and any pipeline may create a table of that name again.
+    pub fn release(&self, owned: &Owned<'_>) -> Vec<Statement> {
+        [(GENERATIONS, "base"), (TABLES, "name"), (OWNERS, "name")]
+            .into_iter()
+            .map(|(catalog, column)| {
+                let mut forget = self.sql();
+                let bound = forget.bind(SqlValue::Text(owned.name().to_owned()));
+                forget.push(&format!("DELETE FROM {catalog} WHERE {column} = {bound}"));
+                forget.finish()
+            })
+            .collect()
     }
 
     /// The query returning the identifier of the table `pipeline` registered for `path`.

@@ -11,10 +11,10 @@ use rusqlite::Transaction;
 
 use super::super::database::{Database, columns, run, run_all};
 use super::super::values;
-use super::owners::{claim, distinct, owned};
+use super::owners::{changed, derived, distinct, owned};
 
-/// Readies `table` for a writer of `pipeline`'s session at `epoch`: claims it, readies a change
-/// stream's tables, checks that it holds its merge key, creates the generation table it fills
+/// Readies `table`, which its pipeline created, for a writer of `pipeline`'s session: readies a
+/// change stream's tables, checks that it holds its merge key, creates the generation table it fills
 /// where that is missing, and indexes what a commit finds rows in, which a commit never does
 /// itself.
 pub(super) fn ready(
@@ -24,7 +24,8 @@ pub(super) fn ready(
     epoch: Epoch,
     table: &TableRef,
 ) -> Result<()> {
-    let table_owner = claim(transaction, planner, pipeline, epoch, &table.name)?;
+    let table_owner = changed(transaction, planner, pipeline, epoch, &table.name)?;
+    derived(transaction, planner, table)?;
     let dialect = planner.dialect();
     let [target, staging, tombstones] = [
         planner.target(table),

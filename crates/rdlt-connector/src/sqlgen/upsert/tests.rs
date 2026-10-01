@@ -28,6 +28,10 @@ impl SqlDialect for Standard {
         Sqlite.columns(table)
     }
 
+    fn resolves(&self, name: &str) -> Statement {
+        Sqlite.resolves(name)
+    }
+
     fn transactional_ddl(&self) -> bool {
         true
     }
@@ -52,6 +56,10 @@ impl SqlDialect for Dual {
 
     fn columns(&self, table: &str) -> Statement {
         Standard.columns(table)
+    }
+
+    fn resolves(&self, name: &str) -> Statement {
+        Standard.resolves(name)
     }
 
     fn transactional_ddl(&self) -> bool {
@@ -80,8 +88,8 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
     let orders = pipeline("orders");
     run_all(&connection, &planner.open(&orders));
     run_all(&connection, &planner.open(&orders));
-    run_all(&connection, &planner.claim(&orders, "events").unwrap());
-    let other = planner.claim(&pipeline("other"), "events").unwrap();
+    run_all(&connection, &planner.claim(&orders, "events"));
+    let other = planner.claim(&pipeline("other"), "events");
     run_all(&connection, &other);
     let put = |value: &'static [u8]| {
         StateChange::Put(StateRecord {

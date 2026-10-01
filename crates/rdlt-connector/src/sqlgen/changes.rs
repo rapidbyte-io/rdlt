@@ -32,7 +32,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// The statement forgetting the tombstones of the table `owned` names, whose rows were
     /// replaced whole.
-    pub fn forget_tombstones(&self, owned: &Owned) -> Statement {
+    pub fn forget_tombstones(&self, owned: &Owned<'_>) -> Statement {
         let tombstones = self.tombstone_table(owned.name());
         Statement {
             sql: format!("DELETE FROM {}", self.quote(&tombstones)),
@@ -49,7 +49,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// [`SqlPlanner::key_indexes`] then indexes the three by the key.
     pub fn change_tables(
         &self,
-        owned: &Owned,
+        owned: &Owned<'_>,
         table: &TableRef,
         [target, staging, tombstones]: [&[Column]; 3],
     ) -> Result<Vec<Statement>> {
@@ -113,7 +113,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
     ///
     /// They run where the table's rows are staged, so a commit finds each staged key's rows by
     /// them and changes no index.
-    pub fn key_indexes(&self, owned: &Owned, table: &TableRef) -> Result<Vec<Statement>> {
+    pub fn key_indexes(&self, owned: &Owned<'_>, table: &TableRef) -> Result<Vec<Statement>> {
         owned.is(&table.name)?;
         let Some(key) = table.merge.as_ref().filter(|key| key.root.is_none()) else {
             return Ok(Vec::new());

@@ -1,73 +1,151 @@
-//! Who owns a destination table: claims, and the owner check every change of a table starts from.
+//! Who owns a destination table, and how the database takes its name: the check every change of
+//! a table starts from, in the transaction that makes the change.
 
 use rdlt_connector::prelude::*;
-use rdlt_connector::sqlgen::{Owned, SqlPlanner, Sqlite};
+use rdlt_connector::sqlgen::{Owned, SqlPlanner, SqlValue, Sqlite, Standing};
 use rdlt_connector::{Epoch, PipelineId};
 use rusqlite::Transaction;
+use rusqlite::types::Value;
 
-use super::super::database::{query, run, run_all, text};
+use super::super::database::{columns, query, run, run_all, text};
 
-/// The pipeline the owner record of the table `name` names, if it has one.
-pub(super) fn owner(
+/// The rows `statement` answers, as the planner reads them.
+fn answers(
     transaction: &Transaction<'_>,
+    statement: &rdlt_connector::sqlgen::Statement,
+) -> Result<Vec<Vec<SqlValue>>> {
+    let rows = query(transaction, statement)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.into_iter().map(planned).collect())
+        .collect())
+}
+
+fn planned(value: Value) -> SqlValue {
+    match value {
+        // The catalog holds no float: one is no name and no pipeline, which is what the planner
+        // makes of a value that is no text.
+        Value::Null | Value::Real(_) => SqlValue::Null,
+        Value::Integer(integer) => SqlValue::Integer(integer),
+        Value::Text(text) => SqlValue::Text(text),
+        Value::Blob(blob) => SqlValue::Blob(blob),
+    }
+}
+
+/// How the table `name` stands in `transaction`: who owns it and what the database takes its
+/// name for.
+pub(super) fn standing<'t>(
+    transaction: &'t Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
     name: &str,
-) -> Result<Option<String>> {
-    query(transaction, &planner.owner(name))?
-        .first()
-        .and_then(|row| row.first())
-        .map(text)
-        .transpose()
+) -> Result<Standing<'t>> {
+    let check = planner.check(name)?;
+    let owner = answers(transaction, check.owner())?;
+    let resolved = answers(transaction, check.resolved())?;
+    check.answered(transaction, &owner, &resolved)
 }
 
 /// The table `name` as `pipeline`'s session may change it: refused under a name the destination
 /// keeps, without an owner record, or as `table_owned` where another pipeline owns it.
-pub(super) fn owned(
-    transaction: &Transaction<'_>,
+pub(super) fn owned<'t>(
+    transaction: &'t Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
     pipeline: &PipelineId,
     name: &str,
-) -> Result<Owned> {
-    planner.named(name)?;
-    let owner = owner(transaction, planner, name)?;
-    planner.owned(pipeline, name, owner.as_deref())
+) -> Result<Owned<'t>> {
+    standing(transaction, planner, name)?.owned(pipeline)
 }
 
-/// Claims the table `name` for `pipeline`'s session at `epoch` where no pipeline owns it; another
-/// pipeline's table is refused as `table_owned`, and a claim by a session a newer one fenced as
-/// fenced, since a drop may have released the table from it.
-pub(super) fn claim(
-    transaction: &Transaction<'_>,
+/// The table `name` as `pipeline`'s session at `epoch` changes or writes it.
+///
+/// A session a newer one fenced is refused as fenced where no pipeline owns the table: a drop
+/// may have released it from that session.
+pub(super) fn changed<'t>(
+    transaction: &'t Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
     pipeline: &PipelineId,
     epoch: Epoch,
     name: &str,
-) -> Result<Owned> {
-    let claiming = planner.claim(pipeline, name)?;
-    if owner(transaction, planner, name)?.is_none()
-        && run(transaction, &planner.fence(pipeline, epoch))? == 0
-    {
-        return Err(ConnectorError::fenced(format!(
-            "pipeline {pipeline} has a session newer than epoch {epoch}"
-        )));
+) -> Result<Owned<'t>> {
+    let standing = standing(transaction, planner, name)?;
+    if standing.unowned() && run(transaction, &planner.fence(pipeline, epoch))? == 0 {
+        return Err(fenced(pipeline, epoch));
     }
-    run_all(transaction, &claiming)?;
-    owned(transaction, planner, pipeline, name)
+    standing.owned(pipeline)
 }
 
-/// Every table `pipeline` owns.
-pub(super) fn owned_by(
+fn fenced(pipeline: &PipelineId, epoch: Epoch) -> ConnectorError {
+    ConnectorError::fenced(format!(
+        "pipeline {pipeline} has a session newer than epoch {epoch}"
+    ))
+}
+
+/// The table `table` names as `pipeline`'s session at `epoch` creates it, which claims it where
+/// no pipeline owns it and the database holds nothing under its name or the names derived from
+/// it; a claim by a session a newer one fenced is refused as fenced, since a drop may have
+/// released the table from it.
+pub(super) fn created<'t>(
+    transaction: &'t Transaction<'_>,
+    planner: &SqlPlanner<Sqlite>,
+    pipeline: &PipelineId,
+    epoch: Epoch,
+    table: &TableRef,
+) -> Result<Owned<'t>> {
+    let owned = standing(transaction, planner, &table.name)?.created(pipeline)?;
+    if owned.claims() && run(transaction, &planner.fence(pipeline, epoch))? == 0 {
+        return Err(fenced(pipeline, epoch));
+    }
+    derived(transaction, planner, table)?;
+    Ok(owned)
+}
+
+/// Refuses `table` where the database takes the name of a table derived from it for a table
+/// named otherwise.
+pub(super) fn derived(
+    transaction: &Transaction<'_>,
+    planner: &SqlPlanner<Sqlite>,
+    table: &TableRef,
+) -> Result<()> {
+    for name in planner.derived(table) {
+        planner.exact(&name, &answers(transaction, &planner.resolves(&name))?)?;
+    }
+    Ok(())
+}
+
+/// Refuses a database that takes the name of a catalog table for a table named otherwise.
+pub(super) fn catalog(transaction: &Transaction<'_>, planner: &SqlPlanner<Sqlite>) -> Result<()> {
+    for name in planner.catalog() {
+        planner.exact(name, &answers(transaction, &planner.resolves(name))?)?;
+    }
+    Ok(())
+}
+
+/// Removes what sessions of `pipeline` older than `epoch` staged in the tables it owns, and
+/// releases an owner record of its that stands for no staging table, which no create left.
+pub(super) fn discard(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
     pipeline: &PipelineId,
-) -> Result<Vec<Owned>> {
-    query(transaction, &planner.owned_by(pipeline))?
-        .iter()
-        .map(|row| {
-            let name = row.first().map_or(Ok(String::new()), text)?;
-            planner.owned(pipeline, &name, Some(pipeline.as_str()))
-        })
-        .collect()
+    epoch: Epoch,
+) -> Result<()> {
+    let mut staged = Vec::new();
+    for row in query(transaction, &planner.owned_by(pipeline))? {
+        let name = row.first().map_or(Ok(String::new()), text)?;
+        // A record whose name the database takes for another table is left as it is: every
+        // change of that table is refused, and nothing of it is touched here.
+        let table = match owned(transaction, planner, pipeline, &name) {
+            Ok(table) => table,
+            Err(refused) if refused.code() == Some("table_unowned") => continue,
+            Err(error) => return Err(error),
+        };
+        let staging = planner.staging_table(&name);
+        if columns(transaction, planner.dialect(), &staging)?.is_empty() {
+            run_all(transaction, &planner.release(&table))?;
+        } else {
+            staged.push(table);
+        }
+    }
+    run_all(transaction, &planner.discard(pipeline, epoch, &staged))
 }
 
 /// Refuses `table` where another table's derived tables or indexes would take a name of its own.
@@ -76,9 +154,7 @@ pub(super) fn distinct(
     planner: &SqlPlanner<Sqlite>,
     table: &TableRef,
 ) -> Result<()> {
-    let texts = |row: &Vec<rusqlite::types::Value>, index: usize| {
-        row.get(index).map_or(Ok(String::new()), text)
-    };
+    let texts = |row: &Vec<Value>, index: usize| row.get(index).map_or(Ok(String::new()), text);
     let owned = query(transaction, &planner.owned_tables())?
         .iter()
         .map(|row| texts(row, 0))

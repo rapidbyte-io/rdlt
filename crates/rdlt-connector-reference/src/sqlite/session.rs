@@ -16,7 +16,7 @@ use rusqlite::types::Value;
 
 use super::database::{Database, columns, integer, query, run, run_all, text};
 use commit::{drop_tables, finish, publish, stored};
-use owners::{claim, distinct, owned_by};
+use owners::{catalog, changed, created, discard, distinct};
 
 pub use writer::SqliteWriter;
 
@@ -39,6 +39,7 @@ impl SqliteSession {
         let (plan, name) = (Arc::clone(&planner), pipeline.clone());
         let (epoch, state) = database
             .transaction(move |transaction| {
+                catalog(transaction, &plan)?;
                 run_all(transaction, &plan.bootstrap())?;
                 run_all(transaction, &plan.open(&name))?;
                 let epoch = query(transaction, &plan.epoch(&name))?;
@@ -84,10 +85,13 @@ impl Session for SqliteSession {
         self.database
             .transaction(move |transaction| {
                 let table = change.table();
-                let owned = claim(transaction, &planner, &pipeline, epoch, &table.name)?;
-                if matches!(change, TableChange::Create { .. }) {
+                let owned = if matches!(change, TableChange::Create { .. }) {
+                    let created = created(transaction, &planner, &pipeline, epoch, table)?;
                     distinct(transaction, &planner, table)?;
-                }
+                    created
+                } else {
+                    changed(transaction, &planner, &pipeline, epoch, &table.name)?
+                };
                 let target = columns(transaction, planner.dialect(), &planner.target(table))?;
                 let staging = columns(
                     transaction,
@@ -100,11 +104,7 @@ impl Session for SqliteSession {
                     &planner.tombstone_table(&table.name),
                 )?;
                 let plan = planner.change(&owned, &change, [&target, &staging, &tombstones])?;
-                run_all(transaction, &plan)?;
-                if matches!(change, TableChange::Create { .. }) {
-                    run_all(transaction, &planner.register(&owned, table)?)?;
-                }
-                Ok(())
+                run_all(transaction, &plan)
             })
             .await
     }
@@ -135,10 +135,7 @@ impl Session for SqliteSession {
         let (planner, pipeline, epoch) =
             (Arc::clone(&self.planner), self.pipeline.clone(), self.epoch);
         self.database
-            .transaction(move |transaction| {
-                let tables = owned_by(transaction, &planner, &pipeline)?;
-                run_all(transaction, &planner.discard(&pipeline, epoch, &tables))
-            })
+            .transaction(move |transaction| discard(transaction, &planner, &pipeline, epoch))
             .await
     }
 
