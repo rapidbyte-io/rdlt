@@ -73,17 +73,19 @@ impl Engine {
             after_commit: CancellationToken::new(),
             now: CancellationToken::new(),
         };
-        let waits = Waits::new(Arc::clone(&self.env), self.config.connector_wait());
+        let budget = MemoryBudget::new(self.config.memory().get())
+            .within(Arc::clone(&self.env), self.config.memory_wait())
+            .read_by(self.config.partitions().get())
+            .limited(self.config.limits());
+        let waits =
+            Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
         let context = RunContext {
             env: Arc::clone(&self.env),
             config: Arc::clone(&self.config),
             plan: Arc::new(plan),
             source: waits.source(source),
             destination: waits.destination(destination),
-            budget: MemoryBudget::new(self.config.memory().get())
-                .within(Arc::clone(&self.env), self.config.memory_wait())
-                .read_by(self.config.partitions().get())
-                .limited(self.config.limits()),
+            budget,
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
         };

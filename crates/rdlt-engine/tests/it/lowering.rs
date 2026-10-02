@@ -25,6 +25,9 @@ use crate::support::{commit_every, engine, pipeline, stream};
 
 const BUDGET: u64 = 34 << 20;
 
+/// About the least budget an engine reading one partition at once takes.
+const ONE_READ: u64 = 54 << 20;
+
 fn batch(column: ArrayRef) -> RecordBatch {
     RecordBatch::try_from_iter([("column", column)]).expect("one column makes a batch")
 }
@@ -318,12 +321,12 @@ async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_h
             Some(Step::Batch(batch(Arc::new(Int64Array::from(vec![1_i64])))))
         }
         step if step < 12 => Some(Step::Checkpoint(
-            usize::try_from(BUDGET / 64 / 4).expect("a size"),
+            usize::try_from(ONE_READ / 64 / 4).expect("a size"),
         )),
         _ => None,
     });
     let config = commit_every(1)
-        .memory(BUDGET)
+        .memory(ONE_READ)
         .partitions(1)
         .memory_wait(WAIT)
         .retry(RetryPolicy::default().max_attempts(1))
@@ -355,7 +358,7 @@ async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_h
     );
     let said = format!("{:?}", error.report());
     assert!(said.contains("for a cursor waited 120s"), "{said}");
-    let full = format!("cursors waiting for a commit {}", BUDGET / 64);
+    let full = format!("cursors waiting for a commit {}", ONE_READ / 64);
     assert!(said.contains(&full), "{said}");
     let elapsed = started.elapsed();
     assert!(

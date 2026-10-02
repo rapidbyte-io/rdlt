@@ -2,6 +2,7 @@
 //! its bytes, and the reservations never pass the budget.
 
 mod admits;
+mod decoding;
 mod ledger;
 #[cfg(test)]
 mod tests;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 pub(crate) use self::admits::{admitted, kept, least};
+pub(crate) use self::decoding::Decoding;
 pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
 use self::ledger::{Ledger, admit_waiting};
 use crate::env::Env;
@@ -166,6 +168,16 @@ impl MemoryBudget {
     /// As [`MemoryBudget::acquire`], for records larger than the share.
     pub(crate) async fn acquire_tables(&self, bytes: u64) -> Result<Reservation, Denied> {
         self.request(Class::Tables, bytes).await
+    }
+
+    /// Reserves the `bytes` decoding a connector's answer holds, from the share of answers being
+    /// decoded, until it is decoded.
+    ///
+    /// # Errors
+    ///
+    /// As [`MemoryBudget::acquire`], for an answer that holds more than the share.
+    pub(crate) async fn acquire_control(&self, bytes: u64) -> Result<Reservation, Denied> {
+        self.request(Class::Control, bytes).await
     }
 
     /// Reserves `bytes` a read keeps beside its events, at once.

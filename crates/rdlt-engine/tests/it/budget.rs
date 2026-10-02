@@ -254,7 +254,7 @@ async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
 }
 
 /// The budget of the cursor tests: about the least an engine of one partition takes.
-const CURSORS_BUDGET: u64 = 34 << 20;
+const CURSORS_BUDGET: u64 = 54 << 20;
 
 /// Loads `count` cursors as large as a read of one partition is told it may send, each after a
 /// row where `rows`, under a policy that commits by rows no cursor test reaches: the heap's

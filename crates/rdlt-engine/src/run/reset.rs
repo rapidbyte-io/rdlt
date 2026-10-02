@@ -66,7 +66,12 @@ impl Engine {
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
     ) -> Result<ResetReport, Error> {
-        let waits = Waits::new(Arc::clone(&self.env), self.config.connector_wait());
+        // A reset holds nothing but what decoding the connectors' answers takes: a budget of the
+        // run's memory holds it.
+        let budget = crate::budget::MemoryBudget::new(self.config.memory().get())
+            .within(Arc::clone(&self.env), self.config.memory_wait());
+        let waits =
+            Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
         let (source, destination) = (waits.source(source), waits.destination(destination));
         let resetting = self.resetting(pipeline, streams, scope, source, destination);
         contained(resetting)
