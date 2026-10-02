@@ -44,11 +44,11 @@ fn an_empty_message_holds_its_own_size() {
 }
 
 #[test]
-fn each_empty_entry_of_a_repeated_message_holds_three_of_its_size() {
+fn each_empty_entry_of_a_repeated_message_holds_four_of_its_size() {
     let form = response("Discover").unwrap();
     let one = decoded(form, &[0x0a, 0x00], usize::MAX).unwrap();
     let two = decoded(form, &[0x0a, 0x00, 0x0a, 0x00], usize::MAX).unwrap();
-    assert_eq!(two - one, 3 * size_of::<v1::StreamSpec>());
+    assert_eq!(two - one, 4 * size_of::<v1::StreamSpec>());
 }
 
 #[test]
@@ -61,14 +61,14 @@ fn a_string_holds_its_length_or_the_least_a_vector_allocates() {
         }
         .encode_to_vec()
     };
-    let base = size_of::<v1::PlanResponse>() + 3 * size_of::<String>();
+    let base = size_of::<v1::PlanResponse>() + 4 * size_of::<String>();
     assert_eq!(decoded(form, &encoded("p"), usize::MAX), Ok(base + 8));
     let long = "p".repeat(100);
     assert_eq!(decoded(form, &encoded(&long), usize::MAX), Ok(base + 100));
 }
 
 #[test]
-fn packed_numbers_hold_three_of_their_size_for_each_byte() {
+fn packed_numbers_hold_four_of_their_size_for_each_byte() {
     let form = response("Discover").unwrap();
     let catalog = v1::Catalog {
         streams: vec![v1::StreamSpec {
@@ -78,20 +78,44 @@ fn packed_numbers_hold_three_of_their_size_for_each_byte() {
     };
     let packed = decoded(form, &catalog.encode_to_vec(), usize::MAX).unwrap();
     let empty = decoded(form, &[0x0a, 0x00], usize::MAX).unwrap();
-    assert_eq!(packed - empty, 3 * 4 * 3);
+    assert_eq!(packed - empty, 3 * 4 * 4);
 }
 
 #[test]
-fn fields_the_form_does_not_know_hold_nothing() {
+fn fields_the_form_does_not_know_hold_their_bytes() {
     let form = response("Discover").unwrap();
-    // Field 15 as a varint, as eight bytes, as four bytes and as a length of bytes.
+    // Field 15 as a varint, as eight bytes, as four bytes, as a length of bytes and as a group
+    // holding a varint.
     let unknown = [
-        0x78, 0x01, 0x79, 0, 0, 0, 0, 0, 0, 0, 0, 0x7d, 0, 0, 0, 0, 0x7a, 0x02, 0x0a, 0x00,
+        0x78, 0x01, 0x79, 0, 0, 0, 0, 0, 0, 0, 0, 0x7d, 0, 0, 0, 0, 0x7a, 0x02, 0x0a, 0x00, 0x7b,
+        0x08, 0x01, 0x7c,
     ];
-    assert_eq!(
-        decoded(form, &unknown, usize::MAX),
-        Ok(size_of::<v1::Catalog>())
+    let counted = decoded(form, &unknown, usize::MAX).unwrap();
+    // Each field's key aside, as the scan takes the key first.
+    assert_eq!(counted, size_of::<v1::Catalog>() + unknown.len() - 5);
+    assert!(
+        v1::Catalog::decode(unknown.as_slice())
+            .unwrap()
+            .streams
+            .is_empty()
     );
+}
+
+#[test]
+fn a_group_the_form_does_not_know_is_walked_as_the_decoder_skips_it() {
+    let form = response("Discover").unwrap();
+    // An empty group of field 1000 before an empty stream.
+    let grouped = [0xc3, 0x3e, 0xc4, 0x3e, 0x0a, 0x00];
+    assert!(decoded(form, &grouped, usize::MAX).is_ok());
+    assert!(v1::Catalog::decode(grouped.as_slice()).is_ok());
+    // A group ended by another field's end, or not ended, does not decode.
+    for unended in [&[0xc3, 0x3e, 0xcc, 0x3e][..], &[0xc3, 0x3e]] {
+        assert_eq!(
+            decoded(form, unended, usize::MAX),
+            Err(Unscanned::Malformed)
+        );
+        assert!(v1::Catalog::decode(unended).is_err());
+    }
 }
 
 #[test]
@@ -106,6 +130,8 @@ fn an_encoding_that_does_not_decode_is_refused() {
         &[0x80; 11],
         &[0x09, 0, 0],
         &[0x0d, 0],
+        &[0x00, 0x00],
+        &[0x80, 0x80, 0x80, 0x80, 0x10, 0x00],
     ] {
         assert_eq!(
             decoded(form, malformed, usize::MAX),
@@ -123,7 +149,7 @@ fn a_count_beyond_its_bound_stops_the_walk_there() {
     let counted = decoded(form, &bloated, bound).unwrap();
     assert!(counted > bound);
     assert!(
-        counted <= bound + 3 * size_of::<v1::StreamSpec>(),
+        counted <= bound + 4 * size_of::<v1::StreamSpec>(),
         "{counted}"
     );
     // A malformed tail past the bound is not reached.
@@ -133,33 +159,34 @@ fn a_count_beyond_its_bound_stops_the_walk_there() {
 }
 
 #[test]
-fn an_encoding_nesting_deeper_than_any_form_is_refused() {
-    use super::{Field, Form, Kind};
-    static LOOP: Form = Form {
-        name: "Loop",
-        size: 8,
-        fields: &[Field {
-            number: 1,
-            kind: Kind::Message(&LOOP),
-            repeated: false,
-        }],
-    };
-    let mut nested = Vec::new();
-    for _ in 0..MAX_DEPTH {
-        let mut outer = vec![0x0a, u8::try_from(nested.len()).unwrap()];
-        outer.extend(&nested);
-        nested = outer;
-    }
-    assert_eq!(decoded(&LOOP, &nested, usize::MAX), Err(Unscanned::Deep));
-    assert!(decoded(&LOOP, &nested[2..], usize::MAX).is_ok());
+fn groups_nest_as_deep_as_the_decoder_takes_them_and_no_deeper() {
+    let form = response("Discover").unwrap();
+    let nested = |levels: usize| [vec![0x7b; levels], vec![0x7c; levels]].concat();
+    assert!(decoded(form, &nested(MAX_DEPTH - 1), usize::MAX).is_ok());
+    assert!(v1::Catalog::decode(nested(MAX_DEPTH - 1).as_slice()).is_ok());
+    assert_eq!(
+        decoded(form, &nested(MAX_DEPTH), usize::MAX),
+        Err(Unscanned::Deep)
+    );
+    assert!(v1::Catalog::decode(nested(MAX_DEPTH).as_slice()).is_err());
 }
 
 #[test]
-fn unpacked_numbers_hold_three_of_their_size_each() {
-    let form = response("Discover").unwrap();
-    // A stream whose read modes, field 5, come one varint each rather than packed.
-    let unpacked = [0x0a, 0x04, 0x28, 0x01, 0x28, 0x02];
-    let counted = decoded(form, &unpacked, usize::MAX).unwrap();
-    let empty = decoded(form, &[0x0a, 0x00], usize::MAX).unwrap();
-    assert_eq!(counted - empty, 2 * 3 * 4);
+fn an_entry_of_one_byte_holds_the_least_a_vector_of_bytes_allocates() {
+    use super::{Field, Form, Kind};
+    // No message of the protocol repeats a one-byte number; a form that does counts so.
+    static FLAGS: Form = Form {
+        name: "Flags",
+        size: 24,
+        fields: &[Field {
+            number: 1,
+            kind: Kind::Scalar(1),
+            repeated: true,
+        }],
+    };
+    assert_eq!(decoded(&FLAGS, &[0x08, 0x01], usize::MAX), Ok(24 + 8));
+    assert_eq!(
+        decoded(&FLAGS, &[0x0a, 0x02, 0x01, 0x00], usize::MAX),
+        Ok(24 + 2 * 8)
+    );
 }

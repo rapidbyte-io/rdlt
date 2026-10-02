@@ -4,8 +4,9 @@
 #![forbid(unsafe_code)]
 
 use bytes::Bytes;
+use proptest::prelude::*;
 use rdlt_wire::prost::Message;
-use rdlt_wire::scan::{Form, decoded, request, response};
+use rdlt_wire::scan::{Form, decoded, differential, request, response};
 use rdlt_wire::v1;
 
 #[global_allocator]
@@ -14,6 +15,14 @@ static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
 /// Entries of a repeated field: one past a power of two, so a vector holds twice as many as it
 /// needs beside the half it grew from.
 const ENTRIES: usize = (1 << 14) + 1;
+
+/// What `call`, run once, held on the heap at its peak.
+fn peak_of(call: &mut dyn FnMut()) -> usize {
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    call();
+    HEAP.peak_usage().saturating_sub(before)
+}
 
 /// What decoding `message` as `M` holds at its peak, against what the scan of it as `form`
 /// counts.
@@ -168,4 +177,111 @@ fn a_report_of_committed_positions_is_counted_as_it_decodes() {
             .collect(),
     };
     holds::<v1::CommittedRequest>(asked("Committed"), &report);
+}
+
+#[test]
+fn entries_whose_vectors_hold_one_each_are_counted_as_they_decode() {
+    // Streams of one column of one node, of one cursor field of one empty segment, and of one
+    // read mode: each vector holds the room of its first growth for one entry.
+    let node = v1::TypeNode {
+        kind: Some(v1::type_node::Kind::Int64(v1::Unit {})),
+        ..v1::TypeNode::default()
+    };
+    let column = v1::StreamSpec {
+        schema: Some(v1::TableSchema {
+            fields: vec![v1::Field {
+                r#type: Some(v1::LogicalType { nodes: vec![node] }),
+                ..v1::Field::default()
+            }],
+        }),
+        ..v1::StreamSpec::default()
+    };
+    let segment = v1::StreamSpec {
+        cursor_fields: vec![v1::ColumnPath {
+            segments: vec![String::new()],
+        }],
+        ..v1::StreamSpec::default()
+    };
+    let mode = v1::StreamSpec {
+        read_modes: vec![1],
+        ..v1::StreamSpec::default()
+    };
+    for stream in [column, segment, mode] {
+        let catalog = v1::Catalog {
+            streams: vec![stream; 1 << 16 | 1],
+        };
+        holds::<v1::Catalog>(answer("Discover"), &catalog);
+    }
+}
+
+/// An encoding of fields of numbers 1 to 15 of every wire type, nesting as deep as `depth`.
+fn encoding(depth: u32) -> impl Strategy<Value = Vec<u8>> {
+    let number = 1_u8..16;
+    let leaf = prop_oneof![
+        (number.clone(), any::<u64>()).prop_map(|(number, value)| {
+            let mut field = vec![number << 3];
+            let mut value = value % 300;
+            while value >= 0x80 {
+                field.push(u8::try_from(value & 0x7f).expect("seven bits") | 0x80);
+                value >>= 7;
+            }
+            field.push(u8::try_from(value).expect("seven bits"));
+            field
+        }),
+        number
+            .clone()
+            .prop_map(|number| [vec![number << 3 | 1], vec![0; 8]].concat()),
+        number
+            .clone()
+            .prop_map(|number| [vec![number << 3 | 5], vec![0; 4]].concat()),
+        (
+            number.clone(),
+            proptest::collection::vec(any::<u8>(), 0..12)
+        )
+            .prop_map(|(number, bytes)| delimited(number, &bytes)),
+    ];
+    let fields = proptest::collection::vec(leaf, 0..6).prop_map(|fields| fields.concat());
+    fields.prop_recursive(depth, 64, 6, move |inner| {
+        let number = 1_u8..16;
+        prop_oneof![
+            (number.clone(), inner.clone()).prop_map(|(number, nested)| delimited(number, &nested)),
+            (number, inner.clone()).prop_map(|(number, nested)| {
+                [vec![number << 3 | 3], nested, vec![number << 3 | 4]].concat()
+            }),
+            proptest::collection::vec(inner, 1..4).prop_map(|fields| fields.concat()),
+        ]
+    })
+}
+
+/// A length-delimited field `number` of `payload`.
+fn delimited(number: u8, payload: &[u8]) -> Vec<u8> {
+    let length = u8::try_from(payload.len().min(127)).expect("seven bits");
+    [
+        &[number << 3 | 2, length][..],
+        &payload[..usize::from(length)],
+    ]
+    .concat()
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 2048, ..ProptestConfig::default() })]
+
+    #[test]
+    fn whatever_a_message_decodes_from_the_scan_takes_counting_no_less_than_it_holds(
+        bytes in encoding(4),
+        which in 0_usize..64,
+    ) {
+        let decoding = differential::decoding(which, &bytes, &peak_of).unwrap();
+        if decoding.decoded {
+            let counted = decoding.counted;
+            prop_assert!(counted.is_ok(), "{}: {:?} for {:02x?}", decoding.form.name, counted, bytes);
+            let counted = counted.unwrap();
+            prop_assert!(decoding.held <= counted, "{}: held {}, counted {} for {:02x?}", decoding.form.name, decoding.held, counted, bytes);
+        }
+    }
+}
+
+#[test]
+fn every_message_the_calls_carry_is_held_to_the_scan() {
+    assert_eq!(differential::count(), 29);
 }

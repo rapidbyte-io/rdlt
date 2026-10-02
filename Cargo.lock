@@ -2032,6 +2032,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "http",
+ "http-body",
  "hyper",
  "hyper-util",
  "nix",
@@ -2243,6 +2244,7 @@ dependencies = [
  "rustls",
  "rustls-webpki",
  "thiserror",
+ "tokio",
  "tonic",
  "tonic-prost",
 ]

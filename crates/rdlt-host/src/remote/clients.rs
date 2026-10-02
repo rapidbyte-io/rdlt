@@ -44,10 +44,10 @@ impl Clients {
     }
 }
 
-/// A client over `channel` decoding within `limits` for `class`, and sending what the protocol's
-/// largest message may hold.
+/// A client over `channel` decoding within `limits` for `class`, and sending what the largest
+/// message of any class may hold.
 pub(crate) fn sized(channel: &Checked, limits: &Limits, class: Class) -> Client {
     ConnectorClient::new(channel.clone())
         .max_decoding_message_size(limits.decoding(class))
-        .max_encoding_message_size(limits.message_bytes())
+        .max_encoding_message_size(limits.largest())
 }

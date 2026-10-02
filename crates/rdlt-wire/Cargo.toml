@@ -20,6 +20,7 @@ prost.workspace = true
 nix = { workspace = true, optional = true, features = ["fs", "user"] }
 rustls = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 tonic = { workspace = true, features = ["codegen"] }
 tonic-prost.workspace = true
 webpki = { workspace = true, optional = true }

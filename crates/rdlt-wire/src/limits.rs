@@ -85,7 +85,8 @@ pub const HANDSHAKE_BYTES: u64 = 4 * 1024 * 1024;
 /// decoded, for each byte it takes on the wire.
 ///
 /// A schema's columns, each a few bytes on the wire, hold tens decoded. A message of state may
-/// hold 8 for each byte, and a handshake, a configuration and a read's start 4.
+/// hold 8 for each byte, a handshake, a configuration and a read's start 4, and a frame of a read
+/// or a write 2: its data is held at its length.
 pub const DECODED_PER_BYTE: usize = 16;
 
 /// Bytes: what a message holds beside the field a limit bounds.
@@ -207,6 +208,18 @@ pub enum Class {
 }
 
 impl Class {
+    /// Every class.
+    pub const ALL: [Self; 8] = [
+        Self::Handshake,
+        Self::Control,
+        Self::Catalog,
+        Self::State,
+        Self::Config,
+        Self::Schema,
+        Self::Cursor,
+        Self::Data,
+    ];
+
     /// The class of a request of `method`, a method of the protocol's service.
     pub fn of_request(method: &str) -> Self {
         match method {
@@ -286,23 +299,27 @@ impl Limits {
         })
     }
 
-    /// The largest protocol message either end sends or accepts: a frame, and the fields around
-    /// it.
-    pub fn message_bytes(&self) -> usize {
-        Self::decoding(self, Class::Data)
-    }
-
     /// The most bytes a message of `class` may hold once decoded, as its
     /// [scan](crate::scan) counts it before it is decoded: so many times its wire bound, as
-    /// [`DECODED_PER_BYTE`] says; none for frames, which are taken as they are.
-    pub fn decoded(&self, class: Class) -> Option<usize> {
+    /// [`DECODED_PER_BYTE`] says for each class.
+    pub fn decoded(&self, class: Class) -> usize {
         let per_byte = match class {
+            Class::Data => 2,
             Class::Handshake | Class::Config | Class::Cursor => 4,
             Class::State => 8,
             Class::Control | Class::Catalog | Class::Schema => DECODED_PER_BYTE,
-            Class::Data => return None,
         };
-        Some(self.decoding(class).saturating_mul(per_byte))
+        self.decoding(class).saturating_mul(per_byte)
+    }
+
+    /// The most bytes a message of any class may take on the wire: the most a decoder that takes
+    /// every class's messages, or an encoder that sends them, is set to.
+    pub fn largest(&self) -> usize {
+        Class::ALL
+            .iter()
+            .map(|class| self.decoding(*class))
+            .max()
+            .unwrap_or(0)
     }
 
     /// The most bytes a message of `class` may take on the wire before it is decoded.
