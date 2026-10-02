@@ -1,6 +1,7 @@
 //! Merging published rows by key, as the memory and files destinations publish a merge table.
 
 mod changes;
+mod folded;
 mod history;
 mod refused;
 mod retype;
@@ -63,6 +64,7 @@ pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> Sch
 ///
 /// The rows are given back as batches of the columns they hold, as [`sparse`] has them: a
 /// column a row never had costs the row nothing, here or in what a destination keeps of them.
+/// Rows of many sets of columns are joined as [`folded`] says, so the batches stay few.
 ///
 /// A key `schema` cannot be merged by, one of no column or naming a column it lacks, is an error,
 /// and so is a value a column's type no longer holds: nothing merges then.
@@ -89,6 +91,7 @@ pub(crate) fn merge_sparse(
         }
         (None, None) => (upsert(schema, published, incoming, key)?, Vec::new()),
     };
+    let rows = folded::folded(&stored, rows)?;
     Ok(Merged { rows, tombstones })
 }
 
@@ -270,7 +273,7 @@ pub(crate) fn merge_children_sparse(
         base: Base::Row(at),
         over: &[],
     });
-    assemble(&sources, picks)
+    folded::folded(schema, assemble(&sources, picks)?)
 }
 
 /// `batch`'s column `name` as `Binary`, which an id or a sequence is.

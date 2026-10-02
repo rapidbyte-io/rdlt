@@ -111,3 +111,12 @@ pub(crate) fn within(
     let message = format!("stream {stream}: {name} is {actual}, over the limit of {limit}");
     Err(ConnectorError::config(message).with_code("limit_exceeded"))
 }
+
+/// Batches: how many a merge gives a table's rows back as, each of the columns its rows hold,
+/// before it joins the smallest: what a destination that writes a file for each set of columns
+/// lists for a merge table.
+pub(crate) const MAX_SHAPES: usize = 16;
+
+/// Cells: bounds what joining a merge's smallest batches into one makes of cells no row of
+/// theirs had, counted as rows times absent columns; batches that would make more join apart.
+pub(crate) const FOLD_CELLS: u64 = 1024 * 1024;
