@@ -1,6 +1,7 @@
 //! Logical types: what a value is, independent of how Arrow or a destination stores it.
 
 mod arrow;
+mod flat;
 mod lattice;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -19,8 +20,8 @@ pub const MAX_DECIMAL_PRECISION: u8 = 76;
 /// A value's logical type.
 ///
 /// Types form a lattice under [`LogicalType::join`]: `Null` is the bottom and `Json` the top.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// A type is stored as its nodes in preorder, so its stored form nests no deeper than it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum LogicalType {
     /// Only nulls seen so far.
     Null,
@@ -156,6 +157,7 @@ pub struct DecimalType {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawDecimal {
     precision: u8,
     scale: u8,
@@ -177,6 +179,15 @@ pub enum TypeError {
     DuplicateField {
         /// The repeated name.
         name: String,
+    },
+    /// A schema's types nest deeper than [`MAX_NESTING_DEPTH`](crate::limits::MAX_NESTING_DEPTH)
+    /// levels, counting a top-level column as the first.
+    #[error("the schema nests {depth} levels deep, beyond the limit of {limit}")]
+    TooDeep {
+        /// How deep it nests.
+        depth: u64,
+        /// The limit.
+        limit: u64,
     },
 }
 
@@ -217,11 +228,10 @@ impl From<DecimalType> for RawDecimal {
     }
 }
 
-/// A named, typed, possibly nullable value slot.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// A named, typed, possibly nullable value slot, stored as its type is.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Field {
     name: Arc<str>,
-    #[serde(rename = "type")]
     logical_type: LogicalType,
     nullable: bool,
 }

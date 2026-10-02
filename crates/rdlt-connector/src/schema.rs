@@ -9,12 +9,22 @@ use std::sync::Arc;
 use arrow_schema::Schema;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Field, Fields, TypeError, TypeKind, UnsupportedType};
+use crate::limits::MAX_NESTING_DEPTH;
+use crate::types::{Field, Fields, LogicalType, TypeError, TypeKind, UnsupportedType};
 
-/// The ordered, uniquely named fields of a table.
+/// The ordered, uniquely named fields of a table, nested no deeper than
+/// [`MAX_NESTING_DEPTH`] levels, counting a top-level column as the first.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "StoredSchema", into = "StoredSchema")]
 pub struct TableSchema {
     fields: Fields,
+}
+
+/// A schema as it is stored.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSchema {
+    fields: Vec<Field>,
 }
 
 /// Why an Arrow schema has no table schema equivalent.
@@ -29,8 +39,15 @@ pub enum SchemaError {
 }
 
 impl TableSchema {
-    /// A schema of `fields`, which must have distinct names.
+    /// A schema of `fields`, which must have distinct names and nest no deeper than the limit.
     pub fn new(fields: Vec<Field>) -> Result<Self, TypeError> {
+        let depth = depth(&fields);
+        if depth > MAX_NESTING_DEPTH {
+            return Err(TypeError::TooDeep {
+                depth,
+                limit: MAX_NESTING_DEPTH,
+            });
+        }
         Ok(Self {
             fields: Fields::new(fields)?,
         })
@@ -60,6 +77,41 @@ impl TableSchema {
             .collect::<Result<_, _>>()?;
         Ok(Self::new(fields)?)
     }
+}
+
+impl TryFrom<StoredSchema> for TableSchema {
+    type Error = TypeError;
+
+    fn try_from(stored: StoredSchema) -> Result<Self, TypeError> {
+        Self::new(stored.fields)
+    }
+}
+
+impl From<TableSchema> for StoredSchema {
+    fn from(schema: TableSchema) -> Self {
+        Self {
+            fields: schema.fields.into(),
+        }
+    }
+}
+
+/// How deep `fields` nest, counting a top-level field as the first level; found without
+/// recursion, so a type of any depth is measured.
+fn depth(fields: &[Field]) -> u64 {
+    let mut deepest = 0;
+    let mut pending: Vec<(&Field, u64)> = fields.iter().map(|field| (field, 1)).collect();
+    while let Some((field, depth)) = pending.pop() {
+        deepest = deepest.max(depth);
+        let below = depth.saturating_add(1);
+        match field.logical_type() {
+            LogicalType::Struct(nested) => {
+                pending.extend(nested.iter().map(|field| (field, below)));
+            }
+            LogicalType::List(item) => pending.push((item, below)),
+            _ => {}
+        }
+    }
+    deepest
 }
 
 /// A column addressed from a table's root: one segment per nesting level.

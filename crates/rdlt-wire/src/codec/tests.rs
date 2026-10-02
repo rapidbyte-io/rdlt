@@ -407,6 +407,15 @@ fn a_schema_nested_to_the_limit_decodes_and_one_level_deeper_is_refused_by_name(
     }
 }
 
+#[test]
+fn a_batch_of_a_schema_nested_to_the_limit_is_sent_and_received() {
+    let depth = usize::try_from(crate::limits::NESTING_DEPTH).unwrap();
+    let schema = Arc::new(nested(depth));
+    let column = arrow_array::new_null_array(schema.field(0).data_type(), 3);
+    let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
+    assert_eq!(crossed(&batch).0, batch);
+}
+
 /// A dictionary column nested in a column of every type that nests one.
 fn nesting_a_dictionary() -> Vec<ArrayRef> {
     use arrow_array::{MapArray, RunArray, StructArray, UnionArray};
