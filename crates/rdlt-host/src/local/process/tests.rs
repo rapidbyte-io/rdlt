@@ -53,7 +53,20 @@ fn script(directory: &Path, body: &str) -> Launch {
         told: None,
         confinement: None,
         lease: Arc::new(writing(&Leases::default(), directory).expect("held")),
+        state_bytes: None,
     }
+}
+
+#[test]
+fn a_connector_is_told_the_hosts_limit_on_state_where_it_is_not_the_protocols() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let mut launch = sleeper(directory.path());
+    assert_eq!(super::command::arguments(&launch), ["--rdlt-fd=3"]);
+    launch.state_bytes = Some(1 << 25);
+    assert_eq!(
+        super::command::arguments(&launch),
+        ["--rdlt-fd=3", "--max-state-bytes=33554432"]
+    );
 }
 
 fn socket() -> OwnedFd {
