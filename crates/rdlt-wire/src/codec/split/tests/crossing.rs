@@ -167,9 +167,9 @@ fn checked(name: &str, column: &ArrayRef) -> Vec<String> {
 /// values, and a view by the bytes of the longer column its leaf is a part of. A run-end column
 /// would not: Arrow's writer sends it as its rows, and only the list of layouts in
 /// `a_column_of_a_plain_layout_goes_as_it_is_and_every_other_is_rebuilt` keeps it rebuilt.
-fn every_part_crosses(leaf: &str) {
+fn every_part_crosses(leaf: &str, share: usize) {
     let mut problems = Vec::new();
-    let columns = nested::over(leaf);
+    let columns = nested::over(leaf, share);
     for (name, column) in &columns {
         problems.extend(checked(name, column));
     }
@@ -182,41 +182,61 @@ fn every_part_crosses(leaf: &str) {
     );
 }
 
-/// A test of [`every_part_crosses`] for each leaf, so that they run side by side.
-macro_rules! every_part_of_every_nested_layout_crosses_as_its_rows_and_as_it_was_weighed {
-    ($($test:ident: $leaf:literal,)*) => {
+/// Tests of [`every_part_crosses`] for each leaf, a share of its layouts each, so that they
+/// run side by side and each takes about a second.
+macro_rules! every_part_of_every_layout_crosses_as_its_rows_and_as_weighed {
+    ($($over:ident: $leaf:literal,)*) => {
         $(
-            #[test]
-            fn $test() {
-                every_part_crosses($leaf);
+            mod $over {
+                #[test]
+                fn the_first_fifth_of_the_layouts_crosses_as_its_rows_and_as_weighed() {
+                    super::every_part_crosses($leaf, 0);
+                }
+
+                #[test]
+                fn the_second_fifth_of_the_layouts_crosses_as_its_rows_and_as_weighed() {
+                    super::every_part_crosses($leaf, 1);
+                }
+
+                #[test]
+                fn the_third_fifth_of_the_layouts_crosses_as_its_rows_and_as_weighed() {
+                    super::every_part_crosses($leaf, 2);
+                }
+
+                #[test]
+                fn the_fourth_fifth_of_the_layouts_crosses_as_its_rows_and_as_weighed() {
+                    super::every_part_crosses($leaf, 3);
+                }
+
+                #[test]
+                fn the_last_fifth_of_the_layouts_crosses_as_its_rows_and_as_weighed() {
+                    super::every_part_crosses($leaf, 4);
+                }
             }
         )*
     };
 }
 
-every_part_of_every_nested_layout_crosses_as_its_rows_and_as_it_was_weighed! {
-    every_part_of_every_layout_over_nulls_crosses_as_its_rows_and_as_weighed: "null",
-    every_part_of_every_layout_over_flags_crosses_as_its_rows_and_as_weighed: "bool",
-    every_part_of_every_layout_over_integers_crosses_as_its_rows_and_as_weighed: "int",
-    every_part_of_every_layout_over_a_part_of_integers_crosses_as_its_rows_and_as_weighed:
-        "int sliced",
-    every_part_of_every_layout_over_texts_crosses_as_its_rows_and_as_weighed: "utf8",
-    every_part_of_every_layout_over_a_part_of_texts_crosses_as_its_rows_and_as_weighed:
-        "utf8 sliced",
-    every_part_of_every_layout_over_bytes_crosses_as_its_rows_and_as_weighed: "binary",
-    every_part_of_every_layout_over_a_part_of_large_texts_crosses_as_its_rows_and_as_weighed:
-        "large utf8 sliced",
-    every_part_of_every_layout_over_large_bytes_crosses_as_its_rows_and_as_weighed:
-        "large binary",
-    every_part_of_every_layout_over_a_part_of_fixed_bytes_crosses_as_its_rows_and_as_weighed:
-        "fixed binary sliced",
-    every_part_of_every_layout_over_a_part_of_decimals_crosses_as_its_rows_and_as_weighed:
-        "decimal sliced",
-    every_part_of_every_layout_over_views_crosses_as_its_rows_and_as_weighed: "view",
-    every_part_of_every_layout_over_views_of_bytes_crosses_as_its_rows_and_as_weighed:
-        "binview",
-    every_part_of_every_layout_over_a_part_of_views_crosses_as_its_rows_and_as_weighed:
-        "view sliced",
+const _: () = assert!(
+    nested::SHARES == 5,
+    "a test for each share of a leaf's layouts"
+);
+
+every_part_of_every_layout_crosses_as_its_rows_and_as_weighed! {
+    over_nulls: "null",
+    over_flags: "bool",
+    over_integers: "int",
+    over_a_part_of_integers: "int sliced",
+    over_texts: "utf8",
+    over_a_part_of_texts: "utf8 sliced",
+    over_bytes: "binary",
+    over_a_part_of_large_texts: "large utf8 sliced",
+    over_large_bytes: "large binary",
+    over_a_part_of_fixed_bytes: "fixed binary sliced",
+    over_a_part_of_decimals: "decimal sliced",
+    over_views: "view",
+    over_views_of_bytes: "binview",
+    over_a_part_of_views: "view sliced",
 }
 
 #[test]
