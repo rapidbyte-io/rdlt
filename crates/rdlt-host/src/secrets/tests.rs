@@ -360,6 +360,12 @@ async fn named_secrets_come_from_the_store_the_operator_gives_and_from_nothing_e
         .await
         .expect_err("no env");
     assert!(matches!(fault, SecretFault::Refused));
+    // An empty prefix reaches no variable, as `DB_PASSWORD` would be reached by `db_password`.
+    let unprefixed = Secrets::new().named(EnvSecrets::named("").reading(variables));
+    let fault = resolve(&unprefixed, SecretKind::Named, "db_password")
+        .await
+        .expect_err("no prefix, nothing");
+    assert!(matches!(fault, SecretFault::Refused), "{fault:?}");
     let vaulted = Secrets::new().named(vault());
     let found = resolve(&vaulted, SecretKind::Named, "api-key").await;
     assert_eq!(found.expect("the vault holds it"), "k-12345");
