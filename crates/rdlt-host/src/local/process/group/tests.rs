@@ -7,7 +7,16 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use tokio::sync::watch;
 
-use super::{Leader, Owned};
+use super::{Leader, Owned, Terms};
+use crate::local::sandbox::Stops;
+
+/// A group stopped by `SIGTERM`, with `grace` to end.
+fn signalled(grace: Duration) -> Terms {
+    Terms {
+        stops: Stops::BySignal,
+        grace,
+    }
+}
 
 /// A shell leading a group of its own, which it shares with a `sleep` it started and whose
 /// process id it wrote; then it runs `then`.
@@ -34,7 +43,7 @@ fn pid(child: &Child) -> Pid {
 
 /// `child` and its group, owned, with `grace` to end once stopped.
 fn owned(child: Child, grace: Duration) -> Owned {
-    Owned::new(child, grace, None, watch::channel(None).0)
+    Owned::new(child, signalled(grace), None, watch::channel(None).0)
 }
 
 #[test]
@@ -147,7 +156,7 @@ fn a_stop_has_asked_every_member_to_end_before_it_returns() {
 fn a_connectors_exit_is_told_before_its_group_is_asked_whether_it_is_empty() {
     let (child, _member) = leading("exit 3");
     let (exit, told) = watch::channel(None);
-    let mut owned = Owned::new(child, Duration::ZERO, None, exit);
+    let mut owned = Owned::new(child, signalled(Duration::ZERO), None, exit);
     let asked = |_| {
         // Whoever waits to say how the connector ended need not wait for its members.
         let code = told.borrow().and_then(|status| status.code());
@@ -184,4 +193,28 @@ fn a_stop_asks_the_members_of_a_group_whose_leader_has_exited_and_is_unreaped() 
     kill(member, Signal::SIGKILL).ok();
     owned.discarded();
     assert!(asked, "the member of an exited leader was not asked to end");
+}
+
+#[test]
+fn a_connector_stopped_by_the_end_of_its_input_is_sent_no_signal_until_it_is_killed() {
+    let (child, member) = leading("read line; exit 7");
+    let leader = pid(&child);
+    let terms = Terms {
+        stops: Stops::ByInputEnd,
+        grace: Duration::from_secs(1000),
+    };
+    let owned = Owned::new(child, terms, None, watch::channel(None).0);
+    owned.held().stop();
+    // The leader ends as its input does, by itself: a signal would have ended it otherwise.
+    let exited = nix::sys::wait::WaitStatus::Exited(leader, 7);
+    assert_eq!(nix::sys::wait::waitpid(leader, None), Ok(exited));
+    // And its member was sent nothing.
+    std::thread::sleep(Duration::from_millis(100));
+    let alive = kill(member, None).is_ok();
+    kill(member, Signal::SIGKILL).ok();
+    assert!(
+        alive,
+        "a member was signalled by a stop that sends no signal"
+    );
+    owned.discarded();
 }

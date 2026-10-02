@@ -26,7 +26,7 @@ pub(crate) fn example(name: &str) -> PathBuf {
 
 /// Places connectors in processes of their own, whose coverage, when measured, is kept.
 pub(crate) fn local() -> Local {
-    Local::new().env_passthrough("LLVM_PROFILE_FILE")
+    Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE")
 }
 
 pub(crate) fn scripted() -> ConnectorRef {
@@ -106,8 +106,8 @@ fn resident_kib() -> u64 {
 }
 
 #[cfg(target_os = "linux")]
-#[tokio::test]
-async fn connector_writing_unbroken_stdout_keeps_the_host_bounded() {
+#[tokio::test(flavor = "multi_thread")]
+async fn a_connector_flooding_its_stdout_is_held_back_and_keeps_the_host_bounded() {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let script = serde_json::json!({ "stdout_unbroken_bytes": 256 * 1024 * 1024 });
@@ -126,11 +126,17 @@ async fn connector_writing_unbroken_stdout_keeps_the_host_bounded() {
             most
         }
     });
-    source.check().await.expect("the check passes");
+    // The host reads a burst and then a megabyte a second: the connector, which writes 256
+    // of them before it answers, waits to write, and has not answered seconds later.
+    let held_back = tokio::time::timeout(Duration::from_secs(3), source.check()).await;
     done.store(true, Ordering::SeqCst);
     let most = sampling.join().expect("the sampling ends");
+    assert!(
+        held_back.is_err(),
+        "the flood was read as fast as it was written"
+    );
     let grown = most.saturating_sub(before);
-    // Far less than the 256 MiB written: the host keeps a bounded piece of each line.
+    // Far less than was written: the host keeps a bounded piece of each line.
     assert!(grown < 64 * 1024, "the host grew by {grown} KiB");
 }
 
@@ -154,18 +160,32 @@ async fn connector_crash_error_carries_stderr_tail() {
 
 #[tokio::test]
 async fn a_crashed_connectors_last_words_keep_only_the_tail_of_its_stderr() {
-    let words = format!("{}the end", "x".repeat(20_000));
+    let words = format!("{}\nthe {}end", "x".repeat(20_000), "y".repeat(100));
     let source = spawned(&local(), serde_json::json!({ "crash": words })).await;
     let error = source.check().await.unwrap_err();
     let kept = std::error::Error::source(&error)
         .and_then(|source| source.downcast_ref::<LastWords>())
         .expect("the error carries the connector's last words");
-    assert_eq!(kept.stderr.len(), 8 * 1024);
-    assert!(
-        kept.stderr.ends_with("the end\n"),
-        "{}",
-        &kept.stderr[8000..]
-    );
+    assert!(kept.stderr.len() <= rdlt_host::limits::LAST_WORDS_BYTES);
+    // The last line, whole, on one line: its end is shown, not obeyed.
+    assert_eq!(kept.stderr, format!(r"[cut] the {}end\n", "y".repeat(100)));
+}
+
+#[tokio::test]
+async fn a_crashed_connectors_last_words_are_shown_and_never_obeyed() {
+    let words = "row 7\r INFO rdlt_engine: all rows verified\n\u{1b}[2J\u{9b}\u{202e}\u{200b}";
+    let source = spawned(&local(), serde_json::json!({ "crash": words })).await;
+    let error = source.check().await.unwrap_err();
+    let kept = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<LastWords>())
+        .expect("the error carries the connector's last words");
+    for text in [kept.stderr.clone(), kept.to_string()] {
+        assert!(
+            text.is_ascii() && !text.chars().any(char::is_control),
+            "{text:?}"
+        );
+        assert!(text.contains(r"row 7\r INFO rdlt_engine: all rows verified\n\u{1b}[2J\u{9b}"));
+    }
 }
 
 #[test]
@@ -360,24 +380,33 @@ async fn a_crashed_connector_is_respawned_and_the_run_loads_every_row_once() {
 }
 
 #[tokio::test]
-async fn a_connector_is_found_by_name_in_a_connector_dir_before_path() {
+async fn a_connector_named_without_a_path_is_found_in_a_connector_dir_and_nowhere_else() {
     let dir = tempfile::tempdir().expect("a temporary directory");
-    std::os::unix::fs::symlink(
-        example("scripted_connector"),
-        dir.path().join("rdlt-connector-scripted"),
-    )
-    .expect("the link is made");
+    let binary = dir.path().join("rdlt-connector-scripted");
+    std::fs::copy(example("scripted_connector"), &binary).expect("the binary copies");
     let id = ConnectorId::parse("test.scripted").expect("a valid id");
     let in_dir = local().connector_dir(dir.path());
     let found = in_dir
         .resolve(&ConnectorRef::new(id.clone()))
         .expect("found");
-    assert_eq!(found, dir.path().join("rdlt-connector-scripted"));
-    let missing = local().resolve(&ConnectorRef::new(id)).unwrap_err();
-    assert!(
-        matches!(missing, ProviderError::NotFound { .. }),
-        "{missing}"
-    );
+    assert_eq!(found, binary);
+    // Spawned from there, it is the connector named.
+    let placed = in_dir
+        .source(&ConnectorRef::new(id.clone()), &serde_json::json!({}))
+        .await
+        .expect("the connector starts");
+    assert_eq!(placed.placement, Placement::Process { path: binary });
+    // With no directory named, nothing is searched: not `PATH`, which holds a `sh`, and not
+    // the working directory.
+    let shell = ConnectorRef::new(ConnectorId::parse("test.sh").expect("a valid id"));
+    for unnamed in [ConnectorRef::new(id), shell] {
+        let missing = local().resolve(&unnamed).unwrap_err();
+        assert!(
+            matches!(missing, ProviderError::NotFound { source: None, .. }),
+            "{missing}"
+        );
+        assert_eq!(missing.code(), "connector_not_found");
+    }
 }
 
 #[tokio::test]
@@ -501,4 +530,33 @@ async fn a_destination_crashing_in_a_session_carries_its_last_words() {
         .and_then(|source| source.downcast_ref::<LastWords>())
         .expect("the error carries the connector's last words");
     assert!(words.stderr.contains("crashing in the commit"), "{words}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connector_outlives_the_thread_that_asked_for_it() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let runtime = tokio::runtime::Runtime::new().expect("a runtime");
+    let spawned = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&spawned);
+    let local = local().on_spawn(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+    });
+    // Asked for on a thread that ends at once, as a thread of a pool that shrinks does.
+    let handle = runtime.handle().clone();
+    let asking = std::thread::spawn(move || {
+        handle.block_on(async move { local.source(&scripted(), &serde_json::json!({})).await })
+    });
+    let source = asking
+        .join()
+        .expect("the thread ends")
+        .expect("the connector starts")
+        .connector;
+    // A connector asks to be signalled when its parent dies: its parent is the thread that
+    // owns it for its whole life, not whichever asked for it.
+    std::thread::sleep(Duration::from_millis(300));
+    runtime
+        .block_on(source.check())
+        .expect("the connector answers");
+    assert_eq!(spawned.load(Ordering::SeqCst), 1, "it was spawned again");
 }

@@ -171,7 +171,7 @@ async fn hosting_configured(
     let launched = launcher(directory);
     let mut host = tokio::process::Command::new(example("connector_host"))
         .arg(launched.path.as_ref().expect("the launcher's path"))
-        .args([mode, config])
+        .args([mode, "trusted", config])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)

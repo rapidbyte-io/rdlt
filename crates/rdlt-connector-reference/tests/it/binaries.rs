@@ -13,7 +13,7 @@ fn reference(id: &str, binary: &str) -> ConnectorRef {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn each_binary_serves_its_connectors_in_their_roles() {
-    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
     let dir = crate::fixtures::tempdir().expect("a temporary directory");
     let sources = [
         (
@@ -115,9 +115,10 @@ async fn a_shipped_destination_binary_reads_nothing_back_whatever_its_host_offer
         ),
     ];
     for (id, binary, config) in destinations {
-        let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+        let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
         let wire = local
             .wire(&reference(id, binary))
+            .await
             .expect("the binary starts");
         let mut client = client(wire, Options::default())
             .await

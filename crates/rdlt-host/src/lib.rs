@@ -5,12 +5,15 @@
 #![forbid(unsafe_code)]
 
 mod connect;
+mod guard;
 mod kills;
+pub mod limits;
 pub mod local;
 pub mod network;
 pub mod provider;
 pub mod registry;
 pub mod remote;
+pub mod secrets;
 #[cfg(test)]
 mod sink;
 mod supervise;
@@ -19,15 +22,20 @@ mod wire;
 pub use connect::{Connect, Open};
 pub use kills::Kills;
 pub use local::{
-    Interrupts, LastWords, Lingering, Local, StopsSpawned, Witness, spawned, stop_spawned,
+    Bubblewrap, Confined, Grants, Interrupts, LastWords, Launcher, Lingering, Local, NetworkGrant,
+    Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned, stop_spawned,
 };
 pub use network::{Endpoint, EndpointError, Network, Remote, Stream, Tcp};
-pub use provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
+pub use provider::{ConnectorRef, Digest, Isolation, Placed, Placement, Provider, ProviderError};
 pub use rdlt_wire::tls::Identity;
 pub use registry::Registry;
 pub use remote::{
     CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Handshaken, Options,
     RemoteDestination, RemoteSource,
+};
+pub use secrets::{
+    Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault,
+    SecretKind, SecretReference, SecretResolver, Secrets,
 };
 pub use supervise::TLS;
 pub use wire::Wire;

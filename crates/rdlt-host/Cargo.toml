@@ -12,7 +12,7 @@ arrow-array.workspace = true
 arrow-schema.workspace = true
 command-fds.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-wire = { workspace = true, features = ["tls"] }
 rustls.workspace = true
@@ -36,6 +36,7 @@ tokio-util.workspace = true
 tonic = { workspace = true, features = ["channel", "codegen"] }
 tower = { workspace = true, features = ["util"] }
 tracing.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true

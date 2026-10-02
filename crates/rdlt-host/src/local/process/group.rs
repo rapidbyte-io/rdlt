@@ -13,7 +13,8 @@ mod registry;
 #[cfg(test)]
 mod tests;
 
-use std::process::{Child, ChildStdin, ExitStatus};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,7 @@ use rustix::process::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::local::sandbox::Stops;
 pub use interrupts::Interrupts;
 pub(super) use registry::has_room;
 #[cfg(test)]
@@ -59,6 +61,8 @@ struct State {
     leader: Option<Pid>,
     /// The leader's standard input, whose end asks a connector to stop.
     stdin: Option<ChildStdin>,
+    /// How the connector is asked to stop.
+    stops: Stops,
     /// How long the group has to end, once stopped, before it is killed.
     grace: Duration,
     /// When the group, stopped, is killed.
@@ -70,9 +74,9 @@ impl Held {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Asks the group to stop, before it returns: the end of its leader's standard input and
-    /// `SIGTERM` to every member, sent once, while its leader is seen to be this process's
-    /// unreaped child, running or exited.
+    /// Asks the group to stop, before it returns: the end of its leader's standard input and,
+    /// where the connector is stopped by it, `SIGTERM` to every member, sent once, while its
+    /// leader is seen to be this process's unreaped child, running or exited.
     ///
     /// The thread that owns the group kills it once its grace has passed.
     pub(super) fn stop(&self) {
@@ -85,7 +89,9 @@ impl Held {
             return;
         }
         drop(state.stdin.take());
-        signal(leader, Signal::TERM);
+        if state.stops == Stops::BySignal {
+            signal(leader, Signal::TERM);
+        }
         state.killing = Instant::now().checked_add(state.grace);
     }
 
@@ -93,6 +99,107 @@ impl Held {
     pub(super) fn kill(&self) {
         self.state().killing = Some(Instant::now());
     }
+}
+
+/// How a group is stopped: how its connector is asked, and how long it then has to end.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Terms {
+    pub(super) stops: Stops,
+    pub(super) grace: Duration,
+}
+
+/// A connector to start: its command, and what stops, kills and tells of it.
+pub(super) struct Starting {
+    pub(super) command: Command,
+    pub(super) terms: Terms,
+    pub(super) killed: Option<CancellationToken>,
+    pub(super) exit: watch::Sender<Option<ExitStatus>>,
+}
+
+/// A connector that started, on the thread that owns its group, which waits to be told
+/// whether the group is kept.
+pub(super) struct Started {
+    /// What stops the group.
+    pub(super) held: Arc<Held>,
+    /// The leader's process id.
+    pub(super) id: u32,
+    pub(super) stdout: Option<ChildStdout>,
+    pub(super) stderr: Option<ChildStderr>,
+    keep: SyncSender<bool>,
+}
+
+impl Started {
+    /// Leaves the group to its thread, which kills and reaps it once it is stopped, killed or
+    /// its leader exits, whatever becomes of the runtime that asked for it.
+    pub(super) fn kept(self) {
+        self.keep.send(true).ok();
+    }
+
+    /// Has the thread kill the connector and its group and reap it, before this returns: the
+    /// end of one that started and could not be used.
+    pub(super) fn discarded(self) {
+        self.keep.send(false).ok();
+        registry::disown(self.id);
+    }
+}
+
+/// Starts `starting`'s command on a thread of its own, started by `threaded`, which owns the
+/// group the connector leads for its whole life.
+///
+/// The connector is the child of that thread: what ends a process with its parent, as a
+/// parent-death signal does, ends it with the thread that owns it and with no other.
+pub(super) fn start(starting: Starting, threaded: Threaded) -> std::io::Result<Started> {
+    type Told = (Arc<Held>, u32, Option<ChildStdout>, Option<ChildStderr>);
+    let (tell, told) = sync_channel::<std::io::Result<Told>>(1);
+    let (keep, kept) = sync_channel::<bool>(1);
+    let owning = move || {
+        let Starting {
+            mut command,
+            terms,
+            killed,
+            exit,
+        } = starting;
+        let spawned = command.spawn();
+        // The command holds this process's copies of the connector's descriptors: dropped,
+        // the connector's exit closes its socket.
+        drop(command);
+        let mut child = match spawned {
+            Ok(child) => child,
+            Err(error) => return drop(tell.send(Err(error))),
+        };
+        let (id, stdout, stderr) = (child.id(), child.stdout.take(), child.stderr.take());
+        let mut owned = Owned::new(child, terms, killed, exit);
+        if tell.send(Ok((owned.held(), id, stdout, stderr))).is_err() {
+            return owned.discarded();
+        }
+        match kept.recv() {
+            Ok(true) => {
+                let (_, emptied) = owned.ended(emptied);
+                registry::leave(id, emptied);
+            }
+            // Whoever asked for the connector could not use it, or is gone.
+            Ok(false) | Err(_) => owned.discarded(),
+        }
+    };
+    let owner = std::thread::Builder::new().name("rdlt-connector".to_owned());
+    let thread = threaded(owner, Box::new(owning))?;
+    let ended = || std::io::Error::other("the thread that owns a connector ended");
+    let (held, id, stdout, stderr) = match told.recv().map_err(|_| ended()).flatten() {
+        Ok(told) => told,
+        Err(error) => {
+            thread.join().ok();
+            return Err(error);
+        }
+    };
+    // Listed before its thread is told to keep it, so the thread's removal comes after.
+    registry::enter(id, Arc::clone(&held), thread);
+    Ok(Started {
+        held,
+        id,
+        stdout,
+        stderr,
+        keep,
+    })
 }
 
 /// A connector's process and the group it leads, with what kills them.
@@ -105,18 +212,19 @@ pub(super) struct Owned {
 }
 
 impl Owned {
-    /// `child` and the group it leads, which has `grace` to end once stopped, is killed at once
+    /// `child` and the group it leads, which is stopped as `terms` say, is killed at once
     /// when `killed` is cancelled, and whose leader's `exit` is told.
     pub(super) fn new(
         mut child: Child,
-        grace: Duration,
+        terms: Terms,
         killed: Option<CancellationToken>,
         exit: watch::Sender<Option<ExitStatus>>,
     ) -> Self {
         let state = State {
             leader: Some(Pid::from_child(&child)),
             stdin: child.stdin.take(),
-            grace,
+            stops: terms.stops,
+            grace: terms.grace,
             killing: None,
         };
         let held = Arc::new(Held {
@@ -130,49 +238,9 @@ impl Owned {
         }
     }
 
-    /// The connector's process, whose output is still to be taken.
-    pub(super) fn child(&mut self) -> &mut Child {
-        &mut self.child
-    }
-
     /// What stops the group.
     pub(super) fn held(&self) -> Arc<Held> {
         Arc::clone(&self.held)
-    }
-
-    /// Hands the group to a thread of its own, started by `threaded`, which kills and reaps it,
-    /// whatever becomes of the runtime that spawned it.
-    ///
-    /// The thread is handed the group once it exists, so a thread that cannot be started leaves
-    /// the group here, to be [discarded](Self::discarded).
-    pub(super) fn reaped(self, threaded: Threaded) -> std::io::Result<()> {
-        let id = self.child.id();
-        let (give, take) = std::sync::mpsc::sync_channel::<Self>(1);
-        let reaping = std::thread::Builder::new().name(format!("rdlt-reap-{id}"));
-        let owning = move || {
-            let Ok(mut owned) = take.recv() else {
-                return;
-            };
-            let (_, emptied) = owned.ended(emptied);
-            registry::leave(id, emptied);
-        };
-        let thread = match threaded(reaping, Box::new(owning)) {
-            Ok(thread) => thread,
-            Err(error) => {
-                self.discarded();
-                return Err(error);
-            }
-        };
-        // Listed before its thread has it, so the thread's removal comes after.
-        registry::enter(id, self.held(), thread);
-        if let Err(std::sync::mpsc::SendError(owned)) = give.send(self) {
-            registry::disown(id);
-            owned.discarded();
-            return Err(std::io::Error::other(
-                "the thread that owns a connector ended",
-            ));
-        }
-        Ok(())
     }
 
     /// Kills the connector and its group, and reaps it: the end of one that started and could

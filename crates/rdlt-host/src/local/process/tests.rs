@@ -6,6 +6,7 @@ use nix::sys::wait::{WaitPidFlag, waitpid};
 use rdlt_connector::ConnectorId;
 
 use super::{Launch, Process, Steps};
+use crate::local::binary::Binary;
 
 /// A script that serves nothing and ends only when it is made to.
 fn sleeper(directory: &std::path::Path) -> Launch {
@@ -15,12 +16,13 @@ fn sleeper(directory: &std::path::Path) -> Launch {
         .expect("the script is executable");
     Launch {
         id: ConnectorId::parse("test.sleeper").expect("a valid id"),
-        path,
+        binary: std::sync::Arc::new(Binary::at(&path).expect("the script opens")),
         digest: None,
         env_passthrough: Vec::new(),
         grace: Duration::from_millis(100),
         kills: None,
         told: None,
+        confinement: None,
     }
 }
 

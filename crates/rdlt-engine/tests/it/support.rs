@@ -247,7 +247,7 @@ fn generated(streams: &[(&str, u64, u64, u64)]) -> Value {
 
 /// Places connectors in processes of their own, whose coverage, when measured, is kept.
 pub(crate) fn local() -> rdlt_host::Local {
-    rdlt_host::Local::new().env_passthrough("LLVM_PROFILE_FILE")
+    rdlt_host::Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE")
 }
 
 /// The generator, as [`generator`], spawned in a process of its own.

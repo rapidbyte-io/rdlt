@@ -111,7 +111,10 @@ async fn a_spawned_connector_that_ends_at_once_is_heard_in_every_failure() {
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
         .expect("the script is executable");
     let id = ConnectorId::parse("test.ends").expect("a valid id");
-    let target = Target::spawned(Local::new(), ConnectorRef::new(id).path(&script));
+    let target = Target::spawned(
+        Local::trusting_binaries(),
+        ConnectorRef::new(id).path(&script),
+    );
     let report = certify_source(&target, json!({})).await;
     for id in SOURCE_CLAUSES.iter().map(|clause| clause.id) {
         let Some(Outcome::Failed(reason)) = report.outcome(id) else {

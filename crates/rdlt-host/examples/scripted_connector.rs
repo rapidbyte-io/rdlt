@@ -44,6 +44,126 @@ struct Script {
     /// Whether its check fails when a process it starts inherits file descriptor 3.
     #[serde(default)]
     probe_fd_3: bool,
+    /// Whether its check fails unless it started with its standard streams and file descriptor
+    /// 3 open, and no other descriptor.
+    #[serde(default)]
+    only_its_descriptors: bool,
+    /// Its whole environment, when its check requires it to be exactly this.
+    whole_env: Option<BTreeMap<String, String>>,
+    /// Paths its check requires not to exist for it.
+    #[serde(default)]
+    absent: Vec<PathBuf>,
+    /// Files its check requires to read.
+    #[serde(default)]
+    readable: Vec<PathBuf>,
+    /// A file its check requires to create, and writes `written` to.
+    writes: Option<PathBuf>,
+    /// An address its check requires a TCP connection to succeed to, or to fail to.
+    connects: Option<(String, bool)>,
+    /// The most processes its check may see in `/proc`, itself included.
+    sees_processes: Option<usize>,
+    /// A command line its connect starts with `/bin/sh -c`, in a process that outlives every
+    /// stop but a kill: it ignores `SIGTERM`, and holds none of the connector's streams.
+    starts: Option<String>,
+    /// What it says back wherever it can, as a careless connector does with its credentials:
+    /// on its standard output and error as it connects, in the error its check fails with,
+    /// and in the error a read fails with, once, at row `fail_once_at`.
+    said: Option<serde_json::Value>,
+    /// The row at which a read fails, once: the first time, it creates `marker` and fails.
+    fail_once_at: Option<u64>,
+}
+
+/// A cause that says `0`, as a driver's error says what it was given.
+#[derive(Debug)]
+struct Driver(String);
+
+impl std::fmt::Display for Driver {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "the driver refused {}", self.0)
+    }
+}
+
+impl std::error::Error for Driver {}
+
+/// An error that says `said` in every form a connector may: as JSON and as `Debug` writes it,
+/// in its message and in its cause.
+fn saying(said: &serde_json::Value) -> ConnectorError {
+    ConnectorError::new(
+        ConnectorErrorKind::Transient,
+        format!("it said {said} and {said:?}"),
+    )
+    .with_source(Driver(format!("{said:#}")))
+}
+
+/// The descriptors that were open as the connector started, before it opened any.
+static STARTED_WITH: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
+
+/// The descriptors open now, but what lists them.
+fn open_descriptors() -> Vec<i32> {
+    let listed: Vec<i32> = std::fs::read_dir("/dev/fd")
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    // The listing's own descriptor is closed by now, and no longer there.
+    let mut open: Vec<i32> = listed
+        .into_iter()
+        .filter(|fd| std::fs::metadata(format!("/dev/fd/{fd}")).is_ok())
+        .collect();
+    open.sort_unstable();
+    open
+}
+
+impl Script {
+    /// Checks what the connector can see and reach of its host, as the script requires.
+    fn confined(&self) -> std::result::Result<(), String> {
+        let started_with = STARTED_WITH.get().cloned().unwrap_or_default();
+        if self.only_its_descriptors && started_with != [0, 1, 2, 3] {
+            return Err(format!("started with descriptors {started_with:?}"));
+        }
+        if let Some(whole) = &self.whole_env {
+            let found: BTreeMap<String, String> = std::env::vars().collect();
+            if found != *whole {
+                let names: Vec<&String> = found.keys().collect();
+                return Err(format!("the environment holds {names:?}"));
+            }
+        }
+        for path in &self.absent {
+            if std::fs::symlink_metadata(path).is_ok() {
+                return Err(format!("{} is there", path.display()));
+            }
+        }
+        for path in &self.readable {
+            std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        if let Some(path) = &self.writes {
+            std::fs::write(path, "written")
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+        if let Some((address, reached)) = &self.connects {
+            let address: std::net::SocketAddr = address.parse().map_err(|_| "no address")?;
+            let patience = std::time::Duration::from_secs(2);
+            let connected = std::net::TcpStream::connect_timeout(&address, patience).is_ok();
+            if connected != *reached {
+                return Err(format!("connecting to {address} succeeded: {connected}"));
+            }
+        }
+        if let Some(most) = self.sees_processes {
+            let numbered = |entry: std::io::Result<std::fs::DirEntry>| {
+                let name = entry.ok()?.file_name();
+                name.to_str()?.parse::<u32>().ok()
+            };
+            let processes = std::fs::read_dir("/proc")
+                .map(|entries| entries.filter_map(numbered).count())
+                .map_err(|error| format!("/proc: {error}"))?;
+            if processes > most {
+                return Err(format!("{processes} processes are seen"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// What ends a connector that outlives its socket.
@@ -87,6 +207,21 @@ impl SourceConnector for Scripted {
             std::fs::write(pid_file, std::process::id().to_string())
                 .map_err(|error| ConnectorError::internal(error.to_string()))?;
         }
+        if let Some(said) = &script.said {
+            let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
+            writeln!(stdout, "connecting with {said}").ok();
+            writeln!(stderr, "connecting with {said:?}").ok();
+            writeln!(stderr, "{said:#}").ok();
+        }
+        if let Some(started) = &script.starts {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &format!("trap '' TERM; {started}")])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(|error| ConnectorError::internal(error.to_string()))?;
+        }
         Ok(Self { script })
     }
 
@@ -115,6 +250,10 @@ impl SourceConnector for Scripted {
                     "a child inherited the host's socket",
                 ));
             }
+        }
+        script.confined().map_err(ConnectorError::config)?;
+        if let (Some(said), None) = (&script.said, script.fail_once_at) {
+            return Err(saying(said));
         }
         for (name, expected) in &script.env {
             let found = std::env::var(name).ok();
@@ -162,6 +301,12 @@ impl ReadStream<Scripted> for Rows {
             {
                 crash(&format!("crashing at row {next}"));
             }
+            if script.fail_once_at == Some(next)
+                && let (Some(marker), Some(said)) = (&script.marker, &script.said)
+                && std::fs::File::create_new(marker).is_ok()
+            {
+                return Err(saying(said));
+            }
             out.rows(&[serde_json::json!({ "id": next })]).await?;
             next += 1;
             if out.checkpoint_due() {
@@ -194,6 +339,7 @@ fn exit_on_sigterm() {
 }
 
 fn main() -> ExitCode {
+    STARTED_WITH.set(open_descriptors()).ok();
     let served = rdlt_connector::serve::<Scripted>();
     if LINGER.get().is_some() {
         loop {

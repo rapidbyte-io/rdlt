@@ -157,7 +157,7 @@ async fn destination(
 fn host(kills: Option<&Kills>) -> Local {
     // Each connector is told as it is spawned, by its process id: the id of the process group
     // it leads, which what watches the run checks is gone once the run has ended.
-    let local = Local::new()
+    let local = Local::trusting_binaries()
         .env_passthrough("LLVM_PROFILE_FILE")
         .on_spawn(|connector| {
             writeln!(std::io::stdout(), "connector {connector}").ok();

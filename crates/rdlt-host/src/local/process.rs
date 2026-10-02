@@ -6,24 +6,28 @@
 //! by itself. The thread outlives the runtime that spawned the connector, so a connector whose
 //! runtime is dropped is stopped all the same.
 
+mod descriptors;
 mod group;
+mod output;
 #[cfg(test)]
 mod tests;
 
-use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::fmt;
-use std::os::fd::OwnedFd;
+use std::os::fd::{OwnedFd, RawFd};
 use std::os::unix::process::CommandExt as _;
-use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use command_fds::{CommandFdExt as _, FdMapping};
 use rdlt_connector::ConnectorId;
 
+use super::binary::Binary;
+use super::sandbox::{Confined, Grants, Sandbox, SandboxError, Stops};
 use crate::provider::Digest;
-use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, BufReader};
+use crate::secrets::Redactions;
+use output::{Draining, Stream, Tail, drain, logging};
 use tokio::process::{ChildStderr, ChildStdout};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -31,16 +35,21 @@ use tokio_util::sync::CancellationToken;
 use crate::kills::Kills;
 pub use group::{Interrupts, Lingering, StopsSpawned, spawned, stop_spawned};
 
-/// Bytes of a connector's standard error kept for the errors of its transport.
-pub(crate) const TAIL_BYTES: usize = 8 * 1024;
+/// The descriptor a connector finds its socket at.
+pub(crate) const SOCKET_FD: RawFd = 3;
+
+/// The descriptor a sandbox's launcher, or a script's interpreter, finds the connector's
+/// program at.
+pub(crate) const PROGRAM_FD: RawFd = 4;
 
 /// How a connector's process is started.
 #[derive(Clone, Debug)]
 pub(crate) struct Launch {
     pub(crate) id: ConnectorId,
-    pub(crate) path: std::path::PathBuf,
-    /// The digest the binary had when placed, when supervised: a binary changed since is not
-    /// spawned again.
+    /// The binary, open since it was placed: what is hashed and what is executed.
+    pub(crate) binary: Arc<Binary>,
+    /// The digest the binary had when placed, where it is checked: a binary whose bytes
+    /// changed since is not spawned again.
     pub(crate) digest: Option<Digest>,
     /// The variables of this process's environment the connector's environment keeps.
     pub(crate) env_passthrough: Vec<String>,
@@ -50,6 +59,8 @@ pub(crate) struct Launch {
     pub(crate) kills: Option<Kills>,
     /// What is told its process id once it is spawned, when anything is.
     pub(crate) told: Option<Told>,
+    /// The sandbox it runs in and what it is granted there; none for a trusted binary.
+    pub(crate) confinement: Option<(Arc<dyn Sandbox>, Grants)>,
 }
 
 /// What a host is told of each connector it spawns: its process id.
@@ -68,59 +79,133 @@ impl fmt::Debug for Told {
     }
 }
 
-/// The last bytes a connector wrote to its standard error, and whether it has closed it.
-#[derive(Debug, Default)]
-pub(crate) struct Tail {
-    bytes: Mutex<VecDeque<u8>>,
+/// Why a connector's command could not be made.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum Unspawned {
+    /// Its sandbox cannot be used.
+    #[error(transparent)]
+    Sandbox(#[from] SandboxError),
+    /// Its binary changed since it was placed.
+    #[error("the binary's digest is {found}, not {expected}")]
+    Changed {
+        /// The digest it was placed with.
+        expected: Digest,
+        /// The digest it has.
+        found: Digest,
+    },
+    /// The operating system refused a step.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
-impl Tail {
-    fn push(&self, line: &[u8]) {
-        let mut bytes = self
-            .bytes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        bytes.extend(line);
-        let excess = bytes.len().saturating_sub(TAIL_BYTES);
-        bytes.drain(..excess);
+/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with only
+/// the environment `launch` keeps, in a process group of its own, holding no other descriptor
+/// of this process; and how the connector is asked to stop.
+fn command(launch: &Launch, socket: OwnedFd) -> Result<Commanded, Unspawned> {
+    if let Some(expected) = launch.digest {
+        let found = launch.binary.digest()?;
+        if found != expected {
+            return Err(Unspawned::Changed { expected, found });
+        }
     }
-
-    /// The kept bytes, as text.
-    pub(crate) fn text(&self) -> String {
-        let bytes = self
-            .bytes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (front, back) = bytes.as_slices();
-        String::from_utf8_lossy(&[front, back].concat()).into_owned()
-    }
-}
-
-/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with a
-/// cleared environment, in a process group of its own.
-fn command(launch: &Launch, socket: OwnedFd) -> std::io::Result<Command> {
-    let mut command = Command::new(&launch.path);
+    let args = [OsString::from(format!("--rdlt-fd={SOCKET_FD}"))];
+    let kept = |name: &String| Some((OsString::from(name), std::env::var_os(name)?));
+    let env: Vec<(OsString, OsString)> = launch.env_passthrough.iter().filter_map(kept).collect();
+    let mut given = vec![FdMapping {
+        parent_fd: socket,
+        child_fd: SOCKET_FD,
+    }];
+    let (mut command, stops, executed) = if let Some((sandbox, grants)) = &launch.confinement {
+        given.push(program(&launch.binary)?);
+        let confined = Confined {
+            program: PROGRAM_FD,
+            args: &args,
+            env: &env,
+            socket: SOCKET_FD,
+            grants,
+        };
+        let launcher = sandbox.launcher(&confined)?;
+        (launcher.command, launcher.stops, None)
+    } else {
+        let (mut command, executed) = trusted(&launch.binary, &mut given)?;
+        command.args(&args).env_clear().envs(env);
+        (command, Stops::BySignal, executed)
+    };
     command
-        .arg("--rdlt-fd=3")
-        .env_clear()
-        .envs(
-        launch
-            .env_passthrough
-            .iter()
-            .filter_map(|name| Some((name, std::env::var_os(name)?))),
-        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // A group of its own, which this host owns: what the connector starts ends with it.
         .process_group(0);
     command
-        .fd_mappings(vec![FdMapping {
-            parent_fd: socket,
-            child_fd: 3,
-        }])
-        .map_err(|_| std::io::Error::other("file descriptor 3 is mapped twice"))?;
-    Ok(command)
+        .fd_mappings(descriptors::mappings(given)?)
+        .map_err(|_| std::io::Error::other("a descriptor is given twice"))?;
+    Ok(Commanded {
+        command,
+        stops,
+        executed,
+    })
+}
+
+/// A connector's command, how the connector is asked to stop, and the descriptor the command
+/// executes, held open until it has.
+struct Commanded {
+    command: Command,
+    stops: Stops,
+    executed: Option<OwnedFd>,
+}
+
+/// Gives `command`'s process `file` at descriptor `at`, and no other descriptor of this
+/// process beside the standard streams the command names.
+pub(crate) fn given(command: &mut Command, file: &std::fs::File, at: RawFd) -> std::io::Result<()> {
+    let mapping = FdMapping {
+        parent_fd: file.try_clone()?.into(),
+        child_fd: at,
+    };
+    command
+        .fd_mappings(descriptors::mappings(vec![mapping])?)
+        .map_err(|_| std::io::Error::other("a descriptor is given twice"))?;
+    Ok(())
+}
+
+/// `binary`'s open file, given at [`PROGRAM_FD`].
+fn program(binary: &Binary) -> std::io::Result<FdMapping> {
+    Ok(FdMapping {
+        parent_fd: binary.file().try_clone()?.into(),
+        child_fd: PROGRAM_FD,
+    })
+}
+
+/// The command that executes `binary`'s open file, not its path: whatever the path names by
+/// now, what was opened, and hashed, is what runs.
+///
+/// A script's interpreter opens the script by the name it was executed by, so a script is
+/// also `given` at [`PROGRAM_FD`], which its interpreter holds; a binary is given nowhere.
+#[cfg(target_os = "linux")]
+fn trusted(
+    binary: &Binary,
+    given: &mut Vec<FdMapping>,
+) -> std::io::Result<(Command, Option<OwnedFd>)> {
+    use std::os::fd::AsRawFd as _;
+    if binary.is_script()? {
+        given.push(program(binary)?);
+        return Ok((Command::new(format!("/proc/self/fd/{PROGRAM_FD}")), None));
+    }
+    // Above every descriptor a connector is given, so that giving those replaces none it is
+    // executed from; closed on exec, and here once the command has spawned.
+    let executed = rustix::io::fcntl_dupfd_cloexec(binary.file(), PROGRAM_FD + 1)?;
+    let command = Command::new(format!("/proc/self/fd/{}", executed.as_raw_fd()));
+    Ok((command, Some(executed)))
+}
+
+/// The command that executes `binary` by its path: this platform executes no open file, so
+/// its digest is neither checked nor reported.
+#[cfg(not(target_os = "linux"))]
+fn trusted(
+    binary: &Binary,
+    _given: &mut Vec<FdMapping>,
+) -> std::io::Result<(Command, Option<OwnedFd>)> {
+    Ok((Command::new(binary.path()), None))
 }
 
 /// A running connector's process, which dropping stops, with every process of its group.
@@ -134,6 +219,8 @@ pub(crate) struct Process {
     /// Whether its standard error has closed.
     stderr_closed: watch::Receiver<bool>,
     tail: Arc<Tail>,
+    /// What the connector was sent that nothing it says may show.
+    redactions: Redactions,
 }
 
 impl Drop for Process {
@@ -143,6 +230,9 @@ impl Drop for Process {
         self.held.stop();
     }
 }
+
+/// The host's end of a spawned connector's socket, and the connector's process.
+pub(crate) type Launched = (Box<dyn crate::network::Stream>, Process);
 
 /// The steps of owning a spawned connector that can fail, each of which a test fails in turn.
 pub(crate) struct Steps {
@@ -160,34 +250,47 @@ impl Steps {
 }
 
 impl Process {
-    /// Spawns `launch`'s binary serving the other end of `socket` at file descriptor 3.
-    pub(crate) fn spawn(launch: &Launch, socket: OwnedFd) -> std::io::Result<Self> {
-        Self::spawn_by(launch, socket, &Steps::TAKEN)
+    /// What the connector is sent that nothing it says may show: filled once its
+    /// configuration's secrets are resolved.
+    pub(crate) fn redactions(&self) -> &Redactions {
+        &self.redactions
     }
 
-    /// Spawns `launch`'s binary as [`spawn`](Self::spawn) does, taking `steps`: a connector
-    /// that started and a step then fails is killed and reaped before the failure is returned.
-    fn spawn_by(launch: &Launch, socket: OwnedFd, steps: &Steps) -> std::io::Result<Self> {
+    /// Spawns `launch`'s binary serving the other end of `socket` at file descriptor 3, taking
+    /// `steps`: a connector that started and a step then fails is killed and reaped before the
+    /// failure is returned.
+    fn spawn_by(launch: &Launch, socket: OwnedFd, steps: &Steps) -> Result<Self, Unspawned> {
         group::has_room()?;
-        let mut command = command(launch, socket)?;
-        let child = command.spawn()?;
-        // The command holds this process's copy of the connector's end: dropped, the connector's
-        // exit closes the socket.
-        drop(command);
+        let Commanded {
+            command,
+            stops,
+            executed,
+        } = command(launch, socket)?;
         let (exit_sender, exit) = watch::channel(None);
         let killed = launch.kills.as_ref().map(Kills::next);
-        // Owned from here on: whatever fails next, the connector does not outlive it.
-        let mut owned = group::Owned::new(child, launch.grace, killed.clone(), exit_sender);
-        let held = owned.held();
-        let (tail, stderr_closed) = match drained(owned.child(), &launch.id, steps) {
+        let starting = group::Starting {
+            command,
+            terms: group::Terms {
+                stops,
+                grace: launch.grace,
+            },
+            killed: killed.clone(),
+            exit: exit_sender,
+        };
+        // Owned from here on by its thread: whatever fails next, the connector does not
+        // outlive it.
+        let mut started = group::start(starting, steps.thread)?;
+        drop(executed);
+        let redactions = Redactions::new();
+        let (tail, stderr_closed) = match drained(&mut started, &launch.id, &redactions, steps) {
             Ok(drained) => drained,
             Err(error) => {
-                owned.discarded();
-                return Err(error);
+                started.discarded();
+                return Err(error.into());
             }
         };
-        let pid = owned.child().id();
-        owned.reaped(steps.thread)?;
+        let (held, pid) = (Arc::clone(&started.held), started.id);
+        started.kept();
         // Told once it is owned, and before anything is asked of it.
         if let Some(Told(told)) = &launch.told {
             told(pid);
@@ -198,7 +301,24 @@ impl Process {
             exit,
             stderr_closed,
             tail,
+            redactions,
         })
+    }
+
+    /// Spawns `launch`'s binary as [`launched`](Self::launched) does, on a thread that may
+    /// block: the binary is hashed, and a sandbox may be tried, before it is spawned.
+    pub(crate) async fn launching(launch: Launch) -> Result<Launched, Box<(Launch, Unspawned)>> {
+        let asked = launch.clone();
+        let launching = tokio::task::spawn_blocking(move || match Self::launched(&launch) {
+            Ok(launched) => Ok(launched),
+            Err(unspawned) => Err(Box::new((launch, unspawned))),
+        });
+        match launching.await {
+            Ok(launched) => launched,
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            // The runtime is shutting down: nothing was spawned, or what was is dropped.
+            Err(error) => Err(Box::new((asked, std::io::Error::other(error).into()))),
+        }
     }
 
     /// Spawns `launch`'s binary serving one end of a new socket pair; the other end, and the
@@ -206,11 +326,11 @@ impl Process {
     ///
     /// Where a kill may kill the process, the other end counts it as landed once it ends after
     /// the kill: a socket ends when no process holds its other end.
-    pub(crate) fn launched(
-        launch: &Launch,
-    ) -> std::io::Result<(Box<dyn crate::network::Stream>, Self)> {
+    pub(crate) fn launched(launch: &Launch) -> Result<Launched, Unspawned> {
+        let spawning = descriptors::spawning();
         let (host, connector) = std::os::unix::net::UnixStream::pair()?;
-        let process = Self::spawn(launch, connector.into())?;
+        let process = Self::spawn_by(launch, connector.into(), &Steps::TAKEN)?;
+        drop(spawning);
         host.set_nonblocking(true)?;
         let host = tokio::net::UnixStream::from_std(host)?;
         let host = match (&launch.kills, &process.killed) {
@@ -232,6 +352,7 @@ impl Process {
             exit: self.exit.clone(),
             stderr_closed: self.stderr_closed.clone(),
             tail: Arc::clone(&self.tail),
+            redactions: self.redactions.clone(),
         }
     }
 }
@@ -242,6 +363,7 @@ pub struct Witness {
     exit: watch::Receiver<Option<ExitStatus>>,
     stderr_closed: watch::Receiver<bool>,
     tail: Arc<Tail>,
+    redactions: Redactions,
 }
 
 impl Witness {
@@ -256,17 +378,19 @@ impl Witness {
         tokio::time::timeout(patience, ended).await.ok();
         LastWords {
             exit: *self.exit.borrow(),
-            stderr: self.tail.text(),
+            stderr: self.tail.words(&self.redactions),
         }
     }
 }
 
-/// How a connector ended, as its transport's errors carry it.
+/// How a connector ended, as its transport's errors carry it: what it wrote is shown on one
+/// line, scrubbed of the secrets it was sent, and never obeyed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub struct LastWords {
     /// How it exited, if it has.
     pub exit: Option<ExitStatus>,
-    /// The last bytes of its standard error.
+    /// The end of its standard error, in [`LAST_WORDS_BYTES`](crate::limits::LAST_WORDS_BYTES)
+    /// at most, each line end and every other character a reader could be deceived by escaped.
     pub stderr: String,
 }
 
@@ -279,96 +403,39 @@ impl fmt::Display for LastWords {
         if self.stderr.is_empty() {
             write!(formatter, ", and wrote nothing to its standard error")
         } else {
-            write!(formatter, "; its standard error ends:\n{}", self.stderr)
+            write!(formatter, "; its standard error ends: {}", self.stderr)
         }
     }
 }
 
-/// Drains `child`'s standard output and error into `tracing`: the tail of its standard error,
-/// and what tells when that has closed.
+/// Drains `started`'s standard output and error into `tracing`: the tail of its standard
+/// error, and what tells when that has closed.
 fn drained(
-    child: &mut std::process::Child,
+    started: &mut group::Started,
     connector: &ConnectorId,
+    redactions: &Redactions,
     steps: &Steps,
 ) -> std::io::Result<(Arc<Tail>, watch::Receiver<bool>)> {
-    let pid = Some(child.id());
+    let pid = started.id;
     let tail = Arc::new(Tail::default());
     let (closed, stderr_closed) = watch::channel(false);
-    let stdout = child.stdout.take().map(steps.stdout).transpose()?;
-    let stderr = child.stderr.take().map(steps.stderr).transpose()?;
+    let stdout = started.stdout.take().map(steps.stdout).transpose()?;
+    let stderr = started.stderr.take().map(steps.stderr).transpose()?;
     if let Some(stdout) = stdout {
-        tokio::spawn(drain(stdout, connector.clone(), pid, Stream::Stdout, None));
+        let draining = Draining {
+            kept: None,
+            redactions: redactions.clone(),
+            log: logging(connector.clone(), pid, Stream::Stdout),
+        };
+        tokio::spawn(drain(stdout, draining));
     }
     if let Some(stderr) = stderr {
-        let kept = Some((Arc::clone(&tail), closed));
-        tokio::spawn(drain(stderr, connector.clone(), pid, Stream::Stderr, kept));
+        let draining = Draining {
+            kept: Some((Arc::clone(&tail), closed)),
+            redactions: redactions.clone(),
+            log: logging(connector.clone(), pid, Stream::Stderr),
+        };
+        tokio::spawn(drain(stderr, draining));
     }
     Ok((tail, stderr_closed))
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Stream {
-    Stdout,
-    Stderr,
-}
-
-/// Forwards each line of `output` to `tracing`, in pieces of at most [`TAIL_BYTES`], so a
-/// connector that never ends a line cannot grow this process's memory: standard output, which a
-/// connector should not use, as a warning; standard error as information, keeping its last bytes
-/// in `kept`'s tail.
-async fn drain(
-    output: impl AsyncRead + Unpin,
-    connector: ConnectorId,
-    pid: Option<u32>,
-    stream: Stream,
-    kept: Option<(Arc<Tail>, watch::Sender<bool>)>,
-) {
-    let mut reader = BufReader::new(output);
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        let mut piece = (&mut reader).take(TAIL_BYTES as u64);
-        match piece.read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        forward(
-            &line,
-            &connector,
-            pid,
-            stream,
-            kept.as_ref().map(|(tail, _)| &**tail),
-        );
-    }
-    if let Some((_, closed)) = kept {
-        closed.send_replace(true);
-    }
-}
-
-/// Forwards `line`, a line of `stream` or a piece of one, to `tracing`, and keeps it in `tail`.
-fn forward(
-    line: &[u8],
-    connector: &ConnectorId,
-    pid: Option<u32>,
-    stream: Stream,
-    tail: Option<&Tail>,
-) {
-    if let Some(tail) = tail {
-        tail.push(line);
-    }
-    let text = String::from_utf8_lossy(line);
-    let text = text.trim_end();
-    match stream {
-        Stream::Stdout => {
-            tracing::warn!(connector = %connector, pid, "connector wrote to stdout: {text}");
-        }
-        Stream::Stderr => tracing::info!(connector = %connector, pid, "{text}"),
-    }
-}
-
-/// Whether `path` is a file this process may execute.
-pub(crate) fn executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::metadata(path)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }

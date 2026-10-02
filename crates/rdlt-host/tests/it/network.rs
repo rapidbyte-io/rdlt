@@ -308,11 +308,14 @@ async fn dropped_after_handshake(reset: bool) {
 #[test]
 fn a_remote_provider_debugs_what_it_holds() {
     let pki = Pki::new("ca");
-    let remote =
-        Remote::new(identity(&pki.client("host")), pki.ca()).fallback(rdlt_host::Local::new());
+    let remote = Remote::new(identity(&pki.client("host")), pki.ca())
+        .fallback(rdlt_host::Local::trusting_binaries());
     let shown = format!("{remote:?}");
     assert!(shown.starts_with("Remote { identity: Identity"), "{shown}");
-    assert!(shown.ends_with("fallback: true }"), "{shown}");
+    assert!(
+        shown.contains("fallback: true, secrets: Secrets"),
+        "{shown}"
+    );
 }
 
 #[tokio::test]
@@ -376,7 +379,7 @@ async fn a_reference_without_an_endpoint_goes_to_the_fallback() {
         "{refused}"
     );
     let spawning = Remote::new(identity(&pki.client("host")), pki.ca())
-        .fallback(rdlt_host::Local::new().env_passthrough("LLVM_PROFILE_FILE"));
+        .fallback(rdlt_host::Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE"));
     let placed = spawning
         .source(&local, &serde_json::json!({}))
         .await

@@ -265,9 +265,20 @@ impl Handshaken {
         self,
         config: &serde_json::Value,
     ) -> Result<Arc<Connection>, ConnectorError> {
-        let request = v1::ConfigureRequest {
-            config_json: config.to_string(),
-        };
+        self.configure_json(config.to_string()).await
+    }
+
+    /// Configures the connector with the JSON document `config_json`, as
+    /// [`configure`](Self::configure) does with a value.
+    ///
+    /// # Errors
+    ///
+    /// As [`configure`](Self::configure) fails.
+    pub async fn configure_json(
+        self,
+        config_json: String,
+    ) -> Result<Arc<Connection>, ConnectorError> {
+        let request = v1::ConfigureRequest { config_json };
         let deadline = self.options.deadlines.connect;
         let mut client = self.client.clone();
         let configured = tokio::select! {

@@ -24,7 +24,7 @@ pub(crate) fn example(name: &str) -> PathBuf {
 /// The reference connectors' binary, spawned for each connection, keeping the coverage variable.
 pub(crate) fn reference() -> Target {
     let id = ConnectorId::parse("io.rapidbyte.reference").expect("a valid id");
-    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
     Target::spawned(
         local,
         ConnectorRef::new(id).path(example("serve_reference")),
@@ -63,7 +63,7 @@ async fn a_spawned_source_binary_is_certified_through_the_protocol() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
     let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
-    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
     // No seed is chosen: the clause loads again until a kill interrupts a load.
     let target = Target::spawned(local, ConnectorRef::new(id).path(example("serve_source")))
         .credit_watch(crate::BRIEF);
@@ -164,7 +164,7 @@ fn launcher(directory: &std::path::Path, detached: bool) -> Target {
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
         .expect("the launcher is executable");
     let id = ConnectorId::parse("io.rapidbyte.reference").expect("a valid id");
-    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
     let target =
         Target::spawned(local, ConnectorRef::new(id).path(path)).credit_watch(crate::BRIEF);
     // A connector no kill reaches is loaded once: one that is, until a kill interrupts a load,
