@@ -26,10 +26,6 @@ pub(crate) const VALUE_UNHOLDABLE: &str = "value_unholdable";
 /// The table's merge key names no column, or one the rows lack.
 pub(crate) const MERGE_KEY_INVALID: &str = "merge_key_invalid";
 
-/// A table's rows, written with every column, would hold more cells of columns they never had
-/// than a destination may be charged.
-pub(crate) const MERGE_TOO_WIDE: &str = "merge_too_wide";
-
 /// A refusal of the merge: its code and what was refused.
 #[derive(Debug)]
 struct Refused {

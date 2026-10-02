@@ -11,7 +11,40 @@ mod refusals;
 mod widths;
 
 use super::changes::stored;
-use super::{Merged, merge, tombstone_schema, written_schema};
+use super::{Merged, merge_children_sparse, merge_sparse, read_back};
+use super::{tombstone_schema, written_schema};
+
+/// A merge's rows as a reader is given them: batches of every column of the table.
+pub(crate) fn merge(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    buried: &[RecordBatch],
+    incoming: &[RecordBatch],
+    key: &MergeKey,
+) -> Result<Merged, arrow_schema::ArrowError> {
+    let merged = merge_sparse(schema, published, buried, incoming, key)?;
+    let whole = match &key.changes {
+        Some(changes) => stored(schema, changes),
+        None => Arc::clone(schema),
+    };
+    Ok(Merged {
+        rows: read_back(&whole, &merged.rows)?,
+        tombstones: merged.tombstones,
+    })
+}
+
+/// A child table's merged rows as a reader is given them.
+fn merge_children(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    incoming: &[RecordBatch],
+    key: &MergeKey,
+    root: &rdlt_connector::RootKey,
+    roots: &[RecordBatch],
+) -> Result<Vec<RecordBatch>, arrow_schema::ArrowError> {
+    let rows = merge_children_sparse(schema, published, incoming, key, root, roots)?;
+    read_back(schema, &rows)
+}
 
 /// One change: its key, value, sequence, op, and the fields it flags unchanged.
 struct Row {

@@ -23,7 +23,8 @@ use rdlt_connector::{
 use serde_json::json;
 
 use super::{SqliteDestination, published};
-use crate::merge::{Merged, merge};
+use crate::merge::Merged;
+use crate::merge::tests::merge;
 
 /// One change: its op, key and region, values, deletion time, the columns it flags unchanged
 /// (bit 0 `value`, bit 1 `n`, bit 2 the deletion time), its sequence, and for a history table

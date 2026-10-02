@@ -283,16 +283,9 @@ fn publish_table(
                 (root, files.map(Vec::as_slice).unwrap_or_default())
             });
             let merged = merged_rows(location, name, table, files, key, root)?;
-            let rows = written(location, name, "merged", &merged.rows, meta, created)?;
-            table.files = rows.into_iter().collect();
-            table.tombstones = match &merged.tombstones {
-                Some(tombstones) => {
-                    written(location, name, "tombstones", tombstones, meta, created)?
-                        .into_iter()
-                        .collect()
-                }
-                None => Vec::new(),
-            };
+            table.files = written(location, name, "merged", &merged.rows, meta, created)?;
+            let buried = &merged.tombstones;
+            table.tombstones = written(location, name, "tombstones", buried, meta, created)?;
         }
         (None, None) => {
             table.files.extend(listed);

@@ -10,8 +10,7 @@ use arrow_array::{Array, ArrayRef, BinaryArray, BooleanArray, Int8Array, Int64Ar
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, Deletion, HistoryColumns, MergeKey};
 
-use super::super::refused::code;
-use super::super::{Merged, merge, merge_sparse};
+use super::super::{Merged, merge_sparse};
 
 const ROWS: i64 = 20_000;
 const WIDTH: usize = 1_000;
@@ -193,28 +192,5 @@ fn a_wide_row_among_narrow_rows_of_its_own_commit_costs_its_own_cells() {
         assert_eq!(counted(&merged), (1, ids.len() + 1), "{kind:?}");
         let held = held_bytes(&merged.rows);
         assert!(held < BOUND, "{kind:?}: the commit holds {held} bytes");
-    }
-}
-
-#[test]
-fn rows_written_with_every_column_are_charged_the_cells_they_never_had_before_any_is_made() {
-    for kind in [Kind::Upsert, Kind::Changes, Kind::History] {
-        let key = key(kind);
-        let ids: Vec<i64> = (0..ROWS).collect();
-        let (narrow, wide) = (schema(kind, 0), schema(kind, WIDTH));
-        let first = merge(&narrow, &[], &[], &[rows(kind, &ids, 1, 0)], &key).unwrap();
-        // Twenty thousand rows times a thousand columns none of them holds.
-        let incoming = [rows(kind, &[ROWS], 1_000_000, WIDTH)];
-        let refused = merge(&wide, &first.rows, &first.tombstones, &incoming, &key).unwrap_err();
-        assert_eq!(code(&refused), Some("merge_too_wide"), "{kind:?}");
-        // Within the limit every batch has every column, an absent one nulls its rows share.
-        let few: Vec<i64> = (0..100).collect();
-        let first = merge(&narrow, &[], &[], &[rows(kind, &few, 1, 0)], &key).unwrap();
-        let second = merge(&wide, &first.rows, &first.tombstones, &incoming, &key).unwrap();
-        assert_eq!(counted(&second), (1, few.len() + 1), "{kind:?}");
-        for batch in &second.rows {
-            assert_eq!(batch.num_columns(), wide.fields().len(), "{kind:?}");
-        }
-        assert!(held_bytes(&second.rows) < BOUND, "{kind:?}");
     }
 }

@@ -6,9 +6,9 @@ use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, Str
 use arrow_schema::{ArrowError, DataType, Field, Schema};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns};
 
+use super::super::admitted;
 use super::super::refused::{code, failed};
-use super::super::{admitted, merge};
-use super::{Row, apply, empty, key, row, rows, soft, stored_schema, written};
+use super::{Row, apply, empty, key, merge, row, rows, soft, stored_schema, written};
 
 /// The code `outcome` was refused under.
 fn refusal<T: std::fmt::Debug>(outcome: Result<T, ArrowError>) -> Option<&'static str> {

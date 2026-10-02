@@ -224,6 +224,14 @@ pub(super) fn read(dir: &Dir, path: &str, schema: &SchemaRef) -> Result<Vec<Reco
     format_of(dir, path)?.read(&parent, file, schema)
 }
 
+/// The rows of the file listed at `path` as [`read`] reads them, but as batches of the columns
+/// they hold: an Arrow file's as written, JSON lines under the columns of `schema` their lines
+/// name, so a published row costs its reader the cells it holds.
+pub(super) fn read_held(dir: &Dir, path: &str, schema: &SchemaRef) -> Result<Vec<RecordBatch>> {
+    let (parent, file) = located(dir, path)?;
+    format_of(dir, path)?.read_held(&parent, file, schema)
+}
+
 /// The format of the file listed at `path` under `dir`, which its name's extension says.
 pub(super) fn format_of(dir: &Dir, path: &str) -> Result<FileFormat> {
     FileFormat::named(path).ok_or_else(|| {

@@ -1,3 +1,5 @@
+mod widths;
+
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int16Array, Int32Array, RecordBatch};
