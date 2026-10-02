@@ -86,3 +86,14 @@ fn a_descriptor_this_process_owns_is_refused_and_left_open() {
     ours.write_all(b"x").expect("the socket still writes");
     drop(theirs);
 }
+
+#[test]
+fn whether_a_number_names_an_open_descriptor_is_asked_of_the_kernel() {
+    let file = std::fs::File::open("/dev/null").expect("a file opens");
+    let fd = file.as_raw_fd();
+    assert!(super::is_open(fd));
+    assert!(super::is_open(0) && super::is_open(1) && super::is_open(2));
+    drop(file);
+    assert!(!super::is_open(fd));
+    assert!(!super::is_open(-1) && !super::is_open(i32::MAX));
+}

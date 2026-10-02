@@ -45,7 +45,10 @@ This record decides what holds each statement, and says where a check ends.
     `rdlt-host` as the only users of the crate.
   - `rdlt_adopt::adopt` is a safe function, so that a crate forbidding `unsafe` code can call
     it. It checks what it can: the descriptor is open, a socket, not a standard stream, not
-    close-on-exec, and taken once. That nothing else in the process owns the descriptor is left
+    close-on-exec, and taken once. Each is asked of the descriptor through `fcntl` and
+    `fstat`, never of `/dev/fd`, which on macOS at times answers that a descriptor the process
+    holds is not there; `is_open` asks the same of any number, for a connector's own check of
+    what it was started with. That nothing else in the process owns the descriptor is left
     to its caller, which calls it first thing in a connector's `main`. The dependency rule
     (`cargo xtask deps`) lets `rdlt-connector` alone use the crate, in tests as well.
   - **What the compiler holds.** Every other target's root file carries

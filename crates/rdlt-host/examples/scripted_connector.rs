@@ -102,6 +102,8 @@ static STARTED_WITH: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
 
 /// The descriptors open now, but what lists them.
 fn open_descriptors() -> Vec<i32> {
+    // The listing names any number, however high; each, and every low number besides, is asked
+    // of the kernel itself, as `/dev/fd` on macOS at times leaves out a descriptor it holds.
     let listed: Vec<i32> = std::fs::read_dir("/dev/fd")
         .map(|entries| {
             entries
@@ -109,14 +111,17 @@ fn open_descriptors() -> Vec<i32> {
                 .collect()
         })
         .unwrap_or_default();
-    // The listing's own descriptor is closed by now, and no longer there.
-    let mut open: Vec<i32> = listed
-        .into_iter()
-        .filter(|fd| std::fs::metadata(format!("/dev/fd/{fd}")).is_ok())
+    let mut open: Vec<i32> = (0..LOW_DESCRIPTORS)
+        .chain(listed)
+        .filter(|fd| rdlt_adopt::is_open(*fd))
         .collect();
     open.sort_unstable();
+    open.dedup();
     open
 }
+
+/// Descriptors from 0 asked about whether or not a listing names them.
+const LOW_DESCRIPTORS: i32 = 64;
 
 impl Script {
     /// Checks what the connector can see and reach of its host, as the script requires.
