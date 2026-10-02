@@ -136,6 +136,18 @@ impl Rendering {
     }
 }
 
+impl Measure {
+    /// The measure, each item a list names, at any depth, costing `bytes` beside itself: for
+    /// whoever makes a row of each item, as normalizing does.
+    #[must_use]
+    pub fn with_items(self, bytes: u64) -> Self {
+        Self {
+            meter: self.meter.with_items(bytes),
+            ..self
+        }
+    }
+}
+
 /// How a table stores one column of a batch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stored {

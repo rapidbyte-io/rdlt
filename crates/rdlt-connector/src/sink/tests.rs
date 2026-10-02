@@ -103,9 +103,12 @@ impl Admission for Gate {
         })
     }
 
-    fn charge(&self, bytes: u64) -> Permit {
+    fn charge(&self, bytes: u64) -> crate::Result<Permit> {
         self.asked.lock().unwrap().push(bytes);
-        Box::new(bytes)
+        if bytes > 1_000 {
+            return Err(crate::ConnectorError::data("more than a read may keep"));
+        }
+        Ok(Box::new(bytes))
     }
 }
 
@@ -182,11 +185,16 @@ async fn an_event_its_admission_charges_nothing_enters_without_a_permit() {
 fn a_sink_reserves_bytes_from_whoever_admits_its_events() {
     let gate = Arc::new(Gate::default());
     let (sink, _feed) = admitted_partition_channel(NonZeroUsize::new(4).unwrap(), gate.clone());
-    let permit = sink.reserve(64).unwrap();
+    let permit = sink.reserve(64).unwrap().unwrap();
     assert_eq!(permit.downcast::<u64>().ok().map(|bytes| *bytes), Some(64));
     assert_eq!(*gate.asked.lock().unwrap(), [64]);
+    // What the admission refuses to hold is refused the sink, with why.
+    let refused = sink.reserve(1_001).unwrap_err();
+    assert_eq!(refused.to_string(), "more than a read may keep");
+    assert_eq!(*gate.asked.lock().unwrap(), [64, 1_001]);
     let (plain, _feed) = partition_channel(NonZeroUsize::new(4).unwrap());
-    assert!(plain.reserve(64).is_none());
+    assert!(plain.reserve(64).unwrap().is_none());
+    assert!(plain.reserve(u64::MAX).unwrap().is_none());
 }
 
 #[tokio::test(start_paused = true)]

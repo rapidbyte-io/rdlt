@@ -75,6 +75,7 @@ impl Meter {
         self.times(rows.len() + 1, OFFSET);
         self.times(rows.len(), BRACKETS);
         self.add(count(items.len()));
+        self.times(items.len(), self.item);
         self.range(values, items, within.inside(item(within)));
     }
 
@@ -98,7 +99,7 @@ impl Meter {
                 values.len(),
             );
             // Each item its comma, and the place it is taken from.
-            self.times(items.len(), 1 + OFFSET);
+            self.times(items.len(), 1 + OFFSET + self.item);
             self.range(values, items, within.inside(item(within)));
         }
     }

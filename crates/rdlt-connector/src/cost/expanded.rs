@@ -79,6 +79,8 @@ pub(super) struct Meter {
     dear: u64,
     /// How many values are remembered at most.
     room: usize,
+    /// Bytes: what each item a list names costs beside itself.
+    item: u64,
 }
 
 /// Where a value is measured: inside a nested value or not, and how its table stores it.
@@ -154,7 +156,14 @@ impl Meter {
             named: HashMap::new(),
             dear: DEAR,
             room: usize::try_from(room).unwrap_or(usize::MAX),
+            item: 0,
         }
+    }
+
+    /// The meter, each item a list names costing `bytes` beside itself.
+    pub(super) fn with_items(mut self, bytes: u64) -> Self {
+        self.item = bytes;
+        self
     }
 
     /// Bytes: what the meter measures against.
@@ -294,7 +303,7 @@ impl Meter {
                 let first = usize::try_from(list.value_offset(rows.start)).unwrap_or(0);
                 let items = rows.len().saturating_mul(size);
                 self.times(rows.len(), OFFSET + BRACKETS);
-                self.add(count(items));
+                self.add(count(items).saturating_mul(1 + self.item));
                 let items = clamp(first..first.saturating_add(items), list.values().len());
                 self.range(list.values().as_ref(), items, within.inside(item(within)));
             }
