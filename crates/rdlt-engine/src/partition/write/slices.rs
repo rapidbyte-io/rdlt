@@ -83,15 +83,17 @@ fn rows(
     max: u64,
     budget: u64,
 ) -> Result<Vec<(RecordBatch, u64)>, RowTooLarge> {
-    let cuts = rendering.cuts(batch, max);
+    let mut pieces = rendering.measure(batch, max);
+    // A row beyond a slice is measured against the budget, each value it names once.
+    let mut alone = rendering.measure(batch, budget);
+    let cuts = pieces.cuts();
     let whole = cuts.len() == 1;
     let mut slices = Vec::with_capacity(cuts.len());
     let mut first = 0;
     for end in cuts {
-        // Measured a byte beyond the slice, so a piece is known to fit or not.
-        let size = rendering.expanded(batch, first..end, max.saturating_add(1));
+        let size = pieces.expanded(first..end);
         if size > max {
-            let expanded = rendering.expanded(batch, first..end, budget.saturating_add(1));
+            let expanded = alone.expanded(first..end);
             if expanded > budget {
                 return Err(RowTooLarge { expanded, budget });
             }

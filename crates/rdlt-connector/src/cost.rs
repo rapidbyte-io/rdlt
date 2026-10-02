@@ -1,8 +1,8 @@
 //! What a batch costs whoever holds it: the memory it keeps alive, and the memory it becomes
 //! once its encodings are decoded and its values rendered as the destination stores them.
 //!
-//! A batch is charged the larger of the two. Both are measured in one pass that keeps no vector
-//! of rows or values, and whose work is bounded by the limit it measures against.
+//! A batch is charged the larger of the two. What a frame of its rows would hold on the wire is
+//! not measured here: `rdlt_wire::Weigher` weighs that.
 
 mod expanded;
 mod held;
@@ -11,6 +11,7 @@ pub(crate) mod tests;
 mod widths;
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::ops::Range;
 
 use arrow_array::{Array, RecordBatch};
@@ -97,14 +98,7 @@ impl Rendering {
 
     /// What `rows` of `batch` expand to, measured up to `limit`.
     pub fn expanded(&self, batch: &RecordBatch, rows: Range<usize>, limit: u64) -> u64 {
-        let mut meter = Meter::new(self, limit);
-        for column in batch.columns() {
-            if meter.over() {
-                break;
-            }
-            meter.column(column.as_ref(), rows.clone());
-        }
-        meter.spent()
+        self.measure(batch, limit).expanded(rows)
     }
 
     /// What `rows` of `array`, a column of its own, expand to, measured up to `limit`.
@@ -114,35 +108,73 @@ impl Rendering {
         meter.spent()
     }
 
-    /// Where to cut `batch` so each piece expands to at most `max`: the end of each piece, in
-    /// order, the last being the batch's row count.
+    /// A measure of what rows of `batch` expand to, up to `limit`, for measuring many stretches
+    /// of them: a value many rows name is measured once for all of them.
+    pub fn measure<'a>(&'a self, batch: &'a RecordBatch, limit: u64) -> Measure<'a> {
+        Measure {
+            batch,
+            meter: Meter::new(self, limit),
+        }
+    }
+}
+
+/// Measures what stretches of one batch's rows expand to, up to a limit.
+pub struct Measure<'a> {
+    batch: &'a RecordBatch,
+    meter: Meter<'a>,
+}
+
+impl fmt::Debug for Measure<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Measure").finish_non_exhaustive()
+    }
+}
+
+impl Measure<'_> {
+    /// What `rows` expand to: beyond the limit, some value beyond it, where measuring stopped.
+    pub fn expanded(&mut self, rows: Range<usize>) -> u64 {
+        self.meter.restart();
+        for column in self.batch.columns() {
+            if self.meter.over() {
+                break;
+            }
+            self.meter.column(column.as_ref(), rows.clone());
+        }
+        self.meter.spent()
+    }
+
+    /// Whether `rows` expand to no more than the limit.
+    fn fits(&mut self, rows: Range<usize>) -> bool {
+        self.expanded(rows);
+        !self.meter.over()
+    }
+
+    /// Where to cut the batch so each piece expands to at most the limit: the end of each piece,
+    /// in order, the last being the batch's row count.
     ///
-    /// A row that alone expands beyond `max` is a piece of its own. The pieces are found by
+    /// A row that alone expands beyond the limit is a piece of its own. The pieces are found by
     /// searching the rows' running cost, which only grows, so no cost a row is kept.
-    pub fn cuts(&self, batch: &RecordBatch, max: u64) -> Vec<usize> {
-        let rows = batch.num_rows();
-        let fits =
-            |from: usize, to: usize| self.expanded(batch, from..to, max.saturating_add(1)) <= max;
+    pub fn cuts(&mut self) -> Vec<usize> {
+        let rows = self.batch.num_rows();
         let mut cuts = Vec::new();
         let mut first = 0;
-        while first < rows && !fits(first, rows) {
+        while first < rows && !self.fits(first..rows) {
             // Doubles the piece while it fits, then searches between the last that fit and the
             // first that did not; the first row is a piece whether or not it fits.
             let (mut fitting, mut step) = (first + 1, 1_usize);
             let mut beyond = rows;
             while fitting < rows {
                 let next = fitting.saturating_add(step).min(rows);
-                if fits(first, next) {
-                    fitting = next;
-                    step = step.saturating_mul(2);
-                } else {
+                if !self.fits(first..next) {
                     beyond = next;
                     break;
                 }
+                fitting = next;
+                step = step.saturating_mul(2);
             }
             while beyond - fitting > 1 {
                 let middle = fitting + (beyond - fitting) / 2;
-                if fits(first, middle) {
+                if self.fits(first..middle) {
                     fitting = middle;
                 } else {
                     beyond = middle;
@@ -155,6 +187,22 @@ impl Rendering {
             cuts.push(rows);
         }
         cuts
+    }
+
+    /// The measure, remembering no value.
+    #[cfg(test)]
+    pub(crate) fn forgetful(self) -> Self {
+        Self {
+            batch: self.batch,
+            meter: self.meter.forgetful(),
+        }
+    }
+
+    /// How many rows, items and stretches measuring has looked at, and how many values it
+    /// remembers.
+    #[cfg(test)]
+    pub(crate) fn work(&self) -> (u64, usize) {
+        (self.meter.steps(), self.meter.remembered())
     }
 }
 
