@@ -5,7 +5,10 @@
 //! panics on a value that is not base64; what a connector sends is untrusted. The transport drops
 //! such a value before tonic reads it, so the status reads as one without details: a failure of
 //! the transport. Each message of an answer is passed on whole, within the bounds of its call's
-//! class on the wire and on what it decodes to, before tonic reserves or decodes any of it.
+//! class on the wire and on what it decodes to, before tonic reserves or decodes any of it; and,
+//! for a call made within [`rdlt_wire::bounded::charging`], once what decoding it holds is charged.
+//! The answer carries its [`Charged`] among its extensions, for whoever reads a stream of messages
+//! to release each charge once the message is decoded.
 
 #[cfg(test)]
 mod tests;
@@ -21,7 +24,7 @@ use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use http::HeaderMap;
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 use rdlt_wire::Limits;
-use rdlt_wire::bounded::{Bounded, Bounds};
+use rdlt_wire::bounded::{Bounded, Bounds, Charged};
 use rdlt_wire::limits::Class;
 use tonic::transport::Channel;
 
@@ -65,13 +68,20 @@ impl tower::Service<http::Request<tonic::body::Body>> for Checked {
         let method = path.rsplit('/').next().unwrap_or(path);
         let form = rdlt_wire::scan::response(method);
         let bounds = Bounds::of(&self.limits, Class::of_answer(method), form);
+        // Made in the caller's task: what the call is charged to is the caller's.
+        let charge = rdlt_wire::bounded::current();
         let answer = self.channel.call(request);
         Box::pin(async move {
             let (mut parts, body) = answer.await?.into_parts();
             check(&mut parts.headers);
             let checked = tonic::body::Body::new(CheckedBody(body));
-            let body = tonic::body::Body::new(Bounded::new(checked, bounds, None));
-            Ok(http::Response::from_parts(parts, body))
+            let charged = Charged::default();
+            parts.extensions.insert(charged.clone());
+            let bounded = Bounded::new(checked, bounds, None).charged(charge, charged);
+            Ok(http::Response::from_parts(
+                parts,
+                tonic::body::Body::new(bounded),
+            ))
         })
     }
 }

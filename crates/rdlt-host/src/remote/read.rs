@@ -9,6 +9,7 @@ use rdlt_connector::{
     ConnectorError, ConnectorErrorKind, Cursor, LogLevel, PartitionSink, Permit, Push, ReadRequest,
     Requested, SourceEvent,
 };
+use rdlt_wire::bounded::Charged;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::bytes::Bytes;
 use rdlt_wire::{Decoder, IpcFrame, Limits};
@@ -30,7 +31,7 @@ pub(super) async fn run(
     // later control answers it, as in the engine's process; and as a control before its credit,
     // for a connector that knows no barrier in the start. One that knows both answers it once.
     let pending = sink.pending_barrier().unwrap_or(0);
-    let (controls, mut frames) = start(connection, &request, pending).await?;
+    let (controls, (mut frames, charged)) = start(connection, &request, pending).await?;
     let control = |control| v1::ReadControl {
         control: Some(control),
     };
@@ -70,6 +71,8 @@ pub(super) async fn run(
                     ).with_code(super::CONNECTOR_LOST)),
                     Err(status) => return Err(rdlt_connector::wire::error(&status)),
                 };
+                // Decoded: its charge goes before its event waits for room in the budget.
+                charged.release();
                 let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
                 match reader.event(frame)? {
                     Read::Done => return Ok(()),
@@ -121,7 +124,7 @@ async fn start(
     barrier: u64,
 ) -> rdlt_connector::Result<(
     mpsc::Sender<v1::ReadControl>,
-    tonic::Streaming<v1::ReadFrame>,
+    (tonic::Streaming<v1::ReadFrame>, Charged),
 )> {
     use v1::read_control::Control;
     let window = connection.options.read_window;
@@ -155,11 +158,10 @@ async fn start(
     let mut client = connection.client.data.clone();
     let deadline = connection.options.deadlines.connect;
     let frames = connection
-        .call(
-            deadline,
-            "starting the read",
-            client.read(ReceiverStream::new(receiver)),
-        )
+        .call(deadline, "starting the read", async move {
+            let started = client.read(ReceiverStream::new(receiver)).await;
+            started.map(super::charged)
+        })
         .await?;
     Ok((controls, frames))
 }

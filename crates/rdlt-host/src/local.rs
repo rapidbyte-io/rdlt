@@ -274,8 +274,7 @@ impl Local {
             told: self.told.clone(),
             confinement,
             lease: Arc::new(lease),
-            state_bytes: Some(self.options.limits.state_bytes)
-                .filter(|bytes| *bytes != rdlt_wire::limits::STATE_BYTES),
+            state_bytes: process::told_state(&self.options.limits),
         })
     }
 

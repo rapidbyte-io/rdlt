@@ -9,6 +9,7 @@ use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
+use rdlt_wire::bounded::Charged;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::{Cut, Encoder};
 use tokio::sync::mpsc;
@@ -24,6 +25,8 @@ pub(super) struct RemoteWriter {
     connection: Arc<Connection>,
     frames: mpsc::Sender<v1::WriteFrame>,
     acks: Streaming<v1::WriteAck>,
+    /// The charge of the answer decoded last, released once it is.
+    charged: Charged,
     /// The credit the connector has left, which the last frame may have taken below zero.
     credit: i64,
     encoder: Encoder,
@@ -56,17 +59,17 @@ impl RemoteWriter {
             .ok();
         let mut client = connection.client.control.clone();
         let deadline = connection.options.deadlines.write_ack;
-        let acks = connection
-            .call(
-                deadline,
-                "opening the writer",
-                client.write(ReceiverStream::new(receiver)),
-            )
+        let (acks, charged) = connection
+            .call(deadline, "opening the writer", async move {
+                let opened = client.write(ReceiverStream::new(receiver)).await;
+                opened.map(super::charged)
+            })
             .await?;
         Ok(Self {
             connection,
             frames,
             acks,
+            charged,
             credit: 0,
             encoder: Encoder::default(),
             schema: None,
@@ -89,6 +92,8 @@ impl RemoteWriter {
             () = self.connection.lost.cancelled() => return Err(lost_error()),
             answer = tokio::time::timeout_at(due, self.acks.message()) => answer,
         };
+        // Decoded: its charge goes.
+        self.charged.release();
         let message = match answer {
             Ok(Ok(Some(ack))) => ack.ack,
             Ok(Ok(None)) => return Err(out_of_turn("the end of the write")),
