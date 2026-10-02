@@ -90,26 +90,34 @@ pub(super) fn counted(count: usize) -> u64 {
 }
 
 impl Table {
-    /// Applies `change` to the table's schema, where every row and tombstone the table holds
-    /// converts to the changed schema with its value kept.
+    /// Applies `change` to the table's schema, where every row the table holds or has staged,
+    /// and every tombstone, converts to the changed schema with its value kept.
     ///
-    /// A change the held rows do not fit, as a widen to a type one of them is beyond, is a
-    /// `Data` error coded `schema_conflict`, and leaves the table as it was.
+    /// A change they do not fit, as a widen to a type one of them is beyond, is a `Data` error
+    /// coded `schema_conflict`, and leaves the table as it was.
     pub(super) fn change(&mut self, change: &TableChange) -> Result<()> {
         let next = changed(self.schema.as_ref(), change)?;
         let arrow = Arc::new(next.to_arrow());
-        let held = self
-            .published
-            .iter()
-            .chain(self.generations.values().flatten())
-            .chain(&self.tombstones);
-        crate::merge::holds(held, &arrow).map_err(|error| {
+        let conflict = |error: arrow_schema::ArrowError| {
             let name = &change.table().name;
             ConnectorError::data(format!(
                 "table {name} holds a row the change does not fit: {error}"
             ))
             .with_code("schema_conflict")
-        })?;
+        };
+        let staged = self.staged.values().flatten().map(|(_, batch)| batch);
+        let rows = self
+            .published
+            .iter()
+            .chain(self.generations.values().flatten())
+            .chain(staged);
+        crate::merge::holds(rows, &arrow).map_err(conflict)?;
+        // A tombstone holds its key under the table's types and its sequence as it compares.
+        if let Some(key) = self.merge.as_ref().or(change.table().merge.as_ref()) {
+            let kept = crate::merge::tombstone_schema(&arrow, key)
+                .map_err(|error| failed("reading tombstones", &error))?;
+            crate::merge::holds(&self.tombstones, &kept).map_err(conflict)?;
+        }
         self.schema = Some(next);
         Ok(())
     }

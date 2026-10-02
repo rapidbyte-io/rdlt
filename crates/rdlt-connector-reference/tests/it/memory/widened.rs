@@ -142,3 +142,116 @@ async fn a_stored_value_a_finer_unit_holds_is_kept_exactly() {
     values.sort_unstable();
     assert_eq!(values, [Some(5), Some(9_223_372_036_000_000_000)]);
 }
+
+/// A change stream's table keyed by `id`, whose deletes remove their rows.
+fn changes() -> TableRef {
+    let mut table = events();
+    table.merge.as_mut().expect("a key").changes = Some(rdlt_connector::ChangeColumns {
+        op: "op".into(),
+        unchanged: None,
+        deletion: rdlt_connector::Deletion::Hard,
+    });
+    table
+}
+
+/// One sequence `seq` as a column of `kind`.
+fn sequence(kind: &LogicalType, seq: i64) -> ArrayRef {
+    match kind {
+        LogicalType::Int64 => Arc::new(Int64Array::from(vec![seq])),
+        LogicalType::Utf8 => Arc::new(arrow_array::StringArray::from(vec![format!("{seq:04}")])),
+        _ => Arc::new(BinaryArray::from_iter_values([seq.to_be_bytes()])),
+    }
+}
+
+#[tokio::test]
+async fn a_table_that_holds_tombstones_takes_a_widen_whatever_its_sequence_is() {
+    use arrow_array::{Int8Array, Int32Array};
+    use rdlt_connector::ChangeOp;
+    let kinds = [LogicalType::Int64, LogicalType::Utf8, LogicalType::Binary];
+    for (case, kind) in kinds.into_iter().enumerate() {
+        let name = format!("widened-over-a-tombstone-{case}");
+        let destination = store(&name).await;
+        let mut session = open(destination.as_ref(), "p", 1).await;
+        let create = TableChange::Create {
+            table: changes(),
+            schema: TableSchema::new(vec![
+                Field::new("id", LogicalType::Int32, true),
+                Field::new("seq", kind.clone(), false),
+                Field::new("v", LogicalType::Int32, true),
+            ])
+            .expect("the schema is valid"),
+        };
+        session
+            .session
+            .apply_schema(&create)
+            .await
+            .expect("created");
+        let mut segment = 0;
+        for (id, seq, op) in [(1, 1, ChangeOp::Insert), (1, 5, ChangeOp::Delete)] {
+            segment += 1;
+            let batch = RecordBatch::try_from_iter([
+                ("id", Arc::new(Int32Array::from(vec![id])) as ArrayRef),
+                ("seq", sequence(&kind, seq)),
+                ("v", Arc::new(Int32Array::from(vec![7])) as ArrayRef),
+                ("op", Arc::new(Int8Array::from(vec![op.code()])) as ArrayRef),
+            ])
+            .expect("a valid batch");
+            let mut writer = session.session.writer(&changes()).await.expect("a writer");
+            writer
+                .write(SegmentId(segment), batch)
+                .await
+                .expect("buffers");
+            writer.flush().await.expect("the flush stages");
+            let commit = meta(&session, 1, segment, &[segment]);
+            session.session.commit(&commit).await.expect("the commit");
+        }
+        for column in ["v", "id"] {
+            let widen = TableChange::Widen {
+                table: changes(),
+                column: column.into(),
+                from: LogicalType::Int32,
+                to: LogicalType::Int64,
+            };
+            let widening = session.session.apply_schema(&widen).await;
+            widening.unwrap_or_else(|error| panic!("{kind:?}: widening {column}: {error}"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_widen_a_staged_value_does_not_fit_is_refused() {
+    let destination = store("widened-staged").await;
+    let mut session = open(destination.as_ref(), "p", 1).await;
+    let seconds = LogicalType::Timestamp(TimeUnit::Second, None);
+    let create = TableChange::Create {
+        table: events(),
+        schema: TableSchema::new(vec![
+            Field::new("id", LogicalType::Int64, false),
+            Field::new("until", seconds.clone(), true),
+            Field::new("seq", LogicalType::Binary, false),
+        ])
+        .expect("the schema is valid"),
+    };
+    session
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("created");
+    let beyond: ArrayRef = Arc::new(TimestampSecondArray::from(vec![253_402_214_400]));
+    staged(&mut session, 1, 1, beyond).await;
+    let widen = TableChange::Widen {
+        table: events(),
+        column: "until".into(),
+        from: seconds,
+        to: LogicalType::Timestamp(TimeUnit::Nanosecond, None),
+    };
+    let refused = session.session.apply_schema(&widen).await;
+    let refused = refused.expect_err("the staged value does not fit");
+    assert_eq!(refused.code(), Some("schema_conflict"));
+    let commit = meta(&session, 1, 1, &[1]);
+    session
+        .session
+        .commit(&commit)
+        .await
+        .expect("the row commits");
+}
