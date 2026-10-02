@@ -112,16 +112,21 @@ log.
     never more than the frame's and with a bound on the frame's overhead (each buffer's
     padding, an offset more than rows, the header: computed from the schema) never less.
     - Weighing is linear in the rows and the items they name. A stretch of fixed-width values,
-      of bytes by offsets, or of structs and lists of those is weighed from its widths and
-      offsets, however long it is. What a dictionary value or a run takes expanded is found
-      once, when a row first names it, and kept, eight bytes a value.
+      of bytes by offsets, of dictionary keys, or of structs and lists of those is weighed
+      from its widths and offsets, however long it is, and the weigher keeps nothing that
+      grows with the batch.
+    - A dictionary's values are in no row's weight: they are weighed as a column of their own,
+      the frame they go in, before anything is rebuilt or encoded, and a batch whose dictionary
+      is beyond a frame's values, view bytes or bytes is refused from that weight. Values that
+      are rebuilt are therefore at most a frame, and the cut holds them, beside the piece, for
+      as long as it lasts.
     - A piece is the longest run of rows within the limit on rows, on values, on view bytes,
       and whose bytes with the overhead fit a frame. The cut weighs stretches each twice as
       long as the last while they fit, and half as long once one did not, so a piece costs a
       few weighings of its own rows; a stretch already beyond a frame's values is weighed no
       further, so the work between two pieces is bounded by the limits.
-    - One row beyond a limit is refused from its weight, before anything is rebuilt or
-      encoded.
+    - One row beyond a limit, or a dictionary beyond one, is refused from its weight, before
+      anything is rebuilt or encoded.
   - **Each piece then costs one rebuilding and one encoding**, of at most a frame, and the
     batch is never encoded or rebuilt whole to learn its size. Tests count the columns, rows,
     runs and keys weighing looks at, and the pieces rebuilt and encoded, for plain columns, for
@@ -132,8 +137,9 @@ log.
     leaving the overhead out.
   - `Encoder::piece` hands over the frames of the next rows of a `Cut`. A sender encodes the
     next piece only once the last was sent, and yields to its runtime between them, so beyond
-    the batch itself it holds one piece, of at most the frame limit it cuts to, and while that
-    piece is rebuilt, the ranges it is rebuilt from.
+    the batch itself it holds one piece, of at most the frame limit it cuts to, the rebuilt
+    values of its dictionaries, each at most a frame, and while a piece is rebuilt, the ranges
+    it is rebuilt from.
   - Every frame is then measured by the receiver's own walk before it is sent, so no frame a
     sender cut is refused by its receiver.
   - The pieces are consecutive rows in order. On a read they are pushes of the segment the batch
@@ -155,11 +161,10 @@ log.
     - A batch the sender itself cannot narrow or encode fails with `unencodable_batch`, which
       blames the sender's batch and no peer.
   - `Weigher` and `Weight` are public, for whoever must charge a batch by what it will take
-    without copying it; `Weigher::weigh_rows` weighs a range of rows. Beside values, view bytes
-    and frame bytes a weight carries the rows' expanded bytes: what they take once each
-    dictionary key and run is replaced by the value it names. A batch a receiver decoded holds
-    at most a frame's values in each of its frames, a dictionary's included, which bounds what
-    weighing it looks at.
+    without copying it; `Weigher::weigh_rows` weighs a range of rows and
+    `Weigher::dictionaries` each dictionary's values. A weight is what a frame holds: values,
+    view bytes and frame bytes. What rows take once their dictionary keys and runs are replaced
+    by the values they name is no measure of the wire's: it belongs to whoever charges memory.
   - Certification's read-back queues every piece of the table it already holds whole; the
     minimums below bound that to about twice the table.
 - **What the engine writes is plain.** Lowering stores every column as the Arrow type of its
