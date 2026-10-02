@@ -645,3 +645,59 @@ async fn a_reset_charges_what_decoding_its_connectors_answers_holds() {
         .expect("the reset commits");
     assert_eq!(*charged.lock(), [true]);
 }
+
+/// A destination whose state was written by the previous format of state records.
+struct Previous(Arc<dyn Destination>);
+
+impl Destination for Previous {
+    fn capabilities(&self) -> &Capabilities {
+        self.0.capabilities()
+    }
+
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.0.check()
+    }
+
+    fn open<'a>(
+        &'a self,
+        context: &'a OpenContext,
+    ) -> BoxFuture<'a, rdlt_connector::Result<OpenedSession>> {
+        Box::pin(async move {
+            let mut opened = self.0.open(context).await?;
+            for record in &mut opened.state {
+                let mut value: serde_json::Value =
+                    serde_json::from_slice(&record.value).expect("a record is JSON");
+                value["v"] = json!(1);
+                record.value = serde_json::to_vec(&value).expect("JSON encodes").into();
+            }
+            Ok(opened)
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn state_of_the_previous_format_is_refused_by_a_run_and_a_reset() {
+    let store = "previous_format";
+    load(Target::Memory, store, store).await;
+    let previous: Arc<dyn Destination> =
+        Arc::new(Previous(Target::Memory.destination(store).await));
+    let plan = pipeline(store, [stream("events").read(ReadMode::Incremental)]);
+    let outcome = engine(commit_every(16))
+        .run(plan, log(store).await, Arc::clone(&previous))
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(error.code(), Some("state_invalid"));
+    assert!(!error.is_retryable());
+    let refused = engine(commit_every(16))
+        .reset(
+            store,
+            &["events"],
+            ResetScope::Positions,
+            log(store).await,
+            previous,
+        )
+        .await
+        .expect_err("a reset reads the state it resets");
+    assert_eq!(refused.code(), Some("state_invalid"));
+}
