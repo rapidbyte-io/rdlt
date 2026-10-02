@@ -26,7 +26,9 @@ processes, with real files, sockets and child processes.
   - either side of a replayed commit.
 
   A point configured through `FAILPOINTS` aborts the process there: no unwinding, no flush, no
-  goodbye to a connector.
+  goodbye to a connector. Amended 2026-10-02: the harness turns
+  its core dumps off before it runs, so an abort costs the system's dump handler nothing; and
+  each process a test starts is killed with its group when the test's own process ends.
 - **The harness stands for the CLI** until M7 has one: the engine's `crash_run` example runs one
   pipeline from a configuration file, its source and destination in its process or spawned, its
   log in a local directory where it keeps one, tells each read and commit as it happens, and
