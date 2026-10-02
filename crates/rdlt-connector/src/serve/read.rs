@@ -13,7 +13,7 @@ use rdlt_wire::{Encoder, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::acknowledgeable::Read;
+use super::noted::Read;
 use super::service::{Answer, invalid};
 use crate::Cursor;
 use crate::error::ConnectorErrorKind;
@@ -45,15 +45,12 @@ pub(super) async fn serve(
         own.admit_cursor(cursor.bytes.len()).map_err(refused)?;
     }
     let barrier = start.barrier;
-    let read = Read {
-        stream: start
-            .stream
-            .as_ref()
-            .map(|stream| (stream.namespace.clone(), stream.name.clone()))
-            .unwrap_or_default(),
-        partition: start.partition.clone(),
-    };
     let request = request(start).map_err(|error| invalid(&error))?;
+    let read = Read {
+        stream: request.stream.clone(),
+        partition: request.partition.id().clone(),
+        start: request.cursor.clone(),
+    };
     let (frames, answer) = mpsc::channel(EVENTS.get());
     tokio::spawn(pump(source, request, barrier, controls, frames, host));
     Ok((Box::pin(ReceiverStream::new(answer)), read))

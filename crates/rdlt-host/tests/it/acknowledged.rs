@@ -116,6 +116,16 @@ async fn checkpoints(
     stream: &str,
     partition: &str,
 ) -> Vec<v1::Cursor> {
+    checkpoints_from(client, stream, partition, None).await
+}
+
+/// The checkpoints a read of `partition` of `stream` from `cursor` sends, to its end.
+async fn checkpoints_from(
+    client: &mut ConnectorClient<Channel>,
+    stream: &str,
+    partition: &str,
+    cursor: Option<v1::Cursor>,
+) -> Vec<v1::Cursor> {
     use v1::read_control::Control;
     use v1::read_frame::Frame;
     let start = v1::ReadStart {
@@ -124,7 +134,7 @@ async fn checkpoints(
             name: stream.to_owned(),
         }),
         partition: partition.to_owned(),
-        cursor: None,
+        cursor,
         barrier: 0,
         unbounded: false,
         follow: false,
@@ -278,8 +288,7 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
     let mut again = connected(&served).await;
     let told = again.committed(committed("orders", "changes", sent[0].clone()));
     told.await.expect("the report is heard");
-    // The connector started again remembers nothing it sent: the report is refused as transient,
-    // and reading again makes it reportable.
+    // The connector started again remembers nothing it sent: the report is refused as transient.
     let restarted = Arc::new(changes());
     let mut fresh = connected(&restarted).await;
     let unknown = fresh.committed(committed("orders", "changes", sent[1].clone()));
@@ -287,10 +296,42 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
     let error = carried(&refused);
     assert_eq!(error.kind(), ConnectorErrorKind::Transient, "{error}");
     assert_eq!(error.code(), Some("position_unsent"), "{error}");
-    let resent = checkpoints(&mut fresh, "orders", "changes").await;
-    assert_eq!(resent, sent);
-    let told = fresh.committed(committed("orders", "changes", sent[1].clone()));
-    told.await.expect("the report is heard");
+    // A host that reads on from a position has said everything before it is committed: the
+    // connector hears it for where its read starts, though it sent no such checkpoint.
+    let last = sent.last().expect("a checkpoint").clone();
+    let resent = checkpoints_from(&mut fresh, "orders", "changes", Some(last.clone())).await;
+    assert!(!resent.contains(&last), "{resent:?}");
+    let told = fresh.committed(committed("orders", "changes", last.clone()));
+    told.await
+        .expect("the report of where the read started is heard");
+    let standing = fresh.read_acknowledged(v1::ReadAcknowledgedRequest {
+        stream: Some(v1::StreamName {
+            namespace: None,
+            name: "orders".to_owned(),
+        }),
+        partition: "changes".to_owned(),
+    });
+    let standing = standing.await.expect("the source tells").into_inner();
+    assert_eq!(standing.cursor, Some(last.clone()));
+    // Where a read of another partition, or of another stream, started is not this one's.
+    for (stream, partition) in [("orders", "snapshot-0"), ("accounts", "changes")] {
+        let elsewhere = fresh.committed(committed(stream, partition, last.clone()));
+        let refused = carried(&elsewhere.await.expect_err("refused"));
+        assert_eq!(
+            refused.code(),
+            Some("position_unsent"),
+            "{stream} {partition}"
+        );
+    }
+    // Nor is a position the host makes up beyond where it reads from.
+    let beyond = v1::Cursor {
+        version: last.version,
+        bytes: br#"{"next":18446744073709551615,"done":true}"#.to_vec().into(),
+    };
+    let forged = fresh.committed(committed("orders", "changes", beyond));
+    let refused = carried(&forged.await.expect_err("refused"));
+    assert_eq!(refused.code(), Some("position_unsent"));
+    assert_eq!(refused.kind(), ConnectorErrorKind::Transient);
 }
 
 #[tokio::test]

@@ -132,8 +132,8 @@ pub use sink::{
     admitted_partition_channel, decoded_bytes, decoded_rows, partition_channel,
 };
 pub use source::{
-    ACKNOWLEDGED_CODE, Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector,
-    SourceFactory, Streams, source_factory,
+    ACKNOWLEDGED_CODE, POSITION_UNSENT, Partition, PartitionPlan, ReadRequest, ReadStream, Sent,
+    Source, SourceConnector, SourceFactory, Streams, source_factory,
 };
 #[cfg(feature = "certify")]
 pub use source::{AcknowledgedReader, Acknowledging, acknowledging_source_factory};
