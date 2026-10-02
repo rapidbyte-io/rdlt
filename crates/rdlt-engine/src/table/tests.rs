@@ -17,6 +17,8 @@ use rdlt_connector::{
     TypeKind,
 };
 
+mod limits;
+
 use super::TableView;
 use super::convert::{convert, json};
 use super::lower::MetaNames;

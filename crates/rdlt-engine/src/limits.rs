@@ -94,6 +94,9 @@ pub(crate) const STATE_EXCEEDS_BUDGET: &str = "state_exceeds_budget";
 /// The code of the error for a table whose records take more than the tables' share.
 pub(crate) const TABLE_EXCEEDS_BUDGET: &str = "table_exceeds_budget";
 
+/// The code of the error for a change to a table whose schema version is the last one counts.
+pub(crate) const SCHEMA_VERSION_EXHAUSTED: &str = "schema_version_exhausted";
+
 /// The code of the error a wait on the memory budget ends with at its deadline.
 pub(crate) const BUDGET_WAIT_EXCEEDED: &str = "memory_budget_wait_exceeded";
 
