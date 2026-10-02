@@ -2,11 +2,10 @@
 //!
 //! The engine changes, writes and drops a table under the name state records for it, so a name
 //! no assignment could have made, as one under a prefix the destination keeps for its own tables,
-//! or one two tables share, is refused before anything uses it.
+//! is refused before anything uses it; one two tables share is refused as the tables are
+//! read from state (`Tables::committed`).
 
-use std::collections::BTreeMap;
-
-use rdlt_connector::{PipelineState, TablePath};
+use rdlt_connector::PipelineState;
 
 use super::Naming;
 use crate::error::{Error, ErrorKind};
@@ -15,22 +14,16 @@ use crate::error::{Error, ErrorKind};
 ///
 /// # Errors
 ///
-/// A table or column name the rules could not have given, or a name two tables share, is
-/// `state_invalid`, a Destination error.
+/// A table or column name the rules could not have given is `state_invalid`, a Destination
+/// error.
 pub(crate) fn check(naming: &Naming, state: &PipelineState) -> Result<(), Error> {
-    let mut owners: BTreeMap<&str, &TablePath> = BTreeMap::new();
     for (path, table) in &state.tables {
-        if let Some(physical) = table.physical.as_deref() {
-            if !naming.admits_table(physical) {
-                return Err(refused(format!(
-                    "table {path} is recorded under a name the destination's rules do not give"
-                )));
-            }
-            if let Some(other) = owners.insert(physical, path) {
-                return Err(refused(format!(
-                    "tables {other} and {path} are recorded under one name"
-                )));
-            }
+        if let Some(physical) = table.physical.as_deref()
+            && !naming.admits_table(physical)
+        {
+            return Err(refused(format!(
+                "table {path} is recorded under a name the destination's rules do not give"
+            )));
         }
         if !table.names.iter().all(|(_, name)| naming.admits(name)) {
             return Err(refused(format!(

@@ -143,7 +143,7 @@ async fn opened_run(
         naming,
         capabilities,
     };
-    let tables = Tables::new(Arc::clone(&opened.session)).committed(&opened.state);
+    let tables = Tables::new(Arc::clone(&opened.session)).committed(&opened.state)?;
     let mut planned = Vec::with_capacity(context.plan.streams().len());
     for plan in context.plan.streams() {
         planned.push(planning.stream(plan, &tables).await?);

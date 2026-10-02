@@ -223,6 +223,9 @@ fn cleared(
         state_delta: Vec::new(),
         drop_tables: Vec::new(),
     };
+    // A table recorded under another table's identifier too is forgotten, never dropped: the
+    // drop would reach the other table.
+    let shared = crate::table::shared(&state);
     for stream in streams {
         let family = family(&state, stream);
         let recorded = state.streams.contains_key(stream)
@@ -242,7 +245,7 @@ fn cleared(
                 let owned = table
                     .physical
                     .as_ref()
-                    .filter(|name| naming.admits_table(name));
+                    .filter(|name| naming.admits_table(name) && !shared.contains(name.as_ref()));
                 if let Some(name) = owned {
                     cleared.drop_tables.push(DroppedTable {
                         path: path.clone(),

@@ -568,7 +568,7 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
         tables: BTreeMap::from([(path, recorded)]),
         ..rdlt_connector::PipelineState::default()
     };
-    let tables = Tables::new(session).committed(&state);
+    let tables = Tables::new(session).committed(&state).unwrap();
     tables.add(resolver(), &table(Some(GenerationId(3))), Model::default());
     let items = vec![Arc::from("items")];
     // Creating the child's generation yields, so the second call waits on the first.
