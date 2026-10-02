@@ -13,6 +13,8 @@ use rdlt_connector::{
 use tokio::sync::Mutex;
 
 mod session;
+#[cfg(test)]
+mod tests;
 
 use session::SupervisedSession;
 
@@ -267,7 +269,7 @@ impl Spawned {
             }
             Self::Connect(error) => error,
             Self::Secret(error) => {
-                ConnectorError::config("a secret the connector's configuration names is missing")
+                ConnectorError::config("the connector's configuration could not be prepared")
                     .with_code(error.code())
                     .with_source(error)
             }

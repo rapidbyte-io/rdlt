@@ -841,6 +841,7 @@ async fn a_configuration_is_read_up_to_its_bound_and_refused_as_too_large_beyond
     let within = certify_given(&args, &padded(bound), &[]).await;
     let said = String::from_utf8_lossy(&within.stderr);
     assert!(!said.contains("standard input"), "{said}");
+    assert_ne!(code(&within), Some(64), "{said}");
     let beyond = certify_given(&args, &padded(bound + 1), &[]).await;
     assert_eq!(code(&beyond), Some(64));
     let said = String::from_utf8_lossy(&beyond.stderr);

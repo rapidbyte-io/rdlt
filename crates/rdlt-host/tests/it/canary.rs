@@ -177,6 +177,7 @@ fn files(dir: &Path) -> String {
 async fn said_by_a_spawned_connector(local: Local, logged: &Logged) {
     let script = serde_json::json!({ "said": everywhere() });
     let source = local
+        .clone()
         .secrets(Vault)
         .source(&scripted(), &script)
         .await
@@ -194,9 +195,9 @@ async fn said_by_a_spawned_connector(local: Local, logged: &Logged) {
         lines.contains("stream=stdout") && lines.contains("stream=stderr"),
         "{lines}"
     );
-    // And what it says as it dies.
+    // And what it says as it dies, placed as the caller places it.
     let crashing = serde_json::json!({ "crash": "dying with ${secret:quoted} and ${secret:wide}" });
-    let source = self::local()
+    let source = local
         .secrets(Vault)
         .source(&scripted(), &crashing)
         .await

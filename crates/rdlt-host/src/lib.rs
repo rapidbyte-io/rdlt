@@ -23,7 +23,7 @@ pub use connect::{Connect, Open};
 pub use kills::Kills;
 pub use local::{
     Bubblewrap, Confined, Grants, Interrupts, LastWords, Launcher, Lingering, Local, NetworkGrant,
-    Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned, stop_spawned,
+    OsError, Sandbox, SandboxError, Stops, StopsSpawned, Witness, spawned, stop_spawned,
 };
 pub use network::{Endpoint, EndpointError, Network, Remote, Stream, Tcp};
 pub use provider::{ConnectorRef, Digest, Isolation, Placed, Placement, Provider, ProviderError};

@@ -92,7 +92,9 @@ given. The host did not enforce it:
     as a connector's binary must (`sandbox_launcher_shared`), and is opened once and executed
     from that open file. Whether it makes a sandbox is tried once, by confining the launcher
     itself: a launcher that is missing (`sandbox_missing`) or makes none, as where
-    unprivileged user namespaces are off (`sandbox_unavailable`), refuses the placement.
+    unprivileged user namespaces are off (`sandbox_unavailable`), refuses the placement, and so
+    does a step of running it that the operating system refuses (`sandbox_failed`, the system's
+    error kept as its cause).
   - The network grant shares the host's network namespace: every interface and route, the
     host's loopback services and the abstract Unix sockets of that namespace. Bubblewrap can
     give a connector its own namespace with no route at all, or the host's; a namespace with
