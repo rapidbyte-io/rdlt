@@ -368,10 +368,7 @@ where
     // A host has as long to send HTTP/2's preface as it had to complete its TLS handshake.
     let tls = Speaking::within(tls, shared.limits.handshake);
     let (served, stopping) = (Arc::clone(&shared.served), shared.stopping.clone());
-    let host = Hosted {
-        name: Some(Arc::clone(host)),
-        sessions: shared.limits.connection_sessions(),
-    };
+    let host = Hosted::named(Some(Arc::clone(host)), &shared.limits);
     serve_until(served, tls, shared.wire, host, stopping.cancelled_owned())
         .await
         .err()

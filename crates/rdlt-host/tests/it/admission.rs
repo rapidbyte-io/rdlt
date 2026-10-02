@@ -140,6 +140,10 @@ struct Connector {
     live: Arc<AtomicUsize>,
     most: Arc<AtomicUsize>,
     pki: Pki,
+    /// Stops the connector, as its operator would.
+    stop: tokio_util::sync::CancellationToken,
+    /// The connector listening, until it has stopped.
+    listening: tokio::task::JoinHandle<()>,
 }
 
 impl Connector {
@@ -173,12 +177,13 @@ impl Connector {
             live: Arc::clone(&live),
             most: Arc::clone(&most),
         };
-        tokio::spawn(serve_listener(
+        let stop = tokio_util::sync::CancellationToken::new();
+        let listening = tokio::spawn(serve_listener(
             Arc::new(served),
             held,
             listening,
             rdlt_wire::Limits::default(),
-            std::future::pending(),
+            stop.clone().cancelled_owned(),
         ));
         Self {
             connections,
@@ -186,6 +191,8 @@ impl Connector {
             live,
             most,
             pki,
+            stop,
+            listening,
         }
     }
 
@@ -944,4 +951,188 @@ async fn a_host_refused_for_revocation_is_reported_apart_from_one_refused_otherw
     assert_ne!(unnamed, revoked);
     assert_ne!(unnamed, stale);
     assert_ne!(revoked, stale);
+}
+
+/// A network whose streams take no more bytes from the connector once `frozen` is set, as a host
+/// that vanished, or holds its window shut, takes none.
+#[derive(Debug)]
+struct Freezing {
+    pipes: Pipes,
+    frozen: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl rdlt_host::Network for Freezing {
+    fn connect<'a>(
+        &'a self,
+        host: &'a str,
+        port: u16,
+    ) -> BoxFuture<'a, std::io::Result<Box<dyn rdlt_host::Stream>>> {
+        Box::pin(async move {
+            let stream = self.pipes.connect(host, port).await?;
+            let frozen = Arc::clone(&self.frozen);
+            Ok(Box::new(Frozen { stream, frozen }) as Box<dyn rdlt_host::Stream>)
+        })
+    }
+}
+
+/// A stream that reads nothing more once frozen.
+struct Frozen {
+    stream: Box<dyn rdlt_host::Stream>,
+    frozen: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AsyncRead for Frozen {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.frozen.load(Ordering::SeqCst) {
+            return Poll::Pending;
+        }
+        Pin::new(&mut self.stream).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for Frozen {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(context)
+    }
+}
+
+/// A generator of more rows than a read ever sends here, listening within `limits`, and a host
+/// placing it over a network that freezes once `frozen` is set: the read it starts, which has
+/// sent its first event.
+async fn reading(
+    limits: ListenLimits,
+    frozen: &Arc<std::sync::atomic::AtomicBool>,
+) -> (
+    Connector,
+    tokio::task::JoinHandle<rdlt_connector::Result<()>>,
+) {
+    use rdlt_connector::{Partition, PartitionId, ReadRequest, StreamName};
+    let served =
+        Served::new().with_source(source_factory::<rdlt_connector_reference::GeneratorSource>());
+    let connector = Connector::serving(served, &["host"], limits);
+    let remote = Remote::new(identity(&connector.pki.client("host")), connector.pki.ca()).network(
+        Freezing {
+            pipes: Pipes(connector.connections.clone()),
+            frozen: Arc::clone(frozen),
+        },
+    );
+    let id = ConnectorId::parse("io.rapidbyte.generator").expect("a valid id");
+    let reference = ConnectorRef::new(id).endpoint("grpcs://connector:7443");
+    let config = serde_json::json!({
+        "seed": 1,
+        "streams": [{ "name": "rows", "rows": 100_000_000, "batch_rows": 10_000 }],
+    });
+    let placed = remote.source(&reference, &config).await;
+    let source = placed.expect("the connector is placed").connector;
+    let (sink, mut feed) = rdlt_connector::partition_channel(std::num::NonZeroUsize::MIN);
+    let partition = Partition::new(PartitionId::parse("0").expect("a valid id"));
+    let stream = StreamName::new("rows").expect("a valid name");
+    let read = tokio::spawn(async move {
+        source
+            .read(ReadRequest::new(stream, partition, None), sink)
+            .await
+    });
+    feed.recv().await.expect("the read sends an event");
+    // The feed is kept, so the host keeps taking frames until it is frozen.
+    tokio::spawn(async move { while feed.recv().await.is_some() {} });
+    (connector, read)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_connection_whose_host_takes_no_bytes_is_closed_at_its_send_wait() {
+    // Shorter than HTTP/2's own keepalive patience, which a stalled write may hold off.
+    const SEND: Duration = Duration::from_secs(10);
+    let frozen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let limits = ListenLimits {
+        send: SEND,
+        ..ListenLimits::default()
+    };
+    let (connector, read) = reading(limits, &frozen).await;
+    frozen.store(true, Ordering::SeqCst);
+    let started = tokio::time::Instant::now();
+    // The connector fills the pipe, and then nothing it writes makes progress, HTTP/2's pings
+    // included. Bounded on the paused clock: a connection held for ever fails here.
+    let closed = async {
+        while connector.live.load(Ordering::SeqCst) > 0 {
+            settle(Duration::from_secs(1)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(3600), closed)
+        .await
+        .expect("the connection is closed");
+    let elapsed = started.elapsed();
+    assert!(elapsed >= SEND && elapsed < SEND * 2, "{elapsed:?}");
+    read.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stopping_connector_closes_a_connection_still_busy_at_its_drain_wait() {
+    use crate::support::connectors::SlowCommits;
+    use rdlt_connector::{CommitMeta, CommitSeq, SegmentSet};
+    const DRAIN: Duration = Duration::from_secs(120);
+    let limits = ListenLimits {
+        drain: DRAIN,
+        ..ListenLimits::default()
+    };
+    // A commit that takes a day, longer than a drain may.
+    let day = Duration::from_hours(24);
+    let served = Served::new().with_destination(SlowCommits::factory(day));
+    let connector = Connector::serving(served, &["host"], limits);
+    let id = ConnectorId::parse("io.rapidbyte.memory").expect("a valid id");
+    let reference = ConnectorRef::new(id).endpoint("grpcs://connector:7443");
+    let config = serde_json::json!({ "store": "drained" });
+    let placed = connector
+        .remote("host")
+        .destination(&reference, &config)
+        .await;
+    let destination = placed.expect("the connector is placed").connector;
+    let load_id = LoadId::from_parts(std::time::UNIX_EPOCH, 1);
+    let context = OpenContext {
+        pipeline: PipelineId::parse("drained").expect("a valid id"),
+        load_id,
+    };
+    let mut opened = destination.open(&context).await.expect("the session opens");
+    let meta = CommitMeta {
+        load_id,
+        commit_seq: CommitSeq::FIRST,
+        epoch: opened.epoch,
+        segments: SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    let committing = tokio::spawn(async move { opened.session.commit(&meta).await });
+    settle(Duration::from_secs(1)).await;
+    connector.stop.cancel();
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(3600), connector.listening)
+        .await
+        .expect("the connector stops")
+        .expect("the connector does not panic");
+    let elapsed = started.elapsed();
+    assert!(elapsed >= DRAIN && elapsed < DRAIN * 2, "{elapsed:?}");
+    committing.abort();
 }
