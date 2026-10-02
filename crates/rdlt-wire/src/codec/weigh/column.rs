@@ -25,30 +25,8 @@ pub(super) struct Counts {
 }
 
 /// Finds what item `index` of a column names: where its bytes or items begin, the items of a
-/// list view, the item of a union, the run of a run-end column, the value of a dictionary key.
+/// list view, the item of a union, the run of a run-end column.
 pub(super) type Named<T> = Box<dyn Fn(usize) -> T + Send + Sync>;
-
-/// What each value of a dictionary or of a run-end column takes once the keys and runs in it
-/// are replaced by the values they name, in bits: found once, when a row first names it.
-#[derive(Default)]
-pub(super) struct Expanded(Vec<u64>);
-
-impl Expanded {
-    /// What value `index` takes, found by `find` unless it was found before.
-    pub(super) fn of(&mut self, index: usize, find: impl FnOnce() -> u64) -> u64 {
-        if self.0.len() <= index {
-            self.0.resize(index.saturating_add(1), u64::MAX);
-        }
-        match self.0.get_mut(index) {
-            Some(known) if *known != u64::MAX => *known,
-            Some(unknown) => {
-                *unknown = find();
-                *unknown
-            }
-            None => find(),
-        }
-    }
-}
 
 /// A column as its rows are weighed.
 pub(super) enum Column {
@@ -88,14 +66,13 @@ pub(super) enum Column {
         reach: Named<(usize, usize)>,
         place: usize,
         values: Box<Column>,
-        expanded: Expanded,
     },
-    /// Dictionary columns: keys of `bits` bits each, and the value a key that is not null names.
+    /// Dictionary columns: keys of `bits` bits each, and their `length` values, which are in a
+    /// frame of their own.
     Keyed {
         bits: u64,
-        key: Named<Option<usize>>,
+        length: usize,
         values: Box<Column>,
-        expanded: Expanded,
     },
 }
 

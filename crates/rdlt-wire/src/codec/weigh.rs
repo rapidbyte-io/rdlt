@@ -1,6 +1,5 @@
 //! Weighs the rows of a batch without copying it: what they add to a frame holding only what
-//! its rows name, and what they take once their dictionary keys and runs are replaced by the
-//! values they name.
+//! its rows name.
 
 mod build;
 mod column;
@@ -28,20 +27,12 @@ pub struct Weight {
     /// Bits: the buffers such a frame holds for the rows, before the padding of each buffer and
     /// the frame's header: a dictionary column's keys, a run's value once for the run.
     pub frame_bits: u64,
-    /// Bits: the rows' values once every dictionary key and every run is replaced by the value
-    /// it names, a value named by several rows counted for each.
-    pub expanded_bits: u64,
 }
 
 impl Weight {
     /// Bytes: [`Weight::frame_bits`], rounded up.
     pub fn frame_bytes(&self) -> u64 {
         self.frame_bits.div_ceil(8)
-    }
-
-    /// Bytes: [`Weight::expanded_bits`], rounded up.
-    pub fn expanded_bytes(&self) -> u64 {
-        self.expanded_bits.div_ceil(8)
     }
 }
 
@@ -50,7 +41,6 @@ impl AddAssign for Weight {
         self.values = self.values.saturating_add(other.values);
         self.view_bytes = self.view_bytes.saturating_add(other.view_bytes);
         self.frame_bits = self.frame_bits.saturating_add(other.frame_bits);
-        self.expanded_bits = self.expanded_bits.saturating_add(other.expanded_bits);
     }
 }
 
@@ -61,13 +51,13 @@ struct State {
     runs: Vec<Option<usize>>,
     /// The values beyond which a stretch of rows is weighed no further.
     most: u64,
-    /// How many columns, rows, runs and keys were looked at, for tests of what weighing costs.
+    /// How many columns, rows and runs were looked at, for tests of what weighing costs.
     #[cfg(test)]
     visits: u64,
 }
 
 impl State {
-    /// Counts one column, row, run or key looked at.
+    /// Counts one column, row or run looked at.
     #[cfg_attr(
         not(test),
         expect(clippy::unused_self, reason = "the count is kept for tests alone")
@@ -93,9 +83,10 @@ impl State {
 /// - Rows of one piece are weighed in order, since a run-end column's run is weighed with the
 ///   first row of the piece that names it.
 /// - Weighing is linear in the rows and the items they name. A stretch of fixed-width values,
-///   of bytes by offsets, or of structs and lists of those is weighed by arithmetic, however
-///   long it is. What a dictionary value or a run takes expanded is found once, when a row
-///   first names it, and kept: eight bytes for each such value.
+///   of bytes by offsets, of dictionary keys, or of structs and lists of those is weighed by
+///   arithmetic, however long it is.
+/// - A dictionary's values are in a frame of their own and in no row's weight:
+///   [`Weigher::dictionaries`] weighs each.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -174,10 +165,21 @@ impl Weigher {
     pub fn weigh_rows(&mut self, rows: Range<usize>) -> Weight {
         let mut weight = Weight::default();
         let end = rows.end.min(self.rows);
-        for column in &mut self.columns {
-            column.span(rows.start, end, true, &mut self.state, &mut weight);
+        for column in &self.columns {
+            column.span(rows.start, end, &mut self.state, &mut weight);
         }
         weight
+    }
+
+    /// What the values of each dictionary in the batch weigh as the frame of their own they go
+    /// in, a dictionary among another's values too; this begins a piece anew.
+    pub fn dictionaries(&mut self) -> Vec<Weight> {
+        let mut weights = Vec::new();
+        for column in &self.columns {
+            column.dictionaries(&mut self.state, &mut weights);
+        }
+        self.begin();
+        weights
     }
 
     /// Remembers which runs the piece begun has weighed, for [`Weigher::rewind`].
@@ -190,7 +192,7 @@ impl Weigher {
         self.state.runs.clone_from(&self.marked);
     }
 
-    /// How many columns, rows, runs and keys weighing has looked at.
+    /// How many columns, rows and runs weighing has looked at.
     #[cfg(test)]
     pub(super) fn visits(&self) -> u64 {
         self.state.visits
