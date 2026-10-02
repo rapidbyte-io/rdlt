@@ -98,7 +98,8 @@ impl Binary {
             directories_private(dir)?;
             // What is absent is looked for in the next directory, and so is a link, which is
             // not followed.
-            let named = rustix::fs::openat(&opened, name, OPEN | OFlags::NOFOLLOW, Mode::empty());
+            let unfollowed = OPEN.union(OFlags::NOFOLLOW);
+            let named = rustix::fs::openat(&opened, name, unfollowed, Mode::empty());
             if let Ok(fd) = named {
                 match Self::checked(File::from(fd), dir.join(name)) {
                     Err(Unfit::Absent(_)) => {}

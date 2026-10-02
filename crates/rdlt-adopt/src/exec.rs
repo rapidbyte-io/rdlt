@@ -57,7 +57,7 @@ pub fn inheriting_only(command: &mut Command, given: &[RawFd], marking: Marking)
     // allocate nothing, as is all that matters there; it reads `kept`, allocated before, and
     // closes nothing, so no descriptor the standard library uses in the child is lost.
     unsafe {
-        command.pre_exec(move || mark_except(&kept, marking, marked_at_once));
+        command.pre_exec(move || mark_except(&kept, marking, AT_ONCE));
     }
 }
 
@@ -70,7 +70,7 @@ pub fn marks_at_once() -> bool {
         // Opened close-on-exec, as the standard library opens a file: marking it changes nothing.
         std::fs::File::open("/dev/null").is_ok_and(|file| {
             let fd = file.as_raw_fd();
-            marked_at_once(fd, fd)
+            AT_ONCE(fd, fd)
         })
     })
 }
@@ -140,11 +140,13 @@ fn marked_at_once(first: RawFd, last: RawFd) -> bool {
     marked == 0
 }
 
+/// What marks a range of descriptors close-on-exec in one call, and whether it did.
+#[cfg(target_os = "linux")]
+const AT_ONCE: fn(RawFd, RawFd) -> bool = marked_at_once;
+
 /// This platform marks no range at once.
 #[cfg(not(target_os = "linux"))]
-fn marked_at_once(_first: RawFd, _last: RawFd) -> bool {
-    false
-}
+const AT_ONCE: fn(RawFd, RawFd) -> bool = |_, _| false;
 
 /// Marks each descriptor from `first` to `last` close-on-exec, below the process's soft limit
 /// and [`ONE_BY_ONE_CAP`].
@@ -171,7 +173,7 @@ fn marked_one_by_one(first: RawFd, last: RawFd) {
         // number that names no descriptor fails, and is passed over.
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFD);
-            if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+            if flags >= 0 {
                 libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
             }
         }

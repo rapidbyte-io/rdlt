@@ -153,6 +153,12 @@ fn the_loop_marks_nothing_from_its_cap_up() {
     let at = beyond.as_raw_fd();
     marked_one_by_one(at, at);
     assert!(!close_on_exec(&beyond), "{at} is above the cap");
+    // A descriptor marked already stays marked.
+    let marked = std::fs::File::open("/dev/null").expect("it opens");
+    let fd = marked.as_raw_fd();
+    marked_one_by_one(fd, fd);
+    let flags = nix::fcntl::fcntl(&marked, nix::fcntl::FcntlArg::F_GETFD).expect("it is open");
+    assert_eq!(flags, libc::FD_CLOEXEC);
     // Below the cap, a descriptor above the lowest common limit is marked too.
     for at in [40, 5000] {
         let within = inheritable_within_limit(at).expect("within the limit");

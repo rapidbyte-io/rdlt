@@ -830,6 +830,26 @@ async fn a_configuration_that_is_no_json_document_is_refused_without_being_quote
     }
 }
 
+#[tokio::test]
+async fn a_configuration_is_read_up_to_its_bound_and_refused_as_too_large_beyond() {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let args = [binary, "--trusted", "--config-file", "-"];
+    let bound = rdlt_host::limits::CONFIG_BYTES;
+    // An object of one text field, `{"pad":"…"}`, of `bytes` in all.
+    let padded = |bytes: usize| format!(r#"{{"pad":"{}"}}"#, "x".repeat(bytes - 10));
+    let within = certify_given(&args, &padded(bound), &[]).await;
+    let said = String::from_utf8_lossy(&within.stderr);
+    assert!(!said.contains("standard input"), "{said}");
+    let beyond = certify_given(&args, &padded(bound + 1), &[]).await;
+    assert_eq!(code(&beyond), Some(64));
+    let said = String::from_utf8_lossy(&beyond.stderr);
+    assert!(
+        said.contains(&format!("larger than {bound} bytes")),
+        "{said}"
+    );
+}
+
 /// A canary no output may hold, and the reports of a destination certified with it, as text
 /// and as JSON: the SQLite destination is told a path it cannot open, and says so.
 async fn reports_with_a_secret(
