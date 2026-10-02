@@ -12,6 +12,8 @@ use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_TEXT_BYTES};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 use serde::Serialize;
 
+use crate::budget::Exhausted;
+use crate::limits::BUDGET_WAIT_EXCEEDED;
 use crate::scope::ScopeError;
 
 /// What kind of failure an [`Error`] reports.
@@ -35,6 +37,8 @@ pub enum ErrorKind {
     Internal,
     /// The write-ahead log could not be written or read.
     Wal,
+    /// The memory budget had no room for what the run holds, for as long as a request waits.
+    Memory,
 }
 
 /// Which connector a [`ConnectorError`] came from.
@@ -90,6 +94,16 @@ impl Error {
         Self::new(ErrorKind::Wal, context)
     }
 
+    /// The error for a request that waited on the memory budget until its deadline, `exhausted`
+    /// saying what held the budget: retryable, since another attempt holds other bytes.
+    pub(crate) fn memory(exhausted: Exhausted) -> Self {
+        let mut memory = Self::new(ErrorKind::Memory, exhausted.to_string());
+        memory.code = Some(Arc::from(BUDGET_WAIT_EXCEEDED));
+        memory.retryable = true;
+        memory.source = Some(Box::new(exhausted));
+        memory
+    }
+
     /// The error for `error`, from the write-ahead log's store: retryable where the operation may
     /// succeed if tried again.
     pub(crate) fn from_wal(error: std::io::Error) -> Self {
@@ -123,6 +137,8 @@ impl Error {
             (K::Config | K::Auth | K::Unsupported, _) => ErrorKind::Config,
             (K::Fenced, _) => ErrorKind::Fenced,
             (K::Stopped, _) => ErrorKind::Cancelled,
+            // A read fails with what its admission refused an event with.
+            (_, Side::Source) if error.code() == Some(BUDGET_WAIT_EXCEEDED) => ErrorKind::Memory,
             (_, Side::Source) => ErrorKind::Source,
             (_, Side::Destination) => ErrorKind::Destination,
         };
