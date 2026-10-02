@@ -27,6 +27,7 @@ use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares};
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
+use crate::json::{self, NotJson};
 use crate::limits::ROW_EXCEEDS_BUDGET;
 use crate::shred::{self, ShredError};
 use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
@@ -41,6 +42,7 @@ pub(super) async fn write_flushed(
     let permits = flushed.permits;
     let units = match flushed.unit {
         Unit::Arrow(batches) => {
+            check_json(job, context, &batches).await?;
             let held = Held::of(permits, &batches);
             vec![(batches, held)]
         }
@@ -64,6 +66,38 @@ pub(super) async fn write_flushed(
     };
     write(job, context, open, units).await
 }
+
+/// Checks, on the compute pool, that every value the columns of JSON of `batches` hold is JSON
+/// nested within the limit: one that is not fails the write before anything reads it.
+async fn check_json(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    batches: &[RecordBatch],
+) -> Result<(), Error> {
+    if !batches
+        .first()
+        .is_some_and(|batch| json::holds_json(&batch.schema()))
+    {
+        return Ok(());
+    }
+    let batches = batches.to_vec();
+    let check = move || batches.iter().try_for_each(json::check_batch);
+    let checked = run_all(context.env.compute(), [check]).await.pop();
+    let Some(Err(NotJson { column, error })) = checked else {
+        return Ok(());
+    };
+    let message = format!(
+        "stream {}: column {} of a push holds a value that is not JSON: {error}",
+        job.stream,
+        rdlt_connector::text::shown(&column, MAX_NAME_SHOWN),
+    );
+    Err(Error::new(ErrorKind::Source, message)
+        .with_code(error.code())
+        .with_stream(&job.stream))
+}
+
+/// Bytes: the most of a column's name an error quotes.
+const MAX_NAME_SHOWN: usize = 256;
 
 /// Reserves `bytes` for the lowering this partition does next, all of them in one request, so
 /// it waits only for what other lowerings hold; the wait ends when the attempt is cancelled, and
