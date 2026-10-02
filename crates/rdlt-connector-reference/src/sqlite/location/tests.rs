@@ -236,11 +236,15 @@ fn another_process_writes_the_database_it_is_given() {
 /// Whether another process takes the write lock of the database at `path` now and writes it.
 fn written_by_another_process(path: &Path) -> bool {
     let test = "sqlite::location::tests::another_process_writes_the_database_it_is_given";
-    let ran = std::process::Command::new(std::env::current_exe().expect("this test's binary"))
+    let mut command = std::process::Command::new(std::env::current_exe().expect("this binary"));
+    command
         .args(["--exact", test, "--ignored", "--test-threads", "1"])
         .env(WRITTEN, path)
-        .output()
-        .expect("the test binary runs");
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Ended with this test's process, however that ends.
+    let running = rdlt_testkit::process::guarded(&mut command).expect("the test binary runs");
+    let ran = running.wait_with_output().expect("it ends");
     let said = String::from_utf8_lossy(&ran.stdout);
     assert!(said.contains("running 1 test"), "the writer ran: {said}");
     ran.status.success()
