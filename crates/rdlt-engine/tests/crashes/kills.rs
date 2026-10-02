@@ -414,3 +414,14 @@ fn what_a_test_of_the_matrix_started_is_gone_once_the_test_is_killed() {
     let left = rdlt_testkit::process::outliving(test, Duration::from_secs(30));
     assert_eq!(left, Vec::<u32>::new(), "processes outlived their test");
 }
+
+#[test]
+fn the_harness_turns_its_core_dumps_off_before_it_runs_anything() {
+    let scenario = scenarios::forgetting_log();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let config = scenario.write_spawned(dir.path(), &json!({}));
+    let (status, lines) = Watched::spawn(&config).ended();
+    assert!(status.success(), "a clean run ended {status}");
+    // Said first: nothing the run does can abort before it holds.
+    assert_eq!(lines.first().map(String::as_str), Some("core dumps off"));
+}

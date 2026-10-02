@@ -2129,6 +2129,7 @@ dependencies = [
  "rdlt-host",
  "rdlt-testkit",
  "rdlt-wire",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
