@@ -13,8 +13,8 @@ async fn a_pipeline_loads_through_connectors_served_over_sockets() {
         .map(|id| serde_json::json!({ "id": id, "name": format!("row {id}") }))
         .collect();
     let config = serde_json::json!({ "streams": { "items": rows }, "page_size": 20 });
-    let source = memory_source(config, Options::default()).await;
-    let destination = memory_destination("served_items", Options::default()).await;
+    let source = memory_source(config, &Options::default()).await;
+    let destination = memory_destination("served_items", &Options::default()).await;
     let stream = StreamPlan::new(StreamName::new("items").expect("a valid stream name"));
     let plan = PipelinePlan::new(PipelineId::parse("served").unwrap(), [stream]).unwrap();
     let outcome = engine(50)
@@ -65,7 +65,7 @@ fn ticks_plan(name: &str) -> PipelinePlan {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_source_that_checkpoints_on_demand_answers_barriers_sent_across_the_wire() {
-    let destination = memory_destination("served_ticks", Options::default()).await;
+    let destination = memory_destination("served_ticks", &Options::default()).await;
     let outcome = engine(100)
         .run(
             ticks_plan("ticks"),
@@ -94,7 +94,7 @@ async fn a_source_that_checkpoints_on_demand_answers_barriers_sent_across_the_wi
 
 #[tokio::test(flavor = "multi_thread")]
 async fn stopping_a_run_at_once_ends_a_read_served_without_end() {
-    let destination = memory_destination("stopped_ticks", Options::default()).await;
+    let destination = memory_destination("stopped_ticks", &Options::default()).await;
     let run = engine(100).run(
         ticks_plan("stopped"),
         Arc::new(ticks(None, 1).await),

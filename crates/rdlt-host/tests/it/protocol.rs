@@ -346,7 +346,7 @@ async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
 async fn slow_commit_within_deadline_succeeds() {
     // Liveness and work deadlines differ (§12.6): a commit much longer than the heartbeat's
     // patience still succeeds while the connector answers heartbeats.
-    let source = crate::support::memory_source(rows(30), quick()).await;
+    let source = crate::support::memory_source(rows(30), &quick()).await;
     let io =
         served(Served::new().with_destination(SlowCommits::factory(Duration::from_millis(400))));
     let config = serde_json::json!({ "store": "slow_commit" });
@@ -425,7 +425,7 @@ async fn a_served_read_spends_its_credit_frame_by_frame_until_none_remains() {
 
 #[tokio::test]
 async fn a_connectors_catalog_crosses_the_wire() {
-    let source = crate::support::memory_source(rows(3), Options::default()).await;
+    let source = crate::support::memory_source(rows(3), &Options::default()).await;
     let catalog = source.discover().await.unwrap();
     let names: Vec<String> = catalog.iter().map(|spec| spec.name().to_string()).collect();
     assert_eq!(names, ["items"]);

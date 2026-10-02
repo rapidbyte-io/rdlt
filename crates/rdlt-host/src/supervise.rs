@@ -133,7 +133,7 @@ impl Supervisor {
         start: Start,
         role: Role,
         configured: Configured,
-        options: Options,
+        options: &Options,
         gate: &Gate<'_>,
     ) -> Result<Self, Spawned> {
         let admit = |spec: &v1::ConnectorSpec| gate.admit(spec).map_err(Spawned::Refused);
@@ -145,7 +145,7 @@ impl Supervisor {
             start,
             role,
             configured,
-            options,
+            options: *options,
             running: Mutex::new(running),
             redactions,
             checked,
@@ -173,7 +173,7 @@ impl Supervisor {
                 start,
                 self.role,
                 configured,
-                self.options,
+                &self.options,
                 &admit,
                 &self.redactions,
             );
@@ -294,7 +294,7 @@ async fn begin(
     start: &Start,
     role: Role,
     configured: &Configured,
-    options: Options,
+    options: &Options,
     admit: &Admit<'_>,
     redactions: &Redactions,
 ) -> Result<Running, Spawned> {
@@ -331,7 +331,7 @@ async fn configured<IO>(
     role: Role,
     configured: &Configured,
     redactions: &Redactions,
-    options: Options,
+    options: &Options,
     admit: &Admit<'_>,
 ) -> Result<Arc<Connection>, Spawned>
 where
@@ -339,7 +339,7 @@ where
 {
     let scrubbed =
         |error: ConnectorError| Spawned::Connect(error.received(&|text| redactions.scrubbed(text)));
-    let handshaken = Connection::handshake(io, role, options)
+    let handshaken = Connection::handshake(io, role, *options)
         .await
         .map_err(scrubbed)?;
     admit(handshaken.spec())?;
@@ -356,7 +356,7 @@ async fn spawn(
     launch: &Launch,
     role: Role,
     configured: &Configured,
-    options: Options,
+    options: &Options,
     admit: &Admit<'_>,
     redactions: &Redactions,
 ) -> Result<Running, Spawned> {

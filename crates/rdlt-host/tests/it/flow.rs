@@ -115,9 +115,9 @@ impl ReadStream<Blobs> for BlobStream {
     }
 }
 
-async fn blobs(config: serde_json::Value, options: Options) -> RemoteSource {
+async fn blobs(config: serde_json::Value, options: &Options) -> RemoteSource {
     let io = served(Served::new().with_source(source_factory::<Blobs>()));
-    let connection = Connection::connect(io, Role::Source, &config, options)
+    let connection = Connection::connect(io, Role::Source, &config, *options)
         .await
         .expect("the source handshakes");
     RemoteSource::new(connection)
@@ -125,7 +125,7 @@ async fn blobs(config: serde_json::Value, options: Options) -> RemoteSource {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn backpressured_partitions_do_not_lose_a_live_source() {
-    let source = Arc::new(blobs(serde_json::json!({}), quick()).await);
+    let source = Arc::new(blobs(serde_json::json!({}), &quick()).await);
     let mut feeds = Vec::new();
     for _ in 0..8 {
         // The engine takes one event of each read and no more, as when its lanes are full.
@@ -151,7 +151,11 @@ async fn backpressured_partitions_do_not_lose_a_live_source() {
 async fn an_error_at_the_control_string_limit_keeps_its_kind_and_code() {
     let limit = usize::try_from(rdlt_wire::limits::CONTROL_STRING_BYTES).expect("fits");
     for length in [limit, 4 * limit] {
-        let source = blobs(serde_json::json!({ "message": length }), Options::default()).await;
+        let source = blobs(
+            serde_json::json!({ "message": length }),
+            &Options::default(),
+        )
+        .await;
         let error = source.check().await.unwrap_err();
         assert_eq!(
             (error.kind(), error.code()),
@@ -189,11 +193,11 @@ async fn writer(
     served: Served,
     limits: Limits,
     store: &str,
-    options: Options,
+    options: &Options,
 ) -> Box<dyn DestinationWriter> {
     let io = served_within(served, limits);
     let config = serde_json::json!({ "store": store });
-    let connection = Connection::connect(io, Role::Destination, &config, options)
+    let connection = Connection::connect(io, Role::Destination, &config, *options)
         .await
         .expect("the destination handshakes");
     let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
@@ -226,7 +230,7 @@ async fn write_until_failed(
 #[tokio::test]
 async fn a_failed_write_keeps_its_error_through_the_remote_writer() {
     let served = Served::new().with_destination(Writes::factory(Writing::Fails));
-    let mut writer = writer(served, Limits::default(), "flow_fails", Options::default()).await;
+    let mut writer = writer(served, Limits::default(), "flow_fails", &Options::default()).await;
     let error = write_until_failed(writer.as_mut(), &ids(10), 200).await;
     assert_eq!(
         (error.kind(), error.to_string()),
@@ -237,7 +241,13 @@ async fn a_failed_write_keeps_its_error_through_the_remote_writer() {
 #[tokio::test]
 async fn a_writer_that_panics_fails_the_write_with_an_internal_error() {
     let served = Served::new().with_destination(Writes::factory(Writing::Panics));
-    let mut writer = writer(served, Limits::default(), "flow_panics", Options::default()).await;
+    let mut writer = writer(
+        served,
+        Limits::default(),
+        "flow_panics",
+        &Options::default(),
+    )
+    .await;
     let error = write_until_failed(writer.as_mut(), &ids(10), 200).await;
     // The panic fails the write as the connector's error, not as a write it ended out of turn.
     assert_eq!(
@@ -257,7 +267,7 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
         },
         ..quick()
     };
-    let mut writer = writer(served, Limits::default(), "flow_stalls", options).await;
+    let mut writer = writer(served, Limits::default(), "flow_stalls", &options).await;
     // Batches of about 160 KB, so the transport's windows fill before the connector's credit.
     let written = tokio::time::timeout(
         Duration::from_secs(10),
@@ -279,7 +289,7 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         },
         ..Options::default()
     };
-    let mut writer = writer(served, Limits::default(), "flow_gated", options).await;
+    let mut writer = writer(served, Limits::default(), "flow_gated", &options).await;
     // One frame beyond the connector's credit, which its writer keeps while it waits.
     writer
         .write(SegmentId(1), ids(600_000))
@@ -315,7 +325,7 @@ async fn a_row_beyond_the_connectors_frame_limit_is_refused_typed() {
         ..Limits::default()
     };
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
-    let mut writer = writer(served, limits, "flow_limit", Options::default()).await;
+    let mut writer = writer(served, limits, "flow_limit", &Options::default()).await;
     // Rows that fit a frame go, as many frames as they need; a row that fits none is refused
     // where the cut reaches it, and its caller must not commit the segment it was written to.
     let small: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 500_000]));
@@ -357,7 +367,7 @@ async fn a_read_frame_beyond_the_hosts_limit_is_refused_typed() {
         },
         ..Options::default()
     };
-    let source = blobs(serde_json::json!({ "bytes": 5 << 20 }), options).await;
+    let source = blobs(serde_json::json!({ "bytes": 5 << 20 }), &options).await;
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
     let request = ReadRequest::new(
         StreamName::new("blobs").expect("a valid stream name"),
@@ -384,7 +394,7 @@ async fn a_row_beyond_the_hosts_frame_limit_ends_the_read_after_the_rows_before_
     };
     let source = blobs(
         serde_json::json!({ "bytes": 5 << 20, "ahead": 100 }),
-        options,
+        &options,
     )
     .await;
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
@@ -422,7 +432,7 @@ async fn a_batch_is_cut_to_the_hosts_own_frames_for_a_connector_that_takes_large
         ..Limits::default()
     };
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
-    let mut writer = writer(served, limits, "flow_larger", Options::default()).await;
+    let mut writer = writer(served, limits, "flow_larger", &Options::default()).await;
     let rows: ArrayRef = Arc::new(StringArray::from(vec!["b".repeat(1 << 20); 80]));
     let batch = RecordBatch::try_from_iter([("b", rows)]).expect("a valid batch");
     writer
@@ -445,7 +455,7 @@ async fn a_batch_is_cut_to_the_connectors_own_frames_for_a_host_that_takes_large
         ..Options::default()
     };
     let config = serde_json::json!({ "bytes": 5 << 20, "ahead": 19, "alike": true });
-    let source = blobs(config, options).await;
+    let source = blobs(config, &options).await;
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(4).expect("not zero"));
     let request = ReadRequest::new(
         StreamName::new("blobs").expect("a valid stream name"),

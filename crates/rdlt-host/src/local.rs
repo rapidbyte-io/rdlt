@@ -386,7 +386,7 @@ impl Local {
             secrets: Arc::clone(&self.secrets),
         };
         let supervisor =
-            Supervisor::start(Start::Spawn(launch), role, configured, self.options, &gate)
+            Supervisor::start(Start::Spawn(launch), role, configured, &self.options, &gate)
                 .await
                 .map_err(|spawned| match spawned {
                     Spawned::Io(source) | Spawned::Unreachable(source) | Spawned::Tls(source) => {
