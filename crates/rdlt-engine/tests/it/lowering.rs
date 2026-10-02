@@ -23,7 +23,7 @@ use crate::support::destinations::{Gate, gated, null, stalling};
 use crate::support::making::{Step, Steps, making};
 use crate::support::{commit_every, engine, pipeline, stream};
 
-const BUDGET: u64 = 16 << 20;
+const BUDGET: u64 = 34 << 20;
 
 fn batch(column: ArrayRef) -> RecordBatch {
     RecordBatch::try_from_iter([("column", column)]).expect("one column makes a batch")
@@ -97,8 +97,9 @@ async fn control_characters_into_a_column_of_json_load_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn rows_each_of_most_of_what_a_request_may_take_are_lowered_one_at_a_time() {
-    // Sixty-four keys of one string of three mebibytes, where a request for lowering may take
-    // four: each row is a piece of its own, and together they are twelve times the budget.
+    // Sixty-four keys of one string of three mebibytes, where a frame may hold four and a request
+    // for lowering take eight: each row is a piece of its own, and together they are six times
+    // the budget.
     let steps: Steps = Arc::new(|step| {
         let long = "x".repeat(3 << 20);
         let keyed = DictionaryArray::<Int32Type>::try_new(
@@ -111,17 +112,29 @@ async fn rows_each_of_most_of_what_a_request_may_take_are_lowered_one_at_a_time(
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_row_that_takes_more_than_a_request_may_to_lower_fails_the_run_and_is_never_lowered() {
-    // One string of five mebibytes, more than the four a request for lowering may take.
-    let steps: Steps = Arc::new(|step| {
-        (step < 1).then(|| {
-            let long = "x".repeat(5 << 20);
-            let keyed = DictionaryArray::<Int32Type>::try_new(
-                Int32Array::from(vec![0; 4]),
-                Arc::new(StringArray::from(vec![long.as_str()])),
-            );
-            Step::Batch(batch(Arc::new(keyed.expect("a dictionary"))))
-        })
+async fn a_row_its_table_widens_beyond_what_a_request_may_take_fails_the_run_unlowered() {
+    // One row makes the column a list of 256-bit decimals; a row of four million small integers
+    // in a list, within a frame, then takes thirty-three times its bytes lowered: more than a
+    // request for lowering may take, which a frame bounds only for a row lowered as it arrives.
+    let lists = |values: ArrayRef, rows: usize| -> ArrayRef {
+        let item = Arc::new(Field::new("item", values.data_type().clone(), true));
+        let offsets = arrow_buffer::OffsetBuffer::from_lengths([values.len()]);
+        assert_eq!(rows, 1);
+        Arc::new(arrow_array::ListArray::new(item, offsets, values, None))
+    };
+    let steps: Steps = Arc::new(move |step| match step {
+        0 => {
+            let wide = Decimal256Array::from(vec![i256::from_i128(1)])
+                .with_precision_and_scale(76, 0)
+                .expect("a decimal");
+            Some(Step::Batch(batch(lists(Arc::new(wide), 1))))
+        }
+        1 => Some(Step::Checkpoint(8)),
+        2 => {
+            let small = Int8Array::from(vec![1_i8; 4_000_000]);
+            Some(Step::Batch(batch(lists(Arc::new(small), 1))))
+        }
+        _ => None,
     });
     let (peak, outcome) = run("lowering_refused", making("lowering_refused", steps).await).await;
     let error = outcome.error.expect("the run fails");
@@ -129,19 +142,21 @@ async fn a_row_that_takes_more_than_a_request_may_to_lower_fails_the_run_and_is_
         (error.kind(), error.code()),
         (ErrorKind::Source, Some("row_exceeds_budget"))
     );
-    assert!(error.to_string().contains("4194304"), "{error}");
-    // The source's own string and the batch's: nothing was lowered beside them.
-    assert!(peak < (2 * 5 + 2) << 20, "the heap held {peak} bytes");
+    let request = (BUDGET / 4).to_string();
+    assert!(error.to_string().contains(&request), "{error}");
+    // The source's own integers and what admitted them: nothing was lowered beside them.
+    assert!(peak < 32 << 20, "the heap held {peak} bytes");
     assert!(outcome.report.peak_memory < 6 << 20);
 }
 
 #[tokio::test(start_paused = true)]
 async fn batches_each_holding_a_schema_of_their_own_load_within_the_budget() {
-    // Sixteen columns named in 64 KiB each: a megabyte of schema, built anew each push.
+    // Sixteen columns named in three kilobytes each, as long a schema as a source is told it may
+    // send: forty-eight kilobytes of schema, built anew each push.
     let steps: Steps = Arc::new(|step| {
         let fields: Vec<Field> = (0..16)
             .map(|index| {
-                let name = format!("{index:02}{}", "n".repeat((64 << 10) - 2));
+                let name = format!("{index:02}{}", "n".repeat(3_000 - 2));
                 Field::new(name, DataType::Int8, true)
             })
             .collect();
@@ -195,9 +210,9 @@ async fn a_list_view_over_a_long_child_of_no_bytes_loads_within_the_budget() {
 
 /// A source whose every read keeps `bytes` beside its events for as long as it lasts, as a
 /// remote read keeps its decoder's dictionaries.
-struct Keeping {
-    source: Arc<dyn Source>,
-    bytes: u64,
+pub(crate) struct Keeping {
+    pub(crate) source: Arc<dyn Source>,
+    pub(crate) bytes: u64,
 }
 
 impl Source for Keeping {
@@ -282,28 +297,33 @@ async fn a_read_keeping_more_than_its_part_of_the_budget_fails_at_once_naming_th
     );
     assert!(!error.is_retryable());
     let said = format!("{:?}", error.report());
-    assert!(
-        said.contains("read kept bytes is 262145, over the limit of 262144"),
-        "{said}"
+    let expected = format!(
+        "read kept bytes is {}, over the limit of {SHARE}",
+        SHARE + 1
     );
+    assert!(said.contains(&expected), "{said}");
     assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
 }
 
 #[tokio::test(start_paused = true)]
 async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_held_the_budget() {
     const WAIT: Duration = Duration::from_secs(120);
-    // The destination never answers the first commit, while the source checkpoints on: cursors
-    // of a quarter of what cursors may take wait for a commit until the fifth finds no room.
+    // The destination never answers the first commit, while the source of one partition
+    // checkpoints on: cursors of a quarter of what cursors may take, as large as it is told it
+    // may send, wait for a commit until the fifth finds no room.
     let gate = Gate::closed();
     let steps: Steps = Arc::new(|step| match step {
         step if step < 12 && step.is_multiple_of(2) => {
             Some(Step::Batch(batch(Arc::new(Int64Array::from(vec![1_i64])))))
         }
-        step if step < 12 => Some(Step::Checkpoint(64 << 10)),
+        step if step < 12 => Some(Step::Checkpoint(
+            usize::try_from(BUDGET / 64 / 4).expect("a size"),
+        )),
         _ => None,
     });
     let config = commit_every(1)
         .memory(BUDGET)
+        .partitions(1)
         .memory_wait(WAIT)
         .retry(RetryPolicy::default().max_attempts(1))
         .lanes(1);
@@ -334,10 +354,8 @@ async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_h
     );
     let said = format!("{:?}", error.report());
     assert!(said.contains("for a cursor waited 120s"), "{said}");
-    assert!(
-        said.contains("cursors waiting for a commit 262144"),
-        "{said}"
-    );
+    let full = format!("cursors waiting for a commit {}", BUDGET / 64);
+    assert!(said.contains(&full), "{said}");
     let elapsed = started.elapsed();
     assert!(
         elapsed >= WAIT && elapsed < WAIT + Duration::from_secs(30),

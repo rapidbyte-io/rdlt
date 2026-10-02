@@ -54,7 +54,11 @@ fn table(index: u32) -> Command {
         table,
         schema,
     }));
-    Command::Table { index, frame }
+    Command::Table {
+        index,
+        frame,
+        held: Box::new(()),
+    }
 }
 
 fn batch(segment: u64, table: u32) -> Command {

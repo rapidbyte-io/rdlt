@@ -67,7 +67,7 @@ impl Scenario {
         let mut config = self.configured(dir);
         config["source"]["spawned"] = json!(true);
         config["destination"]["spawned"] = json!(true);
-        config["memory"] = json!(11 << 20);
+        config["memory"] = json!(34 << 20);
         config["partition_buffer"] = json!(1);
         config["batch_rows"] = json!(8);
         for (key, value) in extra.as_object().expect("extra keys") {

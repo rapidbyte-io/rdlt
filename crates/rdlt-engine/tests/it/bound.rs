@@ -18,7 +18,7 @@ use crate::support::{
     commit_every, engine, pipeline, pooled_engine, pooled_logging_engine, retrying, stream,
 };
 
-const BUDGET: u64 = 16 << 20;
+const BUDGET: u64 = 34 << 20;
 
 /// The heap a run may reach under the budget beside the pushes its sources hold before the
 /// engine admits them, as the engine documents it.

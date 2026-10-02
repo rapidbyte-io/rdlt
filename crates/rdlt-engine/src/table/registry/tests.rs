@@ -664,3 +664,47 @@ async fn a_rounding_batch_planned_beside_floats_leaves_no_column_exact_whichever
         assert!(floated.view().model.columns.len() > 1, "{rounding_first}");
     }
 }
+
+#[tokio::test]
+async fn a_tables_records_are_reserved_at_its_change_until_a_commit_records_them() {
+    let (tables, _) = tables(None, Model::default());
+    let budget = crate::budget::MemoryBudget::new(64 << 20);
+    tables.charge(budget.clone(), tokio_util::sync::CancellationToken::new());
+    tables
+        .fit(0, &schema(&[("id", LogicalType::Int64)]))
+        .await
+        .unwrap();
+    let first = tables.delta();
+    assert_eq!(budget.reserved(), first.prepaid);
+    assert!(budget.reserved() > 0);
+    // A wider table reserves its records in place of the narrower one's.
+    let wider = schema(&[("id", LogicalType::Int64), ("note", LogicalType::Utf8)]);
+    tables.fit(0, &wider).await.unwrap();
+    let second = tables.delta();
+    assert!(second.prepaid > first.prepaid);
+    assert_eq!(budget.reserved(), second.prepaid);
+    // A commit recording an older revision releases nothing; a commit recording the latest does.
+    tables.recorded(&first.revisions);
+    assert_eq!(budget.reserved(), second.prepaid);
+    tables.recorded(&second.revisions);
+    assert_eq!(budget.reserved(), 0);
+}
+
+#[tokio::test]
+async fn a_table_whose_records_pass_the_tables_share_is_refused_before_the_destination_sees_it() {
+    let (tables, changes) = tables(None, Model::default());
+    // A budget whose tables' share holds two hundred bytes.
+    let budget = crate::budget::MemoryBudget::new(6_400);
+    tables.charge(budget.clone(), tokio_util::sync::CancellationToken::new());
+    let error = tables
+        .fit(0, &schema(&[("id", LogicalType::Int64)]))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("table_exceeds_budget"))
+    );
+    assert!(error.to_string().contains("200"), "{error}");
+    assert!(changes.lock().is_empty());
+    assert_eq!(budget.reserved(), 0);
+}

@@ -158,6 +158,16 @@ impl MemoryBudget {
         self.request(Class::Log, bytes).await
     }
 
+    /// Reserves the `bytes` a commit will record of a table, from the tables' share: only a
+    /// commit releases them.
+    ///
+    /// # Errors
+    ///
+    /// As [`MemoryBudget::acquire`], for records larger than the share.
+    pub(crate) async fn acquire_tables(&self, bytes: u64) -> Result<Reservation, Denied> {
+        self.request(Class::Tables, bytes).await
+    }
+
     /// Reserves `bytes` a read keeps beside its events, at once.
     ///
     /// # Errors
@@ -211,6 +221,30 @@ impl MemoryBudget {
                 let exhausted = self.shared.lock().exhausted(class, bytes, waited);
                 drop(queued);
                 Err(exhausted.into())
+            }
+        }
+    }
+
+    /// Waits for `slot`, one of the places among which what reads keep is divided, for no longer
+    /// than a request waits for bytes.
+    ///
+    /// # Errors
+    ///
+    /// [`Exhausted`] for what reads keep, with the part a slot holds, once the wait reaches the
+    /// budget's deadline.
+    pub(crate) async fn read_slot<T>(&self, slot: impl Future<Output = T>) -> Result<T, Exhausted> {
+        let Some(deadline) = &self.deadline else {
+            return Ok(slot.await);
+        };
+        let began = deadline.env.instant();
+        tokio::select! {
+            biased;
+            taken = slot => Ok(taken),
+            () = deadline.env.sleep(deadline.wait) => {
+                let waited = deadline.env.instant().saturating_duration_since(began);
+                let readers = u64::try_from(self.readers).unwrap_or(u64::MAX);
+                let part = self.shares().reads / readers.max(1);
+                Err(self.shared.lock().exhausted(Class::Read, part, waited))
             }
         }
     }

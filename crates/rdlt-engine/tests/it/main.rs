@@ -34,6 +34,7 @@ mod reset;
 mod schema;
 mod signals;
 mod support;
+mod told;
 mod unbounded;
 mod wal;
 mod wal_changes;

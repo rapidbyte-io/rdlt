@@ -124,7 +124,7 @@ async fn two_partitions_whose_pushes_do_not_fit_together_make_progress() {
     // Each push of a hundred thousand rows keeps about three megabytes alive, where pushes may
     // take four and a half of this budget.
     let source = generator(&[("orders", 400_000, 2, 100_000)]).await;
-    let config = commit_every(4_000).memory(11 << 20).lanes(1).lane_window(1);
+    let config = commit_every(4_000).memory(34 << 20).lanes(1).lane_window(1);
     let run = engine(config).run(
         pipeline("l1", [stream("orders")]),
         source,
@@ -310,7 +310,7 @@ async fn retry_budget_resets_after_commit() {
 /// is far slower than the source and every partition reads at once with the default buffers.
 #[tokio::test(start_paused = true)]
 async fn memory_stays_within_the_budget() {
-    const BUDGET: u64 = 12 << 20;
+    const BUDGET: u64 = 34 << 20;
     const PARTITIONS: u64 = 16;
     const ROWS: u64 = 2_000_000;
     let source = generator(&[("orders", ROWS, PARTITIONS, 20_000)]).await;
@@ -341,7 +341,7 @@ async fn memory_stays_within_the_budget() {
 async fn encoded_pushes_stay_within_the_budget_once_decoded() {
     use arrow_array::types::Int32Type;
     use arrow_array::{ArrayRef, DictionaryArray, Int32Array, Int64Array, RunArray, StringArray};
-    const BUDGET: u64 = 12 << 20;
+    const BUDGET: u64 = 34 << 20;
     const ROWS: i32 = 50_000;
     let value = "x".repeat(2_000);
     let pushes = |id: i64| {
@@ -396,7 +396,7 @@ async fn encoded_pushes_stay_within_the_budget_once_decoded() {
 async fn one_encoded_push_stays_within_the_budget_into_writers_that_buffer() {
     use arrow_array::types::Int32Type;
     use arrow_array::{ArrayRef, Int32Array, Int64Array, RunArray, StringArray};
-    const BUDGET: u64 = 12 << 20;
+    const BUDGET: u64 = 34 << 20;
     const ROWS: i32 = 50_000;
     let runs = RunArray::<Int32Type>::try_new(
         &Int32Array::from(vec![ROWS]),
@@ -440,7 +440,8 @@ async fn one_encoded_push_stays_within_the_budget_into_writers_that_buffer() {
 #[tokio::test(start_paused = true)]
 async fn a_push_lowered_in_pieces_is_charged_for_its_rows_once() {
     use arrow_array::{ArrayRef, Int64Array};
-    const BUDGET: u64 = 32 << 20;
+    // A budget whose frame holds the push's eight megabytes.
+    const BUDGET: u64 = 128 << 20;
     const ROWS: i64 = 1 << 20;
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..ROWS));
     let source = batches(

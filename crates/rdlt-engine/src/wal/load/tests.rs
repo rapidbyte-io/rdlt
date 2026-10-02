@@ -89,7 +89,7 @@ async fn each_table_version_is_described_once_before_its_first_batch() {
         logged(&log, &budget, 1, &at(&items, 1), SegmentId(4), &ids(20))
             .await
             .expect("the batch is logged");
-        log.commit(&budget, Vec::new(), Vec::new(), &meta(&[0, 1, 2, 3, 4]))
+        log.commit(&budget, Vec::new(), Vec::new(), &meta(&[0, 1, 2, 3, 4]), 0)
             .await
             .expect("the commit is durable");
         drop(log);
@@ -158,7 +158,7 @@ async fn a_logged_load_reads_back_as_it_was_written() {
             from: None,
             state: state.clone(),
         }];
-        log.commit(&budget, sealed, Vec::new(), &meta(&[1]))
+        log.commit(&budget, sealed, Vec::new(), &meta(&[1]), 0)
             .await
             .expect("durable");
         let kinds: Vec<_> = frames(&observed).into_iter().skip(2).collect();
@@ -241,6 +241,7 @@ async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segme
                 vec![sealed_at(full), sealed_at(empty)],
                 Vec::new(),
                 &commit,
+                0,
             )
             .await
             .expect("durable");
@@ -279,7 +280,7 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
             ..sealed_at(1)
         };
         let sealing = MemoryBudget::new(1 << 20);
-        log.commit(&sealing, vec![large], Vec::new(), &meta(&[1]))
+        log.commit(&sealing, vec![large], Vec::new(), &meta(&[1]), 0)
             .await
             .expect("durable");
         let lengths: Vec<u64> = frames(&observed)
@@ -291,23 +292,49 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
             panic!("a seal and the commit: {lengths:?}");
         };
         assert!(seal > commit && seal > 10_000);
-        assert!(sealing.peak() >= seal, "{} of {seal}", sealing.peak());
-        // It was charged before it was encoded, for its cursor twice over, which is more.
-        assert!(seal < 20_000 && sealing.peak() >= 20_000, "{seal}");
+        // It was charged before it was encoded, for its cursor twice over and what a frame takes
+        // beside, which is more than the frame.
+        assert!(seal < 20_000, "{seal}");
+        assert_eq!(sealing.peak(), 2 * 10_000 + 4_096);
         assert_eq!(sealing.reserved(), 0, "released once appended");
-        // A commit of no seals is charged its own frame.
+        // A commit of no seals is charged what its frame may take, more than it takes.
         let committing = MemoryBudget::new(1 << 20);
         let mut second = meta(&[2]);
         second.commit_seq = CommitSeq::FIRST.next();
-        log.commit(&committing, Vec::new(), Vec::new(), &second)
+        log.commit(&committing, Vec::new(), Vec::new(), &second, 0)
             .await
             .expect("durable");
-        assert_eq!(committing.peak(), commit);
+        assert_eq!(committing.peak(), super::commit_bytes(&[], &second));
+        assert!(committing.peak() >= commit);
         assert_eq!(committing.reserved(), 0);
         drop(log);
     };
     let (ended, ()) = tokio::join!(task, written);
     ended.expect("the writer ends");
+}
+
+#[tokio::test]
+async fn a_tables_schema_frame_is_charged_from_the_log_until_it_is_appended() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
+        .await
+        .expect("the log starts");
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = at(&view("orders"), 1);
+    let written = async {
+        logged(&log, &budget, 0, &orders, SegmentId(0), &ids(0))
+            .await
+            .expect("the batch is logged");
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+    // The schema's frame, held beside the batch's until the log appended it.
+    let described = super::described(&orders.model.schema());
+    assert!(described >= 4_096);
+    assert!(budget.peak() >= 4_096 + described, "{}", budget.peak());
+    assert_eq!(budget.reserved(), 0);
 }
 
 /// Logs `batch` of `segment`, lowered for `view` of table `table`, its frame held by `budget`.
@@ -320,7 +347,8 @@ async fn logged(
     batch: &RecordBatch,
 ) -> Result<(), crate::Error> {
     let held = frame(budget);
-    log.batch(&Inline, held, table, view, segment, batch).await
+    log.batch(&Inline, budget, held, (table, view), segment, batch)
+        .await
 }
 
 /// What a piece reserved of `budget` for its frame in the log.
@@ -356,16 +384,31 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
             changes: vec![rdlt_connector::StateChange::Delete("d".repeat(5_000))],
         }];
         let recording = MemoryBudget::new(1 << 20);
-        log.commit(&recording, Vec::new(), begun, &third)
+        let estimate = super::commit_bytes(&begun, &third);
+        // Each record twice over and what a record takes beside, a segment, and two frames.
+        assert_eq!(
+            estimate,
+            2 * 10_000 + 64 + 2 * 5_000 + 64 + 1_024 + 2 * 4_096
+        );
+        log.commit(&recording, Vec::new(), begun, &third, 0)
             .await
             .expect("durable");
-        assert_eq!(recording.peak(), 2 * 15_000);
+        // Never more than was reserved: what the frames take is within the estimate.
+        assert_eq!(recording.peak(), estimate);
         assert_eq!(recording.reserved(), 0);
+        // What a commit records of tables, which their changes reserved, it does not again.
+        let mut prepaid = third.clone();
+        prepaid.commit_seq = third.commit_seq.next();
+        let paid = MemoryBudget::new(1 << 20);
+        log.commit(&paid, Vec::new(), Vec::new(), &prepaid, 20_000)
+            .await
+            .expect("durable");
+        assert_eq!(paid.peak(), super::commit_bytes(&[], &prepaid) - 20_000);
         // A frame beyond the log's share of the budget is refused, and nothing is reserved.
         let small = MemoryBudget::new(64_000);
         let mut fourth = third.clone();
-        fourth.commit_seq = third.commit_seq.next();
-        let refused = log.commit(&small, Vec::new(), Vec::new(), &fourth).await;
+        fourth.commit_seq = prepaid.commit_seq.next();
+        let refused = log.commit(&small, Vec::new(), Vec::new(), &fourth, 0).await;
         let refused = refused.expect_err("the frame passes the log's share");
         assert_eq!(
             (refused.kind(), refused.code()),

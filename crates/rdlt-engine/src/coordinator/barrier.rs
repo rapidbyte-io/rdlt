@@ -1,0 +1,33 @@
+//! The barrier a commit raises: every reading on-demand partition asked to checkpoint first.
+
+use super::{Coordinator, cancelled};
+use crate::error::Error;
+
+impl Coordinator {
+    /// Asks every reading on-demand partition to checkpoint, and waits until each has answered,
+    /// ended, or `barrier_wait` has passed.
+    pub(super) async fn raise_barrier(&mut self) -> Result<(), Error> {
+        self.barrier += 1;
+        let barrier = self.barrier;
+        self.parts.barrier.send_replace(barrier);
+        let mut deadline = self.parts.env.sleep(self.parts.barrier_wait);
+        while self
+            .parts
+            .partitions
+            .iter()
+            .any(|partition| partition.owes(barrier))
+        {
+            tokio::select! {
+                biased;
+                () = self.parts.cancel.cancelled() => return Err(cancelled()),
+                // Once the wait is over, the commit takes whatever is sealed.
+                () = &mut deadline => break,
+                // An answer that finds no room for its cursor waits for this commit: the commit
+                // takes whatever is sealed now, and frees the room.
+                () = self.parts.budget.cursor_waits() => break,
+                progress = self.parts.progress.recv() => self.observe(progress.ok_or_else(cancelled)?),
+            }
+        }
+        Ok(())
+    }
+}

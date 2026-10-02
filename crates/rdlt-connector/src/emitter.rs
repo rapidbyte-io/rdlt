@@ -5,8 +5,10 @@ mod admit;
 mod tests;
 
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use arrow_array::RecordBatch;
+use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use serde::Serialize;
 
@@ -25,6 +27,8 @@ pub struct Emitter<C> {
     cursor_version: u16,
     follow: bool,
     resumes: bool,
+    /// The schema of the batch last pushed, which its schema message was found within limits.
+    schema: Option<SchemaRef>,
     cursor: PhantomData<fn(&C)>,
 }
 
@@ -35,6 +39,7 @@ impl<C: Serialize> Emitter<C> {
             cursor_version,
             follow,
             resumes: false,
+            schema: None,
             cursor: PhantomData,
         }
     }
@@ -89,6 +94,7 @@ impl<C: Serialize> Emitter<C> {
             return Ok(());
         }
         check_batch(&batch, &self.sink)?;
+        self.check_schema(&batch)?;
         self.sink.send(SourceEvent::Push(Push::Arrow(batch))).await
     }
 
@@ -98,10 +104,28 @@ impl<C: Serialize> Emitter<C> {
             return Ok(());
         }
         check_batch(&batch, &self.sink)?;
+        self.check_schema(&batch)?;
         validate_change_batch(&batch)?;
         self.sink
             .send(SourceEvent::Push(Push::Changes(batch)))
             .await
+    }
+
+    /// Checks that `batch`'s schema, as the message that carries it, is within the sink's limit
+    /// on schema bytes; a schema shared with the batch before is checked once.
+    fn check_schema(&mut self, batch: &RecordBatch) -> Result<()> {
+        let schema = batch.schema();
+        if self
+            .schema
+            .as_ref()
+            .is_some_and(|checked| Arc::ptr_eq(checked, &schema))
+        {
+            return Ok(());
+        }
+        let message = rdlt_wire::schema_message_bytes(&schema);
+        check_limit("schema bytes", message, self.sink.limits().schema_bytes)?;
+        self.schema = Some(schema);
+        Ok(())
     }
 
     /// Seals everything pushed since the last checkpoint; a restart resumes from `cursor`.

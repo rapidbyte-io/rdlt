@@ -68,10 +68,19 @@ impl Charging {
         }
     }
 
-    /// The wait on the budget that failed one of the read's events, where one did: the read
-    /// then failed for the budget, whatever error its source ended with.
+    /// The wait on the budget that failed the read's last event the budget was asked for.
+    ///
+    /// The read then failed for the budget, whatever error its source ended with. A source that
+    /// carried on and had a later event admitted fails for its own reasons.
     pub(crate) fn exhausted(&self) -> Option<Exhausted> {
         *self.exhausted.lock()
+    }
+
+    /// `reservation`, an event's: a wait on the budget that failed before it no longer explains
+    /// how the read ends.
+    fn admitted(&self, reservation: Reservation) -> Reservation {
+        *self.exhausted.lock() = None;
+        reservation
     }
 
     /// The error an event is refused with, as the read's source sees it; a wait that reached
@@ -126,7 +135,8 @@ impl Admission for Charging {
                     let bytes = count(cursor.bytes().len());
                     let admitted = self.budget.acquire_cursor(bytes).await;
                     let admitted = admitted.map_err(|denied| self.refused("cursor bytes", denied));
-                    return Ok(Some(Box::new(Admitted::new(bytes, admitted?)) as Permit));
+                    let admitted = self.admitted(admitted?);
+                    return Ok(Some(Box::new(Admitted::new(bytes, admitted)) as Permit));
                 }
                 SourceEvent::Log { .. }
                 | SourceEvent::Metric { .. }
@@ -134,6 +144,7 @@ impl Admission for Charging {
                 | SourceEvent::Behind { .. } => return Ok(None),
             };
             let reservation = admitted.map_err(|denied| self.refused(PUSH, denied))?;
+            let reservation = self.admitted(reservation);
             Ok(Some(Box::new(Admitted::new(bytes, reservation)) as Permit))
         })
     }

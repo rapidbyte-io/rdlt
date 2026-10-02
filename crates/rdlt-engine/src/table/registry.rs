@@ -2,6 +2,7 @@
 //! the next commit records about them.
 
 mod children;
+mod records;
 #[cfg(test)]
 mod tests;
 
@@ -11,8 +12,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ConnectorError, Field, PipelineState, SchemaVersion, StateChange, StateEntry, TableChange,
-    TablePath, TableRef, TableState,
+    ConnectorError, Field, PipelineState, StateChange, TableChange, TablePath, TableRef, TableState,
 };
 
 use super::model::Model;
@@ -46,6 +46,8 @@ struct Slot {
     plans: Mutex<Vec<Arc<LoweringPlan>>>,
     /// How the stream normalizes, for a normalized stream's own table.
     shape: Option<Arc<Shape>>,
+    /// What the next commit records of the table, reserved since its last change.
+    records: Mutex<records::Held>,
 }
 
 /// Keeps `plan` among `plans`, the plans of a table whose view is `current`, dropping those of
@@ -82,6 +84,8 @@ pub(crate) struct Tables {
     committed: BTreeMap<TablePath, TableState>,
     /// Table identifiers taken: committed ones, then those this attempt assigns.
     taken: Mutex<BTreeSet<String>>,
+    /// Where the records of each table's change are reserved, if anywhere.
+    charge: std::sync::OnceLock<records::Charge>,
 }
 
 /// What a commit records about the tables, and the model revisions it records.
@@ -89,6 +93,8 @@ pub(crate) struct Tables {
 pub(crate) struct TablesDelta {
     pub(crate) changes: Vec<StateChange>,
     pub(crate) revisions: Vec<(usize, u32)>,
+    /// Bytes: what the changes take in a commit's frame, which their schema changes reserved.
+    pub(crate) prepaid: u64,
 }
 
 impl Tables {
@@ -102,6 +108,7 @@ impl Tables {
             adding: tokio::sync::Mutex::new(()),
             committed: BTreeMap::new(),
             taken: Mutex::new(BTreeSet::new()),
+            charge: std::sync::OnceLock::new(),
         }
     }
 
@@ -168,6 +175,7 @@ impl Tables {
             recorded: Mutex::new(recorded),
             plans: Mutex::new(Vec::new()),
             shape: shape.map(Arc::new),
+            records: Mutex::new(None),
         }));
         slots.len() - 1
     }
@@ -274,6 +282,8 @@ impl Tables {
         resolver: &Resolver,
     ) -> Result<Result<(Arc<TableView>, Vec<Route>), ConnectorError>, Error> {
         let next = Arc::new(TableView::new(&view.table, resolution.model, resolver));
+        // What the commit will record of the change is reserved before the destination sees it.
+        self.reserve_records(table, &next).await?;
         let changes = table_changes(view, &next, &resolution.changes);
         match self.session.apply_schema(&changes).await? {
             Ok(()) => Ok(Ok((next, resolution.routes))),
@@ -351,22 +361,10 @@ impl Tables {
             if view.model.revision <= *slot.recorded.lock() {
                 continue;
             }
-            let path = view.table.path.clone();
-            let schema = StateEntry::Schema {
-                table: path.clone(),
-                version: SchemaVersion(view.model.version),
-                schema: view.model.schema(),
-                exact: view.model.exact.clone(),
-            };
-            let names = StateEntry::Names {
-                table: path,
-                physical: Arc::clone(&view.table.name),
-                names: view.model.names.clone(),
-            };
-            delta.changes.push(StateChange::Put(schema.to_record()));
-            delta.changes.push(StateChange::Put(names.to_record()));
+            delta.changes.extend(records::records(&view));
             delta.revisions.push((index, view.model.revision));
         }
+        delta.prepaid = records::recorded_bytes(&delta.changes);
         delta
     }
 
@@ -376,6 +374,8 @@ impl Tables {
             let slot = self.slot(*index);
             let mut recorded = slot.recorded.lock();
             *recorded = (*recorded).max(*revision);
+            drop(recorded);
+            self.release_records(*index, *revision);
         }
     }
 }
