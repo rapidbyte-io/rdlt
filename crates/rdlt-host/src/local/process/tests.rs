@@ -145,12 +145,27 @@ async fn what_a_placement_holds_is_held_until_its_last_connector_is_reaped() {
     let granted = directory.path().join("granted");
     std::fs::create_dir(&granted).expect("a directory");
     let leases = Leases::default();
-    // A connector that ignores its stop, and has a grace to linger through.
-    let mut launch = script(directory.path(), "trap '' TERM\nexec sleep 300");
+    // A connector that ignores its stop once it says so, and has a grace to linger through.
+    let ignoring = directory.path().join("ignoring");
+    let body = format!(
+        "trap '' TERM\ntouch '{}'\nexec sleep 300",
+        ignoring.display()
+    );
+    let mut launch = script(directory.path(), &body);
     launch.grace = Duration::from_secs(3);
     launch.lease = Arc::new(writing(&leases, &granted).expect("held"));
     let process = Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN);
     let process = process.expect("it starts");
+    for _ in 0..1000 {
+        if ignoring.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        ignoring.exists(),
+        "the connector never came to ignore its stop"
+    );
     drop(launch);
     drop(process);
     // Its placement and its handle are gone, and it still runs: what it was granted is held.

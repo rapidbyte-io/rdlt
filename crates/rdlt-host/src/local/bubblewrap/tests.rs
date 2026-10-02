@@ -3,7 +3,7 @@ use std::path::Path;
 
 use super::{Bubblewrap, PROGRAM};
 use crate::local::process::{GRANTS_FD, PROGRAM_FD, SOCKET_FD};
-use crate::local::sandbox::{Bind, Confined, NetworkGrant, Sandbox, SandboxError, Stops};
+use crate::local::sandbox::{Bind, Confined, NetworkGrant, Sandbox, SandboxError};
 
 fn confined<'a>(
     binds: &'a [Bind<'a>],
@@ -163,7 +163,7 @@ fn bubblewrap_where_it_runs_stops_its_connector_by_the_end_of_its_input() {
     let sandbox = Bubblewrap::new();
     match sandbox.launcher(&confined(&[], NetworkGrant::Denied, &[], &[])) {
         Ok(launcher) => {
-            assert_eq!(launcher.stops, Stops::ByInputEnd);
+            assert_eq!(launcher.stops, crate::local::sandbox::Stops::ByInputEnd);
             let program = launcher
                 .command
                 .get_program()

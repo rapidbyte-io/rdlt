@@ -150,6 +150,7 @@ async fn lands(kills: &Kills, landed: u64) -> bool {
 
 /// Waits, within a bound a busy machine keeps, for process `pid` to lead a session of its
 /// own; whether it does.
+#[cfg(target_os = "linux")]
 async fn own_session(pid: i32) -> bool {
     let pid = nix::unistd::Pid::from_raw(pid);
     for _ in 0..3000 {

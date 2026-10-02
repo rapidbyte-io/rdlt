@@ -2,10 +2,7 @@ use std::cell::RefCell;
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::process::{Command, Stdio};
 
-use super::{
-    Marking, ONE_BY_ONE_CAP, inheriting_only, mark_except, mark_range, marked_one_by_one,
-    marks_at_once,
-};
+use super::{Marking, ONE_BY_ONE_CAP, inheriting_only, mark_except, mark_range, marked_one_by_one};
 
 /// The descriptors a shell started by `command` holds, as it lists them.
 fn held(command: &mut Command) -> Vec<i32> {
@@ -66,7 +63,13 @@ fn a_child_inherits_the_descriptors_it_is_given_and_none_below_or_above_them() {
         all.iter().all(|fd| plain.contains(fd)),
         "the files are inherited without the hook: {plain:?}"
     );
-    for marking in [Marking::AtOnce, Marking::OrOneByOne] {
+    // Only Linux marks a range at once: elsewhere a spawn that needs it fails.
+    let markings: &[Marking] = if cfg!(target_os = "linux") {
+        &[Marking::AtOnce, Marking::OrOneByOne]
+    } else {
+        &[Marking::OrOneByOne]
+    };
+    for &marking in markings {
         let mut marked = Command::new("/bin/sh");
         inheriting_only(&mut marked, &[given.as_raw_fd(), 1], marking);
         let kept = held(&mut marked);
@@ -161,5 +164,5 @@ fn the_loop_marks_nothing_from_its_cap_up() {
 #[cfg(target_os = "linux")]
 #[test]
 fn this_kernel_marks_a_range_at_once() {
-    assert!(marks_at_once());
+    assert!(super::marks_at_once());
 }
