@@ -15,9 +15,12 @@ use rdlt_connector::{
     DestinationWriter, Epoch, LoadId, PipelineId, SegmentSet, StreamName, TableChange,
 };
 
+use parking_lot::Mutex;
+
 use super::{RunContext, open};
 use crate::crash::crash_point;
 use crate::error::{Error, Side};
+use crate::report::AttemptLog;
 use crate::table::SharedSession;
 use crate::wal::scan::{self, Logged, Scanned};
 use crate::wal::{Positions, WalStore};
@@ -36,7 +39,15 @@ struct Replaying {
 
 /// Replays every log of the pipeline whose load is gone, then removes it; a session opens only
 /// where a commit needs one, under `load_id`, the attempt's.
-pub(super) async fn replay(context: &RunContext, load_id: LoadId) -> Result<(), Error> {
+///
+/// A commit that lands segments again is progress of the attempt, recorded in `log` as it
+/// lands: a log holds each commit once, so an attempt progresses this way no more often than
+/// an earlier one logged rows.
+pub(super) async fn replay(
+    context: &RunContext,
+    load_id: LoadId,
+    log: &Mutex<AttemptLog>,
+) -> Result<(), Error> {
     let Some(store) = context.env.wal() else {
         return Ok(());
     };
@@ -54,9 +65,10 @@ pub(super) async fn replay(context: &RunContext, load_id: LoadId) -> Result<(), 
                 Some(replaying) => replaying,
                 None => replaying.insert(begin(context, load_id).await?),
             };
-            replaying
+            let landed = replaying
                 .commit(store.as_ref(), pipeline, &scanned, logged)
                 .await?;
+            log.lock().progressed |= landed;
         }
         store
             .remove_log(pipeline, load)
@@ -86,20 +98,21 @@ async fn begin(context: &RunContext, load_id: LoadId) -> Result<Replaying, Error
 }
 
 impl Replaying {
-    /// Commits `logged` again, from `scanned`, its load's log.
+    /// Commits `logged` again, from `scanned`, its load's log; whether it landed segments.
     async fn commit(
         &mut self,
         store: &dyn WalStore,
         pipeline: &PipelineId,
         scanned: &Scanned,
         logged: &Logged,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let meta = &logged.meta;
         let opened = scanned.header.as_ref().and_then(|header| header.opened);
         let decision = decide(&self.positions, &self.resets, self.last, opened, logged);
         self.stage(store, pipeline, scanned, &decision.staged)
             .await?;
         let whole = decision.whole;
+        let landed = !decision.staged.is_empty();
         let replayed = decision.replayed(meta, self.epoch);
         crash_point!("engine.replay.before");
         self.session
@@ -111,7 +124,7 @@ impl Replaying {
         if whole {
             self.last = Some((meta.load_id, meta.commit_seq.get()));
         }
-        Ok(())
+        Ok(landed)
     }
 
     /// Stages `segments`' batch frames again, each table created first, as its schema frame says.

@@ -88,7 +88,7 @@ pub(crate) async fn run(
         .with_code("wal_store_missing"));
     }
     // What earlier loads logged and never saw committed lands before this one plans.
-    replay::replay(context, load_id).await?;
+    replay::replay(context, load_id, &log).await?;
     let opened = open(context, load_id).await?;
     log.lock().opened = opened
         .state
