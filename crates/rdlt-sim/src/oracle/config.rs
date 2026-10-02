@@ -6,6 +6,7 @@ use rdlt_engine::{CommitPolicy, EngineConfig, RetryPolicy};
 
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
+use crate::workload::Workload;
 use crate::world::Pressure;
 
 /// The engine's configuration, drawn from `rng`; a streaming world plans again every quarter
@@ -13,7 +14,10 @@ use crate::world::Pressure;
 ///
 /// Its memory budget is between the least an engine takes, whatever its partitions, and twice
 /// that: small enough that a source pressing on it, as [`pressed`] draws, fills its shares.
-pub(super) fn config(rng: &mut SplitMix64, streaming: bool) -> EngineConfig {
+///
+/// A run reads at least one partition more at once than the `endless` partitions it follows
+/// without end, which hold their places for as long as it runs.
+pub(super) fn config(rng: &mut SplitMix64, streaming: bool, endless: usize) -> EngineConfig {
     let least = EngineConfig::least_memory(1);
     let every = rng
         .chance(700)
@@ -35,13 +39,23 @@ pub(super) fn config(rng: &mut SplitMix64, streaming: bool) -> EngineConfig {
         .memory(least + rng.below(least))
         .lanes(lanes)
         .lane_window(to_usize(1 + rng.below(3)))
-        .partitions(to_usize(1 + rng.below(4)))
+        .partitions(to_usize(1 + rng.below(4)).max(endless + 1))
         .partition_buffer(to_usize(1 + rng.below(4)))
         .barrier_wait(Duration::from_millis(10 + rng.below(2000)))
         .commit(commit)
         .retry(retry)
         .build()
         .expect("the drawn configuration is valid")
+}
+
+/// How many partitions of `workload`'s streams never end.
+pub(super) fn endless(workload: &Workload) -> usize {
+    workload
+        .streams
+        .iter()
+        .filter(|stream| stream.unbounded)
+        .map(|stream| stream.partitions.len())
+        .sum()
 }
 
 /// How hard the source of the world `seed` makes presses on the budget of an engine of `config`,

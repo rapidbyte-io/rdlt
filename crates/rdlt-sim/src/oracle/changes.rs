@@ -52,7 +52,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let features = world.workload.features;
     env.perturb(features.perturb);
     env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
-    let engine = Engine::new(config(&mut rng, false), env);
+    let engine = Engine::new(config(&mut rng, false, 0), env);
     let plan = plan(&world.changes.streams).with_wal(features.wal);
     for round in 0..ROUNDS {
         world.set_phase(round);
