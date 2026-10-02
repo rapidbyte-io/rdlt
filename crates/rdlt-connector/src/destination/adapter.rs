@@ -132,7 +132,7 @@ pub(super) async fn adapted<C: DestinationConnector>(
     config: serde_json::Value,
     context: &ConnectContext,
 ) -> Result<DestinationAdapter<C>> {
-    let config = config::parse::<C::Config>(config)?;
+    let config = config::parse::<C::Config>(&config)?;
     let connector = C::connect(config, context).await?;
     let capabilities = connector.capabilities();
     Ok(DestinationAdapter {

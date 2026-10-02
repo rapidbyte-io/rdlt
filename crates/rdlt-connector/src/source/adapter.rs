@@ -182,7 +182,7 @@ pub(super) async fn adapted<C: SourceConnector>(
     config: serde_json::Value,
     context: &ConnectContext,
 ) -> Result<SourceAdapter<C>> {
-    let config = config::parse::<C::Config>(config)?;
+    let config = config::parse::<C::Config>(&config)?;
     let connector = C::connect(config, context).await?;
     let streams = connector.streams().streams;
     let streams = streams

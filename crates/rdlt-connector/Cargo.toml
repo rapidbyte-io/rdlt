@@ -56,10 +56,12 @@ serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
 sha2 = { workspace = true, optional = true }
+subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, optional = true, features = ["process", "resource", "signal"] }
