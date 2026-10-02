@@ -584,3 +584,25 @@ fn a_dictionary_of_dictionaries_is_found_wherever_it_nests() {
         assert!(!super::twice_keyed(&data_type), "{data_type}");
     }
 }
+
+#[test]
+fn a_schema_that_is_refused_ends_the_schema_before_it() {
+    let batch = samples::batch();
+    let (mut decoder, frames) = frames::sent(&batch, Limits::default());
+    let garbage = Bytes::from_static(b"not an IPC message");
+    assert!(decoder.schema(&garbage).is_err());
+    // No batch is read under the schema the refused one was to replace.
+    for frame in &frames {
+        let error = decoder.frame(frame).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                WireError::Malformed {
+                    problem: Problem::NoSchema,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+}
