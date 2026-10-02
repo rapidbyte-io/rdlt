@@ -301,7 +301,9 @@ fn schema(
 /// Checks that `schema` is one a reader of the file accepts: within the limits on columns and
 /// nesting the wire's decoder enforces.
 pub(super) fn admitted(schema: &arrow_schema::Schema, limits: Limits) -> Result<()> {
-    let message = rdlt_wire::Encoder::default().schema(schema);
+    let message = rdlt_wire::Encoder::default()
+        .schema(schema)
+        .map_err(refused)?;
     Decoder::new(limits)
         .schema(&message)
         .map(|_| ())
