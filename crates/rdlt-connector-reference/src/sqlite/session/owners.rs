@@ -54,10 +54,11 @@ pub(in crate::sqlite) fn published(
 ) -> Result<Option<String>> {
     let check = planner.check(name)?;
     let resolved = answers(connection, check.resolved())?;
-    // Without a catalog no pipeline owns anything.
-    let cataloged = planner.catalog().iter().all(|table| {
-        columns(connection, planner.dialect(), table).is_ok_and(|held| !held.is_empty())
-    });
+    // Without a catalog no pipeline owns anything; a catalog that cannot be read is an error.
+    let mut cataloged = true;
+    for table in planner.catalog() {
+        cataloged &= !columns(connection, planner.dialect(), table)?.is_empty();
+    }
     let owner = if cataloged {
         answers(connection, check.owner())?
     } else {

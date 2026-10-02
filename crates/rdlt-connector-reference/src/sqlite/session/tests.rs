@@ -146,3 +146,27 @@ async fn writers_index_what_a_commit_finds_by_key_and_the_commit_changes_no_sche
     assert_eq!(receipt.rows, 2);
     assert_eq!(schema_objects(&path), staged);
 }
+
+#[test]
+fn a_catalog_that_cannot_be_read_is_an_error_where_a_table_is_read_back() {
+    use rdlt_connector::sqlgen::{SqlDialect as _, SqlPlanner, Sqlite};
+    let directory = crate::scratch::tempdir().expect("a temporary directory");
+    let path = directory.path().join("orders.db");
+    let connection = database::connect(&path).expect("the database opens");
+    let planner = SqlPlanner::try_new(Sqlite).expect("a planner");
+    database::run_all(&connection, &planner.bootstrap()).expect("the catalog is made");
+    // Statements as long as the query of a table's columns fail to prepare; that of what the
+    // database takes a name for is shorter, and runs.
+    let listing = Sqlite.columns("_rdlt_owners").sql.len();
+    assert!(Sqlite.resolves("orders").sql.len() < listing - 1);
+    let limit = i32::try_from(listing - 1).expect("a length");
+    let length = rusqlite::limits::Limit::SQLITE_LIMIT_SQL_LENGTH;
+    connection.set_limit(length, limit).expect("a limit");
+    let read = super::owners::published(&connection, &planner, "orders");
+    let failed = read.expect_err("the catalog cannot be read");
+    assert_eq!(failed.code(), None, "{failed}");
+    // Without the limit, a table no pipeline owns reads as none.
+    connection.set_limit(length, 1_000_000).expect("a limit");
+    let read = super::owners::published(&connection, &planner, "orders");
+    assert_eq!(read.expect("the catalog reads"), None);
+}
