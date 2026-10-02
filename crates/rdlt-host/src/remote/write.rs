@@ -54,7 +54,7 @@ impl RemoteWriter {
             })
             .await
             .ok();
-        let mut client = connection.client.clone();
+        let mut client = connection.client.control.clone();
         let deadline = connection.options.deadlines.write_ack;
         let acks = connection
             .call(

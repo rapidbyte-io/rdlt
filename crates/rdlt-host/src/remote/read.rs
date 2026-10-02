@@ -150,7 +150,7 @@ async fn start(
         .send(control(Control::Credit(v1::Credit { bytes: window })))
         .await
         .ok();
-    let mut client = connection.client.clone();
+    let mut client = connection.client.data.clone();
     let deadline = connection.options.deadlines.connect;
     let frames = connection
         .call(

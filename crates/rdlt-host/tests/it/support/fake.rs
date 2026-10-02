@@ -38,6 +38,8 @@ pub(crate) enum Fault {
     /// It is a destination whose writes it answers, every interval, with a credit of the bytes
     /// given, and never with a flush's stats.
     Trickles(std::time::Duration, u64),
+    /// It answers a discovery and a plan with this many empty entries, each two bytes on the wire.
+    Bloats(usize),
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -128,14 +130,25 @@ impl Connector for Fake {
         &self,
         _: Request<v1::DiscoverRequest>,
     ) -> Result<Response<v1::Catalog>, Status> {
-        Err(Status::unimplemented("discover"))
+        let Fault::Bloats(entries) = self.0 else {
+            return Err(Status::unimplemented("discover"));
+        };
+        Ok(Response::new(v1::Catalog {
+            streams: vec![v1::StreamSpec::default(); entries],
+        }))
     }
 
     async fn plan(
         &self,
         _: Request<v1::PlanRequest>,
     ) -> Result<Response<v1::PlanResponse>, Status> {
-        Err(Status::unimplemented("plan"))
+        let Fault::Bloats(entries) = self.0 else {
+            return Err(Status::unimplemented("plan"));
+        };
+        Ok(Response::new(v1::PlanResponse {
+            starts: vec![v1::PartitionState::default(); entries],
+            ..v1::PlanResponse::default()
+        }))
     }
 
     type ReadStream = Answer<v1::ReadFrame>;
