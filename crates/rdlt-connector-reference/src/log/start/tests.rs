@@ -1,3 +1,6 @@
+// Logs kept nowhere grow from the process's first log source: each test needs a process of its
+// own, which nextest, the runner of `just test`, gives it.
+
 use std::sync::Arc;
 use std::time::Duration;
 
