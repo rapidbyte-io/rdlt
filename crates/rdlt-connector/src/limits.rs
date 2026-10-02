@@ -42,6 +42,19 @@ pub const MAX_CATALOG_STREAMS: usize = 65_536;
 /// it: a partition waiting for its turn costs about a kilobyte, outside the memory budget.
 pub const MAX_PLAN_PARTITIONS: usize = 16_384;
 
+/// Words: bounds the words a destination reserves.
+pub const MAX_RESERVED_WORDS: usize = 4096;
+
+/// Prefixes: bounds the table prefixes a destination reserves.
+pub const MAX_RESERVED_PREFIXES: usize = 64;
+
+/// Bytes: bounds one word or table prefix a destination reserves.
+pub const MAX_RESERVED_BYTES: usize = 256;
+
+/// Bytes: the least identifier length a destination may declare, which holds an identifier's
+/// hash, the `_` before it, and a character of its name.
+pub const MIN_IDENTIFIER_LEN: u16 = 16;
+
 /// Bytes: bounds one encoded cursor.
 pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 

@@ -550,3 +550,21 @@ fn a_records_value_is_json_text_a_third_longer_than_its_bytes() {
     assert_eq!(json, r#"{"key":"k","value":""}"#);
     assert_eq!(serde_json::from_str::<StateRecord>(&json).unwrap(), empty);
 }
+
+#[test]
+fn a_recorded_name_map_naming_two_columns_alike_is_refused() {
+    let two_on_one = serde_json::json!([[{"source": ["a"]}, "c"], [{"source": ["b"]}, "c"]]);
+    assert!(serde_json::from_value::<NameMap>(two_on_one).is_err());
+    let one_twice = serde_json::json!([[{"source": ["a"]}, "c"], [{"source": ["a"]}, "d"]]);
+    assert!(serde_json::from_value::<NameMap>(one_twice).is_err());
+    let distinct = serde_json::json!([[{"source": ["a"]}, "c"], [{"source": ["b"]}, "d"]]);
+    let names = serde_json::from_value::<NameMap>(distinct).unwrap();
+    assert_eq!(
+        names.owner("d"),
+        Some(&ColumnKey::Source(ColumnPath::from("b")))
+    );
+    assert_eq!(
+        names.get(&ColumnKey::Source(ColumnPath::from("a"))),
+        Some("c")
+    );
+}

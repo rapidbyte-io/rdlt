@@ -96,7 +96,7 @@ pub mod wire;
 
 pub use capabilities::{
     Capabilities, CommitKind, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules,
-    NestedSupport, SchemaChanges, WriteModes,
+    InvalidRules, NestedSupport, SchemaChanges, WriteModes,
 };
 pub use catalog::{Catalog, Checkpointing, InvalidCatalog, Partitioning, ReadMode, StreamSpec};
 pub use change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, validate_change_batch};

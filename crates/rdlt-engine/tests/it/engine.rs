@@ -907,3 +907,23 @@ async fn a_plan_naming_a_partition_twice_fails_its_stream_before_anything_is_rea
     assert_eq!(script.reads.load(Ordering::SeqCst), 0);
     assert_eq!(outcome.report.rows, 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_whose_identifier_rules_pass_their_limits_is_refused() {
+    let destination = limited(memory("rules_beyond").await, |capabilities| {
+        capabilities.identifiers.reserved_table_prefixes = [String::new()].into();
+    });
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
+        .connect("rules_beyond")
+        .await;
+    let plan = pipeline("rules-beyond", [stream("events")]);
+    let outcome = engine(commit_every(10))
+        .run(plan, source, destination)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Destination, Some("capabilities_invalid"), false)
+    );
+}

@@ -100,12 +100,12 @@ fn reserved_words_and_metadata_columns_are_never_assigned() {
 
 #[test]
 fn long_names_are_cut_to_fit_with_their_hash() {
-    let naming = Naming::new(rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 10));
-    let first = source(&["abcdefghijklmnop"]);
-    let second = source(&["abcdefghijXYZ"]);
+    let naming = Naming::new(rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 16));
+    let first = source(&["abcdefghijklmnopqrstuv"]);
+    let second = source(&["abcdefghijklmnopXYZ"]);
     let assigned = assign(&naming, &[first.clone(), second.clone()]);
-    assert_eq!(assigned[&second], "abcdefghij");
-    assert!(hashed(&assigned[&first], "abc"), "{assigned:?}");
+    assert_eq!(assigned[&second], "abcdefghijklmnop");
+    assert!(hashed(&assigned[&first], "abcdefghi"), "{assigned:?}");
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn any_rules() -> impl Strategy<Value = IdentifierRules> {
         Just(IdentifierCase::Upper),
     ];
     let chars = prop_oneof![Just(IdentifierChars::AsciiWord), Just(IdentifierChars::Any)];
-    (case, chars, 8_u16..16).prop_map(|(case, chars, max_len)| rules(case, chars, max_len))
+    (case, chars, 16_u16..24).prop_map(|(case, chars, max_len)| rules(case, chars, max_len))
 }
 
 fn any_keys() -> impl Strategy<Value = Vec<ColumnKey>> {
@@ -265,14 +265,16 @@ fn metadata_columns_follow_the_rules_and_never_share_an_identifier() {
         upper.metadata("_rdlt_load_id", &BTreeSet::new()).unwrap(),
         "_RDLT_LOAD_ID"
     );
-    let short = Naming::new(rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 9));
-    let first = short.metadata("_rdlt_load_id", &BTreeSet::new()).unwrap();
-    let second = short
-        .metadata("_rdlt_loaded_at", &BTreeSet::from([first.clone()]))
+    let short = Naming::new(rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 16));
+    let first = short
+        .metadata("_rdlt_is_current_a", &BTreeSet::new())
         .unwrap();
-    assert_eq!(first, "_rdlt_loa");
+    let second = short
+        .metadata("_rdlt_is_current_b", &BTreeSet::from([first.clone()]))
+        .unwrap();
+    assert_eq!(first, "_rdlt_is_current");
     assert_ne!(first, second);
-    assert!(second.len() <= 9);
+    assert!(second.len() <= 16);
 }
 
 /// The hash that tells collisions apart is the xxh3 of the exact source identity, so it never
@@ -310,4 +312,51 @@ fn collision_hashes_are_fixed_by_the_exact_source_identity() {
         names,
         ["a_cdrbrn", "a__b_gx5iju", "a__json_fuh367", "a_n25c7x"]
     );
+}
+
+#[test]
+#[expect(clippy::disallowed_methods, reason = "the test times real work")]
+fn names_are_checked_against_every_reserved_word_once_folded() {
+    use rdlt_connector::limits::{MAX_COLUMNS, MAX_RESERVED_WORDS};
+    let mut reserving = rules(IdentifierCase::Upper, IdentifierChars::AsciiWord, 63);
+    reserving.reserved = (0..MAX_RESERVED_WORDS)
+        .map(|word| format!("word{word}"))
+        .collect();
+    let naming = Naming::new(reserving);
+    let columns = usize::try_from(MAX_COLUMNS).unwrap();
+    let keys: Vec<ColumnKey> = (0..columns)
+        .map(|column| source(&[format!("column{column}").as_str()]))
+        .chain([source(&["Word7"])])
+        .collect();
+    // Folding every reserved word again for each name takes many seconds at the limits.
+    let started = std::time::Instant::now();
+    let assigned = assign(&naming, &keys);
+    let elapsed = started.elapsed();
+    assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+    let reserved = &assigned[&source(&["Word7"])];
+    assert!(hashed(&reserved.to_lowercase(), "word7"), "{reserved}");
+    assert_eq!(assigned[&source(&["column3"])], "COLUMN3");
+}
+
+#[test]
+fn a_table_name_escapes_every_reserved_prefix_it_meets_with_underscores() {
+    use rdlt_connector::limits::MAX_RESERVED_PREFIXES;
+    let mut reserving = rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 512);
+    // Each prefix traps the name behind as many underscores as it has: the name needs one more
+    // than the most.
+    reserving.reserved_table_prefixes = (0..MAX_RESERVED_PREFIXES)
+        .map(|underscores| format!("{}o", "_".repeat(underscores)))
+        .collect();
+    let naming = Naming::new(reserving.clone());
+    let named = naming
+        .table(&TablePath::new(["Orders"]).unwrap(), &BTreeSet::new())
+        .unwrap();
+    assert_eq!(
+        named,
+        format!("{}orders", "_".repeat(MAX_RESERVED_PREFIXES))
+    );
+    let untrapped = naming
+        .table(&TablePath::new(["items"]).unwrap(), &BTreeSet::new())
+        .unwrap();
+    assert_eq!(untrapped, "items");
 }
