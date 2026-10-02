@@ -3,6 +3,7 @@
 
 mod commit;
 mod compact;
+mod fitted;
 mod merged;
 #[cfg(test)]
 pub(super) mod tests;
@@ -95,6 +96,9 @@ impl Session for FilesSession {
                 claim(&location, name)?;
                 tables::update(rdlt, name, |current| {
                     let next = changed(current, &change)?;
+                    if let Some(current) = current.filter(|current| **current != next) {
+                        fitted::fits(&location, &change, current, &next)?;
+                    }
                     Ok((current != Some(&next)).then_some(next))
                 })
             })
@@ -237,12 +241,15 @@ impl TableWriter for FilesWriter {
 
 /// Writes each of the `buffered` batches of `table` to a staged file of its own, which the
 /// session then holds for its segment's commit; what was written.
+///
+/// A batch a merge table cannot take refuses the flush before any of it is staged.
 fn stage(
     location: &Location,
     shared: &Mutex<Shared>,
     table: &TableRef,
     buffered: Vec<(SegmentId, RecordBatch)>,
 ) -> Result<WriteStats> {
+    fitted::admitted(location, table, &buffered)?;
     let mut stats = WriteStats::default();
     for (segment, batch) in buffered {
         if batch.num_rows() == 0 {

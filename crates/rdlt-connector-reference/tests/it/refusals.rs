@@ -1,5 +1,5 @@
 //! A written batch a merge table cannot take is refused where it is staged, under the same code
-//! by the memory and the SQLite destinations.
+//! by the memory, the SQLite and the files destinations.
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -13,7 +13,7 @@ use rdlt_connector::{
     HistoryColumns, LoadId, MergeKey, OpenContext, PipelineId, SchemaVersion, SegmentId,
     TableChange, TablePath, TableRef, TableSchema, destination_factory,
 };
-use rdlt_connector_reference::{MemoryDestination, SqliteDestination};
+use rdlt_connector_reference::{FilesDestination, MemoryDestination, SqliteDestination};
 use serde_json::json;
 
 /// A change stream's table keyed by `id`, a history table where `history`.
@@ -157,7 +157,19 @@ async fn destinations(
         )
         .await
         .expect("the sqlite destination connects");
-    vec![("memory", memory), ("sqlite", sqlite)]
+    let mut destinations = vec![("memory", memory), ("sqlite", sqlite)];
+    for format in ["jsonl", "arrow"] {
+        let root = directory.join(format!("refusals-{case}-{format}"));
+        let files = destination_factory::<FilesDestination>()
+            .connect(
+                json!({ "root": root, "format": format }),
+                ConnectContext::new(),
+            )
+            .await
+            .expect("the files destination connects");
+        destinations.push((format, files));
+    }
+    destinations
 }
 
 /// Batches no merge table takes, each with the code it is refused under and whether its table
@@ -200,7 +212,7 @@ fn refused() -> Vec<(&'static str, bool, Written)> {
 
 #[tokio::test]
 async fn a_batch_a_merge_table_cannot_take_is_refused_alike_where_it_is_staged() {
-    let directory = tempfile::tempdir().expect("a temporary directory");
+    let directory = crate::fixtures::tempdir().expect("a temporary directory");
     for (case, (code, history, written)) in refused().iter().enumerate() {
         for (name, destination) in destinations(directory.path(), case).await {
             let refused = flushed(destination.as_ref(), written, *history).await;
@@ -212,7 +224,7 @@ async fn a_batch_a_merge_table_cannot_take_is_refused_alike_where_it_is_staged()
 
 #[tokio::test]
 async fn a_batch_a_merge_table_takes_is_staged() {
-    let directory = tempfile::tempdir().expect("a temporary directory");
+    let directory = crate::fixtures::tempdir().expect("a temporary directory");
     let taken: Vec<(bool, Written)> = vec![
         (false, Written::update()),
         (false, Written::flagging(0b10)),

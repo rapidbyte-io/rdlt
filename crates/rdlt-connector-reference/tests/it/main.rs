@@ -13,6 +13,7 @@ mod files_growth;
 mod files_locks;
 mod files_paths;
 mod files_source;
+mod files_widened;
 mod fixtures;
 mod generator;
 mod history;
