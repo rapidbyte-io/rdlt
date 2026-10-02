@@ -238,6 +238,8 @@ pub(crate) fn merge_children_sparse(
     let column = key.columns.first().ok_or_else(keyless)?;
     let mut winners: BTreeMap<Vec<u8>, Vec<u8>> = BTreeMap::new();
     for batch in roots {
+        alike(batch, &root.id, schema, column)?;
+        alike(batch, &root.seq, schema, &key.seq)?;
         let (ids, seqs) = (binary(batch, &root.id)?, binary(batch, &root.seq)?);
         let (ids, seqs) = (ids.as_binary::<i32>(), seqs.as_binary::<i32>());
         for row in 0..batch.num_rows() {
@@ -275,6 +277,32 @@ pub(crate) fn merge_children_sparse(
         over: &[],
     });
     assemble(&sources, picks)
+}
+
+/// Refuses a root's column `of_root` of `roots` and its children's column `of_children` of
+/// `schema` where one compares as a number and the other as bytes: no value of one is a value
+/// of the other, so every child would be taken for a root's that was not published.
+fn alike(
+    roots: &RecordBatch,
+    of_root: &str,
+    schema: &SchemaRef,
+    of_children: &str,
+) -> Result<(), ArrowError> {
+    let (Some(root), Ok(child)) = (
+        roots.column_by_name(of_root),
+        schema.field_with_name(of_children),
+    ) else {
+        // A column that is missing is refused where it is read.
+        return Ok(());
+    };
+    if retype::numbered(root.data_type()) == retype::numbered(child.data_type()) {
+        return Ok(());
+    }
+    Err(unkeyed(format!(
+        "the roots' {of_root} is {} and their children's {of_children} is {}",
+        root.data_type(),
+        child.data_type()
+    )))
 }
 
 /// `batch`'s column `name` as `Binary`, which an id or a sequence is.

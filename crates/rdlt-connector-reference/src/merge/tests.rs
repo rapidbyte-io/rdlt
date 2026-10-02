@@ -7,6 +7,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
 mod costs;
+mod owners;
 mod refusals;
 mod widths;
 

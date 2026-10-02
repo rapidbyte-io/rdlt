@@ -120,11 +120,22 @@ fn lossless(from: &DataType, to: &DataType) -> bool {
     }
 }
 
+/// Whether an id or a sequence of `kind` compares as a number: an integer, or a dictionary of
+/// them.
+pub(super) fn numbered(kind: &DataType) -> bool {
+    match kind {
+        DataType::Dictionary(_, values) => numbered(values),
+        kind => kind.is_integer(),
+    }
+}
+
 /// The values of `array`, an id or a sequence, as the bytes they compare by: bytes as they are,
 /// text, which a destination without a type for bytes keeps them as, as the bytes it is, and
-/// integers as sixteen bytes that order as the numbers do.
+/// integers as sixteen bytes that order as the numbers do; a dictionary's as the values its
+/// keys stand for.
 pub(super) fn compared(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
+        DataType::Dictionary(_, values) => compared(&checked(array, values)?),
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
             checked(array, &DataType::Binary)
         }
