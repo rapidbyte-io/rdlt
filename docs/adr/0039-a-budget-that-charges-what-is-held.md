@@ -60,6 +60,30 @@ budget before it is held, or bounded by a limit with a typed refusal.
     it. A partition lowers and hands to its lane whatever it reserved before it waits for more.
   - Requests of one share are admitted in arrival order, lowering before pushes.
   - The shares are limits of the engine, with the names above, in `limits.rs`.
+- **What a connector is told it may send is what the budget admits.** The limits a host
+  advertises at its handshake, and those the `Emitter` holds an in-process source to, are each
+  the lesser of the configured limit and what the shares hold (`EngineConfig::limits`):
+
+  | Limit | Derived from | At the default 256 MiB, 16 partitions | Wire default |
+  |---|---|---|---|
+  | frame bytes | what pushes may take, less what a read keeps | 64 MiB | 64 MiB |
+  | json push bytes | a third of what pushes may take | 36 MiB | 64 MiB |
+  | cursor bytes | the cursors' share, and a quarter of the log's | 4 MiB | 4 MiB |
+  | dictionary bytes | half of what a read keeps | 2 MiB | a frame, 64 MiB |
+  | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 0.4 MiB | 4 MiB |
+
+  Rows, values, columns and nesting are not the budget's: a batch is lowered a piece at a time,
+  whatever it holds. Where a wire default is above what the budget admits, the derived value is
+  what crosses the handshake and what a connector sees. A served connector cuts and bounds what
+  it sends to it, and refuses its source what it cannot cut; the host's decoder refuses what
+  passes it. The budget's own refusals, `push_exceeds_budget` and `limit_exceeded` for `read
+  kept bytes`, stay as the backstop for a connector that ignores what it was told, or a host
+  told the wire's defaults.
+- **The least memory.** A budget whose derived frame limit is below the protocol's least frame
+  (`MIN_FRAME_BYTES`, 4 MiB) is refused when the engine's configuration is built, with
+  `memory_below_minimum` naming the least memory that admits it: 10,324,437 bytes at the default
+  sixteen partitions and 24,403,217 at one (`EngineConfig::least_memory`). Fewer partitions let
+  each read keep more, which pushes then leave room for.
 - **One cost model** (`rdlt_connector::cost`). A batch has two measures.
   - **Held**: the bytes of every allocation the batch reaches, validity, data, child and
     dictionary buffers alike, each counted once however many arrays or slices share it. A slice
@@ -288,13 +312,22 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
   frame, batch-bytes and dictionary limits besides.
 - What lowering reserves is a sum, the value decoded, converted and rendered: a column stored as
   text is lowered in smaller pieces.
-- A budget is useful only where its shares hold what a load sends: a cursor needs a 64th of
-  it, a commit's frame a 16th, a read's schema and dictionaries a 64th at the default sixteen
-  partitions. The simulator and the crash tests run with a quarter of a mebibyte for that
-  reason, where they ran with a kilobyte.
-- A read through a host whose dictionaries take more than its part of the reads' share fails,
-  though the wire would carry them: at the defaults 4 MiB a read, where a frame may hold
-  64 MiB. More memory or fewer partitions raise the part.
+- No engine runs on less than about ten mebibytes. The simulator draws budgets between the
+  least for one partition and twice that, and its sources press on them: pushes keeping alive a
+  fifth to nine tenths of a frame, and cursors of an eighth to a third of their share, so pushes
+  wait for lowering's room and cursors for a commit in a good share of its seeds. The crash
+  tests and certification's kill clauses run with 11 MiB, where they ran with a kilobyte and a
+  mebibyte.
+- A source may keep 2 MiB of dictionaries a read at the defaults, where a frame may hold
+  64 MiB. More memory or fewer partitions raise it.
+- A partition that ends where it last checkpointed seals that cursor again: the commit records
+  it, and the commit's frame holds it, so the seal waits for room in the cursors' share as a
+  checkpoint does. The coordinator commits as soon as a cursor waits, whatever it heard last.
+- A lane's call into its destination ends with the attempt: a write that never returns no
+  longer keeps an attempt that failed, as at the memory deadline, from ending. An in-process
+  destination's write behind a lane too full to queue on is bounded by nothing yet: the
+  partition waits for its lane with no deadline. A served one's is bounded by the host's
+  write deadline.
 - A normalized piece holds a quarter of the budget from before its split until its parts are
   cut, so a little over two normalize at once while pushes fill their share; and a unit of a
   few rows takes three trips to the compute pool before its parts are lowered in one.
@@ -302,7 +335,9 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
   writing, or a commit that never lands, makes one wait.
 - A destination whose calls may take longer than an hour needs `memory_wait` raised with them.
 - `ErrorKind` gained `Memory`, and `Admission::admit` and `Admission::charge` return a
-  `Result`.
+  `Result`; an `Admission` says the limits it admits within, and a `PartitionSink` holds what
+  is sent to them. A run's report counts the waits of pushes and lowering, and of cursors, on
+  the budget. The wire's limits gained `dictionary_bytes`.
 - A cut costs a trip to the compute pool a piece.
 - The dictionary and staged limits follow the frame limit: one and four frames' bytes.
 - An array-form JSON push is scanned for its elements twice: once to chunk it, once as each
