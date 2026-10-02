@@ -290,6 +290,19 @@ fn keys_in_a_non_canonical_form_are_malformed() {
 }
 
 #[test]
+fn a_key_a_state_error_names_is_shown_bounded() {
+    let hostile = "\u{1b}[2J\u{202e}".repeat(100_000);
+    let record = StateRecord {
+        key: hostile,
+        value: Bytes::from_static(b"{}"),
+    };
+    let refused = StateEntry::from_record(&record).unwrap_err().to_string();
+    assert!(refused.len() <= 1024, "{} bytes", refused.len());
+    assert!(!refused.chars().any(char::is_control), "{refused:?}");
+    assert!(refused.contains(r"\u{1b}[2J\u{202e}"), "{refused:?}");
+}
+
+#[test]
 fn applying_changes_puts_and_deletes_entries() {
     let mut state = PipelineState::default();
     let put = StateEntry::Partition {

@@ -75,6 +75,16 @@ impl Destination for RemoteDestination {
             let opened = connection
                 .call(deadline, "the open", client.open(request))
                 .await?;
+            // A record's key is a string of a control message, bounded as one.
+            for record in &opened.state {
+                connection
+                    .options
+                    .limits
+                    .admit_string(&record.key)
+                    .map_err(|refusal| {
+                        rdlt_connector::wire::frame_error(&rdlt_wire::WireError::Refused(refusal))
+                    })?;
+            }
             Ok(OpenedSession {
                 session: Box::new(RemoteSession {
                     connection: Arc::clone(&self.connection),

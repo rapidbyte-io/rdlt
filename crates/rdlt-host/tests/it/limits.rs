@@ -207,3 +207,39 @@ async fn a_request_beyond_its_class_limit_is_refused_by_the_served_connector() {
     assert_eq!(refused.code(), tonic::Code::OutOfRange, "{refused}");
     assert!(refused.message().contains("too large"), "{refused}");
 }
+
+#[tokio::test]
+async fn a_state_key_beyond_the_control_string_limit_is_refused_where_it_is_received() {
+    use crate::support::fake::{Fake, Fault, serve_fake};
+    use rdlt_connector::{Destination as _, LoadId, OpenContext, PipelineId};
+    let opened = |key: fn() -> String| async move {
+        let io = serve_fake(Fake(Fault::Keys(key)));
+        let connection = Connection::connect(
+            io,
+            Role::Destination,
+            &serde_json::json!({}),
+            Options::default(),
+        )
+        .await
+        .expect("the fake connects");
+        let destination =
+            rdlt_host::RemoteDestination::new(connection).expect("the fake declares capabilities");
+        let context = OpenContext {
+            pipeline: PipelineId::parse("keyed").expect("a pipeline id"),
+            load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+        };
+        destination
+            .open(&context)
+            .await
+            .map(|opened| opened.state.len())
+    };
+    assert_eq!(opened(|| "k".repeat(64 * 1024)).await.ok(), Some(1));
+    let refused = opened(|| "k".repeat(64 * 1024 + 1))
+        .await
+        .expect_err("the key is refused");
+    assert_eq!(refused.code(), Some("limit_exceeded"), "{refused}");
+    assert_eq!(
+        refused.limit().map(|limit| limit.name),
+        Some("control string bytes")
+    );
+}

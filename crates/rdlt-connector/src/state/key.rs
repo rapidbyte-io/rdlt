@@ -45,7 +45,7 @@ impl StateKey {
     /// one key cannot hide under two record keys.
     pub fn parse(key: &str) -> Result<Self, StateError> {
         let malformed = || StateError::MalformedKey {
-            key: key.to_owned(),
+            key: super::error::shown(key),
         };
         let parsed: Self = serde_json::from_str(key).map_err(|_| malformed())?;
         if parsed.encode() == key {
