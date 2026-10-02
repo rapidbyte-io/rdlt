@@ -63,7 +63,8 @@ follows H1c.
     The answered barrier only moves forward.
   - A connector's `retry_after` is waited for no longer than the retry policy's `max_delay`, as
     every other backoff is. The simulation now and then asks for ten years, which the cap keeps
-    within the run's limit.
+    within the run's limit. Amended by ADR 0042: only a rate limit's wait is kept, and no shorter
+    than the policy's first delay.
   - `Options::missed` is a `NonZeroU32`, and `Connection::handshake` refuses a zero heartbeat
     interval as `options_invalid` before any I/O.
 - **The handshake answers who the connector is before it sees its configuration** (protocol 2).

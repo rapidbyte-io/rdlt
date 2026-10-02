@@ -36,7 +36,7 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
     receiver bounds the depth itself, and refuses a deeper type by name.
   - A limit left 0 means the protocol's default, as a peer from before that limit existed leaves
     it. The handshake's response carries the connector's limits, as its request carries the
-    host's.
+    host's, and the protocol version the connector speaks (ADR 0042).
   - A value that may be absent as a whole, such as a primary key, is a message of its own, so
     absent and empty differ.
 - **The code is generated and committed.** `cargo xtask codegen` compiles the `.proto` files with

@@ -56,7 +56,8 @@ socket will be.
     budget admits it.
   - A host cannot tell a connector that overran its credit from one that did not, because it
     grants credit back as it consumes. So the protection is the served end keeping to its credit,
-    plus HTTP/2's own flow control, not a check on the host.
+    plus HTTP/2's own flow control, not a check on the host. Frames that carry no event are
+    bounded by count between events instead (ADR 0042).
   - Both ends grant HTTP/2's largest connection window (`CONNECTION_WINDOW`). Credit and each
     stream's window bound what a peer sends, so frames the engine has not taken yet, on reads it
     is behind on, never starve the connection's other streams. The heartbeat is one of them: with
@@ -69,10 +70,12 @@ socket will be.
   - Each call has its deadline from §12.6, and fails past it with a transient
     `deadline_exceeded` error. Reporting committed cursors, which §12.6 does not list, takes the
     commit's deadline.
-  - A started read has no deadline: silence on a data stream is never fatal.
+  - A started read has no deadline: silence on a data stream is never fatal. A read asked to
+    stop is dropped once the engine's stop wait passes (ADR 0042).
   - Each frame of a write is sent within the write-ack deadline, as the transport's windows may
     fill before the connector's credit is spent: a destination whose writer never returns fails
-    the write with `deadline_exceeded` rather than hanging it.
+    the write with `deadline_exceeded` rather than hanging it. The deadline bounds the whole wait
+    for credit, however many answers arrive, and a credit of no bytes is refused (ADR 0042).
   - After this end stalls, the next heartbeat waits its interval rather than catching up, so a
     stalled host does not lose a live connector. An echo of a heartbeat never sent answers
     nothing.
