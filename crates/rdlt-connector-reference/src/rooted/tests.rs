@@ -726,3 +726,45 @@ fn a_sync_that_fails_fails_its_caller_and_is_not_recorded_as_made() {
     super::sync_file(&file, Path::new("file")).unwrap();
     assert_eq!(trace::steps(), [trace::Step::SyncFile("file".into())]);
 }
+
+#[test]
+fn an_entry_s_status_is_asked_of_the_directory_and_follows_no_link() {
+    let (base, dir) = tree();
+    let path = base.path().join("root").join("entry");
+    std::fs::write(&path, b"x").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let found = dir.status("entry").unwrap().unwrap();
+    let ours = rustix::process::geteuid().as_raw();
+    assert_eq!(
+        (found.kind, found.owner, found.mode, found.links),
+        (Kind::File, ours, 0o640, 1)
+    );
+    assert!(found.private_of(0o022).is_ok());
+    assert!(matches!(
+        found.private_of(0o077),
+        Err(Refusal::Shared { mode: 0o640, .. })
+    ));
+    std::fs::hard_link(&path, base.path().join("root").join("entry-again")).unwrap();
+    assert_eq!(dir.status("entry").unwrap().unwrap().links, 2);
+    assert_eq!(dir.status("link").unwrap().unwrap().kind, Kind::Other);
+    assert_eq!(dir.status("missing").unwrap(), None);
+    assert_eq!(dir.kind("entry").unwrap(), Some(Kind::File));
+}
+
+#[test]
+fn a_lock_on_a_lock_file_outlives_every_other_open_and_close_of_it_in_the_process() {
+    let (base, dir) = tree();
+    let held = dir.lock_file("table.lock").unwrap();
+    held.try_lock().unwrap();
+    // The lock is its descriptor's: closing another descriptor of the file releases nothing.
+    drop(dir.lock_file("table.lock").unwrap());
+    drop(dir.file("table.lock").unwrap());
+    drop(std::fs::File::open(base.path().join("root").join("table.lock")).unwrap());
+    let other = dir.lock_file("table.lock").unwrap();
+    assert!(matches!(
+        other.try_lock(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    drop(held);
+    other.try_lock().unwrap();
+}

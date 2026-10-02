@@ -198,3 +198,114 @@ fn a_database_that_is_missing_is_created_only_where_asked() {
     assert_eq!(found.permissions().mode() & 0o777, 0o600);
     assert_eq!(located(&path, false).expect("found"), Some(path));
 }
+
+/// The locks this process holds through its descriptors' files, as the kernel lists them.
+#[cfg(target_os = "linux")]
+fn locks() -> Vec<String> {
+    let process = std::process::id().to_string();
+    let mut held: Vec<String> = std::fs::read_to_string("/proc/locks")
+        .expect("the kernel lists locks")
+        .lines()
+        .map(|line| line.split_whitespace().skip(1).collect::<Vec<_>>())
+        .filter(|fields| fields.first() == Some(&"POSIX") && fields.get(3) == Some(&&*process))
+        .map(|fields| fields.join(" "))
+        .collect();
+    held.sort();
+    held
+}
+
+/// The variable that names the database [`another_process_writes_the_database_it_is_given`]
+/// writes.
+const WRITTEN: &str = "RDLT_TEST_WRITTEN_DATABASE";
+
+/// Run only by [`written_by_another_process`], in a process of its own: takes the write lock of
+/// the database it is given without waiting, and writes a row.
+#[test]
+#[ignore = "run by a test that names a database"]
+fn another_process_writes_the_database_it_is_given() {
+    let path = std::env::var_os(WRITTEN).expect("a database is named");
+    let connection = rusqlite::Connection::open(path).expect("the database opens");
+    connection
+        .busy_timeout(std::time::Duration::ZERO)
+        .expect("no wait");
+    connection
+        .execute_batch("BEGIN IMMEDIATE; INSERT INTO t VALUES (2); COMMIT;")
+        .expect("the write lock is free");
+}
+
+/// Whether another process takes the write lock of the database at `path` now and writes it.
+fn written_by_another_process(path: &Path) -> bool {
+    let test = "sqlite::location::tests::another_process_writes_the_database_it_is_given";
+    let ran = std::process::Command::new(std::env::current_exe().expect("this test's binary"))
+        .args(["--exact", test, "--ignored", "--test-threads", "1"])
+        .env(WRITTEN, path)
+        .output()
+        .expect("the test binary runs");
+    let said = String::from_utf8_lossy(&ran.stdout);
+    assert!(said.contains("running 1 test"), "the writer ran: {said}");
+    ran.status.success()
+}
+
+/// A connection writing the database at `path`, its transaction open and its lock held.
+fn writing(path: &Path) -> rusqlite::Connection {
+    let writer = connect(path).expect("the database opens");
+    writer
+        .execute_batch("CREATE TABLE IF NOT EXISTS t (a INTEGER); BEGIN IMMEDIATE")
+        .expect("the write lock is taken");
+    writer
+        .execute("INSERT INTO t VALUES (1)", [])
+        .expect("a row");
+    writer
+}
+
+#[test]
+fn checking_a_database_s_place_holds_out_whoever_an_open_transaction_holds_out() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("orders.db");
+    let writer = writing(&path);
+    assert!(
+        !written_by_another_process(&path),
+        "the writer's lock holds"
+    );
+    // What every open, check and read-back of the destination does first, and a second
+    // connection of the process, which checks the place again.
+    for _ in 0..2 {
+        located(&path, true).expect("the place is private");
+        located(&path, false).expect("the place is private");
+    }
+    drop(connect(&path).expect("a second connection"));
+    drop(super::super::database::reading(&path).expect("a reading connection"));
+    assert!(
+        !written_by_another_process(&path),
+        "another process wrote during the writer's transaction"
+    );
+    writer.execute_batch("COMMIT").expect("the writer commits");
+    assert!(written_by_another_process(&path), "the lock is free");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn checking_a_database_s_place_releases_no_lock_the_process_holds() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("orders.db");
+    let writer = writing(&path);
+    let before = locks();
+    assert!(!before.is_empty(), "the writer holds locks");
+    located(&path, true).expect("the place is private");
+    located(&path, false).expect("the place is private");
+    assert_eq!(locks(), before);
+    writer.execute_batch("COMMIT").expect("the writer commits");
+}
+
+#[test]
+fn a_database_of_more_names_than_one_is_refused() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("orders.db");
+    drop(connect(&path).expect("the database is created"));
+    let other = directory.path().join("other.db");
+    std::fs::hard_link(&path, &other).expect("a second name");
+    assert_eq!(refusal(connect(&path)), config("not_a_regular_file"));
+    assert_eq!(refusal(connect(&other)), config("not_a_regular_file"));
+    std::fs::remove_file(&other).expect("the name is removed");
+    drop(connect(&path).expect("the database has one name"));
+}

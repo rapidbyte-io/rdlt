@@ -16,17 +16,19 @@ mod tests;
 use std::ffi::OsString;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
 
 use crate::files::io::failed;
-use crate::rooted::{self, Dir, Refusal};
+use crate::rooted::{Dir, Kind, Refusal};
 
 /// What follows a database's name in the names of the files SQLite keeps beside it, the
 /// database itself first: its write-ahead log, that log's index, and its rollback journal.
 pub(super) const SIDE_FILES: [&str; 4] = ["", "-wal", "-shm", "-journal"];
+
+/// Held while a database's place is checked and a missing database created.
+static PLACING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// The prefix of a name SQLite reads as a URI.
 const URI_PREFIX: &[u8] = b"file:";
@@ -40,6 +42,9 @@ const URI_PREFIX: &[u8] = b"file:";
 pub(super) fn located(path: &Path, create: bool) -> Result<Option<PathBuf>> {
     let path = named(path)?;
     let placed = || -> io::Result<bool> {
+        // One at a time: the descriptor a database is created through is closed before any
+        // connection of the process can have locked the file.
+        let _placing = PLACING.lock();
         let (dir, name) = private(&path)?;
         match (dir.kind(&name)?, create) {
             (Some(_), _) => Ok(true),
@@ -112,9 +117,14 @@ pub(super) fn named(path: &Path) -> Result<PathBuf> {
 ///
 /// The directory is a root as the files connectors hold theirs: its user's, and writable by no
 /// other, so no one else creates, replaces or links a name in it. The database and each file
-/// SQLite keeps beside it, where they exist, are regular files of that user's, no links, and
-/// within no one else's reach: SQLite adopts a log that is already there as it is, and whoever
-/// reads the log's index can hold every writer out.
+/// SQLite keeps beside it, where they exist, are regular files of that user's under one name
+/// each, no links, and within no one else's reach: SQLite adopts a log that is already there as
+/// it is, whoever reads the log's index can hold every writer out, and a database of two names
+/// has a log under each.
+///
+/// Each is asked of the directory and none is opened: SQLite locks its files by record, and
+/// closing any descriptor of a file releases every such lock the process holds on it, those of
+/// a connection in the middle of its transaction too.
 fn private(path: &Path) -> io::Result<(Dir, OsString)> {
     let directory = path.parent().unwrap_or(Path::new("/"));
     let name = path.file_name().unwrap_or_default().to_owned();
@@ -122,19 +132,13 @@ fn private(path: &Path) -> io::Result<(Dir, OsString)> {
     for suffix in SIDE_FILES {
         let mut side = name.clone();
         side.push(suffix);
-        if dir.kind(&side)?.is_none() {
+        let Some(found) = dir.status(&side)? else {
             continue;
+        };
+        if found.kind != Kind::File || found.links != 1 {
+            return Err(Refusal::NotRegular.into());
         }
-        let file = dir.file(&side)?;
-        rooted::private(&file)?;
-        let found = file.metadata()?;
-        if found.mode() & 0o077 != 0 {
-            let reached = Refusal::Shared {
-                owner: found.uid(),
-                mode: found.mode() & 0o7777,
-            };
-            return Err(reached.into());
-        }
+        found.private_of(0o077)?;
     }
     Ok((dir, name))
 }
