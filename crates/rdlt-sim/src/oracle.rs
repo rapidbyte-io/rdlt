@@ -293,9 +293,12 @@ struct Ran {
     stopped: bool,
 }
 
-/// Bytes: the least memory budget a run is given, which holds a few of the pushes a workload
-/// makes at once: a budget admits nothing beyond its shares, so one too small for a push, a
-/// cursor or a read's schema refuses it, and one a few times larger makes them wait.
+/// Bytes: the least memory budget a run is given: about the least whose shares hold what a
+/// workload sends, a read's schema of a few kilobytes, its cursors and a commit's frame.
+///
+/// A budget admits nothing beyond its shares, so one smaller refuses them. A workload's pushes
+/// are far smaller than their share of it and never wait for it: lane windows and partition
+/// buffers hold a source back.
 const MEMORY: u64 = 256 << 10;
 
 /// The engine's configuration, drawn from `rng`; a streaming world plans again every quarter
