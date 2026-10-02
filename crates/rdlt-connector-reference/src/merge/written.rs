@@ -28,6 +28,18 @@ pub(crate) fn admitted(
     if seqs.null_count() != 0 {
         return Err(refused(SEQUENCE_MISSING, "a row has no sequence"));
     }
+    // A child table is keyed by its root's id, the first of its key's columns.
+    let keyed = match &key.root {
+        Some(_) => key.columns.get(..1).unwrap_or_default(),
+        None => &key.columns[..],
+    };
+    if let Some(missing) = keyed
+        .iter()
+        .find(|column| batch.column_by_name(column).is_none())
+    {
+        let message = format!("the rows have no key column {missing}");
+        return Err(refused(MERGE_KEY_INVALID, message));
+    }
     let Some(changes) = &key.changes else {
         return Ok(());
     };
