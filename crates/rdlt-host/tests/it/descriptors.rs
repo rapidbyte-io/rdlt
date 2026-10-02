@@ -109,22 +109,23 @@ fn opening(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<u64> {
 }
 
 /// Spawns `count` connectors with `local`, eight at a time, while another thread opens files
-/// without close-on-exec: how many started with a descriptor beside their own.
-async fn leaked(local: rdlt_host::Local, count: usize) -> usize {
+/// without close-on-exec: what each connector that did not start with its own descriptors
+/// alone said, or why it did not start.
+async fn leaked(local: rdlt_host::Local, count: usize) -> Vec<String> {
     let stop = Arc::new(AtomicBool::new(false));
     let opener = opening(Arc::clone(&stop));
-    let mut leaked = 0;
+    let mut leaked = Vec::new();
     for _ in 0..count / 8 {
         let spawning = (0..8).map(|_| {
             let local = local.clone();
             tokio::spawn(async move {
                 let placed = local.source(&scripted(), &only_its_descriptors()).await;
-                let source = placed.expect("the connector starts").connector;
-                source.check().await.is_err()
+                let source = placed.map_err(|error| format!("{error:?}"))?.connector;
+                source.check().await.map_err(|error| format!("{error:?}"))
             })
         });
         for spawned in spawning.collect::<Vec<_>>() {
-            leaked += usize::from(spawned.await.expect("the task ends"));
+            leaked.extend(spawned.await.expect("the task ends").err());
         }
     }
     stop.store(true, Ordering::Relaxed);
@@ -137,7 +138,7 @@ async fn leaked(local: rdlt_host::Local, count: usize) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_trusted_connector_inherits_a_descriptor_another_thread_opens_as_it_is_spawned() {
-    assert_eq!(leaked(local(), 304).await, 0);
+    assert_eq!(leaked(local(), 304).await, Vec::<String>::new());
 }
 
 #[cfg(target_os = "linux")]
@@ -148,5 +149,6 @@ async fn no_sandboxed_connector_inherits_a_descriptor_another_thread_opens_as_it
         rdlt_testkit::process::without_sandbox(&unusable);
         return;
     }
-    assert_eq!(leaked(rdlt_host::Local::sandboxed(sandbox), 304).await, 0);
+    let leaked = leaked(rdlt_host::Local::sandboxed(sandbox), 304).await;
+    assert_eq!(leaked, Vec::<String>::new());
 }

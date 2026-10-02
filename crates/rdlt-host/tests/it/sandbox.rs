@@ -77,6 +77,25 @@ pub(crate) mod bubblewrap {
         }
     }
 
+    /// What the scripted connector's own binary puts in its environment when started with
+    /// none, as an instrumented build's runtime does: never anything of the host's.
+    fn own_env() -> serde_json::Map<String, serde_json::Value> {
+        let directory = tempfile::tempdir().expect("a temporary directory");
+        let output = std::process::Command::new(example("scripted_connector"))
+            .arg("--own-env")
+            .env_clear()
+            .current_dir(directory.path())
+            .output()
+            .expect("the connector runs");
+        assert!(output.status.success(), "{output:?}");
+        let printed = String::from_utf8(output.stdout).expect("text");
+        printed
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_owned(), value.into()))
+            .collect()
+    }
+
     /// A listener on the host's loopback, and its address.
     fn listener() -> (std::net::TcpListener, String) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a listener");
@@ -137,10 +156,14 @@ pub(crate) mod bubblewrap {
         let home = std::env::var("HOME").expect("a home directory");
         let own = std::env::current_exe().expect("the test binary has a path");
         let (name, value) = ("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"));
+        // What the host states, where the launcher put it, and what the binary adds itself.
+        let mut whole_env = own_env();
+        assert!(!whole_env.contains_key(name), "{whole_env:?}");
+        whole_env.insert(name.to_owned(), value.into());
+        whole_env.insert("PWD".to_owned(), "/".into());
         let script = serde_json::json!({
             "only_its_descriptors": true,
-            // What the host states, and where the launcher put it.
-            "whole_env": { name: value, "PWD": "/" },
+            "whole_env": whole_env,
             "absent": [
                 home, "/home", "/root", "/etc/passwd", "/var", "/run", "/srv", "/mnt",
                 logs.path(), logs.path().join("pipeline.wal"), value, own,
