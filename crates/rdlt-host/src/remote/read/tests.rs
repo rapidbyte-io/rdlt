@@ -94,8 +94,11 @@ impl Drop for Charged {
 struct Charging(Arc<Charges>);
 
 impl Admission for Charging {
-    fn admit<'a>(&'a self, _event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>> {
-        Box::pin(async { None })
+    fn admit<'a>(
+        &'a self,
+        _event: &'a SourceEvent,
+    ) -> BoxFuture<'a, rdlt_connector::Result<Option<Permit>>> {
+        Box::pin(async { Ok(None) })
     }
 
     fn charge(&self, bytes: u64) -> Permit {
@@ -171,4 +174,48 @@ fn a_reads_dictionaries_are_charged_while_its_decoder_holds_them() {
     // A new schema forgets the dictionaries, and what held them is released.
     assert_eq!(read(schema_frame(&mut encoder, &second, 2)), 0);
     assert_eq!(*charges.0.lock().unwrap(), [held[0], 0]);
+}
+
+#[test]
+fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
+    use rdlt_connector::cost::{Allocations, schema_bytes};
+    // Sixteen columns named in 60,000 bytes each: about a megabyte of schema.
+    let columns = (0..16).map(|index| {
+        let name = format!("{index:02}{}", "n".repeat(59_998));
+        let ones: ArrayRef = Arc::new(arrow_array::Int8Array::from(vec![1_i8]));
+        (name, ones)
+    });
+    let batch = RecordBatch::try_from_iter(columns).expect("a valid batch");
+    let schema = schema_bytes(&batch.schema());
+    assert!(schema >= 960_000);
+    let (mut reader, mut encoder) = (reader(), Encoder::default());
+    let mut kept = Allocations::default();
+    let mut pushes = Vec::new();
+    for epoch in 1..=200 {
+        let read = reader.event(schema_frame(&mut encoder, &batch, epoch));
+        assert!(matches!(read, Ok(Read::Nothing)));
+        for frame in batch_frames(&mut encoder, &batch, epoch) {
+            let Ok(Read::Event(SourceEvent::Push(Push::Arrow(decoded)))) = reader.event(frame)
+            else {
+                panic!("the frame is a batch");
+            };
+            kept.add(&decoded);
+            pushes.push(decoded);
+        }
+    }
+    assert_eq!(pushes.len(), 200);
+    let first = pushes[0].schema();
+    assert!(
+        pushes
+            .iter()
+            .all(|push| Arc::ptr_eq(&push.schema(), &first))
+    );
+    // Two hundred batches keep one schema alive between them, and a few bytes each.
+    assert!(
+        kept.bytes() < schema + (200 << 10),
+        "{} bytes",
+        kept.bytes()
+    );
+    // Each is still charged for the schema it holds, shared or not.
+    assert!(Allocations::of(&pushes[199]).bytes() >= schema);
 }

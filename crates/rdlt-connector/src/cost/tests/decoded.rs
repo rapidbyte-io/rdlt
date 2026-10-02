@@ -7,7 +7,7 @@ use arrow_array::types::Int32Type;
 use arrow_array::{ArrayRef, DictionaryArray, Int32Array, Int64Array, RecordBatch, StringArray};
 use rdlt_wire::{Decoder, Encoder, Limits};
 
-use crate::cost::Allocations;
+use crate::cost::{Allocations, schema_bytes};
 
 /// What `batch` holds once decoded, as the decoder measures it and as its allocations count:
 /// the batch's own allocation, the dictionaries the decoder holds, and the allocations.
@@ -21,7 +21,9 @@ fn decoded(batch: &RecordBatch) -> (u64, u64, u64) {
         let (read, shape) = decoder.shaped(&frame).unwrap();
         if let Some(read) = read {
             assert_eq!(&read, batch);
-            held = Some((shape.held_bytes, Allocations::of(&read).bytes()));
+            // Beside its buffers a batch holds its schema, which the decoder's count leaves out.
+            let buffers = Allocations::of(&read).bytes() - schema_bytes(&read.schema());
+            held = Some((shape.held_bytes, buffers));
         }
     }
     let (own, allocations) = held.unwrap();

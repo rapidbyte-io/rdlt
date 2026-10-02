@@ -2,7 +2,6 @@ mod bounds;
 mod decoded;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use arrow_array::builder::{BinaryViewBuilder, StringViewBuilder};
 use arrow_array::types::{Int8Type, Int16Type, Int32Type};
@@ -19,7 +18,7 @@ use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields, IntervalUnit, UnionFields};
 use proptest::prelude::*;
 
-use super::{Allocations, Rendering, nulls};
+use super::{Allocations, Piece, Rendering, nulls, schema_bytes};
 use crate::types::TypeKind;
 
 /// A destination storing every scalar as it is.
@@ -339,25 +338,42 @@ fn multiplied(rows: usize, items: usize, bytes: usize) -> ArrayRef {
     )
 }
 
+/// The rows each piece of `pieces` ends before.
+fn ends(pieces: &[Piece]) -> Vec<usize> {
+    pieces.iter().map(|piece| piece.end).collect()
+}
+
 #[test]
 fn measuring_stops_at_its_limit_however_an_encoding_multiplies() {
+    const ROWS: usize = 1_000_000;
     // A million rows each naming a list of a hundred thousand views: 10^11 views to visit.
-    let column = multiplied(1_000_000, 100_000, 1_000);
-    let started = Instant::now();
+    let column = multiplied(ROWS, 100_000, 1_000);
     let cost = native().expanded_array(column.as_ref(), 0..column.len(), 1 << 20);
     assert!(cost > 1 << 20);
-    let cuts = native()
-        .measure(&batch(Arc::clone(&column)), 1 << 20)
-        .cuts();
-    assert_eq!(cuts.len(), 1_000_000);
-    assert!(started.elapsed() < Duration::from_secs(60));
+    let (batch, rendering) = (batch(Arc::clone(&column)), native());
+    let mut measure = rendering.measure(&batch, 1 << 20);
+    let cuts = measure.cuts();
+    assert_eq!(cuts.len(), ROWS);
+    // The views' own sixteen bytes each pass the limit before any is looked at, so the list
+    // costs a few steps each time a row names it, and is not worth remembering.
+    let (steps, remembered) = measure.work();
+    assert_eq!(remembered, 0);
+    assert!(steps <= 8 * u64::try_from(ROWS).unwrap(), "{steps} steps");
 }
 
 #[test]
 fn a_batch_within_the_maximum_is_one_piece() {
     let ids = batch(Arc::new(Int64Array::from(vec![7; 1_000])));
-    assert_eq!(native().measure(&ids, 1 << 20).cuts(), [1_000]);
-    assert_eq!(native().measure(&ids.slice(0, 0), 1 << 20).cuts(), [0]);
+    let whole = native().measure(&ids, 1 << 20).cuts();
+    assert_eq!(
+        whole,
+        [Piece {
+            end: 1_000,
+            bytes: 8_000
+        }]
+    );
+    let none = native().measure(&ids.slice(0, 0), 1 << 20).cuts();
+    assert_eq!(none, [Piece { end: 0, bytes: 0 }]);
 }
 
 #[test]
@@ -371,7 +387,7 @@ fn cuts_fall_where_the_rows_own_values_say() {
     let skewed: ArrayRef = Arc::new(
         DictionaryArray::<Int32Type>::try_new(Int32Array::from(keys), Arc::new(values)).unwrap(),
     );
-    let cuts = native().measure(&batch(skewed), 12_000).cuts();
+    let cuts = ends(&native().measure(&batch(skewed), 12_000).cuts());
     // The small rows before fit one piece with the first large value at most; each large value
     // then takes a piece of its own.
     assert!(cuts[0] <= 101, "{cuts:?}");
@@ -379,8 +395,20 @@ fn cuts_fall_where_the_rows_own_values_say() {
     assert_eq!(cuts.last(), Some(&1_000));
 }
 
+#[test]
+fn every_row_costs_what_the_table_holds_nothing_of_it_in() {
+    let ids = batch(Arc::new(Int64Array::from(vec![7; 1_000])));
+    // A hundred bytes of nulls a row beside its eight: ten rows to a piece.
+    let mut measure = native().lowering(&ids, Vec::new(), 100, 1_080);
+    assert_eq!(measure.expanded(0..10), 1_080);
+    let cuts = measure.cuts();
+    assert_eq!(cuts.len(), 100);
+    assert!(cuts.iter().all(|piece| piece.bytes == 1_080), "{cuts:?}");
+}
+
 proptest! {
-    /// Pieces cover the rows in order, and each fits the maximum or is one row.
+    /// Pieces cover the rows in order, each fits the maximum or is one row, and each ends only
+    /// where the next row, measured for itself, would not fit.
     #[test]
     fn every_piece_fits_or_is_one_row(
         lengths in proptest::collection::vec(0_usize..200, 1..60),
@@ -392,15 +420,17 @@ proptest! {
         let rendering = native();
         let cuts = rendering.measure(&batch, max).cuts();
         let mut first = 0;
-        for end in &cuts {
-            prop_assert!(*end > first || batch.num_rows() == 0);
-            let cost = rendering.expanded(&batch, first..*end, u64::MAX);
-            prop_assert!(cost <= max || end - first == 1, "{first}..{end} costs {cost}");
-            // A piece ends only where one more row would not fit.
-            if *end < batch.num_rows() && end - first > 1 {
-                prop_assert!(rendering.expanded(&batch, first..end + 1, u64::MAX) > max);
+        for Piece { end, bytes } in cuts {
+            prop_assert!(end > first);
+            let cost = rendering.expanded(&batch, first..end, u64::MAX);
+            // What a piece was measured to take is never less than what its rows take together.
+            prop_assert!(cost <= bytes, "{first}..{end} costs {cost}, measured {bytes}");
+            prop_assert!(bytes <= max || end - first == 1, "{first}..{end} costs {bytes}");
+            if end < batch.num_rows() && bytes <= max {
+                let next = rendering.expanded(&batch, end..end + 1, u64::MAX);
+                prop_assert!(bytes + next > max, "{first}..{end} leaves room for a row");
             }
-            first = *end;
+            first = end;
         }
         prop_assert_eq!(first, batch.num_rows());
     }
@@ -415,8 +445,11 @@ fn a_batch_holds_every_allocation_it_pins_once() {
     // One row keeps the whole buffer alive, and two columns sharing it hold it once.
     assert_eq!(Allocations::of_array(slice.as_ref()).bytes(), bytes);
     let shared = RecordBatch::try_from_iter([("a", Arc::clone(&slice)), ("b", slice)]).unwrap();
-    assert_eq!(Allocations::of(&shared).bytes(), bytes);
-    assert_eq!(native().cost(&shared, u64::MAX).held, bytes);
+    // The batch holds its schema beside: two fields named in a byte each.
+    let held = bytes + schema_bytes(&shared.schema());
+    assert_eq!(schema_bytes(&shared.schema()), 2 * 129);
+    assert_eq!(Allocations::of(&shared).bytes(), held);
+    assert_eq!(native().cost(&shared, u64::MAX).held, held);
     assert!(native().cost(&shared, u64::MAX).charge() >= bytes);
 }
 
@@ -443,7 +476,10 @@ fn allocations_count_only_what_a_set_did_not_hold() {
     let added = held.add_array(second.as_ref());
     assert!(added >= 8_000);
     assert_eq!(held.bytes(), before + added);
-    assert_eq!(held.add(&batch(second)), 0);
+    // A batch of an array the set holds adds its schema alone, and once.
+    let second = batch(second);
+    assert_eq!(held.add(&second), schema_bytes(&second.schema()));
+    assert_eq!(held.add(&second.slice(0, 5)), 0);
 }
 
 #[test]
@@ -476,4 +512,28 @@ fn a_batch_nested_beyond_any_the_limits_admit_costs_more_than_any_limit() {
     let admitted = nested(64);
     let column = Arc::clone(admitted.column(0));
     assert!(expanded(&native(), &column) < 10_000);
+}
+
+#[test]
+fn a_schema_counts_its_names_and_metadata_at_any_depth() {
+    use std::collections::HashMap;
+    let named = |name: &str, data_type| Field::new(name, data_type, true);
+    let plain = arrow_schema::Schema::new(vec![named("ab", DataType::Int8)]);
+    assert_eq!(schema_bytes(&plain), 128 + 2);
+    // A megabyte of name is a megabyte held, wherever the field lies.
+    let long = "n".repeat(1 << 20);
+    let inner = named(&long, DataType::Int8);
+    let item = Arc::new(named("item", DataType::Struct(Fields::from(vec![inner]))));
+    let keyed = DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::List(item)));
+    let nested = arrow_schema::Schema::new(vec![named("c", keyed)]);
+    assert_eq!(schema_bytes(&nested), 3 * 128 + 1 + 4 + (1 << 20));
+    // Metadata of the schema and of a field, and a time zone.
+    let zoned = DataType::Timestamp(arrow_schema::TimeUnit::Second, Some("Europe/Warsaw".into()));
+    let field = named("t", zoned).with_metadata(HashMap::from([("k".to_owned(), "vv".to_owned())]));
+    let schema = arrow_schema::Schema::new(vec![field])
+        .with_metadata(HashMap::from([("key".to_owned(), "value".to_owned())]));
+    assert_eq!(schema_bytes(&schema), (48 + 8) + 128 + 1 + (48 + 3) + 13);
+    // A type nested deeper than any stack walks is counted to its end.
+    let deep = crate::cost::tests::nested(3_000).schema();
+    assert_eq!(schema_bytes(&deep), 3_000 * 128 + 6 + 2_999);
 }
