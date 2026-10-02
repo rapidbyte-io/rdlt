@@ -1,6 +1,5 @@
 //! Turns an author's [`DestinationConnector`] into the engine-facing [`Destination`].
 
-use std::collections::BTreeSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -38,15 +37,6 @@ impl<C: DestinationConnector> Destination for DestinationAdapter<C> {
                 epoch,
                 state,
             } = self.connector.open(context).await?;
-            let mut keys = BTreeSet::new();
-            if let Some(repeated) = state
-                .iter()
-                .find(|record| !keys.insert(record.key.as_str()))
-            {
-                let message = format!("the destination returned state key {} twice", repeated.key);
-                let error = ConnectorError::data(message).with_code("state_duplicate_key");
-                return Err(close_after(session, error).await);
-            }
             // Unpublished staging from any earlier load must never reach a later commit.
             if let Err(error) = session.discard_staged().await {
                 return Err(close_after(session, error).await);

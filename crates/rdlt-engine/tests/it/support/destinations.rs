@@ -1,6 +1,7 @@
 //! Destinations for tests: one that discards what it stages, one that hides a capability, one
 //! that fails at a chosen step, one whose commits wait until a test lets them go, one whose
-//! writes never return, and one that counts the sessions it opens and closes.
+//! writes never return, one that counts the sessions it opens and closes, and one that answers
+//! an open with state it rewrote.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -513,5 +514,36 @@ impl DestinationSession for CountedSession {
     fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
         self.sessions.closed.fetch_add(1, Ordering::SeqCst);
         self.inner.close()
+    }
+}
+
+/// How a [`restated`] destination rewrites the state records an open answers with.
+pub(crate) type Restate = fn(&mut Vec<rdlt_connector::StateRecord>);
+
+/// `inner`, answering every open with the state records `restate` rewrote.
+pub(crate) fn restated(inner: Arc<dyn Destination>, restate: Restate) -> Arc<dyn Destination> {
+    Arc::new(Restated { inner, restate })
+}
+
+struct Restated {
+    inner: Arc<dyn Destination>,
+    restate: Restate,
+}
+
+impl Destination for Restated {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<()>> {
+        self.inner.check()
+    }
+
+    fn open<'a>(&'a self, context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
+        Box::pin(async move {
+            let mut opened = self.inner.open(context).await?;
+            (self.restate)(&mut opened.state);
+            Ok(opened)
+        })
     }
 }

@@ -6,6 +6,7 @@
 //! whatever else arrives. Assigned identifiers are recorded in an append-only name map and never
 //! move.
 
+pub(crate) mod recorded;
 #[cfg(test)]
 mod tests;
 
@@ -59,6 +60,38 @@ impl Naming {
             }),
             salt: None,
         }
+    }
+
+    /// Naming under `rules` as a destination declares them.
+    ///
+    /// # Errors
+    ///
+    /// Rules beyond their limits are `capabilities_invalid`, a Destination error.
+    pub(crate) fn checked(rules: &IdentifierRules) -> Result<Self, Error> {
+        rules.validate().map_err(|invalid| {
+            Error::new(
+                ErrorKind::Destination,
+                format!("the destination's identifier rules are refused: {invalid}"),
+            )
+            .with_code("capabilities_invalid")
+        })?;
+        Ok(Self::new(rules.clone()))
+    }
+
+    /// Whether these rules could have given a table `name`: cleaned, within the length limit,
+    /// and under no reserved prefix.
+    pub(crate) fn admits_table(&self, name: &str) -> bool {
+        let prefixes = &self.rules.prefixes;
+        self.admits(name)
+            && !prefixes
+                .iter()
+                .any(|prefix| name.starts_with(prefix.as_str()))
+    }
+
+    /// Whether these rules could have given a column `name`: cleaned and within the length
+    /// limit.
+    pub(crate) fn admits(&self, name: &str) -> bool {
+        name.len() <= usize::from(self.rules.rules.max_len.get()) && self.clean(name) == name
     }
 
     /// The same rules, appending a hash seeded with `salt` to every identifier.

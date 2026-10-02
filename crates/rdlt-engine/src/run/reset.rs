@@ -11,6 +11,7 @@ use rdlt_connector::{
 use super::Engine;
 use crate::deadline::Waits;
 use crate::error::{Error, ErrorKind, Side};
+use crate::naming::{Naming, recorded};
 use crate::scope::contained;
 
 /// What a reset clears of each stream.
@@ -92,6 +93,7 @@ impl Engine {
             .with_code("drop_unsupported"));
         }
         readable_again(source.as_ref(), streams).await?;
+        let naming = Naming::checked(&destination.capabilities().identifiers)?;
         let load_id = self.env.load_id();
         let context = OpenContext {
             pipeline: pipeline.clone(),
@@ -104,7 +106,7 @@ impl Engine {
         } = destination.open(&context).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
-        let reset = cleared(&state, streams, scope, epoch);
+        let reset = cleared(&state, &naming, streams, scope, epoch);
         let committed = match reset {
             Ok(cleared) => self.commit(&mut *session, load_id, epoch, cleared).await,
             Err(error) => Err(error),
@@ -192,9 +194,11 @@ struct Cleared {
     drop_tables: Vec<DroppedTable>,
 }
 
-/// What resetting `streams` as `scope` says changes of `records`, in a session opened at `epoch`.
+/// What resetting `streams` as `scope` says changes of `records`, whose identifiers `naming`
+/// could have given, in a session opened at `epoch`.
 fn cleared(
     records: &[rdlt_connector::StateRecord],
+    naming: &Naming,
     streams: &[StreamName],
     scope: ResetScope,
     epoch: Epoch,
@@ -206,6 +210,7 @@ fn cleared(
         )
         .with_code("state_invalid")
     })?;
+    recorded::check(naming, &state)?;
     let mut cleared = Cleared {
         state_delta: Vec::new(),
         drop_tables: Vec::new(),

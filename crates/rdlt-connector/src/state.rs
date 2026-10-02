@@ -317,10 +317,16 @@ pub struct PipelineState {
 }
 
 impl PipelineState {
-    /// Rebuilds state from stored records.
+    /// Rebuilds state from stored records, one a key.
     pub fn from_records(records: &[StateRecord]) -> Result<Self, StateError> {
         let mut state = Self::default();
+        let mut keys = BTreeSet::new();
         for record in records {
+            if !keys.insert(record.key.as_str()) {
+                return Err(StateError::Repeated {
+                    key: record.key.clone(),
+                });
+            }
             state.put(StateEntry::from_record(record)?);
         }
         Ok(state)

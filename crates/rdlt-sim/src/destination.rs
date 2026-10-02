@@ -73,7 +73,13 @@ impl DestinationConnector for SimDestination {
         }
         let mut store = self.world.store.lock();
         let pipeline = store.pipelines.entry(context.pipeline.clone()).or_default();
-        pipeline.epoch = pipeline.epoch.next();
+        let Some(epoch) = pipeline.epoch.next() else {
+            return Err(ConnectorError::data(format!(
+                "pipeline {} holds the last epoch there is",
+                context.pipeline
+            )));
+        };
+        pipeline.epoch = epoch;
         Ok(Opened {
             session: SimSession {
                 world: Arc::clone(&self.world),

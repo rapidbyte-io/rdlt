@@ -25,6 +25,12 @@ pub enum StateError {
         /// The format found.
         version: u16,
     },
+    /// Two records hold the key.
+    #[error("state key {key:?} is held by two records")]
+    Repeated {
+        /// The key.
+        key: String,
+    },
     /// The value belongs to a different key.
     #[error("state value stored under {key:?} belongs to another key")]
     KeyMismatch {

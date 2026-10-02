@@ -185,8 +185,8 @@ pub(super) fn next_epoch(
             tables::release(rdlt, name, pipeline, wait, || still_dropped(dir, name))?;
         }
         manifest.dropped.clear();
-        let (version, epoch) = (manifest.version.checked_add(1), manifest.epoch.next());
-        let Some(version) = version.filter(|_| epoch != manifest.epoch) else {
+        let next = (manifest.version.checked_add(1), manifest.epoch.next());
+        let (Some(version), Some(epoch)) = next else {
             return Err(ConnectorError::data(format!(
                 "pipeline {pipeline} holds the last manifest version or epoch there is"
             )));

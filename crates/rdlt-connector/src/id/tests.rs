@@ -149,11 +149,11 @@ fn load_ids_before_the_epoch_clamp_to_it() {
 }
 
 #[test]
-fn counters_advance_by_one() {
+fn counters_advance_by_one_and_never_past_their_largest() {
     assert_eq!(CommitSeq::FIRST.get(), 1);
     assert_eq!(CommitSeq::FIRST.next().get(), 2);
-    assert_eq!(Epoch(u64::MAX).next(), Epoch(u64::MAX));
-    assert_eq!(Epoch(4).next(), Epoch(5));
+    assert_eq!(Epoch(u64::MAX).next(), None);
+    assert_eq!(Epoch(4).next(), Some(Epoch(5)));
 }
 
 proptest! {

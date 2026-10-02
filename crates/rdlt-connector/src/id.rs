@@ -358,10 +358,10 @@ macro_rules! counter_id {
         pub struct $name(pub $int);
 
         impl $name {
-            /// The value after this one.
+            /// The value after this one, unless this one is the largest.
             #[must_use]
-            pub fn next(self) -> Self {
-                Self(self.0.saturating_add(1))
+            pub fn next(self) -> Option<Self> {
+                self.0.checked_add(1).map(Self)
             }
         }
 

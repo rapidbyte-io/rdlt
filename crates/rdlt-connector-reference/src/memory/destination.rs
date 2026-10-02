@@ -300,8 +300,13 @@ impl DestinationConnector for MemoryDestination {
     async fn open(&self, context: &OpenContext) -> Result<Opened<MemorySession>> {
         let mut store = self.store.lock();
         let pipeline = store.pipelines.entry(context.pipeline.clone()).or_default();
-        pipeline.epoch = pipeline.epoch.next();
-        let epoch = pipeline.epoch;
+        let Some(epoch) = pipeline.epoch.next() else {
+            return Err(ConnectorError::data(format!(
+                "pipeline {} holds the last epoch there is",
+                context.pipeline
+            )));
+        };
+        pipeline.epoch = epoch;
         let state = pipeline.state.values().cloned().collect();
         let session = MemorySession {
             store: Arc::clone(&self.store),

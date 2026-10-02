@@ -372,7 +372,8 @@ pub struct OpenedSession {
     pub session: Box<dyn DestinationSession>,
     /// The epoch this open set.
     pub epoch: Epoch,
-    /// Every committed state record of the pipeline, with distinct keys.
+    /// Every committed state record of the pipeline, with distinct keys: the engine refuses state
+    /// holding a key twice.
     pub state: Vec<StateRecord>,
 }
 
