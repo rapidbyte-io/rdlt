@@ -118,6 +118,17 @@ fn others() -> Vec<ArrayRef> {
         ArrowField::new("s", DataType::Utf8, true),
     ]);
     let structs = StructArray::new(fields, vec![Arc::clone(&small), Arc::clone(&words)], None);
+    // A field and items typed null, which a table holding them widely converts to nulls of its
+    // own types.
+    let nulls: ArrayRef = Arc::new(NullArray::new(ROWS));
+    let with_null = StructArray::new(
+        Fields::from(vec![
+            ArrowField::new("a", DataType::Null, true),
+            ArrowField::new("s", DataType::Utf8, true),
+        ]),
+        vec![Arc::clone(&nulls), Arc::clone(&words)],
+        None,
+    );
     let twice = |array: &ArrayRef| arrow_select::concat::concat(&[array, array]).expect("joined");
     vec![
         Arc::new(BooleanArray::from(vec![false; ROWS])),
@@ -133,6 +144,8 @@ fn others() -> Vec<ArrayRef> {
         list(twice(&small)),
         list(twice(&words)),
         list(twice(&(Arc::new(structs) as ArrayRef))),
+        Arc::new(with_null),
+        list(twice(&nulls)),
         Arc::new(BinaryViewArray::from(vec![&[0xab_u8; 40][..]; ROWS])),
         views(&small),
         views(&words),
@@ -247,6 +260,14 @@ fn joined() -> Vec<LogicalType> {
         LogicalType::List(Box::new(field("item", decimal(76, 0)))),
         LogicalType::List(Box::new(field("item", LogicalType::Json))),
     ];
+    // Nested values wider than a scalar: a struct of decimals, in a struct and in a list.
+    let wide = fields(
+        (0..8)
+            .map(|index| field(&format!("d{index}"), decimal(76, 0)))
+            .collect(),
+    );
+    types.push(fields(vec![field("a", wide.clone())]));
+    types.push(LogicalType::List(Box::new(field("item", wide))));
     for unit in units {
         types.push(LogicalType::Time(unit));
         types.push(LogicalType::Duration(unit));

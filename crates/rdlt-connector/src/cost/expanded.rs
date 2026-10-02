@@ -31,7 +31,7 @@ use arrow_array::types::{
 use arrow_schema::{DataType, Fields};
 
 use self::named::{Named, Place};
-use super::widths::{BRACKETS, NULL_TEXT, OFFSET, Scalar, count, key, keys, null_slot, scalar};
+use super::widths::{BRACKETS, OFFSET, Scalar, count, key, keys, null_slot, null_text, scalar};
 use super::{Rendering, Stored};
 use crate::types::{self, LogicalType, TypeKind};
 
@@ -345,6 +345,9 @@ impl Meter {
         let stored = within.target.map(LogicalType::to_arrow);
         let to = stored.as_ref().and_then(scalar);
         let converted = match (&stored, to) {
+            // A null of no type converts to a null of its column's, whatever that holds: a
+            // struct's every field, a list's offset.
+            (Some(stored), _) if *data_type == DataType::Null => null_slot(stored),
             // A conversion between dates, times and instants holds each value as an optional
             // 64-bit integer, twice, beside its input in the unit asked for and its result.
             (Some(stored), Some(to)) if stored != data_type && stored.is_temporal() => {
@@ -355,17 +358,18 @@ impl Meter {
             (Some(DataType::Binary | DataType::Utf8), None) => own.slot,
             _ => 0,
         };
-        let text = if within.text || within.nested {
-            to.map_or(own.text, |to| to.text.max(own.text)) + OFFSET
-        } else {
-            0
+        let text = match (&stored, within.text || within.nested) {
+            (_, false) => 0,
+            // Its text as the text of a null of its column's type is measured.
+            (Some(stored), true) if *data_type == DataType::Null => null_text(stored),
+            (_, true) => to.map_or(own.text, |to| to.text.max(own.text)) + OFFSET,
         };
         own.slot.max(1) + converted + text
     }
 
     /// Measures `rows` of structs of `fields`: each row its fields' names in its JSON text, each
     /// field its column, and each field of the table's column the structs lack a null a row,
-    /// stored and named in the row's text.
+    /// stored, and named in the row's text with the text a null of its type is measured at.
     fn structs(
         &mut self,
         array: &dyn Array,
@@ -387,8 +391,9 @@ impl Meter {
         let absent = absent.filter(|stored| fields.find(stored.name()).is_none());
         let nulls: u64 = absent
             .map(|stored| {
-                let slot = null_slot(&stored.logical_type().to_arrow());
-                slot.saturating_add(key(stored.name()) + NULL_TEXT)
+                let data_type = stored.logical_type().to_arrow();
+                let named = key(stored.name()).saturating_add(null_text(&data_type));
+                null_slot(&data_type).saturating_add(named)
             })
             .fold(0, u64::saturating_add);
         self.times(rows.len(), nulls);

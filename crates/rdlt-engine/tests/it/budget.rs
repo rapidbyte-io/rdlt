@@ -453,3 +453,75 @@ async fn a_null_typed_column_loads_within_the_budget_however_wide_its_table_colu
     assert_eq!(outcome.report.rows, 100_001);
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
 }
+
+/// A struct of two hundred decimals, sixteen bytes each.
+fn wide_struct() -> DataType {
+    let fields: Fields = (0..200)
+        .map(|index| Field::new(format!("d{index}"), DataType::Decimal128(38, 0), true))
+        .collect();
+    DataType::Struct(fields)
+}
+
+/// Loads a batch of one row of `wide`, then one of `rows` rows of `narrow`, whose values typed
+/// null are converted to `wide`'s: what the heap held at its peak, and how the run ended.
+async fn widened_nulls(
+    name: &str,
+    wide: ArrayRef,
+    narrow: ArrayRef,
+) -> (usize, rdlt_engine::RunOutcome) {
+    const BUDGET: u64 = 34 << 20;
+    let steps = Arc::new(move |step: usize| match step {
+        0 => Some(Step::Batch(batch(Arc::clone(&wide)))),
+        1 => Some(Step::Checkpoint(8)),
+        2 => Some(Step::Batch(batch(Arc::clone(&narrow)))),
+        _ => None,
+    });
+    let source = making(name, steps).await;
+    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(pipeline(name, [stream("events")]), source, null().await)
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+    (peak, outcome)
+}
+
+#[tokio::test(start_paused = true)]
+async fn nulls_nested_in_structs_and_lists_load_within_the_budget_however_wide_their_type() {
+    const ROWS: usize = 100_000;
+    // A struct whose field is typed null, into a table whose field is the wide struct.
+    let field = |data_type: DataType| Fields::from(vec![Field::new("a", data_type, true)]);
+    let wide = arrow_array::StructArray::new_null(field(wide_struct()), 1);
+    let narrow = arrow_array::StructArray::new(
+        field(DataType::Null),
+        vec![Arc::new(arrow_array::NullArray::new(ROWS))],
+        None,
+    );
+    let (_, outcome) = widened_nulls("nested_nulls", Arc::new(wide), Arc::new(narrow)).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, ROWS as u64 + 1);
+    // A list whose items are typed null, into a table whose items are the wide struct.
+    let item = |data_type: DataType| Arc::new(Field::new("item", data_type, true));
+    let wide = ListArray::new_null(item(wide_struct()), 1);
+    let narrow = ListArray::new(
+        item(DataType::Null),
+        OffsetBuffer::from_lengths(vec![1; ROWS]),
+        Arc::new(arrow_array::NullArray::new(ROWS)),
+        None,
+    );
+    let (_, outcome) = widened_nulls("listed_nulls", Arc::new(wide), Arc::new(narrow)).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, ROWS as u64 + 1);
+}
