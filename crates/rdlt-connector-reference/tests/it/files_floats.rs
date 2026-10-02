@@ -7,7 +7,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{ArrayRef, Float32Array, Float64Array, Int64Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field as ArrowField};
-use rdlt_connector::{CommitSeq, TableSchema};
+use rdlt_connector::{CommitSeq, PublishedRows, TableSchema};
 use serde_json::json;
 
 use crate::fixtures::{connect_with, merge_table, meta, open, stage, table};

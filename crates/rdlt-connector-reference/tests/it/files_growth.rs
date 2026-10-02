@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{
-    CommitSeq, ConnectorErrorKind, Field, GenerationId, LogicalType, PublishedReader, TableChange,
-    TableRef,
+    CommitSeq, ConnectorErrorKind, Field, GenerationId, LogicalType, PublishedReader,
+    PublishedRows, TableChange, TableRef,
 };
 use serde_json::json;
 
@@ -453,7 +453,7 @@ async fn an_arrow_append_table_of_batches_with_dictionaries_stays_short_and_whol
     let files = data_files(root.path(), "arrow");
     assert!(files.len() <= 10, "{} files", files.len());
     // Every row is read back once and in order, its dictionary's value with it.
-    let published = reader.published(&rows).await.unwrap();
+    let published = PublishedRows::gather(&*reader, &rows).await.unwrap();
     let mut read = Vec::new();
     for batch in &published {
         let ids = arrow_cast::cast(batch.column(0), &arrow_schema::DataType::Int64).unwrap();

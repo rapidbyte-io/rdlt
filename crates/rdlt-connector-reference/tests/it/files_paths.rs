@@ -104,7 +104,7 @@ async fn a_manifest_path_outside_the_pipeline_is_refused() {
         let (latest, mut manifest) = latest_manifest(&root);
         manifest["tables"]["rows"]["files"] = json!([listed(&escape)]);
         plant_manifest(&latest, manifest);
-        let read = reader.published(&rows).await;
+        let read = rdlt_connector::PublishedRows::gather(&*reader, &rows).await;
         let error = read.expect_err(&escape);
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{escape}");
         // The next commit merges the table's listed files: it reads none of them either.
