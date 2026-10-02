@@ -73,6 +73,8 @@ fn sample_state() -> PipelineState {
             names,
             sequences: Some(Sequences::Source),
             history: true,
+            key: vec![ColumnPath::from("id")],
+            change_time: Some(ColumnPath::from("at")),
             exact: ["id".into()].into(),
         },
     );
@@ -156,11 +158,15 @@ fn deleting_a_table_s_sequences_forgets_whose_they_are() {
     state.apply(&StateChange::Delete(key.encode())).unwrap();
     assert_eq!(state.tables[&table].sequences, None);
     assert!(!state.tables[&table].history);
+    assert!(state.tables[&table].key.is_empty());
+    assert_eq!(state.tables[&table].change_time, None);
     assert!(state.tables[&table].schema.is_some());
     let engine = StateEntry::Sequences {
         table: table.clone(),
         sequences: Sequences::Engine,
         history: false,
+        key: Vec::new(),
+        change_time: None,
     };
     state.apply(&StateChange::Put(engine.to_record())).unwrap();
     assert_eq!(state.tables[&table].sequences, Some(Sequences::Engine));
@@ -173,6 +179,8 @@ fn a_table_s_sequences_say_whether_it_keeps_history_and_older_records_say_it_doe
         table: table.clone(),
         sequences: Sequences::Source,
         history: true,
+        key: vec![ColumnPath::from("id")],
+        change_time: None,
     };
     let record = history.to_record();
     assert_eq!(StateEntry::from_record(&record).unwrap(), history);
@@ -463,8 +471,19 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
                         Some(Sequences::Engine),
                         Some(Sequences::Source),
                     ][usize::from(sequences)],
-                    // Only a table whose sequences are recorded records its history.
+                    // Only a table whose sequences are recorded records its history, key and
+                    // change time.
                     history: sequences >= 3,
+                    key: match sequences {
+                        0 => Vec::new(),
+                        _ => columns
+                            .iter()
+                            .take(usize::from(sequences % 2) + 1)
+                            .map(|column| ColumnPath::from(column.as_str()))
+                            .collect(),
+                    },
+                    change_time: (sequences >= 3)
+                        .then(|| ColumnPath::from(columns.first().unwrap().as_str())),
                     exact,
                 };
                 (TablePath::new([path]).unwrap(), state)

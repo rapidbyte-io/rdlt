@@ -143,18 +143,20 @@ impl Coordinator {
         }
     }
 
-    /// The state changes recording who made the sequences of each stream's table, where state
-    /// records otherwise: the next commit takes them.
+    /// The state changes recording how each stream's table sequences and matches its rows, where
+    /// state records otherwise: the next commit takes them.
     pub(super) fn sequences_delta(&mut self) -> Vec<StateChange> {
         self.parts
             .streams
             .iter_mut()
             .filter_map(|stream| stream.sequences.take())
-            .map(|(table, sequences, history)| {
+            .map(|(table, keying)| {
                 let entry = StateEntry::Sequences {
                     table,
-                    sequences,
-                    history,
+                    sequences: keying.sequences,
+                    history: keying.history,
+                    key: keying.key,
+                    change_time: keying.change_time,
                 };
                 StateChange::Put(entry.to_record())
             })
