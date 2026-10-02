@@ -136,6 +136,13 @@ given:
   any other. A database that is missing is not created. A name the destination keeps, the
   catalog's among them, is refused as `table_name_reserved`, and a table no pipeline owns as
   `table_unowned`. Read-back names no pipeline, so any pipeline's published table is read.
+- **A catalog of an earlier shape is refused, not converted.** The catalog's table of
+  registered paths keys each path by its pipeline now. The catalog is created only where it is
+  missing, so a database an earlier build of the destination wrote keeps the earlier table; a
+  catalog table that lacks a column it has now is refused where the destination checks or
+  opens the database, as `catalog_outdated` (`Config`), before anything of the catalog is
+  written. The catalog's shape is this project's own and has no release to carry forward: a
+  database from before is recreated or its tables loaded again.
 - **SQLite stages a row at a time and refuses a float it would change.** A float that is no
   number, or negative zero, is a `Data` error coded `float_unstorable` before its row is bound,
   and nothing of its batch stays. Storing them exactly needs a column without `REAL` affinity,
@@ -176,7 +183,9 @@ given:
     rows have shapes. Twenty thousand rows of two columns and one row of a thousand more hold
     their own cells, in the commit the wide row arrives in and after it, for an upsert, a change
     stream and a history alike. The memory destination keeps its rows so, and hands a reader
-    every column, an absent one as nulls its rows share.
+    every column, an absent one as nulls its rows share. The batches a reader is given share one
+    schema, in which a column some batch lacks is nullable, whatever the table declares of it:
+    rows written without a column declared never null are read back with it null.
   - The files destination keeps its rows so too. JSON lines name their own columns, so a
     merged table is one file whatever columns its batches hold; an Arrow file holds one set of
     columns, so each batch is a file of its own. Published files are read back as the columns
