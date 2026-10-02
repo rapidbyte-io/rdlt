@@ -3,9 +3,11 @@
 //! A decoder is handed a schema and makes every column of it for every row it reads. Here the
 //! lines are read in runs, each decoded under the columns its lines name, and a line starts a
 //! new run where joining would leave the run's batch more cells its rows lack than cells they
-//! hold. A row of many columns among rows of few is so a batch of its own, rows that differ by
-//! a few columns share one, and no batch is more than twice the cells of its rows.
+//! hold, once the run is long enough or lacks enough for that to matter. A row of very many
+//! columns among rows of few is so a batch of its own with a few of them, and rows that differ
+//! by a few columns share one.
 
+mod keys;
 #[cfg(test)]
 mod tests;
 
@@ -16,10 +18,9 @@ use std::sync::Arc;
 
 use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::{ArrowError, Schema, SchemaRef};
-use serde::de::{Deserializer as _, IgnoredAny, MapAccess, Visitor};
 
 use super::lines::{self, Lines};
-use crate::limits::{CHUNK_BYTES, LINE_BYTES, READ_BATCH_ROWS};
+use crate::limits::{CHUNK_BYTES, LINE_BYTES, READ_BATCH_ROWS, RUN_ABSENT_CELLS, RUN_ROWS};
 
 /// A line and the columns it names, by ascending place in the schema.
 type Named = (Vec<u8>, Vec<usize>);
@@ -56,16 +57,23 @@ impl Held {
         }
     }
 
-    /// The next batch: the lines that follow while a batch of the columns any of them names
-    /// holds no more cells its rows lack than cells they hold, as many as a batch holds; none
-    /// once the file is read.
+    /// The next batch: the lines that follow, as many as a batch holds, until one would leave
+    /// a batch of the columns any of them names lacking more cells than it holds; none once the
+    /// file is read.
+    ///
+    /// A run is left to gather [`RUN_ROWS`] lines before it ends so, unless it would lack more
+    /// than [`RUN_ABSENT_CELLS`]: every batch costs its columns something, so lines that take
+    /// turns between few columns and many read as batches of all of them, as under the whole
+    /// schema, while a line of very many columns still starts a run of its own.
     pub(super) fn next(&mut self) -> Result<Option<RecordBatch>, ArrowError> {
         let (mut run, mut rows, mut cells) = (Vec::new(), 0_usize, 0_usize);
         let mut columns: Vec<usize> = Vec::new();
         while let Some((line, named)) = self.line()? {
             let joined = union(&columns, &named);
             let held = cells + named.len();
-            if rows != 0 && ((rows + 1) * joined.len()).saturating_sub(held) > held {
+            let absent = ((rows + 1) * joined.len()).saturating_sub(held);
+            let gathered = rows >= RUN_ROWS || absent > RUN_ABSENT_CELLS;
+            if rows != 0 && absent > held && gathered {
                 self.ahead = Some((line, named));
                 break;
             }
@@ -103,15 +111,9 @@ impl Held {
     /// The columns the record `line` holds a value under, with those every row holds.
     fn named(&self, line: &[u8]) -> Result<Vec<usize>, ArrowError> {
         let mut columns = self.required.clone();
-        let mut reader = serde_json::Deserializer::from_slice(line);
-        let keys = Keys {
-            places: &self.places,
-            columns: &mut columns,
-        };
-        reader
-            .deserialize_map(keys)
-            .and_then(|()| reader.end())
-            .map_err(|error| ArrowError::JsonError(format!("a line is no record: {error}")))?;
+        for key in keys::valued(line)? {
+            columns.extend(self.places.get(key.as_ref()));
+        }
         columns.sort_unstable();
         columns.dedup();
         Ok(columns)
@@ -134,30 +136,6 @@ fn union(left: &[usize], right: &[usize]) -> Vec<usize> {
             (None, None) => return joined,
         };
         joined.extend(next);
-    }
-}
-
-/// Collects the places of the columns a record names with a value that is not null.
-struct Keys<'a> {
-    places: &'a HashMap<String, usize>,
-    columns: &'a mut Vec<usize>,
-}
-
-impl<'de> Visitor<'de> for Keys<'_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("one JSON object")
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        while let Some(key) = map.next_key::<String>()? {
-            let held = map.next_value::<Option<IgnoredAny>>()?.is_some();
-            if let (true, Some(place)) = (held, self.places.get(&key)) {
-                self.columns.push(*place);
-            }
-        }
-        Ok(())
     }
 }
 

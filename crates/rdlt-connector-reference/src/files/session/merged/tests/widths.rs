@@ -128,14 +128,16 @@ fn assert_costs_its_own_cells(sessions: &Sessions, narrow: usize, what: &str) {
     let batches = read(sessions);
     let count: usize = batches.iter().map(RecordBatch::num_rows).sum();
     assert_eq!(count, narrow + 1, "{what}");
-    // The wide row is in a batch of its own columns, with at most a narrow row or two.
+    // The wide row is in a batch of its own columns, with the few narrow rows beside it that a
+    // run of lines gathers before it lacks too many cells.
     let wide: Vec<&RecordBatch> = batches
         .iter()
         .filter(|batch| batch.num_columns() == WIDTH + 2)
         .collect();
     assert_eq!(wide.len(), 1, "{what}");
     let last = wide[0].column(WIDTH + 1);
-    assert!(wide[0].num_rows() <= 3, "{what}");
+    let few = 2 * crate::limits::RUN_ABSENT_CELLS / WIDTH + 2;
+    assert!(wide[0].num_rows() <= few, "{what}");
     assert_eq!(last.len() - last.null_count(), 1, "{what}");
     let sevens: i64 = last.as_primitive::<Int64Type>().iter().flatten().sum();
     assert_eq!(sevens, 7, "{what}");

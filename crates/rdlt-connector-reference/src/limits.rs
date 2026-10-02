@@ -120,3 +120,11 @@ pub(crate) const MAX_SHAPES: usize = 16;
 /// counted as its rows times its columns less the cells that hold a value; batches that would
 /// hold more join apart.
 pub(crate) const FOLD_CELLS: u64 = 1024 * 1024;
+
+/// Rows: how long a run of JSON lines read as the columns they name is left to gather before a
+/// line of other columns ends it.
+pub(crate) const RUN_ROWS: usize = 256;
+
+/// Cells: what a run of JSON lines shorter than [`RUN_ROWS`] may lack of the columns its lines
+/// name before a line of other columns ends it all the same.
+pub(crate) const RUN_ABSENT_CELLS: usize = 64 * 1024;
