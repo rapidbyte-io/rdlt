@@ -25,10 +25,10 @@ use crate::target::Target;
 pub const PROTOCOL_CLAUSES: &[Clause] = &[
     Clause {
         id: "P-HANDSHAKE",
-        statement: "the handshake answers the protocol's major version with the connector's spec \
-                    and limits before any configuration, ignores features it does not know, and \
-                    refuses another major version as unsupported; the configuration answers the \
-                    same connector's spec",
+        statement: "the handshake answers the protocol's major version with that version, the \
+                    connector's spec and limits before any configuration, ignores features it \
+                    does not know, and refuses another major version as unsupported; the \
+                    configuration answers the same connector's spec",
         unless: "",
     },
     Clause {

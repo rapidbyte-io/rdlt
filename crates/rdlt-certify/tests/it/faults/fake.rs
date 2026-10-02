@@ -30,6 +30,9 @@ pub(crate) enum Fault {
     MistypedVersion,
     /// It answers its handshake without its limits.
     Limitless,
+    /// It answers its handshake without the protocol version it speaks: no host connects to it,
+    /// so no clause passes.
+    Unversioned,
     /// It declares a limit of one row a batch, below the protocol's minimum: no host connects
     /// to it, so no clause passes.
     FewRows,
@@ -246,7 +249,11 @@ impl Connector for Fake {
                 Vec::new()
             },
             limits: self.keeps(Fault::Limitless).then_some(limits),
-            protocol_major: PROTOCOL_MAJOR,
+            protocol_major: if self.keeps(Fault::Unversioned) {
+                PROTOCOL_MAJOR
+            } else {
+                0
+            },
             protocol_minor: PROTOCOL_MINOR,
         }))
     }

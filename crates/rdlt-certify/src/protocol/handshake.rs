@@ -36,6 +36,13 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
                 "the handshake answered without the connector's spec or limits",
             ));
         };
+        if answer.protocol_major != PROTOCOL_MAJOR {
+            return Err(format!(
+                "the handshake answered protocol {}, not {PROTOCOL_MAJOR}",
+                answer.protocol_major
+            )
+            .into());
+        }
         let configured = client
             .configure(configure_request(config))
             .await
