@@ -56,10 +56,10 @@ fn frames(store: &MemoryWal) -> Vec<Frame> {
 }
 
 /// The view of `table` at `version`.
-fn at(table: &TableView, version: u32) -> TableView {
+fn at(table: &TableView, version: u32) -> Arc<TableView> {
     let mut versioned = table.clone();
     versioned.table.version = SchemaVersion(version);
-    versioned
+    Arc::new(versioned)
 }
 
 #[tokio::test]
@@ -342,7 +342,7 @@ async fn logged(
     log: &LoadLog,
     budget: &MemoryBudget,
     table: usize,
-    view: &TableView,
+    view: &Arc<TableView>,
     segment: SegmentId,
     batch: &RecordBatch,
 ) -> Result<(), crate::Error> {
@@ -452,4 +452,64 @@ async fn a_frame_keeps_what_it_takes_of_its_reservation_and_reserves_what_it_tak
     );
     drop(held);
     assert_eq!(budget.reserved(), 0);
+}
+
+#[tokio::test]
+async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
+        .await
+        .expect("the log starts");
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let described = Arc::clone(&log.tables);
+    let written = async {
+        let current = at(&orders, 200);
+        for version in 1..200_u32 {
+            // Each version's view goes once its batch is logged, as a partition's plan does.
+            let superseded = at(&orders, version);
+            logged(
+                &log,
+                &budget,
+                0,
+                &superseded,
+                SegmentId(u64::from(version)),
+                &ids(0),
+            )
+            .await
+            .expect("the batch is logged");
+        }
+        logged(&log, &budget, 0, &current, SegmentId(200), &ids(0))
+            .await
+            .expect("the batch is logged");
+        log.commit(&budget, Vec::new(), Vec::new(), &meta(&[200]), 0)
+            .await
+            .expect("the commit is durable");
+        // Only the version whose view is still alive is still described.
+        let left: Vec<u32> = described
+            .lock()
+            .await
+            .indexes
+            .values()
+            .map(|(index, _)| *index)
+            .collect();
+        assert_eq!(left, [199]);
+        // A batch of a forgotten version is described again, under an index of its own.
+        logged(&log, &budget, 0, &at(&orders, 1), SegmentId(201), &ids(0))
+            .await
+            .expect("the batch is logged");
+        drop(current);
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+    let indexes: Vec<(u32, SchemaVersion)> = frames(&store)
+        .into_iter()
+        .filter_map(|frame| match frame {
+            Frame::Schema(table) => Some((table.index, table.table.version)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(indexes.last(), Some(&(200, SchemaVersion(1))));
 }

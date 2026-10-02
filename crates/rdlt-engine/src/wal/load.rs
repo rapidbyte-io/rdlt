@@ -6,7 +6,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -48,9 +48,17 @@ pub(crate) struct Sealed {
 #[derive(Clone)]
 pub(crate) struct LoadLog {
     writer: WalWriter,
-    /// The index each table version's schema frame gave it, held while a new one is sent, so no
-    /// batch frame of a table precedes its schema frame.
-    tables: Arc<Mutex<BTreeMap<TableKey, u32>>>,
+    /// The table versions the log describes, held while a new one is sent, so no batch frame of
+    /// a table precedes its schema frame.
+    tables: Arc<Mutex<Described>>,
+}
+
+/// The index each table version's schema frame gave it, with the view its batches are lowered
+/// for while any of them may still be logged, and the index the next version takes.
+#[derive(Default)]
+struct Described {
+    indexes: BTreeMap<TableKey, (u32, Weak<TableView>)>,
+    next: u32,
 }
 
 impl LoadLog {
@@ -97,7 +105,7 @@ impl LoadLog {
         compute: &dyn ComputePool,
         budget: &MemoryBudget,
         mut held: Permit,
-        (table, view): (usize, &TableView),
+        (table, view): (usize, &Arc<TableView>),
         segment: SegmentId,
         batch: &RecordBatch,
     ) -> Result<(), Error> {
@@ -131,15 +139,17 @@ impl LoadLog {
         &self,
         budget: &MemoryBudget,
         table: usize,
-        view: &TableView,
+        view: &Arc<TableView>,
     ) -> Result<u32, Error> {
         let key = (table, view.table.version, view.table.generation);
         let mut tables = self.tables.lock().await;
-        if let Some(index) = tables.get(&key) {
+        if let Some((index, _)) = tables.indexes.get(&key) {
             return Ok(*index);
         }
-        let index = u32::try_from(tables.len())
-            .map_err(|_| Error::internal("a load writes more table versions than a log names"))?;
+        let index = tables.next;
+        tables.next = index
+            .checked_add(1)
+            .ok_or_else(|| Error::internal("a load writes more table versions than a log names"))?;
         // Reserved before it is encoded for what it takes at most, until it is first appended.
         let schema = view.physical_schema();
         let held = reserved(budget, described(&schema)).await?;
@@ -153,7 +163,7 @@ impl LoadLog {
         self.writer
             .send(Command::Table { index, frame, held })
             .await?;
-        tables.insert(key, index);
+        tables.indexes.insert(key, (index, Arc::downgrade(view)));
         Ok(index)
     }
 
@@ -170,6 +180,7 @@ impl LoadLog {
         meta: &CommitMeta,
         prepaid: u64,
     ) -> Result<(), Error> {
+        self.retire().await?;
         // The commit settles every segment it sealed, those it publishes nothing of included, so
         // its receipt lets their chunks go.
         let mut segments = meta.segments.clone();
@@ -228,6 +239,30 @@ impl LoadLog {
         answer
             .await
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
+    }
+
+    /// Tells the writer to forget the schema frames of table versions whose views are gone.
+    ///
+    /// A batch is logged while its view is held, so every batch frame of such a version was sent
+    /// before this: none follows its retirement. A batch of the version lowered by a view of its
+    /// own after it is described again under a new index.
+    async fn retire(&self) -> Result<(), Error> {
+        let mut described = self.tables.lock().await;
+        let gone: Vec<TableKey> = described
+            .indexes
+            .iter()
+            .filter(|(_, (_, view))| view.strong_count() == 0)
+            .map(|(key, _)| *key)
+            .collect();
+        let tables: Vec<u32> = gone
+            .iter()
+            .filter_map(|key| described.indexes.remove(key))
+            .map(|(index, _)| index)
+            .collect();
+        if tables.is_empty() {
+            return Ok(());
+        }
+        self.writer.send(Command::Retire { tables }).await
     }
 
     /// Logs `receipt`, the commit's the destination answered with.

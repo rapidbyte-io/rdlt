@@ -84,7 +84,7 @@ fn begun() -> BegunPhase {
 async fn log_batch(
     log: &LoadLog,
     budget: &MemoryBudget,
-    table: (usize, &TableView),
+    table: (usize, &Arc<TableView>),
     segment: SegmentId,
     batch: &RecordBatch,
 ) -> Result<(), crate::Error> {

@@ -56,6 +56,8 @@ pub(crate) enum Command {
     /// A segment its partition ended without sealing, which no commit takes: settled as a
     /// committed one is, so it holds no chunk back.
     Abandon { segment: SegmentId },
+    /// Tables whose schema frames no later batch frame names: the writer keeps them no more.
+    Retire { tables: Vec<u32> },
     /// The closing frame: appended and made durable, then the log is removed where every commit
     /// in it has a receipt.
     Close {
@@ -227,6 +229,12 @@ impl Log {
                 self.note(&result);
             }
             Command::Abandon { segment } => self.settled.settle([segment]),
+            Command::Retire { tables } => {
+                for table in tables {
+                    self.tables.remove(&table);
+                    drop(self.describing.remove(&table));
+                }
+            }
             Command::Close { frame, done } => {
                 let result = self.close(frame).await;
                 self.note(&result);
