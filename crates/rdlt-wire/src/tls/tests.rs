@@ -555,3 +555,21 @@ fn a_file_that_is_no_regular_file_is_refused_without_waiting_for_it() {
         );
     }
 }
+
+#[test]
+fn naming_hosts_demands_a_certificate_though_what_it_wraps_would_take_none() {
+    use rustls::server::WebPkiClientVerifier;
+    use rustls::server::danger::ClientCertVerifier as _;
+    let pki = Pki::new("ca");
+    let roots = Arc::new(super::roots(&pki.ca()).expect("the CA reads"));
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let lenient = WebPkiClientVerifier::builder_with_provider(roots, provider)
+        .allow_unauthenticated()
+        .build()
+        .expect("a verifier");
+    assert!(!lenient.client_auth_mandatory());
+    let hosts = Hosts::new(["client"]).expect("a host is named");
+    let named = super::hosts::Named::new(lenient, hosts);
+    assert!(named.offer_client_auth());
+    assert!(named.client_auth_mandatory());
+}

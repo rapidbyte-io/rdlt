@@ -113,15 +113,9 @@ impl Named {
     }
 }
 
+// It asks every host for a certificate and takes none without, as the trait does unless told
+// otherwise: whether `inner` would is not asked.
 impl ClientCertVerifier for Named {
-    fn offer_client_auth(&self) -> bool {
-        self.inner.offer_client_auth()
-    }
-
-    fn client_auth_mandatory(&self) -> bool {
-        self.inner.client_auth_mandatory()
-    }
-
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
         self.inner.root_hint_subjects()
     }
