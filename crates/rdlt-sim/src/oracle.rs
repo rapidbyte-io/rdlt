@@ -31,7 +31,7 @@ use crate::swarm::Features;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
-use config::{config, pressed};
+use config::{config, endless, pressed};
 use expected::Discards;
 pub use pressure::Checked;
 use pressure::explained;
@@ -76,15 +76,14 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     env.perturb(world.workload.features.perturb);
     env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
     let streaming = world.workload.features.streaming;
-    let config = config(&mut rng, streaming);
-    let limits = config.limits();
-    // Over the network a batch crosses as its rows and no more, and a cursor of hundreds of
-    // kilobytes outlasts the simulated network's liveness: a source there presses no harder
+    let config = config(&mut rng, streaming, endless(&world.workload));
+    let (limits, budget) = (config.limits(), config.memory().get());
+    // Over the network a batch crosses as its rows and no more, and cursors as large as a cursor
+    // may be outlast a stopping connector's drain (ADR 0039): a source there presses no harder
     // than its workload does.
     if net.is_none() {
         world.press(pressed(seed, &config));
     }
-    let budget = config.memory().get();
     let engine = Engine::new(config, env);
     let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
     let mut simulation = Simulation {
