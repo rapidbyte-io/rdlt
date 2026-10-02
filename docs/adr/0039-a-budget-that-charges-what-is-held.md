@@ -79,7 +79,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   |---|---|---|---|---|
   | frame bytes | what pushes may take less what a read keeps, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,306,271 | 64 MiB |
   | json push bytes | a third of what pushes may take | 4,402,549 | 34,952,533 | 64 MiB |
-  | cursor bytes | the cursors' share over twice one more than the partitions, and a quarter of the log's | 15,538 | 123,361 | 4 MiB |
+  | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 15,538 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 264,152 | 2,097,152 | 64 MiB |
   | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 52,830 | 419,430 | 4 MiB |
   | schema columns | the tables' share over a kilobyte a column, and schema bytes over 56 a column | 943 | 7,489 | 10,000 |

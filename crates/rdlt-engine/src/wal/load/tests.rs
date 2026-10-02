@@ -420,3 +420,36 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
     let (ended, ()) = tokio::join!(task, written);
     ended.expect("the writer ends");
 }
+
+#[tokio::test]
+async fn a_frame_keeps_what_it_takes_of_its_reservation_and_reserves_what_it_takes_beyond() {
+    let budget = MemoryBudget::new(1 << 20);
+    let settle = |frame: usize| {
+        let budget = budget.clone();
+        async move {
+            let held = budget.acquire_log(100).await.unwrap();
+            super::settled(&budget, held, frame).await.unwrap()
+        }
+    };
+    // A byte under, at and a byte over what was reserved; then far beyond it.
+    for (frame, kept, more) in [(99, 99, None), (100, 100, None), (101, 100, Some(1))] {
+        let (held, extra) = settle(frame).await;
+        assert_eq!(
+            (
+                held.bytes(),
+                extra.as_ref().map(crate::budget::Reservation::bytes)
+            ),
+            (kept, more),
+            "a frame of {frame}"
+        );
+        assert_eq!(budget.reserved(), u64::try_from(frame).unwrap());
+    }
+    let (held, extra) = settle(350).await;
+    assert_eq!(budget.reserved(), 350);
+    assert_eq!(
+        (held.bytes(), extra.map(|more| more.bytes())),
+        (100, Some(250))
+    );
+    drop(held);
+    assert_eq!(budget.reserved(), 0);
+}

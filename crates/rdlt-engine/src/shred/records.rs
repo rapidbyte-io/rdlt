@@ -160,8 +160,7 @@ impl<'a> Records<'a> {
 
     /// The next line that is not blank.
     fn line(&mut self) -> Option<Range<usize>> {
-        while self.at < self.bytes.len() {
-            let rest = &self.bytes[self.at..];
+        while let Some(rest) = self.bytes.get(self.at..).filter(|rest| !rest.is_empty()) {
             let end = memchr::memchr(b'\n', rest).map_or(self.bytes.len(), |end| self.at + end);
             let line = trimmed(self.bytes, self.at..end);
             self.at = end + 1;

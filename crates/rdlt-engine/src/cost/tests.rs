@@ -627,3 +627,10 @@ async fn a_push_that_waits_until_the_deadline_is_refused_and_remembered_as_the_b
     // A source that carried on past the refusal fails, from then on, for its own reasons.
     assert_eq!(admission.exhausted(), None);
 }
+
+#[test]
+fn what_admitted_an_event_shows_the_bytes_it_was_charged() {
+    let budget = MemoryBudget::new(1 << 20);
+    let admitted = Admitted::new(5, budget.try_acquire_working(5).unwrap());
+    assert_eq!(format!("{admitted:?}"), "Admitted(5)");
+}

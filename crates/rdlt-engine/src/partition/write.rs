@@ -24,7 +24,7 @@ use self::pieces::{Lowered, Piece, Pieces};
 use self::queue::queue;
 use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
-use crate::budget::{Denied, Reservation};
+use crate::budget::{Denied, MemoryBudget, Reservation, Shares};
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
 use crate::limits::ROW_EXCEEDS_BUDGET;
@@ -149,13 +149,14 @@ async fn write(
             Some(_) => (changes::aligned(&unit.parts[0], &plan.stored()), CHANGE_ROW),
             None => (plan.stored(), 0),
         };
+        let (max, limit) = piece_bounds(shares, times);
         let lowered = Lowered {
             rendering: context.rendering.as_ref().clone(),
             stored,
             row: plan.row_bytes().saturating_add(changes),
             item: 0,
-            max: shares.piece / times,
-            limit: shares.request / times,
+            max,
+            limit,
         };
         let mut pieces = Pieces::new(unit.parts, lowered);
         let mut held = Some(unit.held);
@@ -182,12 +183,18 @@ async fn write(
             let (plan, stream, mode) = (Arc::clone(&plan), job.stream.clone(), job.changes);
             let run = move || lower(&stream, mode, &piece.parts, &plan, &stamp);
             window.push(Box::new(run), lowering);
-            if window.len() == LOWERING_WINDOW {
+            if full(window.len()) {
                 window.lower(job, context, open).await?;
             }
         }
     }
     window.lower(job, context, open).await
+}
+
+/// Bytes: the most a piece's rows take to lower, and a row's alone, where what lowering takes is
+/// reserved `times` over: a piece's and a request's share of `shares`.
+fn piece_bounds(shares: Shares, times: u64) -> (u64, u64) {
+    (shares.piece / times, shares.request / times)
 }
 
 /// The next piece of `pieces`, cut on the compute pool.
@@ -245,11 +252,11 @@ impl Window {
     /// Reserves `bytes` for a piece to lower with those the window holds, where the budget has
     /// them at once; nothing where the window is empty, or the piece must wait: a partition
     /// waits only while it holds no piece it has not handed over.
-    fn reserve(&self, context: &PartitionContext, bytes: u64) -> Option<Reservation> {
+    fn reserve(&self, budget: &MemoryBudget, bytes: u64) -> Option<Reservation> {
         if self.held.is_empty() {
             return None;
         }
-        context.budget.try_acquire_working(bytes)
+        budget.try_acquire_working(bytes)
     }
 
     /// Reserves `bytes` for a piece: with those the window holds where the budget has them at
@@ -262,7 +269,7 @@ impl Window {
         open: &mut OpenSegment,
         bytes: u64,
     ) -> Result<Reservation, Error> {
-        if let Some(reserved) = self.reserve(context, bytes) {
+        if let Some(reserved) = self.reserve(&context.budget, bytes) {
             return Ok(reserved);
         }
         self.lower(job, context, open).await?;
@@ -398,6 +405,11 @@ fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> S
 /// Pieces lowered on the pool at once, at most: what bounds the memory they hold together is
 /// what each reserved before it was lowered.
 const LOWERING_WINDOW: usize = 8;
+
+/// Whether a window of `pieces` holds as many as are lowered together.
+fn full(pieces: usize) -> bool {
+    pieces >= LOWERING_WINDOW
+}
 
 /// The error for a row that alone takes more to lower than a request may take of the budget:
 /// no piece of it can be reserved.
