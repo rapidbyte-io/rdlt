@@ -270,6 +270,15 @@ impl Placing {
         done
     }
 
+    /// Starts the source's connector again, as its operator would: the process that listens next
+    /// remembers nothing the last sent.
+    pub(crate) async fn restart_source(&self) {
+        self.net.connectors.crash(Side::Source);
+        // Long enough for its host to see it down.
+        tokio::time::sleep(DRAIN).await;
+        self.net.connectors.restart(Side::Source);
+    }
+
     /// The source, placed with `config`, trying again until it is reachable.
     pub(crate) async fn source(&self, config: &serde_json::Value) -> Arc<dyn Source> {
         let id = source_factory::<SimSource>().spec().id.clone();

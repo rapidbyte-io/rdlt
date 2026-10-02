@@ -23,6 +23,9 @@ impl Simulation {
         self.world.set_faulty(false);
         self.world.reports.restart();
         let placing = self.placing.as_ref();
+        if let Some(placing) = placing {
+            placing.restart_source().await;
+        }
         execute_all(
             &self.engine,
             &self.plans(),
