@@ -81,7 +81,7 @@ when it is read and never written in a form its reader refuses.
   Published files are private too: a reader runs as that user.
 - **Locks are private, exclusive and waited for a bounded time.** A table's lock file is created
   exclusively, opened without following a link, and must be a regular file of the user's. The
-  lock is tried until `lock_wait_ms` (30 seconds) passed, then the call fails as a transient
+  lock is tried until `lock_wait` (30 seconds) passed, then the call fails as a transient
   error coded `lock_timeout`. The lock is polled and keeps no queue: a waiter may be overtaken,
   and waits at most that long.
 - **A release removes only what is still dropped.** Under the table's lock, a release reads the
