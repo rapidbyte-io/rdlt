@@ -97,8 +97,8 @@ impl TableWriter for SqliteWriter {
                         .collect();
                     let statement = planner.stage(&staging, &table, epoch, *segment, &names)?;
                     values::stage(transaction, &statement, batch)?;
-                    let rows = batch.num_rows() as u64;
-                    let bytes = batch.get_array_memory_size() as u64;
+                    let rows = counted(batch.num_rows());
+                    let bytes = counted(batch.get_array_memory_size());
                     let record =
                         planner.record_segment(&staging, &table, epoch, *segment, [rows, bytes])?;
                     run(transaction, &record)?;
@@ -109,4 +109,9 @@ impl TableWriter for SqliteWriter {
             })
             .await
     }
+}
+
+/// A count of rows or bytes as a receipt carries it.
+fn counted(count: usize) -> u64 {
+    u64::try_from(count).unwrap_or(u64::MAX)
 }
