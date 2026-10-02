@@ -32,7 +32,7 @@ pub(super) const NOT_A_REGULAR_FILE: &str = "not_a_regular_file";
 /// Classifies a filesystem error from `what` on `path` by what refused, never by the error a
 /// platform happens to answer with: a path the connector may not use is a configuration error,
 /// a name or a file it refuses a data error, anything else transient.
-pub(super) fn failed<'a>(
+pub(crate) fn failed<'a>(
     what: &'a str,
     path: &'a Path,
 ) -> impl Fn(io::Error) -> ConnectorError + 'a {

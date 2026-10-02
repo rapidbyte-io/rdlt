@@ -3,7 +3,7 @@
 
 mod destination;
 mod format;
-mod io;
+pub(crate) mod io;
 mod manifest;
 mod session;
 mod source;
