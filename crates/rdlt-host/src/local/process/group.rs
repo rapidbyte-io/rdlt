@@ -302,11 +302,14 @@ impl Owned {
 /// Kills `group` and its leader `child`, and reaps `child`, which was just seen to be this
 /// process's unreaped child: the group's id is still its own, exited or not, and from here on,
 /// as `state` then says, nobody's to signal.
+///
+/// The leader's input is left open until the group's handle is dropped: a sandbox's connector
+/// outlives its launcher for a moment, and would read the input's end as a stop and end as a
+/// stopped connector does, where a kill must give it no such chance.
 fn reap(child: &mut Child, group: Pid, mut state: MutexGuard<'_, State>) -> Option<ExitStatus> {
     signal(group, Signal::KILL);
     let status = child.wait().ok();
     state.leader = None;
-    drop(state.stdin.take());
     status
 }
 
