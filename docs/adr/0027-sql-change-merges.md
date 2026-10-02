@@ -46,7 +46,9 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     tombstones start with the changes, not the snapshot.
 - **SQL change merges** (`sqlgen`, and the SQLite destination through it).
   - A change table's staging gains the op column and the unchanged flags, which the writer stores
-    as the text `,i,j,` of the ordinals of the target columns it flags. It resolves them when it
+    as the text `,i,j,` of the ordinals of the target columns it flags. Amended 2026-10-02: as
+    bytes, one a target column, set where it is flagged, which a commit reads at a position
+    (ADR 0049). It resolves them when it
     stages, in the transaction that stages the rows; a flag naming a column the table lacks, or
     its key or sequence column, is a `Data` error. The staging columns and the tombstones table are
     created where rows are staged, so a commit changes no table's columns.

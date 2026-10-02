@@ -24,7 +24,9 @@ never sees.
   false) and becomes current; a hard delete closes it and records a tombstone; a soft delete closes
   it and opens a deleted version keeping its data; a truncate does so to every version sequenced
   before it. A change stream's change applies only past its key's newest version, tombstone and
-  bound, so replays, retries and the snapshot's overlap change nothing. A version keeps the
+  bound, so replays, retries and the snapshot's overlap change nothing. Amended 2026-10-02: a
+  soft delete or truncate carries its deletion time or is refused, a truncate applies before a
+  change of its own sequence, and an upsert lifts its key's tombstone (ADR 0049). A version keeps the
   sequence of the row that opened it; closing changes only `valid_to` and `is_current`. A change
   equal to the current version leaves the guard where it was: sources send each key's changes in
   order, sending some again at most, so a change sent again is behind the guard or equal to the

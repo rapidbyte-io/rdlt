@@ -132,15 +132,52 @@ given:
 - **The reference merge converts exactly or fails.** A stored column becomes its table's wider
   type by an allow-list: the lattice's widenings and re-encodings, temporal units through
   checked arithmetic, a wall-clock time placed in a zone as the instant it names there. A value
-  the wider type cannot hold fails the merge, and a pair outside the list is refused. An id or
-  a sequence a destination keeps as text compares as the bytes of the text.
-- **A merge costs its rows.** Columns a row never had are one shared array of nulls; a
-  truncate is found for each row by a search of the commit's truncates in order, and a flag is
-  read from its bitmap, in the reference merge. In SQL a window over a key's events gives each
-  row the first truncate past it, the table is read whole only by a commit that truncates, and
-  the bound a truncate leaves is deleted by its own statement so that the keyed delete uses the
-  index. An unchanged flag on a key or sequence column is refused by the reference merge as by
-  `sqlgen`'s staging.
+  the wider type cannot hold fails, and a pair outside the list is refused, a struct losing a
+  field among them. An id or a sequence a destination keeps as text compares as the bytes of
+  the text. A `Date64` that is no whole day is the day it falls in, as the engine reads it.
+- **A schema change the held rows do not fit is refused where it is applied.** The memory
+  destination converts what a table holds, its rows, generations and tombstones, before a
+  column takes a type, and refuses the change as `schema_conflict`: the table stays at the
+  type it had and goes on merging. A widen accepted and then failed at every merge would stop
+  the stream until an operator reset the table.
+- **What a merge table cannot take is refused under a code, where it is staged.** The
+  reference merge, the memory destination at each flush, and `sqlgen`'s staging refuse the
+  same conditions under the same codes: a flag on a key or the sequence (`flag_on_key`) or on
+  what is no stored column (`flag_on_missing_column`), flags that are no bitmap
+  (`flags_invalid`), an op no change stream has (`op_invalid`), a row without a sequence
+  (`sequence_missing`), and for a history table whose deletes are soft, a delete or a truncate
+  that says no deletion time (`deletion_untimed`). The merge adds a conversion that keeps no
+  value (`type_unconvertible`), a value its wider type cannot hold (`value_unholdable`) and a
+  key the rows cannot be merged by (`merge_key_invalid`). Any other failure of the merge is
+  its own, an internal error.
+- **A soft history delete says when.** A history table reads a version as deleted by its
+  deletion time. A delete or a truncate without one would open a deleted version that reads as
+  live, and the reference merge and the SQL plans each made something else of it; none is
+  asked to, since it is refused before a row is staged.
+- **At one sequence a truncate applies first.** A source gives each row a position of its own,
+  but where a truncate and a key's row share one, the truncate removes what is before it and
+  the row, which is not, applies: the reference merge orders them so wherever each was written,
+  a row a truncate of the merge marked takes a change at that sequence, and the SQL plans order
+  a history key's events and choose a soft row's deletion time the same way.
+- **A merge costs its rows, and a row the cells it holds.**
+  - The reference merge reads each batch as the columns one of its rows holds a value in, and
+    gives its rows back grouped by the columns they hold: a table is as many batches as its
+    rows have shapes. Twenty thousand rows of two columns and one row of a thousand more hold
+    their own cells, in the commit the wide row arrives in and after it, for an upsert, a change
+    stream and a history alike. The memory destination keeps its rows so, and hands a reader
+    every column, an absent one as nulls its rows share.
+  - A destination that writes every column of every row, as the files destination does, takes
+    the rows with every column and is charged for the cells they never had before any is made:
+    the rows of each batch times the columns it lacks. More than sixteen million is refused as
+    `merge_too_wide`. Under the limit such a destination still writes those cells.
+  - A truncate is found for each row by a search of the commit's truncates in order, a flag is
+    read from its bitmap, and a row a delete or a truncate marks costs the two cells marked.
+  - In SQL a window over a key's events gives each row the first truncate past it, the table is
+    read whole only by a commit that truncates, and the bound a truncate leaves is deleted by
+    its own statement so that the keyed delete uses the index. A row's flags are staged as
+    bytes, one a column, read at a position (`SqlDialect::byte_at`), and two aggregate passes
+    over a key's upserts find what each column was last set to: a commit of flagged updates
+    costs its rows times its columns.
 - **Receipts are kept.** A SQL destination and the memory destination store a receipt for every
   commit and answer a repeated commit from it, however far back in its load and however many
   loads ago. The engine's log can hold a commit's frame after the frames of many later commits
@@ -149,7 +186,8 @@ given:
   is the engine's knowledge: a horizon it declares is left to the work on the write-ahead log.
 - **Tombstones are kept** by the rules of ADR 0027 and no other. A delete of a key the table
   never held leaves one too: its insert may be sent again alone. What a merge no longer does is
-  pay for each tombstone it leaves as it was.
+  pay for each tombstone it leaves as it was. A history table's upsert lifts its key's
+  tombstone as a change table's does.
 - **A sequence no change can follow is the source's to give.** A destination cannot tell an
   implausible source position from a real one, so the guard of ADR 0027 trusts them; a table
   whose bound stands past every change is reset as ADR 0033 resets a stream.
@@ -194,8 +232,18 @@ given:
   directories above are the operator's, as ADR 0047 leaves them.
 - The exact conversion repeats what the engine's own lowering does for arriving values; one
   implementation in the connector SDK would serve both.
-- The files destination shares the reference merge, and still writes a merged table column by
-  column, so a table that widened costs it rows times width there.
+- The files destination shares the reference merge through its entry that gives every column,
+  and still writes a merged table column by column: a table that widened costs it rows times
+  width there, up to the limit charged. Writing each batch of the merge as a file of the
+  columns it holds would remove the cost; that is the files destination's to take up.
+- A merge gives its rows back by the columns they hold, not in the order they were published.
+- The engine answers `schema_conflict` by resolving names again, which helps a clashing new
+  column and not a widen of a column that exists: a refused widen fails its load until the
+  engine can route such a column elsewhere.
+- A connector that flags its key column is refused at every destination, since the engine
+  carries the flag through.
+- Each consumer group's logs begin when the group is first connected in a process, where every
+  log of a process began together before.
 - Cost tests of a SQL plan count the steps SQLite's virtual machine takes, many operations
   against one, and depend on no clock. Those of the reference merge and of staging, which is
   code and no statement, compare the least of three timings of many operations with one, so
