@@ -141,35 +141,32 @@ fn discover(root: &Dir) -> Result<Vec<FileStream>> {
     let mut found = BTreeMap::<String, String>::new();
     for (entry, kind) in entries(root)? {
         let named = entry.clone();
-        let (stream, dir, files) = match kind {
-            Kind::Dir => {
-                let listed = root
-                    .dir(&entry)
-                    .map_err(io::failed("listing", &root.at(&entry)))?;
-                let files = entries(&listed)?
-                    .into_iter()
-                    .filter(|(_, kind)| *kind == Kind::File)
-                    .filter_map(|(file, _)| partition(file))
-                    .collect();
-                (entry.clone(), Some(entry), files)
-            }
-            Kind::File => {
-                let Some((stem, _)) = split(&entry) else {
-                    continue;
-                };
-                (
-                    stem.to_owned(),
-                    None,
-                    partition(entry).into_iter().collect(),
-                )
-            }
+        let stream = match kind {
+            Kind::Dir => entry.clone(),
+            Kind::File => match split(&entry) {
+                Some((stem, _)) => stem.to_owned(),
+                None => continue,
+            },
             // A link, a pipe, a device or a socket is no stream: none is opened.
             Kind::Other => continue,
         };
-        let files: Vec<_> = files;
-        // A name that is no stream's is skipped, as a hidden one is.
+        // A name that is no stream's is skipped, as a hidden one is, before it is opened: a
+        // directory the source would refuse to enter fails nothing unless it is a stream's.
         let Ok(name) = StreamName::new(&stream) else {
             continue;
+        };
+        let (dir, files): (_, Vec<_>) = if kind == Kind::Dir {
+            let listed = root
+                .dir(&entry)
+                .map_err(io::failed("listing", &root.at(&entry)))?;
+            let files = entries(&listed)?
+                .into_iter()
+                .filter(|(_, kind)| *kind == Kind::File)
+                .filter_map(|(file, _)| partition(file))
+                .collect();
+            (Some(entry), files)
+        } else {
+            (None, partition(entry).into_iter().collect())
         };
         if !files.is_empty() {
             if let Some(first) = found.insert(stream.clone(), named.clone()) {

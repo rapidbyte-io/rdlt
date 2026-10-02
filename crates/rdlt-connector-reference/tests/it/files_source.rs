@@ -608,3 +608,24 @@ async fn two_entries_that_name_the_same_stream_are_refused_by_both_names() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_directory_whose_name_is_no_stream_s_is_skipped_unopened() {
+    use std::os::unix::fs::PermissionsExt as _;
+    // A directory that names no stream is none of the source's: it is not entered, so one the
+    // source would refuse to enter, as a file system's own directory may be, fails nothing.
+    let root = crate::fixtures::tempdir().unwrap();
+    std::fs::write(root.path().join("orders.jsonl"), "{\"id\":1}\n").unwrap();
+    for name in ["no\tstream", "no\nstream"] {
+        assert!(StreamName::new(name).is_err(), "{name}");
+        let other = root.path().join(name);
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("a.jsonl"), "{}\n").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o777)).unwrap();
+    }
+    let source = connect(root.path()).await;
+    let (events, ended) = read(source.as_ref(), "orders", None).await;
+    ended.expect("the stream reads");
+    assert_eq!(pushed(&events), ["{\"id\":1}\n"]);
+    assert_eq!(streams(source.as_ref()).await, ["orders"]);
+}
