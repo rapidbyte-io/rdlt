@@ -215,3 +215,14 @@ fn a_dictionary_beyond_a_frame_is_refused_from_its_weight_before_it_is_rebuilt_o
     let texts = arrow_array::StringArray::from_iter_values(texts);
     refused_from_the_weight_of_its_dictionary(Arc::new(texts), "frame bytes");
 }
+
+#[test]
+fn rows_that_all_fit_are_weighed_in_stretches_each_twice_the_last() {
+    // Ten rows of one column: stretches of one, one, two and four rows, and the two left.
+    let batch = batch_of(Arc::new(Int64Array::from(vec![1; 10])));
+    let whole = cost(&batch, Limits::default());
+    assert_eq!(
+        (whole.pieces, whole.probe.weighed, whole.visits),
+        (1, 10, 5)
+    );
+}

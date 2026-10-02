@@ -98,3 +98,37 @@ fn copying_what_rows_name_holds_a_bounded_run_of_indices_whatever_they_name() {
     assert_eq!(compacted(&apart).unwrap(), apart);
     assert_eq!(held(), 0);
 }
+
+#[test]
+fn ranges_that_follow_one_another_are_named_as_one() {
+    let mut ranges = Vec::new();
+    for (start, end) in [(0, 5), (5, 9), (9, 9), (12, 11), (3, 4), (4, 6), (0, 1)] {
+        super::name(&mut ranges, start, end);
+    }
+    assert_eq!(ranges, [(0, 9), (3, 6), (0, 1)]);
+}
+
+#[test]
+fn a_part_of_views_of_bytes_keeps_only_the_bytes_its_rows_name() {
+    let blobs = (0..500).map(|at| format!("bytes too long for a view to hold, {at:04}"));
+    let blobs = arrow_array::BinaryViewArray::from_iter_values(blobs.map(String::into_bytes));
+    let part = batch_of(std::sync::Arc::new(blobs.slice(250, 3)));
+    let narrowed = compacted(&part).unwrap();
+    assert_eq!(narrowed, part);
+    let held = arrow_array::cast::AsArray::as_binary_view(narrowed.column(0)).data_buffers();
+    let held: usize = held.iter().map(arrow_buffer::Buffer::len).sum();
+    assert_eq!(held, 3 * 39);
+}
+
+#[test]
+fn rows_in_no_range_begin_no_run() {
+    // A run-end column rebuilt from ranges with an empty one between them.
+    let values = arrow_array::Int32Array::from(vec![1, 2]);
+    let ends = arrow_array::Int32Array::from(vec![2, 4]);
+    let runs = arrow_array::RunArray::try_new(&ends, &values).unwrap();
+    let runs: arrow_array::ArrayRef = std::sync::Arc::new(runs);
+    let mut narrower = super::Narrower::default();
+    let rebuilt = narrower.gathered(&runs, &[(0, 1), (3, 3), (1, 2)]).unwrap();
+    let rebuilt = arrow_array::cast::AsArray::as_run::<arrow_array::types::Int32Type>(&rebuilt);
+    assert_eq!(rebuilt.run_ends().values(), [2]);
+}
