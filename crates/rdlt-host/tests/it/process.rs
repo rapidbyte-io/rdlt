@@ -29,6 +29,13 @@ pub(crate) fn local() -> Local {
     Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE")
 }
 
+/// Has `child`, spawned to lead a process group, killed with its group when this test's
+/// process ends, however it ends.
+pub(crate) fn guarded(child: &tokio::process::Child) {
+    let leader = child.id().expect("the child runs");
+    rdlt_testkit::process::guard(leader).expect("the child is guarded");
+}
+
 pub(crate) fn scripted() -> ConnectorRef {
     let id = ConnectorId::parse("test.scripted").expect("a valid id");
     ConnectorRef::new(id).path(example("scripted_connector"))
@@ -76,7 +83,8 @@ async fn a_spawned_connector_is_placed_with_its_spec_and_the_digest_of_its_binar
     );
     let binary = std::fs::read(example("scripted_connector")).expect("the binary reads");
     let digest = Digest(sha2::Sha256::digest(binary).into());
-    assert_eq!(placed.digest, Some(digest));
+    // Reported where the file that was hashed is the file that is executed, and nowhere else.
+    assert_eq!(placed.digest, cfg!(target_os = "linux").then_some(digest));
     placed.connector.check().await.expect("the check passes");
 }
 
@@ -236,6 +244,7 @@ async fn sigint_leaves_no_orphaned_connectors() {
         .kill_on_drop(true)
         .spawn()
         .expect("the host starts");
+    guarded(&host);
     let host_pid = host.id().expect("the host runs");
     let stdout = host.stdout.take().expect("its output is piped");
     let mut lines = tokio::io::BufReader::new(stdout).lines();

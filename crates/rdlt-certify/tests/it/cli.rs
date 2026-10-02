@@ -46,8 +46,10 @@ async fn certify_given(args: &[&str], input: &str, env: &[(&str, &str)]) -> Outp
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .process_group(0)
         .spawn()
         .expect("rdlt-certify runs");
+    crate::guarded(&certifying);
     let mut stdin = certifying.stdin.take().expect("its input is piped");
     // It may end without reading its input: a closed pipe is no failure of the test.
     stdin.write_all(input.as_bytes()).await.ok();
@@ -685,8 +687,10 @@ async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_
             )
             .stdout(std::process::Stdio::null())
             .kill_on_drop(true)
+            .process_group(0)
             .spawn()
             .expect("rdlt-certify runs");
+        crate::guarded(&certifying);
         // Once a connector has started its members, the certification waits on it.
         let members = directory.path().join("members");
         for _ in 0..600 {
@@ -729,8 +733,10 @@ async fn a_second_interrupt_kills_what_a_certification_spawned_and_ends_it_at_on
         .args([launched.as_str(), "--role", "destination", "--trusted"])
         .stdout(std::process::Stdio::null())
         .kill_on_drop(true)
+        .process_group(0)
         .spawn()
         .expect("rdlt-certify runs");
+    crate::guarded(&certifying);
     let members = directory.path().join("members");
     for _ in 0..600 {
         let started = std::fs::read_to_string(&members).unwrap_or_default();

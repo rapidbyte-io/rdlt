@@ -445,8 +445,10 @@ mod bubblewrap {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .kill_on_drop(true)
+            .process_group(0)
             .spawn()
             .expect("the host starts");
+        crate::process::guarded(&host);
         let stdout = host.stdout.take().expect("its output is piped");
         let mut lines = tokio::io::BufReader::new(stdout).lines();
         let ready = lines.next_line().await.expect("it reads");

@@ -54,13 +54,14 @@ struct Watched {
 impl Watched {
     /// The harness on `config`.
     fn spawn(config: &Path) -> Self {
-        let mut child = Command::new(harness())
+        let mut harness = Command::new(harness());
+        harness
             .arg(config)
             .env_remove("FAILPOINTS")
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("the harness starts");
+            .stderr(Stdio::null());
+        // In a group of its own, killed when this test's process ends however it ends.
+        let mut child = rdlt_testkit::process::guarded(&mut harness).expect("the harness starts");
         let stdout = child.stdout.take().expect("the harness's output");
         let (sender, lines) = mpsc::channel();
         let connectors = Arc::new(Mutex::new(Vec::new()));
@@ -384,4 +385,32 @@ fn a_spawned_destination_killed_as_a_run_loads_is_spawned_again_and_doubles_noth
         "destination",
         &[json!(1), json!("publish")],
     );
+}
+
+/// A stand-in for a test of the matrix: it starts a run that waits after its first read, says
+/// which processes that started, and waits to be killed.
+#[test]
+#[ignore = "run by the test below, as the process it kills"]
+fn stand_in_starting_a_run_that_waits() {
+    let scenario = scenarios::forgetting_log();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let config = scenario.write_spawned(dir.path(), &json!({ "pause": 1 }));
+    let run = Watched::spawn(&config);
+    assert!(run.progressed(1), "the run never began to read");
+    rdlt_testkit::process::started(run.child.id());
+    let connectors = run.connectors.lock().expect("unpoisoned").clone();
+    assert_eq!(connectors.len(), 2, "{connectors:?}");
+    connectors
+        .into_iter()
+        .for_each(rdlt_testkit::process::started);
+    // Held, not dropped: a test that is killed drops nothing.
+    std::mem::forget((run, dir));
+    rdlt_testkit::process::ready()
+}
+
+#[test]
+fn what_a_test_of_the_matrix_started_is_gone_once_the_test_is_killed() {
+    let test = "kills::stand_in_starting_a_run_that_waits";
+    let left = rdlt_testkit::process::outliving(test, Duration::from_secs(30));
+    assert_eq!(left, Vec::<u32>::new(), "processes outlived their test");
 }

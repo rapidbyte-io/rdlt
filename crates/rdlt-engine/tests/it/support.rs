@@ -29,6 +29,13 @@ use rdlt_engine::{
 };
 use serde_json::{Value, json};
 
+/// Has `child`, spawned to lead a process group, killed with its group when this test's
+/// process ends, however it ends.
+pub(crate) fn guarded(child: &tokio::process::Child) {
+    let leader = child.id().expect("the child runs");
+    rdlt_testkit::process::guard(leader).expect("the child is guarded");
+}
+
 /// The example `name`, which the test build builds beside the tests: in the first directory above
 /// the test binary that holds an `examples` directory with it, whichever layout the build uses.
 pub(crate) fn example(name: &str) -> std::path::PathBuf {

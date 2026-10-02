@@ -47,8 +47,10 @@ pub(crate) async fn listening(pki: &Pki, server: &Files, address: &str) -> (Chil
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
+        .process_group(0)
         .spawn()
         .expect("the connector starts");
+    crate::process::guarded(&child);
     let stdout = child.stdout.take().expect("its output is piped");
     let line = BufReader::new(stdout)
         .lines()
@@ -389,9 +391,16 @@ async fn a_reference_without_an_endpoint_goes_to_the_fallback() {
 
 #[tokio::test]
 async fn listening_without_mutual_tls_is_refused_and_a_stop_ends_it_cleanly() {
-    let output = Command::new(example("scripted_connector"))
+    let refused = Command::new(example("scripted_connector"))
         .args(["--listen", "127.0.0.1:0"])
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .expect("the connector starts");
+    crate::process::guarded(&refused);
+    let output = refused
+        .wait_with_output()
         .await
         .expect("the connector runs");
     assert!(!output.status.success());
@@ -516,8 +525,10 @@ async fn limited(descriptors: u32, more: &[&str]) -> std::process::Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
+        .process_group(0)
         .spawn()
         .expect("the connector starts");
+    crate::process::guarded(&child);
     let stdout = child.stdout.take().expect("its output is piped");
     let announced = BufReader::new(stdout).lines().next_line().await;
     let announced = announced.expect("its output reads");
