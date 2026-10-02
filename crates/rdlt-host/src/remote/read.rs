@@ -70,23 +70,42 @@ pub(super) async fn run(
                 let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
                 match reader.event(frame)? {
                     Read::Done => return Ok(()),
-                    // A send fails only once the engine has stopped the read, even one that
-                    // waited for room; the next turn forwards the stop, and the read drains.
-                    Read::Event(event) => {
-                        // A checkpoint may answer only a barrier the host forwarded.
-                        if let SourceEvent::Checkpoint { answers: Some(barrier), .. } = &event
-                            && *barrier > forwarded
-                        {
-                            return Err(invalid(&Invalid::OutOfRange("checkpoint barrier")));
-                        }
-                        sink.send(event).await.ok();
-                    }
+                    Read::Event(event) => forward(&mut sink, event, forwarded).await?,
                     // A dictionary waits in the decoder for the batches that use it.
                     Read::Nothing => dictionaries.charge(&sink, reader.decoder.dictionary_bytes()),
                 }
                 controls.send(control(Control::Credit(v1::Credit { bytes: size }))).await.ok();
             }
         }
+    }
+}
+
+/// Sends `event` to the engine, where a checkpoint in it answers no barrier beyond `forwarded`,
+/// the newest the host forwarded.
+///
+/// A send the engine stopped fails as stopped, even one that waited for room: the read's next
+/// turn forwards the stop, and the read drains.
+///
+/// # Errors
+///
+/// A checkpoint answering a barrier the host did not forward, and why its admission refused the
+/// event, where it did.
+async fn forward(
+    sink: &mut PartitionSink,
+    event: SourceEvent,
+    forwarded: u64,
+) -> rdlt_connector::Result<()> {
+    if let SourceEvent::Checkpoint {
+        answers: Some(barrier),
+        ..
+    } = &event
+        && *barrier > forwarded
+    {
+        return Err(invalid(&Invalid::OutOfRange("checkpoint barrier")));
+    }
+    match sink.send(event).await {
+        Err(refused) if refused.kind() != ConnectorErrorKind::Stopped => Err(refused),
+        _ => Ok(()),
     }
 }
 
@@ -151,13 +170,15 @@ struct Dictionaries {
 
 impl Dictionaries {
     /// Charges `sink`'s admission the `bytes` the decoder now holds, in place of what it held.
+    ///
+    /// What it held is released first, so the two are never charged together; and whatever ends
+    /// the read, its return, its failure or its being dropped, releases what is held, once.
     fn charge(&mut self, sink: &PartitionSink, bytes: u64) {
         if bytes != self.bytes {
-            self.held = if bytes == 0 {
-                None
-            } else {
-                sink.reserve(bytes)
-            };
+            self.held = None;
+            if bytes > 0 {
+                self.held = sink.reserve(bytes);
+            }
             self.bytes = bytes;
         }
     }
