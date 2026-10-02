@@ -39,28 +39,43 @@ pub(crate) struct Lanes {
     senders: Vec<mpsc::Sender<Message>>,
 }
 
-/// One lane's end: its queue, a writer for each table and schema version it has written, which
-/// of them it wrote since its last flush, and the reservations of those writes.
+/// One lane's end: its queue, a writer for each table and schema version it writes, which of
+/// them it wrote since its last flush, and the reservations of those writes.
+///
+/// A lane holds at most `share` writers open, and a table's writer of a version older than one
+/// it writes is retired: each is a call into a served destination.
 pub(crate) struct Lane {
     receiver: mpsc::Receiver<Message>,
     tables: Arc<Tables>,
-    writers: BTreeMap<(usize, SchemaVersion), Box<dyn DestinationWriter>>,
+    writers: BTreeMap<(usize, SchemaVersion), Open>,
     written: BTreeSet<(usize, SchemaVersion)>,
     held: Vec<Permit>,
     budget: MemoryBudget,
+    /// The most writers the lane holds open.
+    share: NonZeroUsize,
+    /// Counts the lane's writes, so the writer written longest ago is found.
+    writes: u64,
+}
+
+/// An open writer, and the count of the lane's writes when it was last written.
+struct Open {
+    writer: Box<dyn DestinationWriter>,
+    used: u64,
 }
 
 impl Lanes {
-    /// `count` lanes writing into `tables`, each queueing up to `window` writes.
+    /// `count` lanes writing into `tables`, each queueing up to `window` writes and holding an
+    /// equal share of `writers` open, one at least.
     ///
     /// A lane opens a table's writer when it first writes to the table, since normalized streams
     /// add child tables as their rows arrive.
     pub(crate) fn new(
-        count: NonZeroUsize,
+        (count, writers): (NonZeroUsize, NonZeroUsize),
         tables: &Arc<Tables>,
         window: NonZeroUsize,
         budget: &MemoryBudget,
     ) -> (Self, Vec<Lane>) {
+        let share = NonZeroUsize::new(writers.get() / count.get()).unwrap_or(NonZeroUsize::MIN);
         let (senders, lanes) = (0..count.get())
             .map(|_| {
                 let (sender, receiver) = mpsc::channel(window.get());
@@ -71,6 +86,8 @@ impl Lanes {
                     written: BTreeSet::new(),
                     held: Vec::new(),
                     budget: budget.clone(),
+                    share,
+                    writes: 0,
                 };
                 (sender, lane)
             })
@@ -151,14 +168,23 @@ impl Lane {
         }
     }
 
-    /// Stages `write` with its table's writer, which then holds what the write held.
+    /// Stages `write` with its table's writer, which then holds what the write held; the table's
+    /// writers of older versions are retired first.
     async fn stage(&mut self, write: Write) -> Result<(), Error> {
-        self.written.insert((write.table, write.version));
+        let older: Vec<_> = self
+            .writers
+            .range((write.table, SchemaVersion(0))..(write.table, write.version))
+            .map(|(key, _)| *key)
+            .collect();
+        for key in older {
+            self.retire(key).await?;
+        }
         let writer = self.writer(write.table, write.version).await?;
         writer
             .write(write.segment, write.batch)
             .await
             .map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
+        self.written.insert((write.table, write.version));
         self.held.push(write.reservation);
         Ok(())
     }
@@ -167,16 +193,35 @@ impl Lane {
     async fn flush_written(&mut self) -> Result<(), Error> {
         // A writer written before the last flush holds nothing more to flush.
         for key in std::mem::take(&mut self.written) {
-            let Some(writer) = self.writers.get_mut(&key) else {
+            let Some(open) = self.writers.get_mut(&key) else {
                 continue;
             };
-            writer.flush().await.map_err(|error| {
-                Error::connector(Side::Destination, "flushing staged writes", error)
-            })?;
+            flush(open.writer.as_mut()).await?;
         }
         self.held.clear();
         Ok(())
     }
+
+    /// Closes the writer at `key`, having flushed what it was written since the last flush, so
+    /// what it staged stays staged; what the writes held is released at the lane's next flush.
+    async fn retire(&mut self, key: (usize, SchemaVersion)) -> Result<(), Error> {
+        let Some(mut open) = self.writers.remove(&key) else {
+            return Ok(());
+        };
+        if self.written.remove(&key) {
+            flush(open.writer.as_mut()).await?;
+        }
+        Ok(())
+    }
+}
+
+/// Flushes `writer`.
+async fn flush(writer: &mut dyn DestinationWriter) -> Result<(), Error> {
+    writer
+        .flush()
+        .await
+        .map(drop)
+        .map_err(|error| Error::connector(Side::Destination, "flushing staged writes", error))
 }
 
 impl Lane {
@@ -188,8 +233,20 @@ impl Lane {
         table: usize,
         version: SchemaVersion,
     ) -> Result<&mut Box<dyn DestinationWriter>, Error> {
-        match self.writers.entry((table, version)) {
-            Entry::Occupied(writer) => Ok(writer.into_mut()),
+        self.writes = self.writes.saturating_add(1);
+        let key = (table, version);
+        if !self.writers.contains_key(&key) && self.writers.len() >= self.share.get() {
+            let oldest = self.writers.iter().min_by_key(|(_, open)| open.used);
+            if let Some(oldest) = oldest.map(|(key, _)| *key) {
+                self.retire(oldest).await?;
+            }
+        }
+        match self.writers.entry(key) {
+            Entry::Occupied(open) => {
+                let open = open.into_mut();
+                open.used = self.writes;
+                Ok(&mut open.writer)
+            }
             Entry::Vacant(vacant) => {
                 let view = self.tables.view(table);
                 let table = TableRef {
@@ -205,7 +262,11 @@ impl Lane {
                         let context = format!("creating a writer for table {}", view.table.name);
                         Error::connector(Side::Destination, context, error)
                     })?;
-                Ok(vacant.insert(writer))
+                let open = vacant.insert(Open {
+                    writer,
+                    used: self.writes,
+                });
+                Ok(&mut open.writer)
             }
         }
     }

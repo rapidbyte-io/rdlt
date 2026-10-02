@@ -316,7 +316,13 @@ impl Setup {
 /// One lane over `tables`, running.
 fn lanes(tables: &Arc<Tables>) -> Lanes {
     let budget = crate::budget::MemoryBudget::new(1 << 30);
-    let (lanes, tasks) = Lanes::new(NonZeroUsize::MIN, tables, NonZeroUsize::MIN, &budget);
+    let writers = crate::config::GrowthLimits::default().writers();
+    let (lanes, tasks) = Lanes::new(
+        (NonZeroUsize::MIN, writers),
+        tables,
+        NonZeroUsize::MIN,
+        &budget,
+    );
     for lane in tasks {
         tokio::spawn(lane.run(CancellationToken::new()));
     }

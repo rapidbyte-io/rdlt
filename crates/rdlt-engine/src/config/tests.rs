@@ -296,9 +296,9 @@ fn a_wait_a_failure_asks_for_is_held_between_the_first_and_the_longest_delay() {
 
 #[test]
 fn growth_limits_need_room_for_a_child_table() {
-    let error = super::GrowthLimits::new(0).unwrap_err();
+    let error = super::GrowthLimits::new(0, 1).unwrap_err();
     assert_eq!(error.code(), Some("growth_limits_invalid"));
-    let limits = super::GrowthLimits::new(1).unwrap();
+    let limits = super::GrowthLimits::new(1, 1).unwrap();
     assert_eq!(limits.child_tables().get(), 1);
     assert_eq!(super::GrowthLimits::default().child_tables().get(), 1024);
     let config = EngineConfig::builder().growth(limits).build().unwrap();
