@@ -14,7 +14,7 @@ use rdlt_connector::wire::{status, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_host::Stream;
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
-use rdlt_wire::{PROTOCOL_MAJOR, PUBLISHED};
+use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR, PUBLISHED};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
@@ -246,6 +246,8 @@ impl Connector for Fake {
                 Vec::new()
             },
             limits: self.keeps(Fault::Limitless).then_some(limits),
+            protocol_major: PROTOCOL_MAJOR,
+            protocol_minor: PROTOCOL_MINOR,
         }))
     }
 

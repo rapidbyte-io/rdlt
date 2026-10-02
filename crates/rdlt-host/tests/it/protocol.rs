@@ -550,14 +550,10 @@ async fn a_connection_dropped_before_its_connector_is_configured_is_cut() {
 async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() {
     use crate::support::fake::{Fake, Fault, serve_fake};
     let io = serve_fake(Fake(Fault::GarbledDetails));
-    let connection = Connection::connect(
-        io,
-        Role::Source,
-        &serde_json::json!({}),
-        Options::default(),
-    )
-    .await
-    .expect("the fake handshakes");
+    let connection =
+        Connection::connect(io, Role::Source, &serde_json::json!({}), Options::default())
+            .await
+            .expect("the fake handshakes");
     // The fake fails a discovery; its details do not decode, so it reads as a transport failure.
     let failed = tokio::spawn(async move { RemoteSource::new(connection).discover().await });
     let error = failed
@@ -565,4 +561,50 @@ async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() 
         .expect("the call does not panic")
         .expect_err("the discovery fails");
     assert_eq!(error.code(), Some("transport"), "{error}");
+}
+
+#[test]
+fn every_code_the_host_gives_its_own_findings_is_one_no_connector_may_claim() {
+    use rdlt_connector::wire::{HOST_CODES, TRANSPORT};
+    for code in [CONNECTOR_LOST, DEADLINE_EXCEEDED, TRANSPORT, rdlt_host::TLS] {
+        assert!(HOST_CODES.contains(&code), "{code}");
+    }
+}
+
+#[tokio::test]
+async fn a_handshake_answer_the_host_did_not_agree_to_is_refused() {
+    use crate::support::fake::{Fake, Fault, serve_fake};
+    type Change = fn(&mut v1::HandshakeResponse);
+    let answers: [(Change, &str); 6] = [
+        (|answer| answer.protocol_major += 1, "protocol_version"),
+        (|answer| answer.protocol_major = 0, "protocol_version"),
+        (
+            |answer| answer.accepted_features = vec!["unoffered".to_owned()],
+            "invalid_message",
+        ),
+        (
+            |answer| answer.spec.as_mut().unwrap().id = "test.fake\n`".to_owned(),
+            "invalid_message",
+        ),
+        (
+            |answer| answer.spec.as_mut().unwrap().version = "1.0\u{1b}]52;c;".to_owned(),
+            "invalid_message",
+        ),
+        (
+            |answer| answer.spec.as_mut().unwrap().version = "1".repeat(65),
+            "invalid_message",
+        ),
+    ];
+    for (answer, code) in answers {
+        let io = serve_fake(Fake(Fault::Handshakes(answer)));
+        let refused = Connection::handshake(io, Role::Source, Options::default())
+            .await
+            .expect_err("the handshake is refused");
+        assert_eq!(refused.code(), Some(code), "{refused}");
+    }
+    let agreed = |_: &mut v1::HandshakeResponse| {};
+    let io = serve_fake(Fake(Fault::Handshakes(agreed)));
+    Connection::handshake(io, Role::Source, Options::default())
+        .await
+        .expect("the handshake agrees");
 }

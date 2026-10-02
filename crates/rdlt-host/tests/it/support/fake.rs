@@ -42,6 +42,8 @@ pub(crate) enum Fault {
     Bloats(usize),
     /// Every failure it answers with carries status details that are not base64.
     GarbledDetails,
+    /// Its handshake answers as this changes it.
+    Handshakes(fn(&mut v1::HandshakeResponse)),
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -105,14 +107,20 @@ impl Connector for Fake {
         &self,
         _: Request<v1::HandshakeRequest>,
     ) -> Result<Response<v1::HandshakeResponse>, Status> {
-        Ok(Response::new(v1::HandshakeResponse {
+        let mut answer = v1::HandshakeResponse {
             spec: Some(spec("test.fake", self.destination())),
             accepted_features: Vec::new(),
             limits: matches!(self.0, Fault::NoDictionaryLimit).then(|| v1::Limits {
                 dictionary_bytes: 0,
                 ..rdlt_wire::Limits::default().into()
             }),
-        }))
+            protocol_major: rdlt_wire::PROTOCOL_MAJOR,
+            protocol_minor: rdlt_wire::PROTOCOL_MINOR,
+        };
+        if let Fault::Handshakes(change) = self.0 {
+            change(&mut answer);
+        }
+        Ok(Response::new(answer))
     }
 
     async fn configure(

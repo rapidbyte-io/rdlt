@@ -19,6 +19,7 @@ use std::error::Error as StdError;
 
 #[cfg(feature = "serve")]
 pub(crate) use destination::load_id;
+pub use error::{HOST_CODES, INVALID_CODE};
 pub use rdlt_wire::v1;
 pub use status::{
     MALFORMED_FRAME, TRANSPORT, UNENCODABLE_BATCH, UNSENDABLE_TYPE, error, frame_error,

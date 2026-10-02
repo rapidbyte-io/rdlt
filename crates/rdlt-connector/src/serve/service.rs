@@ -138,6 +138,8 @@ impl Connector for Service {
             spec: Some(spec),
             accepted_features,
             limits: Some(self.limits.into()),
+            protocol_major: rdlt_wire::PROTOCOL_MAJOR,
+            protocol_minor: rdlt_wire::PROTOCOL_MINOR,
         }))
     }
 
