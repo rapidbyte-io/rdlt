@@ -149,10 +149,11 @@ impl Engine {
             child_tables: Vec::new(),
             drop_tables,
         };
-        session
+        let receipt = session
             .commit(&meta)
             .await
             .map_err(|error| Error::connector(Side::Destination, "committing the reset", error))?;
+        crate::table::answered(&meta, receipt)?;
         Ok(dropped)
     }
 }

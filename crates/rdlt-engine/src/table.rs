@@ -31,7 +31,7 @@ pub(crate) use lowering::{ChangeRows, LoweringPlan, Prepared, Stamp, data_ordina
 pub(crate) use model::Model;
 pub(crate) use registry::{Admission, Tables};
 pub(crate) use resolve::{Incoming, Resolver, Settings};
-pub(crate) use session::SharedSession;
+pub(crate) use session::{SharedSession, answered};
 
 /// A table at one schema version: everything needed to prepare batches for it.
 #[derive(Clone, Debug, PartialEq)]

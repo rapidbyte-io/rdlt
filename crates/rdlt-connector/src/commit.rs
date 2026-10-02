@@ -198,3 +198,10 @@ pub struct Receipt {
     /// Bytes published, as the destination measures them.
     pub bytes: u64,
 }
+
+impl Receipt {
+    /// Whether this is the receipt of the commit `meta` describes: of its load and sequence.
+    pub fn answers(&self, meta: &CommitMeta) -> bool {
+        (self.load_id, self.commit_seq) == (meta.load_id, meta.commit_seq)
+    }
+}

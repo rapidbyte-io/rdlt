@@ -48,7 +48,7 @@ fn attempt(load: LoadId, commits: Vec<CommitRecord>, error: Option<&Error>) -> A
             committed: commits
                 .into_iter()
                 .fold(Committed::default(), |mut committed, commit| {
-                    committed.add(commit);
+                    committed.add(commit).unwrap();
                     committed
                 }),
             ..AttemptLog::default()
@@ -141,8 +141,10 @@ fn a_commit_credited_to_a_folded_attempt_counts_toward_it_and_the_run() {
     let pipeline = PipelineId::parse("orders").unwrap();
     let failed = LoadId::from_parts(UNIX_EPOCH, 1);
     let mut report = Report::new(pipeline);
-    report.absorb(attempt(failed, vec![], None));
-    report.credit(commit(failed, 3, &[("orders", 3, 24)]));
+    report.absorb(attempt(failed, vec![], None)).unwrap();
+    report
+        .credit(commit(failed, 3, &[("orders", 3, 24)]))
+        .unwrap();
     assert_eq!((report.commits, report.rows, report.bytes), (1, 3, 30));
     assert_eq!(report.streams["orders"].rows, 3);
     let listed = &report.attempts[0];
@@ -163,12 +165,58 @@ fn a_report_totals_each_stream_s_resets_and_keeps_its_latest_known_lag() {
         signalled.log.retention_resets.insert(orders(), resets);
         signalled
     };
-    report.absorb(signalled(1, Some(100), 1));
+    report.absorb(signalled(1, Some(100), 1)).unwrap();
     // An attempt whose reads never said how far behind they were leaves the last it knew.
-    report.absorb(signalled(2, None, 2));
+    report.absorb(signalled(2, None, 2)).unwrap();
     assert_eq!(report.streams["orders"].behind, Some(100));
     assert_eq!(report.streams["orders"].retention_resets, 3);
-    report.absorb(signalled(3, Some(7), 0));
+    report.absorb(signalled(3, Some(7), 0)).unwrap();
     assert_eq!(report.streams["orders"].behind, Some(7));
     assert_eq!(report.streams["orders"].retention_resets, 3);
+}
+
+/// A commit of `load` whose receipt counts `rows` and `bytes`.
+fn counted(load: LoadId, rows: u64, bytes: u64) -> CommitRecord {
+    CommitRecord {
+        receipt: Receipt {
+            rows,
+            bytes,
+            ..commit(load, 0, &[]).receipt
+        },
+        streams: BTreeMap::new(),
+    }
+}
+
+fn overflowed(result: Result<(), Error>) {
+    let error = result.unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Destination, Some("receipt_overflow"), false)
+    );
+}
+
+#[test]
+fn receipts_counting_past_a_total_are_refused_and_change_nothing() {
+    let load = LoadId::from_parts(UNIX_EPOCH, 1);
+    for (rows, bytes) in [(u64::MAX, 0), (0, u64::MAX)] {
+        let mut committed = Committed::default();
+        committed.add(counted(load, rows, bytes)).unwrap();
+        overflowed(committed.add(counted(load, 1, 1)));
+        assert_eq!(
+            (committed.commits, committed.rows, committed.bytes),
+            (1, rows, bytes)
+        );
+        let mut report = Report::new(PipelineId::parse("orders").unwrap());
+        report
+            .absorb(attempt(load, vec![counted(load, rows, bytes)], None))
+            .unwrap();
+        overflowed(report.absorb(attempt(load, vec![counted(load, 1, 1)], None)));
+        overflowed(report.credit(counted(load, 1, 1)));
+        assert_eq!(
+            (report.attempted, report.commits, report.rows, report.bytes),
+            (1, 1, rows, bytes)
+        );
+        let listed = &report.attempts[0];
+        assert_eq!((listed.rows, listed.bytes), (rows, bytes));
+    }
 }

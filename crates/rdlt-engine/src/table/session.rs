@@ -7,7 +7,7 @@ use rdlt_connector::{
     CommitMeta, DestinationSession, DestinationWriter, Receipt, TableChange, TableRef,
 };
 
-use crate::error::{Error, Side};
+use crate::error::{Error, ErrorKind, Side};
 
 /// The destination session, shared by the coordinator's commits and the partitions' schema
 /// changes until the coordinator closes it.
@@ -44,13 +44,17 @@ impl SharedSession {
         Ok(session.as_mut().ok_or_else(closed)?.writer(table).await)
     }
 
-    /// Commits `meta`.
+    /// Commits `meta`; a receipt the destination answers with is the commit's own, as
+    /// [`answered`] checks.
     pub(crate) async fn commit(
         &self,
         meta: &CommitMeta,
     ) -> Result<rdlt_connector::Result<Receipt>, Error> {
         let mut session = self.0.lock().await;
-        Ok(session.as_mut().ok_or_else(closed)?.commit(meta).await)
+        match session.as_mut().ok_or_else(closed)?.commit(meta).await {
+            Ok(receipt) => answered(meta, receipt).map(Ok),
+            Err(error) => Ok(Err(error)),
+        }
     }
 
     /// Closes the session; later calls find it closed.
@@ -63,6 +67,31 @@ impl SharedSession {
             .await
             .map_err(|error| Error::connector(Side::Destination, "closing the session", error))
     }
+}
+
+/// `receipt`, where it is the receipt of the commit `meta` describes.
+///
+/// # Errors
+///
+/// A receipt of another load or sequence is `receipt_mismatch`, a Destination error that no
+/// retry mends: the write-ahead log would settle a commit the destination never made, and
+/// leave pending the commit it made.
+pub(crate) fn answered(meta: &CommitMeta, receipt: Receipt) -> Result<Receipt, Error> {
+    if receipt.answers(meta) {
+        return Ok(receipt);
+    }
+    Err(Error::new(
+        ErrorKind::Destination,
+        format!(
+            "the destination answered commit {} of load {} with the receipt of commit {} of \
+             load {}",
+            meta.commit_seq.get(),
+            meta.load_id,
+            receipt.commit_seq.get(),
+            receipt.load_id
+        ),
+    )
+    .with_code("receipt_mismatch"))
 }
 
 fn closed() -> Error {
