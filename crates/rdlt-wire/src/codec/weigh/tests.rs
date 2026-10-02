@@ -189,6 +189,15 @@ fn each_layout_weighs_its_own_bits_and_counts_its_own_nodes_and_buffers() {
         whole(Arc::new(NullArray::new(3))),
         ((3, 0, 0), overhead(1, 0), 1)
     );
+    // Three flags: a bit and a validity bit each, two buffers; three fixed bytes, three bytes.
+    let flags = arrow_array::BooleanArray::from(vec![true, false, true]);
+    assert_eq!(whole(Arc::new(flags)), ((3, 0, 3 * 2), overhead(1, 2), 1));
+    let fixed = arrow_array::FixedSizeBinaryArray::try_from_iter([[7_u8; 3]].into_iter());
+    let weighed = whole(Arc::new(fixed.unwrap()));
+    assert_eq!(weighed, ((1, 0, 3 * 8 + 1), overhead(1, 2), 1));
+    // A view of twelve bytes holds them: they are in no data buffer.
+    let views = StringViewArray::from(vec!["t".repeat(12)]);
+    assert_eq!(whole(Arc::new(views)), ((1, 0, 128 + 1), overhead(1, 3), 2));
     // A view of twenty bytes: sixteen bytes, a validity bit and its bytes; three buffers.
     let views = StringViewArray::from(vec!["t".repeat(20)]);
     let weighed = whole(Arc::new(views));
@@ -223,6 +232,13 @@ fn each_layout_weighs_its_own_bits_and_counts_its_own_nodes_and_buffers() {
     let union = UnionArray::try_new(fields, vec![0, 0, 0].into(), None, vec![ints()]).unwrap();
     let weighed = whole(Arc::new(union));
     assert_eq!(weighed, ((3 + 3, 0, 3 * 8 + 3 * 33), overhead(2, 3), 2));
+    // A dense union: a type id and an offset a row, two buffers, and the item each names.
+    let fields = [Field::new("a", DataType::Int32, true)];
+    let fields = UnionFields::try_new(vec![0], fields).unwrap();
+    let offsets = Some(vec![2, 0, 1].into());
+    let union = UnionArray::try_new(fields, vec![0, 0, 0].into(), offsets, vec![ints()]).unwrap();
+    let weighed = whole(Arc::new(union));
+    assert_eq!(weighed, ((3 + 3, 0, 3 * 40 + 3 * 33), overhead(2, 4), 4));
     // Two runs of integers: each row, and for each run its end, a bit and its value; the ends
     // are a node of two buffers, the column itself none.
     let ends = Int32Array::from(vec![2, 5]);
@@ -287,4 +303,16 @@ fn rows_weighed_since_a_mark_are_forgotten_and_those_before_it_kept() {
     // The first run was begun before the mark; the second is begun again.
     assert_eq!(weigher.weigh(1).values, 1);
     assert_eq!(weigher.weigh(2).values, 3);
+}
+
+#[test]
+fn runs_are_weighed_no_further_once_a_stretch_holds_more_values_than_asked() {
+    // Ten runs of one row: each run is its row, its end and its value.
+    let ends = Int32Array::from_iter_values(1..=10);
+    let runs = RunArray::<Int32Type>::try_new(&ends, &Int32Array::from(vec![7; 10])).unwrap();
+    let batch = batch_of(Arc::new(runs));
+    let mut weigher = Weigher::within(&batch, 4);
+    weigher.begin();
+    // The run that takes the stretch beyond four values is the last weighed.
+    assert_eq!(weigher.weigh_rows(0..10).values, 2 * 3);
 }
