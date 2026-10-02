@@ -151,6 +151,17 @@ when it is read and never written in a form its reader refuses.
   commit tries again, at the cost of opening and reading those files once more. Each commit
   opens the files it may merge to compare their schemas, and a commit answered from its
   receipt walks its session's staged tree: both are bounded by the list.
+- **A merge table's files hold the columns their rows hold.** A merge gives the destination
+  its rows as batches of the columns they hold, as ADR 0049 says, and each is written under
+  those columns: JSON lines, which name their own columns, as one file, and Arrow, where a
+  file holds one set of columns, as a file a batch, at most sixteen and a few more where the
+  merge could not join the smaller ones within its bound. A file is read back as the columns
+  its rows hold, JSON lines in runs of lines that name about the same columns, so one row of
+  many columns among many rows of few costs the table its own cells in the file and where it
+  is read. The halving cut above measures each file's batches under the file's own columns.
+  A file a writer staged, and a tombstone file, is read under its whole schema as before. The
+  compaction of lists is unchanged: lines of any columns share a file and read back as above,
+  and Arrow files of differing columns join with none, as files of differing schemas never did.
 - **The keeper is bounded, private and durable before it moves.** A keeper holds 4096
   positions. An acknowledgement that moves a position writes the whole file through a temporary,
   synced and renamed, and the keeper stands at the position only once that write is durable: a
@@ -174,7 +185,8 @@ what the tables hold.
 
 What remains by design:
 
-- A merge table's commit holds the whole table in memory while it merges it, and rewrites it.
+- A merge table's commit holds the whole table in memory while it merges it, each row under the
+  columns it holds, and rewrites it.
 - A staged batch is its own file in its own directories until its commit merges or publishes it.
 - The manifest lists one file per 64 MiB of an append table, and is rewritten at each commit.
 - A reader holding one of the 8 older manifests finds the manifest but may find its files gone:

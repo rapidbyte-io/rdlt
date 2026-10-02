@@ -104,14 +104,17 @@ given:
     `database_path_invalid`, and SQLite is handed the path from the root, which starts with a
     separator: `?`, `%` and `#` in it are characters of the name. A path that ends in no file's
     name is refused the same way.
-  - A database's place is its user's alone, by the rule ADR 0047 gives the files connectors.
-    Its directory, asked once open, belongs to the user the process runs as and is writable by
-    neither its group nor others (`not_private`; `not_a_directory` where it is none). The
-    database and each file SQLite keeps beside it (`-wal`, `-shm`, `-journal`), where they
-    exist, are regular files of that user's that no one else reaches: a link, at the database's
-    name too, is refused as `not_a_regular_file`, and a file others reach as `not_private`,
-    never re-moded, since tightening it would hide that it had been exposed. A new database is
-    created exclusively, mode 0600, and SQLite gives the files it creates beside it that mode.
+  - A database's place is its user's alone, by the rule of ADR 0047 and through the same code:
+    its directory is opened as the files connectors open a root, and belongs to the user the
+    process runs as and is writable by neither its group nor others (`not_private`;
+    `not_a_directory` where it is none). The database and each file SQLite keeps beside it
+    (`-wal`, `-shm`, `-journal`), where they exist, are opened through that directory as
+    regular files of that user's, and beyond the files connectors' rule no one else reaches
+    them at all: a link, at the database's name too, is refused as `not_a_regular_file`, and a
+    file others reach as `not_private`, never re-moded, since tightening it would hide that it
+    had been exposed. Each is a configuration error, since the path is the operator's to name.
+    A new database is created through the directory, exclusively, mode 0600, and SQLite gives
+    the files it creates beside it that mode.
     SQLite adopts a log that is already there as it is, and whoever can read the lock file can
     hold every writer out, which is why the rule covers more than the database.
   - A statement waits thirty seconds for another connection's write, then fails as transient. A
@@ -166,10 +169,27 @@ given:
     their own cells, in the commit the wide row arrives in and after it, for an upsert, a change
     stream and a history alike. The memory destination keeps its rows so, and hands a reader
     every column, an absent one as nulls its rows share.
-  - A destination that writes every column of every row, as the files destination does, takes
-    the rows with every column and is charged for the cells they never had before any is made:
-    the rows of each batch times the columns it lacks. More than sixteen million is refused as
-    `merge_too_wide`. Under the limit such a destination still writes those cells.
+  - The files destination keeps its rows so too. JSON lines name their own columns, so a
+    merged table is one file whatever columns its batches hold; an Arrow file holds one set of
+    columns, so each batch is a file of its own. Published files are read back as the columns
+    their rows hold: an Arrow file's as written, JSON lines in runs decoded under the columns
+    their lines name, a line starting a new run where joining would leave the batch lacking
+    more cells than it holds, so no batch is more than twice its rows' cells. What a writer
+    staged is read as it was written, since its flags count its columns. A reader of the
+    destination is given every column, an absent one as nulls its rows share. No entry of the
+    merge gives every column of every row any more, and nothing is refused for its width.
+  - Rows of many shapes do not become as many batches. A batch is a shape for each set of
+    columns that some written batch, or some row built from flagged columns, holds; a file for
+    each, rewritten by every commit, would let one write of many shapes cost every later
+    commit. Past sixteen batches the merge joins the smallest under the columns any of them
+    holds, in groups that each make at most 2^20 cells no row of theirs had: a table of a few
+    shapes is untouched, one of many small shapes is a few batches, and shapes too large to
+    join within the bound stay apart, so the cost follows what was written.
+  - The files destination refuses at the flush what its merge cannot take, under the merge's
+    codes, as the memory and the SQLite destinations do, and a merge that fails at the commit
+    keeps its code. A change of a column's type reads what the pipeline publishes of the
+    table, its generations and its tombstones, and is refused as `schema_conflict` where a
+    value does not fit; a change of no column's type reads nothing.
   - A truncate is found for each row by a search of the commit's truncates in order, a flag is
     read from its bitmap, and a row a delete or a truncate marks costs the two cells marked.
   - In SQL a window over a key's events gives each row the first truncate past it, the table is
@@ -203,12 +223,17 @@ given:
     with each process. When the awaited message arrives is computed in numbers twice as wide as
     an offset, the wait is never under a millisecond, and for the last offset a number holds,
     which no head passes, the read waits only to be stopped.
-  - A keeper's file is named from the root, each directory by its name, as `*.group` or
-    `*.slot` (`keeper_path_invalid`): one way to write each file, and no file replaced that is
-    not named as a keeper's. How the file is opened and written is ADR 0047's.
-  - A group's or a slot's name is neither empty nor one starting with `file:`
-    (`keeper_name_invalid`): the first is the default keeper's, and the second is how a keeper
-    kept in a file is known, so neither names a keeper of its own.
+  - A keeper's file is named `*.group` or `*.slot` (`keeper_path_invalid`): a keeper replaces
+    its file whole, so none is replaced that is not named as a keeper's. Which file a path
+    leads to, and how it is opened and written, is ADR 0047's: a keeper is known by the
+    directory that holds its file and the name there, so every path to one file is one keeper.
+  - A group's or a slot's name is any but the empty one (`keeper_name_invalid`), which is the
+    default keeper's. A named keeper and one kept in a file are different kinds of key, so no
+    name is a file's keeper, and a log's beginning is kept by the keeper it belongs to.
+  - Named keepers are shared by every source of a process that names them, whoever connected
+    it, and are kept for as long as the process runs. Keying them by the connecting host as
+    well, and freeing one with its last session, waits for the connect context to carry the
+    host, which the served side brings.
   - A source acknowledges only partitions its stream has, all of a call's or none, and the log
     source reads no other.
   - A stream that does not serve again what it acknowledged needs a named group or slot
@@ -232,10 +257,13 @@ given:
   directories above are the operator's, as ADR 0047 leaves them.
 - The exact conversion repeats what the engine's own lowering does for arriving values; one
   implementation in the connector SDK would serve both.
-- The files destination shares the reference merge through its entry that gives every column,
-  and still writes a merged table column by column: a table that widened costs it rows times
-  width there, up to the limit charged. Writing each batch of the merge as a file of the
-  columns it holds would remove the cost; that is the files destination's to take up.
+- An Arrow merge table lists a file for each shape of its rows, at most sixteen and a group
+  for each 2^20 absent cells of the smaller shapes; every commit rewrites them all, as it
+  rewrote the one file before. Append tables and generations compact as ADR 0047 says: an
+  Arrow file joins only files of its columns, and JSON lines of any columns share a file.
+- A JSON lines file the destination reads back holds one record a line; a line of two is
+  refused. A read of published lines parses each line twice, once for its columns.
+- A widen of a column reads the table once before it is taken.
 - A merge gives its rows back by the columns they hold, not in the order they were published.
 - The engine answers `schema_conflict` by resolving names again, which helps a clashing new
   column and not a widen of a column that exists: a refused widen fails its load until the
