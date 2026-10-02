@@ -40,6 +40,8 @@ pub(crate) enum Fault {
     Trickles(std::time::Duration, u64),
     /// It answers a discovery and a plan with this many empty entries, each two bytes on the wire.
     Bloats(usize),
+    /// Every failure it answers with carries status details that are not base64.
+    GarbledDetails,
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -51,9 +53,20 @@ type Answer<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 /// The host's end of a socket whose other end serves `fake`.
 pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
     let (host, connector) = UnixStream::pair().expect("a socket pair");
-    let service =
-        ConnectorServer::new(fake).map_request(|request: http::Request<hyper::body::Incoming>| {
+    let garbles = matches!(fake.0, Fault::GarbledDetails);
+    let service = ConnectorServer::new(fake)
+        .map_request(|request: http::Request<hyper::body::Incoming>| {
             request.map(tonic::body::Body::new)
+        })
+        .map_response(move |mut response: http::Response<tonic::body::Body>| {
+            let headers = response.headers_mut();
+            if garbles && headers.contains_key("grpc-status") {
+                headers.insert(
+                    "grpc-status-details-bin",
+                    http::HeaderValue::from_static("!"),
+                );
+            }
+            response
         });
     tokio::spawn(
         hyper::server::conn::http2::Builder::new(TokioExecutor::new())

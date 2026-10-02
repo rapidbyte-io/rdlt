@@ -8,10 +8,11 @@
 use rdlt_wire::Limits;
 use rdlt_wire::limits::Class;
 use rdlt_wire::v1::connector_client::ConnectorClient;
-use tonic::transport::Channel;
+
+use super::checked::Checked;
 
 /// A client of the protocol, over one connection.
-pub type Client = ConnectorClient<Channel>;
+pub type Client = ConnectorClient<Checked>;
 
 /// One client a class of answer, over one channel.
 #[derive(Clone, Debug)]
@@ -31,7 +32,7 @@ pub(crate) struct Clients {
 
 impl Clients {
     /// The clients over `channel`, each decoding within `limits` for its class.
-    pub(crate) fn new(channel: &Channel, limits: &Limits) -> Self {
+    pub(crate) fn new(channel: &Checked, limits: &Limits) -> Self {
         let client = |class| sized(channel, limits, class);
         Self {
             handshake: client(Class::Handshake),
@@ -45,7 +46,7 @@ impl Clients {
 
 /// A client over `channel` decoding within `limits` for `class`, and sending what the protocol's
 /// largest message may hold.
-pub(crate) fn sized(channel: &Channel, limits: &Limits, class: Class) -> Client {
+pub(crate) fn sized(channel: &Checked, limits: &Limits, class: Class) -> Client {
     ConnectorClient::new(channel.clone())
         .max_decoding_message_size(limits.decoding(class))
         .max_encoding_message_size(limits.message_bytes())
