@@ -8,10 +8,12 @@ use std::panic::PanicHookInfo;
 
 use rdlt_certify::line;
 
-/// Prints each panic of this process to standard error through [`said`], in place of the
-/// message as it was raised, which may carry what a connector sent.
+/// Prints each panic of this process to standard error through [`said`], scrubbed of the
+/// configuration's secrets, in place of the message as it was raised, which may carry what a
+/// connector sent.
 pub(super) fn contain() {
     report(|said| {
+        let said = super::redactions().scrubbed(said.to_owned());
         writeln!(std::io::stderr(), "rdlt-certify: {said}").ok();
     });
 }

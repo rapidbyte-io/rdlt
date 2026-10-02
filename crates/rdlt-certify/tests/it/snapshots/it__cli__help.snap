@@ -10,19 +10,22 @@ Arguments:
   [TARGET]  The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at
 
 Options:
-      --role <ROLE>                Certify this role alone; by default, every role the connector serves [possible values: source, destination]
-      --config <CONFIG>            The connector's configuration, as JSON [default: {}]
-      --config-file <CONFIG_FILE>  A file holding the connector's configuration, as JSON
-      --env <NAME>                 An environment variable a spawned connector keeps; it otherwise starts with none
-      --tls-cert <TLS_CERT>        The host's certificate chain, in PEM, for an endpoint
-      --tls-key <TLS_KEY>          The host's private key, in PEM, for an endpoint
-      --tls-ca <TLS_CA>            The CA bundle that issued the connector's certificate, in PEM, for an endpoint
-      --kill-seed <SEED>           Kills the connector at the points this seed draws, as a failed kill clause reports, to reproduce the failure
-      --kill-timeout <SECONDS>     Gives each kill clause this many seconds for all its loads, rather than 300: a connector slower than about two seconds a commit needs more
-      --timeout <SECONDS>          Ends the certification after this many seconds, rather than 3600, failing every clause of a role still certifying then
-      --no-timeout                 Lets the certification take as long as its clauses' own bounds allow
-      --require <REQUIRE>          What exits 0: `complete`, every clause that applies seen to be met; `partial`, none failed and one passed, whatever was not observed [default: complete] [possible values: complete, partial]
-      --output <OUTPUT>            How to print the reports [default: plain] [possible values: plain, json]
-      --clauses                    Prints every clause, in Markdown, and exits
-  -h, --help                       Print help
-  -V, --version                    Print version
+      --role <ROLE>             Certify this role alone; by default, every role the connector serves [possible values: source, destination]
+      --config-file <PATH>      A file holding the connector's configuration, as JSON, or `-` to read it from standard input; an empty object without it; a text value may refer to a secret as `${env:NAME}` or `${file:/absolute/path}`, which no report then shows
+      --trusted                 Runs the connector's binary with your own access to files, the network and other processes, in no sandbox: for a binary you trust as you trust this command
+      --grant-read <PATH>       A path the sandboxed connector may read
+      --grant-write <PATH>      A path the sandboxed connector may read and write
+      --grant-network           Lets the sandboxed connector reach the network
+      --env <NAME>              An environment variable a spawned connector keeps; it otherwise starts with none
+      --tls-cert <TLS_CERT>     The host's certificate chain, in PEM, for an endpoint
+      --tls-key <TLS_KEY>       The host's private key, in PEM, for an endpoint
+      --tls-ca <TLS_CA>         The CA bundle that issued the connector's certificate, in PEM, for an endpoint
+      --kill-seed <SEED>        Kills the connector at the points this seed draws, as a failed kill clause reports, to reproduce the failure
+      --kill-timeout <SECONDS>  Gives each kill clause this many seconds for all its loads, rather than 300: a connector slower than about two seconds a commit needs more
+      --timeout <SECONDS>       Ends the certification after this many seconds, rather than 3600, failing every clause of a role still certifying then
+      --no-timeout              Lets the certification take as long as its clauses' own bounds allow
+      --require <REQUIRE>       What exits 0: `complete`, every clause that applies seen to be met; `partial`, none failed and one passed, whatever was not observed [default: complete] [possible values: complete, partial]
+      --output <OUTPUT>         How to print the reports [default: plain] [possible values: plain, json]
+      --clauses                 Prints every clause, in Markdown, and exits
+  -h, --help                    Print help
+  -V, --version                 Print version
