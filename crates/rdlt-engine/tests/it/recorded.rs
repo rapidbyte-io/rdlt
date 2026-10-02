@@ -98,7 +98,7 @@ async fn a_recorded_table_name_outside_the_destination_s_rules_is_refused() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_reset_refuses_a_recorded_table_name_the_destination_reserves() {
+async fn a_reset_forgets_a_table_recorded_under_a_reserved_name_and_drops_none() {
     let source = generator(&[("orders", 20, 1, 7)]).await;
     let plan = pipeline("reset_reserved", [stream("orders")]);
     let first = engine(commit_every(10))
@@ -112,7 +112,7 @@ async fn a_reset_refuses_a_recorded_table_name_the_destination_reserves() {
     );
     let reserved: Restate = |records| renamed(records, |_| "rdlt_epochs".to_owned());
     let destination = restated(reserving("reset_reserved").await, reserved);
-    let error = engine(commit_every(10))
+    let reset = engine(commit_every(10))
         .reset(
             "reset_reserved",
             &["orders"],
@@ -121,9 +121,40 @@ async fn a_reset_refuses_a_recorded_table_name_the_destination_reserves() {
             destination,
         )
         .await
-        .expect_err("the reset is refused");
-    assert_eq!(
-        (error.kind(), error.code()),
-        (ErrorKind::Destination, Some("state_invalid"))
-    );
+        .expect("a reset is how a pipeline recovers");
+    assert!(reset.dropped.is_empty(), "{:?}", reset.dropped);
+}
+
+#[tokio::test(start_paused = true)]
+async fn streams_whose_names_fold_alike_load_again_under_reserved_prefixes() {
+    let lower = |store: &'static str| async move {
+        limited(memory(store).await, |capabilities| {
+            capabilities.identifiers.case = rdlt_connector::IdentifierCase::Lower;
+            capabilities.identifiers.reserved_table_prefixes = ["pragma_".to_owned()].into();
+        })
+    };
+    let source = generator(&[("pragma", 20, 1, 7), ("Pragma", 20, 1, 7)]).await;
+    let plan = || pipeline("folded", [stream("pragma"), stream("Pragma")]);
+    for run in ["first", "second"] {
+        let outcome = engine(commit_every(10))
+            .run(plan(), Arc::clone(&source), lower("folded_names").await)
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{run}: {:?}",
+            outcome.error
+        );
+    }
+    let reset = engine(commit_every(10))
+        .reset(
+            "folded",
+            &["pragma", "Pragma"],
+            ResetScope::Tables,
+            source,
+            lower("folded_names").await,
+        )
+        .await
+        .expect("the reset commits");
+    assert_eq!(reset.dropped.len(), 2, "{:?}", reset.dropped);
 }

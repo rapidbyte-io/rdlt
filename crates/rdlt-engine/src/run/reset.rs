@@ -11,7 +11,7 @@ use rdlt_connector::{
 use super::Engine;
 use crate::deadline::Waits;
 use crate::error::{Error, ErrorKind, Side};
-use crate::naming::{Naming, recorded};
+use crate::naming::Naming;
 use crate::scope::contained;
 
 /// What a reset clears of each stream.
@@ -194,8 +194,12 @@ struct Cleared {
     drop_tables: Vec<DroppedTable>,
 }
 
-/// What resetting `streams` as `scope` says changes of `records`, whose identifiers `naming`
-/// could have given, in a session opened at `epoch`.
+/// What resetting `streams` as `scope` says changes of `records`, in a session opened at
+/// `epoch`.
+///
+/// A reset is how a pipeline recovers, so recorded names do not hold it back: what it resets is
+/// forgotten whatever its names, and a table is dropped only under a name `naming` admits as a
+/// table's, never one under a prefix the destination keeps for its own tables.
 fn cleared(
     records: &[rdlt_connector::StateRecord],
     naming: &Naming,
@@ -210,7 +214,6 @@ fn cleared(
         )
         .with_code("state_invalid")
     })?;
-    recorded::check(naming, &state)?;
     let mut cleared = Cleared {
         state_delta: Vec::new(),
         drop_tables: Vec::new(),
@@ -231,7 +234,11 @@ fn cleared(
         if scope == ResetScope::Tables {
             for path in family {
                 let table = &state.tables[&path];
-                if let Some(name) = &table.physical {
+                let owned = table
+                    .physical
+                    .as_ref()
+                    .filter(|name| naming.admits_table(name));
+                if let Some(name) = owned {
                     cleared.drop_tables.push(DroppedTable {
                         path: path.clone(),
                         name: Arc::clone(name),
