@@ -117,8 +117,10 @@ pub(crate) struct Script {
     pub(crate) fail_plan: bool,
     /// Whether acknowledging committed cursors fails.
     pub(crate) fail_ack: bool,
-    /// Acknowledgements to refuse with a one-minute rate limit before accepting them.
+    /// Acknowledgements to refuse with a rate limit before accepting them.
     pub(crate) limited_acks: AtomicUsize,
+    /// The wait a refused acknowledgement asks for; a minute where unset.
+    pub(crate) limited_wait: Mutex<Option<Duration>>,
     pub(crate) faults: Mutex<Vec<Fault>>,
     batches: AtomicU64,
     /// Every acknowledged cursor: stream, partition and resume offset.
@@ -299,9 +301,14 @@ impl ReadStream<ScriptSource> for Scripted {
                     left.checked_sub(1)
                 });
         if limited.is_ok() {
+            let wait = source
+                .script
+                .limited_wait
+                .lock()
+                .unwrap_or(Duration::from_secs(60));
             return Err(ConnectorError::rate_limited(
                 "acknowledgements are limited",
-                Some(Duration::from_secs(60)),
+                Some(wait),
             ));
         }
         if source.script.fail_ack {
