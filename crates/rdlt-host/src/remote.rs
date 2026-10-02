@@ -1,6 +1,7 @@
 //! A connection to a served connector: the handshake that connects it, a heartbeat that notices
 //! when it stops answering, and a deadline for each call.
 
+mod checked;
 mod clients;
 mod destination;
 mod read;
@@ -21,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Endpoint;
 
 pub use clients::Client;
 use clients::Clients;
@@ -349,7 +350,7 @@ async fn channel<IO>(
     options: &Options,
     cut: CancellationToken,
     spent: CancellationToken,
-) -> Result<Channel, ConnectorError>
+) -> Result<checked::Checked, ConnectorError>
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -369,7 +370,7 @@ where
     // HTTP/2's own pings notice a connection the network dropped silently (§12.6), beside the
     // protocol's heartbeat, which notices a connector that stopped answering.
     let patience = options.heartbeat.saturating_mul(options.missed.get());
-    Endpoint::from_static("http://connector")
+    let channel = Endpoint::from_static("http://connector")
         .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
         .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
         .http2_keep_alive_interval(options.heartbeat)
@@ -377,7 +378,8 @@ where
         .keep_alive_while_idle(true)
         .connect_with_connector(connector)
         .await
-        .map_err(|error| lost_because(format!("connecting failed: {error}")))
+        .map_err(|error| lost_because(format!("connecting failed: {error}")))?;
+    Ok(checked::Checked::new(channel))
 }
 
 /// The contract's spec of the connector the handshake's `spec` describes, in `role`.

@@ -2150,6 +2150,7 @@ version = "0.0.0"
 dependencies = [
  "arrow-array",
  "arrow-schema",
+ "base64 0.22.1",
  "bytes",
  "command-fds",
  "http",

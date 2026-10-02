@@ -545,3 +545,24 @@ async fn a_connection_dropped_before_its_connector_is_configured_is_cut() {
             .expect("serving the connection ends"),
     );
 }
+
+#[tokio::test]
+async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() {
+    use crate::support::fake::{Fake, Fault, serve_fake};
+    let io = serve_fake(Fake(Fault::GarbledDetails));
+    let connection = Connection::connect(
+        io,
+        Role::Source,
+        &serde_json::json!({}),
+        Options::default(),
+    )
+    .await
+    .expect("the fake handshakes");
+    // The fake fails a discovery; its details do not decode, so it reads as a transport failure.
+    let failed = tokio::spawn(async move { RemoteSource::new(connection).discover().await });
+    let error = failed
+        .await
+        .expect("the call does not panic")
+        .expect_err("the discovery fails");
+    assert_eq!(error.code(), Some("transport"), "{error}");
+}
