@@ -50,9 +50,9 @@ fn close_on_exec(fd: &OwnedFd) -> bool {
 /// Three inheritable files, numbered in order: one below a given one, the given one, and one
 /// above it.
 fn three() -> (OwnedFd, OwnedFd, OwnedFd) {
-    let below = inheritable(100);
-    let given = inheritable(200);
-    let above = inheritable(300);
+    let below = inheritable(40);
+    let given = inheritable(50);
+    let above = inheritable(60);
     assert!(below.as_raw_fd() < given.as_raw_fd() && given.as_raw_fd() < above.as_raw_fd());
     (below, given, above)
 }
@@ -130,7 +130,7 @@ fn every_descriptor_from_three_up_but_those_given_is_marked() {
 
 #[test]
 fn where_a_range_cannot_be_marked_at_once_the_spawn_fails_or_each_is_marked_as_asked() {
-    let open = inheritable(100);
+    let open = inheritable(40);
     let fd = open.as_raw_fd();
     let refused = mark_range(fd, fd, Marking::AtOnce, |_, _| false);
     assert!(refused.is_err());
@@ -150,9 +150,12 @@ fn the_loop_marks_nothing_from_its_cap_up() {
     let at = beyond.as_raw_fd();
     marked_one_by_one(at, at);
     assert!(!close_on_exec(&beyond), "{at} is above the cap");
-    let within = inheritable(100);
-    marked_one_by_one(within.as_raw_fd(), within.as_raw_fd());
-    assert!(close_on_exec(&within));
+    // Below the cap, a descriptor above the lowest common limit is marked too.
+    for at in [40, 5000] {
+        let within = inheritable_within_limit(at).expect("within the limit");
+        marked_one_by_one(within.as_raw_fd(), within.as_raw_fd());
+        assert!(close_on_exec(&within), "{at}");
+    }
 }
 
 #[cfg(target_os = "linux")]
