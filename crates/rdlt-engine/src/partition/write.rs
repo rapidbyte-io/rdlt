@@ -15,6 +15,7 @@ use parking_lot::Mutex;
 use rdlt_connector::ChangeOp;
 use rdlt_connector::cost::{Allocations, Rendering};
 use rdlt_connector::{ColumnPath, Permit, TableSchema};
+use rdlt_wire::{Weigher, Weight};
 
 use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob, Progress};
@@ -317,20 +318,19 @@ fn row_too_large(job: &PartitionJob, row: &slices::RowTooLarge) -> Error {
     .with_stream(&job.stream)
 }
 
-/// The bytes the rows of `batch` take, as reports and the commit policy count what was written:
-/// a slice counts its own rows, whatever it keeps alive, which is the budget's to charge.
+/// The bytes the rows of `batch` take, as reports and the commit policy count what was written.
+///
+/// They are what a frame holding only those rows holds, as the wire weighs it, with each
+/// dictionary's values: a slice counts its own rows, whatever it keeps alive, which is the
+/// budget's to charge.
 fn written_bytes(batch: &RecordBatch) -> u64 {
-    batch
-        .columns()
-        .iter()
-        .map(|column| {
-            let bytes = column
-                .to_data()
-                .get_slice_memory_size()
-                .unwrap_or_else(|_| column.get_array_memory_size());
-            u64::try_from(bytes).unwrap_or(u64::MAX)
-        })
-        .fold(0, u64::saturating_add)
+    let mut weigher = Weigher::new(batch);
+    let mut weight = Weight::default();
+    for dictionary in weigher.dictionaries() {
+        weight += dictionary;
+    }
+    weight += weigher.weigh_rows(0..batch.num_rows());
+    weight.frame_bytes()
 }
 
 /// `parts`, one batch once concatenated, as `plan` lowers it, with a change stream's `changes`.

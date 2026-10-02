@@ -346,6 +346,6 @@ fn a_row_expanding_beyond_the_budget_is_a_source_error_naming_its_stream() {
 #[test]
 fn written_bytes_count_a_slices_own_rows() {
     let whole = ids(1000);
-    assert_eq!(super::written_bytes(&whole), 8_000);
-    assert_eq!(super::written_bytes(&whole.slice(0, 10)), 80);
+    assert_eq!(super::written_bytes(&whole), 8_125);
+    assert_eq!(super::written_bytes(&whole.slice(0, 10)), 82);
 }
