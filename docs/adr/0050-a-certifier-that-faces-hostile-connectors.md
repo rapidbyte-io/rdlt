@@ -59,7 +59,8 @@ things did not hold to that:
     yield every 1 MiB, so a push never expands beyond what its rows were charged.
   - A read-back is admitted once: at most 10,000 rows (100,000 as the wire probe decodes), flat
     columns only, plain, dictionary or run-end encoded, never nested or of no width, and at most
-    16 MiB once every row holds its own value. Beyond it the clause fails: a clause that wrote
+    16 MiB once every row holds its own value, as the cost model measures what a batch expands
+    to (ADR 0039). Beyond it the clause fails: a clause that wrote
     three rows read back thousands.
   - `K-SOURCE` loads 100,000 rows and 64 MiB at most, and is unobserved beyond.
   - Rows are rendered through one renderer, within 64 MiB of text a clause.
@@ -156,5 +157,5 @@ things did not hold to that:
   casts listed, fails the clause: `K-DESTINATION` no longer takes ids read back as text.
 - `ClauseResult` has a `note`, and `rdlt_host::Kills` counts the connections it cut.
 - A read-back remains the destination's own account of what it published.
-- Until the engine's cost model charges a batch for all it pins, a source clause under-charges
-  such a batch as the engine does.
+- A source clause charges a push as the engine's cost model does (ADR 0039): for what it keeps
+  alive and for what it expands to, whichever is more.

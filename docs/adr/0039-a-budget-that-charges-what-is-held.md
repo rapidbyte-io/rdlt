@@ -39,10 +39,43 @@ budget before it is held, or bounded by a limit with a typed refusal.
       capabilities say which, so a column stored as it is costs its Arrow bytes.
     - A fixed-width value is its width, nulls included.
   - Every Arrow type has a cost: the match over types has no default.
-- **One pass, no vector.** The cost of a range of rows is computed from offsets where the type
-  allows, and a row at a time where it does not. Every step adds at least a byte to a meter that
-  stops at its limit, the budget's size, so the work is bounded by the limit however an encoding
-  multiplies. Cuts are found by searching the rows' running cost, which only grows.
+- **A measure bounded by the rows and by what they name once.** What rows expand to is measured
+  without a vector of rows or values.
+  - A stretch of fixed-width values, of strings or bytes by offsets, or of lists and structs of
+    those is measured from its widths and offsets, however long it is.
+  - A value that dictionary keys or runs name is measured once, apart and against the whole
+    limit, and remembered where measuring it took more than sixteen steps: within the limit its
+    bytes, exactly, and beyond it only that it is beyond, a state of its own and no number.
+    Rows naming it again add what was remembered.
+  - What is remembered is an entry of a few words for each such value named. Nothing is sized
+    by a dictionary's length or by the greatest key, and each entry stands for more than
+    sixteen steps, each a byte charged at least: what measuring holds is in proportion to what
+    it charges, a few bytes a byte at the most, and for values of any size far less.
+  - Every step adds at least a byte to a meter that stops at its limit, the budget's size, so
+    the work is bounded by the limit too, where list views or a union name the same items
+    again: those are charged each time they are named, and the wire and the emitter bound what
+    they name by a frame.
+  - A measure of one batch is kept across the stretches of rows a cut tries: cuts are found by
+    searching the rows' running cost, which only grows, and the engine sizes each slice from
+    the measure that cut it.
+  - Tests count the steps and the values remembered for dictionaries of every key type, nested
+    dictionaries, runs of keys of lists, keys into one run, views sharing a buffer, list views
+    naming the same items and null spans, and the heap measuring takes.
+- **One measure a question.** The wire crate weighs what a frame holds (ADR 0038); what a batch
+  expands to and what it keeps alive are measured here, and nowhere twice.
+  - *What would a frame holding these rows hold?* `rdlt_wire::Weigher`: values, view bytes and
+    bytes, a dictionary's values apart. The emitter's admission and the bytes a write reports
+    use it.
+  - *What does holding this keep alive?* `cost::Allocations`: each allocation once. For a batch
+    decoded from a frame it equals the decoder's `Shape::held_bytes` and the dictionaries its
+    keys name, which a test holds it to.
+  - *What do these rows become?* `Rendering::expanded` and `Rendering::measure`, whose
+    `Measure::cuts` says where a piece of that size ends. A cut of this kind bounds what the
+    engine lowers at once; the wire's `Cut` bounds a frame.
+  - *What is a push charged?* `Rendering::charge`: the larger of the two for a batch, its text
+    for JSON. The engine's admission and certification's source clauses both call it.
+  - *Do a schema's columns and depth fit?* The emitter counts them on the Arrow schema; the wire
+    counts them on the schema's message.
 - **The engine materializes only what rows name.** Before anything converts a column, its
   dictionaries and runs are taken by the values their rows name, its list views become lists of
   the items they name, and every list's items are cut to the ones its rows hold. Arrow's casts
@@ -61,9 +94,22 @@ budget before it is held, or bounded by a limit with a typed refusal.
   until its last piece is flushed. The constant columns of a load count for none.
 - **A row that fits no budget is refused.** A row that alone expands beyond the whole budget
   fails the read with `row_exceeds_budget`, on the wire and in process.
-- **In-process pushes meet the wire's limits** at the `Emitter`: nesting depth and nested
-  columns, measured without recursion before anything walks the batch, the values a batch holds,
-  the bytes its views name, and the bytes it keeps alive, each at the wire's default.
+- **In-process pushes meet the wire's limits** at the `Emitter`, each at the wire's default.
+  - Rows, nesting depth and nested columns are checked for every batch a source pushes, the
+    last two on the schema, without recursion, before anything walks the batch.
+  - A served read's batch meets no more there: it is cut to its host's frames as it is sent
+    (ADR 0038), and its sink says so. Every other sink holds a batch as it is.
+  - A batch held as it is, is then weighed as a frame of its rows would be: its values, the bytes its views
+    name and its bytes, and each dictionary's values as the frame of their own they would go
+    in. A slice is weighed by what its rows name, and rows naming one value through list views
+    or a dense union weigh it each time, so what such a batch multiplies is bounded where it
+    enters. A batch is not cut in process: one beyond a limit is refused.
+  - The allocations it keeps alive are bounded by the same byte limit.
+  - The connector crate depends on the wire crate for this whatever its features.
+- **Certification charges by the same model** (ADR 0050). A source clause charges a push with
+  `Rendering::charge`, for a holder that keeps each value as it is; a read-back is admitted by
+  what its batches expand to; a kill clause's load is charged the allocations each batch keeps
+  alive.
 - **Nothing waits uncharged.**
   - A cursor copies its bytes when it is built, and the host copies a JSON push out of its frame:
     neither keeps the message it arrived in alive.
@@ -108,5 +154,15 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
   chunk is parsed.
 - Checkpoints wait for room in the budget. A source whose cursors are megabytes commits more
   often.
+- A batch decoded from a frame is charged for the dictionaries its keys name, which the host
+  also charges while the decoder holds them: both hold them, and for as long as both do they
+  are charged twice.
+- The bytes a write reports count a validity bit a value, as a frame holds one.
+- A read-back at the edge of what certification admits is measured a row at a time, with each
+  row's offset and key: it admits a little less than rows times the widest value did where
+  every value is as wide, and more where few are.
+- Weighing an in-process batch stops at the limits between stretches of a thousand rows. The
+  wire's weigher can stop within a row, but only for the wire crate's own cut, so one row
+  whose list views nest and name the same items is weighed to its end before it is refused.
 - Not bounded here: how much one push may expand to in total, which costs CPU and destination
   storage in proportion; the null fill of rows times a table's width; and what replay stages.
