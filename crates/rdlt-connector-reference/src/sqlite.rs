@@ -29,7 +29,9 @@ pub use session::{SqliteSession, SqliteWriter};
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SqliteDestinationConfig {
-    /// The database file, created when missing.
+    /// The database file, created when missing, for its user alone.
+    ///
+    /// Its directory is its user's alone to write, and a path starting with `file:` is refused.
     pub path: PathBuf,
 }
 
@@ -39,6 +41,11 @@ pub struct SqliteDestinationConfig {
 /// Every table has a staging table beside it; a replace generation fills its own table until the
 /// commit that finishes it renames it over the table. Column types are SQLite's storage classes,
 /// so the engine stores decimals, times, UUIDs and JSON as text.
+///
+/// Two floats do not load: a float that is no number, which SQLite stores as a null, and negative
+/// zero, which a `REAL` column reads back as zero. A batch holding either is refused where it
+/// is flushed, as a data error coded `float_unstorable`, and nothing of it is staged; a stream
+/// whose floats may be either needs them made nulls or text before this destination.
 #[derive(Debug)]
 pub struct SqliteDestination {
     path: PathBuf,

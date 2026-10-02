@@ -84,6 +84,11 @@ pub(super) fn holds_key(name: &str, key: &MergeKey, schema: Option<&TableSchema>
     Ok(())
 }
 
+/// A count of rows or bytes as a receipt carries it.
+pub(super) fn counted(count: usize) -> u64 {
+    u64::try_from(count).unwrap_or(u64::MAX)
+}
+
 impl Table {
     /// Applies `change` to the table's schema, where every row and tombstone the table holds
     /// converts to the changed schema with its value kept.

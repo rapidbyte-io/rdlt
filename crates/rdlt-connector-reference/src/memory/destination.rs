@@ -129,8 +129,8 @@ impl Store {
         for (name, staged, merged) in plans {
             let table = self.tables.entry(name).or_default();
             for (generation, batch) in staged {
-                rows += batch.num_rows() as u64;
-                bytes += batch.get_array_memory_size() as u64;
+                rows += table::counted(batch.num_rows());
+                bytes += table::counted(batch.get_array_memory_size());
                 if merged.is_none() {
                     match generation {
                         Some(generation) => {
@@ -364,10 +364,7 @@ impl Session for MemorySession {
             return Ok(receipt.clone());
         }
         let (rows, bytes) = store.publish(&self.pipeline, self.epoch, meta)?;
-        let pipeline = store
-            .pipelines
-            .get_mut(&self.pipeline)
-            .expect("the pipeline entry was created above");
+        let pipeline = store.pipelines.entry(self.pipeline.clone()).or_default();
         for change in &meta.state_delta {
             match change {
                 StateChange::Put(record) => {
@@ -433,8 +430,8 @@ impl TableWriter for MemoryWriter {
         }
         let mut stats = WriteStats::default();
         for (segment, batch) in self.buffered.drain(..) {
-            stats.rows += batch.num_rows() as u64;
-            stats.bytes += batch.get_array_memory_size() as u64;
+            stats.rows += table::counted(batch.num_rows());
+            stats.bytes += table::counted(batch.get_array_memory_size());
             table
                 .staged
                 .entry((self.pipeline.clone(), self.epoch, segment))
