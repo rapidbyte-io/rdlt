@@ -110,7 +110,7 @@ fn whole(
 /// the manifest just read may be gone: when a newer manifest exists by then, the table is read
 /// again from it, a bounded number of times. A file missing under the manifest that is still
 /// the latest is lost.
-pub(super) fn published_by(
+pub(in crate::files) fn published_by(
     dir: &Dir,
     table: &str,
     schema: &arrow_schema::SchemaRef,

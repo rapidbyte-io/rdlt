@@ -31,7 +31,7 @@ use crate::rooted::{Dir, Kind};
 
 pub use read_back::published;
 #[cfg(test)]
-use read_back::published_by;
+pub(super) use read_back::published_by;
 
 /// The destination's private directory under its root: catalogs, locks, manifests and files.
 const PRIVATE: &str = "_rdlt";
