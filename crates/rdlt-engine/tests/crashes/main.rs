@@ -170,14 +170,18 @@ fn at_commit(scenario: &Scenario, point: &str, hit: u64) -> bool {
 }
 
 /// Crashes `scenario` at each commit its runs make at `point`, until a run ends before it reaches
-/// the hit: every hit a run reaches must crash it.
-fn every_commit(scenario: &Scenario, point: &str) {
+/// the hit, and answers how many runs it crashed.
+///
+/// Every hit a run reaches must crash it.
+fn every_commit(scenario: &Scenario, point: &str) -> u64 {
     let reached = (1..=MOST_COMMITS).take_while(|hit| at_commit(scenario, point, *hit));
+    let crashed = u64::try_from(reached.count()).expect("a count");
     assert!(
-        reached.count() < usize::try_from(MOST_COMMITS).expect("a count"),
+        crashed < MOST_COMMITS,
         "{}: {point} crashed {MOST_COMMITS} commits and the run never ended",
         scenario.name
     );
+    crashed
 }
 
 /// The failpoint crashing a run at the `hit`th time it passes `point`.
@@ -262,24 +266,15 @@ fn a_history_without_a_log_keeps_each_version_once_through_every_crash() {
 #[test]
 fn a_log_read_again_is_told_every_position_through_a_crash_either_side_of_telling_it() {
     let scenario = scenarios::replayable_log();
-    // How many commits a run makes: after the last, no later commit tells the source again.
-    let dir = tempfile::tempdir().expect("a temporary directory");
-    let (status, commits) = run(&scenario.write(dir.path()), None);
-    assert!(
-        status.success(),
-        "{}: a clean run ended {status}",
-        scenario.name
-    );
-    let last = commits.expect("a run to its end reports its commits");
+    // The commits a run makes vary with timing: telling the source crashes at each one a run
+    // reaches, its last included, until a run ends before the hit.
     for point in ["engine.ack.before", "engine.ack.after"] {
-        for hit in [1, last] {
-            let crashed = at_commit(&scenario, point, hit);
-            assert!(
-                crashed,
-                "{}: {point} at hit {hit} crashed no run",
-                scenario.name
-            );
-        }
+        let crashed = every_commit(&scenario, point);
+        assert!(
+            crashed > 1,
+            "{}: {point} crashed {crashed} runs",
+            scenario.name
+        );
     }
 }
 
