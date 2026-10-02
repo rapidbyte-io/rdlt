@@ -3,8 +3,8 @@
 //! each runs it again and checks every row landed once.
 //!
 //! `crash_run <config.json>` runs the pipeline the file describes once, retrying, and exits 0
-//! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names. It
-//! tells each connector it spawns by its process id (`connector 4321`), each read as it begins
+//! where the run succeeded and 1 where it failed; `FAILPOINTS` crashes it where it names, and it
+//! leaves no core dump when it does. It tells each connector it spawns by its process id (`connector 4321`), each read as it begins
 //! (`read 2`), each commit as it lands (`commit 3`), a kill as it makes it (`killed reading 1`,
 //! the source's reads then in flight), and last its report, as JSON; told to pause after a read
 //! or commit, it waits there to be killed. Before it exits it stops what it spawned.
@@ -31,6 +31,7 @@ use config::{Config, Victim};
 use watch::Watch;
 
 fn main() -> ExitCode {
+    undumped();
     let _failpoints = fail::FailScenario::setup();
     let Some(path) = std::env::args().nth(1) else {
         writeln!(std::io::stderr(), "usage: crash_run <config.json>").ok();
@@ -63,6 +64,34 @@ fn main() -> ExitCode {
             writeln!(std::io::stderr(), "crash_run: {error}").ok();
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Turns core dumps of this process off, and says so once they are.
+///
+/// The harness aborts at a failpoint by design, hundreds of times a sweep: each abort would
+/// otherwise be handed to the system's core-dump handler, which costs seconds of processor
+/// time and fills its journal. The abort itself is untouched: nothing unwinds or is flushed.
+/// On Linux the process is marked non-dumpable, which a handler fed through a pipe heeds where
+/// it ignores a size limit; elsewhere, as on macOS, the core size limit is set to nothing.
+fn undumped() {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let none = Rlimit {
+        current: Some(0),
+        maximum: Some(0),
+    };
+    setrlimit(Resource::Core, none).ok();
+    let limited = getrlimit(Resource::Core).current == Some(0);
+    #[cfg(target_os = "linux")]
+    let off = {
+        use rustix::process::{DumpableBehavior, dumpable_behavior, set_dumpable_behavior};
+        set_dumpable_behavior(DumpableBehavior::NotDumpable).ok();
+        limited && dumpable_behavior().is_ok_and(|now| now == DumpableBehavior::NotDumpable)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let off = limited;
+    if off {
+        writeln!(std::io::stdout(), "core dumps off").ok();
     }
 }
 
