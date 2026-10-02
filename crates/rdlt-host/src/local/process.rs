@@ -73,6 +73,15 @@ pub(crate) struct Launch {
     pub(crate) state_bytes: Option<u64>,
 }
 
+/// The bytes of state a spawned connector is told one request may carry, given the host's
+/// `limits`: the host's state limit, where it raises the protocol's.
+///
+/// The host's limit bounds what it takes, which its memory may hold to less than the protocol's;
+/// what it sends, the engine's commits among it, it never lowers.
+pub(crate) fn told_state(limits: &rdlt_wire::Limits) -> Option<u64> {
+    Some(limits.state_bytes).filter(|bytes| *bytes > rdlt_wire::limits::STATE_BYTES)
+}
+
 /// What a host is told of each connector it spawns: its process id.
 #[derive(Clone)]
 pub(crate) struct Told(Arc<dyn Fn(u32) + Send + Sync>);

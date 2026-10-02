@@ -18,6 +18,7 @@ use std::time::Duration;
 use hyper_util::rt::TokioIo;
 use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
+use rdlt_wire::bounded::Charged;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -414,6 +415,13 @@ fn lost_error() -> ConnectorError {
 
 fn lost_because(message: String) -> ConnectorError {
     ConnectorError::new(ConnectorErrorKind::Transient, message).with_code(CONNECTOR_LOST)
+}
+
+/// `response`, with the charge of what its body passed on last, which whoever reads its stream
+/// releases once each message is decoded.
+fn charged<T>(response: tonic::Response<T>) -> tonic::Response<(T, Charged)> {
+    let charged = response.extensions().get::<Charged>().cloned();
+    response.map(|messages| (messages, charged.unwrap_or_default()))
 }
 
 /// Runs `call` within `deadline`: its answer, or the error it or the deadline failed with.
