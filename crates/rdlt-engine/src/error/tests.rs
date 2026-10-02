@@ -106,3 +106,68 @@ fn debug_output_names_the_kind() {
     let rendered = format!("{:?}", Error::schema("mismatch").with_code("k"));
     assert!(rendered.contains("Schema"), "{rendered}");
 }
+
+/// A driver's error, whose text is whatever the system it spoke to said.
+#[derive(Debug, thiserror::Error)]
+#[error("{text}")]
+struct Driver {
+    text: String,
+    #[source]
+    source: Option<Box<Driver>>,
+}
+
+#[test]
+fn a_report_shows_a_connectors_words_and_obeys_none_of_them() {
+    use rdlt_connector::ResultExt as _;
+    let hostile =
+        "refused\r INFO rdlt_engine: commit 42 published\n\u{1b}[2J\u{9b}\u{202e}\u{200b}";
+    let driver = Driver {
+        text: hostile.to_owned(),
+        source: None,
+    };
+    let failed: Result<(), Driver> = Err(driver);
+    let raised = failed.transient(hostile).unwrap_err().with_code(hostile);
+    let error = Error::connector(Side::Destination, hostile, raised);
+    let report = error.report();
+    let json = serde_json::to_string(&report).expect("a report serializes");
+    let texts = [
+        &report.message,
+        report.code.as_ref().expect("a code"),
+        &json,
+    ]
+    .into_iter()
+    .chain(&report.causes);
+    for text in texts {
+        assert!(
+            text.is_ascii() && !text.chars().any(char::is_control),
+            "{text:?}"
+        );
+        assert!(text.contains("INFO rdlt_engine: commit 42 published"));
+    }
+    assert_eq!(report.causes.len(), 2);
+}
+
+#[test]
+fn a_report_keeps_a_bounded_chain_of_bounded_causes() {
+    use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_TEXT_BYTES};
+    let long = "x".repeat(4 * MAX_ERROR_TEXT_BYTES);
+    for depth in [1, MAX_ERROR_CAUSES - 1, MAX_ERROR_CAUSES, 1000] {
+        let driver = (0..depth).fold(None, |source, _| {
+            let text = long.clone();
+            Some(Box::new(Driver { text, source }))
+        });
+        let raised = ConnectorError::internal(&long).with_source(*driver.expect("a chain"));
+        let error = Error::connector(Side::Source, long.clone(), raised);
+        let report = error.report();
+        // The connector's own message is the first cause.
+        assert_eq!(
+            report.causes.len(),
+            (depth + 1).min(MAX_ERROR_CAUSES),
+            "{depth}"
+        );
+        assert_eq!(report.message.len(), MAX_ERROR_TEXT_BYTES);
+        for cause in &report.causes {
+            assert_eq!(cause.len(), MAX_ERROR_TEXT_BYTES);
+        }
+    }
+}
