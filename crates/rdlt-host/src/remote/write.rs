@@ -12,6 +12,7 @@ use rdlt_connector::{
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::{Cut, Encoder};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Streaming;
 
@@ -75,19 +76,24 @@ impl RemoteWriter {
         })
     }
 
-    /// The connector's next answer, within the write-ack deadline.
-    async fn ack(&mut self) -> rdlt_connector::Result<v1::write_ack::Ack> {
-        let deadline = self.connection.options.deadlines.write_ack;
+    /// When an answer awaited from now is due: the write-ack deadline bounds the whole wait,
+    /// however many answers the connector sends meanwhile.
+    fn due(&self) -> Instant {
+        Instant::now() + self.connection.options.deadlines.write_ack
+    }
+
+    /// The connector's next answer, by `due`.
+    async fn ack(&mut self, due: Instant) -> rdlt_connector::Result<v1::write_ack::Ack> {
         let answer = tokio::select! {
             biased;
             () = self.connection.lost.cancelled() => return Err(lost_error()),
-            answer = tokio::time::timeout(deadline, self.acks.message()) => answer,
+            answer = tokio::time::timeout_at(due, self.acks.message()) => answer,
         };
         let message = match answer {
             Ok(Ok(Some(ack))) => ack.ack,
             Ok(Ok(None)) => return Err(out_of_turn("the end of the write")),
             Ok(Err(status)) => return Err(rdlt_connector::wire::error(&status)),
-            Err(_) => return Err(late(deadline)),
+            Err(_) => return Err(late(self.connection.options.deadlines.write_ack)),
         };
         match message {
             Some(v1::write_ack::Ack::Error(error)) => Err(ConnectorError::try_from(error)
@@ -97,16 +103,28 @@ impl RemoteWriter {
         }
     }
 
+    /// Takes `credit` the connector granted.
+    ///
+    /// # Errors
+    ///
+    /// A credit of no bytes, which grants nothing and only keeps the write waiting.
+    fn grant(&mut self, credit: v1::Credit) -> rdlt_connector::Result<()> {
+        if credit.bytes == 0 {
+            return Err(out_of_turn("a credit of no bytes"));
+        }
+        let bytes = i64::try_from(credit.bytes).unwrap_or(i64::MAX);
+        self.credit = self.credit.saturating_add(bytes);
+        Ok(())
+    }
+
     /// Sends `frame` once the connector has credit left for it, spending its size.
     async fn send(&mut self, frame: v1::write_frame::Frame) -> rdlt_connector::Result<()> {
         let frame = v1::WriteFrame { frame: Some(frame) };
         let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
+        let due = self.due();
         while self.credit <= 0 {
-            match self.ack().await? {
-                v1::write_ack::Ack::Credit(credit) => {
-                    let bytes = i64::try_from(credit.bytes).unwrap_or(i64::MAX);
-                    self.credit = self.credit.saturating_add(bytes);
-                }
+            match self.ack(due).await? {
+                v1::write_ack::Ack::Credit(credit) => self.grant(credit)?,
                 v1::write_ack::Ack::Flushed(_) | v1::write_ack::Ack::Error(_) => {
                     return Err(out_of_turn("stats no flush asked for"));
                 }
@@ -129,8 +147,9 @@ impl RemoteWriter {
 
     /// Why the connector ended the write: the error its answers end with.
     async fn ended(&mut self) -> ConnectorError {
+        let due = self.due();
         loop {
-            if let Err(error) = self.ack().await {
+            if let Err(error) = self.ack(due).await {
                 return error;
             }
         }
@@ -217,12 +236,10 @@ impl RemoteWriter {
         self.send(v1::write_frame::Frame::Flush(v1::Unit {}))
             .await?;
         self.staged = 0;
+        let due = self.due();
         loop {
-            match self.ack().await? {
-                v1::write_ack::Ack::Credit(credit) => {
-                    let bytes = i64::try_from(credit.bytes).unwrap_or(i64::MAX);
-                    self.credit = self.credit.saturating_add(bytes);
-                }
+            match self.ack(due).await? {
+                v1::write_ack::Ack::Credit(credit) => self.grant(credit)?,
                 v1::write_ack::Ack::Flushed(stats) => return Ok(WriteStats::from(stats)),
                 v1::write_ack::Ack::Error(_) => return Err(out_of_turn("an error")),
             }

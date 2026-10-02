@@ -199,6 +199,7 @@ async fn launch(
         loaded_at: context.env.now(),
         env: Arc::clone(&context.env),
         batch: *context.config.batch(),
+        stop_wait: context.config.stop_wait(),
         wal: wal.clone(),
     };
     let (tasks, spawned) = mpsc::unbounded_channel();

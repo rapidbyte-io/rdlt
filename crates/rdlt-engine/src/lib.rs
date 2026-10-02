@@ -34,6 +34,7 @@ mod config;
 mod coordinator;
 mod cost;
 mod crash;
+mod deadline;
 mod env;
 mod error;
 mod lane;

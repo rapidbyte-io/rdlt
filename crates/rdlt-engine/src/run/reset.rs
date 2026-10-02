@@ -9,6 +9,7 @@ use rdlt_connector::{
 };
 
 use super::Engine;
+use crate::deadline::Waits;
 use crate::error::{Error, ErrorKind, Side};
 use crate::scope::contained;
 
@@ -64,6 +65,8 @@ impl Engine {
         source: Arc<dyn Source>,
         destination: Arc<dyn Destination>,
     ) -> Result<ResetReport, Error> {
+        let waits = Waits::new(Arc::clone(&self.env), self.config.connector_wait());
+        let (source, destination) = (waits.source(source), waits.destination(destination));
         let resetting = self.resetting(pipeline, streams, scope, source, destination);
         contained(resetting)
             .await

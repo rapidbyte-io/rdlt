@@ -29,8 +29,7 @@ pub use source::RemoteSource;
 /// The code of the error a call fails with once the connector stops answering heartbeats.
 pub const CONNECTOR_LOST: &str = "connector_lost";
 
-/// The code of the error a call fails with once it takes longer than its deadline.
-pub const DEADLINE_EXCEEDED: &str = "deadline_exceeded";
+pub use rdlt_connector::DEADLINE_EXCEEDED;
 
 /// How long each kind of call may take (§12.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,7 +46,8 @@ pub struct Deadlines {
     pub open: Duration,
     /// Applying a schema change.
     pub apply_schema: Duration,
-    /// Each answer to a write: credit, or a flush's stats.
+    /// A write's wait for credit to send a frame, or a flush's wait for its stats, however
+    /// many answers come meanwhile.
     pub write_ack: Duration,
     /// A commit.
     pub commit: Duration,

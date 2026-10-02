@@ -18,6 +18,10 @@ pub const RETENTION_LOST: &str = "retention_lost";
 /// cannot have issued, as one beyond everything the source holds.
 pub const CURSOR_UNISSUED: &str = "cursor_unissued";
 
+/// The code of the error a call into a connector fails with once it takes longer than its
+/// deadline.
+pub const DEADLINE_EXCEEDED: &str = "deadline_exceeded";
+
 /// What kind of failure a [`ConnectorError`] reports; the engine decides retries from it.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
