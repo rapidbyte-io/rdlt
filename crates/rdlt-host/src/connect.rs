@@ -94,7 +94,7 @@ impl Connect {
             config: Config::from(config),
             secrets: Arc::clone(&self.secrets),
         };
-        let supervisor = Supervisor::start(start, role, configured, self.options, &gate)
+        let supervisor = Supervisor::start(start, role, configured, &self.options, &gate)
             .await
             .map_err(|spawned| match spawned {
                 Spawned::Refused(refused) => refused,

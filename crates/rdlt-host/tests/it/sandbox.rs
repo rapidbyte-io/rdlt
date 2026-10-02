@@ -318,7 +318,7 @@ pub(crate) mod bubblewrap {
             .await
             .expect("the connector starts")
             .connector;
-        let destination = memory_destination("sandboxed_rows", Options::default()).await;
+        let destination = memory_destination("sandboxed_rows", &Options::default()).await;
         let stream = StreamPlan::new(StreamName::new("rows").expect("a valid stream name"));
         let plan = PipelinePlan::new(PipelineId::parse("sandboxed").unwrap(), [stream]).unwrap();
         let outcome = engine(50)

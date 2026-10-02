@@ -178,7 +178,7 @@ impl Remote {
             config: Config::from(config),
             secrets: Arc::clone(&self.secrets),
         };
-        Supervisor::start(Start::Dial(dialing), role, configured, self.options, &gate)
+        Supervisor::start(Start::Dial(dialing), role, configured, &self.options, &gate)
             .await
             .map_err(|spawned| refused(reference, &at, spawned))
     }

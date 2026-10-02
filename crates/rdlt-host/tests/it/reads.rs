@@ -44,7 +44,7 @@ async fn events(source: &RemoteSource) -> (Vec<SourceEvent>, rdlt_connector::Res
 #[tokio::test(flavor = "multi_thread")]
 async fn arrow_batches_whose_schema_changes_mid_read_load_across_the_wire() {
     let source = ticks(serde_json::json!({ "rows": 200, "arrow": true })).await;
-    let destination = memory_destination("served_arrow", Options::default()).await;
+    let destination = memory_destination("served_arrow", &Options::default()).await;
     let plan = PipelinePlan::new(
         PipelineId::parse("arrow").unwrap(),
         [StreamPlan::new(

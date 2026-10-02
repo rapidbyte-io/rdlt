@@ -349,7 +349,7 @@ async fn a_crashed_connector_is_respawned_and_the_run_loads_every_row_once() {
         .await
         .expect("the connector starts")
         .connector;
-    let destination = memory_destination("respawned_rows", rdlt_host::Options::default()).await;
+    let destination = memory_destination("respawned_rows", &rdlt_host::Options::default()).await;
     let stream = StreamPlan::new(StreamName::new("rows").expect("a valid stream name"));
     let plan = PipelinePlan::new(PipelineId::parse("respawned").expect("valid"), [stream])
         .expect("a valid plan");

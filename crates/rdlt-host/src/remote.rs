@@ -167,7 +167,7 @@ impl Connection {
             let spent = lost.child_token();
             (lost, spent)
         };
-        let mut client = channel(io, options, lost.clone(), spent.clone()).await?;
+        let mut client = channel(io, &options, lost.clone(), spent.clone()).await?;
         let request = v1::HandshakeRequest {
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: PROTOCOL_MINOR,
@@ -301,7 +301,7 @@ impl Handshaken {
         }
         tokio::spawn(heartbeat(
             self.client.clone(),
-            self.options,
+            (self.options.heartbeat, self.options.missed),
             self.lost.clone(),
             self.spent.clone(),
         ));
@@ -330,7 +330,7 @@ where
 {
     channel(
         io,
-        options,
+        &options,
         CancellationToken::new(),
         CancellationToken::new(),
     )
@@ -344,7 +344,7 @@ pub type Client = ConnectorClient<Channel>;
 /// cancels `spent`.
 async fn channel<IO>(
     io: IO,
-    options: Options,
+    options: &Options,
     cut: CancellationToken,
     spent: CancellationToken,
 ) -> Result<Client, ConnectorError>
@@ -433,7 +433,7 @@ async fn within<T>(
 /// cancelled.
 async fn heartbeat(
     mut client: ConnectorClient<Channel>,
-    options: Options,
+    (every, missed): (Duration, NonZeroU32),
     lost: CancellationToken,
     retired: CancellationToken,
 ) {
@@ -448,7 +448,7 @@ async fn heartbeat(
         return;
     };
     let mut echoes = echoes.into_inner();
-    let mut ticks = tokio::time::interval(options.heartbeat);
+    let mut ticks = tokio::time::interval(every);
     // After this end stalls, the next heartbeat waits its interval: the connector gets its time.
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let (mut sent, mut answered) = (0_u64, 0_u64);
@@ -467,7 +467,7 @@ async fn heartbeat(
                 Err(_) => break,
             },
             _ = ticks.tick() => {
-                if sent - answered >= u64::from(options.missed.get()) {
+                if sent - answered >= u64::from(missed.get()) {
                     break;
                 }
                 sent += 1;

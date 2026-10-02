@@ -32,15 +32,15 @@ const FLAGS: usize = 300;
 const PIECES: usize = 5;
 
 /// The source of one batch of [`ROWS`] rows, served, read within `options`.
-async fn ticks(options: Options) -> RemoteSource {
+async fn ticks(options: &Options) -> RemoteSource {
     tagged("", options).await
 }
 
 /// As [`ticks`], its rows counted under `tag`.
-async fn tagged(tag: &str, options: Options) -> RemoteSource {
+async fn tagged(tag: &str, options: &Options) -> RemoteSource {
     let io = served(Served::new().with_source(source_factory::<Ticks>()));
     let config = serde_json::json!({ "rows": ROWS, "flags": FLAGS, "tag": tag });
-    let connection = Connection::connect(io, Role::Source, &config, options)
+    let connection = Connection::connect(io, Role::Source, &config, *options)
         .await
         .expect("the source handshakes");
     RemoteSource::new(connection)
@@ -130,7 +130,7 @@ async fn a_write_that_fails_between_a_batchs_pieces_loads_every_row_once() {
         ))
     });
     let destination = destination(&HOOK, "cuts_failed", &Kills::new()).await;
-    let source = Arc::new(ticks(Options::default()).await);
+    let source = Arc::new(ticks(&Options::default()).await);
     let outcome = engine(None)
         .run(plan("cuts-failed"), source, destination)
         .await;
@@ -152,7 +152,7 @@ async fn a_connector_lost_between_a_batchs_pieces_loads_every_row_once() {
         }
     });
     let destination = destination(&HOOK, "cuts_killed", &kills).await;
-    let source = Arc::new(ticks(Options::default()).await);
+    let source = Arc::new(ticks(&Options::default()).await);
     let outcome = engine(None)
         .run(plan("cuts-killed"), source, destination)
         .await;
@@ -171,7 +171,7 @@ async fn a_run_stopped_between_a_batchs_pieces_publishes_none_of_them_and_the_ne
     });
     let kills = Kills::new();
     let destination = destination(&HOOK, "cuts_stopped", &kills).await;
-    let source = Arc::new(ticks(Options::default()).await);
+    let source = Arc::new(ticks(&Options::default()).await);
     let run = engine(None).run(plan("cuts-stopped"), source, Arc::clone(&destination));
     CONTROL.set(run.control()).ok();
     let outcome = tokio::time::timeout(Duration::from_secs(30), run)
@@ -180,7 +180,7 @@ async fn a_run_stopped_between_a_batchs_pieces_publishes_none_of_them_and_the_ne
     assert_eq!(outcome.report.status, RunStatus::Cancelled);
     assert!(HOOK.writes() < PIECES, "{} writes", HOOK.writes());
     assert_eq!(ids("cuts_stopped"), Vec::<i64>::new());
-    let source = Arc::new(ticks(Options::default()).await);
+    let source = Arc::new(ticks(&Options::default()).await);
     let outcome = engine(None)
         .run(plan("cuts-stopped"), source, destination)
         .await;
@@ -203,7 +203,7 @@ async fn a_logged_batch_whose_replay_fails_between_its_pieces_is_replayed_and_cu
     let logs = tempfile::tempdir().expect("a temporary directory");
     let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(logs.path()));
     let destination = destination(&HOOK, "cuts_replayed", &Kills::new()).await;
-    let source = Arc::new(tagged("cuts_replayed", Options::default()).await);
+    let source = Arc::new(tagged("cuts_replayed", &Options::default()).await);
     let outcome = engine(Some(wal))
         .run(plan("cuts-replayed").with_wal(true), source, destination)
         .await;
