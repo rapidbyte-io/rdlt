@@ -91,8 +91,13 @@ pub trait Admission: Send + Sync {
     /// fails with it, and so does the read.
     fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Result<Option<Permit>>>;
 
-    /// Charges `bytes` a read keeps beside its events, at once and beyond the budget if need be.
-    fn charge(&self, bytes: u64) -> Permit;
+    /// Charges `bytes` a read keeps beside its events, at once.
+    ///
+    /// # Errors
+    ///
+    /// A [`ConnectorError::exceeds`] naming the limit, where the read would keep more than a
+    /// read may: the read fails with it.
+    fn charge(&self, bytes: u64) -> Result<Permit>;
 }
 
 /// Creates the two ends of one partition's channel, buffering up to `capacity` events.
@@ -246,10 +251,16 @@ impl PartitionSink {
     /// admits the channel's events.
     ///
     /// The bytes are held until the permit is dropped; a channel nothing admits returns `None`.
-    pub fn reserve(&self, bytes: u64) -> Option<Permit> {
+    ///
+    /// # Errors
+    ///
+    /// A [`ConnectorError::exceeds`] naming the limit, where the read would keep more than
+    /// whoever admits its events lets a read keep.
+    pub fn reserve(&self, bytes: u64) -> Result<Option<Permit>> {
         self.admission
             .as_ref()
             .map(|admission| admission.charge(bytes))
+            .transpose()
     }
 
     /// The newest barrier no checkpoint has answered yet.
