@@ -175,6 +175,7 @@ impl ReadStream<SimSource> for SimStreamReader {
         world.reports.started(&stream.name, partition.id(), &cursor);
         let rows = stream.rows(index, world.phase());
         let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
+        let started = next;
         let mut batches = 0;
         loop {
             let arrived = world.available(self.index, index, rows.len());
@@ -198,7 +199,10 @@ impl ReadStream<SimSource> for SimStreamReader {
                 return Ok(());
             }
         }
-        if stream.final_checkpoint {
+        // A read that sent nothing says nothing of where it is, on every other partition: its
+        // host then reports the cursor it read from, which the source never sent.
+        let silent = next == started && index.is_multiple_of(2);
+        if stream.final_checkpoint && !silent {
             self.checkpoint(source, out, index, next).await?;
         }
         Ok(())
