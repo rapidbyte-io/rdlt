@@ -49,6 +49,11 @@ decision they implement.
   service, a configuration's author may be a tenant, not the operator. A configuration
   reaches the host's environment variables, files and named secrets only as the operator
   lists them; by default it reaches none (ADR 0043). Amended 2026-10-02.
+- **What a connector is granted of the host's files is bounded by the operator.** A pipeline's
+  author may ask for paths on the reference that places its connector, and gets them only
+  within the roots the operator names on the provider, read or write; by default the
+  operator names none, and nothing is granted. A root that may be written may hold nothing
+  that decides what the host runs or keeps (ADR 0043). Amended 2026-10-02.
 - **A connector receives only its own configuration**, and only after the host has verified
   which connector it is: its id and version, the digest of its binary, or the name in its
   certificate. Secrets are never quoted in errors, logs or reports, and connector text is

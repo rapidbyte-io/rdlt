@@ -55,11 +55,20 @@ anything runs; none is ignored.
     descriptor, never a command line another user could read. The launcher is checked as a
     connector's binary is, and run from the file opened. Where bubblewrap is missing, older
     than 0.8, or cannot make user namespaces, the placement is refused.
-  - **Grants belong to a pipeline**: a provider grants every connector only paths to read,
-    as system directories; what a connector may write, or read beyond those, is granted on
-    the reference that places it, and no other running connector of the provider may hold a
-    path within, above or equal to it, unless both state their grants are shared. A grant
-    that may write a connector's binary, a connector directory or the launcher is refused.
+  - **Grants belong to a pipeline, within the operator's roots**: a provider grants every
+    connector only paths to read, as system directories; what a connector may write, or read
+    beyond those, is asked for on the reference that places it, which a pipeline's author may
+    write, and granted only within the roots the operator names on the provider
+    (`grantable_read`, `grantable_write`). By default none is named and nothing is granted.
+  - A root that may be written may hold nothing that decides what the host runs or keeps: no
+    connector directory or binary, no script's interpreter, no launcher, not the host's
+    executable's directory, a directory the host keeps its log, state or secrets in, or one a
+    secret resolver reads. The placement is refused otherwise.
+  - Each path granted is opened once, checked by what was opened, and bound by its descriptor
+    at every spawn of the placement, so a link changed after the check changes nothing. No
+    other connector of the process may hold a path within, above or equal to it while its
+    connector lives, until reaped, unless both state their grants are shared; no grant may
+    write a program a placement runs, and no placement runs a program a held grant may write.
   - **The network grant** shares the host's network namespace: every interface and route, the
     host's loopback services, and the abstract Unix sockets of that namespace, such as a
     session's buses. Grant it only to a connector you would let reach those.
@@ -75,7 +84,9 @@ anything runs; none is ignored.
     against a path.
   - A connector is given its standard streams and its socket, and no other descriptor of the
     host's: after the descriptors it is given are in place, the child marks every other
-    close-on-exec, whatever another thread of the host opened meanwhile.
+    close-on-exec, whatever another thread of the host opened meanwhile. A sandboxed connector
+    is spawned only on a kernel that marks them all in one call, Linux 5.11 and later; for a
+    trusted one elsewhere each is marked in turn up to 65,536, a measure of hygiene.
   - Its process group is the host's for its whole life, and is stopped and killed as a
     group; a sandboxed connector is killed with its whole process namespace.
 
@@ -109,6 +120,9 @@ Not guaranteed:
   connector's process are the sandbox's or the operator's to limit, with control groups or a
   container; its private `/tmp` is memory.
 - **What a network grant reaches**: the host's network namespace, as above.
+- **What a read grant reaches beyond reading**: a connector may connect to a Unix socket
+  beneath a path it may only read, such as a session bus or an agent's socket under
+  `/run/user`. Grant no such directory to a connector you would not let reach those.
 - **A secret a connector transforms** before it prints it, or that trusted in-process code
   panics with; and the memory of the transport a configuration crosses.
 - **macOS local placement**, beyond the checks on the binary: no sandbox and no digest.
