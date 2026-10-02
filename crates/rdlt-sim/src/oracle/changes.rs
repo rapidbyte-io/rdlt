@@ -9,9 +9,10 @@ use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamNam
 use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WalStore, WriteMode};
 use rdlt_testkit::canon::Canon;
 
+use super::config::config;
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
-use super::{FAULTY_RUNS, config, settle};
+use super::{FAULTY_RUNS, settle};
 use crate::changes::{
     CHANGES_PARTITION, CHANGES_PHASE, ChangeStream, Logged, Merged, Position, ROUNDS, Version,
 };

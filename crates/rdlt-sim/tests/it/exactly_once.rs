@@ -1,7 +1,7 @@
 use rdlt_sim::{Seed, check_exactly_once, seeds};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 10] = [
+const FOUND: [u64; 11] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -30,12 +30,27 @@ const FOUND: [u64; 10] = [
     // Streaming: reads cut batches wherever rows had arrived, so JSON pushes inferred types the
     // model never saw, until they served whole checkpoint groups.
     4_516,
+    // Pressed: a partition that ended at its last cursor sealed it again unreserved, so a
+    // commit recording many such cursors passed the log's share of the budget.
+    820,
 ];
 
 #[test]
 fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
+    let (mut seeds_run, mut pushes_waited, mut cursors_waited) = (0_u64, 0_u64, 0_u64);
     for seed in seeds(200) {
-        let _ = check_exactly_once(seed);
+        let checked = check_exactly_once(seed);
+        seeds_run += 1;
+        pushes_waited += u64::from(checked.memory_waits > 0);
+        cursors_waited += u64::from(checked.cursor_waits > 0);
+    }
+    // The budget presses on a good share of the seeds: their pushes wait for lowering's room
+    // and their cursors for a commit.
+    if seeds_run >= 100 {
+        assert!(
+            pushes_waited * 5 >= seeds_run && cursors_waited * 10 >= seeds_run,
+            "of {seeds_run} seeds, {pushes_waited} made pushes wait and {cursors_waited} cursors"
+        );
     }
 }
 

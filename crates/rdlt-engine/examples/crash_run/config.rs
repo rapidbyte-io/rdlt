@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use rdlt_connector::{PipelineId, ReadMode, StreamName};
 use rdlt_engine::{
-    CommitPolicy, DeleteMode, EngineConfig, PipelinePlan, RetryPolicy, StreamPlan, WriteMode,
+    BatchPolicy, CommitPolicy, DeleteMode, EngineConfig, PipelinePlan, RetryPolicy, StreamPlan,
+    WriteMode,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,6 +36,11 @@ pub(crate) struct Config {
     /// default.
     #[serde(default)]
     pub(crate) partition_buffer: Option<usize>,
+    /// The rows the engine gathers before it writes them, where fewer than the engine's
+    /// default: pushes are written as they come, so a source reads no further ahead of its
+    /// commits than its writes.
+    #[serde(default)]
+    pub(crate) batch_rows: Option<u64>,
     /// The read or commit, counted together as the run tells them, after which the run waits to
     /// be killed, where one is.
     #[serde(default)]
@@ -154,6 +160,11 @@ impl Config {
         }
         if let Some(events) = self.partition_buffer {
             builder = builder.partition_buffer(events);
+        }
+        if let Some(rows) = self.batch_rows {
+            let batch = BatchPolicy::new(1 << 20, rows, Duration::from_millis(10), 1 << 20)
+                .map_err(|error| error.to_string())?;
+            builder = builder.batch(batch);
         }
         builder.build().map_err(|error| error.to_string())
     }

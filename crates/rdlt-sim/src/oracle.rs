@@ -3,9 +3,11 @@
 
 mod arrivals;
 mod changes;
+mod config;
 mod expected;
 mod intruder;
 mod names;
+mod pressure;
 mod refusals;
 mod reports;
 mod reset;
@@ -18,12 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, Report, RetryPolicy, StreamPlan, Until,
-    WalStore,
-};
+use rdlt_engine::{Engine, PipelinePlan, Report, StreamPlan, Until, WalStore};
 
-use crate::destination::{Digest, committed_next, completions, reads_in_progress};
+use crate::destination::{committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
 use crate::network::{self, Net, Placing, run_networked};
 use crate::rng::SplitMix64;
@@ -32,20 +31,23 @@ use crate::swarm::Features;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
+use config::{config, pressed};
 use expected::Discards;
+pub use pressure::Checked;
+use pressure::explained;
 use scenario::{Scenario, execute_all, pick};
 
 /// Runs before this many have faults injected; the rest run clean, so every phase converges.
 const FAULTY_RUNS: usize = 4;
 
-/// Checks the exactly-once guarantee for the workload `seed` generates; returns a digest of what
-/// the destination holds at the end, which the same seed always leaves alike.
+/// Checks the exactly-once guarantee for the workload `seed` generates; returns what the
+/// simulation left.
 ///
 /// # Panics
 ///
 /// Panics, naming the seed, when the destination's contents differ from the reference model, an
 /// invariant breaks, a run hangs, or a task outlives its run.
-pub fn check_exactly_once(seed: Seed) -> Digest {
+pub fn check_exactly_once(seed: Seed) -> Checked {
     if Features::draw(&mut SplitMix64::new(seed.value())).network {
         run_networked(seed, move |env, net| async move {
             simulate(seed, env, Some(net)).await
@@ -67,15 +69,24 @@ pub fn stress(seed: Seed) {
 
 /// Checks the exactly-once guarantee for the workload `seed` generates, with the connectors on
 /// `net` when there is one, and in this process otherwise.
-async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest {
+async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checked {
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
     let world = World::register(&name, &mut rng);
     env.perturb(world.workload.features.perturb);
     env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
     let streaming = world.workload.features.streaming;
-    let engine = Engine::new(config(&mut rng, streaming), env);
-    let placing = net.map(|net| Placing::new(net, network::options(&mut rng)));
+    let config = config(&mut rng, streaming);
+    let limits = config.limits();
+    // Over the network a batch crosses as its rows and no more, and a cursor of hundreds of
+    // kilobytes outlasts the simulated network's liveness: a source there presses no harder
+    // than its workload does.
+    if net.is_none() {
+        world.press(pressed(seed, &config));
+    }
+    let budget = config.memory().get();
+    let engine = Engine::new(config, env);
+    let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
     let mut simulation = Simulation {
         seed,
         engine,
@@ -83,6 +94,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
         relaxed: vec![Relaxed::default(); world.workload.streams.len()],
         world,
         name,
+        budget,
+        waits: (0, 0),
     };
     let mut stopped = false;
     for phase in 0..PHASES {
@@ -116,7 +129,11 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
     let violations = simulation.world.violations();
     World::unregister(&simulation.name);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
-    digest
+    Checked {
+        digest,
+        memory_waits: simulation.waits.0,
+        cursor_waits: simulation.waits.1,
+    }
 }
 
 /// One simulation: its world, the engine its runs share, and what an operator relaxed after
@@ -129,6 +146,10 @@ struct Simulation {
     /// Where the connectors are placed, when they listen on a simulated network.
     placing: Option<Placing>,
     relaxed: Vec<Relaxed>,
+    /// Bytes: the engine's memory budget, which no run reserves more than.
+    budget: u64,
+    /// How many times its runs' pushes and pieces, and their cursors, waited on the budget.
+    waits: (u64, u64),
 }
 
 impl Simulation {
@@ -245,16 +266,14 @@ impl Simulation {
         let succeeded = executed.iter().map(|executed| executed.succeeded).collect();
         for executed in executed {
             failures.extend(executed.failures);
+            self.within_budget(&executed.reports, phase);
             reports.extend(executed.reports);
         }
         kept_to_the_protocol(&failures, seed, phase);
         let refused = refusals::refused(&failures, &prediction)
             .unwrap_or_else(|finding| panic!("seed {seed}: phase {phase}: {finding}"));
-        if let Some(failure) = refusals::unexplained(&failures, &prediction).filter(|_| clean) {
-            panic!(
-                "seed {seed}: phase {phase}: a run without faults failed with {}",
-                failure.text
-            );
+        if clean {
+            explained(&failures, &prediction, seed, phase);
         }
         let failure = failures.into_iter().last().map(|failure| failure.text);
         let mut stopped = false;
@@ -291,50 +310,6 @@ struct Ran {
     failure: Option<String>,
     /// Whether one met a refusal no operator can relax.
     stopped: bool,
-}
-
-/// Bytes: the least memory budget a run is given: about the least whose shares hold what a
-/// workload sends, a read's schema of a few kilobytes, its cursors and a commit's frame.
-///
-/// A budget admits nothing beyond its shares, so one smaller refuses them. A workload's pushes
-/// are far smaller than their share of it and never wait for it: lane windows and partition
-/// buffers hold a source back.
-const MEMORY: u64 = 256 << 10;
-
-/// The engine's configuration, drawn from `rng`; a streaming world plans again every quarter
-/// second, so its runs meet the partitions and rows that arrive.
-fn config(rng: &mut SplitMix64, streaming: bool) -> EngineConfig {
-    let every = rng
-        .chance(700)
-        .then(|| Duration::from_millis(100 + rng.below(3000)));
-    let rows = (every.is_none() || rng.chance(500)).then(|| 5 + rng.below(60));
-    let commit = CommitPolicy::new(every, rows, None).expect("the drawn policy has a threshold");
-    let retry = RetryPolicy::default()
-        .max_attempts(4)
-        .initial(Duration::from_millis(1))
-        .max_delay(Duration::from_millis(100));
-    let lanes = u16::try_from(1 + rng.below(3)).unwrap_or(1);
-    let builder = EngineConfig::builder();
-    let builder = if streaming {
-        builder.replan(Duration::from_millis(250))
-    } else {
-        builder
-    };
-    builder
-        .memory(MEMORY + rng.below(3 * MEMORY))
-        .lanes(lanes)
-        .lane_window(to_usize(1 + rng.below(3)))
-        .partitions(to_usize(1 + rng.below(4)))
-        .partition_buffer(to_usize(1 + rng.below(4)))
-        .barrier_wait(Duration::from_millis(10 + rng.below(2000)))
-        .commit(commit)
-        .retry(retry)
-        .build()
-        .expect("the drawn configuration is valid")
-}
-
-fn to_usize(value: u64) -> usize {
-    usize::try_from(value).unwrap_or(1)
 }
 
 /// The identifiers of the pipelines sharing the destination.
