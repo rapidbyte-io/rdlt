@@ -1,6 +1,9 @@
-//! What tables may grow to across pushes and runs: their columns, nested fields counted.
+//! What tables may grow to across pushes and runs: their columns, nested fields counted, and the
+//! child tables a normalized stream adds.
 
-use rdlt_engine::{EngineConfig, ErrorKind, Nested, RunOutcome, RunStatus, SchemaSettings};
+use rdlt_engine::{
+    EngineConfig, ErrorKind, GrowthLimits, Nested, RunOutcome, RunStatus, SchemaSettings,
+};
 use serde_json::{Map, Value, json};
 
 use crate::support::batches::{BatchStream, batches};
@@ -84,4 +87,50 @@ async fn a_struct_column_whose_fields_pass_the_column_limit_is_refused() {
     let second = json!({ "id": 2, "attrs": record("b", half) });
     let outcome = load(store, &[second], least(), Nested::Native).await;
     refused(&outcome, "table_columns_exceeded");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_adding_child_tables_past_the_default_limit_is_refused() {
+    let store = "growth_children";
+    let arrays: Map<String, Value> = (0..=1024)
+        .map(|array| (format!("a{array}"), json!([1])))
+        .collect();
+    let mut document = arrays;
+    document.insert("id".to_owned(), json!(1));
+    let outcome = load(
+        store,
+        &[Value::Object(document)],
+        commit_every(1000),
+        Nested::normalize(),
+    )
+    .await;
+    refused(&outcome, "child_tables_exceeded");
+}
+
+#[tokio::test(start_paused = true)]
+async fn child_tables_recorded_by_earlier_runs_count_toward_the_limit() {
+    let store = "growth_recorded_children";
+    let limited = || commit_every(1000).growth(GrowthLimits::new(3).expect("a valid limit"));
+    let runs = [
+        json!({ "id": 1, "a0": [1], "a1": [2] }),
+        json!({ "id": 2, "b0": [3] }),
+        json!({ "id": 3, "a0": [4], "b0": [5] }),
+    ];
+    for document in runs {
+        let outcome = load(store, &[document], limited(), Nested::normalize()).await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            outcome.error
+        );
+    }
+    let outcome = load(
+        store,
+        &[json!({ "id": 4, "b1": [6] })],
+        limited(),
+        Nested::normalize(),
+    )
+    .await;
+    refused(&outcome, "child_tables_exceeded");
 }

@@ -2,6 +2,7 @@
 
 mod batch;
 mod commit;
+mod growth;
 mod limits;
 #[cfg(test)]
 mod tests;
@@ -13,6 +14,7 @@ use crate::error::Error;
 
 pub use batch::BatchPolicy;
 pub use commit::CommitPolicy;
+pub use growth::GrowthLimits;
 
 /// How many attempts a run makes and how long it waits between them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +116,7 @@ pub struct EngineConfig {
     retry: RetryPolicy,
     /// The limits configured, before the memory budget lowers them.
     limits: rdlt_wire::Limits,
+    growth: GrowthLimits,
 }
 
 impl EngineConfig {
@@ -135,6 +138,7 @@ impl EngineConfig {
             replan: None,
             retry: None,
             limits: None,
+            growth: None,
         }
     }
 
@@ -224,6 +228,11 @@ impl EngineConfig {
     pub fn retry(&self) -> &RetryPolicy {
         &self.retry
     }
+
+    /// What a pipeline's tables and state may grow to.
+    pub fn growth(&self) -> &GrowthLimits {
+        &self.growth
+    }
 }
 
 impl Default for EngineConfig {
@@ -244,6 +253,7 @@ impl Default for EngineConfig {
             replan: Duration::from_secs(60),
             retry: RetryPolicy::default(),
             limits: rdlt_wire::Limits::default(),
+            growth: GrowthLimits::default(),
         }
     }
 }
@@ -266,6 +276,7 @@ pub struct EngineConfigBuilder {
     replan: Option<Duration>,
     retry: Option<RetryPolicy>,
     limits: Option<rdlt_wire::Limits>,
+    growth: Option<GrowthLimits>,
 }
 
 impl EngineConfigBuilder {
@@ -370,6 +381,13 @@ impl EngineConfigBuilder {
         self
     }
 
+    /// What tables and state may grow to (default: [`GrowthLimits::default`]).
+    #[must_use]
+    pub fn growth(mut self, limits: GrowthLimits) -> Self {
+        self.growth = Some(limits);
+        self
+    }
+
     /// Validates the settings: every count and size is more than zero, the retry policy's first
     /// delay is no longer than its longest, and the memory is at least what
     /// [`EngineConfig::least_memory`] says its partitions need.
@@ -420,6 +438,7 @@ impl EngineConfigBuilder {
             },
             retry,
             limits: self.limits.unwrap_or(defaults.limits),
+            growth: self.growth.unwrap_or(defaults.growth),
         };
         config.admit_memory()?;
         Ok(config)
