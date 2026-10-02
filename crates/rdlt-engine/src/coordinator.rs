@@ -356,7 +356,14 @@ impl Coordinator {
                 partition,
                 rows,
                 bytes,
-            } => self.due.written(partition, rows, bytes),
+            } => {
+                let asked = self
+                    .parts
+                    .partitions
+                    .get(partition)
+                    .is_some_and(|run| run.on_demand);
+                self.due.written(partition, asked, rows, bytes);
+            }
             Progress::Abandoned { partition, .. } => self.due.abandoned(partition),
             Progress::Sealed(seal) => self.seal(seal),
             Progress::Moved { partition, epoch } => {
