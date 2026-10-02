@@ -186,16 +186,23 @@ with a typed error, `limit_exceeded` or `malformed_frame`.
 
 ## What the engine holds
 
-Whatever a connector sends is charged to the memory budget before the engine holds it, or bounded
-by a limit with a typed refusal (ADR 0039):
+Whatever a connector sends is reserved from the memory budget before the engine holds it, or
+bounded by a limit with a typed refusal (ADR 0039):
 
-- A push is charged the larger of what it keeps alive, its schema included, and what its rows
-  become once decoded and rendered.
-- A batch is lowered a piece at a time. Each piece reserves what lowering it holds, as its table
-  stores it and with the nulls of the columns it lacks, before it is lowered. A row that alone
-  takes more than the whole budget is refused with `row_exceeds_budget`.
+- The budget is never passed. It is divided into shares, for the cursors of checkpoints, the
+  log's frames, what reads keep, and data, and a reservation is made only where it fits its
+  share. One that could never fit is refused: `push_exceeds_budget`, `row_exceeds_budget`,
+  `log_frame_exceeds_budget`, and `limit_exceeded` naming `cursor bytes` or `read kept bytes`.
+- A push reserves what it keeps alive, its schema included; JSON text reserves three times
+  itself, for the batches it becomes.
+- A batch is lowered a piece at a time, through plans that normalize too. Each piece reserves
+  what lowering it holds, as its table stores it and with the nulls of the columns it lacks,
+  before it is lowered. A row that alone takes more than a quarter of the budget is refused.
+- A checkpoint never waits behind data, and a read keeps no more than its part of a quarter of
+  the budget, so reads cannot starve checkpoints or pushes.
 - No wait on the budget is for ever: at its deadline, an hour by default, the attempt fails with
-  `memory_budget_wait_exceeded`, saying what held the budget.
+  `memory_budget_wait_exceeded`, saying what held the budget. No connector's error can claim
+  that kind or code.
 - A batch pushed in process meets the limits a frame meets on the wire: its nesting, its values,
   the bytes its views name and the bytes it keeps alive.
 - A checkpoint's cursor is charged until its commit lands, and checkpoints that seal no rows keep
@@ -204,7 +211,8 @@ by a limit with a typed refusal (ADR 0039):
   own, `dictionary bytes` and `staged bytes`.
 
 How much one push may expand to in total is not bounded: it costs time and destination storage in
-proportion, within the budget's memory.
+proportion, within the budget's memory. What a JSON push of sparse records becomes beyond three
+times its text is not reserved either: the shredder's limit on cells bounds it, not the budget.
 
 ## Building rdlt
 

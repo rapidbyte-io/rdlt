@@ -52,8 +52,8 @@ M5b follows H1b.
   - Rejected: `arbitrary_precision` for the workspace, which costs an allocation per number on the
     hot path and changes `serde_json` everywhere.
 - **Memory is charged at its decoded size.**
-  (Superseded by ADR 0039: a push is charged the larger of what it keeps alive and what it
-  becomes, by one cost model.)
+  (Superseded by ADR 0039: a push reserves what it keeps alive, and each piece of it what
+  lowering it holds, by one cost model.)
   - `decoded_bytes` counts every row of a run-end or dictionary column as the value it decodes
     to, at any depth, and counts a slice by its own rows. An average of the values would let an
     encoding skewed toward one large value pass for a few bytes a row. A push is admitted, and
