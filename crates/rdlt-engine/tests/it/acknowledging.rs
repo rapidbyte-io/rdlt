@@ -540,6 +540,7 @@ async fn a_source_that_refuses_every_report_is_told_by_each_attempt_until_its_pa
     // The first attempt reports the checkpoint and the second, which ends the partition, where
     // it stood: both are refused and fail. Each landed rows, so neither is counted against the
     // run, and the third finds the partition done, which state holds no cursor for.
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!(outcome.report.attempted, 3);
     assert_eq!(outcome.report.rows, 15);
     assert!(script.acks.lock().is_empty());
