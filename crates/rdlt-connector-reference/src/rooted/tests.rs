@@ -710,3 +710,19 @@ fn a_limited_reader_refuses_the_first_byte_beyond_its_limit() {
         assert_eq!(refusal(&error), Some(too_large), "{chunk}");
     }
 }
+
+#[test]
+fn a_sync_that_fails_fails_its_caller_and_is_not_recorded_as_made() {
+    // A pipe is a file no system makes durable: its sync fails as a disk's may.
+    let (reader, _writer) = std::io::pipe().unwrap();
+    let unsyncable = std::fs::File::from(std::os::fd::OwnedFd::from(reader));
+    trace::clear();
+    let failed = super::sync_file(&unsyncable, Path::new("pipe"));
+    assert!(failed.is_err(), "a sync that failed was taken as made");
+    assert_eq!(trace::steps(), [], "a sync that failed was recorded");
+    // A file's sync is made and recorded.
+    let base = crate::scratch::tempdir().unwrap();
+    let file = std::fs::File::create(base.path().join("file")).unwrap();
+    super::sync_file(&file, Path::new("file")).unwrap();
+    assert_eq!(trace::steps(), [trace::Step::SyncFile("file".into())]);
+}
