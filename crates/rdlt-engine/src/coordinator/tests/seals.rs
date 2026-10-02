@@ -147,7 +147,7 @@ async fn a_seals_cursor_stays_charged_until_its_commit_has_it() {
         cursor: cursor(7),
         answers: None,
     };
-    let permit = admission.admit(&checkpoint).await;
+    let permit = admission.admit(&checkpoint).await.unwrap();
     let charged = budget.reserved();
     assert_eq!(charged, seal(0, 1, 1, 7, None).cursor_bytes());
     let (mut coordinator, _harness) = Setup::new(

@@ -89,17 +89,17 @@ struct Gate {
 }
 
 impl Admission for Gate {
-    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>> {
+    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, crate::Result<Option<Permit>>> {
         Box::pin(async move {
             let bytes = match event {
                 SourceEvent::Push(Push::Json(json)) => json.len(),
                 SourceEvent::Checkpoint { cursor, .. } => cursor.bytes().len(),
-                _ => return None,
+                _ => return Ok(None),
             };
             let bytes = u64::try_from(bytes).unwrap();
             self.asked.lock().unwrap().push(bytes);
             self.open.notified().await;
-            Some(Box::new(bytes) as Permit)
+            Ok(Some(Box::new(bytes) as Permit))
         })
     }
 

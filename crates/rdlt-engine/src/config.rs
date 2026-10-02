@@ -101,6 +101,7 @@ pub struct EngineConfig {
     partitions: NonZeroUsize,
     partition_buffer: NonZeroUsize,
     barrier_wait: Duration,
+    memory_wait: Duration,
     batch: BatchPolicy,
     /// The commit policy set, where one is; each run resolves an unset one for what it reads.
     commit: Option<CommitPolicy>,
@@ -118,6 +119,7 @@ impl EngineConfig {
             partitions: None,
             partition_buffer: None,
             barrier_wait: None,
+            memory_wait: None,
             batch: None,
             commit: None,
             replan: None,
@@ -153,6 +155,11 @@ impl EngineConfig {
     /// How long a commit waits for partitions to answer its barrier.
     pub fn barrier_wait(&self) -> Duration {
         self.barrier_wait
+    }
+
+    /// How long a request waits for room in the memory budget before the attempt fails.
+    pub fn memory_wait(&self) -> Duration {
+        self.memory_wait
     }
 
     /// How pushes are coalesced and JSON is shredded.
@@ -196,6 +203,7 @@ impl Default for EngineConfig {
             partitions: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             partition_buffer: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             barrier_wait: Duration::from_secs(5),
+            memory_wait: crate::limits::BUDGET_WAIT,
             batch: BatchPolicy::default(),
             commit: None,
             replan: Duration::from_secs(60),
@@ -213,6 +221,7 @@ pub struct EngineConfigBuilder {
     partitions: Option<usize>,
     partition_buffer: Option<usize>,
     barrier_wait: Option<Duration>,
+    memory_wait: Option<Duration>,
     batch: Option<BatchPolicy>,
     commit: Option<CommitPolicy>,
     replan: Option<Duration>,
@@ -259,6 +268,14 @@ impl EngineConfigBuilder {
     #[must_use]
     pub fn barrier_wait(mut self, wait: Duration) -> Self {
         self.barrier_wait = Some(wait);
+        self
+    }
+
+    /// How long a request waits for room in the memory budget before the attempt fails with
+    /// what held the budget (default an hour): longer than any call of the destination may take.
+    #[must_use]
+    pub fn memory_wait(mut self, wait: Duration) -> Self {
+        self.memory_wait = Some(wait);
         self
     }
 
@@ -322,6 +339,10 @@ impl EngineConfigBuilder {
             )
             .ok_or_else(|| invalid("partition_buffer"))?,
             barrier_wait: self.barrier_wait.unwrap_or(defaults.barrier_wait),
+            memory_wait: match self.memory_wait {
+                Some(Duration::ZERO) => return Err(invalid("memory_wait")),
+                wait => wait.unwrap_or(defaults.memory_wait),
+            },
             batch: self.batch.unwrap_or(defaults.batch),
             commit: self.commit,
             replan: match self.replan {

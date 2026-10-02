@@ -78,7 +78,8 @@ impl Engine {
             plan: Arc::new(plan),
             source,
             destination,
-            budget: MemoryBudget::new(self.config.memory().get()),
+            budget: MemoryBudget::new(self.config.memory().get())
+                .within(Arc::clone(&self.env), self.config.memory_wait()),
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
         };

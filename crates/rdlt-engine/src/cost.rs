@@ -8,9 +8,12 @@ use std::fmt;
 use std::sync::Arc;
 
 use rdlt_connector::cost::Rendering;
-use rdlt_connector::{Admission, BoxFuture, Capabilities, Permit, SourceEvent};
+use rdlt_connector::{
+    Admission, BoxFuture, Capabilities, ConnectorError, ConnectorErrorKind, Permit, SourceEvent,
+};
 
-use crate::budget::{MemoryBudget, Reservation};
+use crate::budget::{Exhausted, MemoryBudget, Reservation};
+use crate::limits::BUDGET_WAIT_EXCEEDED;
 
 /// How `capabilities`' destination renders values: the kinds it stores as they are, and every
 /// other as text.
@@ -46,19 +49,23 @@ impl Charging {
 }
 
 impl Admission for Charging {
-    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>> {
+    fn admit<'a>(
+        &'a self,
+        event: &'a SourceEvent,
+    ) -> BoxFuture<'a, rdlt_connector::Result<Option<Permit>>> {
         Box::pin(async move {
+            let Some(cost) = self.cost(event) else {
+                return Ok(None);
+            };
             // What the budget reserves: a request beyond it takes the whole of it.
-            let bytes = self.cost(event)?.min(self.budget.capacity());
+            let bytes = cost.min(self.budget.capacity());
             // A cursor waits with its seal for a commit, which alone releases it.
             let reservation = match event {
                 SourceEvent::Checkpoint { .. } => self.budget.acquire_kept(bytes).await,
                 _ => self.budget.acquire(bytes).await,
             };
-            Some(Box::new(Admitted {
-                bytes,
-                _reservation: reservation,
-            }) as Permit)
+            let reservation = reservation.map_err(|exhausted| refused(&exhausted))?;
+            Ok(Some(Box::new(Admitted { bytes, reservation }) as Permit))
         })
     }
 
@@ -68,17 +75,36 @@ impl Admission for Charging {
     }
 }
 
+/// The error an event is refused with once it waited on the budget until its deadline: transient,
+/// and coded so the read's failure is known for the budget's.
+fn refused(exhausted: &Exhausted) -> ConnectorError {
+    ConnectorError::new(ConnectorErrorKind::Transient, exhausted.to_string())
+        .with_code(BUDGET_WAIT_EXCEEDED)
+}
+
 /// What admitted an event: the bytes charged for it, held until this is dropped.
 pub(crate) struct Admitted {
     /// The bytes the event was charged.
     pub(crate) bytes: u64,
-    _reservation: Reservation,
+    reservation: Reservation,
 }
 
 impl Admitted {
     /// What `permit` admitted, where an engine's admission issued it.
     pub(crate) fn of(permit: Permit) -> Option<Box<Self>> {
         permit.downcast().ok()
+    }
+
+    /// Says the bytes are queued for a write, which releases them.
+    pub(crate) fn stage(&mut self) {
+        self.reservation.stage();
+    }
+
+    /// Holds `bytes` from now, fewer than were admitted: the rest is released.
+    pub(crate) fn keep(&mut self, bytes: u64) {
+        let bytes = bytes.min(self.bytes);
+        self.reservation.resize(bytes);
+        self.bytes = bytes;
     }
 }
 

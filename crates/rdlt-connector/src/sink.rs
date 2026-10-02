@@ -84,7 +84,12 @@ pub type Permit = Box<dyn Any + Send>;
 pub trait Admission: Send + Sync {
     /// Waits until what `event` holds may enter, and returns what holds it; `None` for an event
     /// that holds nothing to charge.
-    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Option<Permit>>;
+    ///
+    /// # Errors
+    ///
+    /// Why the event may not enter, as an admission that waited as long as it waits: the send
+    /// fails with it, and so does the read.
+    fn admit<'a>(&'a self, event: &'a SourceEvent) -> BoxFuture<'a, Result<Option<Permit>>>;
 
     /// Charges `bytes` a read keeps beside its events, at once and beyond the budget if need be.
     fn charge(&self, bytes: u64) -> Permit;
@@ -178,7 +183,8 @@ impl PartitionSink {
     ///
     /// A [`Stopped`](crate::ConnectorErrorKind::Stopped) error once the engine has asked the read
     /// to stop or dropped its end, and an `Internal` error coded `barrier_unrequested` for a
-    /// checkpoint answering a barrier the engine never asked for.
+    /// checkpoint answering a barrier the engine never asked for. Where the channel's events are
+    /// admitted, the error its admission refused the event with.
     pub async fn send(&mut self, event: SourceEvent) -> Result<()> {
         if let SourceEvent::Checkpoint {
             answers: Some(barrier),
@@ -200,7 +206,7 @@ impl PartitionSink {
                 biased;
                 // A stop request wins over an admission that could still arrive.
                 () = self.stop.cancelled() => return Err(ConnectorError::stopped()),
-                permit = admission.admit(&event) => permit,
+                permit = admission.admit(&event) => permit?,
             },
             None => None,
         };
