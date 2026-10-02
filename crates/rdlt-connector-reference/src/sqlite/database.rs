@@ -228,7 +228,12 @@ pub(super) fn failed(what: &'static str) -> impl Fn(rusqlite::Error) -> Connecto
             }
             _ => ConnectorErrorKind::Internal,
         };
-        let failed = ConnectorError::new(kind, format!("{what}: {error}")).with_source(error);
+        // A statement SQLite cannot read is said without its text: what it holds was sent.
+        let message = match &error {
+            rusqlite::Error::SqlInputError { msg, .. } => format!("{what}: {msg}"),
+            other => format!("{what}: {other}"),
+        };
+        let failed = ConnectorError::new(kind, message).with_source(error);
         match code {
             Some(ErrorCode::DiskFull) => failed.with_code("disk_full"),
             _ => failed,
