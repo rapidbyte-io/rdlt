@@ -23,6 +23,11 @@ pub(super) struct Columns {
 }
 
 impl Columns {
+    /// The schema the frames are in.
+    pub(super) fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+
     /// The columns of frames in `schema`, as a receiver converts it from its message.
     pub(super) fn new(schema: SchemaRef) -> Self {
         let mut values = HashMap::new();

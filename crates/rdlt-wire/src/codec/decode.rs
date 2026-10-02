@@ -45,15 +45,18 @@ impl Decoder {
         self.held.values().copied().fold(0, u64::saturating_add)
     }
 
-    /// The schema the frames that follow are in, from its IPC schema message; the schema and
-    /// dictionaries received before it are forgotten, whether or not this one is admitted.
+    /// The schema the frames that follow are in, from its IPC schema message.
+    ///
+    /// The schema and dictionaries received before it are forgotten, whether or not this one is
+    /// admitted. A schema equal to the one it replaces is returned as that same schema, so
+    /// batches decoded either side of it share it.
     ///
     /// # Errors
     ///
     /// A [`WireError`] when the message is too large, malformed, or its schema beyond the limits.
     pub fn schema(&mut self, ipc_schema: &Bytes) -> Result<SchemaRef, WireError> {
         // A refused schema ends the schema before it too: no batch is read under either.
-        self.columns = None;
+        let before = self.columns.take();
         self.dictionaries.clear();
         self.held.clear();
         self.limits.admit_schema(ipc_schema.len())?;
@@ -63,6 +66,15 @@ impl Decoder {
         };
         super::schema::admit(fb, &self.limits)?;
         let schema = contained(Frame::Schema, || Ok(arrow_ipc::convert::fb_to_schema(fb)))?;
+        // An equal schema is returned as the schema held: the batches of a sender that sends
+        // its schema again keep a single schema alive between them, not a schema each.
+        if let Some(before) = before
+            && **before.schema() == schema
+        {
+            let held = Arc::clone(before.schema());
+            self.columns = Some(before);
+            return Ok(held);
+        }
         let schema = Arc::new(schema);
         self.columns = Some(Columns::new(Arc::clone(&schema)));
         Ok(schema)
