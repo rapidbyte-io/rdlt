@@ -7,60 +7,28 @@ use serde::de::{
 use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use super::ShredError;
-use super::build::Record;
-use super::visit::{Context, DECIMAL_LIMIT, MAX_DEPTH, Row};
+use super::visit::{Context, DECIMAL_LIMIT};
 
-/// Appends the record `bytes` to `record`, its numbers exact.
-pub(super) fn append(
-    bytes: &[u8],
-    record: &mut Record,
-    context: &Context,
-) -> Result<(), sonic_rs::Error> {
+/// Parses the record `bytes` into `seed`, its numbers exact.
+pub(super) fn visit<S>(bytes: &[u8], seed: S, context: &Context) -> Result<(), sonic_rs::Error>
+where
+    S: for<'de> DeserializeSeed<'de, Value = ()>,
+{
     // Parsing numbers as their text leaves strings unchecked, so the record's text is checked first.
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Err(de::Error::custom("the record is not valid UTF-8"));
     };
     // Parsing builds the record whole, recursing once per level, so depth is checked first.
-    if too_deep(text) {
+    if crate::json::too_deep(text.as_bytes()) {
         return Err(context.fail(ShredError::TooDeep));
     }
     let mut deserializer = sonic_rs::Deserializer::from_str(text).use_rawnumber();
     let value: Value = serde::Deserialize::deserialize(&mut deserializer)?;
     deserializer.end()?;
-    Row { record, context }.deserialize(Exact {
+    seed.deserialize(Exact {
         value: &value,
         context,
     })
-}
-
-/// Whether `record`'s containers nest deeper than a value may: a linear scan of its brackets,
-/// outside its strings.
-fn too_deep(record: &str) -> bool {
-    let (mut depth, mut in_string, mut escaped) = (0_u64, false, false);
-    for byte in record.bytes() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'[' | b'{' => {
-                depth += 1;
-                if depth > MAX_DEPTH {
-                    return true;
-                }
-            }
-            b']' | b'}' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    false
 }
 
 /// A parsed value, walked with its numbers exact.

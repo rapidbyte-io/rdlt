@@ -444,8 +444,8 @@ fn number(row: &mut Vec<u8>, digits: impl FnOnce(&mut Vec<u8>) -> std::io::Resul
 }
 
 /// Floats encode as the canonical text of the shortest text that reads back as them, a tie
-/// going to the even one as JSON writers break it: the text the engine writes a float into JSON
-/// as, so the float and that text hash alike. Negative zero is zero.
+/// going to the even one as JSON writers break it, which is the text the engine writes a float
+/// into JSON as, so the float and that text hash alike; negative zero is zero.
 fn float64(row: &mut Vec<u8>, value: f64) {
     number(row, |row| row.write_all(canonical_float(value).as_bytes()));
 }

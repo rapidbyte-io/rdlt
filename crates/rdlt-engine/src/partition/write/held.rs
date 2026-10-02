@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use rdlt_connector::Permit;
 use rdlt_connector::cost::Allocations;
 
+use crate::budget::Reservation;
 use crate::cost::Admitted;
 
 /// What holds a unit's memory: the permits charged for it and the allocations they cover.
@@ -40,13 +41,18 @@ impl Held {
     }
 }
 
-/// What holds each of `batches`, shredded from the JSON pushes `permits` were admitted for.
+/// What holds each of `batches`, shredded from the JSON pushes `permits` were admitted for, with
+/// `beyond` reserved for what building them took beyond that.
 ///
-/// A JSON push is admitted for its text and for the batches it becomes, so nothing more is
-/// asked of the budget here: the permits give back what the batches do not keep alive, now that
-/// the text is gone, and the batches share them until the last is written. Batches that keep
-/// more alive than was admitted for them hold no more of the budget than that.
-pub(super) fn shredded(mut permits: Vec<Permit>, batches: &[RecordBatch]) -> Vec<Held> {
+/// A JSON push is admitted for its text and for the batches it becomes, and what the batches take
+/// beyond was reserved before they were built: the permits and the reservation give back what
+/// the batches do not keep alive, now that the text is gone, and the batches share them until
+/// the last is written.
+pub(super) fn shredded(
+    mut permits: Vec<Permit>,
+    beyond: Option<Reservation>,
+    batches: &[RecordBatch],
+) -> Vec<Held> {
     let mut alive = batches
         .iter()
         .map(|batch| Allocations::of(batch).bytes())
@@ -56,6 +62,10 @@ pub(super) fn shredded(mut permits: Vec<Permit>, batches: &[RecordBatch]) -> Vec
             admitted.shrink(alive);
             alive = alive.saturating_sub(admitted.bytes);
         }
+    }
+    if let Some(mut beyond) = beyond {
+        beyond.shrink(alive);
+        permits.push(Box::new(beyond));
     }
     let shared = Arc::new(Mutex::new(permits));
     batches

@@ -1,28 +1,35 @@
-//! Arrow columns built as a chunk is parsed, typed by the values as they arrive.
+//! Arrow columns built as a chunk is parsed, typed by the values as they arrive, every byte a
+//! builder takes charged to the chunk's meter before it is taken.
 //!
 //! A column starts as nulls and takes the type of its first value. A later value of a wider type
 //! the column can take without loss (a float after exact integers, a large unsigned integer after
 //! integers) converts it. Any other makes the column `Json`, which it cannot build without the
 //! values it already took, so the column stops building and the chunk is built again once the
 //! push's shape is known.
+//!
+//! A builder is presized for the rows of its level and charged for them when it is made; a level
+//! that holds more grows its builders as they would grow themselves, doubling, and is charged for
+//! each growth before it.
 
+mod list;
+mod record;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{
-    BooleanBuilder, Decimal128Builder, Decimal256Builder, Float64Builder, Int64Builder,
-    StringBuilder,
+    ArrayBuilder, BooleanBuilder, Decimal128Builder, Decimal256Builder, Float64Builder,
+    Int64Builder, StringBuilder,
 };
-use arrow_array::{ArrayRef, ListArray, NullArray, StructArray};
-use arrow_buffer::{NullBufferBuilder, OffsetBuffer, i256};
-use arrow_schema::Fields;
-use rdlt_connector::limits::MAX_COLUMNS;
+use arrow_array::{ArrayRef, NullArray};
+use arrow_buffer::i256;
 
 use super::ShredError;
-use super::observe::{Observed, Shape};
+use super::meter::{Meter, Over};
+use super::observe::Observed;
+pub(crate) use list::List;
+pub(crate) use record::Record;
 
 /// A scalar JSON value.
 #[derive(Clone, Copy, Debug)]
@@ -72,8 +79,10 @@ pub(crate) enum Column {
     Huge(Decimal128Builder),
     Vast(Decimal256Builder),
     Float(Float64Builder),
-    Text(StringBuilder),
-    Json(StringBuilder),
+    /// Strings, and the bytes of text charged and written.
+    Text(StringBuilder, Room),
+    /// JSON text, and the bytes of text charged and written.
+    Json(StringBuilder, Room),
     Struct(Box<Record>),
     List(Box<List>),
     /// A column whose values joined to `Json` after it built others: its values are only checked
@@ -81,36 +90,39 @@ pub(crate) enum Column {
     Spoiled,
 }
 
-/// The columns of objects: one per field seen, in the order first seen.
-pub(crate) struct Record {
-    names: Vec<Arc<str>>,
-    index: BTreeMap<Arc<str>, usize>,
-    columns: Vec<Column>,
-    /// The row that last wrote each field, so a row's missing fields are nulled and repeated keys
-    /// are caught.
-    written: Vec<usize>,
-    rows: usize,
-    nulls: NullBufferBuilder,
-    /// How many rows the builders are sized for.
-    capacity: usize,
-    /// How many keys were searched for rather than found at their hint.
-    #[cfg(test)]
-    searches: usize,
-}
-
-/// The column of arrays: offsets into one item column.
-pub(crate) struct List {
-    offsets: Vec<i32>,
-    nulls: NullBufferBuilder,
-    item: Column,
-}
+/// Bytes a text or list column's offset takes for each row.
+const OFFSET: u64 = 4;
 
 impl Column {
-    /// A column for values observed as `observed`, holding `nulls` nulls, sized for `capacity`.
-    pub(crate) fn new(observed: &Observed, nulls: usize, capacity: usize) -> Self {
+    /// A column for values observed as `observed`, holding `nulls` nulls, sized for `capacity`
+    /// rows and charged to `meter` for them; a list's items are sized for as many as it was
+    /// observed to hold.
+    ///
+    /// # Errors
+    ///
+    /// [`Over`] where the meter has no room for the builders.
+    pub(crate) fn new(
+        observed: &Observed,
+        nulls: usize,
+        capacity: usize,
+        meter: &Meter,
+    ) -> Result<Self, Over> {
         let capacity = capacity.max(nulls);
+        let text = meter.text_bytes(capacity);
+        let rows = count(capacity);
+        let (width, bits, more) = match observed {
+            Observed::Null => return Ok(Self::Null(nulls)),
+            Observed::Bool => (0, 2, 0),
+            Observed::Int { .. } | Observed::Float => (8, 1, 0),
+            Observed::Wide | Observed::Huge => (16, 1, 0),
+            Observed::Vast => (32, 1, 0),
+            Observed::Text | Observed::Json => (OFFSET, 1, count(text)),
+            Observed::Object(_) => (0, 1, 0),
+            Observed::Array(..) => (OFFSET, 1, OFFSET),
+        };
+        meter.charge(rows_of(rows, width, bits).saturating_add(more))?;
         let mut column = match observed {
-            Observed::Null => return Self::Null(nulls),
+            Observed::Null => Self::Null(0),
             Observed::Bool => Self::Bool(BooleanBuilder::with_capacity(capacity)),
             Observed::Int { exact } => Self::Int {
                 builder: Int64Builder::with_capacity(capacity),
@@ -120,22 +132,22 @@ impl Column {
             Observed::Huge => Self::Huge(decimals(capacity, 38)),
             Observed::Vast => Self::Vast(vast(capacity)),
             Observed::Float => Self::Float(Float64Builder::with_capacity(capacity)),
-            Observed::Text => Self::Text(StringBuilder::with_capacity(capacity, capacity * 8)),
-            Observed::Json => Self::Json(StringBuilder::with_capacity(capacity, capacity * 16)),
-            Observed::Object(shape) => Self::Struct(Box::new(Record::new(shape, capacity))),
-            Observed::Array(item) => Self::List(Box::new(List {
-                offsets: Vec::with_capacity(capacity + 1),
-                nulls: NullBufferBuilder::new(capacity),
-                item: Self::new(item, 0, capacity),
-            })),
+            Observed::Text => {
+                Self::Text(StringBuilder::with_capacity(capacity, text), Room::of(text))
+            }
+            Observed::Json => {
+                Self::Json(StringBuilder::with_capacity(capacity, text), Room::of(text))
+            }
+            Observed::Object(shape) => Self::Struct(Box::new(Record::new(shape, capacity, meter)?)),
+            Observed::Array(item, items) => {
+                let items = usize::try_from(*items).unwrap_or(usize::MAX);
+                Self::List(Box::new(List::new(item, capacity, items, meter)?))
+            }
         };
-        if let Self::List(list) = &mut column {
-            list.offsets.push(0);
-        }
         for _ in 0..nulls {
-            column.null();
+            column.null(meter)?;
         }
-        column
+        Ok(column)
     }
 
     /// What the column's values are observed as.
@@ -148,15 +160,40 @@ impl Column {
             Self::Huge(_) => Observed::Huge,
             Self::Vast(_) => Observed::Vast,
             Self::Float(_) => Observed::Float,
-            Self::Text(_) => Observed::Text,
+            Self::Text(..) => Observed::Text,
             Self::Struct(record) => Observed::Object(record.shape()),
-            Self::List(list) => Observed::Array(Box::new(list.item.observed())),
-            Self::Json(_) | Self::Spoiled => Observed::Json,
+            Self::List(list) => list.observed(),
+            Self::Json(..) | Self::Spoiled => Observed::Json,
+        }
+    }
+
+    /// Bytes a row takes in the column's own builders beside its bits, what growing it by a row
+    /// takes: a struct's fields and a list's items grow by their own.
+    fn width(&self) -> u64 {
+        match self {
+            Self::Int { .. } | Self::Float(_) => 8,
+            Self::Wide(_) | Self::Huge(_) => 16,
+            Self::Vast(_) => 32,
+            Self::Text(..) | Self::Json(..) | Self::List(_) => OFFSET,
+            Self::Null(_) | Self::Spoiled | Self::Bool(_) | Self::Struct(_) => 0,
+        }
+    }
+
+    /// Bits a row takes in the column's own builders: its validity, and a boolean's value.
+    fn bits(&self) -> u64 {
+        match self {
+            Self::Null(_) | Self::Spoiled => 0,
+            Self::Bool(_) => 2,
+            _ => 1,
         }
     }
 
     /// Appends a null.
-    pub(crate) fn null(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// [`Over`] where a struct's fields must grow and the meter has no room.
+    pub(crate) fn null(&mut self, meter: &Meter) -> Result<(), Over> {
         match self {
             Self::Null(rows) => *rows += 1,
             Self::Bool(builder) => builder.append_null(),
@@ -164,26 +201,47 @@ impl Column {
             Self::Wide(builder) | Self::Huge(builder) => builder.append_null(),
             Self::Vast(builder) => builder.append_null(),
             Self::Float(builder) => builder.append_null(),
-            Self::Text(builder) | Self::Json(builder) => builder.append_null(),
-            Self::Struct(record) => record.null(),
+            Self::Text(builder, _) | Self::Json(builder, _) => builder.append_null(),
+            Self::Struct(record) => record.null(meter)?,
             Self::List(list) => list.null(),
             Self::Spoiled => {}
         }
+        Ok(())
     }
 
-    /// Appends `value`, converting the column when it widens it without loss; returns whether it
-    /// fitted.
-    pub(crate) fn scalar(&mut self, value: Scalar<'_>, capacity: usize) -> bool {
+    /// Appends `value`, converting the column when it widens it without loss, a column made for
+    /// it sized for `capacity` rows; returns whether it fitted.
+    ///
+    /// # Errors
+    ///
+    /// [`Over`] where the meter has no room for a builder the value needs.
+    pub(crate) fn scalar(
+        &mut self,
+        value: Scalar<'_>,
+        capacity: usize,
+        meter: &Meter,
+    ) -> Result<bool, Over> {
         match (&*self, value) {
-            (Self::Null(nulls), _) => *self = Self::new(&value.observed(), *nulls, capacity),
-            (Self::Int { exact: true, .. }, Scalar::Float(_)) => self.widen(&Observed::Float),
-            (Self::Int { .. }, Scalar::Wide(_)) => self.widen(&Observed::Wide),
-            (Self::Int { .. } | Self::Wide(_), Scalar::Huge(_)) => self.widen(&Observed::Huge),
+            (Self::Null(nulls), _) => {
+                *self = Self::new(&value.observed(), *nulls, capacity, meter)?;
+            }
+            (Self::Int { exact: true, .. }, Scalar::Float(_)) => {
+                self.widen(&Observed::Float, capacity, meter)?;
+            }
+            (Self::Int { .. }, Scalar::Wide(_)) => self.widen(&Observed::Wide, capacity, meter)?,
+            (Self::Int { .. } | Self::Wide(_), Scalar::Huge(_)) => {
+                self.widen(&Observed::Huge, capacity, meter)?;
+            }
             (Self::Int { .. } | Self::Wide(_) | Self::Huge(_), Scalar::Vast(_)) => {
-                self.widen(&Observed::Vast);
+                self.widen(&Observed::Vast, capacity, meter)?;
             }
             _ => {}
         }
+        self.append(value, meter)
+    }
+
+    /// Appends `value` to a column of its type; returns whether it was one.
+    fn append(&mut self, value: Scalar<'_>, meter: &Meter) -> Result<bool, Over> {
         match (self, value) {
             (Self::Bool(builder), Scalar::Bool(value)) => builder.append_value(value),
             (Self::Int { builder, exact }, Scalar::Int(value)) => {
@@ -217,10 +275,26 @@ impl Column {
             {
                 builder.append_value(value as f64);
             }
-            (Self::Text(builder), Scalar::Text(value)) => builder.append_value(value),
-            _ => return false,
+            (Self::Text(builder, room), Scalar::Text(value)) => {
+                write_text(room, value.len(), meter)?;
+                builder.append_value(value);
+            }
+            _ => return Ok(false),
         }
-        true
+        Ok(true)
+    }
+
+    /// Appends `text`, a value of a column of JSON.
+    ///
+    /// # Errors
+    ///
+    /// [`Over`] where the meter has no room for the text.
+    pub(crate) fn json(&mut self, text: &str, meter: &Meter) -> Result<(), Over> {
+        if let Self::Json(builder, room) = self {
+            write_text(room, text.len(), meter)?;
+            builder.append_value(text);
+        }
+        Ok(())
     }
 
     /// Stops building: a value joined the column's type to `Json`.
@@ -229,50 +303,43 @@ impl Column {
     }
 
     /// Converts the integers built so far to the wider `observed`: a float, or a whole decimal of
-    /// 20, 38 or 76 digits.
+    /// 20, 38 or 76 digits, in builders sized for `capacity` rows and charged to `meter`.
+    fn widen(&mut self, observed: &Observed, capacity: usize, meter: &Meter) -> Result<(), Over> {
+        let rows = match self {
+            Self::Int { builder, .. } => builder.len(),
+            Self::Wide(builder) | Self::Huge(builder) => builder.len(),
+            _ => return Ok(()),
+        };
+        let mut widened = Self::new(observed, 0, capacity.max(rows), meter)?;
+        match self {
+            Self::Int { builder, .. } => {
+                for value in &builder.finish() {
+                    widened.append_widened(value.map(i128::from));
+                }
+            }
+            Self::Wide(builder) | Self::Huge(builder) => {
+                for value in &builder.finish() {
+                    widened.append_widened(value);
+                }
+            }
+            _ => {}
+        }
+        *self = widened;
+        Ok(())
+    }
+
+    /// Appends `value`, an integer or a null, to a column a widening just made, sized for it.
     #[expect(
         clippy::cast_precision_loss,
-        reason = "the integers are exact as floats"
+        reason = "the integers widened to floats are exact as floats"
     )]
-    fn widen(&mut self, observed: &Observed) {
-        let whole: Vec<Option<i128>> = match self {
-            Self::Int { builder, .. } => {
-                builder.finish().iter().map(|v| v.map(i128::from)).collect()
-            }
-            Self::Wide(builder) | Self::Huge(builder) => builder.finish().iter().collect(),
-            _ => return,
-        };
-        let capacity = whole.len().max(1);
-        *self = match observed {
-            Observed::Float => {
-                let mut floats = Float64Builder::with_capacity(capacity);
-                for value in &whole {
-                    floats.append_option(value.map(|v| v as f64));
-                }
-                Self::Float(floats)
-            }
-            Observed::Huge => {
-                let mut huge = decimals(capacity, 38);
-                for value in whole {
-                    huge.append_option(value);
-                }
-                Self::Huge(huge)
-            }
-            Observed::Vast => {
-                let mut vast = vast(capacity);
-                for value in whole {
-                    vast.append_option(value.map(i256::from_i128));
-                }
-                Self::Vast(vast)
-            }
-            _ => {
-                let mut wide = decimals(capacity, 20);
-                for value in whole {
-                    wide.append_option(value);
-                }
-                Self::Wide(wide)
-            }
-        };
+    fn append_widened(&mut self, value: Option<i128>) {
+        match self {
+            Self::Float(builder) => builder.append_option(value.map(|value| value as f64)),
+            Self::Wide(builder) | Self::Huge(builder) => builder.append_option(value),
+            Self::Vast(builder) => builder.append_option(value.map(i256::from_i128)),
+            _ => {}
+        }
     }
 
     /// The column built.
@@ -284,7 +351,7 @@ impl Column {
             Self::Wide(mut builder) | Self::Huge(mut builder) => Arc::new(builder.finish()),
             Self::Vast(mut builder) => Arc::new(builder.finish()),
             Self::Float(mut builder) => Arc::new(builder.finish()),
-            Self::Text(mut builder) | Self::Json(mut builder) => Arc::new(builder.finish()),
+            Self::Text(mut builder, _) | Self::Json(mut builder, _) => Arc::new(builder.finish()),
             Self::Struct(record) => Arc::new(record.finish_struct()?),
             Self::List(list) => list.finish()?,
             Self::Spoiled => {
@@ -297,9 +364,46 @@ impl Column {
     }
 }
 
-/// Whether an object of `fields` fields is within the column limit.
-pub(crate) fn within_columns(fields: usize) -> bool {
-    u64::try_from(fields).is_ok_and(|fields| fields <= MAX_COLUMNS)
+/// The bytes of text a builder is charged for and holds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Room {
+    capacity: usize,
+    written: usize,
+}
+
+impl Room {
+    /// A builder presized for `capacity` bytes, holding none.
+    fn of(capacity: usize) -> Self {
+        Self {
+            capacity,
+            written: 0,
+        }
+    }
+}
+
+/// Writes `bytes` of text into a builder with `room`: past what it was charged for, the builder
+/// grows as it would, to twice what it held or to what the text needs, and is charged for all it
+/// then holds, which beside the copy it grew from is what it takes while it grows.
+fn write_text(room: &mut Room, bytes: usize, meter: &Meter) -> Result<(), Over> {
+    let needed = room.written.saturating_add(bytes);
+    if needed > room.capacity {
+        let grown = needed.max(room.capacity.saturating_mul(2));
+        meter.charge(count(grown))?;
+        room.capacity = grown;
+    }
+    room.written = needed;
+    Ok(())
+}
+
+/// Bytes `rows` rows take of `width` bytes and `bits` bits each.
+fn rows_of(rows: u64, width: u64, bits: u64) -> u64 {
+    rows.saturating_mul(width)
+        .saturating_add(rows.saturating_mul(bits).div_ceil(8))
+}
+
+/// A count as the meter's bytes are measured in.
+fn count(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// A builder of whole decimals of `digits` digits, which a 128-bit decimal holds.
@@ -314,171 +418,4 @@ fn vast(capacity: usize) -> Decimal256Builder {
     Decimal256Builder::with_capacity(capacity)
         .with_precision_and_scale(76, 0)
         .expect("76 digits fit a 256-bit decimal")
-}
-
-impl Record {
-    /// Columns for objects of `shape`, sized for `capacity` rows.
-    pub(crate) fn new(shape: &Shape, capacity: usize) -> Self {
-        let mut record = Self::empty(capacity);
-        for (name, observed) in shape.fields() {
-            record.index.insert(Arc::clone(name), record.names.len());
-            record.names.push(Arc::clone(name));
-            record.columns.push(Column::new(observed, 0, capacity));
-            record.written.push(usize::MAX);
-        }
-        record
-    }
-
-    /// No columns yet, sized for `capacity` rows.
-    pub(crate) fn empty(capacity: usize) -> Self {
-        Self {
-            names: Vec::new(),
-            index: BTreeMap::new(),
-            columns: Vec::new(),
-            written: Vec::new(),
-            rows: 0,
-            nulls: NullBufferBuilder::new(capacity),
-            capacity,
-            #[cfg(test)]
-            searches: 0,
-        }
-    }
-
-    /// How many keys were searched for rather than found at their hint.
-    #[cfg(test)]
-    pub(crate) fn searches(&self) -> usize {
-        self.searches
-    }
-
-    /// How many rows the builders are sized for.
-    pub(crate) fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    /// The position of the field `name`, trying `hint` first, adding the field when new: objects
-    /// usually repeat their keys' order, so the field after the last one found is most often next.
-    ///
-    /// A field beyond `MAX_COLUMNS` is refused at once, before the rest of the chunk is read.
-    pub(crate) fn position(&mut self, name: &str, hint: usize) -> Result<usize, ShredError> {
-        if self
-            .names
-            .get(hint)
-            .is_some_and(|field| field.as_ref() == name)
-        {
-            return Ok(hint);
-        }
-        #[cfg(test)]
-        {
-            self.searches += 1;
-        }
-        if let Some(&position) = self.index.get(name) {
-            return Ok(position);
-        }
-        if !within_columns(self.names.len() + 1) {
-            return Err(ShredError::TooManyColumns(self.names.len() + 1));
-        }
-        let name: Arc<str> = name.into();
-        self.index.insert(Arc::clone(&name), self.names.len());
-        self.names.push(name);
-        self.columns.push(Column::Null(self.rows));
-        self.written.push(usize::MAX);
-        Ok(self.names.len() - 1)
-    }
-
-    /// The column of the field at `position`, for the row being appended; a field the row already
-    /// wrote is a repeated key.
-    pub(crate) fn field(&mut self, position: usize) -> Result<&mut Column, ShredError> {
-        if self.written[position] == self.rows {
-            return Err(ShredError::DuplicateKey(self.names[position].to_string()));
-        }
-        self.written[position] = self.rows;
-        Ok(&mut self.columns[position])
-    }
-
-    /// Ends the row being appended, which wrote `fields` fields: the fields it lacked get nulls.
-    pub(crate) fn end_row(&mut self, fields: usize) {
-        if fields != self.columns.len() {
-            for (column, written) in self.columns.iter_mut().zip(&self.written) {
-                if *written != self.rows {
-                    column.null();
-                }
-            }
-        }
-        self.rows += 1;
-        self.nulls.append_non_null();
-    }
-
-    fn null(&mut self) {
-        for column in &mut self.columns {
-            column.null();
-        }
-        self.rows += 1;
-        self.nulls.append_null();
-    }
-
-    /// What the objects appended are observed as.
-    pub(crate) fn shape(&self) -> Shape {
-        let mut shape = Shape::default();
-        for (name, column) in self.names.iter().zip(&self.columns) {
-            shape.push(Arc::clone(name), column.observed());
-        }
-        shape
-    }
-
-    /// The columns built, in the order first seen.
-    pub(crate) fn finish_columns(self) -> Result<Vec<ArrayRef>, ShredError> {
-        self.columns.into_iter().map(Column::finish).collect()
-    }
-
-    fn finish_struct(mut self) -> Result<StructArray, ShredError> {
-        let fields: Fields = self
-            .shape()
-            .logical_fields()
-            .iter()
-            .map(rdlt_connector::Field::to_arrow)
-            .collect();
-        let rows = self.rows;
-        let nulls = self.nulls.finish();
-        if fields.is_empty() {
-            return Ok(StructArray::new_empty_fields(rows, nulls));
-        }
-        let columns = self.finish_columns()?;
-        StructArray::try_new(fields, columns, nulls)
-            .map_err(|error| ShredError::Internal(format!("building a struct column: {error}")))
-    }
-}
-
-impl List {
-    /// The column the items are appended to.
-    pub(crate) fn item(&mut self) -> &mut Column {
-        &mut self.item
-    }
-
-    /// Ends an array of `items` items.
-    pub(crate) fn end_row(&mut self, items: usize) -> Result<(), ShredError> {
-        let end = i32::try_from(items)
-            .ok()
-            .and_then(|items| self.offsets.last().and_then(|last| last.checked_add(items)))
-            .ok_or(ShredError::TooLarge)?;
-        self.offsets.push(end);
-        self.nulls.append_non_null();
-        Ok(())
-    }
-
-    fn null(&mut self) {
-        self.offsets.push(*self.offsets.last().unwrap_or(&0));
-        self.nulls.append_null();
-    }
-
-    fn finish(mut self) -> Result<ArrayRef, ShredError> {
-        let field = Arc::new(
-            rdlt_connector::Field::new("item", self.item.observed().logical_type(), true)
-                .to_arrow(),
-        );
-        let values = self.item.finish()?;
-        let offsets = OffsetBuffer::new(self.offsets.into());
-        ListArray::try_new(field, offsets, values, self.nulls.finish())
-            .map(|array| Arc::new(array) as ArrayRef)
-            .map_err(|error| ShredError::Internal(format!("building a list column: {error}")))
-    }
 }

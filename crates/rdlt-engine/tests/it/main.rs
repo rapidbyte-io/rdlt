@@ -34,7 +34,7 @@ mod recorded;
 mod replanning;
 mod reset;
 mod schema;
-
+mod shredding;
 mod signals;
 mod stored;
 mod support;

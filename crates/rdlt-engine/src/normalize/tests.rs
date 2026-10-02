@@ -28,7 +28,13 @@ fn shape(max_depth: u8) -> Shape {
 fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch> {
     let lines: Vec<String> = records.iter().map(Json::to_string).collect();
     let push = Bytes::from(lines.join("\n"));
-    ready(shred(&Inline, &[push], chunk_bytes)).expect("the records shred")
+    ready(shred(
+        &Inline,
+        &[push],
+        chunk_bytes,
+        crate::shred::ShredLimits::new(rdlt_connector::limits::MAX_COLUMNS),
+    ))
+    .expect("the records shred")
 }
 
 /// The parts of `records`, shredded as one batch and normalized as `shape`.

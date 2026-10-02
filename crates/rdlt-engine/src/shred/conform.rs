@@ -24,7 +24,7 @@ pub(crate) fn fits(local: &Observed, joined: &Observed) -> bool {
     match (local, joined) {
         (Observed::Null, _) | (Observed::Int { .. }, Observed::Float | Observed::Wide) => true,
         (Observed::Object(local), Observed::Object(joined)) => shape_fits(local, joined),
-        (Observed::Array(local), Observed::Array(joined)) => fits(local, joined),
+        (Observed::Array(local, _), Observed::Array(joined, _)) => fits(local, joined),
         (local, joined) => local.logical_type() == joined.logical_type(),
     }
 }
@@ -81,7 +81,7 @@ fn fit(array: &ArrayRef, local: &Observed, joined: &Observed) -> Result<ArrayRef
                 .map(|object| Arc::new(object) as ArrayRef)
                 .map_err(failed)
         }
-        (Observed::Array(local), Observed::Array(joined)) => {
+        (Observed::Array(local, _), Observed::Array(joined, _)) => {
             let list = array.as_list::<i32>();
             let values = fit(list.values(), local, joined)?;
             let item = Arc::new(Field::new("item", joined.logical_type(), true).to_arrow());

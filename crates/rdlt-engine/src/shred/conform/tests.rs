@@ -12,7 +12,7 @@ fn object(fields: &[(&str, Observed)]) -> Observed {
 }
 
 fn list(item: Observed) -> Observed {
-    Observed::Array(Box::new(item))
+    Observed::Array(Box::new(item), 0)
 }
 
 #[test]

@@ -3,8 +3,10 @@ use std::borrow::Cow;
 use proptest::prelude::*;
 use rdlt_connector::limits::MAX_NESTING_DEPTH;
 
+use super::number::PLAIN_BYTES;
+
 use super::{
-    EXPONENT_DIGITS, JsonError, PLAIN_BYTES, Reader, Token, canonical_float, canonical_float32,
+    EXPONENT_DIGITS, JsonError, Reader, Token, canonical_float, canonical_float32,
     canonical_number, check,
 };
 

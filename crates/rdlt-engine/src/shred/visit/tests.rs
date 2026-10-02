@@ -2,6 +2,7 @@ use serde::de::Expected;
 
 use super::{Context, Field, Render, Row, Skip, Value};
 use crate::shred::build::{Column, Record};
+use crate::shred::meter::{Columns, Meter};
 
 fn expected(visitor: &dyn Expected) -> String {
     visitor.to_string()
@@ -9,7 +10,7 @@ fn expected(visitor: &dyn Expected) -> String {
 
 #[test]
 fn every_visitor_says_what_it_expects() {
-    let context = Context::default();
+    let context = Context::new(Meter::new(0), Columns::new(0));
     let mut record = Record::empty(0);
     let mut column = Column::Null(0);
     assert_eq!(

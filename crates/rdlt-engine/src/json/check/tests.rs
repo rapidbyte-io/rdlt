@@ -21,7 +21,7 @@ fn json(field: Field) -> Field {
     field.with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into())
 }
 
-/// What checking a batch of the one column `array`, of `field`, finds.
+/// What checking a batch whose only column is `array`, of `field`, finds.
 fn checked(field: Field, array: ArrayRef) -> Result<(), JsonError> {
     let batch = RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![array]).unwrap();
     check_batch(&batch).map_err(|NotJson { column, error }| {
