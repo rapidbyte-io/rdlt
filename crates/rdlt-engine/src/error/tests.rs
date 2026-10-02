@@ -233,11 +233,12 @@ fn a_report_keeps_a_bounded_chain_of_bounded_causes() {
 
 #[test]
 fn an_errors_display_shows_a_name_a_connector_chose_and_obeys_none_of_it() {
-    let stream =
-        StreamName::new("orders\u{202e}\u{2028}\u{200b}").expect("a name the id rules admit");
+    // A name refuses what would hide or reorder text; a context of other text is shown.
+    assert!(StreamName::new("orders\u{202e}").is_err());
+    let stream = StreamName::new("orders").expect("a name");
     let raised = ConnectorError::data("refused");
-    let error = Error::connector(Side::Source, format!("stream {stream}: reading"), raised)
-        .with_stream(&stream);
+    let context = "stream orders\u{202e}\u{2028}\u{200b}: reading";
+    let error = Error::connector(Side::Source, context, raised).with_stream(&stream);
     let shown = error.to_string();
     assert_eq!(shown, r"stream orders\u{202e}\u{2028}\u{200b}: reading");
     assert!(error.report().stream.is_some_and(|name| name.is_ascii()));

@@ -92,7 +92,9 @@ impl fmt::Write for Showing {
 /// Whether `c` could deceive a reader shown it raw: a control, a format character, a
 /// separator of lines, a space that is not U+0020, a character that shows as nothing, or
 /// one with no meaning of its own.
-fn deceives(c: char) -> bool {
+///
+/// Identifiers refuse such characters, so two that read alike are alike.
+pub fn deceives(c: char) -> bool {
     c.is_control() || blank(c) || format(c) || ignorable(c) || unmeaning(c)
 }
 

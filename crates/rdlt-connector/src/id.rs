@@ -45,7 +45,8 @@ pub enum IdError {
     },
 }
 
-fn validate(
+/// Checks `value` as a `kind` of at most `max` bytes, every character of it `allowed`.
+pub(crate) fn validate(
     kind: &'static str,
     value: &str,
     max: usize,
@@ -67,8 +68,10 @@ fn validate(
     }
 }
 
-fn printable(c: char) -> bool {
-    !c.is_control()
+/// Whether `c` may be part of a name a reader is shown: one that neither acts on a terminal nor
+/// hides or reorders what is around it.
+pub(crate) fn printable(c: char) -> bool {
+    !crate::text::deceives(c)
 }
 
 macro_rules! text_id {

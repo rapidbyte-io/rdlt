@@ -1,5 +1,8 @@
 //! Tables, schema changes, commits and receipts on the wire.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use super::types::{instant, system_time};
@@ -49,31 +52,61 @@ impl From<&MergeKey> for v1::MergeKey {
     }
 }
 
-impl From<v1::MergeKey> for MergeKey {
-    fn from(key: v1::MergeKey) -> Self {
-        Self {
-            columns: key.columns.into_iter().map(Arc::from).collect(),
-            seq: Arc::from(key.seq),
-            root: key.root.map(|root| RootKey {
-                table: Arc::from(root.table),
-                id: Arc::from(root.id),
-                seq: Arc::from(root.seq),
-            }),
-            changes: key.changes.map(|changes| ChangeColumns {
-                op: Arc::from(changes.op),
-                unchanged: changes.unchanged.map(Arc::from),
-                deletion: match changes.deleted_at {
-                    None => Deletion::Hard,
-                    Some(at) => Deletion::Soft { at: Arc::from(at) },
-                },
-            }),
-            history: key.history.map(|history| HistoryColumns {
-                valid_from: Arc::from(history.valid_from),
-                valid_to: Arc::from(history.valid_to),
-                is_current: Arc::from(history.is_current),
-                row_hash: Arc::from(history.row_hash),
-            }),
-        }
+/// `name` as a destination's identifier: not empty, within the longest identifier a
+/// destination may declare, and nothing in it hides or reorders what is around it.
+fn identifier(what: &'static str, name: String) -> Result<Arc<str>, Invalid> {
+    crate::id::validate(what, &name, usize::from(u16::MAX), crate::id::printable)
+        .map_err(|error| Invalid::rejected(what, error))?;
+    Ok(Arc::from(name))
+}
+
+impl TryFrom<v1::MergeKey> for MergeKey {
+    type Error = Invalid;
+
+    fn try_from(key: v1::MergeKey) -> Result<Self, Invalid> {
+        let column = |name| identifier("merge key column", name);
+        Ok(Self {
+            columns: key
+                .columns
+                .into_iter()
+                .map(column)
+                .collect::<Result<_, _>>()?,
+            seq: column(key.seq)?,
+            root: key
+                .root
+                .map(|root| {
+                    Ok::<_, Invalid>(RootKey {
+                        table: identifier("root table", root.table)?,
+                        id: column(root.id)?,
+                        seq: column(root.seq)?,
+                    })
+                })
+                .transpose()?,
+            changes: key
+                .changes
+                .map(|changes| {
+                    Ok::<_, Invalid>(ChangeColumns {
+                        op: column(changes.op)?,
+                        unchanged: changes.unchanged.map(column).transpose()?,
+                        deletion: match changes.deleted_at {
+                            None => Deletion::Hard,
+                            Some(at) => Deletion::Soft { at: column(at)? },
+                        },
+                    })
+                })
+                .transpose()?,
+            history: key
+                .history
+                .map(|history| {
+                    Ok::<_, Invalid>(HistoryColumns {
+                        valid_from: column(history.valid_from)?,
+                        valid_to: column(history.valid_to)?,
+                        is_current: column(history.is_current)?,
+                        row_hash: column(history.row_hash)?,
+                    })
+                })
+                .transpose()?,
+        })
     }
 }
 
@@ -95,10 +128,13 @@ impl TryFrom<v1::TableRef> for TableRef {
     fn try_from(table: v1::TableRef) -> Result<Self, Invalid> {
         Ok(Self {
             path: TablePath::try_from(required("table path", table.path)?)?,
-            name: Arc::from(table.name),
-            version: SchemaVersion(table.version),
+            name: identifier("table identifier", table.name)?,
+            // A table's first schema is version 1.
+            version: Some(SchemaVersion(table.version))
+                .filter(|version| version.0 > 0)
+                .ok_or(Invalid::OutOfRange("schema version"))?,
             generation: table.generation.map(GenerationId),
-            merge: table.merge.map(MergeKey::from),
+            merge: table.merge.map(MergeKey::try_from).transpose()?,
         })
     }
 }
@@ -244,9 +280,9 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
             .child_tables
             .into_iter()
             .map(|child| {
-                let merge = MergeKey::from(required("child table's key", child.merge)?);
+                let merge = MergeKey::try_from(required("child table's key", child.merge)?)?;
                 Ok(ChildTable {
-                    table: Arc::from(child.table),
+                    table: identifier("child table identifier", child.table)?,
                     merge,
                 })
             })
@@ -258,7 +294,7 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
                 let path = TablePath::try_from(required("dropped table's path", dropped.path)?)?;
                 Ok(DroppedTable {
                     path,
-                    name: Arc::from(dropped.name),
+                    name: identifier("dropped table identifier", dropped.name)?,
                 })
             })
             .collect::<Result<_, Invalid>>()?;
