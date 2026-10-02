@@ -118,3 +118,57 @@ fn two_sets_hash_a_position_apart() {
     assert!(hashes.len() > 1);
     assert!(format!("{:?}", Sent::default()).starts_with("Sent"));
 }
+
+#[test]
+fn where_a_read_started_is_heard_until_the_next_read_of_its_partition_starts() {
+    let sent = Sent::default();
+    let (orders, p0, p1) = (stream("orders"), partition("p0"), partition("p1"));
+    let (first, second) = (cursor(1, b"10"), cursor(1, b"20"));
+    sent.started(Some("host"), &orders, &p0, &first);
+    assert!(sent.knows(Some("host"), &orders, &p0, &first));
+    assert!(!sent.knows(Some("other"), &orders, &p0, &first));
+    assert!(!sent.knows(Some("host"), &orders, &p1, &first));
+    assert!(!sent.knows(Some("host"), &stream("users"), &p0, &first));
+    // Another partition's start leaves it; its own next start replaces it.
+    sent.started(Some("host"), &orders, &p1, &second);
+    assert!(sent.knows(Some("host"), &orders, &p0, &first));
+    sent.started(Some("host"), &orders, &p0, &second);
+    assert!(!sent.knows(Some("host"), &orders, &p0, &first));
+    assert!(sent.knows(Some("host"), &orders, &p0, &second));
+}
+
+#[test]
+fn where_a_read_started_outlasts_every_checkpoint_its_host_is_sent() {
+    let sent = Sent::remembering(3);
+    let (orders, idle, busy) = (stream("orders"), partition("p0"), partition("p1"));
+    let start = cursor(1, b"start");
+    sent.started(None, &orders, &idle, &start);
+    let positions: [&'static [u8]; 5] = [b"0", b"1", b"2", b"3", b"4"];
+    for position in positions {
+        sent.note(None, &orders, &busy, &cursor(1, position));
+    }
+    assert!(!sent.knows(None, &orders, &busy, &cursor(1, b"0")));
+    assert!(sent.knows(None, &orders, &idle, &start));
+}
+
+#[test]
+fn the_partitions_whose_starts_a_host_is_heard_for_are_no_more_than_the_limit() {
+    let sent = Sent::remembering(2);
+    let orders = stream("orders");
+    let start = cursor(1, b"start");
+    let partitions = ["p0", "p1", "p2"].map(partition);
+    for partition in &partitions {
+        sent.started(None, &orders, partition, &start);
+    }
+    let heard = partitions
+        .each_ref()
+        .map(|partition| sent.knows(None, &orders, partition, &start));
+    assert_eq!(heard, [false, true, true]);
+    // A partition read again keeps its place among them.
+    sent.started(None, &orders, &partitions[1], &start);
+    sent.started(None, &orders, &partitions[0], &start);
+    let heard = partitions
+        .each_ref()
+        .map(|partition| sent.knows(None, &orders, partition, &start));
+    assert_eq!(heard, [true, true, false]);
+}

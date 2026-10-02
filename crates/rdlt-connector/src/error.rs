@@ -14,6 +14,10 @@ pub type Result<T, E = ConnectorError> = std::result::Result<T, E>;
 /// from: its retention dropped it.
 pub const RETENTION_LOST: &str = "retention_lost";
 
+/// The code of the error a read fails with where it is asked to start from a cursor its source
+/// cannot have issued, as one beyond everything the source holds.
+pub const CURSOR_UNISSUED: &str = "cursor_unissued";
+
 /// What kind of failure a [`ConnectorError`] reports; the engine decides retries from it.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +111,12 @@ impl ConnectorError {
     /// from, as a log whose retention dropped it.
     pub fn retention_lost(message: impl Into<String>) -> Self {
         Self::data(message).with_code(RETENTION_LOST)
+    }
+
+    /// A data error coded [`CURSOR_UNISSUED`]: the read was asked to start from a cursor the
+    /// source cannot have issued, which it must refuse before it sends anything.
+    pub fn cursor_unissued(message: impl Into<String>) -> Self {
+        Self::data(message).with_code(CURSOR_UNISSUED)
     }
 
     /// The error emitting returns once the engine has asked the connector to stop.
