@@ -28,9 +28,71 @@ complete, run only connectors you trust. The mechanisms in place today:
   committed only the checkpoints it sent that host and where that host's reads started, once
   the source accepted them;
 - an endpoint that is refused is never repeated in an error;
-- a connector's process starts with a cleared environment, and receives its configuration only
-  after the host has checked its identity and, where one is named, its binary's digest;
+- where a connector runs is policy, a local one runs in a sandbox or as a binary stated to be
+  trusted, and its configuration's secrets are resolved only for the connector the host has
+  verified and scrubbed from what it says back (Placement, and Secrets and connector text,
+  below);
 - frames from a connector are checked against size limits before they are decoded.
+
+## Placement
+
+A reference to a connector states what it requires: an id, and optionally a version, a path,
+an endpoint, a digest and an isolation. Every provider honours each requirement it is given or
+refuses the reference with a typed error before anything runs; none is ignored.
+
+- **In process** (`Registry::trusted`): for connectors the embedder trusts as its own code.
+  They share the engine's address space and access.
+- **Remote** (`Remote`): over TLS 1.3 with mutual authentication, the connector's certificate
+  checked against the CA bundle and the endpoint's host name. The machine or container the
+  connector runs in is its isolation.
+- **Local** (`Local`): built with a sandbox, or with the statement that its binaries are
+  trusted, and in no other way.
+  - `Bubblewrap`, on Linux: a connector sees the system directories read only and what it was
+    granted, nothing of a home directory, no network unless granted, no process of the
+    host's, only the environment stated, and it ends with its host. Where bubblewrap is
+    missing, or unprivileged user namespaces are off, the placement is refused.
+  - On macOS there is no sandbox: a local connector runs only as a trusted binary, with the
+    host's access. Run untrusted connectors remotely there.
+  - A binary named without a path is found only in the directories configured, never on
+    `PATH` or in the working directory. It is opened once; it and the directory must be
+    writable by no other user; the open file is what is hashed and what is executed, so no
+    file can be swapped in between. On macOS an open file cannot be executed: a digest is
+    refused there rather than checked against a path.
+  - A connector is given its standard streams and its socket. A descriptor the host holds
+    that a child would inherit is covered with the null device in the connector.
+  - Its process group is the host's for its whole life, and is stopped and killed as a
+    group; a sandboxed connector is killed with its whole process namespace.
+
+## Secrets and connector text
+
+- A configuration value may refer to a secret: `${env:NAME}`, `${file:/absolute/path}`,
+  `${secret:name}`. References are resolved when the configuration is sent to a connector
+  whose identity the host has checked: its id and version, and its binary's digest or its
+  certificate's name. A connector receives only its own configuration.
+- A resolved secret is replaced by `***` in that connector's errors, its last words and its
+  logged output, in an engine's report of them, and in `rdlt-certify`'s reports. It is not
+  written to the write-ahead log or to state by the engine. A literal value in a
+  configuration is not a secret and is not scrubbed.
+- A configuration error names the field and what is wrong with it, never the value.
+  `Secret<T>` redacts `Debug`, `Display` and `Serialize`, is wiped when dropped and is not
+  `Clone`.
+- Text from a connector, its errors, last words, output and every reason in a certification
+  report, is shown with each character a terminal obeys or a reader cannot see escaped, and
+  cut at a limit, where the host receives it.
+- A connector's output is read at a bounded rate and logged at a bounded rate of lines.
+
+Not guaranteed:
+- **The data.** A source can send wrong rows and a destination can lose or corrupt what it is
+  given; the engine confines a connector, it does not vouch for it.
+- **A connector's own resources.** The processor time, memory and disk of a local
+  connector's process are the sandbox's or the operator's to limit, with control groups or a
+  container.
+- **A secret a connector transforms** before it prints it, or that trusted in-process code
+  panics with; and the memory of the transport a configuration crosses.
+- **macOS local placement**, beyond the checks on the binary: no sandbox, no digest, and a
+  descriptor the host itself inherited is not covered.
+
+ADR 0043 records these.
 
 ## Build and supply chain
 
@@ -49,7 +111,10 @@ ADR 0048 records these.
 
 ## Certification
 
-`rdlt-certify` treats the connector it certifies as hostile input: every wait has a deadline, and
+`rdlt-certify` treats the connector it certifies as hostile: it spawns a binary inside the
+sandbox unless told the binary is trusted, reads the configuration from a file or standard input
+and never its command line, and scrubs the secrets the configuration refers to from what it
+prints. Every wait has a deadline, and
 what a connector sends is charged against a limit before it is held, expanded or rendered, by its
 rows, its bytes and, for JSON, its records. A column read back is cast only between kinds a test
 shows cannot panic. A clause passes only when the behaviour it names was seen, in a mode the

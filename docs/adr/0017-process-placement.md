@@ -1,7 +1,7 @@
 # ADR 0017: Placing connectors in processes of their own
 
 Status: accepted, 2026-09-26; where the audited `unsafe` lives and what forbids the rest are
-amended by ADR 0048.
+amended by ADR 0048; lookup, trust, descriptors and output are amended by ADR 0043.
 
 ## Context
 
@@ -72,7 +72,9 @@ only at its end. The owner also asked for the host to be simulated over a networ
   - Resolution takes the reference's path first. Without one, it looks for
     `rdlt-connector-<the id's last segment>` in the connector directories, then on `PATH`. The
     path is made absolute, so spawning never searches `PATH` again, and a respawn runs the same
-    file.
+    file. Amended 2026-10-02 (ADR 0043): `PATH` is never searched, the binary is opened once
+    and executed from that open file, and `Local` spawns into a sandbox unless its binaries are
+    stated to be trusted.
   - The connector starts with its socket on file descriptor 3 (`--rdlt-fd=3`) and a piped
     standard input. Its environment is cleared, keeping only the variables `env_passthrough`
     names; the host sets no `RDLT_*` variables yet.

@@ -2,6 +2,8 @@
 
 Status: accepted, 2026-09-27; outcomes, the pass rule and exit codes are amended by ADR 0050
 (2026-10-01): a skipped clause is inapplicable or unobserved, and an unobserved one does not pass.
+Where the configuration is read from, the sandbox a binary is certified in and how a
+connector's text is shown are amended by ADR 0043 (2026-10-02).
 
 ## Context
 
@@ -53,7 +55,9 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
 - **`rdlt-host` gains raw wires** for clients that speak the protocol themselves: `Local::wire`,
   `Remote::wire`, `remote::client`, and `Connection::connector_spec`.
 - **The binary**: `rdlt-certify <binary | grpcs://host:port>` certifies every role the connector
-  serves, or `--role`'s, with one configuration (`--config`, `--config-file`); an endpoint needs
+  serves, or `--role`'s, with one configuration (`--config`, `--config-file`; amended
+  2026-10-02 by ADR 0043: from a file or standard input only, and a binary is certified inside
+  a sandbox unless `--trusted`); an endpoint needs
   `--tls-cert`, `--tls-key` and `--tls-ca`. It prints plain text or JSON (`--output`), and exits
   0 when every report passed, 1 on findings, 64 on a wrong command line and 74 when the
   connector or a file named cannot be read (§19). `--clauses` prints the registry.
@@ -64,6 +68,8 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
     so.
   - Plain output shows what the connector said, not obeys it (§19): its controls, line breaks
     among them, and the marks that reorder text are escaped. JSON output carries it verbatim.
+    Amended 2026-10-02 (ADR 0043): a reason is shown where it is made, so the plain report,
+    its `Display` and the JSON carry the same escaped text.
     A closed standard output ends quietly; one that cannot be written exits 74.
   - A malformed endpoint is a wrong command line, and exits 64.
   - Its help and its reports are snapshots (§20.11), with `insta`.
