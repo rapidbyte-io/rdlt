@@ -369,3 +369,34 @@ fn a_fold_joins_batches_under_columns_the_table_says_every_row_holds() {
     assert_eq!(merged.rows.len(), MAX_SHAPES);
     absent_cells(&merged, &schema(Kind::Upsert, 30), 30, 10);
 }
+
+#[test]
+fn a_reader_is_given_every_column_of_a_table_whose_columns_say_every_row_holds_them() {
+    // A table whose columns are declared never null, and rows written without some of them.
+    let fields: Vec<Field> = schema(Kind::Upsert, 2)
+        .fields()
+        .iter()
+        .map(|field| field.as_ref().clone().with_nullable(false))
+        .collect();
+    let strict: SchemaRef = Arc::new(Schema::new(fields));
+    let rows = [only(0..3, 0), rows(Kind::Upsert, &[7], 1, 2)];
+    let merged = merge_sparse(&strict, &[], &[], &rows, &key(Kind::Upsert)).unwrap();
+    let whole = read_back(&strict, &merged.rows).unwrap();
+    assert_eq!(whole.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+    for batch in &whole {
+        assert_eq!(batch.num_columns(), 4);
+        // Every batch is of one schema: a column some row lacks is nullable, the others not.
+        let held = batch.schema();
+        let nullable: Vec<bool> = held
+            .fields()
+            .iter()
+            .map(|field| field.is_nullable())
+            .collect();
+        assert_eq!(nullable, [false, false, false, true]);
+    }
+    let lacking = whole
+        .iter()
+        .map(|batch| batch.column(3).null_count())
+        .sum::<usize>();
+    assert_eq!(lacking, 3);
+}

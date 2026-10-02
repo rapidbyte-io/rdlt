@@ -168,3 +168,38 @@ async fn a_row_of_a_shape_of_its_own_costs_a_batch_of_the_columns_it_holds() {
     let bytes = held_bytes(&held);
     assert!(bytes < 256 * 1024, "the table holds {bytes} bytes");
 }
+
+#[tokio::test]
+async fn a_reader_is_given_every_column_of_rows_written_without_one_declared_never_null() {
+    let destination = store("never-null").await;
+    let mut session = open(destination.as_ref(), "p", 1).await;
+    let declared = TableSchema::new(vec![
+        rdlt_connector::Field::new("id", rdlt_connector::LogicalType::Int64, false),
+        rdlt_connector::Field::new("seq", rdlt_connector::LogicalType::Binary, false),
+        rdlt_connector::Field::new("c0", rdlt_connector::LogicalType::Int64, false),
+    ])
+    .expect("a schema");
+    let create = TableChange::Create {
+        table: events(),
+        schema: declared,
+    };
+    session
+        .session
+        .apply_schema(&create)
+        .await
+        .expect("created");
+    // Rows written without the column the table declares every row holds.
+    let narrow = rows(0..3, 0);
+    let mut writer = session.session.writer(&events()).await.expect("a writer");
+    writer.write(SegmentId(1), narrow).await.expect("buffers");
+    writer.flush().await.expect("the flush stages");
+    let commit = meta(&session, 1, 1, &[1]);
+    session.session.commit(&commit).await.expect("the commit");
+    let held = published("never-null", "events");
+    assert_eq!(held.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+    for batch in &held {
+        assert_eq!(batch.num_columns(), 3);
+        assert_eq!(batch.column(2).null_count(), 3);
+        assert!(batch.schema().field(2).is_nullable());
+    }
+}
