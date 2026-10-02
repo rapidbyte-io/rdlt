@@ -1,25 +1,43 @@
 //! What a range of an array's rows becomes: decoded out of dictionary and run-end encodings,
 //! views and list views by what they name, nested values as their JSON text.
 //!
-//! Every step of work adds at least a byte to the meter, and the meter stops once it is beyond
-//! its limit: the work is bounded by the limit however an encoding multiplies its values.
+//! Measuring is linear in the rows measured and the items they name:
+//!
+//! - a stretch of fixed-width values, of strings or bytes by offsets, or of lists and structs of
+//!   those, is measured from its widths and offsets, however long it is;
+//! - a value that many keys or runs name is measured once and remembered, where measuring it
+//!   takes more than a few steps, so rows naming it again cost a lookup each;
+//! - every step adds at least a byte to the meter, and the meter stops once it is beyond its
+//!   limit, so the work is bounded by the limit too, whatever a list view or a union names twice.
+//!
+//! What is remembered is an entry of a few words for each value that took more than [`DEAR`]
+//! steps, each step a byte charged at least: the memory measuring takes is in proportion to
+//! what it charges, and never to how long a dictionary is or how great a key.
+
+mod named;
+
+use std::collections::HashMap;
 
 use std::ops::Range;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, RunEndIndexType, UInt8Type,
-    UInt16Type, UInt32Type, UInt64Type,
+    Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow_array::{Array, OffsetSizeTrait};
 use arrow_buffer::ArrowNativeType;
 use arrow_schema::DataType;
 
+use self::named::{Named, Place};
 use super::Rendering;
-use super::widths::{BRACKETS, OFFSET, VIEW, count, escapes, keys, null_slot, scalar};
+use super::widths::{BRACKETS, OFFSET, VIEW, count, escapes, keys, scalar};
 
-/// Bytes: the index of a row's run, which decoding a run-end encoding takes a row.
-const RUN: u64 = 4;
+/// Steps: a value a key or a run names is remembered once measuring it took more than this many,
+/// and measured again each time it is named otherwise.
+const DEAR: u64 = 16;
+
+/// Bytes: how many a scan for escapes reads in one step.
+const SCANNED: u64 = 64;
 
 /// The levels a value may nest before measuring stops: more than any batch the limits admit.
 const DEPTH: u32 = 256;
@@ -29,7 +47,16 @@ pub(super) struct Meter<'r> {
     rendering: &'r Rendering,
     limit: u64,
     spent: u64,
+    /// Whether something measured is beyond the limit, or nests too deep to measure, whatever
+    /// was added up so far.
+    beyond: bool,
     depth: u32,
+    /// How many rows, items and stretches measuring has looked at.
+    steps: u64,
+    /// What each value that was dear to measure takes, by where it lies.
+    named: HashMap<Place, Named>,
+    /// Steps: a value that takes more to measure is remembered.
+    dear: u64,
 }
 
 /// How a string or bytes value is rendered.
@@ -49,18 +76,54 @@ impl<'r> Meter<'r> {
             rendering,
             limit,
             spent: 0,
+            beyond: false,
             depth: 0,
+            steps: 0,
+            named: HashMap::new(),
+            dear: DEAR,
         }
+    }
+
+    /// A meter that remembers no value, for tests of what remembering changes.
+    #[cfg(test)]
+    pub(super) fn forgetful(mut self) -> Self {
+        self.dear = u64::MAX;
+        self
+    }
+
+    /// Starts measuring anew, keeping what was learned of the values keys and runs name: the
+    /// next rows measured must be of the same arrays.
+    pub(super) fn restart(&mut self) {
+        (self.spent, self.beyond) = (0, false);
     }
 
     /// What was measured: beyond the limit, some value beyond it.
     pub(super) fn spent(&self) -> u64 {
+        if self.beyond {
+            return self.spent.max(self.limit.saturating_add(1));
+        }
         self.spent
     }
 
     /// Whether measuring went beyond the limit, and so stopped.
     pub(super) fn over(&self) -> bool {
-        self.spent > self.limit
+        self.beyond || self.spent > self.limit
+    }
+
+    /// How many rows, items and stretches measuring has looked at.
+    #[cfg(test)]
+    pub(super) fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    /// How many values measuring remembers.
+    #[cfg(test)]
+    pub(super) fn remembered(&self) -> usize {
+        self.named.len()
+    }
+
+    fn step(&mut self) {
+        self.steps = self.steps.saturating_add(1);
     }
 
     fn add(&mut self, bytes: u64) {
@@ -81,8 +144,9 @@ impl<'r> Meter<'r> {
         if rows.is_empty() || self.over() {
             return;
         }
+        self.step();
         if self.depth >= DEPTH {
-            self.spent = u64::MAX;
+            self.beyond = true;
             return;
         }
         self.depth += 1;
@@ -201,6 +265,7 @@ impl<'r> Meter<'r> {
             Text::Escaped => {
                 self.times(rows.len(), BRACKETS);
                 if !self.over() {
+                    self.steps = self.steps.saturating_add(bytes / SCANNED);
                     self.add(escapes(data.get(start..end).unwrap_or_default()));
                 }
             }
@@ -214,11 +279,13 @@ impl<'r> Meter<'r> {
             if self.over() {
                 return;
             }
+            self.step();
             let length = u64::from(length(strings.views()[row]));
             self.add(length);
             if nested {
                 self.add(BRACKETS);
                 if !self.over() {
+                    self.steps = self.steps.saturating_add(length / SCANNED);
                     self.add(escapes(strings.value(row).as_bytes()));
                 }
             }
@@ -233,139 +300,9 @@ impl<'r> Meter<'r> {
             if self.over() {
                 return;
             }
+            self.step();
             let length = u64::from(length(views[row]));
             self.add(if hex { 2 * length + BRACKETS } else { length });
-        }
-    }
-
-    fn list<O: OffsetSizeTrait>(&mut self, array: &dyn Array, rows: Range<usize>) {
-        let list = array.as_list::<O>();
-        self.listed(list.value_offsets(), list.values().as_ref(), rows);
-    }
-
-    /// Measures the `rows` lists whose items are `values` between consecutive `offsets`: each an
-    /// offset and its brackets, each item its comma.
-    fn listed<O: ArrowNativeType>(
-        &mut self,
-        offsets: &[O],
-        values: &dyn Array,
-        rows: Range<usize>,
-    ) {
-        let offset = |row: usize| offsets.get(row).map_or(0, |offset| offset.as_usize());
-        let items = clamp(offset(rows.start)..offset(rows.end), values.len());
-        self.times(rows.len() + 1, OFFSET);
-        self.times(rows.len(), BRACKETS);
-        self.add(count(items.len()));
-        self.range(values, items, true);
-    }
-
-    fn list_view<O: OffsetSizeTrait>(&mut self, array: &dyn Array, rows: Range<usize>) {
-        let list = array.as_list_view::<O>();
-        let values = list.values().as_ref();
-        self.times(rows.len(), 2 * OFFSET + BRACKETS);
-        for row in rows {
-            if self.over() {
-                return;
-            }
-            let first = list.offsets()[row].as_usize();
-            let items = clamp(
-                first..first.saturating_add(list.sizes()[row].as_usize()),
-                values.len(),
-            );
-            self.add(count(items.len()));
-            self.range(values, items, true);
-        }
-    }
-
-    fn union(&mut self, array: &dyn Array, rows: Range<usize>) {
-        let union = array.as_union();
-        let DataType::Union(fields, _) = array.data_type() else {
-            return;
-        };
-        // A type id and an offset a row.
-        self.times(rows.len(), 1 + 4);
-        for row in rows {
-            if self.over() {
-                return;
-            }
-            let id = union.type_id(row);
-            if fields.iter().any(|(member, _)| member == id) {
-                let child = union.child(id).as_ref();
-                let at = union.value_offset(row);
-                self.range(child, clamp(at..at.saturating_add(1), child.len()), true);
-            }
-        }
-    }
-
-    /// Measures `rows` of a dictionary: each the value its key names, and a null key, or one
-    /// naming no value, a null slot of the values' type, which decoding gives every row.
-    fn keyed<K: ArrowDictionaryKeyType>(
-        &mut self,
-        array: &dyn Array,
-        rows: Range<usize>,
-        nested: bool,
-    ) {
-        let dictionary = array.as_dictionary::<K>();
-        let (keys, values) = (dictionary.keys(), dictionary.values().as_ref());
-        self.times(rows.len(), count(size_of::<K::Native>()));
-        if scalar(values.data_type()).is_some() {
-            // Every value takes the same, a null too, whatever its key.
-            return self.typed(values, 0..rows.len(), nested);
-        }
-        if matches!(values.data_type(), DataType::RunEndEncoded(..)) {
-            // Decoding names each key's run through a wider copy of the key.
-            self.times(rows.len(), OFFSET);
-        }
-        if keys.nulls().is_some() {
-            // Decoding may place each row among the values its keys name, four bytes a row.
-            self.times(rows.len(), RUN);
-        }
-        let null = null_slot(values.data_type());
-        for row in rows {
-            if self.over() {
-                return;
-            }
-            let key = keys
-                .is_valid(row)
-                .then(|| keys.values()[row].as_usize())
-                .filter(|key| *key < values.len());
-            match key {
-                Some(key) => self.range(values, key..key + 1, nested),
-                None => self.add(null),
-            }
-        }
-    }
-
-    /// Measures `rows` of a run-end encoded array: each run its value, once a row it spans.
-    fn runs<R: RunEndIndexType>(&mut self, array: &dyn Array, rows: Range<usize>, nested: bool) {
-        let runs = array.as_run::<R>();
-        let (ends, values) = (runs.run_ends(), runs.values().as_ref());
-        // Decoding names each row's run in four bytes.
-        self.times(rows.len(), RUN);
-        let (mut at, last) = (
-            ends.offset().saturating_add(rows.start),
-            ends.offset().saturating_add(rows.end),
-        );
-        let mut run = ends.get_physical_index(rows.start);
-        while at < last && !self.over() {
-            let Some(end) = ends.values().get(run) else {
-                return;
-            };
-            let end = end.as_usize().min(last);
-            let spanned = end.saturating_sub(at);
-            let before = self.spent;
-            self.add(count(size_of::<R::Native>()));
-            if run < values.len() {
-                self.range(values, run..run + 1, nested);
-            } else {
-                self.add(null_slot(values.data_type()));
-            }
-            let each = self.spent.saturating_sub(before);
-            self.add(each.saturating_mul(count(spanned.saturating_sub(1))));
-            if spanned == 0 {
-                return;
-            }
-            (at, run) = (end, run + 1);
         }
     }
 }

@@ -1,3 +1,4 @@
+mod bounds;
 mod decoded;
 
 use std::sync::Arc;
@@ -22,7 +23,7 @@ use super::{Allocations, Rendering, nulls};
 use crate::types::TypeKind;
 
 /// A destination storing every scalar as it is.
-fn native() -> Rendering {
+pub(crate) fn native() -> Rendering {
     Rendering::new([
         TypeKind::Null,
         TypeKind::Bool,
@@ -345,7 +346,9 @@ fn measuring_stops_at_its_limit_however_an_encoding_multiplies() {
     let started = Instant::now();
     let cost = native().expanded_array(column.as_ref(), 0..column.len(), 1 << 20);
     assert!(cost > 1 << 20);
-    let cuts = native().cuts(&batch(Arc::clone(&column)), 1 << 20);
+    let cuts = native()
+        .measure(&batch(Arc::clone(&column)), 1 << 20)
+        .cuts();
     assert_eq!(cuts.len(), 1_000_000);
     assert!(started.elapsed() < Duration::from_secs(60));
 }
@@ -353,8 +356,8 @@ fn measuring_stops_at_its_limit_however_an_encoding_multiplies() {
 #[test]
 fn a_batch_within_the_maximum_is_one_piece() {
     let ids = batch(Arc::new(Int64Array::from(vec![7; 1_000])));
-    assert_eq!(native().cuts(&ids, 1 << 20), [1_000]);
-    assert_eq!(native().cuts(&ids.slice(0, 0), 1 << 20), [0]);
+    assert_eq!(native().measure(&ids, 1 << 20).cuts(), [1_000]);
+    assert_eq!(native().measure(&ids.slice(0, 0), 1 << 20).cuts(), [0]);
 }
 
 #[test]
@@ -368,7 +371,7 @@ fn cuts_fall_where_the_rows_own_values_say() {
     let skewed: ArrayRef = Arc::new(
         DictionaryArray::<Int32Type>::try_new(Int32Array::from(keys), Arc::new(values)).unwrap(),
     );
-    let cuts = native().cuts(&batch(skewed), 12_000);
+    let cuts = native().measure(&batch(skewed), 12_000).cuts();
     // The small rows before fit one piece with the first large value at most; each large value
     // then takes a piece of its own.
     assert!(cuts[0] <= 101, "{cuts:?}");
@@ -387,7 +390,7 @@ proptest! {
         let column: ArrayRef = Arc::new(StringArray::from(words));
         let batch = batch(column);
         let rendering = native();
-        let cuts = rendering.cuts(&batch, max);
+        let cuts = rendering.measure(&batch, max).cuts();
         let mut first = 0;
         for end in &cuts {
             prop_assert!(*end > first || batch.num_rows() == 0);

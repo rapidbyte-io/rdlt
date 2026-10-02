@@ -47,11 +47,72 @@ fn costing_a_batch_allocates_nothing_a_value() {
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let cost = rendering.cost(&batch, u64::MAX);
-    let cuts = rendering.cuts(&batch, 1 << 20);
+    let cuts = rendering.measure(&batch, 1 << 20).cuts();
     let peak = HEAP.peak_usage().saturating_sub(before);
     assert!(cost.expanded >= u64::try_from(ITEMS).expect("a count"));
     assert_eq!(cuts, [1]);
     assert!(peak < 64 << 10, "costing allocated {peak} bytes");
+}
+
+/// What costing and cutting `batch` allocates at its peak, and what the batch is charged.
+fn costing(batch: &RecordBatch, max: u64) -> (usize, u64) {
+    let rendering = Rendering::text();
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let cost = rendering.cost(batch, u64::MAX);
+    let cuts = rendering.measure(batch, max).cuts();
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(cuts.last(), Some(&batch.num_rows()));
+    // The cuts themselves are a word a piece.
+    let cuts = cuts.capacity() * size_of::<usize>();
+    (peak.saturating_sub(cuts), cost.charge())
+}
+
+/// A dictionary of `values` lists of twenty views each, keyed by `keys`.
+fn keyed_lists(values: usize, keys: Vec<i32>) -> RecordBatch {
+    let mut views = BinaryViewBuilder::new();
+    let block = views.append_block(vec![7_u8; 64].into());
+    for _ in 0..values * 20 {
+        views.try_append_view(block, 0, 64).expect("a view");
+    }
+    let lists = ListArray::new(
+        Arc::new(Field::new("item", DataType::BinaryView, true)),
+        OffsetBuffer::from_lengths(vec![20; values]),
+        Arc::new(views.finish()),
+        None,
+    );
+    let keyed = DictionaryArray::<Int32Type>::try_new(Int32Array::from(keys), Arc::new(lists));
+    batch(Arc::new(keyed.expect("a valid dictionary")))
+}
+
+#[test]
+fn costing_holds_nothing_for_the_values_no_row_names() {
+    // One row naming the last of thirty-two million nulls, which hold no bytes.
+    const VALUES: usize = 32_000_000;
+    let nulls = arrow_array::NullArray::new(VALUES);
+    let key = i32::try_from(VALUES - 1).expect("a key");
+    let keyed = DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![key]), Arc::new(nulls));
+    let (peak, _) = costing(
+        &batch(Arc::new(keyed.expect("a valid dictionary"))),
+        1 << 20,
+    );
+    assert!(peak < 16 << 10, "costing allocated {peak} bytes");
+    // A hundred thousand lists, of which two hundred thousand rows name one.
+    let one = keyed_lists(100_000, vec![99_999; 200_000]);
+    let (peak, _) = costing(&one, 1 << 20);
+    assert!(peak < 16 << 10, "costing allocated {peak} bytes");
+}
+
+#[test]
+fn costing_remembers_less_than_it_charges() {
+    // Every one of a hundred thousand lists is named twice: each is remembered, in a few
+    // words, and charged for its twenty views twice over.
+    const VALUES: usize = 100_000;
+    let keys = (0..2 * VALUES).map(|row| i32::try_from(row % VALUES).expect("a key"));
+    let (peak, charged) = costing(&keyed_lists(VALUES, keys.collect()), 1 << 20);
+    assert!(peak <= 16 << 20, "costing allocated {peak} bytes");
+    let charged = usize::try_from(charged).expect("a charge in memory");
+    assert!(peak <= charged / 16, "{peak} bytes to charge {charged}");
 }
 
 #[tokio::test(start_paused = true)]
