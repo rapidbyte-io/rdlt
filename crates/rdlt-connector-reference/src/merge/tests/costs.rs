@@ -9,6 +9,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey, RootKey};
 
 use super::super::Merged;
+use super::super::met::counted;
 use super::super::refused::code;
 use super::{key, merge, merge_children, soft, stored_schema};
 
@@ -60,8 +61,27 @@ fn table(rows: u64, deletion: &Deletion) -> Merged {
     merge(&stored_schema(), &[], &[], &[load], &key(deletion.clone())).expect("the rows merge")
 }
 
+/// How many comparisons of a row with a truncate merging `count` truncates into `published`
+/// makes, each sequenced from `first` up.
+fn truncating(published: &Merged, deletion: &Deletion, first: u64, count: u64) -> u64 {
+    let seqs: Vec<u64> = (0..count).map(|index| first + index).collect();
+    let truncates = changes(&vec![None; seqs.len()], &seqs, ChangeOp::Truncate);
+    let key = key(deletion.clone());
+    let (merged, compared) = counted(|| {
+        merge(
+            &stored_schema(),
+            &published.rows,
+            &published.tombstones,
+            std::slice::from_ref(&truncates),
+            &key,
+        )
+    });
+    merged.expect("the truncates merge");
+    compared
+}
+
 /// How long merging `count` truncates into `published` takes, each sequenced from `first` up.
-fn truncating(published: &Merged, deletion: &Deletion, first: u64, count: u64) -> Duration {
+fn timed_truncating(published: &Merged, deletion: &Deletion, first: u64, count: u64) -> Duration {
     let seqs: Vec<u64> = (0..count).map(|index| first + index).collect();
     let truncates = changes(&vec![None; seqs.len()], &seqs, ChangeOp::Truncate);
     let key = key(deletion.clone());
@@ -79,17 +99,22 @@ fn truncating(published: &Merged, deletion: &Deletion, first: u64, count: u64) -
 
 #[test]
 fn truncates_cost_their_count_and_the_rows_not_their_product() {
-    const ROWS: u64 = 20_000;
-    const TRUNCATES: u64 = 2_000;
+    const ROWS: u64 = 4_000;
+    const TRUNCATES: u64 = 400;
     for deletion in [Deletion::Hard, soft()] {
         let published = table(ROWS, &deletion);
         // Truncates before every row change nothing; those past every row remove or mark each.
         for first in [1, 2_000_000] {
             let one = truncating(&published, &deletion, first, 1);
             let many = truncating(&published, &deletion, first, TRUNCATES);
+            // A row is compared with a few of the truncates, as a search of them in order
+            // does: nine for four hundred, where a row compared with each would be compared
+            // four hundred times.
+            assert!(one <= ROWS, "{deletion:?} from {first}: {one}");
             assert!(
-                many < one * 15,
-                "{deletion:?} from {first}: one truncate took {one:?}, {TRUNCATES} took {many:?}"
+                many <= one * 10,
+                "{deletion:?} from {first}: one truncate took {one} comparisons, {TRUNCATES} \
+                 took {many}"
             );
         }
     }
@@ -313,8 +338,8 @@ fn a_hard_truncate_costs_nothing_for_each_tombstone_it_leaves() {
     let buried = merge(&stored_schema(), &[], &[], &[deletes], &key).expect("the deletes merge");
     assert_eq!(buried.tombstones[0].num_rows() as u64, KEYS);
     let (one, many) = (
-        truncating(&buried, &Deletion::Hard, 1, 1),
-        truncating(&buried, &Deletion::Hard, 1, TRUNCATES),
+        timed_truncating(&buried, &Deletion::Hard, 1, 1),
+        timed_truncating(&buried, &Deletion::Hard, 1, TRUNCATES),
     );
     assert!(
         many < one * 15,

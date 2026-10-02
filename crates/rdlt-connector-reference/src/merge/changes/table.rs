@@ -9,6 +9,7 @@ use arrow_row::Rows;
 use arrow_schema::ArrowError;
 use rdlt_connector::ChangeOp;
 
+use super::super::met::before;
 use super::super::sparse::{At, Base, Pick, Sources, assemble};
 
 /// Where a merged row's cells come from, in the schema's order, but for those set apart.
@@ -182,7 +183,8 @@ impl<'a> Table<'a> {
             return;
         };
         let pending = &self.truncates[merged.met..];
-        let first = merged.met + pending.partition_point(|truncate| truncate.seq <= merged.seq);
+        let first =
+            merged.met + pending.partition_point(|truncate| before(&truncate.seq, &merged.seq));
         // The row keeps when it was deleted; else the first truncate that says when does.
         let timed = self.timed.partition_point(|position| *position < first);
         let deleted_by = self
