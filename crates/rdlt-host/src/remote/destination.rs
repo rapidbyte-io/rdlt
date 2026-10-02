@@ -53,7 +53,7 @@ impl Destination for RemoteDestination {
         Box::pin(async move {
             let (connection, deadline) =
                 (&self.connection, self.connection.options.deadlines.check);
-            let mut client = connection.client.clone();
+            let mut client = connection.client.control.clone();
             connection
                 .call(deadline, "the check", client.check(v1::CheckRequest {}))
                 .await?;
@@ -67,7 +67,7 @@ impl Destination for RemoteDestination {
     ) -> BoxFuture<'a, rdlt_connector::Result<OpenedSession>> {
         Box::pin(async move {
             let (connection, deadline) = (&self.connection, self.connection.options.deadlines.open);
-            let mut client = connection.client.clone();
+            let mut client = connection.client.state.clone();
             let request = v1::OpenRequest {
                 pipeline: context.pipeline.as_str().to_owned(),
                 load_id: context.load_id.as_bytes().to_vec().into(),
@@ -101,7 +101,7 @@ impl DestinationSession for RemoteSession {
     ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(async move {
             let connection = &self.connection;
-            let mut client = connection.client.clone();
+            let mut client = connection.client.control.clone();
             let request = v1::ApplySchemaRequest {
                 session: self.id,
                 change: Some(v1::TableChange::from(change)),
@@ -131,7 +131,7 @@ impl DestinationSession for RemoteSession {
     ) -> BoxFuture<'a, rdlt_connector::Result<Receipt>> {
         Box::pin(async move {
             let connection = &self.connection;
-            let mut client = connection.client.clone();
+            let mut client = connection.client.control.clone();
             let request = v1::CommitRequest {
                 session: self.id,
                 meta: Some(v1::CommitMeta::from(meta)),
@@ -147,7 +147,7 @@ impl DestinationSession for RemoteSession {
     fn close(self: Box<Self>) -> BoxFuture<'static, rdlt_connector::Result<()>> {
         Box::pin(async move {
             let connection = &self.connection;
-            let mut client = connection.client.clone();
+            let mut client = connection.client.control.clone();
             let deadline = connection.options.deadlines.close;
             connection
                 .call(

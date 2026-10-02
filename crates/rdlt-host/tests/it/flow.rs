@@ -484,14 +484,14 @@ async fn a_batch_is_cut_to_the_connectors_own_frames_for_a_host_that_takes_large
 /// A writer of the table `orders` on a fake destination that answers its writes as `fault` says.
 async fn trickled(
     fault: crate::support::fake::Fault,
-    options: Options,
+    options: &Options,
 ) -> Box<dyn DestinationWriter> {
     use crate::support::fake::{Fake, serve_fake};
     let connection = Connection::connect(
         serve_fake(Fake(fault)),
         Role::Destination,
         &serde_json::json!({}),
-        options,
+        *options,
     )
     .await
     .expect("the fake connects");
@@ -516,7 +516,7 @@ async fn a_write_whose_credit_trickles_in_fails_at_its_write_ack_deadline() {
     let every = deadline
         .checked_sub(Duration::from_secs(60))
         .expect("the deadline is longer than a minute");
-    let mut writer = trickled(Fault::Trickles(every, 1), Options::default()).await;
+    let mut writer = trickled(Fault::Trickles(every, 1), &Options::default()).await;
     let started = tokio::time::Instant::now();
     let writing = async {
         for segment in 1..=4 {
@@ -532,7 +532,7 @@ async fn a_write_whose_credit_trickles_in_fails_at_its_write_ack_deadline() {
     assert_eq!(written.unwrap_err().code(), Some(DEADLINE_EXCEEDED));
     let elapsed = started.elapsed();
     assert!(elapsed <= every + deadline * 2, "{elapsed:?}");
-    let mut writer = trickled(Fault::Trickles(every, 1 << 30), Options::default()).await;
+    let mut writer = trickled(Fault::Trickles(every, 1 << 30), &Options::default()).await;
     let flushed = tokio::time::timeout(day, writer.flush())
         .await
         .expect("the flush ends");
@@ -544,7 +544,7 @@ async fn a_credit_of_no_bytes_is_refused() {
     use crate::support::fake::Fault;
     let mut writer = trickled(
         Fault::Trickles(Duration::from_secs(1), 0),
-        Options::default(),
+        &Options::default(),
     )
     .await;
     let written = writer.write(SegmentId(1), ids(10));

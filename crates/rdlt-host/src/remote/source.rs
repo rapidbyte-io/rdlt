@@ -37,7 +37,7 @@ impl Source for RemoteSource {
         Box::pin(async move {
             let (connection, deadline) =
                 (&self.connection, self.connection.options.deadlines.check);
-            let mut client = connection.client.clone();
+            let mut client = connection.client.control.clone();
             connection
                 .call(deadline, "the check", client.check(v1::CheckRequest {}))
                 .await?;
@@ -49,7 +49,7 @@ impl Source for RemoteSource {
         Box::pin(async move {
             let (connection, deadline) =
                 (&self.connection, self.connection.options.deadlines.discover);
-            let mut client = connection.client.clone();
+            let mut client = connection.client.catalog.clone();
             let catalog = connection
                 .call(
                     deadline,
@@ -68,7 +68,7 @@ impl Source for RemoteSource {
     ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
         Box::pin(async move {
             let (connection, deadline) = (&self.connection, self.connection.options.deadlines.plan);
-            let mut client = connection.client.clone();
+            let mut client = connection.client.state.clone();
             let request = v1::PlanRequest {
                 stream: Some(v1::StreamName::from(stream)),
                 state: Some(v1::StreamState::from(state)),
@@ -97,7 +97,7 @@ impl Source for RemoteSource {
             // §12.6 names no deadline for reporting committed cursors; a commit's is the closest.
             let (connection, deadline) =
                 (&self.connection, self.connection.options.deadlines.commit);
-            let mut client = connection.client.clone();
+            let mut client = connection.client.control.clone();
             let request = v1::CommittedRequest {
                 stream: Some(v1::StreamName::from(stream)),
                 cursors: cursors

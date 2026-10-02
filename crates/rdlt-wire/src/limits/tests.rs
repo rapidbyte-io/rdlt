@@ -37,6 +37,7 @@ fn each_admission_measures_against_its_own_limit() {
         batch_values: 9,
         schema_bytes: 10,
         dictionary_bytes: 11,
+        ..Limits::default()
     };
     let refused =
         |result: Result<(), Refusal>| result.map_err(|refusal| (refusal.field, refusal.limit));
@@ -66,6 +67,9 @@ fn limits_cross_the_wire_unchanged() {
         batch_values: 9,
         schema_bytes: 10,
         dictionary_bytes: 11,
+        catalog_bytes: 12,
+        state_bytes: 13,
+        control_message_bytes: 14,
     };
     assert_eq!(Limits::from(v1::Limits::from(limits)), limits);
 }
@@ -86,6 +90,9 @@ fn the_default_limits_are_the_protocols() {
             batch_values: 67_108_864,
             schema_bytes: 4_194_304,
             dictionary_bytes: 67_108_864,
+            catalog_bytes: 4_194_304,
+            state_bytes: 16_777_216,
+            control_message_bytes: 262_144,
         }
     );
 }
@@ -210,6 +217,9 @@ fn a_peers_limits_are_admitted_from_the_protocols_minimums_up() {
         config_bytes: 1,
         control_string_bytes: 1,
         schema_bytes: 1,
+        catalog_bytes: 1,
+        state_bytes: 1,
+        control_message_bytes: 1,
         ..least
     };
     assert_eq!(others.admit_peer(), Ok(()));
@@ -229,6 +239,9 @@ fn the_lesser_of_two_ends_limits_is_the_lesser_of_each() {
         batch_values: 9,
         schema_bytes: 10,
         dictionary_bytes: 11,
+        catalog_bytes: 21,
+        state_bytes: 22,
+        control_message_bytes: 23,
     };
     let high = Limits {
         frame_bytes: 11,
@@ -242,6 +255,9 @@ fn the_lesser_of_two_ends_limits_is_the_lesser_of_each() {
         batch_values: 19,
         schema_bytes: 20,
         dictionary_bytes: 21,
+        catalog_bytes: 31,
+        state_bytes: 32,
+        control_message_bytes: 33,
     };
     assert_eq!(low.lesser(&high), low);
     assert_eq!(high.lesser(&low), low);
@@ -300,4 +316,34 @@ fn dictionaries_and_staged_frames_are_bounded_in_frames() {
     assert_eq!(unlimited.admit_dictionaries(u64::MAX), Ok(()));
     assert_eq!(Limits::default().held_dictionary_bytes(), 64 << 20);
     assert_eq!(Limits::default().staged_bytes(), 256 << 20);
+}
+
+#[test]
+fn each_class_of_message_is_decoded_within_its_own_limit() {
+    use super::{Class, HANDSHAKE_BYTES};
+    let limits = Limits {
+        frame_bytes: 1,
+        cursor_bytes: 2,
+        config_bytes: 3,
+        schema_bytes: 4,
+        catalog_bytes: 5,
+        state_bytes: 6,
+        control_message_bytes: 7,
+        ..Limits::default()
+    };
+    let overhead = 65_536;
+    let expected = [
+        (Class::Handshake, usize::try_from(HANDSHAKE_BYTES).unwrap()),
+        (Class::Control, 7),
+        (Class::Catalog, 5),
+        (Class::State, 6),
+        (Class::Config, 3 + overhead),
+        (Class::Schema, 4 + overhead),
+        (Class::Cursor, 2 + overhead),
+        (Class::Data, 1 + overhead),
+    ];
+    for (class, bytes) in expected {
+        assert_eq!(limits.decoding(class), bytes, "{class:?}");
+    }
+    assert_eq!(HANDSHAKE_BYTES, 4_194_304);
 }

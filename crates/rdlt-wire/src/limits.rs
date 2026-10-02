@@ -66,6 +66,23 @@ pub const CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 /// Bytes: bounds one string field of a control message.
 pub const CONTROL_STRING_BYTES: u64 = 64 * 1024;
 
+/// Bytes: bounds one catalog, a discovery's answer.
+pub const CATALOG_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Bytes: bounds one message that carries state or a stream's positions: an open's answer, a
+/// plan and its request, a commit's request and a report of committed positions.
+pub const STATE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Bytes: bounds any other control message.
+pub const CONTROL_MESSAGE_BYTES: u64 = 256 * 1024;
+
+/// Bytes: bounds a handshake and its answer, which come before either end knows the other's
+/// limits; a destination's identifier rules at their limits fit.
+pub const HANDSHAKE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Bytes: what a message holds beside the field a limit bounds.
+const MESSAGE_OVERHEAD: usize = 64 * 1024;
+
 /// Bytes: bounds the text of a panic the decoder contained, as its error carries it.
 pub const PANIC_TEXT_BYTES: u64 = 256;
 
@@ -100,6 +117,9 @@ pub const FIELDS: &[&str] = &[
     "view bytes",
     "dictionary bytes",
     "staged bytes",
+    "catalog bytes",
+    "state bytes",
+    "control message bytes",
 ];
 
 /// The code of a limit a peer set below the protocol's minimum.
@@ -145,6 +165,35 @@ pub struct Limits {
     /// Bytes the dictionaries one read or write holds at once take, where that is less than
     /// [`DICTIONARY_FRAMES`] frames' bytes.
     pub dictionary_bytes: u64,
+    /// Bytes in one catalog.
+    pub catalog_bytes: u64,
+    /// Bytes in one message that carries state or a stream's positions.
+    pub state_bytes: u64,
+    /// Bytes in any other control message.
+    pub control_message_bytes: u64,
+}
+
+/// What a message is, for the bytes it may hold before it is decoded: a decoder holds what a
+/// message's fields become, many times what they took on the wire, so each kind of message is
+/// bounded by what it carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// A handshake or its answer.
+    Handshake,
+    /// A control message carrying none of the below.
+    Control,
+    /// A catalog.
+    Catalog,
+    /// State or a stream's positions.
+    State,
+    /// A configuration.
+    Config,
+    /// A schema change.
+    Schema,
+    /// A read's start, its cursor.
+    Cursor,
+    /// A stream of frames.
+    Data,
 }
 
 impl Default for Limits {
@@ -161,6 +210,9 @@ impl Default for Limits {
             batch_values: BATCH_VALUES,
             schema_bytes: SCHEMA_BYTES,
             dictionary_bytes: FRAME_BYTES * DICTIONARY_FRAMES,
+            catalog_bytes: CATALOG_BYTES,
+            state_bytes: STATE_BYTES,
+            control_message_bytes: CONTROL_MESSAGE_BYTES,
         }
     }
 }
@@ -200,9 +252,23 @@ impl Limits {
     /// The largest protocol message either end sends or accepts: a frame, and the fields around
     /// it.
     pub fn message_bytes(&self) -> usize {
-        usize::try_from(self.frame_bytes)
-            .unwrap_or(usize::MAX)
-            .saturating_add(64 * 1024)
+        Self::decoding(self, Class::Data)
+    }
+
+    /// The most bytes a message of `class` may take on the wire before it is decoded.
+    pub fn decoding(&self, class: Class) -> usize {
+        let bytes = |limit: u64| usize::try_from(limit).unwrap_or(usize::MAX);
+        let around = |limit: u64| bytes(limit).saturating_add(MESSAGE_OVERHEAD);
+        match class {
+            Class::Handshake => bytes(HANDSHAKE_BYTES),
+            Class::Control => bytes(self.control_message_bytes),
+            Class::Catalog => bytes(self.catalog_bytes),
+            Class::State => bytes(self.state_bytes),
+            Class::Config => around(self.config_bytes),
+            Class::Schema => around(self.schema_bytes),
+            Class::Cursor => around(self.cursor_bytes),
+            Class::Data => around(self.frame_bytes),
+        }
     }
 
     /// Bytes: bounds the dictionaries one read or write holds at once: [`DICTIONARY_FRAMES`]
@@ -260,6 +326,9 @@ impl Limits {
             batch_values: self.batch_values.min(other.batch_values),
             schema_bytes: self.schema_bytes.min(other.schema_bytes),
             dictionary_bytes: self.dictionary_bytes.min(other.dictionary_bytes),
+            catalog_bytes: self.catalog_bytes.min(other.catalog_bytes),
+            state_bytes: self.state_bytes.min(other.state_bytes),
+            control_message_bytes: self.control_message_bytes.min(other.control_message_bytes),
         }
     }
 
@@ -363,6 +432,9 @@ impl From<Limits> for v1::Limits {
             batch_values: limits.batch_values,
             schema_bytes: limits.schema_bytes,
             dictionary_bytes: limits.dictionary_bytes,
+            catalog_bytes: limits.catalog_bytes,
+            state_bytes: limits.state_bytes,
+            control_message_bytes: limits.control_message_bytes,
         }
     }
 }
@@ -386,6 +458,9 @@ impl From<v1::Limits> for Limits {
             schema_bytes: or(limits.schema_bytes, defaults.schema_bytes),
             // A limit of its own the peer sets as it is, none below the protocol's least.
             dictionary_bytes: limits.dictionary_bytes,
+            catalog_bytes: or(limits.catalog_bytes, defaults.catalog_bytes),
+            state_bytes: or(limits.state_bytes, defaults.state_bytes),
+            control_message_bytes: or(limits.control_message_bytes, defaults.control_message_bytes),
         }
     }
 }

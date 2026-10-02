@@ -1648,6 +1648,16 @@ pub struct Limits {
     /// Bytes the dictionaries one read or write holds at once take, where less than a frame's.
     #[prost(uint64, tag = "11")]
     pub dictionary_bytes: u64,
+    /// Bytes in one catalog: a discovery's answer.
+    #[prost(uint64, tag = "12")]
+    pub catalog_bytes: u64,
+    /// Bytes in one message that carries state or a stream's positions: an open's answer, a plan
+    /// and its request, a commit's request and a report of committed positions.
+    #[prost(uint64, tag = "13")]
+    pub state_bytes: u64,
+    /// Bytes in any other control message.
+    #[prost(uint64, tag = "14")]
+    pub control_message_bytes: u64,
 }
 /// Opens the conversation.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

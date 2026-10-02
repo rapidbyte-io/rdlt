@@ -140,3 +140,70 @@ async fn a_host_whose_limits_are_below_the_protocols_minimums_is_refused_at_the_
         .await
         .expect("limits at the minimums are admitted");
 }
+
+/// The fake source answering bloated, connected with `limits`.
+async fn bloated(limits: Limits) -> RemoteSource {
+    use crate::support::fake::{Fake, Fault, serve_fake};
+    let options = Options {
+        limits,
+        ..Options::default()
+    };
+    // 64 KiB of entries on the wire, each of which decodes to tens of bytes.
+    let io = serve_fake(Fake(Fault::Bloats(32 * 1024)));
+    let connection = Connection::connect(io, Role::Source, &serde_json::json!({}), options)
+        .await
+        .expect("the fake handshakes");
+    RemoteSource::new(connection)
+}
+
+#[tokio::test]
+async fn answers_beyond_their_class_limit_are_refused_before_they_are_decoded() {
+    let stream = StreamName::new("items").expect("a valid stream name");
+    let state = rdlt_connector::StreamState::default();
+    // Within its limit, an answer is decoded, and its first empty entry refused.
+    let source = bloated(Limits::default()).await;
+    let decoded = source
+        .discover()
+        .await
+        .expect_err("an empty stream is refused");
+    assert_eq!(decoded.code(), Some("invalid_message"), "{decoded}");
+    let decoded = source.plan(&stream, &state).await.expect_err("refused");
+    assert_eq!(decoded.code(), Some("invalid_message"), "{decoded}");
+    let small = Limits {
+        catalog_bytes: 32 * 1024,
+        state_bytes: 32 * 1024,
+        ..Limits::default()
+    };
+    let source = bloated(small).await;
+    let refused = source.discover().await.expect_err("the catalog is refused");
+    assert!(refused.to_string().contains("too large"), "{refused}");
+    let refused = source
+        .plan(&stream, &state)
+        .await
+        .expect_err("the plan is refused");
+    assert!(refused.to_string().contains("too large"), "{refused}");
+}
+
+#[tokio::test]
+async fn a_request_beyond_its_class_limit_is_refused_by_the_served_connector() {
+    use rdlt_wire::v1;
+    let limits = Limits {
+        state_bytes: 32 * 1024,
+        ..Limits::default()
+    };
+    let served = Served::new().with_source(source_factory::<MemorySource>());
+    let mut client = crate::support::raw_client(served_within(served, limits)).await;
+    let cursors = (0..4096)
+        .map(|partition| v1::CommittedCursor {
+            partition: format!("p{partition}"),
+            cursor: None,
+        })
+        .collect();
+    let request = v1::CommittedRequest {
+        stream: None,
+        cursors,
+    };
+    let refused = client.committed(request).await.expect_err("refused");
+    assert_eq!(refused.code(), tonic::Code::OutOfRange, "{refused}");
+    assert!(refused.message().contains("too large"), "{refused}");
+}

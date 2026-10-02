@@ -88,6 +88,13 @@ message Limits {
   uint64 schema_bytes = 10;
   // Bytes the dictionaries one read or write holds at once take, where less than a frame's.
   uint64 dictionary_bytes = 11;
+  // Bytes in one catalog: a discovery's answer.
+  uint64 catalog_bytes = 12;
+  // Bytes in one message that carries state or a stream's positions: an open's answer, a plan
+  // and its request, a commit's request and a report of committed positions.
+  uint64 state_bytes = 13;
+  // Bytes in any other control message.
+  uint64 control_message_bytes = 14;
 }
 
 // Opens the conversation.

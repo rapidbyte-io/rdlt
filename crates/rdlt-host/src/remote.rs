@@ -1,6 +1,7 @@
 //! A connection to a served connector: the handshake that connects it, a heartbeat that notices
 //! when it stops answering, and a deadline for each call.
 
+mod clients;
 mod destination;
 mod read;
 pub(crate) mod severed;
@@ -15,7 +16,6 @@ use std::time::Duration;
 use hyper_util::rt::TokioIo;
 use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
-use rdlt_wire::v1::connector_client::ConnectorClient;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -23,6 +23,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::{Channel, Endpoint};
 
+pub use clients::Client;
+use clients::Clients;
 pub use destination::RemoteDestination;
 pub use source::RemoteSource;
 
@@ -102,7 +104,7 @@ impl Default for Options {
 /// A handshaken connection to a served connector.
 #[derive(Debug)]
 pub struct Connection {
-    client: ConnectorClient<Channel>,
+    client: Clients,
     spec: v1::ConnectorSpec,
     /// The limits the connector enforces on what it receives.
     peer: Limits,
@@ -167,7 +169,8 @@ impl Connection {
             let spent = lost.child_token();
             (lost, spent)
         };
-        let mut client = channel(io, &options, lost.clone(), spent.clone()).await?;
+        let channel = channel(io, &options, lost.clone(), spent.clone()).await?;
+        let client = Clients::new(&channel, &options.limits);
         let request = v1::HandshakeRequest {
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: PROTOCOL_MINOR,
@@ -180,7 +183,9 @@ impl Connection {
             limits: Some(options.limits.into()),
         };
         let deadline = options.deadlines.connect;
-        let response = within(deadline, "the handshake", client.handshake(request)).await?;
+        let mut handshaking = client.handshake.clone();
+        let handshaken = handshaking.handshake(request);
+        let response = within(deadline, "the handshake", handshaken).await?;
         // A connector may not make this host send frames smaller than the protocol's least.
         let peer = response.limits.map(Limits::from).unwrap_or_default();
         peer.admit_peer()
@@ -239,7 +244,7 @@ impl Connection {
 /// Dropped unconfigured, it cuts the connection: its client is the connection's last.
 #[derive(Debug)]
 pub struct Handshaken {
-    client: ConnectorClient<Channel>,
+    client: Clients,
     spec: v1::ConnectorSpec,
     peer: Limits,
     options: Options,
@@ -280,7 +285,7 @@ impl Handshaken {
     ) -> Result<Arc<Connection>, ConnectorError> {
         let request = v1::ConfigureRequest { config_json };
         let deadline = self.options.deadlines.connect;
-        let mut client = self.client.clone();
+        let mut client = self.client.control.clone();
         let configured = tokio::select! {
             biased;
             () = self.lost.cancelled() => return Err(lost_error()),
@@ -300,7 +305,7 @@ impl Handshaken {
             }));
         }
         tokio::spawn(heartbeat(
-            self.client.clone(),
+            self.client.control.clone(),
             (self.options.heartbeat, self.options.missed),
             self.lost.clone(),
             self.spent.clone(),
@@ -328,26 +333,23 @@ pub async fn client<IO>(io: IO, options: Options) -> Result<Client, ConnectorErr
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    channel(
-        io,
-        &options,
-        CancellationToken::new(),
-        CancellationToken::new(),
-    )
-    .await
+    let (cut, spent) = (CancellationToken::new(), CancellationToken::new());
+    let channel = channel(io, &options, cut, spent).await?;
+    Ok(clients::sized(
+        &channel,
+        &options.limits,
+        rdlt_wire::limits::Class::Data,
+    ))
 }
 
-/// A client of the protocol, over one connection.
-pub type Client = ConnectorClient<Channel>;
-
-/// A client over `io`, which fails once `cut` is cancelled, and whose one connection, once closed,
-/// cancels `spent`.
+/// A channel over `io`, which fails once `cut` is cancelled, and whose one connection, once
+/// closed, cancels `spent`.
 async fn channel<IO>(
     io: IO,
     options: &Options,
     cut: CancellationToken,
     spent: CancellationToken,
-) -> Result<Client, ConnectorError>
+) -> Result<Channel, ConnectorError>
 where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -367,7 +369,7 @@ where
     // HTTP/2's own pings notice a connection the network dropped silently (§12.6), beside the
     // protocol's heartbeat, which notices a connector that stopped answering.
     let patience = options.heartbeat.saturating_mul(options.missed.get());
-    let channel = Endpoint::from_static("http://connector")
+    Endpoint::from_static("http://connector")
         .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
         .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
         .http2_keep_alive_interval(options.heartbeat)
@@ -375,11 +377,7 @@ where
         .keep_alive_while_idle(true)
         .connect_with_connector(connector)
         .await
-        .map_err(|error| lost_because(format!("connecting failed: {error}")))?;
-    let bytes = options.limits.message_bytes();
-    Ok(ConnectorClient::new(channel)
-        .max_decoding_message_size(bytes)
-        .max_encoding_message_size(bytes))
+        .map_err(|error| lost_because(format!("connecting failed: {error}")))
 }
 
 /// The contract's spec of the connector the handshake's `spec` describes, in `role`.
@@ -426,13 +424,13 @@ async fn within<T>(
     }
 }
 
-/// Sends a heartbeat every interval, and cancels `lost` once `missed` sent are unanswered when the
+/// Sends a heartbeat `every` interval, and cancels `lost` once `missed` sent are unanswered when the
 /// next is due, or the heartbeat stream fails.
 ///
 /// A connector that ends the stream is stopping: it finishes the calls in flight, and `retired` is
 /// cancelled.
 async fn heartbeat(
-    mut client: ConnectorClient<Channel>,
+    mut client: Client,
     (every, missed): (Duration, NonZeroU32),
     lost: CancellationToken,
     retired: CancellationToken,
