@@ -1,5 +1,6 @@
 //! The world one simulation shares: its workload, faults, destination store and findings.
 
+mod reports;
 #[cfg(test)]
 mod tests;
 
@@ -21,6 +22,7 @@ use crate::rng::SplitMix64;
 use crate::swarm::Features;
 use crate::wal::SimWal;
 use crate::workload::Workload;
+pub(crate) use reports::Reports;
 
 /// Where a connector can fail, and how often, in failures per thousand calls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +85,8 @@ pub struct World {
     /// The streams a reset is clearing while runs race it, whose committed positions move back:
     /// an acknowledgement of a commit that landed before the reset may reach the source after it.
     pub(crate) reset: Mutex<BTreeSet<String>>,
+    /// What the source remembers of the reports it may hear, and what it heard.
+    pub(crate) reports: Reports,
     /// How many rows of each followed partition have arrived, by stream and partition index,
     /// while a streaming phase produces them; every row has arrived when there is none.
     produced: Mutex<Option<BTreeMap<(usize, usize), usize>>>,
@@ -109,6 +113,7 @@ impl World {
             wal: Arc::default(),
             acknowledged: Mutex::default(),
             reset: Mutex::default(),
+            reports: Reports::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
         });
@@ -149,6 +154,7 @@ impl World {
             wal: Arc::default(),
             acknowledged: Mutex::default(),
             reset: Mutex::default(),
+            reports: Reports::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
         });

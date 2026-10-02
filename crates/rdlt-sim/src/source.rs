@@ -172,19 +172,24 @@ impl ReadStream<SimSource> for SimStreamReader {
                 ));
             }
         }
+        world.reports.started(&stream.name, partition.id(), &cursor);
         let rows = stream.rows(index, world.phase());
         let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
         let mut batches = 0;
         loop {
             let arrived = world.available(self.index, index, rows.len());
             let available = stream.servable(index, world.phase(), arrived);
-            self.serve(source, out, rows, &mut next, available, &mut batches)
+            let serving = Serving {
+                partition: index,
+                available,
+            };
+            self.serve(source, out, rows, &mut next, serving, &mut batches)
                 .await?;
             // A read that follows a partition that never ends waits for its next rows.
             if !(out.follows() && partition.is_unbounded()) {
                 break;
             }
-            out.checkpoint(&SimCursor { next: next as u64 }).await?;
+            self.checkpoint(source, out, index, next).await?;
             // As a log does, it says how far behind its newest rows it is; and it asks for the
             // stream to be planned again, which, its partitions unchanged, must change nothing.
             out.behind(arrived.saturating_sub(next) as u64).await?;
@@ -194,7 +199,7 @@ impl ReadStream<SimSource> for SimStreamReader {
             }
         }
         if stream.final_checkpoint {
-            out.checkpoint(&SimCursor { next: next as u64 }).await?;
+            self.checkpoint(source, out, index, next).await?;
         }
         Ok(())
     }
@@ -208,17 +213,41 @@ impl ReadStream<SimSource> for SimStreamReader {
     }
 }
 
+/// What a read serves next: of which partition, and up to which of its rows.
+#[derive(Clone, Copy)]
+struct Serving {
+    partition: usize,
+    available: usize,
+}
+
 impl SimStreamReader {
-    /// Serves `rows` from `next` up to `available`, counting `batches`.
+    /// Sends the checkpoint at row `next` of partition `partition`, which the source remembers
+    /// it sent.
+    async fn checkpoint(
+        &self,
+        source: &SimSource,
+        out: &mut Emitter<SimCursor>,
+        partition: usize,
+        next: usize,
+    ) -> Result<()> {
+        let cursor = SimCursor { next: next as u64 };
+        let id = PartitionId::parse(format!("p{partition}")).expect("valid partition id");
+        let stream = self.stream(source);
+        source.world.reports.note(&stream.name, &id, &cursor);
+        out.checkpoint(&cursor).await
+    }
+
+    /// Serves `rows` from `next` up to what `serving` says, counting `batches`.
     async fn serve(
         &self,
         source: &SimSource,
         out: &mut Emitter<SimCursor>,
         rows: &[Row],
         next: &mut usize,
-        available: usize,
+        serving: Serving,
         batches: &mut u64,
     ) -> Result<()> {
+        let available = serving.available;
         let world = &source.world;
         let stream = self.stream(source);
         while *next < available {
@@ -240,7 +269,8 @@ impl SimStreamReader {
                 Checkpointing::Natural => (*batches).is_multiple_of(stream.checkpoint_every),
             };
             if due {
-                out.checkpoint(&SimCursor { next: *next as u64 }).await?;
+                self.checkpoint(source, out, serving.partition, *next)
+                    .await?;
             }
         }
         Ok(())
@@ -274,7 +304,7 @@ impl SimStreamReader {
                 () = &mut arrived => {}
                 () = tokio::time::sleep(WAKE) => {
                     if out.checkpoint_due() {
-                        out.checkpoint(&SimCursor { next: next as u64 }).await?;
+                        self.checkpoint(source, out, partition, next).await?;
                     }
                 }
             }
@@ -293,6 +323,9 @@ fn committed(
 ) -> Result<()> {
     let name = StreamName::new(&stream.name).expect("valid stream name");
     for (partition, cursor) in cursors {
+        world
+            .reports
+            .hear(&stream.name, partition, cursor, cursor.next)?;
         if !stream.replayable {
             // It hears once the engine's log holds the rows, before they land; the oracle
             // checks they did once the phase is over.
