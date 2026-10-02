@@ -13,7 +13,6 @@ use serde::Serialize;
 use crate::change::validate_change_batch;
 use crate::cursor::Cursor;
 use crate::error::{ConnectorError, LimitExceeded, Result, ResultExt};
-use crate::limits::MAX_JSON_PUSH_BYTES;
 use crate::sink::{LogLevel, PartitionSink, Push, SourceEvent};
 
 /// Sends one partition's data and checkpoints to the engine, with cursors of type `C`.
@@ -79,7 +78,8 @@ impl<C: Serialize> Emitter<C> {
 
     /// Pushes raw JSON: an array of objects or newline-delimited objects.
     pub async fn json(&mut self, json: Bytes) -> Result<()> {
-        check_limit("JSON push bytes", json.len(), MAX_JSON_PUSH_BYTES)?;
+        let limit = self.sink.limits().json_push_bytes;
+        check_limit("json push bytes", json.len(), limit)?;
         self.sink.send(SourceEvent::Push(Push::Json(json))).await
     }
 
@@ -88,7 +88,7 @@ impl<C: Serialize> Emitter<C> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        check_batch(&batch, self.sink.holds_whole())?;
+        check_batch(&batch, &self.sink)?;
         self.sink.send(SourceEvent::Push(Push::Arrow(batch))).await
     }
 
@@ -97,7 +97,7 @@ impl<C: Serialize> Emitter<C> {
         if batch.num_rows() == 0 {
             return Ok(());
         }
-        check_batch(&batch, self.sink.holds_whole())?;
+        check_batch(&batch, &self.sink)?;
         validate_change_batch(&batch)?;
         self.sink
             .send(SourceEvent::Push(Push::Changes(batch)))
@@ -107,6 +107,8 @@ impl<C: Serialize> Emitter<C> {
     /// Seals everything pushed since the last checkpoint; a restart resumes from `cursor`.
     pub async fn checkpoint(&mut self, cursor: &C) -> Result<()> {
         let cursor = Cursor::encode(self.cursor_version, cursor)?;
+        let limit = self.sink.limits().cursor_bytes;
+        check_limit("cursor bytes", cursor.bytes().len(), limit)?;
         let answers = self.sink.pending_barrier();
         self.sink
             .send(SourceEvent::Checkpoint { cursor, answers })
@@ -152,10 +154,10 @@ impl<C: Serialize> Emitter<C> {
     }
 }
 
-/// Checks `batch` against the limits on a batch, before anything else walks it; one held
-/// `whole`, as it is, against what a frame may hold too.
-fn check_batch(batch: &RecordBatch, whole: bool) -> Result<()> {
-    admit::admit(batch, whole).map_err(ConnectorError::exceeds)
+/// Checks `batch` against `sink`'s limits on a batch, before anything else walks it; one the
+/// sink holds whole, as it is, against what a frame may hold too.
+fn check_batch(batch: &RecordBatch, sink: &PartitionSink) -> Result<()> {
+    admit::admit(batch, sink.holds_whole(), &sink.limits()).map_err(ConnectorError::exceeds)
 }
 
 fn check_limit(name: &'static str, actual: usize, limit: u64) -> Result<()> {

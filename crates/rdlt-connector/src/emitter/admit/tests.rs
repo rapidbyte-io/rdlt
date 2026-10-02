@@ -9,19 +9,21 @@ use arrow_array::{
 use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields, UnionFields};
 
+use rdlt_wire::Limits;
+
 use super::admit;
 use crate::cost::Allocations;
 use crate::cost::tests::{batch, every_type, item, nested};
 
 fn refused(batch: &RecordBatch) -> (&'static str, u64) {
-    let refusal = admit(batch, true).unwrap_err();
+    let refusal = admit(batch, true, &Limits::default()).unwrap_err();
     assert!(refusal.actual > refusal.limit);
     (refusal.name, refusal.limit)
 }
 
 #[test]
 fn a_batch_nested_beyond_the_limit_is_refused_however_deep() {
-    admit(&nested(64), true).unwrap();
+    admit(&nested(64), true, &Limits::default()).unwrap();
     assert_eq!(refused(&nested(65)), ("nesting depth", 64));
     // Deep enough to overflow a stack that recursed a level at a time.
     assert_eq!(refused(&nested(3_000)), ("nesting depth", 64));
@@ -101,7 +103,7 @@ fn a_batch_of_more_rows_or_columns_than_the_limit_is_refused() {
 #[test]
 fn every_type_within_the_limits_is_admitted() {
     for column in every_type() {
-        admit(&batch(column), true).unwrap();
+        admit(&batch(column), true, &Limits::default()).unwrap();
     }
 }
 
@@ -118,18 +120,18 @@ fn an_encoded_column_counts_as_the_columns_its_layout_has() {
         RecordBatch::try_from_iter((0..columns).map(|index| (format!("c{index}"), column(index))))
             .unwrap()
     };
-    admit(&wide(10_000, &keyed), true).unwrap();
+    admit(&wide(10_000, &keyed), true, &Limits::default()).unwrap();
     // A run-end encoded column is three: itself, its run ends and its values.
     let runs = |_| {
         let ends = arrow_array::Int16Array::from(vec![1]);
         Arc::new(RunArray::<Int16Type>::try_new(&ends, &words).unwrap()) as ArrayRef
     };
-    admit(&wide(3_333, &runs), true).unwrap();
+    admit(&wide(3_333, &runs), true, &Limits::default()).unwrap();
     assert_eq!(refused(&wide(3_334, &runs)), ("batch columns", 10_000));
     // Its values count toward the batch's, beside its rows and its runs.
     let long = RunArray::<Int32Type>::try_new(&Int32Array::from(vec![1 << 20]), &NullArray::new(1))
         .unwrap();
-    admit(&batch(Arc::new(long)), true).unwrap();
+    admit(&batch(Arc::new(long)), true, &Limits::default()).unwrap();
 }
 
 #[test]
@@ -172,7 +174,7 @@ fn a_slice_is_weighed_by_what_its_rows_name() {
     );
     let whole = batch(Arc::new(nulls));
     assert_eq!(refused(&whole), ("batch values", 64 << 20));
-    admit(&whole.slice(1, 1), true).unwrap();
+    admit(&whole.slice(1, 1), true, &Limits::default()).unwrap();
 }
 
 #[test]
@@ -194,10 +196,10 @@ fn a_batch_that_is_cut_as_it_is_sent_is_held_to_its_rows_and_schema_alone() {
         Arc::new(NullArray::new(items)),
         None,
     );
-    admit(&batch(Arc::new(nulls)), false).unwrap();
+    admit(&batch(Arc::new(nulls)), false, &Limits::default()).unwrap();
     let rows: ArrayRef = Arc::new(NullArray::new((1 << 20) + 1));
-    let refusal = admit(&batch(rows), false).unwrap_err();
+    let refusal = admit(&batch(rows), false, &Limits::default()).unwrap_err();
     assert_eq!((refusal.name, refusal.limit), ("batch rows", 1 << 20));
-    let refusal = admit(&nested(65), false).unwrap_err();
+    let refusal = admit(&nested(65), false, &Limits::default()).unwrap_err();
     assert_eq!((refusal.name, refusal.limit), ("nesting depth", 64));
 }

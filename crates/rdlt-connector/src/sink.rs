@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use bytes::Bytes;
+use rdlt_wire::Limits;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -98,6 +99,12 @@ pub trait Admission: Send + Sync {
     /// A [`ConnectorError::exceeds`] naming the limit, where the read would keep more than a
     /// read may: the read fails with it.
     fn charge(&self, bytes: u64) -> Result<Permit>;
+
+    /// The limits on what a read sends that this admission admits within, where they are fewer
+    /// than the wire's defaults: a source that keeps to them is refused nothing here.
+    fn limits(&self) -> Limits {
+        Limits::default()
+    }
 }
 
 /// Creates the two ends of one partition's channel, buffering up to `capacity` events.
@@ -126,6 +133,7 @@ fn channel(
         barrier,
         stop: stop.clone(),
         answered: 0,
+        limits: admission.as_ref().map(|admission| admission.limits()),
         admission,
         cut: false,
     };
@@ -145,6 +153,8 @@ pub struct PartitionSink {
     stop: CancellationToken,
     answered: u64,
     admission: Option<Arc<dyn Admission>>,
+    /// The limits on what is sent here, where they are fewer than the wire's defaults.
+    limits: Option<Limits>,
     /// Whether what receives a batch sent here cuts it before anything holds it.
     cut: bool,
 }
@@ -165,6 +175,20 @@ impl PartitionSink {
     pub(crate) fn cut(mut self) -> Self {
         self.cut = true;
         self
+    }
+
+    /// The sink, what is sent to it kept within `limits`, as a served read keeps what it sends
+    /// within its host's.
+    #[cfg(any(test, feature = "serve"))]
+    pub(crate) fn within(mut self, limits: Limits) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+
+    /// The limits on what a read sends here: those of whoever admits its events or receives its
+    /// frames, the wire's defaults otherwise.
+    pub fn limits(&self) -> Limits {
+        self.limits.unwrap_or_default()
     }
 
     /// Whether a batch sent here is held as it is, and so must be within what a frame may hold.

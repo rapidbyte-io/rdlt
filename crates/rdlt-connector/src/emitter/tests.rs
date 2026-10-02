@@ -149,7 +149,7 @@ async fn json_over_the_limit_is_refused_before_it_is_sent() {
         usize::try_from(MAX_JSON_PUSH_BYTES).unwrap() + 1
     ]);
     let error = out.json(too_big).await.unwrap_err();
-    assert_eq!(error.limit().unwrap().name, "JSON push bytes");
+    assert_eq!(error.limit().unwrap().name, "json push bytes");
     assert!(drain(out, feed).await.is_empty());
 }
 
