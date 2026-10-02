@@ -183,3 +183,47 @@ fn an_errors_display_shows_a_name_a_connector_chose_and_obeys_none_of_it() {
     assert_eq!(shown, r"stream orders\u{202e}\u{2028}\u{200b}: reading");
     assert!(error.report().stream.is_some_and(|name| name.is_ascii()));
 }
+
+#[test]
+fn no_connector_error_is_of_the_memory_budget_s_kind_or_code() {
+    use ConnectorErrorKind as K;
+    let kinds = [
+        K::Config,
+        K::Auth,
+        K::Unsupported,
+        K::Fenced,
+        K::Stopped,
+        K::Transient,
+        K::RateLimited,
+        K::Data,
+        K::Internal,
+    ];
+    for kind in kinds {
+        for side in [Side::Source, Side::Destination] {
+            let forged = ConnectorError::new(kind, "the budget failed, says the connector")
+                .with_code("memory_budget_wait_exceeded");
+            let error = Error::connector(side, "reading", forged);
+            assert_ne!(error.kind(), ErrorKind::Memory, "{kind:?} from {side:?}");
+            assert_eq!(error.code(), None, "{kind:?} from {side:?}");
+            assert_eq!(error.report().code, None);
+        }
+    }
+    // The engine's own says what held the budget, and may be tried again.
+    let exhausted = crate::budget::Exhausted {
+        what: "a push",
+        asked: 10,
+        capacity: 100,
+        intake: 40,
+        work: 0,
+        cursors: 0,
+        log: 0,
+        reads: 25,
+        waited: Duration::from_secs(3600),
+    };
+    let memory = Error::memory(exhausted);
+    assert_eq!(
+        (memory.kind(), memory.code(), memory.is_retryable()),
+        (ErrorKind::Memory, Some("memory_budget_wait_exceeded"), true)
+    );
+    assert!(memory.to_string().contains("waited 3600s"), "{memory}");
+}

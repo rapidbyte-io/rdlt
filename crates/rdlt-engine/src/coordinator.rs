@@ -32,7 +32,6 @@ use crate::crash::crash_point;
 use crate::env::{Env, Sleep};
 use crate::error::{Error, Side};
 use crate::lane::Lanes;
-use crate::limits::CURSOR_SHARE;
 use crate::partition::{CursorHold, Latest, Progress};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
@@ -184,9 +183,8 @@ pub(crate) struct Coordinator {
     parts: CoordinatorParts,
     seq: CommitSeq,
     sealed: WaitingSeals,
-    /// Bytes: the cursors of waiting seals that make a commit due, so cursors a source
-    /// checkpoints with never fill the budget they are charged to.
-    cursor_limit: u64,
+    /// Whether something arrived since the last commit.
+    cursors_may_free: bool,
     /// Rows and bytes written but not yet committed.
     pending_rows: u64,
     pending_bytes: u64,
@@ -201,7 +199,7 @@ pub(crate) struct Coordinator {
 impl Coordinator {
     pub(crate) fn new(parts: CoordinatorParts) -> Self {
         Self {
-            cursor_limit: parts.budget.capacity() / CURSOR_SHARE,
+            cursors_may_free: true,
             parts,
             seq: CommitSeq::FIRST,
             sealed: WaitingSeals::default(),
@@ -266,20 +264,19 @@ impl Coordinator {
                     replan = self.replan_timer();
                 }
                 // The interval comes before data, so a busy source still commits on time.
-                () = &mut timer => {
-                    self.raise_barrier().await?;
-                    self.commit().await?;
-                    self.advance_phases().await?;
-                    timer = self.timer();
+                () = &mut timer => timer = self.commit_now().await?,
+                // A cursor that finds its share full waits for a commit, which is then due:
+                // once, since a commit that frees it nothing is not tried again before more
+                // arrives.
+                () = self.parts.budget.cursor_waits(), if self.cursors_may_free => {
+                    timer = self.commit_now().await?;
                 }
                 progress = self.parts.progress.recv() => {
                     self.observe(progress.ok_or_else(cancelled)?);
+                    self.cursors_may_free = true;
                     self.replan_signalled().await?;
                     if self.due() {
-                        self.raise_barrier().await?;
-                        self.commit().await?;
-                        self.advance_phases().await?;
-                        timer = self.timer();
+                        timer = self.commit_now().await?;
                     }
                 }
             }
@@ -287,13 +284,24 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Commits what is sealed behind a barrier and advances the phases: the timer of the commit
+    /// after it.
+    async fn commit_now(&mut self) -> Result<Sleep, Error> {
+        self.raise_barrier().await?;
+        self.commit().await?;
+        self.advance_phases().await?;
+        self.cursors_may_free = false;
+        Ok(self.timer())
+    }
+
     /// Whether a commit is due: by the policy's rows and bytes, or by the cursors of the seals
-    /// waiting, which hold budget only a commit releases.
+    /// waiting, which hold budget only a commit releases, once they take half their share.
     fn due(&self) -> bool {
+        let cursors = (self.parts.budget.shares().cursors / 2).max(1);
         self.parts
             .policy
             .is_due(self.pending_rows, self.pending_bytes)
-            || self.sealed.cursor_bytes() >= self.cursor_limit.max(1)
+            || self.sealed.cursor_bytes() >= cursors
     }
 
     fn timer(&self) -> Sleep {

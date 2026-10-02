@@ -130,15 +130,14 @@ impl Error {
     ///
     /// Configuration, credential and capability failures are [`ErrorKind::Config`]; a fenced
     /// session is [`ErrorKind::Fenced`]; a stopped read is [`ErrorKind::Cancelled`]; everything
-    /// else belongs to the side. Only transient and rate-limited failures are retryable.
+    /// else belongs to the side. Only transient and rate-limited failures are retryable. No
+    /// connector's error is of the kind or code a wait on the memory budget fails with.
     pub(crate) fn connector(side: Side, context: impl Into<String>, error: ConnectorError) -> Self {
         use ConnectorErrorKind as K;
         let kind = match (error.kind(), side) {
             (K::Config | K::Auth | K::Unsupported, _) => ErrorKind::Config,
             (K::Fenced, _) => ErrorKind::Fenced,
             (K::Stopped, _) => ErrorKind::Cancelled,
-            // A read fails with what its admission refused an event with.
-            (_, Side::Source) if error.code() == Some(BUDGET_WAIT_EXCEEDED) => ErrorKind::Memory,
             (_, Side::Source) => ErrorKind::Source,
             (_, Side::Destination) => ErrorKind::Destination,
         };
@@ -146,7 +145,11 @@ impl Error {
             kind,
             context: context.into(),
             stream: None,
-            code: error.code().map(Arc::from),
+            // The budget's code is the engine's own: no connector's error carries it.
+            code: error
+                .code()
+                .filter(|code| *code != BUDGET_WAIT_EXCEEDED)
+                .map(Arc::from),
             retryable: error.is_retryable(),
             retry_after: error.retry_after(),
             source: Some(Box::new(error)),

@@ -416,58 +416,80 @@ fn only_what_rows_name_is_materialized() {
     }
 }
 
-/// A budget of `capacity` bytes and an admission charging it for a destination storing text.
-fn charging(capacity: u64) -> (MemoryBudget, Charging) {
-    let budget = MemoryBudget::new(capacity);
-    let admission = Charging::new(budget.clone(), Arc::new(Rendering::text()));
+/// The system's clock, which a paused test runtime moves.
+fn clock() -> Arc<dyn Env> {
+    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
+    Arc::new(crate::env::SystemEnv::new(pool))
+}
+
+/// A budget of `capacity` bytes whose requests wait an hour at most, and an admission charging
+/// it for one of `reads` reads.
+fn charging(capacity: u64, reads: usize) -> (MemoryBudget, Charging) {
+    let budget = MemoryBudget::new(capacity).within(clock(), WAIT);
+    let admission = Charging::new(budget.clone().read_by(reads));
     (budget, admission)
 }
 
+const WAIT: std::time::Duration = std::time::Duration::from_secs(3600);
+
+fn pushed_json(bytes: usize) -> SourceEvent {
+    SourceEvent::Push(Push::Json(bytes::Bytes::from(vec![b' '; bytes])))
+}
+
+fn checkpoint(bytes: usize) -> SourceEvent {
+    SourceEvent::Checkpoint {
+        cursor: rdlt_connector::Cursor::new(1, &vec![7; bytes]).unwrap(),
+        answers: None,
+    }
+}
+
 #[tokio::test]
-async fn a_push_is_admitted_for_the_larger_of_what_it_holds_and_what_it_becomes() {
-    let (budget, admission) = charging(1 << 30);
+async fn a_push_is_admitted_for_what_it_keeps_alive() {
+    let (budget, admission) = charging(1 << 30, 1);
     // A slice of three rows keeps its whole buffer alive.
     let whole = Int64Array::from(vec![7; 100_000]);
     let slice = RecordBatch::try_from_iter([("n", Arc::new(whole.slice(0, 3)) as ArrayRef)]);
-    let held = Push::Arrow(slice.unwrap());
-    let permit = admission.admit(&SourceEvent::Push(held)).await.unwrap();
-    assert!(budget.reserved() >= 800_000, "{}", budget.reserved());
-    let admitted = Admitted::of(permit.unwrap()).unwrap();
-    assert_eq!(admitted.bytes, budget.reserved());
+    let slice = slice.unwrap();
+    let alive = Allocations::of(&slice).bytes();
+    assert!(alive >= 800_000, "{alive}");
+    let permit = admission
+        .admit(&SourceEvent::Push(Push::Arrow(slice)))
+        .await;
+    assert_eq!(budget.reserved(), alive);
+    let admitted = Admitted::of(permit.unwrap().unwrap()).unwrap();
+    assert_eq!(admitted.bytes, alive);
     drop(admitted);
     assert_eq!(budget.reserved(), 0);
-    // A dictionary of one long value named by every row becomes far more than it holds.
+    // A dictionary of one long value named by every row becomes far more than it holds: what it
+    // becomes is reserved a piece at a time as it is lowered, not here.
     let long = "x".repeat(1_000);
     let keyed = DictionaryArray::<Int32Type>::try_new(
         Int32Array::from(vec![0; 10_000]),
         Arc::new(arrow_array::StringArray::from(vec![long.as_str()])),
     );
     let expanding = RecordBatch::try_from_iter([("s", Arc::new(keyed.unwrap()) as ArrayRef)]);
-    let change = Push::Changes(expanding.unwrap());
-    let permit = admission.admit(&SourceEvent::Push(change)).await.unwrap();
-    assert!(budget.reserved() >= 10_000_000, "{}", budget.reserved());
+    let expanding = expanding.unwrap();
+    let alive = Allocations::of(&expanding).bytes();
+    assert!(alive < 100_000, "{alive}");
+    let change = SourceEvent::Push(Push::Changes(expanding));
+    let permit = admission.admit(&change).await.unwrap();
+    assert_eq!(budget.reserved(), alive);
     drop(permit);
-    let json = Push::Json(bytes::Bytes::from_static(b"[{}]"));
-    let permit = admission.admit(&SourceEvent::Push(json)).await.unwrap();
-    assert_eq!(budget.reserved(), 4);
-    drop(permit);
+    // JSON text is admitted for itself and for the batches it becomes.
+    let permit = admission.admit(&pushed_json(1_000)).await.unwrap();
+    assert_eq!(budget.reserved(), 3_000);
+    let mut admitted = Admitted::of(permit.unwrap()).unwrap();
+    admitted.shrink(1_200);
+    assert_eq!((admitted.bytes, budget.reserved()), (1_200, 1_200));
+    admitted.shrink(5_000);
+    assert_eq!((admitted.bytes, budget.reserved()), (1_200, 1_200));
 }
 
 #[tokio::test]
 async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
-    let (budget, admission) = charging(100);
-    let cursor = rdlt_connector::Cursor::new(1, &[7; 40]).unwrap();
-    let checkpoint = SourceEvent::Checkpoint {
-        cursor,
-        answers: None,
-    };
-    let held = admission.admit(&checkpoint).await.unwrap();
+    let (budget, admission) = charging(6_400, 1);
+    let held = admission.admit(&checkpoint(40)).await.unwrap();
     assert_eq!(budget.reserved(), 40);
-    // Only a commit releases a cursor, so it keeps no push of the whole budget out.
-    let json = Push::Json(bytes::Bytes::from(vec![b' '; 100]));
-    let pushed = admission.admit(&SourceEvent::Push(json)).await.unwrap();
-    assert_eq!(budget.reserved(), 140);
-    drop((held, pushed));
     for event in [
         SourceEvent::Replan,
         SourceEvent::Behind { records: 3 },
@@ -482,72 +504,124 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
     ] {
         assert!(admission.admit(&event).await.unwrap().is_none());
     }
-    assert_eq!(budget.reserved(), 0);
-    // What a read keeps beside its events is charged at once, apart from what is in flight.
-    let kept = admission.charge(500);
-    assert_eq!(budget.reserved(), 500);
-    let pushed = admission
-        .admit(&SourceEvent::Push(Push::Json(bytes::Bytes::from_static(
-            b"[]",
-        ))))
-        .await
-        .unwrap();
-    assert_eq!(budget.reserved(), 502);
-    drop((kept, pushed));
+    assert_eq!(budget.reserved(), 40);
+    drop(held);
     assert_eq!(budget.reserved(), 0);
     assert!(Admitted::of(Box::new(7_u8)).is_none());
 }
 
-#[tokio::test]
-async fn a_push_expanding_beyond_the_budget_holds_the_budget_and_no_more() {
-    let (budget, admission) = charging(1_000);
-    // A million rows of a wide value: far more than the budget, measured in one step.
-    let wide = arrow_array::new_null_array(&DataType::FixedSizeBinary(64), 1_000_000);
+#[tokio::test(start_paused = true)]
+async fn a_push_or_a_cursor_beyond_what_it_may_take_is_refused_naming_the_limit() {
+    // Pushes may take 2,700 bytes of this budget and cursors 100.
+    let (budget, admission) = charging(6_400, 1);
+    let refused = admission.admit(&pushed_json(901)).await.err().unwrap();
+    assert_eq!(refused.code(), Some("push_exceeds_budget"));
+    assert_eq!(refused.kind(), rdlt_connector::ConnectorErrorKind::Data);
+    let limit = refused.limit().unwrap();
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("push bytes", 2_700, 2_703)
+    );
+    assert!(admission.admit(&pushed_json(900)).await.unwrap().is_some());
+    let wide = arrow_array::new_null_array(&DataType::FixedSizeBinary(64), 1_000);
     let batch = RecordBatch::try_from_iter([("w", wide)]).unwrap();
-    let permit = admission
-        .admit(&SourceEvent::Push(Push::Arrow(batch)))
-        .await
-        .unwrap();
-    assert_eq!(budget.reserved(), 1_000);
-    // What it says it holds is what the budget reserved, so nothing later counts as paid for.
-    assert_eq!(Admitted::of(permit.unwrap()).unwrap().bytes, 1_000);
+    let push = SourceEvent::Push(Push::Arrow(batch));
+    let refused = admission.admit(&push).await.err().unwrap();
+    assert_eq!(refused.code(), Some("push_exceeds_budget"));
+    let refused = admission.admit(&checkpoint(101)).await.err().unwrap();
+    assert_eq!(refused.code(), Some("limit_exceeded"));
+    let limit = refused.limit().unwrap();
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("cursor bytes", 100, 101)
+    );
+    // None of them waited, was reserved, or counts as the budget's failure.
+    assert_eq!((budget.reserved(), budget.peak()), (0, 2_700));
+    assert_eq!(admission.exhausted(), None);
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_checkpoint_behind_what_reads_keep_fails_at_the_deadline_and_holds_no_one_up() {
-    const WAIT: std::time::Duration = std::time::Duration::from_secs(3600);
-    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
-    let env = Arc::new(crate::env::SystemEnv::new(pool));
-    let budget = MemoryBudget::new(256 << 20).within(Arc::clone(&env) as Arc<dyn Env>, WAIT);
-    let admission = Charging::new(budget.clone(), Arc::new(Rendering::text()));
-    // Four reads each keep a dictionary of a quarter of the budget, as a decoder's is charged.
-    let kept: Vec<_> = (0..4).map(|_| admission.charge(64 << 20)).collect();
-    assert_eq!(budget.reserved(), 256 << 20);
-    // A checkpoint finds no room, and nothing in flight or waiting for a commit could make any.
-    let cursor = rdlt_connector::Cursor::new(1, &[7; 40]).unwrap();
-    let checkpoint = SourceEvent::Checkpoint {
-        cursor,
-        answers: None,
-    };
-    let started = env.instant();
-    let refused = admission.admit(&checkpoint).await.unwrap_err();
-    assert_eq!(env.instant().duration_since(started), WAIT);
-    assert_eq!(refused.code(), Some("memory_budget_wait_exceeded"));
-    assert!(refused.is_retryable());
-    let said = refused.to_string();
-    assert!(said.contains("268435456 are kept by reads"), "{said}");
-    // The read's failure is the budget's, whichever stream met it.
-    let failed = crate::error::Error::connector(crate::error::Side::Source, "reading", refused);
-    assert_eq!(failed.kind(), crate::ErrorKind::Memory);
-    assert!(failed.is_retryable());
-    // The checkpoint left the queue: a push is admitted at once, as before it.
-    let json = SourceEvent::Push(Push::Json(bytes::Bytes::from_static(b"[{}]")));
-    let pushed = tokio::select! {
-        biased;
-        pushed = admission.admit(&json) => pushed,
-        () = env.sleep(std::time::Duration::from_secs(1)) => panic!("the push waits"),
-    };
-    assert!(pushed.unwrap().is_some());
+async fn a_read_keeps_no_more_than_its_part_of_what_reads_may_keep() {
+    // Reads may keep 1,600 bytes of this budget together: 100 each of sixteen.
+    let (budget, admission) = charging(6_400, 16);
+    let first = admission.charge(60).unwrap();
+    let second = admission.charge(40).unwrap();
+    assert_eq!(budget.reserved(), 100);
+    let refused = admission.charge(1).err().unwrap();
+    assert_eq!(refused.code(), Some("limit_exceeded"));
+    let limit = refused.limit().unwrap();
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("read kept bytes", 100, 101)
+    );
+    assert_eq!(budget.reserved(), 100, "a refused charge holds nothing");
+    // What the read lets go of it may keep again.
+    drop(first);
+    assert_eq!(budget.reserved(), 40);
+    let third = admission.charge(60).unwrap();
+    assert!(admission.charge(1).is_err());
+    drop((second, third));
+    assert_eq!(budget.reserved(), 0);
+    // Another read's part is its own.
+    let other = Charging::new(budget.clone().read_by(16));
+    let kept = (admission.charge(100).unwrap(), other.charge(100).unwrap());
+    assert_eq!(budget.reserved(), 200);
     drop(kept);
+    // More reads than the share was divided for never pass it.
+    let reads: Vec<_> = (0..20)
+        .map(|_| Charging::new(budget.clone().read_by(16)))
+        .collect();
+    let kept: Vec<_> = reads.iter().map(|read| read.charge(100)).collect();
+    assert_eq!(kept.iter().filter(|kept| kept.is_ok()).count(), 16);
+    assert_eq!((budget.reserved(), budget.peak()), (1_600, 1_600));
+}
+
+#[tokio::test(start_paused = true)]
+async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing() {
+    // The default budget and the default sixteen partitions read at once.
+    let budget = MemoryBudget::new(256 << 20);
+    let reads: Vec<_> = (0..16)
+        .map(|_| Charging::new(budget.clone().read_by(16)))
+        .collect();
+    let kept: Vec<_> = reads
+        .iter()
+        .map(|read| read.charge(4 << 20).unwrap())
+        .collect();
+    assert_eq!(budget.reserved(), 64 << 20);
+    assert!(reads[0].charge(1).is_err());
+    let started = clock().instant();
+    let mut admitted = Vec::new();
+    for read in &reads {
+        // A cursor of the longest the cursors' share holds between them, and a megabyte of JSON.
+        admitted.push(read.admit(&checkpoint(256 << 10)).await.unwrap());
+        admitted.push(read.admit(&pushed_json(1 << 20)).await.unwrap());
+    }
+    assert_eq!(
+        clock().instant().duration_since(started),
+        std::time::Duration::ZERO
+    );
+    assert!(budget.peak() <= 256 << 20);
+    drop((admitted, kept));
+    assert_eq!(budget.reserved(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_push_that_waits_until_the_deadline_is_refused_and_remembered_as_the_budget_s() {
+    let (budget, admission) = charging(6_400, 1);
+    let held = admission.admit(&pushed_json(900)).await.unwrap();
+    assert_eq!(admission.exhausted(), None);
+    let started = clock().instant();
+    let refused = admission.admit(&pushed_json(1)).await.err().unwrap();
+    assert_eq!(clock().instant().duration_since(started), WAIT);
+    // The source is told a transient failure, and nothing of the engine's own kind or code.
+    assert!(refused.is_retryable());
+    assert_eq!(refused.code(), None);
+    let exhausted = admission.exhausted().expect("the wait is remembered");
+    assert_eq!((exhausted.asked, exhausted.intake), (3, 2_700));
+    assert_eq!(exhausted.waited, WAIT);
+    assert_eq!(refused.to_string(), exhausted.to_string());
+    // The request left the queue: a push is admitted at once when there is room.
+    drop(held);
+    assert!(admission.admit(&pushed_json(900)).await.unwrap().is_some());
     assert_eq!(budget.reserved(), 0);
 }

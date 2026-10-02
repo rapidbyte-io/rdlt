@@ -1,9 +1,6 @@
 //! Seals as they wait for their commit: one cursor a partition for checkpoints of no rows, each
 //! charged until its commit lands, and a commit due once they hold their share of the budget.
 
-use std::sync::Arc;
-
-use rdlt_connector::cost::Rendering;
 use rdlt_connector::{Admission, PartitionState, SegmentId, SourceEvent};
 
 use super::{Setup, cursor, partition, position, stream, without_receipt};
@@ -124,8 +121,8 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     );
-    // A quarter of the budget is three cursors.
-    setup.budget = 12 * bytes;
+    // Half the cursors' share, a 64th of the budget, is three cursors.
+    setup.budget = 3 * 128 * bytes;
     let (mut coordinator, _harness) = setup.coordinator().await;
     for segment in 1..=2 {
         coordinator.observe(Progress::Sealed(seal(0, segment, 1, segment, None)));
@@ -133,16 +130,22 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
     }
     coordinator.observe(Progress::Sealed(seal(0, 3, 1, 3, None)));
     assert!(coordinator.due());
-    // A limit of nothing, as a budget of a few bytes has, is not due without a cursor.
     coordinator.sealed.take();
-    coordinator.cursor_limit = 0;
+    assert!(!coordinator.due());
+    // A share of nothing, as a budget of a few bytes has, is not due without a cursor.
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    setup.budget = 8;
+    let (coordinator, _harness) = setup.coordinator().await;
     assert!(!coordinator.due());
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_seals_cursor_stays_charged_until_its_commit_has_it() {
     let budget = MemoryBudget::new(1 << 20);
-    let admission = Charging::new(budget.clone(), Arc::new(Rendering::text()));
+    let admission = Charging::new(budget.clone().read_by(1));
     let checkpoint = SourceEvent::Checkpoint {
         cursor: cursor(7),
         answers: None,
