@@ -329,11 +329,32 @@ fn composed_batch(
 /// `batches`, each of the columns it holds, as batches of every column of `schema`, at its
 /// types: a column a batch does not hold is nulls, one array for every such column of its type
 /// and length.
+///
+/// The batches share one schema, in which a column some batch does not hold is nullable,
+/// whatever `schema` says of it: its rows were written without it.
 pub(super) fn every_column(
     schema: &SchemaRef,
     batches: &[RecordBatch],
     nulls: &mut Nulls,
 ) -> Result<Vec<RecordBatch>, ArrowError> {
+    let lacked = |field: &arrow_schema::FieldRef| {
+        let name = field.name();
+        batches
+            .iter()
+            .any(|sparse| sparse.column_by_name(name).is_none())
+    };
+    let fields: Vec<_> = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            if lacked(field) && !field.is_nullable() {
+                Arc::new(field.as_ref().clone().with_nullable(true))
+            } else {
+                Arc::clone(field)
+            }
+        })
+        .collect();
+    let read = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
     batches
         .iter()
         .map(|sparse| {
@@ -347,7 +368,7 @@ pub(super) fn every_column(
                     None => Ok(nulls.of(field.data_type(), rows)),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            batch(Arc::clone(schema), columns, rows)
+            batch(Arc::clone(&read), columns, rows)
         })
         .collect()
 }
