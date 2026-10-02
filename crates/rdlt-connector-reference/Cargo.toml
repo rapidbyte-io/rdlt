@@ -23,7 +23,7 @@ parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "sqlgen"] }
 rdlt-wire.workspace = true
 rusqlite.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
