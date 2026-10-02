@@ -16,6 +16,7 @@ pub mod canon;
 pub mod decode;
 pub mod draw;
 pub mod drawn;
+pub mod nested;
 pub mod process;
 pub mod tls;
 

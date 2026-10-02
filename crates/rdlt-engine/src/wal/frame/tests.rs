@@ -10,6 +10,7 @@ use rdlt_connector::{
     TableRef, TableSchema,
 };
 use rdlt_testkit::drawn::{self, Drawn};
+use rdlt_testkit::nested;
 
 use super::{Batch, BegunPhase, Frame, Frames, Header, Seal, Table, VERSION};
 
@@ -379,4 +380,56 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
         .map(|frame| frame.expect("the frame decodes").1)
         .collect();
     assert_eq!(decoded, [Frame::Commit(Box::new(meta))]);
+}
+
+/// The deepest a table's types may nest.
+fn limit() -> usize {
+    usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH).expect("a small limit")
+}
+
+/// A table of an id and a column nested `depth` levels deep, as `nesting` says.
+fn nested_schema(depth: usize, nesting: nested::Nesting) -> TableSchema {
+    TableSchema::new(vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("c", nested::logical(depth, nesting), true),
+    ])
+    .expect("a schema within the limit")
+}
+
+#[test]
+fn a_schema_frame_nested_to_the_limit_reads_back() {
+    for nesting in nested::NESTINGS {
+        let frame = Frame::Schema(Table {
+            index: 0,
+            table: table(),
+            schema: nested_schema(limit(), nesting),
+        });
+        let bytes = frame.encode().expect("the frame encodes");
+        let read: Vec<_> = Frames::new(&bytes)
+            .map(|frame| {
+                frame
+                    .map(|(_, frame)| frame)
+                    .map_err(|error| error.to_string())
+            })
+            .collect();
+        assert_eq!(read, [Ok(frame)], "{nesting:?}");
+    }
+}
+
+#[test]
+fn a_batch_frame_nested_to_the_limit_reads_back() {
+    for nesting in nested::NESTINGS {
+        let schema = Arc::new(nested_schema(limit(), nesting).to_arrow());
+        let rows = [
+            serde_json::json!({ "id": 1, "c": nested::value(limit(), nesting) }),
+            serde_json::json!({ "id": 2, "c": null }),
+        ];
+        let mut decoder = arrow_json::ReaderBuilder::new(Arc::clone(&schema))
+            .build_decoder()
+            .expect("a decoder of the schema");
+        decoder.serialize(&rows).expect("the rows decode");
+        let batch = decoder.flush().expect("a batch").expect("rows");
+        let (frame, read) = round_trip(batch);
+        assert_eq!(read, [frame], "{nesting:?}");
+    }
 }

@@ -109,6 +109,17 @@ pub(super) fn unexpected(frame: Frame, message: &Message<'_>) -> WireError {
 /// its length can hold: a table every four bytes, and sixteen times its bytes once every table
 /// and string is counted wherever it repeats.
 pub(super) fn message(frame: Frame, header: &[u8], depth: u64) -> Result<Message<'_>, WireError> {
+    let message = verified(frame, header, depth)?;
+    if message.version() != MetadataVersion::V5 {
+        let found = message.version().0;
+        return Err(WireError::malformed(frame, Problem::Version { found }));
+    }
+    Ok(message)
+}
+
+/// The IPC message `header` holds, of whichever metadata version, verified as
+/// [`message`] verifies it.
+pub(super) fn verified(frame: Frame, header: &[u8], depth: u64) -> Result<Message<'_>, WireError> {
     let depth = usize::try_from(depth).unwrap_or(usize::MAX);
     let options = flatbuffers::VerifierOptions {
         max_depth: depth.saturating_mul(4).saturating_add(64),
@@ -123,10 +134,6 @@ pub(super) fn message(frame: Frame, header: &[u8], depth: u64) -> Result<Message
             }
             _ => WireError::malformed(frame, Problem::NotAMessage),
         })?;
-    if message.version() != MetadataVersion::V5 {
-        let found = message.version().0;
-        return Err(WireError::malformed(frame, Problem::Version { found }));
-    }
     Ok(message)
 }
 

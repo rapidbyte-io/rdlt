@@ -388,3 +388,18 @@ fn a_catalog_version_that_is_no_schema_is_a_data_error_no_retry_reads_differentl
         assert_eq!(error.code(), Some(super::CATALOG_INVALID), "{junk:?}");
     }
 }
+
+#[test]
+fn a_catalog_nested_to_the_limit_is_read_and_changed_again() {
+    use rdlt_testkit::nested;
+    let depth = usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH).unwrap();
+    for nesting in nested::NESTINGS {
+        let (_root, rdlt) = private();
+        let deep =
+            TableSchema::new(vec![Field::new("c", nested::logical(depth, nesting), true)]).unwrap();
+        update(&rdlt, "t", |_| Ok(Some(deep.clone()))).unwrap();
+        assert_eq!(read(&rdlt, "t").unwrap(), Some(deep.clone()), "{nesting:?}");
+        update(&rdlt, "t", |current| Ok(Some(with(current, "z")))).unwrap();
+        assert_eq!(names(&rdlt), ["c", "z"], "{nesting:?}");
+    }
+}

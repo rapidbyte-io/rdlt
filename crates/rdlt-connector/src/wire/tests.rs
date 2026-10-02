@@ -702,9 +702,18 @@ fn a_type_nested_to_the_protocols_depth_crosses_the_wire_and_one_deeper_is_refus
         TableChange::try_from(decoded.change.unwrap()).unwrap(),
         change
     );
-    let deeper = TableSchema::new(vec![Field::new("deep", nested(depth + 1), true)]).unwrap();
+    // No schema nests deeper, so the message is built from its field.
+    let deeper = v1::TableSchema {
+        fields: vec![v1::Field::from(&Field::new(
+            "deep",
+            nested(depth + 1),
+            true,
+        ))],
+    };
+    let bytes = prost::Message::encode_to_vec(&deeper);
+    let decoded = <v1::TableSchema as prost::Message>::decode(bytes.as_slice()).unwrap();
     assert!(matches!(
-        crossed::<_, v1::TableSchema>(&deeper),
+        TableSchema::try_from(decoded),
         Err(Invalid::OutOfRange("nesting depth"))
     ));
 }

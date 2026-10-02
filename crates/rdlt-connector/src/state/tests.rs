@@ -606,3 +606,77 @@ fn a_recorded_name_map_naming_two_columns_alike_is_refused() {
         Some("c")
     );
 }
+
+/// How each level below a nested column is made.
+#[derive(Clone, Copy, Debug)]
+enum Nesting {
+    Structs,
+    Lists,
+    StructsThenLists,
+    ListsThenStructs,
+}
+
+/// A schema of one column nested `depth` levels deep, counting the column as the first: each
+/// level below it a struct of one field or a list, as `nesting` says.
+fn nested(depth: usize, nesting: Nesting) -> Vec<Field> {
+    let mut logical = LogicalType::Int64;
+    for level in (1..depth).rev() {
+        let list = match nesting {
+            Nesting::Structs => false,
+            Nesting::Lists => true,
+            Nesting::StructsThenLists => level.is_multiple_of(2),
+            Nesting::ListsThenStructs => !level.is_multiple_of(2),
+        };
+        logical = if list {
+            LogicalType::List(Box::new(Field::new("item", logical, true)))
+        } else {
+            let fields = crate::types::Fields::new(vec![Field::new("a", logical, true)]).unwrap();
+            LogicalType::Struct(fields)
+        };
+    }
+    vec![
+        Field::new("id", LogicalType::Int64, false),
+        Field::new("c", logical, true),
+    ]
+}
+
+const NESTINGS: [Nesting; 4] = [
+    Nesting::Structs,
+    Nesting::Lists,
+    Nesting::StructsThenLists,
+    Nesting::ListsThenStructs,
+];
+
+#[test]
+fn a_schema_nested_to_the_limit_is_stored_and_read_back() {
+    let limit = usize::try_from(crate::limits::MAX_NESTING_DEPTH).unwrap();
+    for nesting in NESTINGS {
+        let schema = TableSchema::new(nested(limit, nesting)).unwrap();
+        let entry = StateEntry::Schema {
+            table: TablePath::new(["deep"]).unwrap(),
+            version: SchemaVersion(1),
+            schema,
+            exact: ["id".into()].into(),
+        };
+        let record = entry.to_record();
+        assert_eq!(
+            StateEntry::from_record(&record),
+            Ok(entry),
+            "{nesting:?} nested to the limit"
+        );
+    }
+}
+
+#[test]
+fn a_schema_nested_past_the_limit_is_refused() {
+    let limit = usize::try_from(crate::limits::MAX_NESTING_DEPTH).unwrap();
+    for nesting in NESTINGS {
+        assert!(
+            matches!(
+                TableSchema::new(nested(limit + 1, nesting)),
+                Err(crate::types::TypeError::TooDeep { depth, limit: 64 }) if depth == 65
+            ),
+            "{nesting:?} nested past the limit"
+        );
+    }
+}

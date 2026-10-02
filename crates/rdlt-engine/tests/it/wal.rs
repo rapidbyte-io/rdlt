@@ -6,6 +6,7 @@ use std::sync::Arc;
 use rdlt_connector::{PipelineId, ReadMode};
 use rdlt_engine::{ErrorKind, LocalWal, RunOutcome, RunStatus, WalStore};
 
+use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, counting, failing};
 use crate::support::logs::Counted;
 use crate::support::script::{Script, ScriptStream, id};
@@ -208,4 +209,29 @@ async fn a_load_that_needs_no_log_keeps_none_though_the_engine_has_a_store() {
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!(published_ids("wal_unneeded", "events"), ids(2, 30));
     assert_eq!((counted.appends(), counted.syncs()), (0, 0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_logged_commit_of_a_table_nested_to_the_limit_replays() {
+    for nesting in rdlt_testkit::nested::NESTINGS {
+        let name = format!("wal_deepest_{nesting:?}").to_lowercase();
+        let base = tempfile::tempdir().expect("a temporary directory");
+        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+        let document = crate::json::deepest(1, nesting);
+        let source = batches(&name, vec![BatchStream::json("events", &[&document])]).await;
+        let destination = failing(memory(&name).await, Step::CommitOnce);
+        let plan = pipeline(&name, [stream("events")]).with_wal(true);
+        let outcome = logging_engine(retrying(3), Arc::clone(&store))
+            .run(plan, source, destination)
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{nesting:?}: {:?}",
+            outcome.error
+        );
+        assert_eq!(published_ids(&name, "events"), [1], "{nesting:?}");
+        let pipeline = PipelineId::parse(name.replace('_', "-")).expect("a valid pipeline");
+        assert_eq!(store.loads(&pipeline).await.expect("loads list"), []);
+    }
 }

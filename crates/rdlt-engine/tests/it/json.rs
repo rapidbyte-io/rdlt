@@ -326,3 +326,45 @@ async fn integer_keys_beyond_64_bits_stay_distinct() {
         [18_446_744_073_709_551_616, 18_446_744_073_709_551_617]
     );
 }
+
+/// A document of `id` and a column `c` nested as deep as a JSON push may, each level below the
+/// column as `nesting` says.
+pub(crate) fn deepest(id: i64, nesting: rdlt_testkit::nested::Nesting) -> String {
+    // A JSON value's levels count the record as the first and the integer as the last: the
+    // column's own is the second.
+    let depth = usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH - 1).expect("small");
+    json!({ "id": id, "c": rdlt_testkit::nested::value(depth, nesting) }).to_string()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_document_nested_to_the_limit_loads_on_every_run() {
+    use crate::support::targets::Target;
+    use rdlt_testkit::nested::NESTINGS;
+    for target in [Target::Memory, Target::Sqlite] {
+        for nesting in NESTINGS {
+            let store = target.name(&format!("deepest_{nesting:?}"));
+            let runs = [deepest(1, nesting), r#"{"id":2}"#.to_owned()];
+            for (run, document) in runs.iter().enumerate() {
+                let source = batches(&store, vec![BatchStream::json("events", &[document])]).await;
+                let outcome = engine(commit_every(1000))
+                    .run(
+                        pipeline(&store, [stream("events")]),
+                        source,
+                        target.destination(&store).await,
+                    )
+                    .await;
+                assert_eq!(
+                    outcome.report.status,
+                    RunStatus::Succeeded,
+                    "{target:?} {nesting:?} run {run}: {:?}",
+                    outcome.error
+                );
+            }
+            assert_eq!(
+                target.ids(&store, "events"),
+                [1, 2],
+                "{target:?} {nesting:?}"
+            );
+        }
+    }
+}
