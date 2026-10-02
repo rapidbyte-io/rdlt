@@ -270,11 +270,12 @@ impl Target {
     ///
     /// A spawned connector is killed outright; one reached otherwise has its connections cut. A
     /// source reads within [`KILL_WINDOW`] of credit, so it runs little ahead of the commits the
-    /// kills follow.
+    /// kills follow, and is told `admitted`, the limits the loading engine admits within.
     pub(crate) fn provider(
         &self,
         id: &rdlt_connector::ConnectorId,
         kills: &rdlt_host::Kills,
+        admitted: &Limits,
     ) -> (Box<dyn rdlt_host::Provider>, ConnectorRef) {
         let reference = |from: Option<&ConnectorRef>| ConnectorRef {
             id: id.clone(),
@@ -289,6 +290,7 @@ impl Target {
         };
         let options = Options {
             read_window: KILL_WINDOW,
+            limits: self.options.limits.lesser(admitted),
             ..self.options
         };
         match &self.reach {

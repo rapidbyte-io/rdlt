@@ -373,22 +373,31 @@ impl ReadStream<Wide> for WideStream {
 }
 
 /// Loads the `wide` stream, each of whose sixteen reads keeps a dictionary of `dictionary`
-/// bytes, through an engine of the default budget and partitions.
-async fn wide(store: &str, dictionary: usize) -> rdlt_engine::RunOutcome {
+/// bytes, through an engine of the default budget and partitions; the source is told the limits
+/// the engine admits within where `told`, and the wire's otherwise.
+async fn wide(store: &str, dictionary: usize, told: bool) -> rdlt_engine::RunOutcome {
     use rdlt_engine::{EngineConfig, PipelinePlan, RetryPolicy, StreamPlan};
-    let io = served(Served::new().with_source(source_factory::<Wide>()));
-    let config = serde_json::json!({ "dictionary": dictionary });
-    let connection = Connection::connect(io, Role::Source, &config, Options::default())
-        .await
-        .expect("the source handshakes");
-    let source = RemoteSource::new(connection);
-    let destination = crate::support::memory_destination(store, Options::default()).await;
     let config = EngineConfig::builder()
         .retry(RetryPolicy::default().max_attempts(1))
         .build()
         .expect("the defaults are valid");
     assert_eq!(config.memory().get(), 256 << 20);
     assert_eq!(config.partitions().get(), 16);
+    let options = Options {
+        limits: if told {
+            config.limits()
+        } else {
+            rdlt_wire::Limits::default()
+        },
+        ..Options::default()
+    };
+    let io = served(Served::new().with_source(source_factory::<Wide>()));
+    let wide = serde_json::json!({ "dictionary": dictionary });
+    let connection = Connection::connect(io, Role::Source, &wide, options)
+        .await
+        .expect("the source handshakes");
+    let source = RemoteSource::new(connection);
+    let destination = crate::support::memory_destination(store, &Options::default()).await;
     let threads = NonZeroUsize::new(4).expect("not zero");
     let pool = rdlt_engine::RayonPool::new(threads).expect("the compute pool starts");
     let engine = rdlt_engine::Engine::new(config, Arc::new(rdlt_engine::SystemEnv::new(pool)));
@@ -404,10 +413,19 @@ async fn wide(store: &str, dictionary: usize) -> rdlt_engine::RunOutcome {
         .expect("no read waits on the budget for what another keeps")
 }
 
+/// Bytes: the dictionaries a read told the default configuration's limits may hold.
+fn told_dictionary_bytes() -> usize {
+    let config = rdlt_engine::EngineConfig::default();
+    usize::try_from(config.limits().dictionary_bytes).expect("a size in memory")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing() {
-    // Each read may keep four mebibytes of the default budget: these keep nearly all of it.
-    let outcome = wide("wide_within", (4 << 20) - (64 << 10)).await;
+async fn sixteen_reads_told_the_limits_keep_dictionaries_as_large_as_allowed_and_are_refused_nothing()
+ {
+    // Each read is told it may hold two mebibytes of dictionaries: its value's offsets and the
+    // padding of its frame take the rest.
+    let largest = told_dictionary_bytes() - 4_096;
+    let outcome = wide("wide_within", largest, true).await;
     assert_eq!(
         outcome.report.status,
         rdlt_engine::RunStatus::Succeeded,
@@ -415,14 +433,31 @@ async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing
         outcome.error
     );
     assert_eq!(outcome.report.rows, 16 * (1 + 8 * WIDE_ROWS as u64));
-    // Sixteen reads kept sixty megabytes between them, beside what was pushed.
+    // Sixteen reads kept thirty megabytes between them, beside what was pushed.
     let peak = outcome.report.peak_memory;
-    assert!((60 << 20..=256 << 20).contains(&peak), "{peak} bytes");
+    let kept = 16 * u64::try_from(largest).expect("a size");
+    assert!((kept..=256 << 20).contains(&peak), "{peak} bytes");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_source_told_the_limits_is_refused_a_dictionary_beyond_them_before_it_is_sent() {
+    let outcome = wide("wide_told_beyond", told_dictionary_bytes() + 1, true).await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (rdlt_engine::ErrorKind::Source, Some("limit_exceeded"))
+    );
+    let said = format!("{:?}", error.report());
+    assert!(said.contains("dictionary bytes"), "{said}");
+    assert!(said.contains("2097152"), "{said}");
+    assert_eq!(outcome.report.rows, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_keeping_more_than_its_part_of_the_budget_fails_naming_the_limit() {
-    let outcome = wide("wide_beyond", (4 << 20) + 1).await;
+    // A host that tells its source the wire's limits, not the engine's: the budget refuses
+    // what the source keeps beyond a read's part.
+    let outcome = wide("wide_beyond", (4 << 20) + 1, false).await;
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),

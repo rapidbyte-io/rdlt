@@ -1,6 +1,7 @@
 //! The memory budget: everything the engine holds of what connectors send has a reservation of
 //! its bytes, and the reservations never pass the budget.
 
+mod admits;
 mod ledger;
 #[cfg(test)]
 mod tests;
@@ -12,6 +13,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
+pub(crate) use self::admits::{admitted, kept, least};
 pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
 use self::ledger::{Ledger, admit_waiting};
 use crate::env::Env;
@@ -39,6 +41,8 @@ pub(crate) struct MemoryBudget {
     deadline: Option<Deadline>,
     /// How many reads share what reads may keep.
     readers: usize,
+    /// The limits on what a read sends, where they are fewer than what the budget admits.
+    limits: Option<rdlt_wire::Limits>,
 }
 
 /// How long a request waits, and the clock that says so.
@@ -70,6 +74,7 @@ impl MemoryBudget {
             shared: Arc::new(Mutex::new(Ledger::new(capacity))),
             deadline: None,
             readers: 1,
+            limits: None,
         }
     }
 
@@ -88,6 +93,19 @@ impl MemoryBudget {
     /// How many reads share what reads may keep.
     pub(crate) fn readers(&self) -> usize {
         self.readers
+    }
+
+    /// The budget, its reads held to `limits` on what they send.
+    pub(crate) fn limited(mut self, limits: rdlt_wire::Limits) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+
+    /// The limits on what a read sends: those set, or what the budget's shares admit.
+    pub(crate) fn limits(&self) -> rdlt_wire::Limits {
+        let admitted = admitted(self.shares(), self.readers);
+        self.limits
+            .map_or(admitted, |limits| limits.lesser(&admitted))
     }
 
     /// Reserves `bytes` a push keeps alive, waiting until earlier pushes are admitted and the
@@ -242,6 +260,11 @@ impl MemoryBudget {
     #[cfg(test)]
     pub(crate) fn reserved(&self) -> u64 {
         self.shared.lock().reserved()
+    }
+
+    /// How many requests for pushes or lowering have waited for room, and how many cursors.
+    pub(crate) fn waits(&self) -> (u64, u64) {
+        self.shared.lock().waited
     }
 
     /// The most bytes ever reserved at once.

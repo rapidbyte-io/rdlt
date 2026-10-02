@@ -86,7 +86,7 @@ fn the_builder_applies_defaults_and_settings() {
     let retry = RetryPolicy::default().max_attempts(2);
     let batch = BatchPolicy::new(10, 20, Duration::from_millis(30), 40).unwrap();
     let config = EngineConfig::builder()
-        .memory(1024)
+        .memory(64 << 20)
         .lanes(3)
         .lane_window(2)
         .partitions(5)
@@ -97,7 +97,7 @@ fn the_builder_applies_defaults_and_settings() {
         .retry(retry)
         .build()
         .unwrap();
-    assert_eq!(config.memory().get(), 1024);
+    assert_eq!(config.memory().get(), 64 << 20);
     assert_eq!(config.lanes().map(std::num::NonZero::get), Some(3));
     assert_eq!(config.lane_window().get(), 2);
     assert_eq!(config.partitions().get(), 5);
@@ -106,6 +106,66 @@ fn the_builder_applies_defaults_and_settings() {
     assert_eq!(config.batch(), &batch);
     assert_eq!(config.commit(), Some(&policy));
     assert_eq!(config.retry(), &retry);
+}
+
+#[test]
+fn memory_below_what_the_protocol_s_least_frame_needs_is_refused_naming_the_least() {
+    for partitions in [1, 4, 16] {
+        let least = EngineConfig::least_memory(partitions);
+        let build = |memory| {
+            EngineConfig::builder()
+                .memory(memory)
+                .partitions(partitions)
+                .build()
+        };
+        let config = build(least).unwrap();
+        assert!(config.limits().admit_peer().is_ok());
+        let refused = build(least - 1).unwrap_err();
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (ErrorKind::Config, Some("memory_below_minimum"))
+        );
+        let said = refused.to_string();
+        assert!(said.contains(&format!("is {least} bytes")), "{said}");
+        assert!(said.contains(&format!("{partitions} partitions")), "{said}");
+    }
+    // About ten mebibytes at the default sixteen partitions, and the default is far above it.
+    assert_eq!(EngineConfig::least_memory(16), 10_324_437);
+    assert!(EngineConfig::builder().build().is_ok());
+}
+
+#[test]
+fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
+    use rdlt_wire::Limits;
+    let defaults = EngineConfig::default().limits();
+    assert_eq!(
+        defaults,
+        Limits {
+            json_push_bytes: 36 << 20,
+            dictionary_bytes: 2 << 20,
+            schema_bytes: (2 << 20) / 5,
+            ..Limits::default()
+        }
+    );
+    // A limit configured below what the memory admits stays, and one above is lowered.
+    let configured = Limits {
+        json_push_bytes: 1 << 20,
+        dictionary_bytes: 32 << 20,
+        batch_rows: 2_000,
+        ..Limits::default()
+    };
+    let config = EngineConfig::builder().limits(configured).build().unwrap();
+    assert_eq!(
+        config.limits(),
+        Limits {
+            json_push_bytes: 1 << 20,
+            batch_rows: 2_000,
+            ..defaults
+        }
+    );
+    // Fewer partitions let each read keep more.
+    let two = EngineConfig::builder().partitions(2).build().unwrap();
+    assert_eq!(two.limits().dictionary_bytes, 16 << 20);
 }
 
 #[test]

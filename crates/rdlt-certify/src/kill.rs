@@ -121,7 +121,7 @@ const UNBUILT: &str = "rdlt-certify was built without its `kill` feature";
 #[cfg(all(feature = "kill", test))]
 use running::{DRAWS, drawn};
 #[cfg(feature = "kill")]
-pub(crate) use running::{Loaded, Proof, converged, proven, run, unproven, within};
+pub(crate) use running::{Loaded, Proof, converged, limits, proven, run, unproven, within};
 
 #[cfg(feature = "kill")]
 mod running {
@@ -151,8 +151,9 @@ mod running {
     /// flight.
     const COMMIT_ROWS: u64 = 16;
 
-    /// The bytes a load holds in flight, which bound what a source sends ahead of commits.
-    const MEMORY: u64 = 1 << 20;
+    /// The load's memory budget, about the least an engine takes: its shares bound what a
+    /// source sends ahead of commits.
+    const MEMORY: u64 = 11 << 20;
 
     /// The rows a batch the engine writes holds, at most.
     const BATCH_ROWS: u64 = 8;
@@ -297,8 +298,9 @@ mod running {
         Some(Loaded::Unseen(format!("{reason} (kill seed {seed})")))
     }
 
-    /// An engine that commits every [`COMMIT_ROWS`] rows and retries quickly.
-    fn engine() -> Result<Engine, Violation> {
+    /// The configuration of an engine that commits every [`COMMIT_ROWS`] rows and retries
+    /// quickly.
+    fn config() -> Result<EngineConfig, Violation> {
         let commit = CommitPolicy::new(None, Some(COMMIT_ROWS), None).map_err(Violation::of)?;
         let retry = RetryPolicy::default()
             .max_attempts(ATTEMPTS)
@@ -309,7 +311,7 @@ mod running {
         // source is still reading when the kills land.
         let batch = BatchPolicy::new(1 << 20, BATCH_ROWS, Duration::from_millis(10), 1 << 20)
             .map_err(Violation::of)?;
-        let config = EngineConfig::builder()
+        EngineConfig::builder()
             .memory(MEMORY)
             .partition_buffer(1)
             .lane_window(1)
@@ -317,7 +319,17 @@ mod running {
             .commit(commit)
             .retry(retry)
             .build()
-            .map_err(Violation::of)?;
+            .map_err(Violation::of)
+    }
+
+    /// The limits the loading engine admits within, which its connectors are told.
+    pub(crate) fn limits() -> Result<rdlt_wire::Limits, Violation> {
+        Ok(config()?.limits())
+    }
+
+    /// An engine of that configuration.
+    fn engine() -> Result<Engine, Violation> {
+        let config = config()?;
         let threads = NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN);
         let pool = RayonPool::new(threads).map_err(Violation::of)?;
         Ok(Engine::new(config, Arc::new(SystemEnv::new(pool))))

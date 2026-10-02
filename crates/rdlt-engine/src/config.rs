@@ -2,6 +2,7 @@
 
 mod batch;
 mod commit;
+mod limits;
 #[cfg(test)]
 mod tests;
 
@@ -107,6 +108,8 @@ pub struct EngineConfig {
     commit: Option<CommitPolicy>,
     replan: Duration,
     retry: RetryPolicy,
+    /// The limits configured, before the memory budget lowers them.
+    limits: rdlt_wire::Limits,
 }
 
 impl EngineConfig {
@@ -124,6 +127,7 @@ impl EngineConfig {
             commit: None,
             replan: None,
             retry: None,
+            limits: None,
         }
     }
 
@@ -208,6 +212,7 @@ impl Default for EngineConfig {
             commit: None,
             replan: Duration::from_secs(60),
             retry: RetryPolicy::default(),
+            limits: rdlt_wire::Limits::default(),
         }
     }
 }
@@ -226,6 +231,7 @@ pub struct EngineConfigBuilder {
     commit: Option<CommitPolicy>,
     replan: Option<Duration>,
     retry: Option<RetryPolicy>,
+    limits: Option<rdlt_wire::Limits>,
 }
 
 impl EngineConfigBuilder {
@@ -308,8 +314,9 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// Validates the settings: every count and size is more than zero, and the retry policy's
-    /// first delay is no longer than its longest.
+    /// Validates the settings: every count and size is more than zero, the retry policy's first
+    /// delay is no longer than its longest, and the memory is at least what
+    /// [`EngineConfig::least_memory`] says its partitions need.
     pub fn build(self) -> Result<EngineConfig, Error> {
         let defaults = EngineConfig::default();
         let invalid = |name: &str| {
@@ -321,7 +328,7 @@ impl EngineConfigBuilder {
                 Error::config("retry: initial delay exceeds max_delay").with_code("config_invalid")
             );
         }
-        Ok(EngineConfig {
+        let config = EngineConfig {
             memory: nonzero(self.memory, defaults.memory, NonZeroU64::new)
                 .ok_or_else(|| invalid("memory"))?,
             lanes: match self.lanes {
@@ -350,7 +357,10 @@ impl EngineConfigBuilder {
                 replan => replan.unwrap_or(defaults.replan),
             },
             retry,
-        })
+            limits: self.limits.unwrap_or(defaults.limits),
+        };
+        config.admit_memory()?;
+        Ok(config)
     }
 }
 

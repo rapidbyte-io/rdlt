@@ -148,9 +148,10 @@ async fn a_push_the_shredder_refuses_fails_the_run_with_its_code() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_json_push_beyond_what_pushes_may_take_of_the_budget_is_refused() {
+async fn a_json_push_beyond_what_the_budget_admits_is_refused_where_it_is_emitted() {
+    // Two megabytes of JSON, where a budget of eleven admits a push of a megabyte and a half.
     let rows: Vec<String> = (0..2000)
-        .map(|id| format!(r#"{{"id":{id},"pad":"{}"}}"#, "x".repeat(40)))
+        .map(|id| format!(r#"{{"id":{id},"pad":"{}"}}"#, "x".repeat(1_000)))
         .collect();
     let push = rows.join("\n");
     let source = batches(
@@ -158,18 +159,34 @@ async fn a_json_push_beyond_what_pushes_may_take_of_the_budget_is_refused() {
         vec![BatchStream::json("events", &[&push, &push])],
     )
     .await;
-    let outcome = engine(commit_every(1000).memory(4096))
+    let config = commit_every(1000).memory(11 << 20);
+    let limit = config
+        .clone()
+        .build()
+        .expect("valid")
+        .limits()
+        .json_push_bytes;
+    assert!(limit < 2_000_000, "{limit}");
+    let outcome = engine(config)
         .run(
             pipeline("over_budget", [stream("events")]),
             source,
             memory("over_budget").await,
         )
         .await;
-    // Nothing is admitted beyond the budget: the push is refused, and none of it loads.
+    // The source is told the limit the budget admits, so the push never reaches the budget.
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
-        (ErrorKind::Source, Some("push_exceeds_budget"))
+        (ErrorKind::Source, Some("limit_exceeded"))
+    );
+    let said = format!("{:?}", error.report());
+    assert!(
+        said.contains(&format!(
+            "json push bytes is {}, over the limit of {limit}",
+            push.len()
+        )),
+        "{said}"
     );
     assert_eq!(published_rows("over_budget", "events"), 0);
     assert_eq!(outcome.report.peak_memory, 0);
@@ -237,12 +254,16 @@ async fn rows_shredded_into_several_batches_keep_their_order_for_merges() {
 
 #[tokio::test(start_paused = true)]
 async fn a_small_budget_never_holds_gathered_pushes_until_their_latency() {
-    // Twenty pushes of about 900 bytes against an 8 KiB budget: the gathered pushes' permits fill
-    // the budget, so the next push's admission waits for them.
+    // Twenty pushes of about 300 KB, each admitted for three times that, where pushes may take
+    // four and a half megabytes of the budget: the gathered pushes' permits fill their share,
+    // so the next push's admission waits for them.
     let pushes: Vec<String> = (0..20)
         .map(|push| {
             let rows: Vec<String> = (0..10)
-                .map(|row| format!(r#"{{"id":{},"pad":"{}"}}"#, push * 10 + row, "x".repeat(70)))
+                .map(|row| {
+                    let pad = "x".repeat(30_000);
+                    format!(r#"{{"id":{},"pad":"{pad}"}}"#, push * 10 + row)
+                })
                 .collect();
             rows.join("\n")
         })
@@ -253,7 +274,7 @@ async fn a_small_budget_never_holds_gathered_pushes_until_their_latency() {
         vec![BatchStream::json("events", &pushes).one_segment()],
     )
     .await;
-    let run = engine(commit_every(1000).memory(8192)).run(
+    let run = engine(commit_every(1000).memory(11 << 20)).run(
         pipeline("small_budget", [stream("events")]),
         source,
         memory("small_budget").await,

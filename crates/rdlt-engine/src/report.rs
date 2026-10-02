@@ -50,6 +50,10 @@ pub struct Report {
     pub commits: u64,
     /// The most bytes of in-flight batches the run held at once.
     pub peak_memory: u64,
+    /// How many times a push or a piece being lowered waited for room in the memory budget.
+    pub memory_waits: u64,
+    /// How many times a checkpoint's cursor waited for a commit to make room for it.
+    pub cursor_waits: u64,
     /// What each stream committed, by stream name.
     pub streams: BTreeMap<String, StreamReport>,
 }
@@ -196,6 +200,8 @@ impl Report {
             bytes: 0,
             commits: 0,
             peak_memory: 0,
+            memory_waits: 0,
+            cursor_waits: 0,
             streams: BTreeMap::new(),
         }
     }

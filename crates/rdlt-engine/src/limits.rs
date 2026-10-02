@@ -49,6 +49,18 @@ pub(crate) const MIN_PIECE: u64 = 64 << 10;
 /// long waits for bytes nothing will release.
 pub(crate) const BUDGET_WAIT: Duration = Duration::from_secs(3600);
 
+/// Times a schema's message that a read keeps for it: the message, and the schema decoded from
+/// it, which takes up to four times as much where its fields are many and their names short.
+pub(crate) const SCHEMA_KEPT: u64 = 5;
+
+/// Bytes a frame of the log takes for each byte of a cursor or state value it records: the value
+/// is base64 text in its record, and the record base64 text in the frame.
+pub(crate) const RECORDED: u64 = 2;
+
+/// The code of the error for a configuration whose memory admits less than the protocol's
+/// least frame.
+pub(crate) const MEMORY_BELOW_MINIMUM: &str = "memory_below_minimum";
+
 /// The code of the error a wait on the memory budget ends with at its deadline.
 pub(crate) const BUDGET_WAIT_EXCEEDED: &str = "memory_budget_wait_exceeded";
 
