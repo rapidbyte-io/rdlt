@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::HEAP;
 use crate::schema::{batch, ints, text};
 use crate::support::batches::{BatchStream, batches};
-use crate::support::destinations::{buffering, limited, null};
+use crate::support::destinations::{Step, buffering, failing, limited, null};
 use crate::support::script::{Fault, Hang, Script, ScriptStream, id, reconnect};
 use crate::support::{
     commit_every, engine, every_id, generator, memory, pipeline, published_ids, published_json,
@@ -304,6 +304,34 @@ async fn retry_budget_resets_after_commit() {
         .await;
     assert_eq!(strict.report.status, RunStatus::Failed);
     assert_eq!(strict.report.attempts.len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn receipts_counting_past_a_total_fail_the_run_typed() {
+    // Two commits in one attempt, and one in each of two attempts, the first failing after its
+    // commit landed: the attempt's totals, then the run's, would pass what they hold.
+    for (name, faulted) in [("inflated_attempt", false), ("inflated_run", true)] {
+        let mut script = Script::new(vec![ScriptStream::new("events", 1, 10, 5)]);
+        if faulted {
+            script = script.fail(Fault {
+                batch: 2,
+                kind: ConnectorErrorKind::Transient,
+                retry_after: None,
+            });
+        }
+        let (_, source) = script.connect(name).await;
+        let destination = failing(memory(name).await, Step::InflateReceipts);
+        let plan = pipeline(name, [stream("events").read(ReadMode::Incremental)]);
+        let outcome = engine(commit_every(5)).run(plan, source, destination).await;
+        assert_eq!(outcome.report.status, RunStatus::Failed, "{name}");
+        let error = outcome.error.expect("the run failed");
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Destination, Some("receipt_overflow")),
+            "{name}"
+        );
+        assert_eq!(outcome.report.rows, u64::MAX, "{name}");
+    }
 }
 
 /// L8: the engine's memory stays within its budget plus a fixed overhead, even when the destination

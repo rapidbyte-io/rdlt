@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 use rdlt_connector::{CommitSeq, LoadId, PipelineId, Receipt, StreamName};
 use serde::Serialize;
 
-use crate::error::ErrorReport;
+use crate::error::{Error, ErrorKind, ErrorReport};
 
 /// How a run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -135,14 +135,36 @@ pub(crate) struct Committed {
 
 impl Committed {
     /// Folds `commit` in.
-    pub(crate) fn add(&mut self, commit: CommitRecord) {
+    ///
+    /// # Errors
+    ///
+    /// `receipt_overflow` where the receipt's rows or bytes take a total past what it holds.
+    pub(crate) fn add(&mut self, commit: CommitRecord) -> Result<(), Error> {
+        let rows = total(self.rows, commit.receipt.rows)?;
+        let bytes = total(self.bytes, commit.receipt.bytes)?;
+        (self.rows, self.bytes) = (rows, bytes);
         self.commits += 1;
-        self.rows += commit.receipt.rows;
-        self.bytes += commit.receipt.bytes;
         for (stream, counts) in commit.streams {
             self.streams.entry(stream).or_default().absorb(&counts);
         }
+        Ok(())
     }
+}
+
+/// `held` with `more` added, where a total holds it.
+///
+/// # Errors
+///
+/// `receipt_overflow`, a Destination error no retry mends: only a destination's receipts count
+/// rows and bytes the engine does not, and none that tells the truth reaches the limit.
+fn total(held: u64, more: u64) -> Result<u64, Error> {
+    held.checked_add(more).ok_or_else(|| {
+        Error::new(
+            ErrorKind::Destination,
+            "the destination's receipts count more rows or bytes than a total holds",
+        )
+        .with_code("receipt_overflow")
+    })
 }
 
 impl StreamReport {
@@ -207,7 +229,15 @@ impl Report {
     }
 
     /// Folds `attempt` in, listing it among the latest [`REPORTED_ATTEMPTS`].
-    pub(crate) fn absorb(&mut self, attempt: AttemptRecord) {
+    ///
+    /// # Errors
+    ///
+    /// `receipt_overflow` where the attempt's totals take the run's past what they hold; the
+    /// report is then as it was.
+    pub(crate) fn absorb(&mut self, attempt: AttemptRecord) -> Result<(), Error> {
+        let committed = attempt.log.committed;
+        let rows = total(self.rows, committed.rows)?;
+        let bytes = total(self.bytes, committed.bytes)?;
         for (stream, behind) in &attempt.log.behind {
             self.streams.entry(stream.to_string()).or_default().behind = Some(*behind);
         }
@@ -217,13 +247,11 @@ impl Report {
                 .or_default()
                 .retention_resets += resets;
         }
-        let committed = attempt.log.committed;
         for (stream, counts) in &committed.streams {
             let total = self.streams.entry(stream.to_string()).or_default();
             total.absorb(counts);
         }
-        self.rows += committed.rows;
-        self.bytes += committed.bytes;
+        (self.rows, self.bytes) = (rows, bytes);
         self.commits += committed.commits;
         self.attempted += 1;
         self.attempts.push(AttemptReport {
@@ -238,32 +266,40 @@ impl Report {
         if self.attempts.len() > REPORTED_ATTEMPTS {
             self.attempts.remove(0);
         }
+        Ok(())
     }
 
     /// Credits `commit` to the folded attempt whose load its receipt names, once a later attempt
     /// found it landed.
-    pub(crate) fn credit(&mut self, commit: CommitRecord) {
+    ///
+    /// # Errors
+    ///
+    /// `receipt_overflow`, as [`Report::absorb`] fails; the report is then as it was.
+    pub(crate) fn credit(&mut self, commit: CommitRecord) -> Result<(), Error> {
         let load = commit.receipt.load_id;
         let mut committed = Committed::default();
-        committed.add(commit);
+        committed.add(commit)?;
+        let rows = total(self.rows, committed.rows)?;
+        let bytes = total(self.bytes, committed.bytes)?;
         for (stream, counts) in &committed.streams {
             self.streams
                 .entry(stream.to_string())
                 .or_default()
                 .absorb(counts);
         }
-        self.rows += committed.rows;
-        self.bytes += committed.bytes;
+        (self.rows, self.bytes) = (rows, bytes);
         self.commits += committed.commits;
         if let Some(listed) = self
             .attempts
             .iter_mut()
             .find(|attempt| attempt.load_id == load)
         {
+            // An attempt's totals are part of the run's, which hold them.
             listed.commits += committed.commits;
-            listed.rows += committed.rows;
-            listed.bytes += committed.bytes;
+            listed.rows = listed.rows.saturating_add(committed.rows);
+            listed.bytes = listed.bytes.saturating_add(committed.bytes);
         }
+        Ok(())
     }
 
     /// Folds `attempts` into the run's report.
@@ -277,7 +313,7 @@ impl Report {
     ) -> Self {
         let mut report = Self::new(pipeline);
         for attempt in attempts {
-            report.absorb(attempt);
+            report.absorb(attempt).expect("test totals fit");
         }
         report.status = status;
         report.elapsed = elapsed;

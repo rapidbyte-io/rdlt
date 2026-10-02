@@ -443,7 +443,7 @@ impl Coordinator {
         let receipt = self.committed(&meta).await?;
         crash_point!("engine.complete.after", !completing.is_empty());
         self.parts.tables.recorded(&tables.revisions);
-        self.record(receipt, streams, &completing);
+        self.record(receipt, streams, &completing)?;
         self.record_positions(&collected.positions);
         self.landed(&collected.positions, progressed);
         crash_point!("engine.ack.before");
@@ -471,12 +471,16 @@ impl Coordinator {
     }
 
     /// Advances past a landed commit: what state now records, and the commit in the log.
+    ///
+    /// # Errors
+    ///
+    /// `receipt_overflow` where the receipt counts more than the attempt's totals hold.
     fn record(
         &mut self,
         receipt: Receipt,
         streams: BTreeMap<StreamName, crate::report::StreamReport>,
         completing: &[usize],
-    ) {
+    ) -> Result<(), Error> {
         self.seq = self.seq.next();
         // Rows still unsealed stay pending, so they make the next commit due as soon as they seal.
         for counts in streams.values() {
@@ -496,7 +500,7 @@ impl Coordinator {
         }
         let mut log = self.parts.log.lock();
         log.pending = None;
-        log.committed.add(CommitRecord { receipt, streams });
+        log.committed.add(CommitRecord { receipt, streams })
     }
 }
 

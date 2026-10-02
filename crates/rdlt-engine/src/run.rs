@@ -201,20 +201,25 @@ impl Ledger {
     /// A failed attempt's commit in flight is credited once a later attempt opened and found it
     /// landed, to the attempt whose load its receipt names. An attempt that never opened read
     /// nothing back, so the commit stays in flight for the next.
-    fn record(&mut self, mut attempt: AttemptRecord, failed: bool) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// `receipt_overflow` where the attempt's receipts take the run's totals past what they
+    /// hold.
+    fn record(&mut self, mut attempt: AttemptRecord, failed: bool) -> Result<bool, Error> {
         let log = &mut attempt.log;
         if let Some(opened) = log.opened
             && let Some(pending) = self.unresolved.take()
             && opened == (pending.receipt.load_id, pending.receipt.commit_seq)
         {
-            self.report.credit(pending);
+            self.report.credit(pending)?;
         }
         if failed && let Some(pending) = log.pending.take() {
             self.unresolved = Some(pending);
         }
         let progressed = log.progressed;
-        self.report.absorb(attempt);
-        progressed
+        self.report.absorb(attempt)?;
+        Ok(progressed)
     }
 
     /// The run's report.
@@ -299,7 +304,10 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
             log,
             error: result.as_ref().err().map(Error::report),
         };
-        let progressed = ledger.record(attempt, result.is_err());
+        let progressed = match ledger.record(attempt, result.is_err()) {
+            Ok(progressed) => progressed,
+            Err(error) => break (RunStatus::Failed, Some(error)),
+        };
         let error = match result {
             Ok(AttemptEnd::Exhausted) => break (RunStatus::Succeeded, None),
             Ok(AttemptEnd::Stopped) => break (RunStatus::Stopped, None),

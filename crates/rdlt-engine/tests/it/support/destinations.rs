@@ -213,6 +213,10 @@ pub(crate) enum Step {
     PanicOnOpen,
     /// The first commit fails before it lands; the others land.
     CommitOnce,
+    /// Every commit lands, and is answered with the receipt of the commit after it.
+    SkewReceipts,
+    /// Every commit lands, and its receipt counts as many rows as a total holds.
+    InflateReceipts,
 }
 
 /// `inner`, failing with a transient error at `step`, or panicking there.
@@ -305,7 +309,17 @@ impl DestinationSession for FailingSession {
             if loses && !self.lost.swap(true, Ordering::SeqCst) {
                 return Err(injected());
             }
-            Ok(receipt)
+            Ok(match self.step {
+                Step::SkewReceipts => Receipt {
+                    commit_seq: receipt.commit_seq.next(),
+                    ..receipt
+                },
+                Step::InflateReceipts => Receipt {
+                    rows: u64::MAX,
+                    ..receipt
+                },
+                _ => receipt,
+            })
         })
     }
 

@@ -80,6 +80,35 @@ async fn reset(target: Target, name: &str, store: &str, scope: ResetScope) -> Re
 }
 
 #[tokio::test]
+async fn a_receipt_for_another_commit_fails_a_run_and_a_reset() {
+    let skewing = || async { failing(memory("skewed_receipts").await, Step::SkewReceipts) };
+    let plan = pipeline("skewed", [stream("events").read(ReadMode::Incremental)]);
+    let outcome = engine(commit_every(16))
+        .run(plan, log("skewed").await, skewing().await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Destination, Some("receipt_mismatch"), false)
+    );
+    let reset = engine(commit_every(16))
+        .reset(
+            "skewed",
+            &["events"],
+            ResetScope::Positions,
+            log("skewed").await,
+            skewing().await,
+        )
+        .await;
+    let error = reset.expect_err("the reset fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Destination, Some("receipt_mismatch"))
+    );
+}
+
+#[tokio::test]
 async fn a_stream_reset_to_its_beginning_is_read_again_into_its_table() {
     each(Target::IN_PROCESS, |target| async move {
         load(target, "again", "reset_positions").await;

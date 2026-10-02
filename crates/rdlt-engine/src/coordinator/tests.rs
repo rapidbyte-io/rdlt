@@ -13,10 +13,10 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    BoxFuture, Catalog, CommitMeta, ConnectorError, Cursor, DestinationSession, DestinationWriter,
-    Epoch, GenerationId, LoadId, PartitionId, PartitionSink, PartitionState, ReadRequest, Receipt,
-    Result, SchemaVersion, SegmentId, Source, StateChange, StateEntry, StateKey, StreamName,
-    StreamState, TableChange, TablePath, TableRef, TableSchema,
+    BoxFuture, Catalog, CommitMeta, CommitSeq, ConnectorError, Cursor, DestinationSession,
+    DestinationWriter, Epoch, GenerationId, LoadId, PartitionId, PartitionSink, PartitionState,
+    ReadRequest, Receipt, Result, SchemaVersion, SegmentId, Source, StateChange, StateEntry,
+    StateKey, StreamName, StreamState, TableChange, TablePath, TableRef, TableSchema,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -45,6 +45,8 @@ struct Recorder {
     commits: Commits,
     closed: Arc<AtomicBool>,
     fail: bool,
+    /// Whether each receipt names the commit after the commit it answers.
+    skewed: bool,
 }
 
 impl DestinationSession for Recorder {
@@ -69,9 +71,14 @@ impl DestinationSession for Recorder {
                 return Err(ConnectorError::data("commit refused"));
             }
             self.commits.lock().push(meta.clone());
+            let skew = if self.skewed {
+                CommitSeq::next
+            } else {
+                std::convert::identity
+            };
             Ok(Receipt {
                 load_id: meta.load_id,
-                commit_seq: meta.commit_seq,
+                commit_seq: skew(meta.commit_seq),
                 committed_at: UNIX_EPOCH,
                 rows: meta.segments.len(),
                 bytes: 0,
@@ -149,6 +156,8 @@ struct Setup {
     policy: CommitPolicy,
     barrier_wait: Duration,
     fail_commit: bool,
+    /// Whether the destination answers each commit with the receipt of the next.
+    skew_receipts: bool,
     /// A schema the first stream's table is created with before the coordinator starts.
     schema: Option<TableSchema>,
     /// Where the load keeps its write-ahead log, if it keeps one.
@@ -170,6 +179,7 @@ impl Setup {
             policy: CommitPolicy::new(None, Some(1_000), None).unwrap(),
             barrier_wait: Duration::from_secs(60),
             fail_commit: false,
+            skew_receipts: false,
             schema: None,
             wal: None,
             budget: u64::MAX,
@@ -242,6 +252,7 @@ impl Setup {
             commits: Arc::clone(&commits),
             closed,
             fail: self.fail_commit,
+            skewed: self.skew_receipts,
         }));
         let tables = self.tables(session).await;
         let source = Arc::new(self.listener(acks, commits));
@@ -908,6 +919,40 @@ async fn a_failed_commit_ends_the_coordinator_and_acknowledges_nothing() {
     );
     assert!(harness.acks.lock().is_empty());
     assert_eq!(harness.log.lock().committed.commits, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it() {
+    let store = Arc::new(MemoryWal::default());
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    setup.skew_receipts = true;
+    setup.wal = Some(Arc::clone(&store));
+    let (task, harness) = setup.start().await;
+    harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
+    harness.end(0, false);
+    let error = task.await.unwrap().unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Destination, Some("receipt_mismatch"), false)
+    );
+    assert!(harness.acks.lock().is_empty());
+    assert_eq!(harness.log.lock().committed.commits, 0);
+    // The log holds the commit and no receipt: a replay commits it again.
+    let frames: Vec<Frame> = store
+        .appended
+        .lock()
+        .iter()
+        .flat_map(|appended| Frames::new(appended).map(|frame| frame.unwrap().1))
+        .collect();
+    assert!(frames.iter().any(|frame| matches!(frame, Frame::Commit(_))));
+    assert!(
+        !frames
+            .iter()
+            .any(|frame| matches!(frame, Frame::Committed(_)))
+    );
 }
 
 #[tokio::test(start_paused = true)]
