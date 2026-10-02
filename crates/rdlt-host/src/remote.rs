@@ -297,6 +297,7 @@ impl Handshaken {
             answer = within(deadline, "the configuration", client.configure(request)) => answer?,
         };
         let spec = configured.spec.unwrap_or_default();
+        agreed::spec_within(&spec)?;
         if (spec.id.as_str(), spec.version.as_str())
             != (self.spec.id.as_str(), self.spec.version.as_str())
         {

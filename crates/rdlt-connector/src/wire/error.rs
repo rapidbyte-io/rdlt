@@ -9,6 +9,7 @@ use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 const CONTRACT_LIMITS: &[&str] = &[
     "batch columns",
     "batch rows",
+    "config schema bytes",
     "cursor bytes",
     "json push bytes",
 ];
