@@ -7,30 +7,28 @@ mod binary;
 mod bubblewrap;
 mod grants;
 pub(crate) mod process;
+mod provide;
 mod sandbox;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rdlt_connector::{
-    BoxFuture, ConnectorError, ConnectorId, ConnectorSpec, Destination, Role, Source,
-};
+use rdlt_connector::{ConnectorSpec, Role};
 
 use crate::kills::Kills;
 use crate::secrets::{Config, SecretResolver, Secrets};
-use crate::supervise::{
-    Configured, Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor,
-};
+use crate::supervise::{Configured, Gate, Spawned, Start, Supervisor};
 use binary::{Binary, Unfit};
 pub use bubblewrap::Bubblewrap;
+use grants::{Chain, Claim, Guarded, Lease, Leases, Opened, Program, Roots};
 pub use process::{Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawned, stop_spawned};
-use process::{Launch, Process, Unspawned};
-pub use sandbox::{Confined, Grants, Launcher, NetworkGrant, Sandbox, SandboxError, Stops};
+use process::{Launch, Process};
+pub(crate) use provide::refused;
+use provide::{binary_name, handshake_failed, spawn_failed};
+pub use sandbox::{Bind, Confined, Grants, Launcher, NetworkGrant, Sandbox, SandboxError, Stops};
 
-use crate::provider::{
-    ConnectorRef, Digest, Honours, Isolation, Placed, Placement, Provider, ProviderError,
-};
+use crate::provider::{ConnectorRef, Digest, Honours, Isolation, ProviderError};
 use crate::remote::Options;
 use crate::wire::Wire;
 
@@ -50,8 +48,12 @@ pub struct Local {
     sandbox: Option<Arc<dyn Sandbox>>,
     /// Paths every connector may read.
     shared_reads: Vec<PathBuf>,
-    /// What each connector running now was granted.
-    leases: grants::Leases,
+    /// Where a reference's grants may be made.
+    roots: Roots,
+    /// Where the host keeps its own files.
+    guarded_dirs: Vec<PathBuf>,
+    /// What each placement of this process holds now.
+    leases: Leases,
     dirs: Vec<PathBuf>,
     grace: Duration,
     env_passthrough: Vec<String>,
@@ -66,7 +68,9 @@ impl Local {
         Self {
             sandbox,
             shared_reads: Vec::new(),
-            leases: grants::Leases::default(),
+            roots: Roots::default(),
+            guarded_dirs: Vec::new(),
+            leases: Leases::process(),
             dirs: Vec::new(),
             grace: Duration::from_secs(10),
             env_passthrough: Vec::new(),
@@ -104,6 +108,37 @@ impl Local {
     #[must_use]
     pub fn grant_read(mut self, path: impl Into<PathBuf>) -> Self {
         self.shared_reads.push(path.into());
+        self
+    }
+
+    /// Lets a reference grant its connector reads within `root`, an absolute path: a
+    /// reference's grants lie within the roots its operator names, and none are made where
+    /// none is named.
+    #[must_use]
+    pub fn grantable_read(mut self, root: impl Into<PathBuf>) -> Self {
+        self.roots.read.push(root.into());
+        self
+    }
+
+    /// Lets a reference grant its connector reads and writes within `root`, an absolute path.
+    ///
+    /// No placement is made while `root` holds, or lies within, what decides what the host
+    /// runs or keeps: a connector directory, a binary placed or its directory, a script's
+    /// interpreter, the sandbox's launcher, the host's executable's directory, a directory
+    /// the host keeps its own files in ([`guarded_dir`](Self::guarded_dir)), or one secrets
+    /// are read from.
+    #[must_use]
+    pub fn grantable_write(mut self, root: impl Into<PathBuf>) -> Self {
+        self.roots.write.push(root.into());
+        self
+    }
+
+    /// Names `dir`, an absolute path, as a directory the host keeps its own files in, as its
+    /// write-ahead log, its state, or secrets it reads itself: no root grants may write within
+    /// may hold it or lie within it.
+    #[must_use]
+    pub fn guarded_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.guarded_dirs.push(dir.into());
         self
     }
 
@@ -225,6 +260,8 @@ impl Local {
                 found,
             });
         }
+        let confinement = self.confinement(reference)?;
+        let lease = self.lease(reference, &found, confinement.is_some())?;
         Ok(Launch {
             id: reference.id.clone(),
             binary,
@@ -233,38 +270,82 @@ impl Local {
             grace: self.grace,
             kills: self.kills.clone(),
             told: self.told.clone(),
-            confinement: self.confinement(reference, &found)?,
+            confinement,
+            lease: Arc::new(lease),
         })
     }
 
-    /// What confines the connector `reference` names, run from `binary`: the provider's
-    /// sandbox, what every connector may read and what the reference grants, held while the
-    /// connector runs; none for a trusted binary, which has the host's access.
+    /// What confines the connector `reference` names: the provider's sandbox, and the
+    /// network the reference grants; none for a trusted binary, which has the host's access.
     fn confinement(
         &self,
         reference: &ConnectorRef,
-        binary: &Binary,
     ) -> Result<Option<process::Confinement>, ProviderError> {
         let Some(sandbox) = &self.sandbox else {
             return Ok(None);
         };
-        let refused = |source| ProviderError::Sandbox {
-            id: reference.id.clone(),
-            source,
-        };
-        let lease = self.leases.take(&reference.grants).map_err(refused)?;
-        grants::guarding(&lease, &[binary.path()], &self.dirs).map_err(refused)?;
-        let mut grants = reference.grants.clone();
-        grants.read.extend(self.shared_reads.iter().cloned());
+        if cfg!(not(target_os = "linux")) {
+            return Err(ProviderError::Sandbox {
+                id: reference.id.clone(),
+                source: SandboxError::Unsupported,
+            });
+        }
         Ok(Some(process::Confinement {
             sandbox: Arc::clone(sandbox),
-            grants,
-            lease: Arc::new(lease),
+            network: reference.grants.network,
         }))
     }
 
+    /// What a placement of `reference`, run from `binary`, holds while it lives: the programs
+    /// it runs and, where it is `confined`, what it is granted, each path opened once and
+    /// checked against the roots, what is guarded, and what other placements hold now.
+    fn lease(
+        &self,
+        reference: &ConnectorRef,
+        binary: &Binary,
+        confined: bool,
+    ) -> Result<Lease, ProviderError> {
+        let programs =
+            programs(binary).map_err(|source| spawn_failed(reference, binary.path(), source))?;
+        let ungranted = Grants::default();
+        let (grants, shared_reads) = if confined {
+            (&reference.grants, self.shared_reads.as_slice())
+        } else {
+            (&ungranted, &[][..])
+        };
+        let claim = Claim {
+            grants,
+            shared_reads,
+            roots: &self.roots,
+            guarded: &self.guarded(),
+            programs: &programs,
+        };
+        self.leases
+            .take(&claim)
+            .map_err(|source| ProviderError::Sandbox {
+                id: reference.id.clone(),
+                source,
+            })
+    }
+
+    /// What no root grants may write within may hold: where connectors are found, the
+    /// host's executable is, the host keeps its own files, and secrets are read from; and what
+    /// confines a connector.
+    fn guarded(&self) -> Guarded {
+        let mut directories = self.dirs.clone();
+        let executable = std::env::current_exe().ok();
+        directories.extend(executable.and_then(|exe| exe.parent().map(Path::to_owned)));
+        directories.extend(self.guarded_dirs.iter().cloned());
+        directories.extend(self.secrets.directories());
+        let files = self.sandbox.as_ref().map(|sandbox| sandbox.programs());
+        Guarded {
+            directories,
+            files: files.unwrap_or_default(),
+        }
+    }
+
     /// A raw connection to the connector `reference` names, before its handshake: its binary,
-    /// found, checked and spawned as [`source`](Provider::source) spawns it, with the
+    /// found, checked and spawned as [`source`](crate::Provider::source) spawns it, with the
     /// connection's other end on file descriptor 3, stops once the wire is dropped.
     ///
     /// # Errors
@@ -321,83 +402,19 @@ impl Local {
     }
 }
 
-/// The provider's error for a connector that was not spawned.
-pub(crate) fn refused(launch: &Launch, unspawned: Unspawned) -> ProviderError {
-    let (id, path) = (launch.id.clone(), launch.binary.path().to_owned());
-    match unspawned {
-        Unspawned::Sandbox(source) => ProviderError::Sandbox { id, source },
-        Unspawned::Changed { expected, found } => ProviderError::DigestMismatch {
-            id,
-            path,
-            expected,
-            found,
-        },
-        Unspawned::Replaced => ProviderError::Replaced { id, path },
-        Unspawned::Io(source) => ProviderError::SpawnFailed { id, path, source },
+/// The programs a placement of `binary` runs: the binary, and a script's interpreter where it
+/// names one that is there.
+fn programs(binary: &Binary) -> std::io::Result<Vec<Program>> {
+    let path = binary.path().to_owned();
+    let chain = Chain::of(binary.file(), &path)?;
+    let mut programs = vec![Program { path, chain }];
+    if let Some(interpreter) = binary.interpreter()?
+        && let Ok(opened) = Opened::at(&interpreter)
+    {
+        programs.push(Program {
+            path: interpreter,
+            chain: opened.chain,
+        });
     }
-}
-
-fn spawn_failed(reference: &ConnectorRef, path: &Path, source: std::io::Error) -> ProviderError {
-    ProviderError::SpawnFailed {
-        id: reference.id.clone(),
-        path: path.to_owned(),
-        source,
-    }
-}
-
-fn handshake_failed(reference: &ConnectorRef, source: ConnectorError) -> ProviderError {
-    ProviderError::HandshakeFailed {
-        id: reference.id.clone(),
-        source: Box::new(source),
-    }
-}
-
-/// `rdlt-connector-` and the last segment of `id`.
-fn binary_name(id: &ConnectorId) -> String {
-    let last = id.as_str().rsplit('.').next().unwrap_or(id.as_str());
-    format!("rdlt-connector-{last}")
-}
-
-impl Provider for Local {
-    fn source<'a>(
-        &'a self,
-        reference: &'a ConnectorRef,
-        config: &'a serde_json::Value,
-    ) -> BoxFuture<'a, Result<Placed<Box<dyn Source>>, ProviderError>> {
-        Box::pin(async move {
-            let (supervisor, spec, path, digest) =
-                self.start(reference, Role::Source, config).await?;
-            Ok(Placed {
-                connector: Box::new(SupervisedSource(Arc::new(supervisor))) as Box<dyn Source>,
-                spec,
-                placement: Placement::Process { path },
-                digest,
-            })
-        })
-    }
-
-    fn destination<'a>(
-        &'a self,
-        reference: &'a ConnectorRef,
-        config: &'a serde_json::Value,
-    ) -> BoxFuture<'a, Result<Placed<Box<dyn Destination>>, ProviderError>> {
-        Box::pin(async move {
-            let (supervisor, spec, path, digest) =
-                self.start(reference, Role::Destination, config).await?;
-            let capabilities = supervisor
-                .capabilities()
-                .await
-                .map_err(|source| handshake_failed(reference, source))?;
-            let destination = SupervisedDestination {
-                supervisor: Arc::new(supervisor),
-                capabilities,
-            };
-            Ok(Placed {
-                connector: Box::new(destination) as Box<dyn Destination>,
-                spec,
-                placement: Placement::Process { path },
-                digest,
-            })
-        })
-    }
+    Ok(programs)
 }

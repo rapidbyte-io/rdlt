@@ -147,4 +147,8 @@ impl SecretResolver for FileSecrets {
                 .map_err(|error| SecretFault::Io(std::io::Error::other(error)))?
         })
     }
+
+    fn directories(&self) -> Vec<PathBuf> {
+        self.directories.clone()
+    }
 }

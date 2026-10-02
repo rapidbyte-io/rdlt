@@ -1,6 +1,6 @@
 //! The workspace's audited `unsafe` code: taking ownership of the socket a host passed a spawned
 //! connector at a file descriptor, and spawning a connector that inherits no other descriptor
-//! of its host's ([`inheriting_below`]).
+//! of its host's ([`inheriting_only`]).
 //!
 //! Rust cannot know that a file descriptor number names an open file nothing else owns, so
 //! turning it into an owned socket is `unsafe`. [`adopt`] establishes both before it owns the
@@ -15,7 +15,7 @@
 //! A process that made a socket, cleared its close-on-exec flag and kept its owner would have it
 //! owned twice. `rdlt-connector` calls it first thing in a connector's `main`, on the descriptor
 //! its host passed, and is the only crate the workspace's dependency rule lets use it;
-//! `rdlt-host` alone uses [`inheriting_below`].
+//! `rdlt-host` alone uses [`inheriting_only`].
 //!
 //! ```no_run
 //! let socket = rdlt_adopt::adopt(3)?;
@@ -34,7 +34,7 @@ use std::os::unix::fs::FileTypeExt as _;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub use exec::inheriting_below;
+pub use exec::{Marking, ONE_BY_ONE_CAP, inheriting_only, marks_at_once};
 
 /// Whether this process has adopted its host's socket.
 static ADOPTED: AtomicBool = AtomicBool::new(false);

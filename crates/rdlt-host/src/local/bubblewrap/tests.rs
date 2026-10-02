@@ -1,12 +1,13 @@
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::Path;
 
 use super::{Bubblewrap, PROGRAM};
-use crate::local::process::{PROGRAM_FD, SOCKET_FD};
-use crate::local::sandbox::{Confined, Grants, NetworkGrant, Sandbox, SandboxError, Stops};
+use crate::local::process::{GRANTS_FD, PROGRAM_FD, SOCKET_FD};
+use crate::local::sandbox::{Bind, Confined, NetworkGrant, Sandbox, SandboxError, Stops};
 
 fn confined<'a>(
-    grants: &'a Grants,
+    binds: &'a [Bind<'a>],
+    network: NetworkGrant,
     env: &'a [(OsString, OsString)],
     args: &'a [OsString],
 ) -> Confined<'a> {
@@ -15,15 +16,16 @@ fn confined<'a>(
         args,
         env,
         socket: SOCKET_FD,
-        grants,
+        binds,
+        network,
     }
 }
 
-/// The arguments that confine a connector with `grants`, as text.
-fn arguments(grants: &Grants) -> Vec<String> {
+/// The arguments that confine a connector granted `binds` and `network`, as text.
+fn arguments(binds: &[Bind<'_>], network: NetworkGrant) -> Vec<String> {
     let env = [(OsString::from("KEPT"), OsString::from("a value"))];
     let args = [OsString::from("--rdlt-fd=3")];
-    let arguments = Bubblewrap::confinement(&confined(grants, &env, &args)).expect("arguments");
+    let arguments = Bubblewrap::confinement(&confined(binds, network, &env, &args));
     arguments
         .into_iter()
         .map(|argument| argument.into_string().expect("text"))
@@ -42,7 +44,7 @@ fn holds(arguments: &[String], sequence: &[&str]) -> bool {
 
 #[test]
 fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
-    let arguments = arguments(&Grants::default());
+    let arguments = arguments(&[], NetworkGrant::Denied);
     for alone in [
         "--unshare-all",
         "--die-with-parent",
@@ -72,7 +74,11 @@ fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
             .any(|argument| argument == "--" || argument == "--rdlt-fd=3")
     );
     // Nothing of the host is bound to be written, and no home directory at all.
-    assert!(!arguments.iter().any(|argument| argument == "--bind"));
+    assert!(
+        !arguments
+            .iter()
+            .any(|argument| argument == "--bind" || argument == "--bind-fd")
+    );
     assert!(
         !arguments
             .iter()
@@ -82,49 +88,37 @@ fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
 }
 
 #[test]
-fn what_is_granted_is_bound_and_nothing_else_of_the_hosts() {
-    let granted = tempfile::tempdir().expect("a temporary directory");
-    let (read, write) = (granted.path().join("read"), granted.path().join("write"));
-    std::fs::create_dir(&read).expect("a directory");
-    std::fs::create_dir(&write).expect("a directory");
-    let grants = Grants {
-        read: vec![read.clone()],
-        write: vec![write.clone()],
-        network: NetworkGrant::Granted,
-        shared: false,
-    };
-    let arguments = arguments(&grants);
-    let (read, write) = (read.to_str().expect("text"), write.to_str().expect("text"));
-    assert!(holds(&arguments, &["--ro-bind", read, read]));
-    assert!(holds(&arguments, &["--bind", write, write]));
+fn what_is_granted_is_bound_from_its_descriptor_and_nothing_else_of_the_hosts() {
+    let binds = [
+        Bind {
+            fd: GRANTS_FD,
+            at: Path::new("/granted/read"),
+            write: false,
+        },
+        Bind {
+            fd: GRANTS_FD + 1,
+            at: Path::new("/granted/write"),
+            write: true,
+        },
+    ];
+    let arguments = arguments(&binds, NetworkGrant::Granted);
+    let (read, write) = (GRANTS_FD.to_string(), (GRANTS_FD + 1).to_string());
+    assert!(holds(&arguments, &["--ro-bind-fd", &read, "/granted/read"]));
+    assert!(holds(&arguments, &["--bind-fd", &write, "/granted/write"]));
+    // Never by a path, which bubblewrap would resolve again.
+    for by_path in ["--bind", "--ro-bind"] {
+        assert!(!holds(&arguments, &[by_path, "/granted/read"]), "{by_path}");
+        assert!(
+            !holds(&arguments, &[by_path, "/granted/write"]),
+            "{by_path}"
+        );
+    }
     assert!(holds(&arguments, &["--unshare-all", "--share-net"]));
 }
 
 #[test]
-fn a_grant_that_is_no_absolute_path_to_something_there_is_refused() {
-    let absent = PathBuf::from("/nonexistent/granted");
-    for path in [PathBuf::from("relative"), PathBuf::from(""), absent] {
-        for write in [false, true] {
-            let mut grants = Grants::default();
-            if write {
-                grants.write.push(path.clone());
-            } else {
-                grants.read.push(path.clone());
-            }
-            let refused = Bubblewrap::confinement(&confined(&grants, &[], &[]));
-            assert_eq!(
-                refused,
-                Err(SandboxError::Grant { path: path.clone() }),
-                "{write}"
-            );
-        }
-    }
-}
-
-#[test]
 fn a_launcher_that_is_not_there_or_makes_no_sandbox_is_refused_with_its_reason() {
-    let grants = Grants::default();
-    let asked = confined(&grants, &[], &[]);
+    let asked = confined(&[], NetworkGrant::Denied, &[], &[]);
     let launcher = |path: &str| Bubblewrap::at(path).launcher(&asked).map(|_| ());
     let refused = launcher("/nonexistent/bwrap").expect_err("it is missing");
     assert_eq!(
@@ -167,8 +161,7 @@ fn whether_a_launcher_makes_a_sandbox_is_tried_once() {
 #[test]
 fn bubblewrap_where_it_runs_stops_its_connector_by_the_end_of_its_input() {
     let sandbox = Bubblewrap::new();
-    let grants = Grants::default();
-    match sandbox.launcher(&confined(&grants, &[], &[])) {
+    match sandbox.launcher(&confined(&[], NetworkGrant::Denied, &[], &[])) {
         Ok(launcher) => {
             assert_eq!(launcher.stops, Stops::ByInputEnd);
             let program = launcher
@@ -192,11 +185,10 @@ fn no_argument_and_no_value_of_the_environment_is_on_the_launchers_command_line(
         rdlt_testkit::process::without_sandbox(&unusable);
         return;
     }
-    let grants = Grants::default();
     let env = [(OsString::from("SECRET"), OsString::from("hunter2-in-env"))];
     let args = [OsString::from("--rdlt-fd=3")];
     let launcher = sandbox
-        .launcher(&confined(&grants, &env, &args))
+        .launcher(&confined(&[], NetworkGrant::Denied, &env, &args))
         .expect("a launcher");
     let line: Vec<String> = std::iter::once(launcher.command.get_program())
         .chain(launcher.command.get_args())
@@ -220,7 +212,7 @@ fn no_argument_and_no_value_of_the_environment_is_on_the_launchers_command_line(
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_launcher_another_user_may_change_or_a_grant_that_may_write_it_is_refused() {
+fn a_launcher_another_user_may_change_is_refused_and_every_launcher_is_guarded() {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a temporary directory");
     let copy = root.path().join("bwrap");
@@ -234,18 +226,37 @@ fn a_launcher_another_user_may_change_or_a_grant_that_may_write_it_is_refused() 
         .usable()
         .expect_err("another user may write it");
     assert_eq!(refused.code(), "sandbox_launcher_shared");
-    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o755)).expect("a mode");
-    let sandbox = Bubblewrap::at(&copy);
+    // Whoever may write the launcher decides what confines every connector.
+    assert_eq!(Bubblewrap::at(&copy).programs(), [copy]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_launcher_runs_from_a_descriptor_above_every_one_it_is_given() {
+    let sandbox = Bubblewrap::new();
     if let Err(unusable) = sandbox.usable() {
         rdlt_testkit::process::without_sandbox(&unusable);
         return;
     }
-    let grants = Grants {
-        write: vec![root.path().to_owned()],
-        ..Grants::default()
-    };
-    let refused = sandbox
-        .launcher(&confined(&grants, &[], &[]))
-        .expect_err("it covers");
-    assert_eq!(refused.code(), "grant_covers");
+    let at = Path::new("/granted");
+    let binds: Vec<Bind<'_>> = (GRANTS_FD..GRANTS_FD + 6)
+        .map(|fd| Bind {
+            fd,
+            at,
+            write: false,
+        })
+        .collect();
+    let launcher = sandbox
+        .launcher(&confined(&binds, NetworkGrant::Denied, &[], &[]))
+        .expect("a launcher");
+    let program = launcher
+        .command
+        .get_program()
+        .to_string_lossy()
+        .into_owned();
+    let executed: i32 = program
+        .strip_prefix("/proc/self/fd/")
+        .and_then(|fd| fd.parse().ok())
+        .expect("a descriptor");
+    assert!(executed > GRANTS_FD + 5, "{executed}");
 }

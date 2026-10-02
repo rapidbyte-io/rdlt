@@ -5,7 +5,7 @@
 //! Where bubblewrap makes no sandbox, as where unprivileged user namespaces are off, each of
 //! these says so and checks nothing.
 
-use rdlt_host::{Bubblewrap, ConnectorRef, Isolation, Local, Provider as _, ProviderError};
+use rdlt_host::{Bubblewrap, Isolation, Local, Provider as _, ProviderError};
 
 use crate::process::scripted;
 
@@ -47,7 +47,7 @@ async fn there_is_no_sandbox_here_so_an_untrusted_connector_is_refused() {
 }
 
 #[cfg(target_os = "linux")]
-mod bubblewrap {
+pub(crate) mod bubblewrap {
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
@@ -65,7 +65,7 @@ mod bubblewrap {
 
     /// A provider that spawns into bubblewrap; none, with the reason said, where bubblewrap
     /// makes no sandbox.
-    async fn sandboxed() -> Option<Local> {
+    pub(crate) async fn sandboxed() -> Option<Local> {
         let local = Local::sandboxed(Bubblewrap::new());
         match local.wire(&scripted()).await {
             Ok(_) => Some(local),
@@ -181,7 +181,7 @@ mod bubblewrap {
         std::fs::create_dir(&read).expect("a directory");
         std::fs::create_dir(&write).expect("a directory");
         std::fs::write(read.join("given"), "given").expect("it writes");
-        let granting = local.clone().grant_read(&read);
+        let granting = local.clone().grant_read(&read).grantable_write(&write);
         let granted_ref = scripted().grant_write(&write).grant_network();
         let reaching = serde_json::json!({
             "readable": [read.join("given")],
@@ -290,6 +290,7 @@ mod bubblewrap {
             "only_its_descriptors": true,
         });
         let source = local
+            .grantable_write(kept.path())
             .source(&scripted().grant_write(kept.path()), &script)
             .await
             .expect("the connector starts")
@@ -485,92 +486,6 @@ mod bubblewrap {
     }
 
     #[tokio::test]
-    async fn one_pipelines_connector_reaches_none_of_what_another_pipeline_was_granted() {
-        let Some(local) = sandboxed().await else {
-            return;
-        };
-        let data = tempfile::tempdir().expect("a temporary directory");
-        let (a, b) = (data.path().join("a"), data.path().join("b"));
-        std::fs::create_dir(&a).expect("a directory");
-        std::fs::create_dir(&b).expect("a directory");
-        std::fs::write(b.join("table"), "b's rows").expect("it writes");
-        // Pipeline B's connector runs, granted its own directory.
-        let b_ref = scripted().grant_write(&b);
-        let b_source = local
-            .source(&b_ref, &serde_json::json!({}))
-            .await
-            .expect("b starts");
-        // Pipeline A's, through the same provider, is granted its own, and reaches none of b's.
-        let a_ref = scripted().grant_write(&a);
-        let reaching_b = serde_json::json!({
-            "writes": a.join("own"),
-            "absent": [b.clone(), b.join("table")],
-        });
-        let a_source = local.source(&a_ref, &reaching_b).await.expect("a starts");
-        a_source
-            .connector
-            .check()
-            .await
-            .expect("a sees only its own grant");
-        let writing_b = serde_json::json!({ "writes": b.join("table") });
-        let a_writer = local
-            .source(&scripted().grant_write(&a).share_grants(), &writing_b)
-            .await;
-        // A's own grant is held by A's connector: a second, unshared, is refused.
-        assert_eq!(a_writer.err().expect("refused").code(), "grant_overlap");
-        drop(a_source);
-        let a_writer = local
-            .source(&a_ref, &writing_b)
-            .await
-            .expect("a starts again");
-        a_writer
-            .connector
-            .check()
-            .await
-            .expect_err("b's file is not there for a");
-        assert_eq!(
-            std::fs::read_to_string(b.join("table")).expect("it reads"),
-            "b's rows"
-        );
-        // A grant holding b's, as one of the whole data directory, is refused while b runs.
-        let wide = scripted().grant_write(data.path());
-        let refused = local
-            .source(&wide, &serde_json::json!({}))
-            .await
-            .err()
-            .expect("refused");
-        assert_eq!(refused.code(), "grant_overlap");
-        drop(b_source);
-        drop(a_writer);
-        local
-            .source(&wide, &serde_json::json!({}))
-            .await
-            .expect("nothing else holds it");
-    }
-
-    #[tokio::test]
-    async fn grants_both_stated_to_be_shared_may_overlap() {
-        let Some(local) = sandboxed().await else {
-            return;
-        };
-        let data = tempfile::tempdir().expect("a temporary directory");
-        let shared = scripted().grant_write(data.path()).share_grants();
-        let config = serde_json::json!({});
-        let _one = local.source(&shared, &config).await.expect("one starts");
-        let _two = local
-            .source(&shared, &config)
-            .await
-            .expect("both are shared");
-        let unshared = scripted().grant_read(data.path());
-        let refused = local
-            .source(&unshared, &config)
-            .await
-            .err()
-            .expect("refused");
-        assert_eq!(refused.code(), "grant_overlap");
-    }
-
-    #[tokio::test]
     async fn each_sandboxed_connector_has_a_private_scratch_directory_of_its_own() {
         let Some(local) = sandboxed().await else {
             return;
@@ -596,34 +511,6 @@ mod bubblewrap {
             !Path::new("/tmp/scratch").exists(),
             "the host's /tmp was written"
         );
-    }
-
-    #[tokio::test]
-    async fn a_write_grant_that_holds_a_connectors_binary_or_directory_is_refused() {
-        let Some(local) = sandboxed().await else {
-            return;
-        };
-        let dir = tempfile::tempdir().expect("a temporary directory");
-        let binary = dir.path().join("rdlt-connector-scripted");
-        std::fs::copy(example("scripted_connector"), &binary).expect("the binary copies");
-        let config = serde_json::json!({});
-        let holding = scripted().path(&binary).grant_write(dir.path());
-        let refused = local
-            .source(&holding, &config)
-            .await
-            .err()
-            .expect("refused");
-        assert_eq!(refused.code(), "grant_covers");
-        let by_name =
-            ConnectorRef::new(rdlt_connector::ConnectorId::parse("test.scripted").unwrap())
-                .grant_write(dir.path());
-        let in_dir = local.clone().connector_dir(dir.path());
-        let refused = in_dir
-            .source(&by_name, &config)
-            .await
-            .err()
-            .expect("refused");
-        assert_eq!(refused.code(), "grant_covers");
     }
 
     #[tokio::test(flavor = "multi_thread")]

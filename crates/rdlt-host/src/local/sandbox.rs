@@ -8,9 +8,11 @@ use std::process::Command;
 
 /// What a sandboxed connector may reach beyond its own program: nothing unless granted.
 ///
-/// A pipeline grants what its own connector needs, on the reference that places it
-/// ([`ConnectorRef::grant_write`](crate::ConnectorRef::grant_write)); a provider grants only
-/// paths every connector it spawns may read ([`Local::grant_read`](crate::Local::grant_read)).
+/// A pipeline asks for what its own connector needs, on the reference that places it
+/// ([`ConnectorRef::grant_write`](crate::ConnectorRef::grant_write)), and is granted it only
+/// within the roots the provider's operator names
+/// ([`Local::grantable_write`](crate::Local::grantable_write)); a provider grants only paths
+/// every connector it spawns may read ([`Local::grant_read`](crate::Local::grant_read)).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grants {
     /// Paths it may read, each absolute.
@@ -19,7 +21,7 @@ pub struct Grants {
     pub write: Vec<PathBuf>,
     /// Whether it may reach the network.
     pub network: NetworkGrant,
-    /// Whether its paths may overlap those another connector the provider runs was granted,
+    /// Whether its paths may overlap those another connector of this process was granted,
     /// that connector's grants being shared too: otherwise such a placement is refused.
     pub shared: bool,
 }
@@ -55,8 +57,22 @@ pub struct Confined<'a> {
     /// The descriptor the launcher finds the connector's socket at, which the connector must
     /// find at the same number.
     pub socket: RawFd,
-    /// What the connector may reach.
-    pub grants: &'a Grants,
+    /// What the connector is granted of the host's files, read grants first.
+    pub binds: &'a [Bind<'a>],
+    /// Whether it may reach the network.
+    pub network: NetworkGrant,
+}
+
+/// A path a connector is granted, open at a descriptor the launcher finds it at: what was
+/// checked, which the launcher binds, and never a path it resolves again.
+#[derive(Clone, Copy, Debug)]
+pub struct Bind<'a> {
+    /// The descriptor the launcher finds what is granted at, open as a location alone.
+    pub fd: RawFd,
+    /// Where the connector finds it: the path as it was granted.
+    pub at: &'a std::path::Path,
+    /// Whether the connector may write it.
+    pub write: bool,
 }
 
 /// How a launcher's connector is asked to stop.
@@ -115,20 +131,45 @@ pub enum SandboxError {
         /// The path.
         path: PathBuf,
     },
+    /// A path granted lies within no root its operator lets grants be made in: one to be
+    /// written within no root that may be written.
+    #[error("the granted path {} lies outside every path grants may be made in", path.display())]
+    Outside {
+        /// The path.
+        path: PathBuf,
+    },
+    /// A root grants may write within holds, or lies within, what decides what a host runs or
+    /// keeps: a connector directory or binary, the sandbox's launcher, the host's executable,
+    /// its state, or a directory secrets are read from.
+    #[error("grants may write within {}, which holds what the host runs or keeps", path.display())]
+    Guarded {
+        /// The root.
+        path: PathBuf,
+    },
     /// A path granted overlaps one another connector running now was granted, and the grants
-    /// are not both shared.
+    /// are not both shared; or a path granted to be written overlaps one every connector of
+    /// the provider reads.
     #[error("the granted path {} overlaps a path another connector was granted", path.display())]
     Overlap {
         /// The path.
         path: PathBuf,
     },
-    /// A path granted to be written holds, or is within, what decides which program runs: a
-    /// connector directory, the connector's binary, or the sandbox's launcher.
+    /// A path granted to be written holds a program another placement runs.
     #[error("the path {} granted to be written holds a program the host runs", path.display())]
     Covers {
         /// The path.
         path: PathBuf,
     },
+    /// A program the placement runs lies within a path a connector running now may write.
+    #[error("the program {} lies where a connector may write", path.display())]
+    Exposed {
+        /// The program.
+        path: PathBuf,
+    },
+    /// This kernel cannot mark a child's descriptors close-on-exec in one call, as a sandboxed
+    /// connector's spawn needs: Linux 5.11 and later can.
+    #[error("this kernel cannot keep a sandboxed connector from inheriting descriptors")]
+    Descriptors,
     /// The launcher, or a directory above it, belongs to another user or may be written by
     /// one.
     #[error("the sandbox launcher at {} may be changed by another user", path.display())]
@@ -146,8 +187,12 @@ impl SandboxError {
             Self::Missing { .. } => "sandbox_missing",
             Self::Unavailable { .. } => "sandbox_unavailable",
             Self::Grant { .. } => "sandbox_grant",
+            Self::Outside { .. } => "grant_outside",
+            Self::Guarded { .. } => "grant_root_guarded",
             Self::Overlap { .. } => "grant_overlap",
             Self::Covers { .. } => "grant_covers",
+            Self::Exposed { .. } => "program_exposed",
+            Self::Descriptors => "sandbox_descriptors",
             Self::Shared { .. } => "sandbox_launcher_shared",
         }
     }
@@ -167,4 +212,10 @@ pub trait Sandbox: fmt::Debug + Send + Sync {
     ///
     /// A [`SandboxError`] when the sandbox cannot be made: the connector is then not run.
     fn launcher(&self, confined: &Confined<'_>) -> Result<Launcher, SandboxError>;
+
+    /// The files that decide how a connector is confined, as its launcher: no root grants may
+    /// write within may hold one.
+    fn programs(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }

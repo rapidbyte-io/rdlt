@@ -5,6 +5,7 @@ mod env;
 mod file;
 
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rdlt_connector::{BoxFuture, Secret};
@@ -100,6 +101,11 @@ pub trait SecretResolver: fmt::Debug + Send + Sync {
         &'a self,
         reference: &'a SecretReference,
     ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>>;
+
+    /// The directories this resolver reads secrets from, which no grant may write.
+    fn directories(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
 
 /// Refuses a secret of `bytes`, beyond [`SECRET_BYTES`].
@@ -177,5 +183,10 @@ impl SecretResolver for Secrets {
                 Box::pin(async { Err(SecretFault::Refused) })
             }
         }
+    }
+    fn directories(&self) -> Vec<PathBuf> {
+        let files = self.files.iter().flat_map(SecretResolver::directories);
+        let named = self.named.iter().flat_map(|named| named.directories());
+        files.chain(named).collect()
     }
 }

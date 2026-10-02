@@ -430,6 +430,11 @@ fn local(args: &Args) -> Result<Local, Ended> {
         })?;
         Local::sandboxed(sandbox)
     };
+    // What the command line grants is where it lets grants be made, and where no secret
+    // directory it names may be written.
+    let local = args.grant_read.iter().fold(local, Local::grantable_read);
+    let local = args.grant_write.iter().fold(local, Local::grantable_write);
+    let local = args.secret_dir.iter().fold(local, Local::guarded_dir);
     Ok(args.env.iter().fold(local, Local::env_passthrough))
 }
 

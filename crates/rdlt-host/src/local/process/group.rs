@@ -24,6 +24,7 @@ use rustix::process::{
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::local::grants::Lease;
 use crate::local::sandbox::Stops;
 pub use interrupts::Interrupts;
 pub(super) use registry::has_room;
@@ -114,6 +115,8 @@ pub(super) struct Starting {
     pub(super) terms: Terms,
     pub(super) killed: Option<CancellationToken>,
     pub(super) exit: watch::Sender<Option<ExitStatus>>,
+    /// What its placement holds, released by this connector once it is reaped.
+    pub(super) lease: Arc<Lease>,
 }
 
 /// A connector that started, on the thread that owns its group, which waits to be told
@@ -153,11 +156,13 @@ pub(super) fn start(starting: Starting, threaded: Threaded) -> std::io::Result<S
     let (tell, told) = sync_channel::<std::io::Result<Told>>(1);
     let (keep, kept) = sync_channel::<bool>(1);
     let owning = move || {
+        // Held until the connector is reaped, whichever way this ends.
         let Starting {
             mut command,
             terms,
             killed,
             exit,
+            lease: _held,
         } = starting;
         let spawned = command.spawn();
         // The command holds this process's copies of the connector's descriptors: dropped,

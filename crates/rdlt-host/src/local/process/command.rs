@@ -10,18 +10,19 @@ use std::sync::Arc;
 
 use command_fds::{CommandFdExt as _, FdMapping};
 
+use rdlt_adopt::Marking;
+
 use super::super::binary::Binary;
-use super::super::grants::Lease;
-use super::super::sandbox::{Confined, Grants, Sandbox, SandboxError, Stops};
-use super::{Launch, PROGRAM_FD, SOCKET_FD};
+use super::super::sandbox::{Bind, Confined, NetworkGrant, Sandbox, SandboxError, Stops};
+use super::{GRANTS_FD, Launch, PROGRAM_FD, SOCKET_FD};
 use crate::provider::Digest;
 
-/// The sandbox a connector runs in, what it is granted there, and the hold on its grants.
+/// The sandbox a connector runs in, and whether it may reach the network there; what it is
+/// granted of the host's files is its placement's lease's.
 #[derive(Clone, Debug)]
 pub(crate) struct Confinement {
     pub(crate) sandbox: Arc<dyn Sandbox>,
-    pub(crate) grants: Grants,
-    pub(crate) lease: Arc<Lease>,
+    pub(crate) network: NetworkGrant,
 }
 
 /// Why a connector's command could not be made.
@@ -58,7 +59,14 @@ pub(crate) struct Commanded {
 /// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with only
 /// the environment `launch` keeps, in a process group of its own, inheriting no other
 /// descriptor of this process; and how the connector is asked to stop.
-pub(crate) fn command(launch: &Launch, socket: OwnedFd) -> Result<Commanded, Unspawned> {
+///
+/// A sandboxed connector is spawned only where `marks_at_once` says the kernel marks every
+/// other descriptor close-on-exec in one call.
+pub(crate) fn command(
+    launch: &Launch,
+    socket: OwnedFd,
+    marks_at_once: fn() -> bool,
+) -> Result<Commanded, Unspawned> {
     if let Some(expected) = launch.digest {
         let found = launch.binary.digest()?;
         if found != expected {
@@ -69,25 +77,36 @@ pub(crate) fn command(launch: &Launch, socket: OwnedFd) -> Result<Commanded, Uns
     let kept = |name: &String| Some((OsString::from(name), std::env::var_os(name)?));
     let env: Vec<(OsString, OsString)> = launch.env_passthrough.iter().filter_map(kept).collect();
     let mut given = vec![(socket, SOCKET_FD)];
-    let (mut command, stops, held) = if let Some(confinement) = &launch.confinement {
+    let (mut command, stops, held, marking) = if let Some(confinement) = &launch.confinement {
+        if !marks_at_once() {
+            return Err(SandboxError::Descriptors.into());
+        }
         if !launch.binary.linked()? {
             return Err(Unspawned::Replaced);
         }
         given.push((launch.binary.file().try_clone()?.into(), PROGRAM_FD));
+        let mut binds = Vec::new();
+        for (bound, fd) in launch.lease.bound.iter().zip(GRANTS_FD..) {
+            given.push((bound.file.try_clone()?.into(), fd));
+            let (at, write) = (bound.at.as_path(), bound.write);
+            binds.push(Bind { fd, at, write });
+        }
         let confined = Confined {
             program: PROGRAM_FD,
             args: &args,
             env: &env,
             socket: SOCKET_FD,
-            grants: &confinement.grants,
+            binds: &binds,
+            network: confinement.network,
         };
         let launcher = confinement.sandbox.launcher(&confined)?;
         given.extend(launcher.given);
-        (launcher.command, launcher.stops, launcher.held)
+        let (command, stops) = (launcher.command, launcher.stops);
+        (command, stops, launcher.held, Marking::AtOnce)
     } else {
         let (mut command, held) = trusted(&launch.binary, &mut given)?;
         command.args(&args).env_clear().envs(env);
-        (command, Stops::BySignal, held)
+        (command, Stops::BySignal, held, Marking::OrOneByOne)
     };
     command
         .stdin(Stdio::piped())
@@ -95,7 +114,7 @@ pub(crate) fn command(launch: &Launch, socket: OwnedFd) -> Result<Commanded, Uns
         .stderr(Stdio::piped())
         // A group of its own, which this host owns: what the connector starts ends with it.
         .process_group(0);
-    inheriting(&mut command, given)?;
+    inheriting(&mut command, given, marking)?;
     Ok(Commanded {
         command,
         stops,
@@ -105,12 +124,13 @@ pub(crate) fn command(launch: &Launch, socket: OwnedFd) -> Result<Commanded, Uns
 
 /// Gives `command`'s process each of `given` at its number, and no other descriptor of this
 /// process beside its standard streams: whatever another thread opens, the child marks every
-/// descriptor above those it is given close-on-exec once they are in place.
+/// other descriptor close-on-exec once those are in place, as `marking` says.
 pub(crate) fn inheriting(
     command: &mut Command,
     given: Vec<(OwnedFd, RawFd)>,
+    marking: Marking,
 ) -> std::io::Result<()> {
-    let above = given.iter().map(|(_, at)| *at).max().unwrap_or(2);
+    let numbers: Vec<RawFd> = given.iter().map(|(_, at)| *at).collect();
     let mappings = given.into_iter().map(|(parent_fd, child_fd)| FdMapping {
         parent_fd,
         child_fd,
@@ -119,7 +139,7 @@ pub(crate) fn inheriting(
         .fd_mappings(mappings.collect())
         .map_err(|_| std::io::Error::other("a descriptor is given twice"))?;
     // Registered after the mappings' hook, so it runs after the descriptors are in place.
-    rdlt_adopt::inheriting_below(command, above + 1);
+    rdlt_adopt::inheriting_only(command, &numbers, marking);
     Ok(())
 }
 
@@ -139,7 +159,7 @@ fn trusted(
         let command = Command::new(format!("/proc/self/fd/{PROGRAM_FD}"));
         return Ok((command, Vec::new()));
     }
-    let (command, executed) = executed_from(binary.file())?;
+    let (command, executed) = executed_from(binary.file(), PROGRAM_FD)?;
     Ok((command, vec![executed]))
 }
 
@@ -153,16 +173,20 @@ fn trusted(
     Ok((Command::new(binary.path()), Vec::new()))
 }
 
-/// Descriptors below this one may be given to a child; one a command is executed from is put
-/// at or above it, so that giving those replaces none.
+/// The lowest descriptor a command is executed from.
 const EXECUTED_FD: RawFd = 8;
 
 /// The command that executes the open `file` through `/proc/self/fd`, and the descriptor it
-/// does so through: close-on-exec, and held open until the command has spawned.
+/// does so through: close-on-exec, held open until the command has spawned, and numbered above
+/// `highest`, the highest the child is given, so that giving those replaces none.
 #[cfg(target_os = "linux")]
-pub(crate) fn executed_from(file: &std::fs::File) -> std::io::Result<(Command, OwnedFd)> {
+pub(crate) fn executed_from(
+    file: &std::fs::File,
+    highest: RawFd,
+) -> std::io::Result<(Command, OwnedFd)> {
     use std::os::fd::AsRawFd as _;
-    let executed = rustix::io::fcntl_dupfd_cloexec(file, EXECUTED_FD)?;
+    let lowest = highest.saturating_add(1).max(EXECUTED_FD);
+    let executed = rustix::io::fcntl_dupfd_cloexec(file, lowest)?;
     let command = Command::new(format!("/proc/self/fd/{}", executed.as_raw_fd()));
     Ok((command, executed))
 }

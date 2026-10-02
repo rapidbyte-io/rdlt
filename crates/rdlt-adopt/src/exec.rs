@@ -5,58 +5,124 @@
 //! inherited, or that other code opened without the flag, is not, and another thread may open
 //! one at any moment, between any look at the process's descriptors and the `fork` that copies
 //! them. Only the child, after the fork, sees the set it will carry through `exec` and no
-//! other: [`inheriting_below`] marks every descriptor from a number up close-on-exec there.
+//! other: [`inheriting_only`] marks every descriptor but those it is given close-on-exec there.
 //!
 //! Marking a descriptor in the child needs code that runs between `fork` and `exec`, which Rust
-//! holds `unsafe`: in a multithreaded process only async-signal-safe calls may run there.
+//! holds `unsafe`: in a multithreaded process the child may make plain system calls there, and
+//! may neither take a lock nor allocate.
 
 #[cfg(test)]
 mod tests;
 
+use std::io;
 use std::os::fd::RawFd;
 use std::os::unix::process::CommandExt as _;
 use std::process::Command;
+use std::sync::OnceLock;
 
-/// Has the process `command` starts inherit no descriptor numbered `first` or above.
+/// Descriptors the loop of [`Marking::OrOneByOne`] marks at most: it stops at the process's
+/// soft limit, or at this number, whichever is lower.
+pub const ONE_BY_ONE_CAP: RawFd = 65_536;
+
+/// How a child's descriptors are marked where the kernel cannot mark a range in one call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Marking {
+    /// Not at all, and the spawn fails: only `close_range` with `CLOSE_RANGE_CLOEXEC`, on Linux
+    /// 5.11 and later, marks every descriptor whatever its number.
+    AtOnce,
+    /// Each descriptor in turn, up to the soft limit capped at [`ONE_BY_ONE_CAP`]: a measure of
+    /// hygiene for a trusted child, which misses a descriptor numbered above the cap.
+    OrOneByOne,
+}
+
+/// Has the process `command` starts inherit no descriptor but its standard streams and those
+/// numbered `given`.
 ///
 /// Call it after every other hook that places a descriptor the child is given, as
-/// `command-fds`'s mappings do: hooks run in the order they were registered. Every descriptor
-/// from `first` up is then marked close-on-exec in the child, so `exec` closes it; none is
-/// closed before, so a program executed through `/proc/self/fd` is still open when `exec` opens
-/// it. The parent's descriptors are untouched.
-///
-/// On Linux 5.11 and later one call marks them all; on an older kernel, and elsewhere, each
-/// descriptor up to the process's limit is marked in turn.
-pub fn inheriting_below(command: &mut Command, first: RawFd) {
-    let first = first.max(0);
+/// `command-fds`'s mappings do: hooks run in the order they were registered. Every other
+/// descriptor from 3 up, below the highest given as well as above it, is then marked
+/// close-on-exec in the child, so `exec` closes it; none is closed before, so a program executed
+/// through `/proc/self/fd` is still open when `exec` opens it. The parent's descriptors are
+/// untouched. Where the kernel cannot mark a range at once, `marking` says what is done.
+pub fn inheriting_only(command: &mut Command, given: &[RawFd], marking: Marking) {
+    let mut kept: Vec<RawFd> = given.iter().copied().filter(|fd| *fd > 2).collect();
+    kept.sort_unstable();
+    kept.dedup();
+    let kept = kept.into_boxed_slice();
     #[expect(
         unsafe_code,
         reason = "marking the child's descriptors runs between fork and exec"
     )]
-    // SAFETY: between `fork` and `exec` the hook calls only the async-signal-safe `close_range`,
-    // `getrlimit` and `fcntl`, allocates nothing, takes no lock, and reads only its own `first`.
-    // It closes nothing, so no descriptor the standard library uses in the child is lost.
+    // SAFETY: after the fork the hook makes only plain system calls, which take no lock and
+    // allocate nothing, as is all that matters there; it reads `kept`, allocated before, and
+    // closes nothing, so no descriptor the standard library uses in the child is lost.
     unsafe {
-        command.pre_exec(move || {
-            mark_from(first);
+        command.pre_exec(move || mark_except(&kept, marking, marked_at_once));
+    }
+}
+
+/// Whether this kernel marks a range of descriptors close-on-exec in one call, as
+/// [`Marking::AtOnce`] needs: asked once, of a descriptor this process holds.
+pub fn marks_at_once() -> bool {
+    static MARKS: OnceLock<bool> = OnceLock::new();
+    *MARKS.get_or_init(|| {
+        use std::os::fd::AsRawFd as _;
+        // Opened close-on-exec, as the standard library opens a file: marking it changes nothing.
+        std::fs::File::open("/dev/null").is_ok_and(|file| {
+            let fd = file.as_raw_fd();
+            marked_at_once(fd, fd)
+        })
+    })
+}
+
+/// Marks every descriptor of this process from 3 up but `kept`, sorted, each above 2, as
+/// `marking` says, through `at_once` where it can.
+fn mark_except(
+    kept: &[RawFd],
+    marking: Marking,
+    at_once: fn(RawFd, RawFd) -> bool,
+) -> io::Result<()> {
+    let mut first: RawFd = 3;
+    for &fd in kept {
+        if fd > first {
+            mark_range(first, fd - 1, marking, at_once)?;
+        }
+        let Some(next) = fd.checked_add(1) else {
+            return Ok(());
+        };
+        first = next;
+    }
+    mark_range(first, RawFd::MAX, marking, at_once)
+}
+
+/// Marks descriptors `first` to `last` close-on-exec, as `marking` says.
+fn mark_range(
+    first: RawFd,
+    last: RawFd,
+    marking: Marking,
+    at_once: fn(RawFd, RawFd) -> bool,
+) -> io::Result<()> {
+    if at_once(first, last) {
+        return Ok(());
+    }
+    match marking {
+        Marking::AtOnce => Err(io::Error::last_os_error()),
+        Marking::OrOneByOne => {
+            marked_one_by_one(first, last);
             Ok(())
-        });
+        }
     }
 }
 
-/// Marks every descriptor of this process from `first` up close-on-exec.
-fn mark_from(first: RawFd) {
-    #[cfg(target_os = "linux")]
-    if marked_at_once(first) {
-        return;
-    }
-    marked_one_by_one(first);
-}
-
-/// Marks every descriptor from `first` up close-on-exec in one call, where the kernel has it.
+/// Marks descriptors `first` to `last` close-on-exec in one call, where the kernel has it.
 #[cfg(target_os = "linux")]
-fn marked_at_once(first: RawFd) -> bool {
-    let Ok(first) = libc::c_uint::try_from(first) else {
+fn marked_at_once(first: RawFd, last: RawFd) -> bool {
+    // `RawFd::MAX` stands for every descriptor from `first` up, as the kernel's highest does.
+    let last = match last {
+        RawFd::MAX => Ok(libc::c_uint::MAX),
+        last => libc::c_uint::try_from(last),
+    };
+    let (Ok(first), Ok(last)) = (libc::c_uint::try_from(first), last) else {
         return false;
     };
     #[expect(
@@ -69,15 +135,22 @@ fn marked_at_once(first: RawFd) -> bool {
         libc::syscall(
             libc::SYS_close_range,
             first,
-            libc::c_uint::MAX,
+            last,
             libc::CLOSE_RANGE_CLOEXEC,
         )
     };
     marked == 0
 }
 
-/// Marks each descriptor from `first` up to the process's limit close-on-exec.
-fn marked_one_by_one(first: RawFd) {
+/// This platform marks no range at once.
+#[cfg(not(target_os = "linux"))]
+fn marked_at_once(_first: RawFd, _last: RawFd) -> bool {
+    false
+}
+
+/// Marks each descriptor from `first` to `last` close-on-exec, below the process's soft limit
+/// and [`ONE_BY_ONE_CAP`].
+fn marked_one_by_one(first: RawFd, last: RawFd) {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -89,9 +162,9 @@ fn marked_one_by_one(first: RawFd) {
     // SAFETY: `limit` is a valid `rlimit` this function owns, and `getrlimit` only writes it.
     let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) };
     // A limit that cannot be read is taken at its lowest common value.
-    let last = if read == 0 { limit.rlim_cur } else { 1024 };
-    let last = RawFd::try_from(last).unwrap_or(RawFd::MAX);
-    for fd in first..last {
+    let soft = if read == 0 { limit.rlim_cur } else { 1024 };
+    let end = RawFd::try_from(soft).map_or(ONE_BY_ONE_CAP, |soft| soft.min(ONE_BY_ONE_CAP));
+    for fd in first..end.min(last.saturating_add(1)) {
         #[expect(
             unsafe_code,
             reason = "each descriptor of the child is marked by number"

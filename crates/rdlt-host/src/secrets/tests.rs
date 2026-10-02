@@ -669,3 +669,37 @@ fn the_part_of_a_secret_left_where_a_beginning_was_dropped_is_scrubbed_too() {
     let unrelated = redactions.scrubbed_end("was the password hunter2".to_owned(), true);
     assert_eq!(unrelated, "was the password ***");
 }
+
+/// A store that reads secrets from `directory`, as a store of files does.
+#[derive(Debug)]
+struct Filed(std::path::PathBuf);
+
+impl SecretResolver for Filed {
+    fn resolve<'a>(
+        &'a self,
+        _reference: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
+        Box::pin(async { Err(SecretFault::Missing) })
+    }
+
+    fn directories(&self) -> Vec<std::path::PathBuf> {
+        vec![self.0.clone()]
+    }
+}
+
+#[test]
+fn the_resolvers_list_every_directory_they_read_secrets_from() {
+    let (listed, stored) = (std::path::PathBuf::from("/files"), "/stored".into());
+    let both = Secrets::new()
+        .env(EnvSecrets::allowing(["HOME"]))
+        .files(FileSecrets::within([listed.clone()]))
+        .named(Filed(std::path::PathBuf::from("/stored")));
+    assert_eq!(both.directories(), [listed.clone(), stored]);
+    assert_eq!(
+        FileSecrets::within([listed.clone()]).directories(),
+        [listed]
+    );
+    assert!(Secrets::new().directories().is_empty());
+    assert!(EnvSecrets::prefixed("RDLT_").directories().is_empty());
+    assert!(vault().directories().is_empty());
+}
