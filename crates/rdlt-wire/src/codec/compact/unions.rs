@@ -49,10 +49,14 @@ impl Narrower {
         for (row, id) in rows().zip(&ids) {
             let child = fields.iter().position(|(of, _)| of == *id);
             let child = child.ok_or_else(|| beyond("the child of row", row))?;
-            let at = usize::try_from(offsets[row]).map_err(|_| beyond("the item of row", row))?;
-            name(&mut named[child], at, at.saturating_add(1));
-            moved.push(sized::<i32>(counts[child])?);
-            counts[child] += 1;
+            let at = offsets.get(row).and_then(|at| usize::try_from(*at).ok());
+            let at = at.ok_or_else(|| beyond("the item of row", row))?;
+            let (Some(named), Some(count)) = (named.get_mut(child), counts.get_mut(child)) else {
+                return Err(beyond("the child of row", row));
+            };
+            name(named, at, at.saturating_add(1));
+            moved.push(sized::<i32>(*count)?);
+            *count += 1;
         }
         let mut children = Vec::with_capacity(fields.len());
         for ((id, _), named) in fields.iter().zip(&named) {
