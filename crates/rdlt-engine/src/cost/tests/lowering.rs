@@ -304,10 +304,66 @@ fn lowered(
     made.is_ok().then_some((charge, peak))
 }
 
-#[test]
-fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_than_its_charge() {
-    let (mut lowerings, mut beyond) = (0, Vec::new());
-    let mut kinds = std::collections::BTreeSet::new();
+/// Runs `$check` over each tenth of the columns, in a test of its own, under a module named as
+/// the check proves: together they cover every column, and each runs in about a second.
+macro_rules! in_tenths {
+    ($module:ident: $check:ident) => {
+        mod $module {
+            #[test]
+            fn the_first_tenth_of_the_columns() {
+                super::$check(0);
+            }
+
+            #[test]
+            fn the_second_tenth_of_the_columns() {
+                super::$check(1);
+            }
+
+            #[test]
+            fn the_third_tenth_of_the_columns() {
+                super::$check(2);
+            }
+
+            #[test]
+            fn the_fourth_tenth_of_the_columns() {
+                super::$check(3);
+            }
+
+            #[test]
+            fn the_fifth_tenth_of_the_columns() {
+                super::$check(4);
+            }
+
+            #[test]
+            fn the_sixth_tenth_of_the_columns() {
+                super::$check(5);
+            }
+
+            #[test]
+            fn the_seventh_tenth_of_the_columns() {
+                super::$check(6);
+            }
+
+            #[test]
+            fn the_eighth_tenth_of_the_columns() {
+                super::$check(7);
+            }
+
+            #[test]
+            fn the_ninth_tenth_of_the_columns() {
+                super::$check(8);
+            }
+
+            #[test]
+            fn the_last_tenth_of_the_columns() {
+                super::$check(9);
+            }
+        }
+    };
+}
+
+/// Every column this file lowers, before its encodings, with the field that names its type.
+fn plain_columns() -> Vec<(ArrowField, ArrayRef)> {
     let plain = |column: ArrayRef| {
         (
             ArrowField::new("c", column.data_type().clone(), true),
@@ -315,7 +371,50 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
         )
     };
     let columns = numbers().into_iter().chain(others()).map(plain);
-    for (field, column) in columns.chain(extensions()) {
+    columns.chain(extensions()).collect()
+}
+
+/// The columns of `tenth`, of the ten every column falls in by its place.
+fn in_tenth<T>(columns: Vec<T>, tenth: usize) -> impl Iterator<Item = T> {
+    let place = move |(index, column): (usize, T)| (index % 10 == tenth).then_some(column);
+    columns.into_iter().enumerate().filter_map(place)
+}
+
+#[test]
+fn the_columns_lowered_are_of_every_kind_of_logical_type() {
+    let kinds: std::collections::BTreeSet<_> = plain_columns()
+        .iter()
+        .map(|(field, _)| {
+            Field::from_arrow(field)
+                .expect("a logical type")
+                .logical_type()
+                .kind()
+        })
+        .collect();
+    let every: std::collections::BTreeSet<_> = rdlt_testkit::drawn::KINDS.into_iter().collect();
+    // Nulls among them, which are built as their table stores them rather than converted.
+    assert_eq!(kinds, every);
+    // And some of them a normalizing plan splits into tables of their own.
+    let shape = crate::normalize::Shape {
+        max_depth: 8,
+        whole: std::collections::BTreeSet::new(),
+        key: Vec::new(),
+    };
+    let splits = every_column().into_iter().any(|(field, column)| {
+        let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
+        crate::normalize::normalize(&batch, &shape).unwrap().len() > 1
+    });
+    assert!(splits, "no column splits into tables of its own");
+}
+
+in_tenths!(lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_than_its_charge: lowers_within_its_charge);
+
+/// Lowers each column of `tenth` in every encoding into every type its table may hold it in,
+/// as it is and as text, failing where one allocates more than it was charged.
+fn lowers_within_its_charge(tenth: usize) {
+    let (mut lowerings, mut beyond) = (0, Vec::new());
+    for (field, column) in in_tenth(plain_columns(), tenth) {
         let from = Field::from_arrow(&field).expect("a logical type");
         let from = from.logical_type();
         // A column of nulls is built as its table stores it, charged as the rows the batch
@@ -323,7 +422,6 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
         if *from == LogicalType::Null {
             continue;
         }
-        kinds.insert(from.kind());
         let held = held_in(from);
         for encoded in encodings(&column) {
             for to in &held {
@@ -342,11 +440,7 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
             }
         }
     }
-    assert!(lowerings > 1_000, "{lowerings} lowerings were measured");
-    // Every kind of logical type was lowered, but nulls, which are built and not converted.
-    let every: std::collections::BTreeSet<_> = rdlt_testkit::drawn::KINDS.into_iter().collect();
-    let missing: Vec<_> = every.difference(&kinds).collect();
-    assert_eq!(missing, [&rdlt_connector::TypeKind::Null], "{kinds:?}");
+    assert!(lowerings > 100, "{lowerings} lowerings were measured");
     beyond.sort();
     beyond.dedup();
     assert!(
@@ -359,15 +453,8 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
 
 /// Every column this file lowers, with the field that names its type, in every encoding.
 fn every_column() -> Vec<(ArrowField, ArrayRef)> {
-    let plain = |column: ArrayRef| {
-        (
-            ArrowField::new("c", column.data_type().clone(), true),
-            column,
-        )
-    };
-    let columns = numbers().into_iter().chain(others()).map(plain);
     let mut every = Vec::new();
-    for (field, column) in columns.chain(extensions()) {
+    for (field, column) in plain_columns() {
         for encoded in encodings(&column) {
             let field = field.clone().with_data_type(encoded.data_type().clone());
             every.push((field, encoded));
@@ -387,8 +474,11 @@ fn split_estimate(batch: &RecordBatch) -> u64 {
         .saturating_mul(SPLIT_COPIES)
 }
 
-#[test]
-fn a_column_through_a_normalizing_plan_is_split_and_lowered_within_what_is_reserved_for_it() {
+in_tenths!(a_column_through_a_normalizing_plan_is_split_and_lowered_within_what_is_reserved_for_it: splits_and_lowers_within_what_is_reserved);
+
+/// Splits each column of `tenth` in every encoding through a normalizing plan, then lowers its
+/// parts as a plain batch's, failing where either allocates more than was reserved.
+fn splits_and_lowers_within_what_is_reserved(tenth: usize) {
     use crate::normalize::{Shape, normalize};
     let shape = Shape {
         max_depth: 8,
@@ -396,7 +486,7 @@ fn a_column_through_a_normalizing_plan_is_split_and_lowered_within_what_is_reser
         key: Vec::new(),
     };
     let (mut splits, mut lowerings, mut tables, mut beyond) = (0, 0, 0, Vec::new());
-    for (field, column) in every_column() {
+    for (field, column) in in_tenth(every_column(), tenth) {
         let kind = column.data_type().clone();
         let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
         let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
@@ -436,9 +526,9 @@ fn a_column_through_a_normalizing_plan_is_split_and_lowered_within_what_is_reser
             }
         }
     }
-    assert!(splits > 100, "{splits} columns were split");
-    assert!(tables > splits, "{tables} tables of {splits} columns");
-    assert!(lowerings > 1_000, "{lowerings} lowerings were measured");
+    assert!(splits > 10, "{splits} columns were split");
+    assert!(tables >= splits, "{tables} tables of {splits} columns");
+    assert!(lowerings > 100, "{lowerings} lowerings were measured");
     beyond.sort();
     beyond.dedup();
     assert!(

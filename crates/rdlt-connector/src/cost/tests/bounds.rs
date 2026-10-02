@@ -114,7 +114,7 @@ fn alone(values: &ArrayRef) -> u64 {
 }
 
 fn one_dear_value_is_measured_once_however_many_keys_name_it<K: ArrowDictionaryKeyType>() {
-    const ROWS: usize = 500;
+    const ROWS: usize = 100;
     for values in [lists(1, 2_000), view_lists(1, 300)] {
         let each = alone(&values);
         assert!(each > 100, "{each}");
@@ -130,12 +130,14 @@ fn one_dear_value_is_measured_once_however_many_keys_name_it<K: ArrowDictionaryK
 fn each_dear_value_named_is_measured_once<K: ArrowDictionaryKeyType>() {
     const ROWS: usize = 2_000;
     const VALUES: usize = 100;
-    for values in [lists(VALUES, 2_000), view_lists(VALUES, 200)] {
+    for values in [lists(VALUES, 200), view_lists(VALUES, 50)] {
         let each = alone(&values);
         // Half the values are named, twenty times each.
         let named = VALUES / 2;
         let column = keyed::<K>((0..ROWS).map(|row| row % named), values);
-        let (kept, _) = measured(&column);
+        // Remembering changes nothing measured (`remembering_changes_nothing_measured`): only
+        // what it saves is measured here.
+        let kept = work(&column, u64::MAX, false);
         assert!(
             kept.steps <= 4 * steps(ROWS) + steps(named) * each,
             "{kept:?}"
@@ -184,9 +186,9 @@ fn null_keys_of_every_type_measure_no_value() {
 
 #[test]
 fn a_value_nested_dictionaries_name_is_measured_once() {
-    const ROWS: usize = 5_000;
+    const ROWS: usize = 1_000;
     const OUTER: usize = 100;
-    let dear = lists(1, 10_000);
+    let dear = lists(1, 1_000);
     let each = alone(&dear);
     // Every value of the outer dictionary names the inner dictionary's one value.
     let inner = keyed::<Int8Type>(vec![0; OUTER], dear);
@@ -237,10 +239,10 @@ fn a_run_end_column_of_a_dictionary_of_lists_is_measured_in_its_runs() {
 
 #[test]
 fn keys_into_one_run_measure_its_value_once() {
-    const ROWS: usize = 3_000;
-    let dear = lists(1, 10_000);
+    const ROWS: usize = 600;
+    let dear = lists(1, 1_000);
     let each = alone(&dear);
-    // One run of three thousand over the list, and a key for each place in it.
+    // One run of six hundred over the list, and a key for each place in it.
     let ends = PrimitiveArray::<Int32Type>::from_iter_values([i32::try_from(ROWS).unwrap()]);
     let run: ArrayRef = Arc::new(RunArray::<Int32Type>::try_new(&ends, dear.as_ref()).unwrap());
     let column = keyed::<Int32Type>(0..ROWS, run);

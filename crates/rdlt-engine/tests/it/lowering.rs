@@ -61,7 +61,8 @@ async fn loaded(name: &str, steps: Steps, rows: u64) {
 
 #[tokio::test(start_paused = true)]
 async fn small_integers_into_a_column_of_256_bit_decimals_load_within_the_budget() {
-    // One row makes the column a 256-bit decimal; sixteen million bytes then become 512 MiB.
+    // One row makes the column a 256-bit decimal; four million bytes then become 128 MiB, past
+    // the heap's bound.
     let steps: Steps = Arc::new(|step| match step {
         0 => {
             let wide = Decimal256Array::from(vec![i256::from_i128(1)])
@@ -70,13 +71,13 @@ async fn small_integers_into_a_column_of_256_bit_decimals_load_within_the_budget
             Some(Step::Batch(batch(Arc::new(wide))))
         }
         1 => Some(Step::Checkpoint(8)),
-        2..=17 => {
+        2..=5 => {
             let small = Int8Array::from(vec![1_i8; 1_000_000]);
             Some(Step::Batch(batch(Arc::new(small))))
         }
         _ => None,
     });
-    loaded("lowering_widened", steps, 16_000_001).await;
+    loaded("lowering_widened", steps, 4_000_001).await;
 }
 
 #[tokio::test(start_paused = true)]

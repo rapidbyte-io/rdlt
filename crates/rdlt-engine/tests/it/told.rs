@@ -432,11 +432,13 @@ impl ReadStream<Mixed> for Own {
 
 #[tokio::test(start_paused = true)]
 async fn a_cursor_waiting_for_room_commits_without_waiting_on_a_barrier_slow_to_be_answered() {
-    // Three reads at once: cursors may take six cursors of the limit, so the forty of each
-    // partition of `own` wait on commits, which a policy of rows never makes due.
+    // Three reads at once, at about the least memory: cursors may take eight cursors of the
+    // limit, so the forty of each partition of `own` wait on commits, which a policy of rows
+    // never makes due.
     let config = || {
         EngineConfig::builder()
             .commit(CommitPolicy::new(None, Some(1_000_000), None).expect("a policy"))
+            .memory(34 << 20)
             .partitions(3)
             .lanes(1)
             .barrier_wait(Duration::from_secs(20))

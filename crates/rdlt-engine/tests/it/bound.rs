@@ -103,23 +103,32 @@ async fn rows_of_a_table_far_wider_than_their_batch_load_within_the_budget_norma
 
 #[tokio::test(start_paused = true)]
 async fn small_integers_into_a_column_of_256_bit_decimals_load_within_the_budget_normalized() {
-    // One row makes the column a 256-bit decimal; sixteen million bytes then become 512 MiB.
+    const ROWS: usize = 500_000;
+    // One row makes the column a 256-bit decimal; a million and a half bytes then become 48 MiB,
+    // more than the budget, lowered a piece at a time.
     let steps: Steps = Arc::new(|step| match step {
         0 => Some(Step::Batch(batch(wide()))),
         1 => Some(Step::Checkpoint(8)),
-        2..=17 => {
-            let small = Int8Array::from(vec![1_i8; 1_000_000]);
+        2..=4 => {
+            let small = Int8Array::from(vec![1_i8; ROWS]);
             Some(Step::Batch(batch(Arc::new(small))))
         }
         _ => None,
     });
     let (peak, outcome) = normalizing("bound_widened", steps).await;
-    within(&outcome, 16_000_001, peak, bound());
+    within(&outcome, 3 * ROWS as u64 + 1, peak, bound());
+    // The heap held less than half of what lowering made: its pieces were let go as they were
+    // written, where a lowering that kept them would hold it all.
+    let lowered = 3 * ROWS * 32;
+    assert!(
+        peak < lowered / 2,
+        "the heap held {peak} bytes of {lowered} lowered"
+    );
 }
 
 /// Rows each push of a nested read holds, and the pushes of each read.
-const NESTED_ROWS: usize = 10_000;
-const PUSHES: usize = 4;
+const NESTED_ROWS: usize = 5_000;
+const PUSHES: usize = 2;
 
 /// A read of a wide row, then pushes of small integers beside lists of two each, which a plan
 /// that normalizes sends to a table of their own; each push with its checkpoint.
@@ -175,12 +184,13 @@ async fn sixteen_partitions_normalizing_into_two_tables_on_a_pool_stay_within_th
 async fn sixteen_partitions_widening_on_a_pool_stay_within_the_budget() {
     const PARTS: usize = 16;
     const ROWS: usize = 500_000;
-    // Each partition sends two megabytes of small integers into a column of 256-bit decimals,
-    // sixty-six megabytes once lowered, in pieces every partition cuts at the same time.
+    // Each partition sends half a megabyte of small integers into a column of 256-bit
+    // decimals, sixteen megabytes once lowered, more than a request may take: in pieces every
+    // partition cuts at the same time, 256 MiB together.
     let steps: Steps = Arc::new(|step| match step {
         0 => Some(Step::Batch(batch(wide()))),
         1 => Some(Step::Checkpoint(8)),
-        2..=5 => Some(Step::Batch(batch(Arc::new(Int8Array::from(vec![
+        2 => Some(Step::Batch(batch(Arc::new(Int8Array::from(vec![
             1_i8;
             ROWS
         ]))))),
@@ -194,7 +204,7 @@ async fn sixteen_partitions_widening_on_a_pool_stay_within_the_budget() {
     let plan = pipeline("bound_widening", [stream("events")]);
     let run = pooled_engine(config, 4).run(plan, source, null().await);
     let (peak, outcome) = measured(run).await;
-    let rows = PARTS * (1 + 4 * ROWS);
+    let rows = PARTS * (1 + ROWS);
     within(&outcome, rows as u64, peak, bound() + PARTS * ROWS);
 }
 

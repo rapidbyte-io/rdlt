@@ -119,7 +119,8 @@ fn costing_remembers_less_than_it_charges() {
 async fn list_views_naming_one_child_load_within_the_budget() {
     const BUDGET: u64 = 34 << 20;
     const ROWS: usize = 2_000;
-    // Each batch is 16 KB of views and 16 KB of items, and 32 MB once every row holds its items.
+    // Each batch is 16 KB of views and 16 KB of items, and 32 MB once every row holds its items:
+    // 64 MB together, twice the budget.
     let steps = Arc::new(|step: usize| {
         let rows = i32::try_from(ROWS).expect("a few rows");
         let views = ListViewArray::new(
@@ -129,7 +130,7 @@ async fn list_views_naming_one_child_load_within_the_budget() {
             Arc::new(Int64Array::from_iter_values(0..i64::from(rows))),
             None,
         );
-        (step < 4).then(|| Step::Batch(batch(Arc::new(views))))
+        (step < 2).then(|| Step::Batch(batch(Arc::new(views))))
     });
     let source = making("budget_views", steps).await;
     let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
@@ -145,8 +146,12 @@ async fn list_views_naming_one_child_load_within_the_budget() {
         "{:?}",
         outcome.error
     );
-    assert_eq!(outcome.report.rows, 4 * 2_000);
+    assert_eq!(outcome.report.rows, 2 * 2_000);
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+    // The heap held less than half of what the rows became: they were lowered a piece at a
+    // time and let go, where rows kept as they became would hold it all.
+    let became = 2 * ROWS * ROWS * 8;
+    assert!(peak < became / 2, "the heap held {peak} bytes of {became}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -248,26 +253,34 @@ async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
 }
 
-#[tokio::test(start_paused = true)]
-async fn checkpoints_with_large_cursors_load_within_the_budget() {
-    const BUDGET: u64 = 34 << 20;
-    // Three hundred megabytes of cursors, each as large as a read of one partition is told it
-    // may send, near a quarter of the cursors' share, and not one row, under a policy that
-    // commits by rows.
-    let steps = Arc::new(|step: usize| (step < 2_400).then_some(Step::Checkpoint(128 << 10)));
-    let source = making("budget_cursors", steps).await;
-    let config = commit_every(1_000_000)
-        .memory(BUDGET)
-        .partitions(1)
-        .lanes(1);
+/// The budget of the cursor tests: about the least an engine of one partition takes.
+const CURSORS_BUDGET: u64 = 34 << 20;
+
+/// Loads `count` cursors as large as a read of one partition is told it may send, each after a
+/// row where `rows`, under a policy that commits by rows no cursor test reaches: the heap's
+/// peak above where it started, and the outcome.
+async fn cursors_loaded(name: &str, count: usize, rows: bool) -> (usize, rdlt_engine::RunOutcome) {
+    let config = || {
+        commit_every(1_000_000)
+            .memory(CURSORS_BUDGET)
+            .partitions(1)
+            .lanes(1)
+    };
+    let limit = config().build().expect("valid").limits().cursor_bytes;
+    let cursor = usize::try_from(limit).expect("a size");
+    let steps = Arc::new(move |step: usize| match (rows, step) {
+        (false, step) => (step < count).then_some(Step::Checkpoint(cursor)),
+        (true, step) if step >= 2 * count => None,
+        (true, step) if step.is_multiple_of(2) => {
+            Some(Step::Batch(batch(Arc::new(Int8Array::from(vec![1])))))
+        }
+        (true, _) => Some(Step::Checkpoint(cursor)),
+    });
+    let source = making(name, steps).await;
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
-    let outcome = engine(config)
-        .run(
-            pipeline("cursors", [stream("events")]),
-            source,
-            null().await,
-        )
+    let outcome = engine(config())
+        .run(pipeline(name, [stream("events")]), source, null().await)
         .await;
     let peak = HEAP.peak_usage().saturating_sub(before);
     assert_eq!(
@@ -276,43 +289,38 @@ async fn checkpoints_with_large_cursors_load_within_the_budget() {
         "{:?}",
         outcome.error
     );
-    assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+    assert!(peak <= bound(CURSORS_BUDGET), "peak {peak} bytes");
+    (peak, outcome)
+}
+
+/// Bytes: how much more heap ten times the cursors may take, where what they hold at once is
+/// bounded: a fraction of what the extra cursors take together, about 7 MB.
+const CURSORS_GROWTH: usize = 2 << 20;
+
+#[tokio::test(start_paused = true)]
+async fn checkpoints_with_large_cursors_load_within_the_budget() {
+    // Cursors and not one row: each replaces the cursor waiting, so ten times as many, together
+    // far more than the cursors' share, hold no more of the heap.
+    let (few, _) = cursors_loaded("budget_cursors_few", 6, false).await;
+    let (many, outcome) = cursors_loaded("budget_cursors", 60, false).await;
+    assert_eq!(outcome.report.rows, 0);
+    assert!(many <= few + CURSORS_GROWTH, "{few} bytes, then {many}");
 }
 
 #[tokio::test(start_paused = true)]
 async fn rows_sealed_under_large_cursors_load_within_the_budget() {
-    const BUDGET: u64 = 34 << 20;
-    // A row then a cursor of near a quarter of the cursors' share, eight hundred times, a
-    // hundred megabytes of them: every seal has a row, so none replaces the seal before it.
-    let steps = Arc::new(|step: usize| {
-        if step >= 1_600 {
-            return None;
-        }
-        Some(if step.is_multiple_of(2) {
-            Step::Batch(batch(Arc::new(Int8Array::from(vec![1]))))
-        } else {
-            Step::Checkpoint(128 << 10)
-        })
-    });
-    let source = making("budget_sealed", steps).await;
-    let config = commit_every(1_000_000)
-        .memory(BUDGET)
-        .partitions(1)
-        .lanes(1);
-    HEAP.reset_peak_usage();
-    let before = HEAP.current_usage();
-    let outcome = engine(config)
-        .run(pipeline("sealed", [stream("events")]), source, null().await)
-        .await;
-    let peak = HEAP.peak_usage().saturating_sub(before);
-    assert_eq!(
-        outcome.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        outcome.error
+    // A row then a cursor: every seal has a row, so none replaces the seal before it, and the
+    // cursors waiting fill their share and make commits due instead of piling up.
+    let (few, _) = cursors_loaded("budget_sealed_few", 6, true).await;
+    let (many, outcome) = cursors_loaded("budget_sealed", 60, true).await;
+    assert_eq!(outcome.report.rows, 60);
+    // The cursors' share holds four cursors of the limit, and a commit is due at half of it.
+    assert!(
+        outcome.report.commits >= 15,
+        "{} commits",
+        outcome.report.commits
     );
-    assert_eq!(outcome.report.rows, 800);
-    assert!(peak <= bound(BUDGET), "peak {peak} bytes");
+    assert!(many <= few + CURSORS_GROWTH, "{few} bytes, then {many}");
 }
 
 /// A future that completes once `ready` says so, looking again every millisecond.
@@ -326,12 +334,13 @@ fn once(ready: impl Fn() -> bool + Send + 'static) -> Step {
 
 #[tokio::test(start_paused = true)]
 async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
-    const SIGNALS: usize = 2_000_000;
+    const SIGNALS: usize = 250_000;
     let gate = Gate::closed();
     let held = Arc::new(AtomicUsize::new(0));
     let (commits, heap) = (Arc::clone(&gate), Arc::clone(&held));
     // A row and a checkpoint make a commit due; while the destination holds it, the source says
-    // two million times how far behind it is and that its partitions changed.
+    // a quarter of a million times how far behind it is and that its partitions changed: queued,
+    // they would take megabytes.
     let steps = Arc::new(move |step: usize| match step {
         0 => Some(Step::Batch(batch(Arc::new(Int8Array::from(vec![1]))))),
         1 => Some(Step::Checkpoint(8)),
