@@ -1,6 +1,6 @@
 //! A resolution in progress, as schema resolution records it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rdlt_connector::{ColumnKey, ColumnPath, Field, LogicalType, TypeKind};
@@ -14,6 +14,8 @@ use crate::naming::Naming;
 /// A resolution in progress: the model, the columns it adds and the changes decided so far.
 pub(super) struct Draft {
     model: Model,
+    /// The position of each of the model's columns, by identifier.
+    positions: BTreeMap<Arc<str>, usize>,
     /// Added columns, before they have identifiers: key, type and nullability.
     adds: Vec<(ColumnKey, LogicalType, bool)>,
     /// The added columns of 64-bit integers every value of which a 64-bit float holds exactly.
@@ -27,6 +29,7 @@ impl Draft {
     pub(super) fn new(model: &Model) -> Self {
         Self {
             model: model.clone(),
+            positions: model.positions(),
             adds: Vec::new(),
             exact_adds: BTreeSet::new(),
             changes: Vec::new(),
@@ -74,7 +77,8 @@ impl Draft {
     ///
     /// A batch holds each column once, so a column this resolution adds is never looked up again.
     pub(super) fn find(&self, key: &ColumnKey) -> Option<usize> {
-        self.model.column(key).map(|(index, _)| index)
+        let name = self.model.names.get(key)?;
+        self.positions.get(name).copied()
     }
 
     /// The positions of the table's variant columns of `path`, in kind order.

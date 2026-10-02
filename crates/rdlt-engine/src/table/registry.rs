@@ -412,11 +412,12 @@ fn table_changes(before: &TableView, after: &TableView, changes: &[Change]) -> V
             schema: after.physical_schema(),
         }];
     }
+    let positions = after.model.positions();
     changes
         .iter()
         .filter_map(|change| match change {
             Change::Add { key } => {
-                let (index, _) = after.model.column(key)?;
+                let index = *positions.get(after.model.names.get(key)?)?;
                 Some(TableChange::AddColumn {
                     table: table.clone(),
                     field: after.physical[index].clone(),

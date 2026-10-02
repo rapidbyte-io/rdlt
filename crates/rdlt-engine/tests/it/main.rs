@@ -19,6 +19,7 @@ mod engine;
 mod exactness;
 mod following;
 mod following_changes;
+mod growth;
 mod history;
 mod json;
 mod ledger;

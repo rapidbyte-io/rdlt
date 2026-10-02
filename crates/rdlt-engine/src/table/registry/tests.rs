@@ -81,6 +81,7 @@ fn resolver() -> Resolver {
             history: None,
         },
         root: None,
+        columns: u64::MAX,
     }
 }
 

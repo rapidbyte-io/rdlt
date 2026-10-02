@@ -11,6 +11,7 @@ use rdlt_connector::{
 };
 
 mod draft;
+mod width;
 
 use super::lower::{LineageColumns, MetaNames, lower};
 use super::model::Model;
@@ -95,6 +96,8 @@ pub(crate) struct Resolver {
     pub(crate) meta: MetaNames,
     /// For a child table of a merge stream, the stream's table, whose merges replace its rows.
     pub(crate) root: Option<RootKey>,
+    /// Columns: the most the table may hold, its nested fields counted.
+    pub(crate) columns: u64,
 }
 
 /// A batch's columns as they arrive: their types, and each column's path within its table.
@@ -213,6 +216,9 @@ impl Resolver {
             resolution.model.version = 1;
             resolution.model.revision =
                 draft::advanced(resolution.model.revision).map_err(stream)?;
+        }
+        if resolution.model.version != model.version {
+            width::admit(&resolution.model, self.columns).map_err(stream)?;
         }
         Ok(resolution)
     }

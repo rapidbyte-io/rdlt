@@ -1,12 +1,10 @@
 //! A table as the engine models it: its columns by identifier with their logical types, and the
 //! source column each one holds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use rdlt_connector::{
-    ColumnKey, Field, LogicalType, NameMap, SchemaVersion, TableSchema, TableState,
-};
+use rdlt_connector::{Field, LogicalType, NameMap, SchemaVersion, TableSchema, TableState};
 
 use crate::error::{Error, ErrorKind};
 
@@ -78,13 +76,13 @@ impl Model {
         self.version > 0
     }
 
-    /// The column holding `key`, with its position.
-    pub(crate) fn column(&self, key: &ColumnKey) -> Option<(usize, &Field)> {
-        let name = self.names.get(key)?;
+    /// The position of each column, by identifier, for finding many columns at once.
+    pub(crate) fn positions(&self) -> BTreeMap<Arc<str>, usize> {
         self.columns
             .iter()
             .enumerate()
-            .find(|(_, field)| field.name() == name)
+            .map(|(index, field)| (Arc::from(field.name()), index))
+            .collect()
     }
 
     /// The model's columns as a schema.

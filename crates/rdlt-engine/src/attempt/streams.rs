@@ -149,6 +149,7 @@ impl Planning<'_> {
             naming: self.naming.clone(),
             meta,
             root: None,
+            columns: self.context.config.limits().schema_columns,
         };
         Ok((resolver, table, model))
     }

@@ -74,6 +74,7 @@ fn resolver(capabilities: Capabilities, policy: SchemaPolicy, nested: Nested) ->
         naming,
         capabilities: Arc::new(capabilities),
         root: None,
+        columns: u64::MAX,
     }
 }
 
