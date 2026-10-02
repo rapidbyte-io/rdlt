@@ -13,12 +13,14 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, ErrorKind, Write as _};
 use std::path::Path;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Weak};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rdlt_connector::PartitionId;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use tokio::time::Instant;
 
 use crate::limits::{KEEPER_BYTES, KEEPER_POSITIONS};
 use crate::rooted::{Dir, Limit};
@@ -36,6 +38,10 @@ type Positions<P> = BTreeMap<(String, PartitionId), P>;
 pub(crate) struct Kept<P> {
     positions: Mutex<Positions<P>>,
     file: Option<KeptFile>,
+    /// When the process opened the keeper, on the clock tasks sleep by and on the calendar's.
+    opened: (Instant, SystemTime),
+    /// When a keeper kept in a file was first kept there, in the calendar's milliseconds.
+    began: Option<u64>,
 }
 
 /// Where a keeper's file is: its directory, opened once, and its name there.
@@ -52,8 +58,41 @@ impl<P> Default for Kept<P> {
         Self {
             positions: Mutex::default(),
             file: None,
+            opened: (Instant::now(), SystemTime::now()),
+            began: None,
         }
     }
+}
+
+impl<P> Kept<P> {
+    /// When the process opened the keeper: every source that shares it shares that moment, on
+    /// the clock tasks sleep by and on the calendar's.
+    pub(crate) fn opened(&self) -> (Instant, SystemTime) {
+        self.opened
+    }
+
+    /// How long a keeper kept in a file had been kept there when this process opened it, by the
+    /// calendar; none for a keeper kept in no file, which begins with its process.
+    ///
+    /// No time where the calendar says the file was first kept later than now.
+    pub(crate) fn kept_for(&self) -> Option<Duration> {
+        let opened = millis(self.opened.1);
+        let began = self.began?;
+        Some(Duration::from_millis(opened.saturating_sub(began)))
+    }
+}
+
+/// `at` in the calendar's milliseconds.
+fn millis(at: SystemTime) -> u64 {
+    let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
+    u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// When a keeper file was first kept, in the calendar's milliseconds, as its `lock` says: the
+/// lock file is made with the keeper's first process and never written, where the keeper's own
+/// file is put anew by every write.
+fn began(lock: &File) -> io::Result<u64> {
+    Ok(millis(lock.metadata()?.modified()?))
 }
 
 impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
@@ -69,6 +108,8 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
         Ok(Self {
             positions: Mutex::new(read(&dir, &name)?),
             file: None,
+            opened: (Instant::now(), SystemTime::now()),
+            began: None,
         })
     }
 
@@ -92,7 +133,9 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
         let lock = alone(&dir, &name)?;
         let positions = read(&dir, &name)?;
         // No other writer shares the file: every temporary of it is one a crash left.
-        dir.sweep_of(&name.to_string_lossy(), std::time::Duration::ZERO)?;
+        dir.sweep_of(&name.to_string_lossy(), Duration::ZERO)?;
+        let began = began(&lock)?;
+        let opened = (Instant::now(), SystemTime::now());
         Ok(Self {
             positions: Mutex::new(positions),
             file: Some(KeptFile {
@@ -100,6 +143,8 @@ impl<P: Copy + Ord + Serialize + DeserializeOwned> Kept<P> {
                 name,
                 _lock: lock,
             }),
+            opened,
+            began: Some(began),
         })
     }
 
@@ -225,49 +270,97 @@ fn write<P: Serialize>(file: &KeptFile, positions: &Positions<P>) -> io::Result<
     temporary.replace(&file.name)
 }
 
-/// What names a keeper of a process: a name sources share, or a file.
+/// What names a keeper of a process: the host it is kept for, the process's own where none is
+/// named, and a name sources share or a file.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Named {
-    Group(String),
+    Group(Option<String>, String),
     /// The file system and the directory on it that hold the file, and its name there.
-    File(u64, u64, OsString),
+    File(Option<String>, u64, u64, OsString),
 }
 
-/// Keepers by name, for as long as the process runs.
-pub(crate) struct Registry<P>(LazyLock<Mutex<BTreeMap<Named, Arc<Kept<P>>>>>);
+/// Keepers by host and name.
+///
+/// A keeper is its host's: where a connector listens for hosts, two hosts that name one group
+/// have a keeper each, and a file one of them keeps is refused the other while it is held.
+///
+/// A keeper is held for as long as a source holds it, and one the process's own host names for
+/// as long as the process runs, as a broker keeps a group between its consumers. A keeper kept
+/// for a host named to a listening connector, or in a file, is freed with its last source, its
+/// file's lock with it, and its name is forgotten when a keeper is next asked for: what hosts
+/// name costs the process nothing once they are gone, and a name freed is a new keeper's when
+/// named again.
+pub(crate) struct Registry<P>(LazyLock<Mutex<Keepers<P>>>);
+
+/// The keepers of a registry: each by what names it, and those kept for the process.
+struct Keepers<P> {
+    named: BTreeMap<Named, Weak<Kept<P>>>,
+    own: Vec<Arc<Kept<P>>>,
+}
+
+impl<P> Keepers<P> {
+    /// The keeper `key` names, where a source or the process holds one; the names of keepers
+    /// nothing holds any more are forgotten.
+    fn held(&mut self, key: &Named) -> Option<Arc<Kept<P>>> {
+        self.named.retain(|_, kept| kept.strong_count() != 0);
+        self.named.get(key).and_then(Weak::upgrade)
+    }
+}
 
 impl<P> Registry<P> {
     pub(crate) const fn new() -> Self {
-        Self(LazyLock::new(|| Mutex::new(BTreeMap::new())))
+        Self(LazyLock::new(|| {
+            Mutex::new(Keepers {
+                named: BTreeMap::new(),
+                own: Vec::new(),
+            })
+        }))
     }
 
-    /// The keeper named `name`, shared by every source of this process that names it; the
-    /// default keeper, which every source naming none shares, where `name` is none.
-    pub(crate) fn named(&self, name: Option<&str>) -> Arc<Kept<P>> {
-        let name = Named::Group(name.unwrap_or_default().to_owned());
-        Arc::clone(self.0.lock().entry(name).or_default())
+    /// The keeper `host` names `name`, shared by every source of this process connected for
+    /// that host that names it; the host's default keeper, which its sources naming none share,
+    /// where `name` is none.
+    pub(crate) fn named(&self, host: Option<&str>, name: Option<&str>) -> Arc<Kept<P>> {
+        let key = Named::Group(host.map(str::to_owned), name.unwrap_or_default().to_owned());
+        let mut keepers = self.0.lock();
+        if let Some(kept) = keepers.held(&key) {
+            return kept;
+        }
+        let kept = Arc::new(Kept::default());
+        keepers.named.insert(key, Arc::downgrade(&kept));
+        if host.is_none() {
+            keepers.own.push(Arc::clone(&kept));
+        }
+        kept
+    }
+
+    /// How many names the registry held when a keeper was last asked for.
+    #[cfg(test)]
+    pub(crate) fn kept(&self) -> usize {
+        self.0.lock().named.len()
     }
 }
 
 impl<P: Copy + Ord + Serialize + DeserializeOwned> Registry<P> {
-    /// The keeper kept in the file at `path`, shared by every source of this process that names
-    /// the file.
+    /// The keeper kept for `host` in the file at `path`, shared by every source of this process
+    /// connected for that host that names the file.
     ///
     /// # Errors
     ///
-    /// The file cannot be read, or holds no keeper.
-    pub(crate) fn at(&self, path: &Path) -> io::Result<Arc<Kept<P>>> {
+    /// The file cannot be read, holds no keeper, or is held for another host.
+    pub(crate) fn at(&self, host: Option<&str>, path: &Path) -> io::Result<Arc<Kept<P>>> {
         // Keyed by the directory itself and the name in it, so every path to one file names one
         // keeper.
         let (dir, name) = place(path)?;
         let (device, file) = dir.identity()?;
-        let key = Named::File(device, file, name.clone());
+        let key = Named::File(host.map(str::to_owned), device, file, name.clone());
         let mut keepers = self.0.lock();
-        if let Some(kept) = keepers.get(&key) {
-            return Ok(Arc::clone(kept));
+        // A keeper no source holds has let its file go by now.
+        if let Some(kept) = keepers.held(&key) {
+            return Ok(kept);
         }
         let kept = Arc::new(Kept::open(dir, name)?);
-        keepers.insert(key, Arc::clone(&kept));
+        keepers.named.insert(key, Arc::downgrade(&kept));
         Ok(kept)
     }
 }

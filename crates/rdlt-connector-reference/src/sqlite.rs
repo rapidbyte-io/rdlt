@@ -182,7 +182,8 @@ fn readable(path: &std::path::Path, table: &str) -> Result<Option<(rusqlite::Con
 /// table or the database is missing.
 ///
 /// Columns read back as their storage class: integers as `Int64`, floats as `Float64`. Only a
-/// table a pipeline owns is read, as [`readable`] says.
+/// table a pipeline owns is read: a name the destination keeps, as the catalog's, is a `Config`
+/// error coded `table_name_reserved`, and a table no pipeline owns one coded `table_unowned`.
 pub fn published(path: impl Into<PathBuf>, table: &str) -> Result<Vec<RecordBatch>> {
     match readable(&path.into(), table)? {
         Some((connection, name)) => values::read_table(&connection, &Sqlite, &name),

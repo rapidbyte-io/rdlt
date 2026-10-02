@@ -148,7 +148,7 @@ async fn a_run_with_nothing_new_from_a_served_source_completes_in_one_attempt() 
         for listens in [false, true] {
             let name = format!("idle-{replayable}-{listens}");
             let base = tempfile::tempdir().expect("a temporary directory");
-            let group = base.path().join("group");
+            let group = base.path().join("events.group");
             let config = log(50, replayable, &group);
             let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join("wal")));
             let engine = logging_engine(retrying(3), store);
@@ -418,7 +418,7 @@ async fn a_connector_started_again_before_it_hears_of_a_commit_costs_one_attempt
     for (replayable, at) in [(true, At::Landed), (false, At::Flush)] {
         let name = format!("restarted-{replayable}");
         let base = tempfile::tempdir().expect("a temporary directory");
-        let group = base.path().join("group");
+        let group = base.path().join("events.group");
         let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join("wal")));
         // One commit, once the read has ended: the connector is idle when it is started again.
         let config = commit_every(1000).retry(

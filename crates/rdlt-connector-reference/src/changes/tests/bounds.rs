@@ -87,7 +87,7 @@ async fn a_position_of_a_partition_the_stream_never_has_is_not_acknowledged() {
         assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{partition}");
     }
     // An acknowledgement naming a partition the stream never has kept none of its positions.
-    let (_, reader) = source_factory::<ChangesSource>()
+    let (_, reader) = rdlt_connector::acknowledging_source_factory::<ChangesSource>()
         .connect_acknowledging(config, ConnectContext::new())
         .await
         .unwrap();
@@ -162,4 +162,62 @@ async fn a_slot_s_name_is_any_but_the_empty_one() {
             .await
             .unwrap_or_else(|error| panic!("{name:?}: {error}"));
     }
+}
+
+#[tokio::test]
+async fn two_hosts_that_name_one_slot_share_nothing_and_a_slot_goes_with_its_last_source() {
+    use rdlt_connector::acknowledging_source_factory;
+    let dir = crate::scratch::tempdir().unwrap();
+    let stream = json!({ "name": "orders", "keys": 6, "changes": 40, "replayable": false });
+    let named = json!({ "seed": 3, "slot": "of_two_hosts", "streams": [stream.clone()] });
+    let filed = json!({
+        "seed": 3, "slot_path": dir.path().join("orders.slot"), "streams": [stream],
+    });
+    let serving = |host: Option<&'static str>, config: &Value| {
+        let context = host.map_or_else(ConnectContext::new, ConnectContext::serving);
+        let factory = acknowledging_source_factory::<ChangesSource>();
+        let config = config.clone();
+        async move { factory.connect_acknowledging(config, context).await }
+    };
+    let changes = PartitionId::parse("changes").unwrap();
+    let position = Position {
+        next: 3,
+        done: false,
+    };
+    let at = || Cursor::encode(1, &position).unwrap();
+    let (ours, told) = serving(Some("a.example"), &named).await.unwrap();
+    let (_theirs, told_them) = serving(Some("b.example"), &named).await.unwrap();
+    let (_own, told_own) = serving(None, &named).await.unwrap();
+    ours.committed(&orders(), &[(changes.clone(), at())])
+        .await
+        .unwrap();
+    assert!(
+        told.acknowledged(&orders(), &changes)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    for other in [&told_them, &told_own] {
+        assert_eq!(other.acknowledged(&orders(), &changes).await.unwrap(), None);
+    }
+    // The slot goes with the last source of its host that holds it.
+    drop((ours, told));
+    let (_anew, told) = serving(Some("a.example"), &named).await.unwrap();
+    assert_eq!(told.acknowledged(&orders(), &changes).await.unwrap(), None);
+    // A slot's file is one host's while it is held, and the next host's with what it holds.
+    let (ours, told) = serving(Some("a.example"), &filed).await.unwrap();
+    ours.committed(&orders(), &[(changes.clone(), at())])
+        .await
+        .unwrap();
+    let kept = told.acknowledged(&orders(), &changes).await.unwrap();
+    for host in [Some("b.example"), None] {
+        let Err(refused) = serving(host, &filed).await else {
+            panic!("{host:?} shares the file");
+        };
+        assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{host:?}");
+    }
+    drop((ours, told));
+    let (_theirs, told) = serving(Some("b.example"), &filed).await.unwrap();
+    assert!(kept.is_some());
+    assert_eq!(told.acknowledged(&orders(), &changes).await.unwrap(), kept);
 }
