@@ -251,3 +251,60 @@ fn rows_of_many_sets_of_columns_are_a_merge_table_of_few_files() {
         assert_eq!(cells, 400, "{format:?}");
     }
 }
+
+#[test]
+fn a_table_of_many_shapes_settles_over_many_commits_into_files_of_bounded_absent_cells() {
+    use crate::limits::{FOLD_CELLS, MAX_SHAPES};
+    let (each, width) = (10_000_i64, 200);
+    let sessions = Sessions::new(FileFormat::Arrow);
+    let merged = table(None, true);
+    sessions.create(&merged, &schema(width));
+    // Sixteen shapes of many rows, each holding a column of its own, and a row of every column.
+    let mut segments: Vec<u64> = (1..=16).collect();
+    for segment in &segments {
+        let from = i64::try_from(*segment).unwrap() * each;
+        let own = usize::try_from(*segment).unwrap() + 1;
+        let whole = rows(from..from + each, 1, 20);
+        sessions.stage(&merged, *segment, whole.project(&[0, 1, own]).unwrap());
+    }
+    segments.push(17);
+    sessions.stage(&merged, 17, rows(0..1, 1, width));
+    sessions.commit(&sessions.meta(1, 1, &segments)).unwrap();
+    let limit = usize::try_from(FOLD_CELLS).unwrap();
+    let (mut counts, mut sizes) = (Vec::new(), Vec::new());
+    for commit in 2..=14_u64 {
+        // Five thousand rows of their key and sequence alone: joined with the wide row they
+        // would lack a million cells, just within what one fold makes.
+        let from = 100 * each + i64::try_from(commit).unwrap() * 5_000;
+        sessions.stage(&merged, 20 + commit, rows(from..from + 5_000, 1, 0));
+        let meta = sessions.meta(1, commit, &[20 + commit]);
+        sessions.commit(&meta).unwrap();
+        let files = listed(&sessions);
+        counts.push(files.len());
+        let arrow = Arc::new(schema(width).to_arrow());
+        for file in &files {
+            let batches = manifest::read_held(&sessions.location.dir, &file.path, &arrow).unwrap();
+            let nulls: usize = batches
+                .iter()
+                .flat_map(|batch| batch.columns().iter())
+                .map(Array::null_count)
+                .sum();
+            assert!(
+                nulls <= limit,
+                "commit {commit}: a file of {nulls} null cells"
+            );
+        }
+        let bytes: u64 = files.iter().map(|file| file.bytes).sum();
+        sizes.push(bytes);
+    }
+    // The list and the bytes it holds stop growing but for the rows added: a batch a commit
+    // joined is cut into the batches its file holds, and read back as the columns each holds.
+    assert!(
+        counts.iter().all(|count| *count <= MAX_SHAPES + 2),
+        "{counts:?}"
+    );
+    let most = 8 * 1024 * 1024;
+    assert!(sizes[4..].iter().all(|bytes| *bytes < most), "{sizes:?}");
+    let expected = usize::try_from(16 * each + 1 + 13 * 5_000).unwrap();
+    assert_eq!(ids(&sessions).len(), expected);
+}

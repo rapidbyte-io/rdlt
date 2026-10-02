@@ -111,3 +111,37 @@ async fn one_wide_row_among_many_narrow_rows_costs_the_table_its_own_cells() {
     let bytes = held_bytes(&held);
     assert!(bytes < 4 * 1024 * 1024, "the table holds {bytes} bytes");
 }
+
+/// Rows of `ids` that hold 7 in the column `column` alone beside their key and sequence.
+fn only(ids: std::ops::Range<i64>, column: usize) -> RecordBatch {
+    rows(ids, 400)
+        .project(&[0, 1, column + 2])
+        .expect("three columns")
+}
+
+#[tokio::test]
+async fn a_table_of_many_shapes_keeps_each_row_under_its_own_columns_over_many_commits() {
+    let destination = store("shapes").await;
+    let mut session = open(destination.as_ref(), "p", 1).await;
+    loaded(&mut session, 1, rows(0..1, 400)).await;
+    // Forty shapes of a thousand rows, each holding a column of its own, then twelve commits
+    // of rows that hold their key and sequence alone.
+    for shape in 0..40_i64 {
+        let from = (shape + 1) * 1_000;
+        let column = usize::try_from(shape).expect("a column");
+        let segment = u64::try_from(shape).expect("a segment") + 2;
+        loaded(&mut session, segment, only(from..from + 1_000, column)).await;
+    }
+    for commit in 0..12_i64 {
+        let from = 100_000 + commit * 5_000;
+        let segment = u64::try_from(commit).expect("a segment") + 50;
+        loaded(&mut session, segment, rows(from..from + 5_000, 0)).await;
+        let held = published("shapes", "events");
+        // A table keeps a batch for each set of columns its rows hold and makes no cell: the
+        // narrow rows gather in one batch, whatever the wide row beside them holds, and a
+        // reader's absent columns are nulls every batch shares.
+        assert_eq!(held.len(), 42, "commit {commit}");
+        let bytes = held_bytes(&held);
+        assert!(bytes < 4 * 1024 * 1024, "commit {commit}: {bytes} bytes");
+    }
+}

@@ -114,8 +114,14 @@ pub(super) fn merged_rows(
         let buried = read(&mut table.tombstones.iter(), &buried)?;
         merge_sparse(&schema, &published, &buried, &incoming, key).map_err(merging)?
     };
+    // An Arrow file holds one set of columns, so each batch is a file: rows of many sets are
+    // joined into a few. Lines name their own columns and share one file as they are.
+    let rows = match location.format {
+        FileFormat::Arrow => crate::merge::folded(&schema, merged.rows).map_err(merging)?,
+        FileFormat::Jsonl => merged.rows,
+    };
     Ok(MergedRows {
-        rows: merged.rows,
+        rows,
         tombstones: merged.tombstones,
         held,
     })

@@ -11,6 +11,7 @@ pub(crate) mod tests;
 mod tombstones;
 mod written;
 
+pub(crate) use folded::folded;
 pub(crate) use refused::failed;
 pub(crate) use retype::holds;
 pub(crate) use tombstones::schema as tombstone_schema;
@@ -64,7 +65,8 @@ pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> Sch
 ///
 /// The rows are given back as batches of the columns they hold, as [`sparse`] has them: a
 /// column a row never had costs the row nothing, here or in what a destination keeps of them.
-/// Rows of many sets of columns are joined as [`folded`] says, so the batches stay few.
+/// It is one batch for each set of columns rows hold, however many: [`folded`] joins them for a
+/// destination that pays for each.
 ///
 /// A key `schema` cannot be merged by, one of no column or naming a column it lacks, is an error,
 /// and so is a value a column's type no longer holds: nothing merges then.
@@ -91,7 +93,6 @@ pub(crate) fn merge_sparse(
         }
         (None, None) => (upsert(schema, published, incoming, key)?, Vec::new()),
     };
-    let rows = folded::folded(&stored, rows)?;
     Ok(Merged { rows, tombstones })
 }
 
@@ -273,7 +274,7 @@ pub(crate) fn merge_children_sparse(
         base: Base::Row(at),
         over: &[],
     });
-    folded::folded(schema, assemble(&sources, picks)?)
+    assemble(&sources, picks)
 }
 
 /// `batch`'s column `name` as `Binary`, which an id or a sequence is.
