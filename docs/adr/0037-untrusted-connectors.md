@@ -45,6 +45,10 @@ decision they implement.
     sandbox, so untrusted connectors run remotely there.
   - A placement the policy does not permit is refused with a typed error. Nothing degrades
     silently to a weaker isolation.
+- **Whoever writes a pipeline's configuration is not trusted with the host's secrets.** In a
+  service, a configuration's author may be a tenant, not the operator. A configuration
+  reaches the host's environment variables, files and named secrets only as the operator
+  lists them; by default it reaches none (ADR 0043). Amended 2026-10-02.
 - **A connector receives only its own configuration**, and only after the host has verified
   which connector it is: its id and version, the digest of its binary, or the name in its
   certificate. Secrets are never quoted in errors, logs or reports, and connector text is

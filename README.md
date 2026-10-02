@@ -36,8 +36,8 @@ bubblewrap on Linux) unless its binaries are stated to be trusted
 executes the file it opened and hashed, gives it its socket on file descriptor 3 and nothing
 else of the host's, bounds and shows its output, keeps its last words for its errors, stops it
 when done and respawns it when it is lost. A configuration's secrets are references
-(`${env:NAME}`, `${file:/path}`, `${secret:name}`) resolved for the connector the host has
-verified and scrubbed from whatever it says back. The engine's integration suite runs against
+(`${env:NAME}`, `${file:/path}`, `${secret:name}`), resolved only as the operator lists, for
+the connector the host has verified, and scrubbed from whatever it says back. The engine's integration suite runs against
 the reference connectors both ways. `rdlt-host`'s `Remote` reaches connectors listening
 on the network over mutual TLS 1.3, redialing them when they are lost, and the integration suite
 runs against them too. A listening connector accepts only the hosts named to it, by a name in

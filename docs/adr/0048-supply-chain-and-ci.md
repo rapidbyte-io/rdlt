@@ -30,6 +30,14 @@ This record decides what holds each statement, and says where a check ends.
   - The audited code is a crate of its own, `rdlt-adopt`: two files, `src/lib.rs` and its
     tests, compiled on Unix only. It allows `unsafe` code with `#[expect(unsafe_code)]` on the
     one statement and the one function that need it, under the workspace's `deny`.
+    Amended 2026-10-02 (ADR 0043): it holds a second audited module, `src/exec.rs` and its
+    tests, the lint's list of audited files naming both. `inheriting_below` registers the
+    workspace's one `pre_exec` hook, which marks a spawned child's descriptors from a number
+    up close-on-exec once the descriptors it is given are in place: one `close_range` system
+    call, through `libc`, on Linux 5.11 and later, and `fcntl` on each descriptor up to the
+    process's limit elsewhere. The hook calls only async-signal-safe functions, allocates
+    nothing and closes nothing. `rdlt-host` alone may use it; the dependency rule names
+    `rdlt-connector` and `rdlt-host` as the only users of the crate.
   - `rdlt_adopt::adopt` is a safe function, so that a crate forbidding `unsafe` code can call
     it. It checks what it can: the descriptor is open, a socket, not a standard stream, not
     close-on-exec, and taken once. That nothing else in the process owns the descriptor is left
