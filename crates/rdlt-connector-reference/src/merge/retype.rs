@@ -121,11 +121,22 @@ fn lossless(from: &DataType, to: &DataType) -> bool {
 }
 
 /// The values of `array`, an id or a sequence, as the bytes they compare by: bytes as they are,
-/// and text, which a destination without a type for bytes keeps them as, as the bytes it is.
+/// text, which a destination without a type for bytes keeps them as, as the bytes it is, and
+/// integers as sixteen bytes that order as the numbers do.
 pub(super) fn compared(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
             checked(array, &DataType::Binary)
+        }
+        kind if kind.is_integer() => {
+            // Every integer fits a decimal of 38 digits; its sign bit flipped, the number's
+            // bytes from the greatest order as the numbers do.
+            let wide = checked(array, &DataType::Decimal128(38, 0))?;
+            let wide = wide.as_primitive::<arrow_array::types::Decimal128Type>();
+            let ordered = wide
+                .iter()
+                .map(|value| value.map(|value| (value ^ i128::MIN).to_be_bytes()));
+            Ok(Arc::new(arrow_array::BinaryArray::from_iter(ordered)))
         }
         _ => retyped(array, &DataType::Binary),
     }

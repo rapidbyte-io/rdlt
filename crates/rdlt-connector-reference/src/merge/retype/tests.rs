@@ -583,9 +583,25 @@ fn an_id_or_a_sequence_kept_as_text_compares_as_the_bytes_it_is() {
         let held: Vec<&[u8]> = bytes.as_binary::<i32>().iter().flatten().collect();
         assert_eq!(held, expected, "{}", stored.data_type());
     }
-    // A number is no id or sequence.
-    let number: ArrayRef = Arc::new(Int64Array::from(vec![1]));
-    assert!(super::compared(&number).is_err());
+    // Numbers compare as numbers do, whatever their width and sign.
+    let numbers = [i64::MIN, -300, -1, 0, 1, 255, 256, 70_000, i64::MAX];
+    let wide: ArrayRef = Arc::new(Int64Array::from(numbers.to_vec()));
+    let bytes = super::compared(&wide).unwrap();
+    let ordered: Vec<&[u8]> = bytes.as_binary::<i32>().iter().flatten().collect();
+    assert!(
+        ordered.windows(2).all(|pair| pair[0] < pair[1]),
+        "{ordered:?}"
+    );
+    let narrow: ArrayRef = Arc::new(Int16Array::from(vec![-300_i16, 256]));
+    let narrow = super::compared(&narrow).unwrap();
+    let narrow = narrow.as_binary::<i32>();
+    assert_eq!((narrow.value(0), narrow.value(1)), (ordered[1], ordered[6]));
+    let unsigned: ArrayRef = Arc::new(UInt64Array::from(vec![u64::MAX]));
+    let unsigned = super::compared(&unsigned).unwrap();
+    assert!(unsigned.as_binary::<i32>().value(0) > ordered[8]);
+    // A float is no id or sequence.
+    let float: ArrayRef = Arc::new(Float64Array::from(vec![1.0]));
+    assert!(super::compared(&float).is_err());
 }
 
 #[test]
