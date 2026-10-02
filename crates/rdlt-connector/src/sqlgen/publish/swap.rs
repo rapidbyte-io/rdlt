@@ -20,6 +20,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         generation: GenerationId,
         generations: &[(String, GenerationId)],
     ) -> Result<Vec<Statement>> {
+        owned.is(owned.name())?;
         let base = owned.name();
         // Only generation tables change the schema: renamed in, or dropped.
         if !generations.is_empty() && !self.swaps_atomically() {

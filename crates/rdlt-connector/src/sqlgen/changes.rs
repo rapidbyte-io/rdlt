@@ -31,12 +31,17 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// The statement forgetting the tombstones of the table `owned` names, whose rows were
     /// replaced whole.
-    pub fn forget_tombstones(&self, owned: &Owned<'_>) -> Statement {
+    ///
+    /// # Errors
+    ///
+    /// The witness is of a table yet to be created.
+    pub fn forget_tombstones(&self, owned: &Owned<'_>) -> Result<Statement> {
+        owned.is(owned.name())?;
         let tombstones = self.tombstone_table(owned.name());
-        Statement {
+        Ok(Statement {
             sql: format!("DELETE FROM {}", self.quote(&tombstones)),
             params: Vec::new(),
-        }
+        })
     }
 
     /// The statements readying a change stream's tables before it stages rows for `table`, which
