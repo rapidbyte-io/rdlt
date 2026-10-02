@@ -133,13 +133,17 @@ pub(super) fn derived(
     Ok(())
 }
 
-/// Refuses a database that takes the name of a catalog table for a table named otherwise.
+/// Refuses a database that takes the name of a catalog table for a table named otherwise, or
+/// holds a catalog table in a shape this destination no longer writes.
 pub(in crate::sqlite) fn catalog(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
 ) -> Result<()> {
     for name in planner.catalog() {
         planner.exact(name, &answers(transaction, &planner.resolves(name))?)?;
+        let columns = columns(transaction, &Sqlite, name)?;
+        let names: Vec<String> = columns.into_iter().map(|column| column.name).collect();
+        planner.catalog_current(name, &names)?;
     }
     Ok(())
 }

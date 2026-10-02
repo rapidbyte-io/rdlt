@@ -29,7 +29,41 @@ pub(super) const CATALOG: [&str; 7] = [
     SEGMENTS,
 ];
 
+/// The code of an error for a catalog made in a shape this planner no longer writes.
+pub const CATALOG_OUTDATED: &str = "catalog_outdated";
+
+/// The catalog tables whose shape changed, each with the columns it has now.
+const RESHAPED: [(&str, &[&str]); 1] = [(TABLES, &["pipeline", "path", "name"])];
+
 impl<D: SqlDialect> SqlPlanner<D> {
+    /// Refuses the catalog table `table` where the database holds it in a shape this planner no
+    /// longer writes: `columns` are those the database lists for it, none where it is missing.
+    ///
+    /// [`SqlPlanner::bootstrap`] creates a missing table and leaves one that exists as it is, so
+    /// a table made in an earlier shape would be written as this one and fail where it is read.
+    /// The catalog's shape is this crate's own and has no earlier release to carry forward: a
+    /// database made in an earlier shape is a `Config` error coded `catalog_outdated`.
+    ///
+    /// # Errors
+    ///
+    /// The table lacks a column it has now.
+    pub fn catalog_current(&self, table: &str, columns: &[String]) -> Result<()> {
+        let Some((_, wanted)) = RESHAPED.iter().find(|(reshaped, _)| *reshaped == table) else {
+            return Ok(());
+        };
+        let held = |name: &&str| columns.iter().any(|column| column == name);
+        let lacking: Vec<&str> = wanted.iter().copied().filter(|name| !held(name)).collect();
+        if columns.is_empty() || lacking.is_empty() {
+            return Ok(());
+        }
+        let message = format!(
+            "the catalog table {table} was made in an earlier shape, without {}: the database is \
+             one an earlier build of this destination wrote, and is not used",
+            lacking.join(", ")
+        );
+        Err(ConnectorError::config(message).with_code(CATALOG_OUTDATED))
+    }
+
     /// Creates the catalog tables where they are missing.
     pub fn bootstrap(&self) -> Vec<Statement> {
         let (text, integer, blob) = (&self.text, &self.integer, &self.blob);
