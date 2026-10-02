@@ -7,8 +7,9 @@ use std::time::UNIX_EPOCH;
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use rdlt_connector::{
     CommitMeta, CommitSeq, ConnectContext, Destination, Field, LoadId, LogicalType, MergeKey,
-    OpenContext, OpenedSession, PipelineId, PublishedReader, SchemaVersion, SegmentId, SegmentSet,
-    TableChange, TablePath, TableRef, TableSchema, readable_destination_factory,
+    OpenContext, OpenedSession, PipelineId, PublishedReader, PublishedRows, SchemaVersion,
+    SegmentId, SegmentSet, TableChange, TablePath, TableRef, TableSchema,
+    readable_destination_factory,
 };
 use rdlt_connector_reference::FilesDestination;
 use serde_json::{Value, json};

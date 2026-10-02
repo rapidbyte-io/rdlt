@@ -214,14 +214,19 @@ impl PublishedReader for Bits {
     fn published<'a>(
         &'a self,
         _: &'a TableRef,
-    ) -> BoxFuture<'a, rdlt_connector::Result<Vec<RecordBatch>>> {
+        rows: PublishedRows,
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         let batch = |rows: &usize| {
             let ids: ArrayRef = Arc::new(BooleanArray::from(vec![true; *rows]));
             let names: ArrayRef = Arc::new(NullArray::new(*rows));
             RecordBatch::try_from_iter([("id", ids), ("name", names)]).expect("a valid batch")
         };
-        let batches = self.0.iter().map(batch).collect();
-        Box::pin(async move { Ok(batches) })
+        Box::pin(async move {
+            for read in self.0.iter().map(batch) {
+                rows.send(read).await?;
+            }
+            Ok(())
+        })
     }
 }
 

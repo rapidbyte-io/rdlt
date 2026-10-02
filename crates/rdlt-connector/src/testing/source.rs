@@ -108,7 +108,7 @@ pub(super) async fn certify_source_holding<C: SourceConnector>(
     config: serde_json::Value,
     held: usize,
 ) -> Report {
-    let factory = source_factory::<C>();
+    let factory = acknowledging_source_factory::<C>();
     certified(factory.as_ref(), config, &Observed::new(), held).await
 }
 

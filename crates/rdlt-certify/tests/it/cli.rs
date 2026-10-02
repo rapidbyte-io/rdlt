@@ -719,6 +719,7 @@ async fn a_second_interrupt_kills_what_a_certification_spawned_and_ends_it_at_on
     // It exits as the last signal it heard would have ended it.
     assert_eq!(status.code(), Some(143));
 }
+
 #[tokio::test(flavor = "multi_thread")]
 async fn an_endpoint_refused_is_not_repeated_in_what_is_reported() {
     let tls = [
