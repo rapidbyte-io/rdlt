@@ -16,6 +16,25 @@ const CONTRACT_LIMITS: &[&str] = &[
 /// The name a limit that `name` does not match goes by.
 const UNKNOWN_LIMIT: &str = "limit";
 
+/// The code an error a connector sent goes by when the code it chose is not one it may use.
+pub const INVALID_CODE: &str = "invalid_code";
+
+/// The codes a host gives its own findings about a connection, which no connector may claim.
+pub const HOST_CODES: &[&str] = &["connector_lost", "deadline_exceeded", "tls", "transport"];
+
+/// `code` where a connector may use it: lower-case letters, digits, `_`, `.` and `-`, within
+/// [`MAX_ERROR_CODE_BYTES`](crate::limits::MAX_ERROR_CODE_BYTES), and none of [`HOST_CODES`];
+/// otherwise [`INVALID_CODE`].
+fn admitted(code: String) -> String {
+    let token = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || "_.-".contains(c);
+    let fits = (1..=crate::limits::MAX_ERROR_CODE_BYTES).contains(&code.len());
+    if fits && code.chars().all(token) && !HOST_CODES.contains(&code.as_str()) {
+        code
+    } else {
+        INVALID_CODE.to_owned()
+    }
+}
+
 impl From<ConnectorErrorKind> for v1::ErrorKind {
     fn from(kind: ConnectorErrorKind) -> Self {
         match kind {
@@ -83,7 +102,7 @@ impl TryFrom<v1::Error> for ConnectorError {
             .with_retry_after(error.retry_after.map(std_duration).transpose()?)
             .with_limit(limit);
         if let Some(code) = error.code {
-            decoded = decoded.with_code(code);
+            decoded = decoded.with_code(admitted(code));
         }
         // Text a connector chose: shown and bounded where it is received.
         Ok(decoded.received(&|text| text))

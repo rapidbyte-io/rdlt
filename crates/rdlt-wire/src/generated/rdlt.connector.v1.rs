@@ -1715,6 +1715,12 @@ pub struct HandshakeResponse {
     /// The limits the connector enforces on what it receives.
     #[prost(message, optional, tag = "3")]
     pub limits: ::core::option::Option<Limits>,
+    /// The protocol's major version the connector speaks; the host refuses another.
+    #[prost(uint32, tag = "4")]
+    pub protocol_major: u32,
+    /// The protocol's minor version the connector speaks.
+    #[prost(uint32, tag = "5")]
+    pub protocol_minor: u32,
 }
 /// Configures the connector.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

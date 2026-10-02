@@ -1,6 +1,7 @@
 //! A connection to a served connector: the handshake that connects it, a heartbeat that notices
 //! when it stops answering, and a deadline for each call.
 
+mod agreed;
 mod checked;
 mod clients;
 mod destination;
@@ -175,6 +176,7 @@ impl Connection {
         let request = v1::HandshakeRequest {
             protocol_major: PROTOCOL_MAJOR,
             protocol_minor: PROTOCOL_MINOR,
+            // A host offers no feature: certification's read-back is the only one.
             features: Vec::new(),
             role: match role {
                 Role::Source => v1::Role::Source,
@@ -187,6 +189,7 @@ impl Connection {
         let mut handshaking = client.handshake.clone();
         let handshaken = handshaking.handshake(request);
         let response = within(deadline, "the handshake", handshaken).await?;
+        agreed::agreed(&response, &[])?;
         // A connector may not make this host send frames smaller than the protocol's least.
         let peer = response.limits.map(Limits::from).unwrap_or_default();
         peer.admit_peer()

@@ -458,7 +458,7 @@ proptest! {
     fn errors_cross_the_wire_with_their_kind_code_retry_and_limit(
         kind in error_kind(),
         message in ".{0,20}",
-        code in proptest::option::of("[a-z_.]{1,12}"),
+        code in proptest::option::of("[a-z_.]{1,12}".prop_filter("a host's code", |code| !super::HOST_CODES.contains(&code.as_str()))),
         retry_after in proptest::option::of((any::<u32>(), 0..1_000_000_000_u32)),
         limit in proptest::option::of((proptest::sample::select(vec!["batch rows", "cursor bytes", "frame bytes"]), any::<u64>(), any::<u64>())),
     ) {
@@ -1085,5 +1085,38 @@ fn identifier_rules_beyond_their_limits_are_refused_where_they_are_received() {
             }
         ),
         "{refused}"
+    );
+}
+
+#[test]
+fn a_connector_error_code_outside_the_grammar_or_the_host_s_is_replaced() {
+    let decoded = |code: &str| {
+        let sent = v1::Error {
+            kind: v1::ErrorKind::Data as i32,
+            message: "failed".to_owned(),
+            code: Some(code.to_owned()),
+            retry_after: None,
+            limit: None,
+        };
+        let error = ConnectorError::try_from(sent).expect("it decodes");
+        error.code().map(str::to_owned)
+    };
+    for kept in ["pg.permission_denied", "retention_lost", "a-b", "x"] {
+        assert_eq!(decoded(kept).as_deref(), Some(kept));
+    }
+    let longest = "x".repeat(crate::limits::MAX_ERROR_CODE_BYTES);
+    assert_eq!(decoded(&longest).as_deref(), Some(longest.as_str()));
+    let long = "x".repeat(crate::limits::MAX_ERROR_CODE_BYTES + 1);
+    let replaced = ["", "Upper", "a b", "a\nb", "x\u{202e}", long.as_str()];
+    for code in replaced
+        .into_iter()
+        .chain(super::HOST_CODES.iter().copied())
+    {
+        let found = decoded(code);
+        assert_eq!(found.as_deref(), Some(super::INVALID_CODE), "{code:?}");
+    }
+    assert_eq!(
+        super::HOST_CODES,
+        ["connector_lost", "deadline_exceeded", "tls", "transport"]
     );
 }

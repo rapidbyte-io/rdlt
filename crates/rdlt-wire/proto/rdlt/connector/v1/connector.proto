@@ -141,6 +141,10 @@ message HandshakeResponse {
   repeated string accepted_features = 2;
   // The limits the connector enforces on what it receives.
   Limits limits = 3;
+  // The protocol's major version the connector speaks; the host refuses another.
+  uint32 protocol_major = 4;
+  // The protocol's minor version the connector speaks.
+  uint32 protocol_minor = 5;
 }
 
 // Configures the connector.
