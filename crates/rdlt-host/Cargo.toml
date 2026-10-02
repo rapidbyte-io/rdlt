@@ -45,9 +45,11 @@ zeroize.workspace = true
 [dev-dependencies]
 bytes.workspace = true
 http.workspace = true
+http-body.workspace = true
 hyper = { workspace = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, features = ["service", "tokio"] }
 nix = { workspace = true, features = ["process", "signal"] }
+peak_alloc.workspace = true
 rdlt-connector = { workspace = true, features = ["certify", "serve"] }
 rdlt-connector-reference = { workspace = true, features = ["certify"] }
 rdlt-engine.workspace = true

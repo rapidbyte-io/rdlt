@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use super::lint_tree;
-use crate::codegen::GENERATED;
+use crate::codegen::{FORMS, GENERATED};
 use crate::rules::Rule;
 
 fn write(root: &Path, relative: &str, contents: &str) {
@@ -49,10 +49,12 @@ fn a_tree_without_source_roots_is_clean() {
 }
 
 #[test]
-fn the_generated_file_is_held_to_no_comment_or_style_rule() {
-    let root = tempfile::tempdir().unwrap();
-    write(root.path(), GENERATED, "// TODO: later\nfn f() {}\n");
-    assert!(lint_tree(root.path()).unwrap().is_empty());
+fn the_generated_files_are_held_to_no_comment_or_style_rule() {
+    for file in [GENERATED, FORMS] {
+        let root = tempfile::tempdir().unwrap();
+        write(root.path(), file, "// TODO: later\nfn f() {}\n");
+        assert!(lint_tree(root.path()).unwrap().is_empty(), "{file}");
+    }
 }
 
 // Generated code is compiled like any other: only what is about its prose is skipped.

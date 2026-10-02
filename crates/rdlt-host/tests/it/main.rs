@@ -6,6 +6,7 @@ mod acknowledged;
 mod admission;
 mod canary;
 mod cuts;
+mod decoded;
 mod descriptors;
 mod dictionaries;
 mod flow;
@@ -34,3 +35,7 @@ mod staging;
 mod started;
 mod support;
 mod wires;
+
+/// Tracks the heap's peak, for what a message holds before it is refused.
+#[global_allocator]
+static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;

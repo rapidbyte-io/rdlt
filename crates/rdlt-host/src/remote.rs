@@ -386,7 +386,7 @@ where
         .connect_with_connector(connector)
         .await
         .map_err(|error| lost_because(format!("connecting failed: {error}")))?;
-    Ok(checked::Checked::new(channel))
+    Ok(checked::Checked::new(channel, options.limits))
 }
 
 /// The contract's spec of the connector the handshake's `spec` describes, in `role`.

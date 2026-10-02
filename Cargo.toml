@@ -63,6 +63,7 @@ prost = "0.14.4" # protocol buffer messages of the wire protocol
 tonic = { version = "0.14.6", default-features = false } # gRPC: the wire protocol's service stubs, server and client
 tonic-prost = "0.14.6" # the protobuf codec of the wire protocol's gRPC service
 http = "1.5.0" # the requests a served connection's gRPC service takes
+http-body = "1.1.0" # the bodies of calls, held to their messages' bounds before they are decoded
 hyper = { version = "1.11.1", default-features = false } # one HTTP/2 connection served to its end
 hyper-util = { version = "0.1.21", default-features = false } # tokio's executor, timers and IO for hyper
 tokio-stream = { version = "0.1.19", default-features = false } # the streams a served read and write answer with

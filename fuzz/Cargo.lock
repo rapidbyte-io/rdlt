@@ -1058,6 +1058,7 @@ dependencies = [
  "arrow-select",
  "bytes",
  "flatbuffers",
+ "http-body",
  "prost",
  "thiserror",
  "tonic",

@@ -347,3 +347,50 @@ fn each_class_of_message_is_decoded_within_its_own_limit() {
     }
     assert_eq!(HANDSHAKE_BYTES, 4_194_304);
 }
+
+#[test]
+fn each_class_of_message_may_hold_so_many_times_its_bytes_once_decoded() {
+    use super::{Class, DECODED_PER_BYTE};
+    let limits = Limits::default();
+    let times = |class| {
+        limits
+            .decoded(class)
+            .map(|decoded| decoded / limits.decoding(class))
+    };
+    assert_eq!(DECODED_PER_BYTE, 16);
+    let expected = [
+        (Class::Handshake, Some(4)),
+        (Class::Config, Some(4)),
+        (Class::Cursor, Some(4)),
+        (Class::State, Some(8)),
+        (Class::Control, Some(16)),
+        (Class::Catalog, Some(16)),
+        (Class::Schema, Some(16)),
+        (Class::Data, None),
+    ];
+    for (class, expected) in expected {
+        assert_eq!(times(class), expected, "{class:?}");
+    }
+    assert_eq!(limits.decoded(Class::State), Some(128 << 20));
+    assert_eq!(limits.decoded(Class::Catalog), Some(64 << 20));
+}
+
+#[test]
+fn each_call_s_answer_has_the_class_of_what_it_carries() {
+    use super::Class;
+    let expected = [
+        ("Handshake", Class::Handshake),
+        ("Configure", Class::Handshake),
+        ("Discover", Class::Catalog),
+        ("Plan", Class::State),
+        ("Open", Class::State),
+        ("Read", Class::Data),
+        ("ReadPublished", Class::Data),
+        ("Commit", Class::Control),
+        ("Write", Class::Control),
+        ("Check", Class::Control),
+    ];
+    for (method, expected) in expected {
+        assert_eq!(Class::of_answer(method), expected, "{method}");
+    }
+}

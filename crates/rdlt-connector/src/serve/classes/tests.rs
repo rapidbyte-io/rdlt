@@ -1,6 +1,6 @@
 use rdlt_wire::limits::Class;
 
-use super::class;
+use super::method;
 
 #[test]
 fn each_call_s_request_has_the_class_of_what_it_carries() {
@@ -22,8 +22,8 @@ fn each_call_s_request_has_the_class_of_what_it_carries() {
         ("ReadAcknowledged", Class::Control),
         ("Unknown", Class::Control),
     ];
-    for (method, expected) in expected {
-        let path = format!("/rdlt.connector.v1.Connector/{method}");
-        assert_eq!(class(&path), expected, "{method}");
+    for (name, expected) in expected {
+        let path = format!("/rdlt.connector.v1.Connector/{name}");
+        assert_eq!(Class::of_request(method(&path)), expected, "{name}");
     }
 }

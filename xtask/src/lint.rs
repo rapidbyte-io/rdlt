@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use anyhow::Context as _;
 use walkdir::WalkDir;
 
-use crate::codegen::GENERATED;
+use crate::codegen::{FORMS, GENERATED};
 use crate::lexer::scan;
 use crate::rules::{self, FileRole, Finding, Severity};
 use crate::unsafe_code;
@@ -25,8 +25,8 @@ const SOURCE_ROOTS: &[&str] = &["crates", "fuzz", "xtask"];
 
 /// Every finding in the tree under `root`, with paths relative to `root`.
 ///
-/// The code generated from the protocol's definitions is held to no comment or style rule, and
-/// to every rule about `unsafe` code.
+/// The code generated from the protocol's definitions, its messages and their forms, is held to
+/// no comment or style rule, and to every rule about `unsafe` code.
 pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> {
     let mut all = Vec::new();
     let mut unwinding = Unwinding::default();
@@ -46,7 +46,10 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
                 fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
             let relative = path.strip_prefix(root).unwrap_or(path).to_path_buf();
             let mut findings = Vec::new();
-            if relative != Path::new(GENERATED) {
+            if ![GENERATED, FORMS]
+                .iter()
+                .any(|file| relative == Path::new(file))
+            {
                 let (role, scanned) = (FileRole::of(&relative), scan(&source));
                 unwinding.read(&relative, role, &scanned, &source);
                 findings = rules::check(role, &scanned);

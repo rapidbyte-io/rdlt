@@ -15,6 +15,7 @@ arrow-schema.workspace = true
 arrow-select.workspace = true
 bytes.workspace = true
 flatbuffers.workspace = true
+http-body.workspace = true
 prost.workspace = true
 nix = { workspace = true, optional = true, features = ["fs", "user"] }
 rustls = { workspace = true, optional = true }
@@ -30,6 +31,7 @@ serve = ["tonic/server"]
 tls = ["dep:nix", "dep:rustls", "dep:webpki"]
 
 [dev-dependencies]
+peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-testkit.workspace = true
 
