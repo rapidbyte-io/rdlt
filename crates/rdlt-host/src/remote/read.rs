@@ -38,9 +38,10 @@ pub(super) async fn run(
         decoder: Decoder::new(limits),
         limits,
         epoch: None,
+        schema: 0,
     };
     let (mut forwarded, mut stopping) = (pending, false);
-    let mut dictionaries = Dictionaries::default();
+    let mut kept = Kept::default();
     loop {
         tokio::select! {
             biased;
@@ -71,8 +72,9 @@ pub(super) async fn run(
                 match reader.event(frame)? {
                     Read::Done => return Ok(()),
                     Read::Event(event) => forward(&mut sink, event, forwarded).await?,
-                    // A dictionary waits in the decoder for the batches that use it.
-                    Read::Nothing => dictionaries.charge(&sink, reader.decoder.dictionary_bytes()),
+                    // A schema and a dictionary wait in the decoder for the batches that use
+                    // them.
+                    Read::Nothing => kept.charge(&sink, reader.kept())?,
                 }
                 controls.send(control(Control::Credit(v1::Credit { bytes: size }))).await.ok();
             }
@@ -160,27 +162,34 @@ async fn start(
     Ok((controls, frames))
 }
 
-/// What holds the bytes of the dictionaries a read's decoder keeps, charged to whoever admits
-/// the read's events for as long as the decoder keeps them.
+/// What holds the bytes a read's decoder keeps between batches, its schema and its
+/// dictionaries, charged to whoever admits the read's events for as long as the decoder keeps
+/// them.
 #[derive(Default)]
-struct Dictionaries {
+struct Kept {
     bytes: u64,
     held: Option<Permit>,
 }
 
-impl Dictionaries {
-    /// Charges `sink`'s admission the `bytes` the decoder now holds, in place of what it held.
+impl Kept {
+    /// Charges `sink`'s admission the `bytes` the decoder now keeps, in place of what it kept.
     ///
-    /// What it held is released first, so the two are never charged together; and whatever ends
+    /// What it kept is released first, so the two are never charged together; and whatever ends
     /// the read, its return, its failure or its being dropped, releases what is held, once.
-    fn charge(&mut self, sink: &PartitionSink, bytes: u64) {
+    ///
+    /// # Errors
+    ///
+    /// The refusal of whoever admits the read's events, where the read would keep more than a
+    /// read may: the read fails at the frame that would pass it.
+    fn charge(&mut self, sink: &PartitionSink, bytes: u64) -> rdlt_connector::Result<()> {
         if bytes != self.bytes {
-            self.held = None;
+            (self.held, self.bytes) = (None, 0);
             if bytes > 0 {
-                self.held = sink.reserve(bytes);
+                self.held = sink.reserve(bytes)?;
             }
             self.bytes = bytes;
         }
+        Ok(())
     }
 }
 
@@ -199,9 +208,16 @@ struct Reader {
     decoder: Decoder,
     limits: Limits,
     epoch: Option<u64>,
+    /// Bytes: what the schema the decoder holds takes, with the message it came from.
+    schema: u64,
 }
 
 impl Reader {
+    /// Bytes: what the decoder keeps between batches, its schema and its dictionaries.
+    fn kept(&self) -> u64 {
+        self.schema.saturating_add(self.decoder.dictionary_bytes())
+    }
+
     fn event(&mut self, frame: v1::ReadFrame) -> rdlt_connector::Result<Read> {
         use v1::read_frame::Frame;
         let refused = |refusal| frame_error(&rdlt_wire::WireError::Refused(refusal));
@@ -264,9 +280,13 @@ impl Reader {
             return Err(ConnectorError::new(ConnectorErrorKind::Internal, message)
                 .with_code(rdlt_connector::wire::MALFORMED_FRAME));
         }
-        self.decoder
+        let held = self
+            .decoder
             .schema(&schema.ipc_schema)
             .map_err(|error| frame_error(&error))?;
+        // The decoder keeps the schema, and its message to know it by.
+        let message = u64::try_from(schema.ipc_schema.len()).unwrap_or(u64::MAX);
+        self.schema = rdlt_connector::cost::schema_bytes(&held).saturating_add(message);
         self.epoch = Some(schema.schema_epoch);
         Ok(Read::Nothing)
     }

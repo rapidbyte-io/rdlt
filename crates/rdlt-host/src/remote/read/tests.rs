@@ -10,7 +10,7 @@ use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::encoding::{WireType, encode_key, encode_varint};
 use rdlt_wire::{Decoder, Encoder, Limits};
 
-use super::{Dictionaries, Read, Reader};
+use super::{Kept, Read, Reader};
 
 fn reader() -> Reader {
     let limits = Limits::default();
@@ -18,6 +18,7 @@ fn reader() -> Reader {
         decoder: Decoder::new(limits),
         limits,
         epoch: None,
+        schema: 0,
     }
 }
 
@@ -91,6 +92,9 @@ impl Drop for Charged {
     }
 }
 
+/// Bytes: the most [`Charging`] lets a read keep.
+const LIMIT: u64 = 100_000;
+
 struct Charging(Arc<Charges>);
 
 impl Admission for Charging {
@@ -101,9 +105,18 @@ impl Admission for Charging {
         Box::pin(async { Ok(None) })
     }
 
-    fn charge(&self, bytes: u64) -> Permit {
+    fn charge(&self, bytes: u64) -> rdlt_connector::Result<Permit> {
+        if bytes > LIMIT {
+            return Err(rdlt_connector::ConnectorError::exceeds(
+                rdlt_connector::LimitExceeded {
+                    name: "read kept bytes",
+                    limit: LIMIT,
+                    actual: bytes,
+                },
+            ));
+        }
         self.0.0.lock().unwrap().push(bytes);
-        Box::new(Charged(Arc::clone(&self.0)))
+        Ok(Box::new(Charged(Arc::clone(&self.0))))
     }
 }
 
@@ -143,37 +156,78 @@ fn batch_frames(encoder: &mut Encoder, batch: &RecordBatch, epoch: u64) -> Vec<v
 }
 
 #[test]
-fn a_reads_dictionaries_are_charged_while_its_decoder_holds_them() {
+fn a_read_s_schema_and_dictionaries_are_charged_while_its_decoder_holds_them() {
     let charges = Arc::new(Charges::default());
     let admission = Arc::new(Charging(Arc::clone(&charges)));
     let (sink, _feed) = admitted_partition_channel(NonZeroUsize::MIN, admission);
     let (mut reader, mut encoder) = (reader(), Encoder::default());
-    let mut dictionaries = Dictionaries::default();
+    let mut kept = Kept::default();
     let mut read = |frame: v1::ReadFrame| {
         let read = reader.event(frame).expect("an admitted frame");
         if matches!(read, Read::Nothing) {
-            dictionaries.charge(&sink, reader.decoder.dictionary_bytes());
+            kept.charge(&sink, reader.kept()).expect("within the limit");
         }
-        reader.decoder.dictionary_bytes()
+        reader.kept()
     };
     let (first, second) = (keyed("x"), keyed("y"));
-    assert_eq!(read(schema_frame(&mut encoder, &first, 1)), 0);
-    assert!(charges.0.lock().unwrap().is_empty(), "nothing is held yet");
+    // The schema is held from its frame on, with the message it came from.
+    let frame = schema_frame(&mut encoder, &first, 1);
+    let Some(v1::read_frame::Frame::Schema(message)) = &frame.frame else {
+        panic!("the frame is a schema");
+    };
+    let message = u64::try_from(message.ipc_schema.len()).expect("a length");
+    let schema = rdlt_connector::cost::schema_bytes(&first.schema()) + message;
+    assert!(message > 0 && schema > message);
+    assert_eq!(read(frame), schema);
+    assert_eq!(*charges.0.lock().unwrap(), [schema]);
     let frames = batch_frames(&mut encoder, &first, 1);
     let held: Vec<u64> = frames.into_iter().map(&mut read).collect();
-    assert!(held[0] >= 1_000);
-    // The dictionary is charged once, and the batch that uses it changes nothing.
-    assert_eq!(*charges.0.lock().unwrap(), [held[0]]);
+    assert!(held[0] >= schema + 1_000);
+    // What was held is released before the schema and its dictionary are charged together, once;
+    // the batch that uses the dictionary changes nothing.
+    assert_eq!(*charges.0.lock().unwrap(), [schema, 0, held[0]]);
     // A dictionary that replaces it is charged in its place.
     let replaced: Vec<u64> = batch_frames(&mut encoder, &second, 1)
         .into_iter()
         .map(&mut read)
         .collect();
     assert_eq!(replaced, [held[0], held[0]]);
-    assert_eq!(*charges.0.lock().unwrap(), [held[0]]);
+    assert_eq!(*charges.0.lock().unwrap(), [schema, 0, held[0]]);
     // A new schema forgets the dictionaries, and what held them is released.
-    assert_eq!(read(schema_frame(&mut encoder, &second, 2)), 0);
-    assert_eq!(*charges.0.lock().unwrap(), [held[0], 0]);
+    assert_eq!(read(schema_frame(&mut encoder, &second, 2)), schema);
+    assert_eq!(*charges.0.lock().unwrap(), [schema, 0, held[0], 0, schema]);
+}
+
+#[test]
+fn a_read_that_would_keep_more_than_it_may_is_refused_and_holds_nothing_more() {
+    let charges = Arc::new(Charges::default());
+    let admission = Arc::new(Charging(Arc::clone(&charges)));
+    let (sink, _feed) = admitted_partition_channel(NonZeroUsize::MIN, admission);
+    let mut kept = Kept::default();
+    kept.charge(&sink, 60_000).expect("within the limit");
+    let refused = kept.charge(&sink, LIMIT + 1).expect_err("beyond the limit");
+    assert_eq!(refused.code(), Some("limit_exceeded"));
+    let limit = refused.limit().expect("the limit passed");
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("read kept bytes", LIMIT, LIMIT + 1)
+    );
+    // What was kept before was released for the charge, and nothing is held in its place.
+    assert_eq!(*charges.0.lock().unwrap(), [60_000, 0]);
+    assert!(kept.held.is_none());
+    assert_eq!(kept.bytes, 0);
+    // A schema alone beyond the limit is refused at its frame.
+    let columns = (0..4).map(|index| {
+        let name = format!("{index}{}", "n".repeat(30_000));
+        let ones: ArrayRef = Arc::new(arrow_array::Int8Array::from(vec![1_i8]));
+        (name, ones)
+    });
+    let wide = RecordBatch::try_from_iter(columns).expect("a valid batch");
+    let (mut reader, mut encoder) = (reader(), Encoder::default());
+    let read = reader.event(schema_frame(&mut encoder, &wide, 1));
+    assert!(matches!(read, Ok(Read::Nothing)));
+    assert!(reader.kept() > LIMIT);
+    assert!(kept.charge(&sink, reader.kept()).is_err());
 }
 
 #[test]
