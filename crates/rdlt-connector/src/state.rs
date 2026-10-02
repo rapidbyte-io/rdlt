@@ -203,14 +203,14 @@ impl StateEntry {
     pub fn from_record(record: &StateRecord) -> Result<Self, StateError> {
         let key = StateKey::parse(&record.key)?;
         let malformed = |reason: String| StateError::MalformedValue {
-            key: record.key.clone(),
-            reason,
+            key: error::shown(&record.key),
+            reason: error::shown(&reason),
         };
         let version: VersionOnly =
             serde_json::from_slice(&record.value).map_err(|error| malformed(error.to_string()))?;
         if version.v != STATE_VERSION {
             return Err(StateError::UnsupportedVersion {
-                key: record.key.clone(),
+                key: error::shown(&record.key),
                 version: version.v,
             });
         }
@@ -218,7 +218,7 @@ impl StateEntry {
             serde_json::from_slice(&record.value).map_err(|error| malformed(error.to_string()))?;
         if versioned.entry.key() != key {
             return Err(StateError::KeyMismatch {
-                key: record.key.clone(),
+                key: error::shown(&record.key),
             });
         }
         Ok(versioned.entry)
@@ -324,7 +324,7 @@ impl PipelineState {
         for record in records {
             if !keys.insert(record.key.as_str()) {
                 return Err(StateError::Repeated {
-                    key: record.key.clone(),
+                    key: error::shown(&record.key),
                 });
             }
             state.put(StateEntry::from_record(record)?);

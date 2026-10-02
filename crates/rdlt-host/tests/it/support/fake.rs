@@ -44,6 +44,8 @@ pub(crate) enum Fault {
     GarbledDetails,
     /// Its handshake answers as this changes it.
     Handshakes(fn(&mut v1::HandshakeResponse)),
+    /// It is a destination whose opens answer with a state record of this key.
+    Keys(fn() -> String),
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -97,7 +99,7 @@ fn spec(id: &str, destination: bool) -> v1::ConnectorSpec {
 
 impl Fake {
     fn destination(&self) -> bool {
-        matches!(self.0, Fault::Trickles(..))
+        matches!(self.0, Fault::Trickles(..) | Fault::Keys(_))
     }
 }
 
@@ -260,10 +262,17 @@ impl Connector for Fake {
         if !self.destination() {
             return Err(Status::unimplemented("open"));
         }
+        let state = match self.0 {
+            Fault::Keys(key) => vec![v1::StateRecord {
+                key: key(),
+                value: Bytes::from_static(b"{}"),
+            }],
+            _ => Vec::new(),
+        };
         Ok(Response::new(v1::OpenResponse {
             session: 1,
             epoch: 1,
-            state: Vec::new(),
+            state,
         }))
     }
 
