@@ -109,7 +109,7 @@ impl LoadLog {
         let frame = encoded
             .pop()
             .ok_or_else(|| Error::internal("a batch frame's job returned nothing"))??;
-        let held = Box::new(budget.charge(frame.len() as u64));
+        let held = Box::new(budget.charge(count(frame.len())));
         self.writer
             .send(Command::Batch {
                 segment,
@@ -161,6 +161,11 @@ impl LoadLog {
         }
         for seal in sealed {
             let segment = seal.segment;
+            // Charged before it is encoded for the cursors it records, each written twice over
+            // in base64, and for the frame as it is once it exists.
+            let cursors = [seal.from.as_ref(), Some(&seal.state)];
+            let cursors = cursors.into_iter().flatten().map(recorded);
+            let mut held = budget.charge(cursors.fold(0, u64::saturating_add));
             let frame = Frame::Seal(frame::Seal {
                 segment,
                 stream: seal.stream,
@@ -171,20 +176,30 @@ impl LoadLog {
                 state: seal.state,
             })
             .encode()?;
-            let held = Box::new(budget.charge(frame.len() as u64));
+            held.resize(count(frame.len()));
             let seal = Command::Seal {
                 segment,
                 frame,
-                held,
+                held: Box::new(held),
             };
             self.writer.send(seal).await?;
         }
+        // Charged before it is encoded for the state it records, and for the frames as they are
+        // once they exist.
+        let state = meta.state_delta.iter().map(|change| match change {
+            rdlt_connector::StateChange::Put(record) => {
+                count(record.key.len() + record.value.len())
+            }
+            rdlt_connector::StateChange::Delete(key) => count(key.len()),
+        });
+        let mut held = budget.charge(state.fold(0, |bytes, record| bytes + ENCODED * record));
         let mut frames = Vec::new();
         for begun in begun {
             frames.extend_from_slice(&Frame::Begun(begun).encode()?);
         }
         frames.extend_from_slice(&frame::commit(meta)?);
-        let held = Box::new(budget.charge(frames.len() as u64));
+        held.resize(count(frames.len()));
+        let held = Box::new(held);
         let (durable, answer) = oneshot::channel();
         self.writer
             .send(Command::Commit {
@@ -227,4 +242,20 @@ impl LoadLog {
             .await
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
     }
+}
+
+/// Bytes a frame takes for each byte of a cursor or state value it records: the value is base64
+/// text in its record, and the record base64 text in the frame.
+const ENCODED: u64 = 2;
+
+/// Bytes: about what `state` takes in a frame that records it.
+fn recorded(state: &PartitionState) -> u64 {
+    match state {
+        PartitionState::Cursor(cursor) => ENCODED * count(cursor.bytes().len()),
+        PartitionState::Done => 0,
+    }
+}
+
+fn count(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
 }

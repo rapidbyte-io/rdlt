@@ -292,6 +292,8 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
         };
         assert!(seal > commit && seal > 10_000);
         assert!(sealing.peak() >= seal, "{} of {seal}", sealing.peak());
+        // It was charged before it was encoded, for its cursor twice over, which is more.
+        assert!(seal < 20_000 && sealing.peak() >= 20_000, "{seal}");
         assert_eq!(sealing.reserved(), 0, "released once appended");
         // A commit of no seals is charged its own frame.
         let committing = MemoryBudget::new(1 << 20);
