@@ -111,3 +111,8 @@ pub(crate) fn within(
     let message = format!("stream {stream}: {name} is {actual}, over the limit of {limit}");
     Err(ConnectorError::config(message).with_code("limit_exceeded"))
 }
+
+/// Cells: bounds what the rows of a merge table lack of the columns the table has since gained,
+/// counted as rows times absent columns, where a destination writes every column of every row:
+/// what such a write materialises, charged before any of it is made.
+pub(crate) const MAX_ABSENT_CELLS: u64 = 16 * 1024 * 1024;

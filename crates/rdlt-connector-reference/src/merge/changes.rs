@@ -11,17 +11,16 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, RecordBatch};
-use arrow_row::Rows;
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
-use super::aligned::{Nulls, aligned, concat};
 use super::refused::{FLAG_ON_KEY, SEQUENCE_MISSING, refused};
 use super::retype::retyped;
+use super::sparse::{At, Nulls};
 use super::tombstones::{self, Tombstones};
 use super::written::ops;
-use super::{binary, converter, held, key_columns};
-use table::{Applied, At, Change, Columns, Table};
+use super::{converter, source_keys, source_seqs, sources};
+use table::{Applied, Change, Columns, Table};
 
 /// The schema a change stream's table stores: `schema` without the columns `changes` names that
 /// only written batches carry.
@@ -55,33 +54,30 @@ pub(crate) fn merge_changes(
     let schema = stored(schema, changes);
     let converter = converter(&schema, key)?;
     let mut nulls = Nulls::default();
-    let published = concat(published, &schema, &mut nulls)?;
-    let nullable = nullable(&schema);
-    let aligned = incoming
-        .iter()
-        .map(|batch| aligned(batch, &nullable, &mut nulls))
-        .collect::<Result<Vec<_>, _>>()?;
-    let keys = aligned
-        .iter()
-        .map(|batch| converter.convert_columns(&key_columns(batch, key)?))
-        .collect::<Result<Vec<Rows>, _>>()?;
+    let (sources, held) = sources(&schema, published, incoming)?;
+    let keys = source_keys(&sources, &converter, key, &mut nulls)?;
+    let seqs = source_seqs(&sources, key, &mut nulls)?;
     let flags = incoming
         .iter()
         .map(|batch| Flags::of(batch, &schema, key, changes))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut rows = changed_rows(incoming, &aligned, key, changes)?;
-    // A stable sort keeps rows of one sequence in the order they were written.
-    rows.sort_by(|left, right| left.seq.cmp(&right.seq));
+    let mut rows = changed_rows(incoming, held, &seqs, changes)?;
+    // A truncate removes what is sequenced before it, and a key's change at its own sequence
+    // is not before it: the truncate applies first, wherever it was written. A stable sort
+    // keeps the other rows of one sequence in the order they were written.
+    rows.sort_by(|left, right| {
+        let keyed = |change: &Change| change.op != ChangeOp::Truncate;
+        (&left.seq, keyed(left)).cmp(&(&right.seq, keyed(right)))
+    });
     let columns = Columns {
         seq: schema.index_of(&key.seq)?,
         at: match &changes.deletion {
             Deletion::Hard => None,
             Deletion::Soft { at } => Some(schema.index_of(at)?),
         },
-        count: schema.fields().len(),
     };
     let hard = columns.at.is_none();
-    let mut table = Table::load(&published, &aligned, &converter, key, columns)?;
+    let mut table = Table::load(&sources, held, (&keys, &seqs), columns);
     let tombstone_schema = tombstones::schema(&schema, key)?;
     let mut tombstones = Tombstones::load(buried, &tombstone_schema, &converter, key)?;
     for change in rows {
@@ -94,58 +90,45 @@ pub(crate) fn merge_changes(
             }
             continue;
         }
-        let At { source, row } = change.at;
-        let row_key = keys[source - 1].row(row).as_ref().to_vec();
+        let at = change.at;
+        let row_key = keys[at.source].row(at.row).as_ref().to_vec();
         if !tombstones.admits(Some(&row_key), &change.seq) {
             continue;
         }
-        let unchanged = match &flags[source - 1] {
-            Some(flags) => flags.mask(row)?,
+        let unchanged = match &flags[at.source - held] {
+            Some(flags) => flags.mask(at.row)?,
             None => None,
         };
         let seq = change.seq.clone();
         match table.apply(row_key.clone(), change, unchanged.as_deref()) {
-            Applied::Removed => tombstones.bury(row_key, seq, source - 1, row),
+            Applied::Removed => tombstones.bury(row_key, seq, at),
             Applied::Held => tombstones.lift(&row_key),
             Applied::Nothing => {}
         }
     }
-    let merged = table.assemble(&schema, &mut nulls)?;
-    let buried = tombstones.assemble(&tombstone_schema, &aligned, key)?;
-    Ok((held([merged]), buried))
+    let merged = table.assemble()?;
+    let buried = tombstones.assemble(&tombstone_schema, &sources, key, &mut nulls)?;
+    Ok((merged, buried))
 }
 
-/// `schema` with every column nullable, as incoming rows align to it: a truncate names no key.
-pub(super) fn nullable(schema: &SchemaRef) -> SchemaRef {
-    Arc::new(Schema::new(
-        schema
-            .fields()
-            .iter()
-            .map(|field| field.as_ref().clone().with_nullable(true))
-            .collect::<Vec<_>>(),
-    ))
-}
-
-/// Every row of `incoming`, with its op and sequence.
+/// Every row of `incoming`, the sources from `first` on, with its op and its sequence, which
+/// `seqs` holds for each source.
 fn changed_rows(
     incoming: &[RecordBatch],
-    aligned: &[RecordBatch],
-    key: &MergeKey,
+    first: usize,
+    seqs: &[ArrayRef],
     changes: &ChangeColumns,
 ) -> Result<Vec<Change>, ArrowError> {
     let mut rows = Vec::new();
-    for (index, (raw, batch)) in incoming.iter().zip(aligned).enumerate() {
-        let seqs = binary(batch, &key.seq)?;
-        let seqs = seqs.as_binary::<i32>();
+    for (index, raw) in incoming.iter().enumerate() {
+        let source = first + index;
+        let seqs = seqs[source].as_binary::<i32>();
         for (row, op) in ops(raw, changes)?.into_iter().enumerate() {
             if seqs.is_null(row) {
                 return Err(refused(SEQUENCE_MISSING, "a change has no sequence"));
             }
             rows.push(Change {
-                at: At {
-                    source: index + 1,
-                    row,
-                },
+                at: At { source, row },
                 op,
                 seq: seqs.value(row).to_vec(),
             });

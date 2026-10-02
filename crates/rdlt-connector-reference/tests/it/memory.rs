@@ -3,6 +3,7 @@ mod owned;
 mod poisoned;
 mod receipts;
 mod widened;
+mod widths;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

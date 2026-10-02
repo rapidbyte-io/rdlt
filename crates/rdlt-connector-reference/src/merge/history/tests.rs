@@ -389,8 +389,14 @@ fn a_hard_delete_closes_the_current_version_and_a_later_upsert_opens_another() {
         versions(&merged),
         [closed(1, "a", 1, 10, 20), current(1, "a", 4, 40)]
     );
-    // A delete buries its key whether or not a version was current.
-    assert_eq!(tombstones(&merged), [(Some(1), 2), (Some(7), 3)]);
+    // A delete buries its key whether or not a version was current, until a version sequenced
+    // past it holds the key again.
+    assert_eq!(tombstones(&merged), [(Some(7), 3)]);
+    let buried = history(
+        &[&[upsert(1, "a", 1, 10), delete(1, 2, 20), delete(7, 3, 30)]],
+        Kind::Hard,
+    );
+    assert_eq!(tombstones(&buried), [(Some(1), 2), (Some(7), 3)]);
 }
 
 #[test]
