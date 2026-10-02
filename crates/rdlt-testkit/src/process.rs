@@ -23,10 +23,13 @@ static GUARDIANS: Mutex<Vec<Child>> = Mutex::new(Vec::new());
 /// leader's id and started at another time, the id was reused, and nothing is sent.
 ///
 /// A second argument stands in for the start noted, as a test of a reused id gives it.
+///
+/// The signal is named with `-s`, as the standard words it: dash, which is `/bin/sh` on Debian and
+/// Ubuntu, takes `--` after it, and refuses it after `-KILL`, so no group would be killed.
 const GUARDING: &str = "started=${2-$(ps -o lstart= -p \"$1\" 2>/dev/null)}; read -r _; \
     now=$(ps -o lstart= -p \"$1\" 2>/dev/null); \
     [ -n \"$now\" ] && [ \"$now\" != \"$started\" ] && exit 0; \
-    kill -KILL -- \"-$1\" 2>/dev/null";
+    kill -s KILL -- \"-$1\" 2>/dev/null";
 
 /// Has the process group `leader` leads killed when this process ends, a kill of this
 /// process included: `leader` is a child spawned to lead a group of its own.
