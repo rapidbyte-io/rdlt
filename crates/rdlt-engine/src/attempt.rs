@@ -144,6 +144,8 @@ async fn opened_run(
     for plan in context.plan.streams() {
         planned.push(planning.stream(plan, &tables).await?);
     }
+    let partitions = planned.iter().map(|stream| stream.partitions.len()).sum();
+    within_partition_limit(partitions)?;
     launch(
         context,
         load_id,
@@ -190,6 +192,27 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         epoch,
         state,
     })
+}
+
+/// Refuses an attempt reading more than `partitions` at once: each is a task and bookkeeping,
+/// whichever stream it reads, so the limit on a plan's partitions holds for all of them.
+///
+/// # Errors
+///
+/// `plan_invalid`, a Source error no retry mends, beyond the limit.
+pub(crate) fn within_partition_limit(partitions: usize) -> Result<(), Error> {
+    use rdlt_connector::limits::MAX_PLAN_PARTITIONS;
+    if partitions <= MAX_PLAN_PARTITIONS {
+        return Ok(());
+    }
+    Err(Error::new(
+        ErrorKind::Source,
+        format!(
+            "the streams read {partitions} partitions at once, beyond the limit of \
+             {MAX_PLAN_PARTITIONS}"
+        ),
+    )
+    .with_code("plan_invalid"))
 }
 
 /// Runs the lanes, the partitions and the coordinator in one scope until all of them end.
