@@ -96,25 +96,39 @@ than the model ADR 0037 now sets:
   - The memory destination keeps its stores for each host apart.
 - **A host reports committed what it was sent or reads from, and the engine reports every
   partition a commit covers.**
-  - A served source remembers, for each host, a keyed hash of each checkpoint its reads sent and
-    of each cursor a read started from, of its stream and partition, 2^18 at most. A checkpoint
-    is the source's statement of a position; the cursor a read starts from is the host's, which
-    by asking to read from there has said everything before it is committed. A report of any
+  - A served source remembers, for each host, a keyed hash of each checkpoint its reads sent,
+    of its stream and partition, 2^18 at most, and apart from them where the host's latest read
+    of each partition started. A checkpoint is the source's statement of a position. Where a
+    read started is the host's, which by asking to read from there has said everything before
+    it is committed, and which the source vouched for by accepting the read. A report of any
     other position is refused as transient, with the code `position_unsent`, and nothing of the
     report is told to the source. The positions are remembered for the process, not the
     connection, so a host that dials again reports what it committed. One type holds the rule,
     `rdlt_connector::Sent`, which a source that binds its reports in process uses too.
+  - Where a read started is noted only once the source has accepted the read: when it sends
+    data or a checkpoint, or ends the read cleanly. A read the source refuses, or that fails
+    before either, leaves nothing to report. It is one start a partition a host, replaced by
+    the next read's, so no number of checkpoints forgets it.
+  - A source therefore refuses, before it sends anything, a cursor it cannot have issued, as
+    one beyond everything it holds, with the code `cursor_unissued`: a start it accepts is a
+    position its host may report. A source that starts elsewhere than the cursor it was given,
+    from a position it keeps itself, sends a checkpoint of where it starts before anything
+    else, and the host is heard for that position and not for the cursor it gave. The
+    reference log and change sources refuse a cursor no read of theirs was sent.
   - The engine reports the committed position of every partition a commit covers, moved or
     not. A partition whose read was sent nothing is sealed where it started, and reported
     there: so a report that failed, or was lost with the process, is made again by the next
     attempt, and the source's kept position reaches the committed one though the partition
     never moves again. A source that refuses every report fails the run once no attempt is
     left.
-  - A partition that ends done after its last checkpoint is told that checkpoint with the
-    commit that records it done. It has no position after that: a report of it that fails is
-    not made again, as a full read that completed is not read again by the next attempt.
+  - A partition that ends done is told its last position with the commit that records it
+    done: the last checkpoint among the commit's seals, or with none there the cursor the
+    partition stood at, so a report of that cursor that failed earlier is still made. It has no
+    position after that: a report by the commit that records it done which fails is not made
+    again, as a full read that completed is not read again by the next attempt.
   - A commit that publishes no row and records nothing but partitions where they stood is no
-    progress: it does not reset the count of failed attempts. Positions are compared byte for
+    progress: it does not reset the count of failed attempts. Rows an attempt lands from the
+    write-ahead log an earlier attempt left are progress, as rows it commits itself are. Positions are compared byte for
     byte. A source whose every attempt moves a position still retries without end; a limit
     on such resets is the control plane's to add.
 - **The pipeline id stays the key of ownership and state.** The host's identity does not scope
@@ -170,8 +184,13 @@ Rejected:
 - A connector started again between a checkpoint and its report fails that attempt as
   transient. The next attempt reads on from the committed positions, which the new process
   hears it for, and reports them.
-- A host that asks to read from a position it never committed can then report that position:
-  it is one of the hosts named to the connector, which may already read and write through it.
+- A host that reads from a position it never committed, which the source issued and accepts,
+  can then report that position: it is one of the hosts named to the connector, which may
+  already read and write through it. It cannot report a position the source refuses to read
+  from, so a source that follows the rule is never moved beyond what it holds.
+- A source that accepts a cursor it did not issue, and acts on reports, can be moved there by
+  a host named to it. The rule is the connector author's to keep; certification does not yet
+  check it.
 - A session used after three newer ones were opened on its connection is gone, and answers
   `no_session`.
 - Certifying a connector over the wire needs a binary built for it, whose `main` names the
