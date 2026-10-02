@@ -145,3 +145,18 @@ async fn a_destination_of_short_identifiers_keeps_the_protocols_clauses() {
         assert_eq!(report.outcome(id), Some(&Outcome::Passed), "{id}: {report}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_is_watched_for_as_long_as_the_target_chooses_and_no_longer() {
+    // A source that ignores credit and sends a little over a second after its first frame: the
+    // watch of a second after each grant sees it, as the faults above show, and one of 50 ms
+    // after each, 200 ms in all, is over before it sends.
+    let target =
+        Target::connected(|| Box::pin(async { served(Fault::Paced) })).credit_watch(crate::BRIEF);
+    let report = certify_source(&target, serde_json::json!({})).await;
+    assert_eq!(
+        report.outcome("P-CREDIT"),
+        Some(&Outcome::Passed),
+        "{report}"
+    );
+}
