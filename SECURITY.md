@@ -182,10 +182,12 @@ ADR 0044 records these.
 
 What a connector says beside its data is bounded, checked and given a deadline as its frames
 are (ADR 0042):
-- each call's messages are passed to the decoder only once whole, within the limit of what the
-  call carries, not a frame's, and counted before they are decoded, for what decoding them would
-  hold, within a bound of their own; catalogs, plans and identifier rules are bounded in count
-  and checked in linear time;
+- each call's messages, frames among them, are passed to the decoder only once whole, within
+  the limit of what the call carries, and counted before they are decoded, for what decoding them
+  would hold, within a bound of their own; a message that cannot be counted is refused, and a
+  served connection holds the messages still arriving within a window, reading no more until it
+  has room; catalogs, plans and identifier rules are bounded in count and checked in linear
+  time;
 - stream names, partition ids, table paths and destination identifiers refuse characters that
   hide or reorder text, and an error's code must be a token that is none of the host's own;
 - every call into a connector has a deadline in every placement, a read asked to stop is

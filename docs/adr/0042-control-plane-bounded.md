@@ -33,25 +33,43 @@ still taken largely on trust:
   is bounded on its own, at 1 MiB (`MAX_CONFIG_SCHEMA_BYTES`).
   - Each end passes a message to tonic only once it has arrived whole (`rdlt_wire::bounded`):
     within its class's bytes on the wire, refused from its prefix, so no decoder reserves a
-    length before its bytes arrive; and, for every message but a frame, counted by a scan of its
-    encoding (`rdlt_wire::scan`) within what its class may hold decoded:
-    `Limits::decoded`, 4 times the wire bound for a handshake, a configuration and a read's
-    start, 8 for state, 16 (`DECODED_PER_BYTE`) for a catalog, a schema change and any other
-    control message: 64 MiB for a catalog and 128 MiB for state by default. The scan walks the
-    encoding by forms `cargo xtask codegen` generates from the `.proto` files, each message's
-    size and the kind of each field, and counts each message its size, three times for an entry
-    of a repeated field, and each string or bytes its length: no less than decoding holds at its
-    peak, which tests measure on the heap.
+    length before its bytes arrive; and, every message, frames among them, counted by a scan of
+    its encoding (`rdlt_wire::scan`) within what its class may hold decoded: `Limits::decoded`,
+    2 times the wire bound for a frame, 4 for a handshake, a configuration and a read's start, 8
+    for state, 16 (`DECODED_PER_BYTE`) for a catalog, a schema change and any other control
+    message: 128 MiB for a frame, 64 MiB for a catalog and 128 MiB for state by default. A
+    message arriving is held in room that doubles, and goes straight to the message's end once
+    within twice what it holds, so a frame at its limit holds less than twice its bytes.
+  - The scan walks the encoding by forms `cargo xtask codegen` generates from the `.proto`
+    files, each message's size and the kind of each field. It counts each message its size, four
+    times for an entry of a repeated field and eight for one of one-byte numbers, as a vector
+    first allocates room for four and holds its old entries beside twice as many as it grows;
+    each string or bytes its length, or the eight bytes a vector of bytes first allocates; and a
+    field the form does not know, groups among them, its bytes. Tests hold this to the decoder:
+    for repeated messages, nested single entries, strings and numbers, packed and not, the heap
+    peak of decoding stays within the count; a property test and a fuzz target (`scan`) decode
+    random encodings as every message the calls carry, and whatever decodes, the scan takes and
+    counts no less than its peak.
+  - A message the scan cannot walk, which protocol buffers would not decode either, fails its
+    call as `InvalidArgument` and never reaches the decoder; so does a call whose body ends within
+    a message.
   - A message beyond either bound fails its call as `OutOfRange`, which the host reports as a
     non-retryable transport failure naming the sizes, before anything decodes it. Measured at the
-    class limits, a refused 4 MiB catalog of empty entries holds 12 MiB at its peak, a refused
-    16 MiB plan or open answer 48 MiB, and a served commit of empty child tables 25 MiB.
+    class limits, a refused 4 MiB catalog of empty entries holds 9 MiB at its peak, a refused
+    16 MiB plan or open answer 27 MiB, a served commit of empty child tables 21 MiB, and a 64 MiB
+    frame, read or written, of empty path segments 103 MiB, within the 128 MiB of its bound.
   - On a served connection, the requests still arriving hold at most four of its largest
-    messages together; a request beyond that window fails as `ResourceExhausted`.
+    messages together. A request finding no room is not refused: its body is not read until
+    room comes back, so HTTP/2 flow control holds its sender on that stream alone, the
+    connection's window being HTTP/2's largest. Room is taken as a message's prefix arrives and
+    given back as the whole message is passed on, and the window serves bodies in turn, so a
+    commit behind writes holding the window gets room as soon as their messages arrive; a body
+    waiting holds none, and none waits on another body to finish its message.
   - A served connection holds at most 200 open calls, set explicitly.
   - A served connector takes the state one request may carry from `--max-state-bytes`, spawned or
     listening; a host spawning a connector passes its own `state_bytes` where it is not the
-    protocol's, so raising the host's limit raises both ends'.
+    protocol's, so raising the host's limit raises both ends'. Either end's decoder and encoder
+    are set to the largest of any class, so a state limit above a frame's takes effect.
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64
@@ -95,8 +113,11 @@ still taken largely on trust:
   before sealing a row fails the attempt as retryable, so backoff and attempts bound it.
 - **The commit policy is due by rows a commit can take.** Rows of a partition that seals when a
   barrier asks count until they are sealed, as only a barrier, raised by rows that are due, seals
-  them. Rows of a partition that seals on its own count until a commit passes them by, and again
-  once sealed, so a partition that checkpoints only at its end keeps no commit due.
+  them; but those a partition held when it did not answer a barrier within `barrier_wait` count
+  no more, so it is asked again only once it has written as much again, and a partition that
+  never answers makes no later event wait a barrier out. Rows of a partition that seals on its
+  own count until a commit passes them by, and again once sealed, so a partition that
+  checkpoints only at its end keeps no commit due.
 - **Machine strings and the protocol are the host's to check.** A code a connector's error
   carries must be `[a-z0-9_.-]`, within the code limit, and none of the host's own codes
   (`connector_lost`, `deadline_exceeded`, `tls`, `transport`); otherwise it is `invalid_code`.
