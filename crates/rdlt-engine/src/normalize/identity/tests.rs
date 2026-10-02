@@ -1,3 +1,6 @@
+mod recorded;
+mod vectors;
+
 use std::sync::Arc;
 
 use arrow_array::builder::{
