@@ -408,7 +408,26 @@ async fn frames_that_carry_no_event_are_bounded_between_events() {
         ..Limits::default()
     };
     assert!(read_of(Fault::Schemas(5), limits).await.is_none());
+    // A log line costs the engine as little: it ends no run of frames that carry no event.
+    let error = read_of(Fault::Chatters(6), limits)
+        .await
+        .expect("the read fails");
+    assert_eq!(error.code(), Some("invalid_message"), "{error}");
     let error = read_of(Fault::Schemas(6), limits)
+        .await
+        .expect("the read fails");
+    assert_eq!(error.code(), Some("invalid_message"), "{error}");
+}
+
+#[tokio::test]
+async fn log_lines_and_metrics_between_events_are_bounded_on_their_own() {
+    let limit = rdlt_host::MAX_FREE_FRAMES;
+    assert!(
+        read_of(Fault::Logs(limit), Limits::default())
+            .await
+            .is_none()
+    );
+    let error = read_of(Fault::Logs(limit + 1), Limits::default())
         .await
         .expect("the read fails");
     assert_eq!(error.code(), Some("invalid_message"), "{error}");

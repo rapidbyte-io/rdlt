@@ -28,6 +28,7 @@ use tonic::transport::Endpoint;
 pub use clients::Client;
 use clients::Clients;
 pub use destination::RemoteDestination;
+pub use read::MAX_FREE_FRAMES;
 pub use source::RemoteSource;
 
 /// The code of the error a call fails with once the connector stops answering heartbeats.
