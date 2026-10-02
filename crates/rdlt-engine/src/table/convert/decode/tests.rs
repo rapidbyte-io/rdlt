@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Int8Type, Int32Type};
+use arrow_array::types::{Int8Type, Int16Type, Int32Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int32Array, LargeListArray,
-    LargeListViewArray, ListArray, ListViewArray, MapArray, RunArray, StringArray, StructArray,
-    UnionArray,
+    Array, ArrayRef, DictionaryArray, FixedSizeListArray, Int8Array, Int16Array, Int32Array,
+    Int64Array, LargeListArray, LargeListViewArray, ListArray, ListViewArray, MapArray, RunArray,
+    StringArray, StructArray, UnionArray,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Fields, UnionFields};
@@ -35,6 +35,37 @@ fn shown(array: &ArrayRef) -> Vec<String> {
     (0..array.len())
         .map(|row| formatter.value(row).to_string())
         .collect()
+}
+
+/// [`runs`] with run ends of every width.
+fn runs_of_every_width() -> Vec<ArrayRef> {
+    let values = StringArray::from(vec!["a", "b", "c"]);
+    vec![
+        Arc::new(
+            RunArray::<Int16Type>::try_new(&Int16Array::from(vec![2, 4, 5]), &values).unwrap(),
+        ),
+        runs(),
+        Arc::new(
+            RunArray::<Int64Type>::try_new(&Int64Array::from(vec![2, 4, 5]), &values).unwrap(),
+        ),
+    ]
+}
+
+#[test]
+fn keys_into_runs_of_every_width_name_each_its_run() {
+    for values in runs_of_every_width() {
+        let width = values.data_type().to_string();
+        let named = decoded(&keyed(
+            &[Some(0), Some(3), None, Some(4)],
+            Arc::clone(&values),
+        ));
+        assert_eq!(shown(&named.unwrap()), ["a", "b", "null", "c"], "{width}");
+        assert_eq!(
+            shown(&decoded(&values).unwrap()),
+            ["a", "a", "b", "b", "c"],
+            "{width}"
+        );
+    }
 }
 
 #[test]
