@@ -51,23 +51,38 @@ pub(super) async fn replay(
     let Some(store) = context.env.wal() else {
         return Ok(());
     };
-    let pipeline = context.plan.pipeline();
     let mut replaying: Option<Replaying> = None;
+    let replayed = replay_into(context, store.as_ref(), load_id, log, &mut replaying).await;
+    let Some(replaying) = replaying else {
+        return replayed;
+    };
+    let closed = replaying.session.close().await;
+    // A failed replay's failure matters more than any error from closing.
+    replayed.and(closed)
+}
+
+/// Replays as [`replay`] does, opening the session into `replaying` the first commit needs.
+async fn replay_into(
+    context: &RunContext,
+    store: &dyn WalStore,
+    load_id: LoadId,
+    log: &Mutex<AttemptLog>,
+    replaying: &mut Option<Replaying>,
+) -> Result<(), Error> {
+    let pipeline = context.plan.pipeline();
     for load in store.loads(pipeline).await.map_err(Error::from_wal)? {
         // A load still running holds its log; it commits it itself, or leaves it to a later
         // replay once it is gone.
         let Some(claim) = store.claim(pipeline, load).await.map_err(Error::from_wal)? else {
             continue;
         };
-        let scanned = scan::scan(store.as_ref(), pipeline, load).await?;
+        let scanned = scan::scan(store, pipeline, load).await?;
         for logged in scanned.pending() {
-            let replaying = match &mut replaying {
+            let replaying = match replaying {
                 Some(replaying) => replaying,
                 None => replaying.insert(begin(context, load_id).await?),
             };
-            let landed = replaying
-                .commit(store.as_ref(), pipeline, &scanned, logged)
-                .await?;
+            let landed = replaying.commit(store, pipeline, &scanned, logged).await?;
             log.lock().progressed |= landed;
         }
         store
@@ -75,9 +90,6 @@ pub(super) async fn replay(
             .await
             .map_err(Error::from_wal)?;
         drop(claim);
-    }
-    if let Some(replaying) = replaying {
-        replaying.session.close().await?;
     }
     Ok(())
 }

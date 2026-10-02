@@ -1,6 +1,6 @@
 //! Destinations for tests: one that discards what it stages, one that hides a capability, one
-//! that fails at a chosen step, one whose commits wait until a test lets them go, and one whose
-//! writes never return.
+//! that fails at a chosen step, one whose commits wait until a test lets them go, one whose
+//! writes never return, and one that counts the sessions it opens and closes.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -219,6 +219,8 @@ pub(crate) enum Step {
     InflateReceipts,
     /// Every write and flush waits for ever.
     StallWrites,
+    /// Every open answers with a state record that is not one.
+    GarbleState,
 }
 
 /// `inner`, failing with a transient error at `step`, or panicking there.
@@ -263,7 +265,13 @@ impl Destination for Failing {
             if self.step == Step::Open || refuse {
                 return Err(injected());
             }
-            let opened = self.inner.open(context).await?;
+            let mut opened = self.inner.open(context).await?;
+            if self.step == Step::GarbleState {
+                opened.state.push(rdlt_connector::StateRecord {
+                    key: "garbled".to_owned(),
+                    value: bytes::Bytes::from_static(b"garbled"),
+                });
+            }
             Ok(OpenedSession {
                 session: Box::new(FailingSession {
                     inner: opened.session,
@@ -432,5 +440,78 @@ impl DestinationWriter for Stalled {
 
     fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
         Box::pin(std::future::pending())
+    }
+}
+
+/// How many sessions a [`counting`] destination opened and how many it closed.
+#[derive(Debug, Default)]
+pub(crate) struct Sessions {
+    pub(crate) opened: AtomicUsize,
+    pub(crate) closed: AtomicUsize,
+}
+
+/// `inner`, counting in the [`Sessions`] returned the sessions it opens and closes.
+pub(crate) fn counting(inner: Arc<dyn Destination>) -> (Arc<dyn Destination>, Arc<Sessions>) {
+    let sessions = Arc::new(Sessions::default());
+    let destination = Arc::new(Counting {
+        inner,
+        sessions: Arc::clone(&sessions),
+    });
+    (destination, sessions)
+}
+
+struct Counting {
+    inner: Arc<dyn Destination>,
+    sessions: Arc<Sessions>,
+}
+
+impl Destination for Counting {
+    fn capabilities(&self) -> &Capabilities {
+        self.inner.capabilities()
+    }
+
+    fn check(&self) -> BoxFuture<'_, Result<()>> {
+        self.inner.check()
+    }
+
+    fn open<'a>(&'a self, context: &'a OpenContext) -> BoxFuture<'a, Result<OpenedSession>> {
+        Box::pin(async move {
+            let opened = self.inner.open(context).await?;
+            self.sessions.opened.fetch_add(1, Ordering::SeqCst);
+            Ok(OpenedSession {
+                session: Box::new(CountedSession {
+                    inner: opened.session,
+                    sessions: Arc::clone(&self.sessions),
+                }),
+                ..opened
+            })
+        })
+    }
+}
+
+struct CountedSession {
+    inner: Box<dyn DestinationSession>,
+    sessions: Arc<Sessions>,
+}
+
+impl DestinationSession for CountedSession {
+    fn apply_schema<'a>(&'a mut self, change: &'a TableChange) -> BoxFuture<'a, Result<()>> {
+        self.inner.apply_schema(change)
+    }
+
+    fn writer<'a>(
+        &'a mut self,
+        table: &'a TableRef,
+    ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        self.inner.writer(table)
+    }
+
+    fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
+        self.inner.commit(meta)
+    }
+
+    fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        self.sessions.closed.fetch_add(1, Ordering::SeqCst);
+        self.inner.close()
     }
 }

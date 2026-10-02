@@ -91,6 +91,23 @@ pub(crate) async fn run(
     // What earlier loads logged and never saw committed lands before this one plans.
     replay::replay(context, load_id, &log).await?;
     let opened = open(context, load_id).await?;
+    let session = Arc::clone(&opened.session);
+    let ran = opened_run(context, load_id, opened, &log).await;
+    if ran.is_err() {
+        // A failed attempt's session releases what it holds now; the failure matters more than
+        // any error from closing, and a session the coordinator closed stays closed.
+        drop(session.close().await);
+    }
+    ran
+}
+
+/// Runs the attempt as [`run`] does, on the session it opened.
+async fn opened_run(
+    context: &RunContext,
+    load_id: LoadId,
+    opened: Opened,
+    log: &Arc<Mutex<AttemptLog>>,
+) -> Result<AttemptEnd, Error> {
     log.lock().opened = opened
         .state
         .last_receipt
@@ -127,7 +144,7 @@ pub(crate) async fn run(
         opened,
         planned,
         Arc::new(tables),
-        Arc::clone(&log),
+        Arc::clone(log),
     )
     .await?;
     let end = log.lock().end;
@@ -151,13 +168,17 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         context.destination.open(&open).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
-    let state = PipelineState::from_records(&state).map_err(|error| {
-        Error::new(
-            ErrorKind::Destination,
-            format!("reading pipeline state: {error}"),
-        )
-        .with_code("state_invalid")
-    })?;
+    let state = match PipelineState::from_records(&state) {
+        Ok(state) => state,
+        Err(error) => {
+            drop(session.close().await);
+            return Err(Error::new(
+                ErrorKind::Destination,
+                format!("reading pipeline state: {error}"),
+            )
+            .with_code("state_invalid"));
+        }
+    };
     Ok(Opened {
         session: SharedSession::new(session),
         epoch,

@@ -694,6 +694,35 @@ async fn a_failure_at_any_step_of_an_attempt_names_its_side() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn every_failed_attempt_closes_the_session_it_opened() {
+    use crate::support::destinations::{Step, counting, failing};
+    for (step, name) in [
+        (Step::CreateTable, "closed-create"),
+        (Step::Writer, "closed-writer"),
+        (Step::Commit, "closed-commit"),
+        (Step::StallWrites, "closed-stall"),
+        (Step::GarbleState, "closed-state"),
+    ] {
+        let (destination, sessions) = counting(failing(memory(name).await, step));
+        let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 20, 5)])
+            .connect(name)
+            .await;
+        let config = retrying(2).connector_wait(Duration::from_secs(60));
+        let outcome = engine(config)
+            .run(
+                pipeline(name, [stream("events").read(ReadMode::Incremental)]),
+                source,
+                destination,
+            )
+            .await;
+        assert_eq!(outcome.report.status, RunStatus::Failed, "{step:?}");
+        let opened = sessions.opened.load(Ordering::SeqCst);
+        assert!(opened >= 1, "{step:?}");
+        assert_eq!(sessions.closed.load(Ordering::SeqCst), opened, "{step:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_stopped_partition_commits_only_up_to_its_last_checkpoint() {
     let mut sparse = ScriptStream::new("events", 1, 15, 5);
     sparse.checkpoint_every = 2;
