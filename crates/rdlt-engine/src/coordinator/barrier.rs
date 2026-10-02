@@ -19,10 +19,16 @@ impl Coordinator {
             tokio::select! {
                 biased;
                 () = self.parts.cancel.cancelled() => return Err(cancelled()),
-                // Once the wait is over, the commit takes whatever is sealed.
-                () = &mut deadline => break,
+                // Once the wait is over, the commit takes whatever is sealed, and those that did
+                // not answer are not asked again until they write more.
+                () = &mut deadline => {
+                    for partition in std::mem::take(&mut self.owing) {
+                        self.due.unanswered(partition);
+                    }
+                }
                 // An answer that finds no room for its cursor waits for this commit: the commit
-                // takes whatever is sealed now, and frees the room.
+                // takes whatever is sealed now, and frees the room. Those still owing may be
+                // that answer, so they are asked again.
                 () = self.parts.budget.cursor_waits() => break,
                 progress = self.parts.progress.recv() => self.observe(progress.ok_or_else(cancelled)?),
             }

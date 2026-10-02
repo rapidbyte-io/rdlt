@@ -149,6 +149,7 @@ struct Harness {
     log: Arc<Mutex<AttemptLog>>,
     closed: Arc<AtomicBool>,
     latest: Arc<Latest>,
+    budget: crate::budget::MemoryBudget,
 }
 
 struct Setup {
@@ -247,6 +248,7 @@ impl Setup {
             log: Arc::default(),
             closed: Arc::clone(&closed),
             latest: Arc::default(),
+            budget: crate::budget::MemoryBudget::new(self.budget),
         };
         let pool = RayonPool::new(NonZeroUsize::MIN).unwrap();
         let session = SharedSession::new(Box::new(Recorder {
@@ -275,7 +277,7 @@ impl Setup {
             partitions: self.partitions,
             progress: progress_feed,
             latest: Arc::clone(&harness.latest),
-            budget: crate::budget::MemoryBudget::new(self.budget),
+            budget: harness.budget.clone(),
             barrier: barrier_sender,
             stop_reads: harness.stop_reads.clone(),
             stop: harness.stop.clone(),
@@ -708,6 +710,112 @@ async fn rows_of_partitions_that_seal_when_asked_keep_commits_at_the_threshold()
         .expect("the last ten rows raise a barrier")
         .unwrap();
     assert_eq!(harness.barrier.borrow_and_update(), 6);
+    harness.end(0, false);
+    harness.end(1, false);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_still_owing_when_a_cursor_waits_for_room_is_asked_again() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 2)],
+        vec![partition("p0", true), partition("p1", true)],
+    );
+    setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
+    setup.barrier_wait = Duration::from_secs(60);
+    setup.budget = 1 << 20;
+    let (task, mut harness) = setup.start().await;
+    harness.send(Progress::Started { partition: 0 });
+    harness.send(Progress::Started { partition: 1 });
+    harness.send(Progress::Written {
+        partition: 1,
+        rows: 10,
+        bytes: 80,
+    });
+    harness.barrier.changed().await.unwrap();
+    assert_eq!(harness.barrier.borrow_and_update(), 1);
+    harness.seal(0, 1, 0, PartitionState::Cursor(cursor(1)), Some(1));
+    // A cursor finds the cursors' share full while p1 still owes the barrier: the barrier stops
+    // waiting long before its wait runs out, and the commit frees the room.
+    let started = tokio::time::Instant::now();
+    let share = harness.budget.shares().cursors;
+    let held = harness.budget.acquire_cursor(share).await.unwrap();
+    let budget = harness.budget.clone();
+    let waiting = tokio::spawn(async move { budget.acquire_cursor(1).await.map(drop) });
+    while harness.commits.lock().is_empty() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "the barrier waited its wait out"
+    );
+    drop(held);
+    waiting.await.unwrap().unwrap();
+    // p1 may still be answering: its rows count, so p0's next row raises the next barrier.
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 1,
+        bytes: 8,
+    });
+    let raised = tokio::time::timeout(Duration::from_secs(1), harness.barrier.changed());
+    raised
+        .await
+        .expect("p1's rows still make a commit due")
+        .unwrap();
+    assert_eq!(harness.barrier.borrow_and_update(), 2);
+    harness.end(0, false);
+    harness.end(1, false);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_that_did_not_answer_is_not_asked_again_until_it_writes_more() {
+    // p1 seals when asked but never answers; p0 answers every barrier.
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 2)],
+        vec![partition("p0", true), partition("p1", true)],
+    );
+    setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
+    setup.barrier_wait = Duration::from_secs(1);
+    let (task, mut harness) = setup.start().await;
+    harness.send(Progress::Started { partition: 0 });
+    harness.send(Progress::Started { partition: 1 });
+    let written = |harness: &Harness, partition, rows| {
+        harness.send(Progress::Written {
+            partition,
+            rows,
+            bytes: rows * 8,
+        });
+    };
+    written(&harness, 1, 10);
+    harness.barrier.changed().await.unwrap();
+    assert_eq!(harness.barrier.borrow_and_update(), 1);
+    harness.seal(0, 1, 0, PartitionState::Cursor(cursor(1)), Some(1));
+    // p1's wait runs out. p0's rows after it raise no barrier of their own, nine short of the
+    // threshold: p1's rows, unanswered, no longer count.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let started = tokio::time::Instant::now();
+    for _ in 0..9 {
+        written(&harness, 0, 1);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        harness.barrier.borrow_and_update(),
+        1,
+        "no barrier for each event"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "no event waited a barrier out"
+    );
+    // p1 writing more is asked again.
+    written(&harness, 1, 10);
+    let raised = tokio::time::timeout(Duration::from_secs(60), harness.barrier.changed());
+    raised
+        .await
+        .expect("p1's new rows raise a barrier")
+        .unwrap();
+    assert_eq!(harness.barrier.borrow_and_update(), 2);
     harness.end(0, false);
     harness.end(1, false);
     task.await.unwrap().unwrap();

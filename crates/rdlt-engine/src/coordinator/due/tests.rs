@@ -70,3 +70,27 @@ fn rows_a_barrier_seals_count_until_they_are_sealed() {
         "abandoned rows count no more"
     );
 }
+
+#[test]
+fn rows_a_partition_held_when_it_did_not_answer_count_no_more() {
+    let mut due = Due::default();
+    due.written(0, true, 10, 100);
+    due.unanswered(0);
+    assert_eq!((due.rows(), due.bytes()), (0, 0));
+    due.committing();
+    assert_eq!((due.rows(), due.bytes()), (0, 0), "nor after a commit");
+    due.written(0, true, 3, 30);
+    assert_eq!(
+        (due.rows(), due.bytes()),
+        (3, 30),
+        "what it writes next counts"
+    );
+    due.sealed(0);
+    assert_eq!(
+        (due.rows(), due.bytes()),
+        (13, 130),
+        "all it wrote counts once sealed"
+    );
+    due.unanswered(1);
+    assert_eq!((due.rows(), due.bytes()), (13, 130));
+}

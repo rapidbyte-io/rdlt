@@ -38,8 +38,8 @@ use barriers::Barriers;
 use coalesce::{Coalescer, Pushed};
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
-pub(crate) use slots::Slots;
 use retention::read_resetting;
+pub(crate) use slots::Slots;
 use write::write_flushed;
 
 /// One partition to read.
