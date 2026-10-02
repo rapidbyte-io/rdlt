@@ -117,12 +117,10 @@ fn mark_range(
 /// Marks descriptors `first` to `last` close-on-exec in one call, where the kernel has it.
 #[cfg(target_os = "linux")]
 fn marked_at_once(first: RawFd, last: RawFd) -> bool {
-    // `RawFd::MAX` stands for every descriptor from `first` up, as the kernel's highest does.
-    let last = match last {
-        RawFd::MAX => Ok(libc::c_uint::MAX),
-        last => libc::c_uint::try_from(last),
-    };
-    let (Ok(first), Ok(last)) = (libc::c_uint::try_from(first), last) else {
+    // No descriptor is numbered above `RawFd::MAX`, so a range up to it is every one from
+    // `first` up.
+    let (Ok(first), Ok(last)) = (libc::c_uint::try_from(first), libc::c_uint::try_from(last))
+    else {
         return false;
     };
     #[expect(

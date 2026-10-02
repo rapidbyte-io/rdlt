@@ -288,3 +288,22 @@ fn a_file_renamed_over_or_removed_is_no_longer_linked() {
     std::fs::rename(root.path().join("other"), &path).expect("it is renamed over");
     assert!(!binary.linked().expect("it is asked"));
 }
+
+#[test]
+fn a_scripts_interpreter_is_the_first_word_of_its_first_line() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let path = root.path().join("rdlt-connector-x");
+    for (bytes, interpreter) in [
+        (&b"#!/bin/sh\nexit 0\n"[..], Some("/bin/sh")),
+        (b"#!  /usr/bin/env python3 -u\n", Some("/usr/bin/env")),
+        (b"#!/opt/run\tfast", Some("/opt/run")),
+        (b"#!\n/bin/sh\n", None),
+        (b"\x7fELF", None),
+        (b"", None),
+    ] {
+        file(&path, bytes, 0o755);
+        let binary = Binary::at(&path).expect("it opens");
+        let found = binary.interpreter().expect("it reads");
+        assert_eq!(found.as_deref(), interpreter.map(Path::new), "{bytes:?}");
+    }
+}
