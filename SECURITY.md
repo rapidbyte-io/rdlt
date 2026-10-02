@@ -37,8 +37,9 @@ complete, run only connectors you trust. The mechanisms in place today:
 ## Placement
 
 A reference to a connector states what it requires: an id, and optionally a version, a path,
-an endpoint, a digest and an isolation. Every provider honours each requirement it is given or
-refuses the reference with a typed error before anything runs; none is ignored.
+an endpoint, a digest, an isolation, and what its pipeline grants its connector. Every provider
+honours each requirement it is given or refuses the reference with a typed error before
+anything runs; none is ignored.
 
 - **In process** (`Registry::trusted`): for connectors the embedder trusts as its own code.
   They share the engine's address space and access.
@@ -47,38 +48,58 @@ refuses the reference with a typed error before anything runs; none is ignored.
   connector runs in is its isolation.
 - **Local** (`Local`): built with a sandbox, or with the statement that its binaries are
   trusted, and in no other way.
-  - `Bubblewrap`, on Linux: a connector sees the system directories read only and what it was
-    granted, nothing of a home directory, no network unless granted, no process of the
-    host's, only the environment stated, and it ends with its host. Where bubblewrap is
-    missing, or unprivileged user namespaces are off, the placement is refused.
+  - `Bubblewrap`, on Linux: a connector sees the system directories read only, a private
+    `/tmp`, and what it was granted; nothing of a home directory, no process of the host's,
+    only the environment stated, no network unless granted, and no user namespace of its own
+    making; it ends with its host. Its arguments and environment reach the launcher through a
+    descriptor, never a command line another user could read. The launcher is checked as a
+    connector's binary is, and run from the file opened. Where bubblewrap is missing, older
+    than 0.8, or cannot make user namespaces, the placement is refused.
+  - **Grants belong to a pipeline**: a provider grants every connector only paths to read,
+    as system directories; what a connector may write, or read beyond those, is granted on
+    the reference that places it, and no other running connector of the provider may hold a
+    path within, above or equal to it, unless both state their grants are shared. A grant
+    that may write a connector's binary, a connector directory or the launcher is refused.
+  - **The network grant** shares the host's network namespace: every interface and route, the
+    host's loopback services, and the abstract Unix sockets of that namespace, such as a
+    session's buses. Grant it only to a connector you would let reach those.
   - On macOS there is no sandbox: a local connector runs only as a trusted binary, with the
     host's access. Run untrusted connectors remotely there.
   - A binary named without a path is found only in the directories configured, never on
-    `PATH` or in the working directory. It is opened once; it and the directory must be
-    writable by no other user; the open file is what is hashed and what is executed, so no
-    file can be swapped in between. On macOS an open file cannot be executed: a digest is
-    refused there rather than checked against a path.
-  - A connector is given its standard streams and its socket. A descriptor the host holds
-    that a child would inherit is covered with the null device in the connector.
+    `PATH` or in the working directory. The binary, every directory above it and above a
+    connector directory must be writable by no other user, a sticky directory such as `/tmp`
+    excepted for entries the user owns. It is opened once, and the open file is what is
+    hashed and what is executed, so no file can be swapped in between. A sandboxed connector
+    whose binary was replaced since it was placed is refused until it is placed again. On
+    macOS an open file cannot be executed: a digest is refused there rather than checked
+    against a path.
+  - A connector is given its standard streams and its socket, and no other descriptor of the
+    host's: after the descriptors it is given are in place, the child marks every other
+    close-on-exec, whatever another thread of the host opened meanwhile.
   - Its process group is the host's for its whole life, and is stopped and killed as a
     group; a sandboxed connector is killed with its whole process namespace.
 
 ## Secrets and connector text
 
-- A configuration value may refer to a secret: `${env:NAME}`, `${file:/absolute/path}`,
-  `${secret:name}`. References are resolved when the configuration is sent to a connector
-  whose identity the host has checked: its id and version, and its binary's digest or its
-  certificate's name. A connector receives only its own configuration.
+- **Whoever writes a pipeline's configuration is not trusted with the host's secrets.** A
+  configuration value may refer to a secret, `${env:NAME}`, `${file:/absolute/path}` or
+  `${secret:name}`, and reaches only what the operator lists: the variables an `EnvSecrets`
+  names, files beneath the private directories a `FileSecrets` names, and the named secrets of
+  the store the operator gives. By default no reference resolves.
+- References are resolved when the configuration is sent to a connector whose identity the
+  host has checked: its id and version, and its binary's digest or its certificate's name. A
+  connector receives only its own configuration.
 - A resolved secret is replaced by `***` in that connector's errors, its last words and its
-  logged output, in an engine's report of them, and in `rdlt-certify`'s reports. It is not
-  written to the write-ahead log or to state by the engine. A literal value in a
-  configuration is not a secret and is not scrubbed.
+  logged output, whichever start of it said it, in an engine's report of them, and in
+  `rdlt-certify`'s reports. It is not written to the write-ahead log or to state by the
+  engine. A literal value in a configuration is not a secret and is not scrubbed.
 - A configuration error names the field and what is wrong with it, never the value.
   `Secret<T>` redacts `Debug`, `Display` and `Serialize`, is wiped when dropped and is not
   `Clone`.
-- Text from a connector, its errors, last words, output and every reason in a certification
-  report, is shown with each character a terminal obeys or a reader cannot see escaped, and
-  cut at a limit, where the host receives it.
+- Text from a connector, its errors, last words, output, the names it gives streams and
+  tables in an engine's errors, and every reason in a certification report, is shown with
+  each character a terminal obeys or a reader cannot see escaped, and cut at a limit, where
+  the host receives it.
 - A connector's output is read at a bounded rate and logged at a bounded rate of lines.
 
 Not guaranteed:
@@ -86,17 +107,19 @@ Not guaranteed:
   given; the engine confines a connector, it does not vouch for it.
 - **A connector's own resources.** The processor time, memory and disk of a local
   connector's process are the sandbox's or the operator's to limit, with control groups or a
-  container.
+  container; its private `/tmp` is memory.
+- **What a network grant reaches**: the host's network namespace, as above.
 - **A secret a connector transforms** before it prints it, or that trusted in-process code
   panics with; and the memory of the transport a configuration crosses.
-- **macOS local placement**, beyond the checks on the binary: no sandbox, no digest, and a
-  descriptor the host itself inherited is not covered.
+- **macOS local placement**, beyond the checks on the binary: no sandbox and no digest.
 
 ADR 0043 records these.
 
 ## Build and supply chain
 
-- `unsafe` code is in one audited crate, `rdlt-adopt`. Every other crate, test, example, bench
+- `unsafe` code is in one audited crate, `rdlt-adopt`: adopting a host's socket, and the hook
+  that keeps a spawned connector from inheriting the host's descriptors. Every other crate,
+  test, example, bench
   and fuzz target forbids it, which the compiler enforces for the code it compiles there; the
   lint rejects the keyword everywhere else it is a token, macro bodies included, which the
   compiler does not check.
