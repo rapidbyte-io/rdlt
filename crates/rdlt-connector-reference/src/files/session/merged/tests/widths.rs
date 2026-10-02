@@ -213,3 +213,41 @@ fn files_of_differing_columns_are_compacted_and_merged_into_at_their_rows_own_co
         assert_eq!(listed(&sessions).len(), files, "{format:?}");
     }
 }
+
+#[test]
+fn rows_of_many_sets_of_columns_are_a_merge_table_of_few_files() {
+    use crate::limits::MAX_SHAPES;
+    for format in [FileFormat::Jsonl, FileFormat::Arrow] {
+        let sessions = Sessions::new(format);
+        let merged = table(None, true);
+        sessions.create(&merged, &schema(40));
+        // Forty batches of ten rows, each holding a column no other does.
+        let segments: Vec<u64> = (1..=40).collect();
+        for segment in &segments {
+            let from = i64::try_from(*segment).unwrap() * 10;
+            let whole = rows(from..from + 10, 1, 40);
+            let own = usize::try_from(*segment).unwrap() + 1;
+            let batch = whole.project(&[0, 1, own]).unwrap();
+            sessions.stage(&merged, *segment, batch);
+        }
+        sessions.commit(&sessions.meta(1, 1, &segments)).unwrap();
+        let files = if format == FileFormat::Jsonl {
+            1
+        } else {
+            MAX_SHAPES
+        };
+        assert_eq!(listed(&sessions).len(), files, "{format:?}");
+        assert_eq!(
+            ids(&sessions),
+            (10..410).collect::<Vec<i64>>(),
+            "{format:?}"
+        );
+        // Each row holds its own column and no other.
+        let cells: usize = read(&sessions)
+            .iter()
+            .flat_map(|batch| batch.columns()[2..].iter())
+            .map(|column| column.len() - column.null_count())
+            .sum();
+        assert_eq!(cells, 400, "{format:?}");
+    }
+}

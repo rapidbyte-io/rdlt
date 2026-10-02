@@ -8,9 +8,10 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BinaryArray, BooleanArray, Int8Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use rdlt_connector::{ChangeColumns, Deletion, HistoryColumns, MergeKey};
+use rdlt_connector::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey};
 
-use super::super::{Merged, merge_sparse};
+use super::super::{Merged, merge_children_sparse, merge_sparse, read_back};
+use crate::limits::{FOLD_CELLS, MAX_SHAPES};
 
 const ROWS: i64 = 20_000;
 const WIDTH: usize = 1_000;
@@ -193,4 +194,110 @@ fn a_wide_row_among_narrow_rows_of_its_own_commit_costs_its_own_cells() {
         let held = held_bytes(&merged.rows);
         assert!(held < BOUND, "{kind:?}: the commit holds {held} bytes");
     }
+}
+
+/// Rows of `ids` that hold 7 in the column `column` alone beside their key and sequence.
+fn only(ids: std::ops::Range<i64>, column: usize) -> RecordBatch {
+    let count = usize::try_from(ids.end - ids.start).unwrap();
+    let seqs = ids.clone().map(|id| position(u64::try_from(id).unwrap()));
+    let columns: Vec<(String, ArrayRef)> = vec![
+        ("id".into(), Arc::new(Int64Array::from_iter_values(ids))),
+        ("seq".into(), Arc::new(BinaryArray::from_iter_values(seqs))),
+        (
+            format!("c{column}"),
+            Arc::new(Int64Array::from(vec![7; count])),
+        ),
+    ];
+    RecordBatch::try_from_iter(columns).expect("a valid batch")
+}
+
+/// Checks `merged` holds `shapes` sets of `each` rows, every row its own column and no other,
+/// and gives the cells of columns its rows never had, batch by batch.
+fn absent_cells(merged: &Merged, schema: &SchemaRef, shapes: i64, each: i64) -> Vec<usize> {
+    let whole = read_back(schema, &merged.rows).unwrap();
+    let mut found = 0;
+    for batch in &whole {
+        let ids = batch.column(0).as_primitive::<Int64Type>();
+        for (row, id) in ids.values().iter().enumerate() {
+            let own = usize::try_from(id / each).unwrap();
+            for column in 0..usize::try_from(shapes).unwrap() {
+                let cell = batch.column(2 + column).as_primitive::<Int64Type>();
+                assert_eq!(
+                    cell.is_valid(row),
+                    column == own,
+                    "row {id}, column {column}"
+                );
+            }
+            found += 1;
+        }
+    }
+    assert_eq!(found, shapes * each);
+    let nulls = |batch: &RecordBatch| -> usize {
+        let columns = batch.columns().iter();
+        columns.map(Array::null_count).sum()
+    };
+    merged.rows.iter().map(nulls).collect()
+}
+
+#[test]
+fn rows_of_many_sets_of_columns_come_back_as_few_batches() {
+    let key = key(Kind::Upsert);
+    // A hundred batches of ten rows, each holding a column no other does.
+    let (shapes, each) = (100, 10);
+    let wide = schema(Kind::Upsert, 100);
+    let incoming: Vec<RecordBatch> = (0..shapes)
+        .map(|shape| {
+            only(
+                shape * each..(shape + 1) * each,
+                usize::try_from(shape).unwrap(),
+            )
+        })
+        .collect();
+    let merged = merge_sparse(&wide, &[], &[], &incoming, &key).unwrap();
+    assert_eq!(merged.rows.len(), MAX_SHAPES);
+    let absent = absent_cells(&merged, &wide, shapes, each);
+    // All but one batch are as they were written; the smallest joined under their columns.
+    let joined = usize::try_from(shapes).unwrap() - (MAX_SHAPES - 1);
+    assert_eq!(absent.iter().filter(|cells| **cells != 0).count(), 1);
+    assert_eq!(absent.iter().sum::<usize>(), joined * 10 * (joined - 1));
+    // What was folded merges again as any rows do, and stays as few.
+    let again = [only(0..each, 0)];
+    let merged = merge_sparse(&wide, &merged.rows, &[], &again, &key).unwrap();
+    assert!(merged.rows.len() <= MAX_SHAPES + 1);
+    absent_cells(&merged, &wide, shapes, each);
+}
+
+#[test]
+fn batches_join_apart_where_one_would_hold_more_absent_cells_than_a_fold_makes() {
+    let key = key(Kind::Upsert);
+    // Forty batches of two thousand rows: the twenty-five smallest, joined as one, would hold
+    // over a million cells no row had, twenty-four for each of their rows.
+    let (shapes, each) = (40, 2_000);
+    let wide = schema(Kind::Upsert, 40);
+    let incoming: Vec<RecordBatch> = (0..shapes)
+        .map(|shape| {
+            only(
+                shape * each..(shape + 1) * each,
+                usize::try_from(shape).unwrap(),
+            )
+        })
+        .collect();
+    let merged = merge_sparse(&wide, &[], &[], &incoming, &key).unwrap();
+    assert_eq!(merged.rows.len(), MAX_SHAPES + 1);
+    let absent = absent_cells(&merged, &wide, shapes, each);
+    let limit = usize::try_from(FOLD_CELLS).unwrap();
+    assert!(absent.iter().all(|cells| *cells <= limit), "{absent:?}");
+    assert_eq!(absent.iter().filter(|cells| **cells != 0).count(), 2);
+    // A child table's rows fold as a table's do.
+    let child = MergeKey {
+        root: Some(RootKey {
+            table: "roots".into(),
+            id: "id".into(),
+            seq: "seq".into(),
+        }),
+        ..key
+    };
+    let root = child.root.clone().unwrap();
+    let rows = merge_children_sparse(&wide, &[], &incoming, &child, &root, &incoming).unwrap();
+    assert_eq!(rows.len(), MAX_SHAPES + 1);
 }
