@@ -42,9 +42,9 @@ async fn a_forgotten_partition_leaves_its_stream_s_lag_to_the_rest_and_none_leav
     let (mut coordinator, harness) = two_partitions().await;
     coordinator.behind(0, 10);
     coordinator.behind(1, 5);
-    coordinator.forget_lag(0, Some(&[id("p1")]));
+    coordinator.forget_lag(0, Some(&[id("p1")].into()));
     assert_eq!(harness.log.lock().behind.get(&name()), Some(&10));
-    coordinator.forget_lag(0, Some(&[id("p0")]));
+    coordinator.forget_lag(0, Some(&[id("p0")].into()));
     assert_eq!(harness.log.lock().behind.get(&name()), None);
 }
 

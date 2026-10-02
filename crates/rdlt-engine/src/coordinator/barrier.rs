@@ -11,12 +11,11 @@ impl Coordinator {
         let barrier = self.barrier;
         self.parts.barrier.send_replace(barrier);
         let mut deadline = self.parts.env.sleep(self.parts.barrier_wait);
-        while self
-            .parts
-            .partitions
-            .iter()
-            .any(|partition| partition.owes(barrier))
-        {
+        // Kept as partitions start, answer and end, so the wait looks at no partition twice.
+        self.owing = (0..self.parts.partitions.len())
+            .filter(|index| self.parts.partitions[*index].owes(barrier))
+            .collect();
+        while !self.owing.is_empty() {
             tokio::select! {
                 biased;
                 () = self.parts.cancel.cancelled() => return Err(cancelled()),

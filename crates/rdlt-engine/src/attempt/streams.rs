@@ -12,8 +12,8 @@ use rdlt_connector::{
 
 use super::check::check_stream;
 use super::{Planned, RunContext, sequences};
-use crate::coordinator::{Begun, Cycle, Phases, StreamRun, Template};
-use crate::error::{Error, ErrorKind, Side};
+use crate::coordinator::{Begun, Cycle, Phases, StreamRun, Template, plan_of};
+use crate::error::{Error, ErrorKind};
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
 use crate::partition::ChangeMode;
@@ -180,7 +180,7 @@ fn planned(
     let tracked = cdc || (follow && plan.read_mode() == ReadMode::Incremental);
     let phases = tracked.then(|| Phases {
         phase: partitioned.phase,
-        reading: Vec::new(),
+        reading: BTreeMap::new(),
         committed: partitioned.committed,
         begun: partitioned.begun,
         settled: false,
@@ -409,9 +409,7 @@ async fn partitions(
     state: &StreamState,
 ) -> Result<Partitioned, Error> {
     let name = plan.name();
-    let planned = context.source.plan(name, state).await.map_err(|error| {
-        Error::connector(Side::Source, format!("planning stream {name}"), error).with_stream(name)
-    })?;
+    let planned = plan_of(context.source.as_ref(), name, state).await?;
     if let Some(phase) = planned.phase.filter(|phase| *phase != state.phase) {
         if plan.read_mode() != ReadMode::Cdc {
             return Err(Error::new(

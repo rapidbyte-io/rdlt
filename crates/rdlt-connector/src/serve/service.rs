@@ -195,28 +195,7 @@ impl Connector for Service {
             .plan(&stream, &state)
             .await
             .map_err(|error| status(&error))?;
-        Ok(Response::new(v1::PlanResponse {
-            partitions: planned
-                .partitions
-                .iter()
-                .map(|partition| partition.id().as_str().to_owned())
-                .collect(),
-            phase: planned.phase.map(u32::from),
-            unbounded: planned
-                .partitions
-                .iter()
-                .filter(|partition| partition.is_unbounded())
-                .map(|partition| partition.id().as_str().to_owned())
-                .collect(),
-            starts: planned
-                .starts
-                .iter()
-                .map(|(partition, cursor)| v1::PartitionState {
-                    partition: partition.as_str().to_owned(),
-                    state: Some(v1::partition_state::State::Cursor(v1::Cursor::from(cursor))),
-                })
-                .collect(),
-        }))
+        Ok(Response::new(v1::PlanResponse::from(&planned)))
     }
 
     type ReadStream = Answer<v1::ReadFrame>;

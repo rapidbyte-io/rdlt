@@ -33,6 +33,15 @@ pub const MAX_COLUMNS: u64 = 10_000;
 /// the record itself as the first.
 pub const MAX_NESTING_DEPTH: u64 = 64;
 
+/// Streams: bounds one catalog.
+pub const MAX_CATALOG_STREAMS: usize = 65_536;
+
+/// Partitions: bounds the partitions one plan of a stream names.
+///
+/// The engine tracks each partition a plan names until its read ends, and starts a task to read
+/// it: a partition waiting for its turn costs about a kilobyte, outside the memory budget.
+pub const MAX_PLAN_PARTITIONS: usize = 16_384;
+
 /// Bytes: bounds one encoded cursor.
 pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 

@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::id::StreamName;
@@ -190,53 +192,75 @@ impl StreamSpec {
     }
 }
 
-/// The streams a source offers, with distinct names.
+/// The streams a source offers, with distinct names, at most
+/// [`MAX_CATALOG_STREAMS`](crate::limits::MAX_CATALOG_STREAMS).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<StreamSpec>", into = "Vec<StreamSpec>")]
-pub struct Catalog(Vec<StreamSpec>);
+pub struct Catalog {
+    streams: Vec<StreamSpec>,
+    /// Each stream's place in `streams`, by its name.
+    index: BTreeMap<StreamName, usize>,
+}
 
-/// Two streams of one catalog share a name.
+/// Why streams are no catalog.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("stream {0} appears more than once in the catalog")]
-pub struct DuplicateStream(pub StreamName);
+pub enum InvalidCatalog {
+    /// Two streams share a name.
+    #[error("stream {0} appears more than once in the catalog")]
+    Duplicate(StreamName),
+    /// There are more streams than a catalog holds.
+    #[error("the catalog has {count} streams, beyond the limit of {limit}")]
+    TooMany {
+        /// The streams offered.
+        count: usize,
+        /// The most a catalog holds.
+        limit: usize,
+    },
+}
 
 impl Catalog {
-    /// A catalog of `streams`, which must have distinct names.
-    pub fn new(streams: Vec<StreamSpec>) -> Result<Self, DuplicateStream> {
-        for (index, stream) in streams.iter().enumerate() {
-            if streams[..index]
-                .iter()
-                .any(|earlier| earlier.name() == stream.name())
-            {
-                return Err(DuplicateStream(stream.name().clone()));
+    /// A catalog of `streams`, which must have distinct names and be at most
+    /// [`MAX_CATALOG_STREAMS`](crate::limits::MAX_CATALOG_STREAMS).
+    pub fn new(streams: Vec<StreamSpec>) -> Result<Self, InvalidCatalog> {
+        let limit = crate::limits::MAX_CATALOG_STREAMS;
+        if streams.len() > limit {
+            return Err(InvalidCatalog::TooMany {
+                count: streams.len(),
+                limit,
+            });
+        }
+        let mut index = BTreeMap::new();
+        for (place, stream) in streams.iter().enumerate() {
+            if index.insert(stream.name().clone(), place).is_some() {
+                return Err(InvalidCatalog::Duplicate(stream.name().clone()));
             }
         }
-        Ok(Self(streams))
+        Ok(Self { streams, index })
     }
 
     /// The stream called `name`.
     pub fn get(&self, name: &StreamName) -> Option<&StreamSpec> {
-        self.0.iter().find(|stream| stream.name() == name)
+        self.index.get(name).map(|place| &self.streams[*place])
     }
 
     /// The streams, in the order the source listed them.
     pub fn iter(&self) -> impl Iterator<Item = &StreamSpec> {
-        self.0.iter()
+        self.streams.iter()
     }
 
     /// The number of streams.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.streams.len()
     }
 
     /// Whether the catalog is empty.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.streams.is_empty()
     }
 }
 
 impl TryFrom<Vec<StreamSpec>> for Catalog {
-    type Error = DuplicateStream;
+    type Error = InvalidCatalog;
 
     fn try_from(streams: Vec<StreamSpec>) -> Result<Self, Self::Error> {
         Self::new(streams)
@@ -245,6 +269,6 @@ impl TryFrom<Vec<StreamSpec>> for Catalog {
 
 impl From<Catalog> for Vec<StreamSpec> {
     fn from(catalog: Catalog) -> Self {
-        catalog.0
+        catalog.streams
     }
 }

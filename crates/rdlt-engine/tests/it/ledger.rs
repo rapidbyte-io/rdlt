@@ -624,3 +624,88 @@ async fn column_names_are_stable_across_runs_and_batches() {
     assert_eq!(last["a"], json!(6), "A keeps the identifier it took first");
     assert_eq!(last[assigned[2]], json!(4));
 }
+
+/// A source of one stream planned as `partitions` partitions, whose reads wait until they are
+/// stopped, counting how many started.
+struct Waiting {
+    partitions: usize,
+    started: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl rdlt_connector::Source for Waiting {
+    fn check(&self) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn discover(
+        &self,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<rdlt_connector::Catalog>> {
+        Box::pin(async {
+            let spec = rdlt_connector::StreamSpec::new(StreamName::new("events").expect("a name"))
+                .with_partitioning(rdlt_connector::Partitioning::Planned);
+            Ok(rdlt_connector::Catalog::new(vec![spec]).expect("a catalog"))
+        })
+    }
+
+    fn plan<'a>(
+        &'a self,
+        _stream: &'a StreamName,
+        _state: &'a rdlt_connector::StreamState,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<rdlt_connector::PartitionPlan>> {
+        Box::pin(async move {
+            let partitions = (0..self.partitions)
+                .map(|index| {
+                    let id = rdlt_connector::PartitionId::parse(format!("p{index}"))
+                        .expect("a partition id");
+                    rdlt_connector::Partition::new(id)
+                })
+                .collect();
+            Ok(rdlt_connector::PartitionPlan::new(partitions))
+        })
+    }
+
+    fn read(
+        &self,
+        _request: rdlt_connector::ReadRequest,
+        sink: rdlt_connector::PartitionSink,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.started
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            sink.stopped().await;
+            Ok(())
+        })
+    }
+
+    fn committed<'a>(
+        &'a self,
+        _stream: &'a StreamName,
+        _cursors: &'a [(rdlt_connector::PartitionId, rdlt_connector::Cursor)],
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn partitions_waiting_for_their_turn_to_read_cost_little() {
+    const PARTITIONS: usize = rdlt_connector::limits::MAX_PLAN_PARTITIONS;
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let source = Arc::new(Waiting {
+        partitions: PARTITIONS,
+        started: Arc::clone(&started),
+    });
+    let plan = pipeline("waiting", [stream("events")]);
+    let before = HEAP.current_usage();
+    let running = engine(commit_every(10).partitions(4)).run(plan, source, memory("waiting").await);
+    let control = running.control();
+    let run = tokio::spawn(running);
+    until(|| started.load(std::sync::atomic::Ordering::SeqCst) == 4).await;
+    // Every partition's task is started before the first reads, the rest waiting for a slot.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let held = HEAP.current_usage().saturating_sub(before);
+    control.stop(StopMode::Now);
+    let outcome = run.await.unwrap();
+    assert_eq!(outcome.report.status, RunStatus::Cancelled);
+    let each = held / PARTITIONS;
+    assert!(each <= 2048, "{each} bytes a waiting partition");
+}

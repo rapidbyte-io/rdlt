@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use bytes::Bytes;
 use rdlt_connector::{CommitMeta, Cursor, PartitionId, PartitionState, StateChange};
 
 use super::Coordinator;
@@ -42,15 +43,24 @@ impl Coordinator {
     /// again. Positions are compared byte for byte: a source that encodes an equal position
     /// anew has moved, as far as the engine can tell.
     pub(super) fn progresses(&self, collected: &Collected, delta: &[StateChange]) -> bool {
-        let restated: Vec<StateChange> = collected
+        let restated: BTreeMap<String, Bytes> = collected
             .positions
             .iter()
             .filter(|(partition, state)| {
                 self.parts.partitions[**partition].stands.as_ref() == Some(*state)
             })
-            .map(|(partition, state)| self.position(*partition, state))
+            .filter_map(
+                |(partition, state)| match self.position(*partition, state) {
+                    StateChange::Put(record) => Some((record.key, record.value)),
+                    StateChange::Delete(_) => None,
+                },
+            )
             .collect();
-        !collected.segments.is_empty() || delta.iter().any(|change| !restated.contains(change))
+        let moves = |change: &StateChange| match change {
+            StateChange::Put(record) => restated.get(&record.key) != Some(&record.value),
+            StateChange::Delete(_) => true,
+        };
+        !collected.segments.is_empty() || delta.iter().any(moves)
     }
 
     /// Records a commit that landed: each partition stands at its position in `positions`, and

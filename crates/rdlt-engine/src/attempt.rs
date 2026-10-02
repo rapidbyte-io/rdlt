@@ -195,7 +195,8 @@ async fn launch(
         wal: wal.clone(),
     };
     let (tasks, spawned) = mpsc::unbounded_channel();
-    let launcher = launcher(partition_context.clone(), tasks);
+    let partition_context = Arc::new(partition_context);
+    let launcher = launcher(Arc::clone(&partition_context), tasks);
     let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
     // Only the partitions and the launcher may keep the lanes and the progress channel open.
     drop(partition_context);
@@ -271,7 +272,7 @@ async fn start_log(
 fn spawn_partitions(
     scope: &mut TaskScope<Error>,
     planned: Vec<Planned>,
-    context: &PartitionContext,
+    context: &Arc<PartitionContext>,
 ) -> (Vec<StreamRun>, Vec<PartitionRun>) {
     let mut streams = Vec::with_capacity(planned.len());
     let mut partitions = Vec::new();
@@ -291,12 +292,12 @@ fn spawn_partitions(
                 reset_retention: stream.reset_retention,
             };
             if let Some(phases) = stream.stream.phases.as_mut() {
-                phases.reading.push(partitions.len());
+                phases.reading.insert(id.clone(), partitions.len());
             }
             let stop = job.stop.clone();
             let tracked = PartitionRun::new(index, id, stream.on_demand, stop);
             partitions.push(tracked.starting(job.cursor.as_ref()));
-            scope.spawn(partition::run(job, context.clone()));
+            scope.spawn(partition::run(job, Arc::clone(context)));
         }
         streams.push(stream.stream);
     }

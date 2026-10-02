@@ -3,10 +3,11 @@
 //! again, and a plan naming a new phase starts that phase's partitions.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use rdlt_connector::{
-    BoxFuture, Cursor, Partition, PartitionId, PartitionPlan, PartitionState, StateChange,
-    StateEntry, StateKey, StreamState,
+    BoxFuture, Cursor, Partition, PartitionId, PartitionPlan, PartitionState, Source, StateChange,
+    StateEntry, StateKey, StreamName, StreamState,
 };
 use tokio::sync::mpsc;
 
@@ -20,8 +21,8 @@ use crate::wal::frame::BegunPhase;
 pub(crate) struct Phases {
     /// The phase the stream reads.
     pub(crate) phase: u16,
-    /// The indices of the partitions the stream reads in its phase.
-    pub(crate) reading: Vec<usize>,
+    /// The partitions the stream reads in its phase, by id, each with its index in the attempt.
+    pub(crate) reading: BTreeMap<PartitionId, usize>,
     /// The committed position of each partition of the phase, as state records it.
     pub(crate) committed: BTreeMap<PartitionId, PartitionState>,
     /// The phase this attempt began, which the next commit records; `None` once a commit has
@@ -51,17 +52,40 @@ pub(crate) struct Template {
     pub(crate) reset_retention: bool,
 }
 
+/// What `source` plans for the stream `name` from `state`, checked as
+/// [`PartitionPlan::validate`] checks it.
+///
+/// # Errors
+///
+/// The source's error, or `plan_invalid`, a Source error no retry mends, for a plan of too many
+/// partitions, a partition named twice, or a start of one it does not name.
+pub(crate) async fn plan_of(
+    source: &dyn Source,
+    name: &StreamName,
+    state: &StreamState,
+) -> Result<PartitionPlan, Error> {
+    let planned = source.plan(name, state).await.map_err(|error| {
+        Error::connector(Side::Source, format!("planning stream {name}"), error).with_stream(name)
+    })?;
+    planned.validate().map_err(|invalid| {
+        Error::new(ErrorKind::Source, format!("stream {name}: {invalid}"))
+            .with_code("plan_invalid")
+            .with_stream(name)
+    })?;
+    Ok(planned)
+}
+
 /// Starts the partitions the coordinator plans.
 pub(crate) type Launcher = Box<dyn Fn(PartitionJob) -> Result<(), Error> + Send + Sync>;
 
 /// A launcher whose partitions read with `context`, their tasks sent to `tasks` to join the
 /// attempt's scope.
 pub(crate) fn launcher(
-    context: PartitionContext,
+    context: Arc<PartitionContext>,
     tasks: mpsc::UnboundedSender<BoxFuture<'static, Result<(), Error>>>,
 ) -> Launcher {
     Box::new(move |job| {
-        let task = partition::run(job, context.clone());
+        let task = partition::run(job, Arc::clone(&context));
         tasks
             .send(Box::pin(task))
             .map_err(|_| Error::cancelled("the attempt's scope ended"))
@@ -103,7 +127,7 @@ impl Coordinator {
         }
         phases
             .reading
-            .iter()
+            .values()
             .all(|index| self.parts.partitions[*index].ended)
     }
 
@@ -135,10 +159,7 @@ impl Coordinator {
                 ..StreamState::default()
             })
             .unwrap_or_default();
-        self.parts.source.plan(name, &state).await.map_err(|error| {
-            Error::connector(Side::Source, format!("planning stream {name}"), error)
-                .with_stream(name)
-        })
+        plan_of(self.parts.source.as_ref(), name, &state).await
     }
 
     /// Begins `stream`'s phase `next`, starting its partitions where `planned` says.
@@ -172,7 +193,9 @@ impl Coordinator {
         begun.starts.clone_from(&planned.starts);
         phases.begun = Some(begun);
         phases.phase = next;
-        phases.reading.clear();
+        // The phase's partitions have ended, their ends committed: their places are free.
+        self.retired
+            .extend(std::mem::take(&mut phases.reading).into_values());
         let template = phases.template;
         self.forget_lag(stream, None);
         for partition in planned.partitions {
@@ -184,8 +207,9 @@ impl Coordinator {
 
     /// Starts reading `partition` of `stream`, in its phase, from `cursor`.
     ///
-    /// A partition read again takes the place its ended read had, so a run that reads for ever
-    /// tracks each partition once.
+    /// A partition read again takes the place its ended read had, and a new one the place of a
+    /// partition no stream reads any more, so a run that reads for ever tracks no more
+    /// partitions than its plans name at once.
     pub(super) fn launch(
         &mut self,
         stream: usize,
@@ -197,25 +221,16 @@ impl Coordinator {
         let stop = self.parts.stop_reads.child_token();
         let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, stop.clone())
             .starting(cursor.as_ref());
-        let partitions = &mut self.parts.partitions;
+        let index = self.place(stream, &id);
+        match self.parts.partitions.get_mut(index) {
+            Some(place) => *place = tracked,
+            None => self.parts.partitions.push(tracked),
+        }
+        self.unended += 1;
         let run = &mut self.parts.streams[stream];
-        let ended = run.phases.as_ref().and_then(|phases| {
-            phases
-                .reading
-                .iter()
-                .copied()
-                .find(|index| partitions[*index].id == id && partitions[*index].ended)
-        });
-        let index = if let Some(index) = ended {
-            partitions[index] = tracked;
-            index
-        } else {
-            partitions.push(tracked);
-            if let Some(phases) = run.phases.as_mut() {
-                phases.reading.push(partitions.len() - 1);
-            }
-            partitions.len() - 1
-        };
+        if let Some(phases) = run.phases.as_mut() {
+            phases.reading.insert(id, index);
+        }
         run.remaining += 1;
         let job = PartitionJob {
             index,
@@ -232,12 +247,38 @@ impl Coordinator {
         (self.parts.launcher)(job)
     }
 
+    /// The index `stream`'s partition `id` takes: the place of its ended read, else the place
+    /// of a partition no stream reads whose seals were all committed, else a new one.
+    fn place(&mut self, stream: usize, id: &PartitionId) -> usize {
+        let partitions = &self.parts.partitions;
+        let ended = self.parts.streams[stream]
+            .phases
+            .as_ref()
+            .and_then(|phases| phases.reading.get(id).copied())
+            .filter(|index| partitions[*index].ended);
+        if let Some(index) = ended {
+            return index;
+        }
+        let free = self
+            .retired
+            .iter()
+            .copied()
+            .find(|index| !self.sealing.contains(index));
+        match free {
+            Some(index) => {
+                self.retired.remove(&index);
+                index
+            }
+            None => self.parts.partitions.len(),
+        }
+    }
+
     /// Records, for each phased stream, the committed positions of its phase's partitions.
     pub(super) fn record_positions(&mut self, positions: &BTreeMap<usize, PartitionState>) {
         for (index, state) in positions {
             let partition = &self.parts.partitions[*index];
             if let Some(phases) = self.parts.streams[partition.stream].phases.as_mut()
-                && phases.reading.contains(index)
+                && phases.reading.get(&partition.id) == Some(index)
             {
                 phases.committed.insert(partition.id.clone(), state.clone());
             }

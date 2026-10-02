@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::{
-    Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector, Streams,
-    source_factory,
+    InvalidPlan, Partition, PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector,
+    Streams, source_factory,
 };
 use crate::catalog::StreamSpec;
 use crate::cursor::Cursor;
@@ -397,4 +397,51 @@ async fn a_read_knows_whether_it_was_given_a_cursor_or_starts_from_the_default()
     let (read, events) = read_all(source.as_ref(), Some(start)).await;
     read.unwrap();
     assert!(told(&events) > 0.5);
+}
+
+fn plan_of(ids: &[&str]) -> PartitionPlan {
+    PartitionPlan::new(
+        ids.iter()
+            .map(|id| Partition::new(PartitionId::parse(id).unwrap()))
+            .collect(),
+    )
+}
+
+#[test]
+fn a_plan_naming_a_partition_twice_is_refused() {
+    assert_eq!(plan_of(&["a", "b"]).validate(), Ok(()));
+    assert_eq!(
+        plan_of(&["a", "b", "a"]).validate(),
+        Err(InvalidPlan::Repeated(PartitionId::parse("a").unwrap()))
+    );
+}
+
+#[test]
+fn a_plan_starting_a_partition_it_does_not_name_is_refused() {
+    let cursor = Cursor::encode(1, &0_u64).unwrap();
+    let started = plan_of(&["a"]).start(PartitionId::parse("a").unwrap(), cursor.clone());
+    assert_eq!(started.validate(), Ok(()));
+    let stray = plan_of(&["a"]).start(PartitionId::parse("b").unwrap(), cursor);
+    assert_eq!(
+        stray.validate(),
+        Err(InvalidPlan::Unplanned(PartitionId::parse("b").unwrap()))
+    );
+}
+
+#[test]
+fn a_plan_beyond_its_partition_limit_is_refused() {
+    let limit = crate::limits::MAX_PLAN_PARTITIONS;
+    let ids: Vec<String> = (0..=limit).map(|index| format!("p{index}")).collect();
+    let names: Vec<&str> = ids.iter().map(String::as_str).collect();
+    // A check of every partition against every other takes minutes at the limit.
+    let started = std::time::Instant::now();
+    assert_eq!(plan_of(&names[..limit]).validate(), Ok(()));
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        plan_of(&names).validate(),
+        Err(InvalidPlan::TooMany {
+            count: limit + 1,
+            limit
+        })
+    );
 }

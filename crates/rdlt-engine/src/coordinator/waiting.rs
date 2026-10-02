@@ -50,6 +50,7 @@ impl WaitingSeals {
     }
 
     /// The seals waiting, in order.
+    #[cfg(test)]
     pub(super) fn iter(&self) -> impl Iterator<Item = &Seal> {
         self.seals.iter()
     }

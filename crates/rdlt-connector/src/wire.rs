@@ -8,6 +8,7 @@
 mod catalog;
 mod destination;
 mod error;
+mod plan;
 mod state;
 mod status;
 #[cfg(test)]

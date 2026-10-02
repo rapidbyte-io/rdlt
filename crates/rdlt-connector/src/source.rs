@@ -5,17 +5,17 @@ mod acknowledged;
 #[cfg(feature = "certify")]
 mod acknowledging;
 mod adapter;
+mod plan;
 mod sent;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
 use std::future::Future;
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::catalog::{Catalog, DuplicateStream, StreamSpec};
+use crate::catalog::{Catalog, InvalidCatalog, StreamSpec};
 use crate::cursor::Cursor;
 use crate::emitter::Emitter;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
@@ -29,6 +29,7 @@ pub use acknowledged::{AcknowledgedReader, Acknowledging};
 #[cfg(feature = "certify")]
 pub use acknowledging::acknowledging_source_factory;
 pub use adapter::source_factory;
+pub use plan::{InvalidPlan, Partition, PartitionPlan};
 pub use sent::{POSITION_UNSENT, Sent};
 
 /// A source connector, as its author writes it.
@@ -67,7 +68,7 @@ pub trait SourceConnector: Sized + Send + Sync + 'static {
         let catalog = self
             .streams()
             .catalog()
-            .map_err(|error| duplicate_stream(&error));
+            .map_err(|error| invalid_catalog(&error));
         async move { catalog }
     }
 }
@@ -162,98 +163,6 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     }
 }
 
-/// A slice of a stream that is read, and checkpointed, on its own.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Partition {
-    id: PartitionId,
-    unbounded: bool,
-}
-
-impl Partition {
-    /// A partition with `id`; the source gives the id its meaning.
-    pub fn new(id: PartitionId) -> Self {
-        Self {
-            id,
-            unbounded: false,
-        }
-    }
-
-    /// The partition, as one that never ends, as a change stream's changes or a log's records
-    /// do: a read of it that ends only pauses it.
-    ///
-    /// Such a partition is never done: its next read resumes from its last checkpoint, so rows a
-    /// read pushed after that checkpoint are read again, not committed without a position.
-    #[must_use]
-    pub fn unbounded(mut self) -> Self {
-        self.unbounded = true;
-        self
-    }
-
-    /// Whether the partition never ends.
-    pub fn is_unbounded(&self) -> bool {
-        self.unbounded
-    }
-
-    /// The partition of a stream that is not split, with id `whole`.
-    pub fn single() -> Self {
-        Self::new(PartitionId::whole())
-    }
-
-    /// The partition's id.
-    pub fn id(&self) -> &PartitionId {
-        &self.id
-    }
-}
-
-/// The partitions a source plans for a stream, and the phase they belong to.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PartitionPlan {
-    /// The stream's phase the partitions belong to; `None` keeps the phase state records.
-    ///
-    /// A phase other than the recorded one begins the phase: the commit that first records it
-    /// forgets the previous phase's partitions.
-    pub phase: Option<u16>,
-    /// The partitions, with distinct ids.
-    pub partitions: Vec<Partition>,
-    /// Where partitions of a new phase start, as a CDC stream's changes start from the position
-    /// its snapshot captured.
-    ///
-    /// A partition without a start starts from the beginning. A plan in the recorded phase
-    /// resumes each partition from its committed position instead.
-    pub starts: BTreeMap<PartitionId, Cursor>,
-}
-
-impl PartitionPlan {
-    /// `partitions`, in the phase state records.
-    pub fn new(partitions: Vec<Partition>) -> Self {
-        Self {
-            phase: None,
-            partitions,
-            starts: BTreeMap::new(),
-        }
-    }
-
-    /// The plan with its partitions in `phase`.
-    #[must_use]
-    pub fn phase(mut self, phase: u16) -> Self {
-        self.phase = Some(phase);
-        self
-    }
-
-    /// The plan with `partition`, of a new phase, starting at `cursor`.
-    #[must_use]
-    pub fn start(mut self, partition: PartitionId, cursor: Cursor) -> Self {
-        self.starts.insert(partition, cursor);
-        self
-    }
-}
-
-impl From<Vec<Partition>> for PartitionPlan {
-    fn from(partitions: Vec<Partition>) -> Self {
-        Self::new(partitions)
-    }
-}
-
 /// The streams of a source; built by [`SourceConnector::streams`].
 pub struct Streams<S> {
     streams: Vec<Box<dyn adapter::ErasedStream<S>>>,
@@ -275,7 +184,7 @@ impl<S: SourceConnector> Streams<S> {
     }
 
     /// The catalog of the streams' specs.
-    pub fn catalog(&self) -> Result<Catalog, DuplicateStream> {
+    pub fn catalog(&self) -> Result<Catalog, InvalidCatalog> {
         Catalog::new(self.streams.iter().map(|stream| stream.spec()).collect())
     }
 }
@@ -404,6 +313,6 @@ pub trait SourceFactory: Send + Sync {
 /// The code of the error a source refuses to tell where it stands with, where it does not.
 pub const ACKNOWLEDGED_CODE: &str = "acknowledged";
 
-fn duplicate_stream(error: &DuplicateStream) -> ConnectorError {
+fn invalid_catalog(error: &InvalidCatalog) -> ConnectorError {
     ConnectorError::new(ConnectorErrorKind::Internal, error.to_string())
 }
