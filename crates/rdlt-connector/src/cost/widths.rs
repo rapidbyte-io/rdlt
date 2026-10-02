@@ -121,6 +121,44 @@ pub(super) fn null_slot(data_type: &DataType) -> u64 {
     }
 }
 
+/// Bytes: at most what the text of a null of `data_type` is measured at, a row, whose array
+/// the cost model measures as JSON text: the larger of a scalar's slot and its longest text, a
+/// string's offsets and quotes, a struct's names and its fields', a list's offsets and brackets.
+///
+/// What a builder of a column's text reserves for a null converted to the column's type is no
+/// more, so a value typed null, or a field a struct lacks, is charged it.
+pub(super) fn null_text(data_type: &DataType) -> u64 {
+    // A row's validity, in a byte of its own at the most.
+    let validity = 1;
+    let text = if let Some(scalar) = scalar(data_type) {
+        scalar.slot.max(scalar.text + OFFSET).max(1)
+    } else {
+        match data_type {
+            DataType::Utf8View | DataType::BinaryView => VIEW + OFFSET + BRACKETS,
+            DataType::Struct(fields) => fields
+                .iter()
+                .map(|field| null_text(field.data_type()))
+                .fold(keys(fields), u64::saturating_add),
+            DataType::FixedSizeList(item, size) => {
+                let size = u64::from(size.unsigned_abs());
+                size.saturating_mul(1 + null_text(item.data_type()))
+                    .saturating_add(OFFSET + BRACKETS)
+            }
+            DataType::Union(fields, _) => fields
+                .iter()
+                .map(|(_, field)| null_text(field.data_type()))
+                .fold(2 * OFFSET, u64::saturating_add),
+            DataType::Dictionary(_, values) => null_text(values).saturating_add(OFFSET),
+            DataType::RunEndEncoded(_, values) => {
+                null_text(values.data_type()).saturating_add(OFFSET)
+            }
+            // Strings, bytes and lists of every layout: their offsets and their brackets.
+            _ => 2 * OFFSET + BRACKETS,
+        }
+    };
+    text.saturating_add(validity)
+}
+
 /// The bytes the names of a struct's `fields` add to every row of its JSON text: each quoted and
 /// escaped, with its colon and comma, between the braces.
 pub(super) fn keys(fields: &Fields) -> u64 {

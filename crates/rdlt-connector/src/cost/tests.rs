@@ -252,6 +252,22 @@ fn every_type_costs_at_least_a_byte_a_row_and_grows_with_its_rows() {
 }
 
 #[test]
+fn the_text_of_a_null_of_every_type_is_measured_within_its_bound() {
+    for column in every_type() {
+        let data_type = column.data_type();
+        for rows in [1, 7, 64] {
+            let built = new_null_array(data_type, rows);
+            let measured = super::text_bytes(built.as_ref(), true);
+            let bound = super::widths::null_text(data_type) * u64::try_from(rows).unwrap();
+            assert!(
+                measured <= bound,
+                "{data_type}, {rows} rows: {measured} > {bound}"
+            );
+        }
+    }
+}
+
+#[test]
 fn every_type_has_a_null_slot() {
     for column in every_type() {
         let rows = 64;
