@@ -143,6 +143,33 @@ pub(crate) enum Kind {
     Other,
 }
 
+/// What a directory entry is and whose, links never followed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Status {
+    pub(crate) kind: Kind,
+    /// Its owner's user id.
+    pub(crate) owner: u32,
+    /// Its permission bits.
+    pub(crate) mode: u32,
+    /// How many names the entry has.
+    pub(crate) links: u64,
+}
+
+impl Status {
+    /// Checks the entry belongs to the user the process runs as and that neither its group nor
+    /// others have any of the permissions `reach` names.
+    pub(crate) fn private_of(&self, reach: u32) -> Result<(), Refusal> {
+        let ours = self.owner == rustix::process::geteuid().as_raw();
+        if ours && self.mode & reach == 0 {
+            return Ok(());
+        }
+        Err(Refusal::Shared {
+            owner: self.owner,
+            mode: self.mode,
+        })
+    }
+}
+
 impl From<FileType> for Kind {
     fn from(kind: FileType) -> Self {
         match kind {
@@ -398,9 +425,28 @@ impl Dir {
 
     /// What `name` is, if it exists.
     pub(crate) fn kind(&self, name: impl AsRef<OsStr>) -> io::Result<Option<Kind>> {
+        Ok(self.status(name)?.map(|status| status.kind))
+    }
+
+    /// What `name` is and whose, if it exists, asked of the directory and never of a descriptor
+    /// of the entry: a file a lock of this process is on is not opened to be inspected, since
+    /// closing any descriptor of a file releases the locks the process holds on it by record.
+    pub(crate) fn status(&self, name: impl AsRef<OsStr>) -> io::Result<Option<Status>> {
         let name = component(name.as_ref())?;
+        #[cfg_attr(
+            target_os = "linux",
+            expect(
+                clippy::useless_conversion,
+                reason = "a mode and a count of names are narrower numbers on other platforms"
+            )
+        )]
         match rustix::fs::statat(&self.file, name, AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(stat) => Ok(Some(FileType::from_raw_mode(stat.st_mode).into())),
+            Ok(stat) => Ok(Some(Status {
+                kind: FileType::from_raw_mode(stat.st_mode).into(),
+                owner: stat.st_uid,
+                mode: u32::from(stat.st_mode) & 0o7777,
+                links: u64::from(stat.st_nlink),
+            })),
             Err(rustix::io::Errno::NOENT) => Ok(None),
             Err(error) => Err(error.into()),
         }
