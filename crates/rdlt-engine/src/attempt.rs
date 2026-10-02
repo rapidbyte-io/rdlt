@@ -228,10 +228,10 @@ async fn launch(
     let cancel = scope.token().clone();
     let lanes = start_lanes(context, &tables, &mut scope);
     let wal = start_log(context, load_id, &opened.state, &planned, &mut scope).await?;
-    let (progress, progress_feed) = mpsc::unbounded_channel();
-    let (barrier, barrier_feed) = watch::channel(0);
+    let ((progress, progress_feed), (barrier, barrier_feed)) =
+        (mpsc::unbounded_channel(), watch::channel(0));
     let (stop_reads, latest) = (CancellationToken::new(), Arc::new(Latest::default()));
-    let partition_context = PartitionContext {
+    let partition_context = Arc::new(PartitionContext {
         source: Arc::clone(&context.source),
         lanes: lanes.clone(),
         tables: Arc::clone(&tables),
@@ -251,13 +251,10 @@ async fn launch(
         batch: *context.config.batch(),
         stop_wait: context.config.stop_wait(),
         wal: wal.clone(),
-    };
+    });
     let (tasks, spawned) = mpsc::unbounded_channel();
-    let partition_context = Arc::new(partition_context);
     let launcher = launcher(Arc::clone(&partition_context), tasks);
-    let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
-    // Only the partitions and the launcher may keep the lanes and the progress channel open.
-    drop(partition_context);
+    let (streams, partitions) = spawn_partitions(&mut scope, planned, partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
         env: Arc::clone(&context.env),
         policy: context.config.commit_for(context.plan.commits_as_stream()),
@@ -284,7 +281,6 @@ async fn launch(
         replan: context.config.replan(),
     });
     scope.spawn(coordinator.run());
-    // The coordinator starts the partitions of streams' next phases as it runs.
     scope.join_spawning(spawned).await
 }
 
@@ -327,10 +323,13 @@ async fn start_log(
 
 /// Starts a task per partition to read, and returns the streams and partitions as the
 /// coordinator tracks them.
+///
+/// It takes `context`, so only the partitions and the launcher keep the lanes and the progress
+/// channel open.
 fn spawn_partitions(
     scope: &mut TaskScope<Error>,
     planned: Vec<Planned>,
-    context: &Arc<PartitionContext>,
+    context: Arc<PartitionContext>,
 ) -> (Vec<StreamRun>, Vec<PartitionRun>) {
     let mut streams = Vec::with_capacity(planned.len());
     let mut partitions = Vec::new();
@@ -355,10 +354,11 @@ fn spawn_partitions(
             let stop = job.stop.clone();
             let tracked = PartitionRun::new(index, id, stream.on_demand, stop);
             partitions.push(tracked.starting(job.cursor.as_ref()));
-            scope.spawn(partition::run(job, Arc::clone(context)));
+            scope.spawn(partition::run(job, Arc::clone(&context)));
         }
         streams.push(stream.stream);
     }
+    drop(context);
     (streams, partitions)
 }
 

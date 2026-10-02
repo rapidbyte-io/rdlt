@@ -41,6 +41,8 @@ impl Coordinator {
             sealed: Vec::new(),
             held: Vec::new(),
         };
+        // The commit takes every seal; rows not sealed by now it passes by, until they are.
+        self.due.committing();
         let seals = self.sealed.take();
         self.sealing.clear();
         if self.parts.wal.is_some() {
