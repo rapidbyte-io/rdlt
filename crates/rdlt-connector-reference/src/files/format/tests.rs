@@ -1301,6 +1301,12 @@ fn a_published_line_of_more_than_one_record_is_refused_under_its_code() {
             .unwrap_err();
         assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{lines:?}");
         assert_eq!(refused.code(), code, "{lines:?}: {refused}");
+        // The parser's error stays the refusal's cause.
+        let cause = std::error::Error::source(&refused).expect("a cause");
+        assert!(
+            cause.downcast_ref::<arrow_schema::ArrowError>().is_some(),
+            "{lines:?}"
+        );
     }
 }
 

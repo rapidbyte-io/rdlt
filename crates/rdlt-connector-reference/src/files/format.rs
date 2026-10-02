@@ -239,7 +239,9 @@ fn held(path: &std::path::Path, error: ArrowError) -> ConnectorError {
     match error {
         ArrowError::ParseError(_) => {
             let message = format!("reading {}: {error}", path.display());
-            ConnectorError::data(message).with_code(io::LINE_INVALID)
+            ConnectorError::data(message)
+                .with_code(io::LINE_INVALID)
+                .with_source(error)
         }
         error => decoded(path, error),
     }
