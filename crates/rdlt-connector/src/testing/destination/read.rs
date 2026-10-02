@@ -5,14 +5,12 @@
 mod tests;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{
-    BinaryViewType, ByteArrayType, ByteViewType, GenericBinaryType, GenericStringType, Int64Type,
-    StringViewType,
-};
+use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::DataType;
 
 use super::Bench;
+use crate::cost::Rendering;
 use crate::destination::TableRef;
 use crate::testing::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS};
 use crate::testing::{Reason, Violation, bounded_call};
@@ -31,7 +29,8 @@ impl Bench<'_> {
 
 impl Published {
     /// `batches`, when they hold at most [`PUBLISHED_ROWS`] rows in columns of the kinds
-    /// certification writes, which expand to at most [`PUBLISHED_BYTES`].
+    /// certification writes, which expand to at most [`PUBLISHED_BYTES`] once each row holds its
+    /// own value.
     pub(super) fn admit(batches: Vec<RecordBatch>) -> Result<Self, Violation> {
         let mut rows = 0_usize;
         for batch in &batches {
@@ -43,25 +42,28 @@ impl Published {
                  certification reads of a table"
             )));
         }
-        let mut bytes = 0_usize;
+        // What the rows become once each holds its own value, as the cost model measures it.
+        let (rendering, limit) = (Rendering::native(), count(PUBLISHED_BYTES));
+        let mut bytes = 0_u64;
         for batch in &batches {
             let schema = batch.schema();
             for (field, column) in schema.fields().iter().zip(batch.columns()) {
-                let Some(widest) = widest(column.as_ref()) else {
+                if !flat(column.as_ref()) {
                     return Err(Violation::from(format_args!(
                         "column `{}` read back as {}, which no column certification writes is",
                         field.name(),
                         column.data_type()
                     )));
-                };
-                bytes = bytes.saturating_add(widest.saturating_mul(batch.num_rows()));
+                }
             }
-        }
-        if bytes > PUBLISHED_BYTES {
-            return Err(Violation::from(format_args!(
-                "the destination read back rows that expand to {bytes} bytes, more than the \
-                 {PUBLISHED_BYTES} certification reads of a table"
-            )));
+            let expanded = rendering.expanded(batch, 0..batch.num_rows(), limit);
+            bytes = bytes.saturating_add(expanded);
+            if bytes > limit {
+                return Err(Violation::from(format_args!(
+                    "the destination read back rows that expand to more than the \
+                     {PUBLISHED_BYTES} bytes certification reads of a table"
+                )));
+            }
         }
         Ok(Self(batches))
     }
@@ -204,48 +206,32 @@ fn reads(from: &DataType, to: &DataType) -> bool {
     }
 }
 
-/// The bytes the widest value of `column` takes, where `column` is of a kind certification
-/// writes: a scalar, or scalars one dictionary or one run of ends encodes; none otherwise, as for
-/// nested columns and binary values of no width.
-fn widest(column: &dyn Array) -> Option<usize> {
+/// Whether `column` is of a kind certification writes: a scalar, or scalars one dictionary or
+/// one run of ends encodes; not a nested column, nor binary values of no width.
+fn flat(column: &dyn Array) -> bool {
     match column.data_type() {
-        DataType::Dictionary(_, _) => scalar(column.as_any_dictionary().values().as_ref()),
-        DataType::RunEndEncoded(_, _) => {
-            let values = column.to_data().child_data().get(1).cloned()?;
-            scalar(arrow_array::make_array(values).as_ref())
-        }
-        _ => scalar(column),
+        DataType::Dictionary(_, values) => scalar(values),
+        DataType::RunEndEncoded(_, values) => scalar(values.data_type()),
+        plain => scalar(plain),
     }
 }
 
-/// The bytes the widest value of `values` takes, where it holds scalars.
-fn scalar(values: &dyn Array) -> Option<usize> {
-    let kind = values.data_type();
-    if let Some(width) = kind.primitive_width() {
-        return Some(width);
-    }
+/// Whether values of `kind` are scalars certification writes.
+fn scalar(kind: &DataType) -> bool {
     match kind {
-        DataType::Null | DataType::Boolean => Some(1),
-        DataType::FixedSizeBinary(width) => usize::try_from(*width).ok().filter(|width| *width > 0),
-        DataType::Utf8 => Some(longest::<GenericStringType<i32>>(values)),
-        DataType::LargeUtf8 => Some(longest::<GenericStringType<i64>>(values)),
-        DataType::Binary => Some(longest::<GenericBinaryType<i32>>(values)),
-        DataType::LargeBinary => Some(longest::<GenericBinaryType<i64>>(values)),
-        DataType::Utf8View => Some(longest_view::<StringViewType>(values)),
-        DataType::BinaryView => Some(longest_view::<BinaryViewType>(values)),
-        _ => None,
+        DataType::Null
+        | DataType::Boolean
+        | DataType::Utf8
+        | DataType::LargeUtf8
+        | DataType::Binary
+        | DataType::LargeBinary
+        | DataType::Utf8View
+        | DataType::BinaryView => true,
+        DataType::FixedSizeBinary(width) => *width > 0,
+        kind => kind.primitive_width().is_some(),
     }
 }
 
-/// The length of the longest value of `values`, strings or bytes held by offsets.
-fn longest<T: ByteArrayType>(values: &dyn Array) -> usize {
-    let lengths = values.as_bytes::<T>().offsets().lengths();
-    lengths.max().unwrap_or_default()
-}
-
-/// The length of the longest value of `values`, strings or bytes held by views.
-fn longest_view<T: ByteViewType>(values: &dyn Array) -> usize {
-    let lengths = values.as_byte_view::<T>().lengths();
-    let longest = lengths.max().unwrap_or_default();
-    usize::try_from(longest).unwrap_or(usize::MAX)
+fn count(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }

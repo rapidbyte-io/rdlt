@@ -22,8 +22,8 @@ pub(super) const RESUME_SAMPLES: usize = 5;
 /// and a read-back of more fails it before any row is expanded.
 pub(super) const PUBLISHED_ROWS: usize = 10_000;
 
-/// Bytes the columns a clause reads of one read-back may take once each row holds its own value,
-/// whatever encoding shared it: the rows times each column's widest value, summed.
+/// Bytes one read-back may take once each row holds its own value, whatever encoding shared it:
+/// what its batches expand to, as the cost model measures a batch whose values stay as they are.
 pub(super) const PUBLISHED_BYTES: usize = 16 << 20;
 
 /// Bytes a source clause holds of what its reads send, all its reads together: each push's
