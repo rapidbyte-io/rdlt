@@ -14,8 +14,17 @@ use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
 
 use super::fake::{Fake, Fault};
 
-/// A body of one gRPC message of `payload` and the trailers of a call that succeeded.
+/// A body of one gRPC message, prefix and all, and the trailers of a call that succeeded.
 struct Raw(Option<Bytes>, bool);
+
+/// `payload` as a gRPC message, its prefix before it.
+fn framed(payload: &[u8]) -> Bytes {
+    let mut message = Vec::with_capacity(payload.len() + 5);
+    message.put_u8(0);
+    message.put_u32(u32::try_from(payload.len()).expect("a payload of a message"));
+    message.extend_from_slice(payload);
+    message.into()
+}
 
 impl http_body::Body for Raw {
     type Data = Bytes;
@@ -25,12 +34,8 @@ impl http_body::Body for Raw {
         mut self: Pin<&mut Self>,
         _context: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Status>>> {
-        if let Some(payload) = self.0.take() {
-            let mut message = Vec::with_capacity(payload.len() + 5);
-            message.put_u8(0);
-            message.put_u32(u32::try_from(payload.len()).expect("a payload of a message"));
-            message.extend_from_slice(&payload);
-            return Poll::Ready(Some(Ok(http_body::Frame::data(message.into()))));
+        if let Some(message) = self.0.take() {
+            return Poll::Ready(Some(Ok(http_body::Frame::data(message))));
         }
         if std::mem::take(&mut self.1) {
             let mut trailers = http::HeaderMap::new();
@@ -43,8 +48,10 @@ impl http_body::Body for Raw {
 
 /// The host's end of a socket whose other end serves the fake connector breaking the protocol
 /// as `fault` says, but for `method`, which it answers with a message of `payload`.
-pub(crate) fn answering(fault: Fault, method: &'static str, payload: Bytes) -> UnixStream {
+pub(crate) fn answering(fault: Fault, method: &'static str, payload: &[u8]) -> UnixStream {
     let (host, connector) = UnixStream::pair().expect("a socket pair");
+    // Framed now, so what the host holds of it is the host's own.
+    let payload = framed(payload);
     let server = ConnectorServer::new(Fake(fault));
     let service = tower::service_fn(move |request: http::Request<hyper::body::Incoming>| {
         let mut server = server.clone();
@@ -122,4 +129,30 @@ pub(crate) async fn called(io: UnixStream, method: &str, payload: Bytes) -> Resu
         .unary(tonic::Request::new(payload), path, Bytewise)
         .await
         .map(tonic::Response::into_inner)
+}
+
+/// Calls `method`, a streaming method, of the connector served on the other end of `io` with one
+/// message of `payload`, and returns how its first answer ends.
+pub(crate) async fn streamed(
+    io: UnixStream,
+    method: &str,
+    payload: Bytes,
+) -> Result<Bytes, Status> {
+    let mut client = tonic::client::Grpc::new(super::raw_channel(io).await);
+    client
+        .ready()
+        .await
+        .map_err(|error| Status::unknown(error.to_string()))?;
+    let path = format!("/rdlt.connector.v1.Connector/{method}")
+        .parse()
+        .expect("a path");
+    let messages = tokio_stream::iter([payload]);
+    let mut answers = client
+        .streaming(tonic::Request::new(messages), path, Bytewise)
+        .await?
+        .into_inner();
+    answers
+        .message()
+        .await?
+        .ok_or_else(|| Status::unknown("the call ended"))
 }

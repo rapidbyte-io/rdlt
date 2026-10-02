@@ -36,7 +36,9 @@ impl Classed {
     /// `service`, each request held to `limits` for its class, and each answer within the
     /// protocol's largest message.
     pub(super) fn new(service: Service, limits: &Limits) -> Self {
-        let bytes = limits.message_bytes();
+        // Each request is held to its class's bound before tonic sees it: tonic takes the
+        // largest of any class, its operator's state limit among them.
+        let bytes = limits.largest();
         Self {
             server: ConnectorServer::new(service)
                 .max_decoding_message_size(bytes)

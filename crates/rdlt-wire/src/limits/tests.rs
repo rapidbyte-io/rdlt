@@ -136,7 +136,7 @@ fn the_credit_window_and_a_messages_overhead_are_the_protocols() {
         frame_bytes: 10,
         ..Limits::default()
     };
-    assert_eq!(limits.message_bytes(), 10 + 65_536);
+    assert_eq!(limits.decoding(super::Class::Data), 10 + 65_536);
 }
 
 /// The least limits a peer may set: each a sender cuts batches to at its protocol minimum.
@@ -352,27 +352,40 @@ fn each_class_of_message_is_decoded_within_its_own_limit() {
 fn each_class_of_message_may_hold_so_many_times_its_bytes_once_decoded() {
     use super::{Class, DECODED_PER_BYTE};
     let limits = Limits::default();
-    let times = |class| {
-        limits
-            .decoded(class)
-            .map(|decoded| decoded / limits.decoding(class))
-    };
+    let times = |class| limits.decoded(class) / limits.decoding(class);
     assert_eq!(DECODED_PER_BYTE, 16);
     let expected = [
-        (Class::Handshake, Some(4)),
-        (Class::Config, Some(4)),
-        (Class::Cursor, Some(4)),
-        (Class::State, Some(8)),
-        (Class::Control, Some(16)),
-        (Class::Catalog, Some(16)),
-        (Class::Schema, Some(16)),
-        (Class::Data, None),
+        (Class::Handshake, 4),
+        (Class::Config, 4),
+        (Class::Cursor, 4),
+        (Class::State, 8),
+        (Class::Control, 16),
+        (Class::Catalog, 16),
+        (Class::Schema, 16),
+        (Class::Data, 2),
     ];
     for (class, expected) in expected {
         assert_eq!(times(class), expected, "{class:?}");
     }
-    assert_eq!(limits.decoded(Class::State), Some(128 << 20));
-    assert_eq!(limits.decoded(Class::Catalog), Some(64 << 20));
+    assert_eq!(limits.decoded(Class::State), 128 << 20);
+    assert_eq!(limits.decoded(Class::Catalog), 64 << 20);
+}
+
+#[test]
+fn the_largest_message_is_the_largest_of_any_class() {
+    use super::Class;
+    let limits = Limits::default();
+    assert_eq!(limits.largest(), limits.decoding(Class::Data));
+    let state = Limits {
+        state_bytes: 80 << 20,
+        ..Limits::default()
+    };
+    assert_eq!(state.largest(), 80 << 20);
+    let handshake = Limits {
+        frame_bytes: 1,
+        ..Limits::default()
+    };
+    assert_eq!(handshake.largest(), handshake.decoding(Class::State));
 }
 
 #[test]

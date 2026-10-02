@@ -554,3 +554,82 @@ async fn a_credit_of_no_bytes_is_refused() {
         .expect_err("the write is refused");
     assert_eq!(error.code(), Some("invalid_message"));
 }
+
+/// Limits whose largest message is a frame of the protocol's least, so a few writes' frames fill
+/// a served connection's window.
+fn framed() -> Limits {
+    Limits {
+        frame_bytes: MIN_FRAME_BYTES,
+        catalog_bytes: 1 << 20,
+        state_bytes: 1 << 20,
+        config_bytes: 1 << 20,
+        cursor_bytes: 1 << 20,
+        schema_bytes: 1 << 20,
+        ..Limits::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_taken() {
+    use rdlt_connector::{CommitMeta, CommitSeq, SegmentSet};
+    let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
+    let io = served_within(served, framed());
+    let options = Options {
+        limits: framed(),
+        ..Options::default()
+    };
+    let config = serde_json::json!({ "store": "five_writers" });
+    let connection = Connection::connect(io, Role::Destination, &config, options)
+        .await
+        .expect("the destination handshakes");
+    let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
+    let context = OpenContext {
+        pipeline: PipelineId::parse("five").expect("a valid pipeline id"),
+        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let mut opened = destination.open(&context).await.expect("the session opens");
+    let mut writers = Vec::new();
+    for _ in 0..5 {
+        writers.push(
+            opened
+                .session
+                .writer(&table())
+                .await
+                .expect("a writer opens"),
+        );
+    }
+    // Each batch takes a frame of nearly the frame limit: five of them, all in flight, pass the
+    // window of four, and the fifth waits for room rather than failing.
+    let rows = i64::try_from(MIN_FRAME_BYTES * 15 / 16 / 8).unwrap();
+    let mut writing = tokio::task::JoinSet::new();
+    for (index, mut writer) in writers.into_iter().enumerate() {
+        let segment = SegmentId(u64::try_from(index).unwrap() + 1);
+        writing.spawn(async move {
+            writer.write(segment, ids(rows)).await?;
+            writer.flush().await
+        });
+    }
+    // A commit behind the writes, on the same connection, is taken too.
+    let meta = CommitMeta {
+        load_id: context.load_id,
+        commit_seq: CommitSeq::FIRST,
+        epoch: opened.epoch,
+        segments: SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+    };
+    let bounded = Duration::from_secs(60);
+    let committed = tokio::time::timeout(bounded, opened.session.commit(&meta)).await;
+    committed
+        .expect("the commit is not held for ever")
+        .expect("the commit is taken");
+    let written = tokio::time::timeout(bounded, writing.join_all())
+        .await
+        .expect("no writer is held for ever");
+    assert_eq!(written.len(), 5);
+    for stats in written {
+        assert!(stats.expect("each write is taken").rows > 0);
+    }
+}

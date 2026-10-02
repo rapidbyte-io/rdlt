@@ -69,6 +69,7 @@ nix = { workspace = true, optional = true, features = ["process", "resource", "s
 rdlt-adopt = { workspace = true, optional = true }
 
 [dev-dependencies]
+http-body.workspace = true
 proptest.workspace = true
 regex.workspace = true
 prost.workspace = true
