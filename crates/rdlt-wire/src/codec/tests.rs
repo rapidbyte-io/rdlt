@@ -772,3 +772,120 @@ fn a_schema_sent_again_forgets_the_dictionaries_before_it() {
     // The batch's keys name a dictionary the decoder no longer holds.
     assert!(decoder.frame(&frames[1]).is_err());
 }
+
+/// A batch of dictionary columns, each of one row keyed into its one value.
+fn tagged(columns: &[(&str, &str)]) -> RecordBatch {
+    let keyed = |value: &str| -> ArrayRef {
+        let values = Arc::new(StringArray::from(vec![value]));
+        Arc::new(DictionaryArray::<Int8Type>::try_new(vec![0].into(), values).unwrap())
+    };
+    RecordBatch::try_from_iter(columns.iter().map(|(name, value)| (*name, keyed(value)))).unwrap()
+}
+
+/// The dictionary ids a schema message gives its fields, in order.
+fn dictionary_ids(message: &[u8]) -> Option<Vec<Option<i64>>> {
+    let message = arrow_ipc::root_as_message(message).ok()?;
+    let schema = arrow_ipc::convert::fb_to_schema(message.header_as_schema()?);
+    #[expect(deprecated, reason = "the ids a message names are read nowhere else")]
+    let ids = schema
+        .fields()
+        .iter()
+        .map(|field| field.dict_id())
+        .collect();
+    Some(ids)
+}
+
+/// Two schema messages of columns `a` and `b`, alike but for their dictionaries' ids: 1 and 2
+/// in the first, exchanged in the second.
+fn exchanged() -> (Bytes, Bytes) {
+    use arrow_ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
+    let batch = tagged(&[("a", "banana"), ("b", "apple")]);
+    let mut tracker = DictionaryTracker::new(false);
+    tracker.next_dict_id();
+    let first = IpcDataGenerator {}
+        .schema_to_bytes_with_dictionary_tracker(
+            &batch.schema(),
+            &mut tracker,
+            &IpcWriteOptions::default(),
+        )
+        .ipc_message;
+    assert_eq!(dictionary_ids(&first), Some(vec![Some(1), Some(2)]));
+    let (one, two) = (1_i64.to_le_bytes(), 2_i64.to_le_bytes());
+    let places = |id: [u8; 8]| -> Vec<usize> {
+        let windows = first.windows(8).enumerate();
+        let found = windows.filter(|(_, window)| *window == id);
+        found.map(|(place, _)| place).collect()
+    };
+    for (i, j) in places(one)
+        .into_iter()
+        .flat_map(|i| places(two).into_iter().map(move |j| (i, j)))
+    {
+        let mut patched = first.clone();
+        patched[i..i + 8].copy_from_slice(&two);
+        patched[j..j + 8].copy_from_slice(&one);
+        if dictionary_ids(&patched) == Some(vec![Some(2), Some(1)]) {
+            return (Bytes::from(first), Bytes::from(patched));
+        }
+    }
+    panic!("the ids are in the message");
+}
+
+/// Frames of dictionaries 1 and 2, of "banana" and of "apple", and of a batch of two columns
+/// of keys.
+fn exchanged_frames() -> [IpcFrame; 3] {
+    use arrow_ipc::writer::{
+        DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
+    };
+    let (generator, options) = (IpcDataGenerator {}, IpcWriteOptions::default());
+    let encoded = |batch: &RecordBatch| {
+        let mut tracker = DictionaryTracker::new(false);
+        generator.schema_to_bytes_with_dictionary_tracker(&batch.schema(), &mut tracker, &options);
+        let mut context = IpcWriteContext::default();
+        generator
+            .encode(batch, &mut tracker, &options, &mut context)
+            .unwrap()
+    };
+    let frame = |encoded: &arrow_ipc::writer::EncodedData| IpcFrame {
+        header: Bytes::from(encoded.ipc_message.clone()),
+        body: Bytes::from(encoded.arrow_data.clone()),
+    };
+    // Dictionaries are numbered from zero by place: of three columns, the last two are 1 and 2.
+    let (dictionaries, _) = encoded(&tagged(&[("x", "x"), ("a", "banana"), ("b", "apple")]));
+    let (_, keys) = encoded(&tagged(&[("a", "banana"), ("b", "apple")]));
+    [
+        frame(&dictionaries[1]),
+        frame(&dictionaries[2]),
+        frame(&keys),
+    ]
+}
+
+#[test]
+fn a_schema_naming_other_dictionary_ids_is_not_the_schema_held() {
+    let (first, second) = exchanged();
+    let [banana, apple, keys] = exchanged_frames();
+    let read = |decoder: &mut Decoder| {
+        assert_eq!(decoder.frame(&banana).unwrap(), None);
+        assert_eq!(decoder.frame(&apple).unwrap(), None);
+        let batch = decoder.frame(&keys).unwrap().unwrap();
+        let text = |column: usize| {
+            let keys = batch.column(column).as_dictionary::<Int8Type>();
+            keys.values().as_string::<i32>().value(0).to_owned()
+        };
+        (text(0), text(1))
+    };
+    // A decoder that saw only the second schema: dictionary 2 is a's, 1 is b's.
+    let mut alone = Decoder::new(Limits::default());
+    alone.schema(&second).unwrap();
+    let expected = read(&mut alone);
+    assert_eq!(expected, ("apple".to_owned(), "banana".to_owned()));
+    // A decoder that saw the first schema before it.
+    let mut decoder = Decoder::new(Limits::default());
+    let held = decoder.schema(&first).unwrap();
+    let again = decoder.schema(&second).unwrap();
+    // The schemas are equal but for the ids, which decide whose dictionary each is.
+    assert_eq!(held, again);
+    assert!(!Arc::ptr_eq(&held, &again));
+    assert_eq!(read(&mut decoder), expected);
+    // The same message again is the schema held.
+    assert!(Arc::ptr_eq(&again, &decoder.schema(&second).unwrap()));
+}
