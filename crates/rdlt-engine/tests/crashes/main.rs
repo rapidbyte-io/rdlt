@@ -282,3 +282,21 @@ fn a_log_read_again_is_told_every_position_through_a_crash_either_side_of_tellin
         }
     }
 }
+
+#[test]
+fn a_partition_that_ends_done_is_told_the_position_a_crash_kept_from_its_source() {
+    let scenario = scenarios::log_ending_done();
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let (status, commits) = run(&scenario.write(dir.path()), None);
+    assert!(
+        status.success(),
+        "{}: a clean run ended {status}",
+        scenario.name
+    );
+    // The commit before the last records the checkpoint, and the last the partition done.
+    let checkpoint = commits.expect("a run to its end reports its commits") - 1;
+    for point in ["engine.ack.before", "engine.ack.after"] {
+        let crashed = at_commit(&scenario, point, checkpoint);
+        assert!(crashed, "{}: {point} crashed no run", scenario.name);
+    }
+}

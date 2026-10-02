@@ -132,6 +132,41 @@ pub(crate) fn replayable_log() -> Scenario {
     log_of::<50, true>("a log read again")
 }
 
+/// A log of one partition of eighteen messages read to its end, in batches of eight with a
+/// checkpoint every other batch: its first commit records the checkpoint at sixteen, and its
+/// last, of the two messages no checkpoint follows, records the partition done.
+pub(crate) fn log_ending_done() -> Scenario {
+    Scenario {
+        logged: false,
+        completes: false,
+        name: "a log whose partition ends done",
+        config: |dir| {
+            let source = json!({ "kind": "log", "config": {
+                "seed": 1, "group_path": dir.join("events.group"),
+                "streams": [{ "name": "events", "partitions": 1, "messages": 18, "bounded": true,
+                              "batch_rows": 8, "checkpoint_batches": 2 }],
+            }});
+            let stream = json!({ "name": "events", "read": "incremental", "write": "append" });
+            harness(dir, &stream, &source, &sqlite_at(dir))
+        },
+        verify: |dir, case| {
+            let batches = sqlite::published(dir.join("out.db"), "events").expect("the table reads");
+            let mut offsets: Vec<Option<i64>> = batches
+                .iter()
+                .flat_map(|batch| ints(batch, "offset"))
+                .collect();
+            offsets.sort_unstable();
+            assert_eq!(offsets, (0..18).map(Some).collect::<Vec<_>>(), "{case}");
+            // The commit that records the partition done has no checkpoint of its own, and
+            // tells the source the position the run that crashed never told it.
+            let kept = std::fs::read(dir.join("events.group")).expect("the group file reads");
+            let kept: Vec<(String, String, i64)> =
+                serde_json::from_slice(&kept).expect("the group file lists its positions");
+            assert_eq!(kept, [("events".to_owned(), "p0".to_owned(), 16)], "{case}");
+        },
+    }
+}
+
 /// A log named `name` of two partitions of `MESSAGES` messages, appended to SQLite; where not
 /// `REPLAYABLE` it forgets what it committed, and its runs keep a write-ahead log.
 fn log_of<const MESSAGES: i64, const REPLAYABLE: bool>(name: &'static str) -> Scenario {

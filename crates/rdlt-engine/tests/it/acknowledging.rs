@@ -461,31 +461,87 @@ async fn a_connector_started_again_before_it_hears_of_a_commit_costs_one_attempt
 
 #[tokio::test(start_paused = true)]
 async fn a_source_that_refuses_every_report_fails_the_run_once_no_attempt_is_left() {
-    let (script, source) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
-        .connect("ack_refused")
-        .await;
+    let base = tempfile::tempdir().expect("a temporary directory");
+    for replayable in [true, false] {
+        let name = format!("ack_refused_{replayable}");
+        let mut events = ScriptStream::new("events", 1, 10, 5);
+        events.replayable = replayable;
+        let (script, source) = Script::new(vec![events]).connect(&name).await;
+        script.limited_acks.store(usize::MAX, Ordering::SeqCst);
+        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join(&name)));
+        let engine = logging_engine(retrying(3).commit(commit_all()), store);
+        let plan = incremental(&name.replace('_', "-"));
+        let running = engine.run(plan, source, memory(&name).await);
+        // Bounded on the paused clock: a run that retried without end would fail here at once.
+        let outcome = tokio::time::timeout(Duration::from_secs(600), running).await;
+        let outcome = outcome.expect("the run ends once no attempt is left");
+        // The rows were read by the first attempt. Each attempt reported their position and
+        // was refused; the two after it read nothing new, so none reset the count of failures.
+        assert_eq!(outcome.report.status, RunStatus::Failed, "{name}");
+        assert_eq!(outcome.report.attempted, 3, "{name}");
+        assert!(script.acks.lock().is_empty(), "{name}");
+        let left = script.limited_acks.load(Ordering::SeqCst);
+        assert_eq!(left, usize::MAX - 3, "{name}");
+        let error = outcome.error.expect("the run failed");
+        assert_eq!(error.kind(), ErrorKind::Source, "{name}");
+        assert!(error.is_retryable(), "{name}");
+        let stream = error.stream().map(ToString::to_string);
+        assert_eq!(stream.as_deref(), Some("events"), "{name}");
+    }
+}
+
+/// A stream of fifteen rows in batches of five, with a checkpoint after the second batch and
+/// none after the last: its partition ends done after its last checkpoint.
+fn ending_past_its_checkpoint(replayable: bool) -> ScriptStream {
+    let mut events = ScriptStream::new("events", 1, 15, 5);
+    events.checkpoint_every = 2;
+    events.final_checkpoint = false;
+    events.replayable = replayable;
+    events
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_report_refused_is_made_again_though_its_partition_then_ends_done() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    for replayable in [true, false] {
+        let name = format!("ack_done_{replayable}");
+        let events = ending_past_its_checkpoint(replayable);
+        let (script, source) = Script::new(vec![events]).connect(&name).await;
+        // The report of the checkpoint at ten is refused.
+        script.limited_acks.store(1, Ordering::SeqCst);
+        let each = rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a valid policy");
+        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join(&name)));
+        let engine = logging_engine(retrying(3).commit(each), store);
+        let plan = incremental(&name.replace('_', "-"));
+        let outcome = engine.run(plan, source, memory(&name).await).await;
+        assert_eq!(outcome.report.status, RunStatus::Succeeded, "{name}");
+        assert_eq!(outcome.report.attempted, 2, "{name}");
+        // The commit that ends the partition has no checkpoint of its own to report, and tells
+        // the source the position it stood at, which the refused report was of.
+        assert_eq!(heard(&script), [("p0".to_owned(), 10)], "{name}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_that_refuses_every_report_is_told_by_each_attempt_until_its_partition_is_done() {
+    let events = ending_past_its_checkpoint(true);
+    let (script, source) = Script::new(vec![events]).connect("ack_done_refused").await;
     script.limited_acks.store(usize::MAX, Ordering::SeqCst);
-    let running = engine(retrying(3).commit(commit_all())).run(
-        incremental("ack-refused"),
+    let each = rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a valid policy");
+    let running = engine(retrying(3).commit(each)).run(
+        incremental("ack-done-refused"),
         source,
-        memory("ack_refused").await,
+        memory("ack_done_refused").await,
     );
-    // Bounded on the paused clock: a run that retried without end would fail here at once.
     let outcome = tokio::time::timeout(Duration::from_secs(600), running).await;
-    let outcome = outcome.expect("the run ends once no attempt is left");
-    // The rows landed in the first attempt. Each attempt reported their position and was
-    // refused; the two after it committed nothing new, so none reset the count of failures.
-    assert_eq!(outcome.report.status, RunStatus::Failed);
-    assert_eq!((outcome.report.attempted, outcome.report.rows), (3, 10));
+    let outcome = outcome.expect("the run ends");
+    // The first attempt reports the checkpoint and the second, which ends the partition, where
+    // it stood: both are refused and fail. Each landed rows, so neither is counted against the
+    // run, and the third finds the partition done, which state holds no cursor for.
+    assert_eq!(outcome.report.attempted, 3);
+    assert_eq!(outcome.report.rows, 15);
     assert!(script.acks.lock().is_empty());
-    assert_eq!(script.limited_acks.load(Ordering::SeqCst), usize::MAX - 3);
-    let error = outcome.error.expect("the run failed");
-    assert_eq!(error.kind(), ErrorKind::Source);
-    assert!(error.is_retryable());
-    assert_eq!(
-        error.stream().map(ToString::to_string).as_deref(),
-        Some("events")
-    );
+    assert_eq!(script.limited_acks.load(Ordering::SeqCst), usize::MAX - 2);
 }
 
 #[tokio::test(start_paused = true)]
