@@ -429,6 +429,31 @@ pub(crate) mod bubblewrap {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_kill_of_sandboxed_connectors_lands_on_each_and_lets_none_stop_as_if_asked() {
+        let Some(local) = sandboxed().await else {
+            return;
+        };
+        // A connector outlives its launcher for a moment: were its input closed then, it would
+        // end as a stopped connector does, and its host would close the connection itself.
+        let kills = Kills::new();
+        let killing = local.kills(&kills);
+        let mut sources = Vec::new();
+        for _ in 0..16 {
+            let placed = killing.source(&scripted(), &serde_json::json!({})).await;
+            sources.push(placed.expect("the connector starts").connector);
+        }
+        kills.kill();
+        for _ in 0..ENDING.as_millis() / 20 {
+            if kills.landed() == 16 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(kills.landed(), 16, "a kill did not land on every connector");
+        drop(sources);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_sandboxed_connector_that_is_killed_ends_at_once_with_everything_it_started() {
         let Some(local) = sandboxed().await else {
             return;
@@ -545,8 +570,13 @@ pub(crate) mod bubblewrap {
         let binary = dir.path().join("rdlt-connector-scripted");
         std::fs::copy(example("scripted_connector"), &binary).expect("the binary copies");
         let kills = Kills::new();
+        let spawns = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = Arc::clone(&spawns);
         let source = local
             .kills(&kills)
+            .on_spawn(move |_| {
+                counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
             .source(&scripted().path(&binary), &serde_json::json!({}))
             .await
             .expect("the connector starts")
@@ -557,19 +587,14 @@ pub(crate) mod bubblewrap {
         std::fs::copy(&binary, &upgrade).expect("the binary copies");
         std::fs::rename(&upgrade, &binary).expect("the upgrade takes the name");
         kills.kill();
-        // Asked only once the kill has landed: before, the connector killed may answer still.
+        let spawned = || spawns.load(std::sync::atomic::Ordering::SeqCst);
+        // The connector killed may answer until it is gone; no other is ever spawned.
         for _ in 0..ENDING.as_millis() / 20 {
-            if kills.landed() > 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert_eq!(kills.landed(), 1, "the kill never landed");
-        for _ in 0..100 {
-            let Err(error) = source.check().await else {
-                panic!("a replaced binary was spawned again");
-            };
-            if error.code() == Some("connector_changed") {
+            let checked = source.check().await;
+            assert_eq!(spawned(), 1, "a replaced binary was spawned again");
+            if let Err(error) = checked
+                && error.code() == Some("connector_changed")
+            {
                 let replaced = std::error::Error::source(&error)
                     .and_then(|source| source.downcast_ref::<ProviderError>())
                     .map(ProviderError::code);
