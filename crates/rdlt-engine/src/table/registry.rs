@@ -19,7 +19,7 @@ use super::model::Model;
 use super::resolve::{Change, Incoming, Resolution, Resolver, Route};
 use super::session::SharedSession;
 use super::{LoweringPlan, TableView};
-use crate::error::{Error, Side};
+use crate::error::{Error, ErrorKind, Side};
 use crate::naming::Naming;
 use crate::normalize::Shape;
 
@@ -113,8 +113,19 @@ impl Tables {
     }
 
     /// The same tables, over the tables `state` records.
-    #[must_use]
-    pub(crate) fn committed(mut self, state: &PipelineState) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// `state_invalid`, a Destination error, where two tables are recorded under one identifier:
+    /// writes and drops of one would reach the other.
+    pub(crate) fn committed(mut self, state: &PipelineState) -> Result<Self, Error> {
+        if let Some(name) = shared(state).first() {
+            return Err(Error::new(
+                ErrorKind::Destination,
+                format!("reading pipeline state: two tables are recorded under the name {name}"),
+            )
+            .with_code("state_invalid"));
+        }
         self.taken = Mutex::new(
             state
                 .tables
@@ -123,7 +134,7 @@ impl Tables {
                 .collect(),
         );
         self.committed = state.tables.clone();
-        self
+        Ok(self)
     }
 
     /// The session the tables change through.
@@ -378,6 +389,17 @@ impl Tables {
             self.release_records(*index, *revision);
         }
     }
+}
+
+/// The identifiers `state` records for more than one table.
+pub(crate) fn shared(state: &PipelineState) -> BTreeSet<&str> {
+    let mut recorded = BTreeSet::new();
+    state
+        .tables
+        .values()
+        .filter_map(|table| table.physical.as_deref())
+        .filter(|physical| !recorded.insert(*physical))
+        .collect()
 }
 
 /// The destination changes that take `before` to `after`: the whole table for its first version,

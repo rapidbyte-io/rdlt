@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectContext, ConnectorError, ConnectorErrorKind,
     Destination, DestinationSession, DestinationWriter, OpenContext, OpenedSession, ReadMode,
-    Receipt, Source, TableChange, TableRef, source_factory,
+    Receipt, Source, StateEntry, StateRecord, TableChange, TablePath, TableRef, source_factory,
 };
 use rdlt_connector_reference::LogSource;
 use rdlt_connector_reference::changes::expected;
@@ -646,10 +646,11 @@ async fn a_reset_charges_what_decoding_its_connectors_answers_holds() {
     assert_eq!(*charged.lock(), [true]);
 }
 
-/// A destination whose state was written by the previous format of state records.
-struct Previous(Arc<dyn Destination>);
+/// A destination whose opened state records are rewritten as a test's function says, as a
+/// destination whose state was written otherwise would hold them.
+struct Rewritten(Arc<dyn Destination>, fn(&mut Vec<StateRecord>));
 
-impl Destination for Previous {
+impl Destination for Rewritten {
     fn capabilities(&self) -> &Capabilities {
         self.0.capabilities()
     }
@@ -664,14 +665,19 @@ impl Destination for Previous {
     ) -> BoxFuture<'a, rdlt_connector::Result<OpenedSession>> {
         Box::pin(async move {
             let mut opened = self.0.open(context).await?;
-            for record in &mut opened.state {
-                let mut value: serde_json::Value =
-                    serde_json::from_slice(&record.value).expect("a record is JSON");
-                value["v"] = json!(1);
-                record.value = serde_json::to_vec(&value).expect("JSON encodes").into();
-            }
+            (self.1)(&mut opened.state);
             Ok(opened)
         })
+    }
+}
+
+/// `records` as the previous format of state records would hold them.
+fn previous(records: &mut Vec<StateRecord>) {
+    for record in records {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&record.value).expect("a record is JSON");
+        value["v"] = json!(1);
+        record.value = serde_json::to_vec(&value).expect("JSON encodes").into();
     }
 }
 
@@ -680,7 +686,7 @@ async fn state_of_the_previous_format_is_refused_by_a_run_and_a_reset() {
     let store = "previous_format";
     load(Target::Memory, store, store).await;
     let previous: Arc<dyn Destination> =
-        Arc::new(Previous(Target::Memory.destination(store).await));
+        Arc::new(Rewritten(Target::Memory.destination(store).await, previous));
     let plan = pipeline(store, [stream("events").read(ReadMode::Incremental)]);
     let outcome = engine(commit_every(16))
         .run(plan, log(store).await, Arc::clone(&previous))
@@ -700,4 +706,72 @@ async fn state_of_the_previous_format_is_refused_by_a_run_and_a_reset() {
         .await
         .expect_err("a reset reads the state it resets");
     assert_eq!(refused.code(), Some("state_invalid"));
+}
+
+/// `records` with the table of stream `b` recorded under the identifier of stream `a`'s.
+fn shared(records: &mut Vec<StateRecord>) {
+    let b = TablePath::new(["b"]).expect("a valid path");
+    for record in records {
+        if let Ok(StateEntry::Names { table, names, .. }) = StateEntry::from_record(record)
+            && table == b
+        {
+            let physical = "a".into();
+            *record = StateEntry::Names {
+                table,
+                physical,
+                names,
+            }
+            .to_record();
+        }
+    }
+}
+
+/// Loads one row into each of the tables of streams `a` and `b` in `store`.
+async fn two_streams(store: &str) {
+    let streams = vec![
+        BatchStream::json("a", &[r#"{"id":1}"#]),
+        BatchStream::json("b", &[r#"{"id":2}"#]),
+    ];
+    let source = batches(store, streams).await;
+    let plan = pipeline(store, [stream("a"), stream("b")]);
+    let outcome = engine(commit_every(16))
+        .run(plan, source, memory(store).await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn two_tables_recorded_under_one_identifier_are_refused_at_open() {
+    let store = "shared_open";
+    two_streams(store).await;
+    let source = batches(store, vec![BatchStream::json("b", &[r#"{"id":3}"#])]).await;
+    let destination: Arc<dyn Destination> = Arc::new(Rewritten(memory(store).await, shared));
+    let outcome = engine(commit_every(16))
+        .run(pipeline(store, [stream("b")]), source, destination)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    assert_eq!(
+        outcome.error.expect("the run fails").code(),
+        Some("state_invalid")
+    );
+    assert_eq!(published_ids(store, "a"), [1]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reset_drops_no_table_another_stream_records() {
+    let store = "shared_reset";
+    two_streams(store).await;
+    let source = batches(store, Vec::new()).await;
+    let destination: Arc<dyn Destination> = Arc::new(Rewritten(memory(store).await, shared));
+    let report = engine(commit_every(16))
+        .reset(store, &["b"], ResetScope::Tables, source, destination)
+        .await
+        .expect("the reset commits");
+    assert!(report.dropped.is_empty(), "{report:?}");
+    assert_eq!(published_ids(store, "a"), [1]);
 }

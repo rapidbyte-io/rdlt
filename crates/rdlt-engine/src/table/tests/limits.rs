@@ -14,6 +14,8 @@ fn recorded(model: &Model, version: u32) -> TableState {
         names: model.names.clone(),
         sequences: None,
         history: false,
+        key: Vec::new(),
+        change_time: None,
         exact: model.exact.clone(),
     }
 }
