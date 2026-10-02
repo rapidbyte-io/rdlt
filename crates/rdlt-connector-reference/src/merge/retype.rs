@@ -13,7 +13,7 @@ mod tests;
 
 use std::sync::Arc;
 
-use super::refused::{TYPE_UNCONVERTIBLE, VALUE_UNHOLDABLE, refused};
+use super::refused::{TYPE_UNCONVERTIBLE, VALUE_UNHOLDABLE, caused, refused};
 use arrow_array::cast::AsArray;
 use arrow_array::temporal_conversions::as_datetime;
 use arrow_array::timezone::Tz;
@@ -161,8 +161,10 @@ fn checked(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
     };
     // Every pair cast here keeps the values it takes: what it refuses is a value that does
     // not fit.
-    arrow_cast::cast_with_options(array, to, &options)
-        .map_err(|error| refused(VALUE_UNHOLDABLE, error.to_string()))
+    arrow_cast::cast_with_options(array, to, &options).map_err(|error| {
+        let message = format!("a value of {} does not fit {to}", array.data_type());
+        caused(VALUE_UNHOLDABLE, message, error)
+    })
 }
 
 fn inexact(from: &DataType, to: &DataType) -> ArrowError {

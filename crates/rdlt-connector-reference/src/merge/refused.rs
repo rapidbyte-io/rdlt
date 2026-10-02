@@ -31,6 +31,8 @@ pub(crate) const MERGE_KEY_INVALID: &str = "merge_key_invalid";
 struct Refused {
     code: &'static str,
     message: String,
+    /// What Arrow refused, where the refusal is of an operation of Arrow's.
+    cause: Option<ArrowError>,
 }
 
 impl std::fmt::Display for Refused {
@@ -39,13 +41,31 @@ impl std::fmt::Display for Refused {
     }
 }
 
-impl std::error::Error for Refused {}
+impl std::error::Error for Refused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_ref().map(|cause| cause as _)
+    }
+}
 
 /// The refusal coded `code` of what `message` says.
 pub(crate) fn refused(code: &'static str, message: impl Into<String>) -> ArrowError {
     ArrowError::ExternalError(Box::new(Refused {
         code,
         message: message.into(),
+        cause: None,
+    }))
+}
+
+/// The refusal coded `code` of what `message` says, which `cause`, Arrow's error, explains.
+pub(crate) fn caused(
+    code: &'static str,
+    message: impl Into<String>,
+    cause: ArrowError,
+) -> ArrowError {
+    ArrowError::ExternalError(Box::new(Refused {
+        code,
+        message: message.into(),
+        cause: Some(cause),
     }))
 }
 

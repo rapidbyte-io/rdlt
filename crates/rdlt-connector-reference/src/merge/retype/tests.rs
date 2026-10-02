@@ -649,3 +649,24 @@ fn a_refused_conversion_says_whether_the_types_or_a_value_refuse_it() {
     .unwrap();
     super::holds(std::iter::empty(), &schema(DataType::Utf8)).unwrap();
 }
+
+#[test]
+fn a_value_a_cast_refuses_keeps_the_cast_s_error_as_its_cause() {
+    use arrow_array::Int64Array;
+    let wide: ArrayRef = Arc::new(Int64Array::from(vec![300]));
+    let refused = super::checked(&wide, &DataType::Int8).unwrap_err();
+    assert_eq!(code(&refused), Some("value_unholdable"));
+    let arrow_schema::ArrowError::ExternalError(refusal) = &refused else {
+        panic!("{refused:?}");
+    };
+    let cause = std::error::Error::source(refusal.as_ref()).expect("a cause");
+    let cast = cause
+        .downcast_ref::<arrow_schema::ArrowError>()
+        .expect("the cast's error");
+    assert!(
+        matches!(cast, arrow_schema::ArrowError::CastError(_)),
+        "{cast:?}"
+    );
+    // The message says what was refused, and the cause what the cast found.
+    assert!(refusal.to_string().contains("Int8"), "{refusal}");
+}
