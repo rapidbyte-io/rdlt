@@ -660,6 +660,60 @@ async fn the_interval_commits_a_quiet_partition() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn rows_of_partitions_that_seal_when_asked_keep_commits_at_the_threshold() {
+    // Both partitions seal only when a barrier asks; there is no interval.
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 2)],
+        vec![partition("p0", true), partition("p1", true)],
+    );
+    setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
+    setup.barrier_wait = Duration::from_secs(3600);
+    let (task, mut harness) = setup.start().await;
+    harness.send(Progress::Started { partition: 0 });
+    harness.send(Progress::Started { partition: 1 });
+    let written = |harness: &Harness, rows| {
+        harness.send(Progress::Written {
+            partition: 0,
+            rows,
+            bytes: rows * 8,
+        });
+    };
+    let mut segment = 0;
+    let mut pending = 10;
+    written(&harness, 10);
+    for barrier in 1..=5 {
+        let raised = tokio::time::timeout(Duration::from_secs(60), harness.barrier.changed());
+        raised
+            .await
+            .expect("each ten rows raise a barrier")
+            .unwrap();
+        assert_eq!(harness.barrier.borrow_and_update(), barrier);
+        // p0 answers, then writes a row while the commit still waits for p1.
+        segment += 1;
+        let state = PartitionState::Cursor(cursor(segment));
+        harness.seal(0, segment, pending, state, Some(barrier));
+        written(&harness, 1);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        segment += 1;
+        let state = PartitionState::Cursor(cursor(segment));
+        harness.seal(1, segment, 0, state, Some(barrier));
+        until(|| harness.commit_count() == usize::try_from(barrier).unwrap()).await;
+        // That row and nine more make the next commit due.
+        written(&harness, 9);
+        pending = 10;
+    }
+    let raised = tokio::time::timeout(Duration::from_secs(60), harness.barrier.changed());
+    raised
+        .await
+        .expect("the last ten rows raise a barrier")
+        .unwrap();
+    assert_eq!(harness.barrier.borrow_and_update(), 6);
+    harness.end(0, false);
+    harness.end(1, false);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_commit_waits_for_on_demand_partitions_to_answer_its_barrier() {
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 2)],
