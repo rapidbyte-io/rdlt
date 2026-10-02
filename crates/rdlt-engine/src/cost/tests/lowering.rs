@@ -6,11 +6,12 @@ use std::sync::Arc;
 
 use arrow_array::types::Int32Type;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, DictionaryArray, FixedSizeBinaryArray, Int8Array,
-    Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, ListArray, NullArray, RecordBatch,
-    RunArray, StringArray, StringViewArray, StructArray,
+    Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray,
+    FixedSizeBinaryArray, FixedSizeListArray, Int8Array, Int32Array, Int64Array, LargeBinaryArray,
+    LargeStringArray, ListArray, ListViewArray, MapArray, NullArray, RecordBatch, RunArray,
+    StringArray, StringViewArray, StructArray,
 };
-use arrow_buffer::OffsetBuffer;
+use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field as ArrowField, Fields, TimeUnit as U};
 use rdlt_connector::cost::{Rendering, Stored};
 use rdlt_connector::{DecimalType, Field, LogicalType, TimeUnit};
@@ -132,7 +133,49 @@ fn others() -> Vec<ArrayRef> {
         list(twice(&small)),
         list(twice(&words)),
         list(twice(&(Arc::new(structs) as ArrayRef))),
+        Arc::new(BinaryViewArray::from(vec![&[0xab_u8; 40][..]; ROWS])),
+        views(&small),
+        views(&words),
+        arrow_cast::cast(&list(twice(&small)), &DataType::LargeList(item(&small))).expect("lists"),
+        Arc::new(FixedSizeListArray::new(
+            item(&small),
+            2,
+            twice(&small),
+            None,
+        )),
+        map(&words, &small),
     ]
+}
+
+fn item(items: &ArrayRef) -> Arc<ArrowField> {
+    Arc::new(ArrowField::new("item", items.data_type().clone(), true))
+}
+
+/// List views of `items`, every row naming the same three.
+fn views(items: &ArrayRef) -> ArrayRef {
+    Arc::new(ListViewArray::new(
+        item(items),
+        ScalarBuffer::from(vec![5_i32; ROWS]),
+        ScalarBuffer::from(vec![3_i32; ROWS]),
+        Arc::clone(items),
+        None,
+    ))
+}
+
+/// A map of one entry a row, its key from `keys` and its value from `values`.
+fn map(keys: &ArrayRef, values: &ArrayRef) -> ArrayRef {
+    let fields = Fields::from(vec![
+        ArrowField::new("key", keys.data_type().clone(), false),
+        ArrowField::new("value", values.data_type().clone(), true),
+    ]);
+    let entries = StructArray::new(fields, vec![Arc::clone(keys), Arc::clone(values)], None);
+    let field = Arc::new(ArrowField::new(
+        "entries",
+        entries.data_type().clone(),
+        false,
+    ));
+    let offsets = OffsetBuffer::from_lengths(vec![1; ROWS]);
+    Arc::new(MapArray::new(field, offsets, entries, None, false))
 }
 
 /// `column` as it is, behind keys and as runs.
