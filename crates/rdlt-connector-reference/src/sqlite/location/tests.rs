@@ -313,3 +313,38 @@ fn a_database_of_more_names_than_one_is_refused() {
     std::fs::remove_file(&other).expect("the name is removed");
     drop(connect(&path).expect("the database has one name"));
 }
+
+#[test]
+fn a_file_beside_the_database_removed_as_it_is_asked_about_is_not_refused() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    mode(directory.path(), 0o700);
+    let path = directory.path().join("removing.db");
+    assert!(located(&path, true).expect("created").is_some());
+    // SQLite removes its journal at each commit, as another process may while this one asks.
+    let journal = beside(&path, "-journal");
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stopping = std::sync::Arc::clone(&stop);
+    let removing = std::thread::spawn(move || {
+        while !stopping.load(Ordering::Relaxed) {
+            let mut private = std::fs::OpenOptions::new();
+            std::os::unix::fs::OpenOptionsExt::mode(&mut private, 0o600);
+            private
+                .write(true)
+                .create_new(true)
+                .open(&journal)
+                .expect("it is made");
+            std::fs::remove_file(&journal).expect("it is removed");
+        }
+    });
+    let started = std::time::Instant::now();
+    let mut refused = Vec::new();
+    while started.elapsed() < std::time::Duration::from_secs(3) {
+        if let Err(error) = located(&path, false) {
+            refused.push(error.to_string());
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    removing.join().expect("it ends");
+    assert_eq!(refused, Vec::<String>::new());
+}

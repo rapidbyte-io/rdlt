@@ -135,6 +135,11 @@ fn private(path: &Path) -> io::Result<(Dir, OsString)> {
         let Some(found) = dir.status(&side)? else {
             continue;
         };
+        // A name asked about as it is removed, as SQLite removes its journal at each commit,
+        // can show a file of no names: one being removed, gone a moment later.
+        if found.links == 0 {
+            continue;
+        }
         if found.kind != Kind::File || found.links != 1 {
             return Err(Refusal::NotRegular.into());
         }
