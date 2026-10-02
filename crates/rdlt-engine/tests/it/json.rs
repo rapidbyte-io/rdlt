@@ -401,3 +401,36 @@ async fn an_arrow_push_holding_text_that_is_not_json_in_a_json_column_fails_unwr
     );
     assert_eq!(published_rows(store, "events"), 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_merge_key_mixing_kinds_merges_by_its_json_text_where_the_stream_does_not_normalize() {
+    let store = "mixed_key";
+    let push = [
+        r#"{"id":1,"v":"a"}"#,
+        r#"{"id":"x","v":"b"}"#,
+        r#"{"id":1,"v":"c"}"#,
+    ]
+    .join("\n");
+    let keyed = BatchStream::json("events", &[&push]).primary_key(&["id"]);
+    let source = batches(store, vec![keyed]).await;
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline(store, [stream("events").write(WriteMode::Merge)]),
+            source,
+            memory(store).await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(
+        published_json(store, "events"),
+        [
+            json!({"id": "1", "v": "c"}),
+            json!({"id": "\"x\"", "v": "b"})
+        ]
+    );
+}
