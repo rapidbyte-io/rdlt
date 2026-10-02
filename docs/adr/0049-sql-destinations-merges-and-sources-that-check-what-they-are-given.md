@@ -108,13 +108,21 @@ given:
     its directory is opened as the files connectors open a root, and belongs to the user the
     process runs as and is writable by neither its group nor others (`not_private`;
     `not_a_directory` where it is none). The database and each file SQLite keeps beside it
-    (`-wal`, `-shm`, `-journal`), where they exist, are opened through that directory as
-    regular files of that user's, and beyond the files connectors' rule no one else reaches
-    them at all: a link, at the database's name too, is refused as `not_a_regular_file`, and a
-    file others reach as `not_private`, never re-moded, since tightening it would hide that it
-    had been exposed. Each is a configuration error, since the path is the operator's to name.
-    A new database is created through the directory, exclusively, mode 0600, and SQLite gives
-    the files it creates beside it that mode.
+    (`-wal`, `-shm`, `-journal`), where they exist, are asked of that directory and must be
+    regular files of that user's under one name each, and beyond the files connectors' rule no
+    one else reaches them at all: a link, at the database's name too, or a second name of the
+    file, which would have a log of its own, is refused as `not_a_regular_file`, and a file
+    others reach as `not_private`, never re-moded, since tightening it would hide that it had
+    been exposed. Each is a configuration error, since the path is the operator's to name.
+  - None of the four is opened to be inspected. SQLite locks its files by record, and closing
+    any descriptor of a file releases every such lock its process holds on it: a check that
+    opened and closed the database let another process write in the middle of a connection's
+    transaction, whenever a second session, a check or a read-back came in the same process.
+    A missing database is created through the directory, exclusively, mode 0600, with the
+    place checked and the descriptor closed one at a time in a process, so no connection has
+    locked the file by then; SQLite gives the files it creates beside it that mode. The locks
+    the files connectors take, on a table and on a keeper, are on the open file, not the
+    process (`flock`, on Linux and macOS alike), and no other open or close releases them.
     SQLite adopts a log that is already there as it is, and whoever can read the lock file can
     hold every writer out, which is why the rule covers more than the database.
   - A statement waits thirty seconds for another connection's write, then fails as transient. A
@@ -173,23 +181,43 @@ given:
     merged table is one file whatever columns its batches hold; an Arrow file holds one set of
     columns, so each batch is a file of its own. Published files are read back as the columns
     their rows hold: an Arrow file's as written, JSON lines in runs decoded under the columns
-    their lines name, a line starting a new run where joining would leave the batch lacking
-    more cells than it holds, so no batch is more than twice its rows' cells. What a writer
-    staged is read as it was written, since its flags count its columns. A reader of the
-    destination is given every column, an absent one as nulls its rows share. No entry of the
-    merge gives every column of every row any more, and nothing is refused for its width.
-  - Rows of many shapes do not become as many batches. A batch is a shape for each set of
-    columns that some written batch, or some row built from flagged columns, holds; a file for
-    each, rewritten by every commit, would let one write of many shapes cost every later
-    commit. Past sixteen batches the merge joins the smallest under the columns any of them
-    holds, in groups that each make at most 2^20 cells no row of theirs had: a table of a few
-    shapes is untouched, one of many small shapes is a few batches, and shapes too large to
-    join within the bound stay apart, so the cost follows what was written.
+    their lines name. A line starts a new run where joining would leave the batch lacking more
+    cells than it holds, once the run holds 256 lines or would lack 65536 cells: every batch
+    costs its columns something, so lines that take turns between few columns and many read
+    as batches of all of them, at what the whole schema costs, and a line of very many columns
+    still starts a run of its own. What a writer staged is read as it was written, since its
+    flags count its columns. A reader of the destination is given every column, an absent one
+    as nulls its rows share. No entry of the merge gives every column of every row any more,
+    and nothing is refused for its width.
+  - A line's columns are found by one pass over its bytes that decodes nothing but its keys
+    and nests no call, so a record is taken or refused as its decoder takes or refuses it. A
+    line of more than one record is refused as `line_invalid`: no writer of these files, on
+    this branch or before it, writes one, and compaction copies lines whole.
+  - A merge gives a batch for each set of columns rows hold, however many, and makes no cell.
+    A set comes with each written batch that has no value in some column, and with each row
+    built from flagged columns, so one write could make as many as it has rows. The memory
+    destination keeps them as they are, a batch a set: each costs what its held columns do,
+    and nothing is copied. JSON lines share a file whatever their sets. Only an Arrow file
+    pays for a set, a file each, rewritten by every commit, so the fold is there: past sixteen
+    batches the files destination joins the smallest under the columns any of them holds, in
+    groups that each hold at most 2^20 cells without a value. A cell without a value counts
+    whether a join made it or a row was written with it, so a batch joined by one commit is
+    measured by the next as what it is, and what a table holds of such cells does not grow
+    with its commits. The same rows fold into the same files.
   - The files destination refuses at the flush what its merge cannot take, under the merge's
     codes, as the memory and the SQLite destinations do, and a merge that fails at the commit
-    keeps its code. A change of a column's type reads what the pipeline publishes of the
-    table, its generations and its tombstones, and is refused as `schema_conflict` where a
-    value does not fit; a change of no column's type reads nothing.
+    keeps its code. A change of a column's type is checked against what the pipeline publishes
+    of the table, its generations, what the session staged, and its tombstones under the
+    tombstone schema of the changed table, whose sequence is the bytes it compares by; it is
+    refused as `schema_conflict` where a value does not fit, and a change of no column's type
+    reads nothing. The rows are read before the table's lock is taken, and the change is taken
+    under the lock only where the schema, the manifest and the staged files are those that
+    were read; a table that changed meanwhile is read again, three times, then answered as
+    transient (`table_changed`).
+  - An id or a sequence compares as bytes, text as the bytes it is, and integers of any width
+    and sign as numbers; a dictionary as the values it stands for. A root's id or sequence
+    that is a number where its children's is bytes, or the other way, is refused as
+    `merge_key_invalid`.
   - A truncate is found for each row by a search of the commit's truncates in order, a flag is
     read from its bitmap, and a row a delete or a truncate marks costs the two cells marked.
   - In SQL a window over a key's events gives each row the first truncate past it, the table is
@@ -257,13 +285,18 @@ given:
   directories above are the operator's, as ADR 0047 leaves them.
 - The exact conversion repeats what the engine's own lowering does for arriving values; one
   implementation in the connector SDK would serve both.
-- An Arrow merge table lists a file for each shape of its rows, at most sixteen and a group
-  for each 2^20 absent cells of the smaller shapes; every commit rewrites them all, as it
-  rewrote the one file before. Append tables and generations compact as ADR 0047 says: an
-  Arrow file joins only files of its columns, and JSON lines of any columns share a file.
-- A JSON lines file the destination reads back holds one record a line; a line of two is
-  refused. A read of published lines parses each line twice, once for its columns.
-- A widen of a column reads the table once before it is taken.
+- An Arrow merge table lists a file for each shape of its rows: the fifteen of most rows, and
+  the others in groups, about one for each 2^20 cells the group's rows lack of each other's
+  columns, so the count follows what was written and no constant bounds it short of the
+  manifest's size. Each file is synced and every commit rewrites them all, as it rewrote the
+  one file before. Append tables and generations compact as ADR 0047 says: an Arrow file
+  joins only files of its columns, and JSON lines of any columns share a file.
+- A memory merge table holds a batch for each set of columns its rows hold, up to one a row,
+  and its read-back hands a reader a reference a column for each.
+- A JSON lines file the destination reads back holds one record a line. A read of published
+  lines passes over each line twice, once for its keys.
+- A widen of a column reads the table once before it is taken, without the table's lock.
+- A SQLite database with a second hard link is refused.
 - A merge gives its rows back by the columns they hold, not in the order they were published.
 - The engine answers `schema_conflict` by resolving names again, which helps a clashing new
   column and not a widen of a column that exists: a refused widen fails its load until the
