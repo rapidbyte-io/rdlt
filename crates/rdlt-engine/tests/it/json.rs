@@ -148,7 +148,7 @@ async fn a_push_the_shredder_refuses_fails_the_run_with_its_code() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn json_pushes_larger_than_the_memory_budget_still_load() {
+async fn a_json_push_beyond_what_pushes_may_take_of_the_budget_is_refused() {
     let rows: Vec<String> = (0..2000)
         .map(|id| format!(r#"{{"id":{id},"pad":"{}"}}"#, "x".repeat(40)))
         .collect();
@@ -165,13 +165,14 @@ async fn json_pushes_larger_than_the_memory_budget_still_load() {
             memory("over_budget").await,
         )
         .await;
+    // Nothing is admitted beyond the budget: the push is refused, and none of it loads.
+    let error = outcome.error.expect("the run fails");
     assert_eq!(
-        outcome.report.status,
-        RunStatus::Succeeded,
-        "{:?}",
-        outcome.error
+        (error.kind(), error.code()),
+        (ErrorKind::Source, Some("push_exceeds_budget"))
     );
-    assert_eq!(published_rows("over_budget", "events"), 4000);
+    assert_eq!(published_rows("over_budget", "events"), 0);
+    assert_eq!(outcome.report.peak_memory, 0);
 }
 
 #[tokio::test(start_paused = true)]

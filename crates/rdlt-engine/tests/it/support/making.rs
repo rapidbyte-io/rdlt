@@ -33,12 +33,18 @@ pub(crate) enum Step {
 /// What a making source emits at each step of its read; `None` ends the read.
 pub(crate) type Steps = Arc<dyn Fn(usize) -> Option<Step> + Send + Sync>;
 
-static SOURCES: LazyLock<Mutex<BTreeMap<String, Steps>>> = LazyLock::new(Mutex::default);
+static SOURCES: LazyLock<Mutex<BTreeMap<String, (Steps, usize)>>> = LazyLock::new(Mutex::default);
 
 /// A source of one stream, `events`, of one partition, emitting what `steps` makes, registered
 /// as `name`.
 pub(crate) async fn making(name: &str, steps: Steps) -> Arc<dyn Source> {
-    SOURCES.lock().insert(name.to_owned(), steps);
+    making_parts(name, steps, 1).await
+}
+
+/// A source as [`making`] makes it, whose stream has `parts` partitions, each emitting what
+/// `steps` makes.
+pub(crate) async fn making_parts(name: &str, steps: Steps, parts: usize) -> Arc<dyn Source> {
+    SOURCES.lock().insert(name.to_owned(), (steps, parts));
     let source = source_factory::<MakingSource>()
         .connect(json!({ "name": name }), ConnectContext::new())
         .await
@@ -53,6 +59,7 @@ struct MakingConfig {
 
 struct MakingSource {
     steps: Steps,
+    parts: usize,
 }
 
 impl SourceConnector for MakingSource {
@@ -61,12 +68,12 @@ impl SourceConnector for MakingSource {
     type Config = MakingConfig;
 
     async fn connect(config: MakingConfig, _context: &ConnectContext) -> Result<Self> {
-        let steps = SOURCES
+        let (steps, parts) = SOURCES
             .lock()
             .get(&config.name)
             .cloned()
             .ok_or_else(|| ConnectorError::config("no such steps"))?;
-        Ok(Self { steps })
+        Ok(Self { steps, parts })
     }
 
     async fn check(&self) -> Result<()> {
@@ -90,10 +97,17 @@ impl ReadStream<MakingSource> for Events {
 
     async fn partitions(
         &self,
-        _source: &MakingSource,
+        source: &MakingSource,
         _state: &StreamState,
     ) -> Result<Vec<Partition>> {
-        Ok(vec![Partition::single()])
+        if source.parts == 1 {
+            return Ok(vec![Partition::single()]);
+        }
+        let part = |index| {
+            let id = rdlt_connector::PartitionId::parse(format!("p{index}"));
+            Partition::new(id.expect("a valid partition id"))
+        };
+        Ok((0..source.parts).map(part).collect())
     }
 
     async fn read(

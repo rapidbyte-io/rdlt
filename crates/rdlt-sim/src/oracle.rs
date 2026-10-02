@@ -293,6 +293,11 @@ struct Ran {
     stopped: bool,
 }
 
+/// Bytes: the least memory budget a run is given, which holds a few of the pushes a workload
+/// makes at once: a budget admits nothing beyond its shares, so one too small for a push, a
+/// cursor or a read's schema refuses it, and one a few times larger makes them wait.
+const MEMORY: u64 = 256 << 10;
+
 /// The engine's configuration, drawn from `rng`; a streaming world plans again every quarter
 /// second, so its runs meet the partitions and rows that arrive.
 fn config(rng: &mut SplitMix64, streaming: bool) -> EngineConfig {
@@ -313,7 +318,7 @@ fn config(rng: &mut SplitMix64, streaming: bool) -> EngineConfig {
         builder
     };
     builder
-        .memory(512 + rng.below(8192))
+        .memory(MEMORY + rng.below(3 * MEMORY))
         .lanes(lanes)
         .lane_window(to_usize(1 + rng.below(3)))
         .partitions(to_usize(1 + rng.below(4)))

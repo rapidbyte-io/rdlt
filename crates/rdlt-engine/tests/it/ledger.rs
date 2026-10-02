@@ -117,11 +117,12 @@ async fn report_totals_span_all_attempts() {
     assert_eq!(published_ids("d7", "events"), ids(1, 50));
 }
 
-/// L1: two partitions whose batches each take more than half the budget both make progress.
+/// L1: two partitions whose batches each take more than half of what pushes may take of the
+/// budget both make progress.
 #[tokio::test(start_paused = true)]
-async fn two_partitions_with_half_budget_frames_make_progress() {
+async fn two_partitions_whose_pushes_do_not_fit_together_make_progress() {
     let source = generator(&[("orders", 20_000, 2, 1_000)]).await;
-    let config = commit_every(4_000).memory(40_000).lanes(1).lane_window(1);
+    let config = commit_every(4_000).memory(100_000).lanes(1).lane_window(1);
     let run = engine(config).run(
         pipeline("l1", [stream("orders")]),
         source,
@@ -130,7 +131,12 @@ async fn two_partitions_with_half_budget_frames_make_progress() {
     let outcome = tokio::time::timeout(Duration::from_secs(60), run)
         .await
         .expect("both partitions make progress");
-    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
     assert!(
         outcome.report.peak_memory > 20_000,
         "{}",
@@ -432,7 +438,7 @@ async fn one_encoded_push_stays_within_the_budget_into_writers_that_buffer() {
 #[tokio::test(start_paused = true)]
 async fn a_push_lowered_in_pieces_is_charged_for_its_rows_once() {
     use arrow_array::{ArrayRef, Int64Array};
-    const BUDGET: u64 = 4 << 20;
+    const BUDGET: u64 = 32 << 20;
     const ROWS: i64 = 1 << 20;
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..ROWS));
     let source = batches(
@@ -454,8 +460,9 @@ async fn a_push_lowered_in_pieces_is_charged_for_its_rows_once() {
         "{:?}",
         outcome.error
     );
-    // The push itself, its admission and one window of pieces beside it.
-    let bound = BUDGET + 3 * (8 << 20);
+    // The push itself, and its rows once beside it while they are lowered.
+    let bound = 2 * (8 << 20) + (64 << 10);
+    assert!(outcome.report.peak_memory >= 8 << 20);
     assert!(
         outcome.report.peak_memory <= bound,
         "peak {}; bound {bound}",
