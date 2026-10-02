@@ -4,6 +4,7 @@
 //! The generated code is committed, so building rdlt-wire needs neither `protoc` nor a build
 //! script; `--check` fails when the committed code is stale.
 
+mod forms;
 #[cfg(test)]
 mod tests;
 
@@ -16,36 +17,44 @@ use anyhow::Context as _;
 /// The directory holding the protocol's `.proto` files, relative to the repository root.
 const PROTO_DIR: &str = "crates/rdlt-wire/proto";
 
-/// The generated file, relative to the repository root.
+/// The generated file of messages and the service, relative to the repository root.
 pub(crate) const GENERATED: &str = "crates/rdlt-wire/src/generated/rdlt.connector.v1.rs";
+
+/// The generated file of the messages' forms, relative to the repository root.
+pub(crate) const FORMS: &str = "crates/rdlt-wire/src/generated/forms.rs";
 
 /// Generates the code, writing it, or with `check` comparing it to what is committed.
 #[expect(clippy::print_stdout, reason = "the verdict is the command's output")]
 pub(crate) fn run(root: &Path, check: bool) -> anyhow::Result<ExitCode> {
-    let generated = generate(root)?;
-    let path = root.join(GENERATED);
-    if check {
-        let committed = fs::read_to_string(&path).unwrap_or_default();
-        if committed != generated {
-            println!("{GENERATED} is stale: run `cargo xtask codegen`");
-            return Ok(ExitCode::FAILURE);
+    let (generated, forms) = generate(root)?;
+    for (file, code) in [(GENERATED, generated), (FORMS, forms)] {
+        let path = root.join(file);
+        if check {
+            let committed = fs::read_to_string(&path).unwrap_or_default();
+            if committed != code {
+                println!("{file} is stale: run `cargo xtask codegen`");
+                return Ok(ExitCode::FAILURE);
+            }
+            continue;
         }
-        return Ok(ExitCode::SUCCESS);
+        fs::create_dir_all(
+            path.parent()
+                .context("the generated file has a directory")?,
+        )?;
+        fs::write(&path, code).with_context(|| format!("writing {}", path.display()))?;
     }
-    fs::create_dir_all(
-        path.parent()
-            .context("the generated file has a directory")?,
-    )?;
-    fs::write(&path, generated).with_context(|| format!("writing {}", path.display()))?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// The protocol's Rust code, formatted as `cargo fmt` formats the repository.
-pub(crate) fn generate(root: &Path) -> Result<String, anyhow::Error> {
+/// The protocol's Rust code and its messages' forms, formatted as `cargo fmt` formats the
+/// repository.
+pub(crate) fn generate(root: &Path) -> Result<(String, String), anyhow::Error> {
     let proto_dir = root.join(PROTO_DIR);
     let files = protos(&proto_dir)?;
     let descriptors = protox::compile(&files, [&proto_dir]).context("compiling the protocol")?;
     let out = tempfile::tempdir().context("creating a scratch directory")?;
+    let forms_file = out.path().join("forms.rs");
+    fs::write(&forms_file, forms::forms(&descriptors)?).context("writing the forms")?;
     tonic_prost_build::configure()
         .bytes(".")
         .build_client(true)
@@ -60,12 +69,15 @@ pub(crate) fn generate(root: &Path) -> Result<String, anyhow::Error> {
         .arg("--config-path")
         .arg(root)
         .arg(&file)
+        .arg(&forms_file)
         .status()
         .context("running rustfmt")?;
     if !status.success() {
         return Err(RustfmtFailed(status).into());
     }
-    fs::read_to_string(&file).context("reading the generated code")
+    let generated = fs::read_to_string(&file).context("reading the generated code")?;
+    let forms = fs::read_to_string(&forms_file).context("reading the generated forms")?;
+    Ok((generated, forms))
 }
 
 /// rustfmt could not format the generated code.

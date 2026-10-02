@@ -1,9 +1,11 @@
-//! The host's transport, which drops status details a connector sent that do not decode.
+//! The host's transport, which holds each answer to its bounds before tonic reads it, and drops
+//! status details a connector sent that do not decode.
 //!
 //! tonic decodes a status's details from base64 as it reads an answer's headers or trailers, and
 //! panics on a value that is not base64; what a connector sends is untrusted. The transport drops
 //! such a value before tonic reads it, so the status reads as one without details: a failure of
-//! the transport.
+//! the transport. Each message of an answer is passed on whole, within the bounds of its call's
+//! class on the wire and on what it decodes to, before tonic reserves or decodes any of it.
 
 #[cfg(test)]
 mod tests;
@@ -18,6 +20,9 @@ use base64::engine::DecodePaddingMode;
 use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use http::HeaderMap;
 use hyper::body::{Body, Bytes, Frame, SizeHint};
+use rdlt_wire::Limits;
+use rdlt_wire::bounded::{Bounded, Bounds};
+use rdlt_wire::limits::Class;
 use tonic::transport::Channel;
 
 /// The header that carries a status's details.
@@ -29,13 +34,18 @@ const BASE64: GeneralPurpose = GeneralPurpose::new(
     GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
 );
 
-/// A channel whose answers carry only status details that decode.
+/// A channel whose answers carry only status details that decode, and messages within their
+/// bounds.
 #[derive(Clone, Debug)]
-pub struct Checked(Channel);
+pub struct Checked {
+    channel: Channel,
+    limits: Limits,
+}
 
 impl Checked {
-    pub(crate) fn new(channel: Channel) -> Self {
-        Self(channel)
+    /// `channel`, its answers held within `limits`.
+    pub(crate) fn new(channel: Channel, limits: Limits) -> Self {
+        Self { channel, limits }
     }
 }
 
@@ -47,15 +57,20 @@ impl tower::Service<http::Request<tonic::body::Body>> for Checked {
     type Future = Pin<Box<dyn Future<Output = Result<Answer, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, context: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.0.poll_ready(context)
+        self.channel.poll_ready(context)
     }
 
     fn call(&mut self, request: http::Request<tonic::body::Body>) -> Self::Future {
-        let answer = self.0.call(request);
+        let path = request.uri().path();
+        let method = path.rsplit('/').next().unwrap_or(path);
+        let form = rdlt_wire::scan::response(method);
+        let bounds = Bounds::of(&self.limits, Class::of_answer(method), form);
+        let answer = self.channel.call(request);
         Box::pin(async move {
             let (mut parts, body) = answer.await?.into_parts();
             check(&mut parts.headers);
-            let body = tonic::body::Body::new(CheckedBody(body));
+            let checked = tonic::body::Body::new(CheckedBody(body));
+            let body = tonic::body::Body::new(Bounded::new(checked, bounds, None));
             Ok(http::Response::from_parts(parts, body))
         })
     }

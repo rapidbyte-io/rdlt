@@ -27,6 +27,11 @@ pub(crate) fn served_within(served: Served, limits: Limits) -> UnixStream {
 
 /// A raw client of the connector served on the other end of `io`, which has had no handshake.
 pub(crate) async fn raw_client(io: UnixStream) -> ConnectorClient<Channel> {
+    ConnectorClient::new(raw_channel(io).await)
+}
+
+/// A channel to the connector served on the other end of `io`.
+pub(crate) async fn raw_channel(io: UnixStream) -> Channel {
     let slot = std::sync::Mutex::new(Some(io));
     let connector = tower::service_fn(move |_| {
         let io = slot.lock().expect("the lock is not poisoned").take();
@@ -35,11 +40,10 @@ pub(crate) async fn raw_client(io: UnixStream) -> ConnectorClient<Channel> {
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotConnected))
         }
     });
-    let channel = Endpoint::from_static("http://connector")
+    Endpoint::from_static("http://connector")
         .connect_with_connector(connector)
         .await
-        .expect("the channel connects");
-    ConnectorClient::new(channel)
+        .expect("the channel connects")
 }
 
 /// The memory source, served, with `config`.

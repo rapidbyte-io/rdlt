@@ -81,6 +81,13 @@ pub const CONTROL_MESSAGE_BYTES: u64 = 256 * 1024;
 /// rules at their limits within it, fit.
 pub const HANDSHAKE_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Bytes a message of a catalog, a schema change or any other control message may hold once
+/// decoded, for each byte it takes on the wire.
+///
+/// A schema's columns, each a few bytes on the wire, hold tens decoded. A message of state may
+/// hold 8 for each byte, and a handshake, a configuration and a read's start 4.
+pub const DECODED_PER_BYTE: usize = 16;
+
 /// Bytes: what a message holds beside the field a limit bounds.
 const MESSAGE_OVERHEAD: usize = 64 * 1024;
 
@@ -177,6 +184,8 @@ pub struct Limits {
 /// What a message is, for the bytes it may hold before it is decoded: a decoder holds what a
 /// message's fields become, many times what they took on the wire, so each kind of message is
 /// bounded by what it carries.
+///
+/// [`Class::of_request`] and [`Class::of_answer`] say the class of each call's messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     /// A handshake or its answer.
@@ -195,6 +204,33 @@ pub enum Class {
     Cursor,
     /// A stream of frames.
     Data,
+}
+
+impl Class {
+    /// The class of a request of `method`, a method of the protocol's service.
+    pub fn of_request(method: &str) -> Self {
+        match method {
+            "Handshake" => Self::Handshake,
+            "Configure" => Self::Config,
+            "ApplySchema" => Self::Schema,
+            "Read" => Self::Cursor,
+            "Plan" | "Committed" | "Commit" => Self::State,
+            "Write" => Self::Data,
+            _ => Self::Control,
+        }
+    }
+
+    /// The class of an answer of `method`, a method of the protocol's service.
+    pub fn of_answer(method: &str) -> Self {
+        match method {
+            // The configuration's answer carries the spec, as the handshake's does.
+            "Handshake" | "Configure" => Self::Handshake,
+            "Discover" => Self::Catalog,
+            "Plan" | "Open" => Self::State,
+            "Read" | "ReadPublished" => Self::Data,
+            _ => Self::Control,
+        }
+    }
 }
 
 impl Default for Limits {
@@ -254,6 +290,19 @@ impl Limits {
     /// it.
     pub fn message_bytes(&self) -> usize {
         Self::decoding(self, Class::Data)
+    }
+
+    /// The most bytes a message of `class` may hold once decoded, as its
+    /// [scan](crate::scan) counts it before it is decoded: so many times its wire bound, as
+    /// [`DECODED_PER_BYTE`] says; none for frames, which are taken as they are.
+    pub fn decoded(&self, class: Class) -> Option<usize> {
+        let per_byte = match class {
+            Class::Handshake | Class::Config | Class::Cursor => 4,
+            Class::State => 8,
+            Class::Control | Class::Catalog | Class::Schema => DECODED_PER_BYTE,
+            Class::Data => return None,
+        };
+        Some(self.decoding(class).saturating_mul(per_byte))
     }
 
     /// The most bytes a message of `class` may take on the wire before it is decoded.
