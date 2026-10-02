@@ -67,6 +67,36 @@ fn a_guard_in_the_crates_root_covers_its_files_and_no_other_crates() {
 }
 
 #[test]
+fn only_a_condition_that_holds_in_a_build_that_aborts_is_a_guard() {
+    let guards = [
+        "panic = \"abort\"",
+        "all(feature = \"serve\", panic = \"abort\")",
+        "not(not(panic = \"abort\"))",
+        "all(any(panic = \"abort\"), not(panic = \"unwind\"))",
+        "not(panic = \"unwind\")",
+    ];
+    let others = [
+        "not(panic = \"abort\")",
+        "any(panic = \"abort\", unix)",
+        "panic = \"unwind\"",
+        "all(feature = \"serve\", not(panic = \"abort\"))",
+        "any(not(panic = \"abort\"))",
+        "all(panic = \"abort\", not(any(panic = \"abort\")))",
+        "not(any(unix, panic = \"abort\"))",
+        "all(panic = \"abort\"",
+    ];
+    let cases = guards.iter().map(|guard| (guard, 0));
+    for (condition, expected) in cases.chain(others.iter().map(|other| (other, 1))) {
+        let root = format!("{ROOT}#[cfg({condition})]\ncompile_error!(\"no\");\n");
+        let found = unguarded(&[
+            ("crates/a/src/lib.rs", &root),
+            ("crates/a/src/x.rs", CATCHES),
+        ]);
+        assert_eq!(found.len(), expected, "{condition}");
+    }
+}
+
+#[test]
 fn tests_and_mentions_of_catching_a_panic_need_no_guard() {
     let mentions = "// catch_unwind\nconst S: &str = \"catch_unwind\";\nfn catch_unwind_all() {}\n";
     let found = unguarded(&[

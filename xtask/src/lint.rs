@@ -48,7 +48,7 @@ pub(crate) fn lint_tree(root: &Path) -> anyhow::Result<Vec<(PathBuf, Finding)>> 
             let mut findings = Vec::new();
             if relative != Path::new(GENERATED) {
                 let (role, scanned) = (FileRole::of(&relative), scan(&source));
-                unwinding.read(&relative, role, &scanned);
+                unwinding.read(&relative, role, &scanned, &source);
                 findings = rules::check(role, &scanned);
             }
             findings.extend(unsafe_code::check_file(&relative, &source));
