@@ -43,7 +43,7 @@ impl Decoder {
     ///
     /// A [`WireError`] when the message is too large, malformed, or its schema beyond the limits.
     pub fn schema(&mut self, ipc_schema: &Bytes) -> Result<SchemaRef, WireError> {
-        // A schema that is refused ends the one before it: no batch is read under either.
+        // A refused schema ends the schema before it too: no batch is read under either.
         self.columns = None;
         self.dictionaries.clear();
         self.limits.admit_schema(ipc_schema.len())?;
