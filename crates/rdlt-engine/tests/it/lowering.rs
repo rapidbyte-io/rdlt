@@ -276,3 +276,30 @@ async fn a_budget_only_reads_hold_fails_the_attempt_with_what_held_it() {
         started.elapsed()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_json_push_is_charged_for_what_it_becomes_before_it_is_parsed() {
+    // A megabyte of records whose text is mostly their one long key: the batch they become
+    // takes far less than their text.
+    let key = "k".repeat(1_000);
+    let record = format!("{{\"{key}\":1}}\n");
+    let text = record.repeat(1_000);
+    let bytes = u64::try_from(text.len()).expect("a length");
+    let pushed = bytes::Bytes::from(text);
+    let steps: Steps = Arc::new(move |step| (step < 1).then(|| Step::Json(pushed.clone())));
+    let (_, outcome) = run("lowering_chunks", making("lowering_chunks", steps).await).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 1_000);
+    // The push's text, and twice it for its chunks before any was parsed, but for the line
+    // ends between chunks.
+    let peak = outcome.report.peak_memory;
+    assert!(
+        (3 * bytes - 1_024..4 * bytes).contains(&peak),
+        "{peak} bytes reserved of {bytes} pushed"
+    );
+}

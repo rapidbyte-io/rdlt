@@ -189,9 +189,13 @@ with a typed error, `limit_exceeded` or `malformed_frame`.
 Whatever a connector sends is charged to the memory budget before the engine holds it, or bounded
 by a limit with a typed refusal (ADR 0039):
 
-- A push is charged the larger of what it keeps alive and what its rows become once decoded and
-  rendered. A row that alone expands beyond the whole budget is refused with
-  `row_exceeds_budget`.
+- A push is charged the larger of what it keeps alive, its schema included, and what its rows
+  become once decoded and rendered.
+- A batch is lowered a piece at a time. Each piece reserves what lowering it holds, as its table
+  stores it and with the nulls of the columns it lacks, before it is lowered. A row that alone
+  takes more than the whole budget is refused with `row_exceeds_budget`.
+- No wait on the budget is for ever: at its deadline, an hour by default, the attempt fails with
+  `memory_budget_wait_exceeded`, saying what held the budget.
 - A batch pushed in process meets the limits a frame meets on the wire: its nesting, its values,
   the bytes its views name and the bytes it keeps alive.
 - A checkpoint's cursor is charged until its commit lands, and checkpoints that seal no rows keep
