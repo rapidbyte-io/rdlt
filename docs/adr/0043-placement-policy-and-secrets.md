@@ -37,19 +37,48 @@ given. The host did not enforce it:
 - **A local connector runs in a sandbox, or its operator says its binaries are trusted.**
   `Local::sandboxed(sandbox)` and `Local::trusting_binaries()` are the only constructors.
   - `Sandbox` is a trait: given the descriptor the program is open at, its arguments, its
-    whole environment, the descriptor of its socket and its `Grants` (paths to read, paths to
-    write, the network or not), it answers the command to run, the descriptors that command
-    is given, and how the connector is asked to stop. It puts no value of the environment
-    where another user may read it, as a command line.
-  - **Grants belong to a pipeline.** A provider grants only paths every connector it spawns
-    may read, as system directories are (`Local::grant_read`). What one connector may write,
-    read beyond those, or reach on the network is granted on the reference that places it
-    (`ConnectorRef::grant_write`, `grant_read`, `grant_network`), and held while the connector
-    runs: a grant that overlaps, contains or lies within a path another running connector of
-    the provider holds is refused (`grant_overlap`), unless both references state their grants
-    are shared (`share_grants`). A write grant that holds the connector's binary, the
-    launcher, or touches a connector directory is refused (`grant_covers`): whoever may write
-    there decides what a host runs. Each sandbox has a `/tmp` of its own, in memory, as its
+    whole environment, the descriptor of its socket, each path it is granted as a descriptor
+    open at a number and the path it is to be found at (`Bind`, the reads first), and the
+    network or not, it answers the command to run, the descriptors that command is given,
+    and how the connector is asked to stop; and it lists the files that decide how it
+    confines (`Sandbox::programs`, the launcher). It puts no value of the environment where
+    another user may read it, as a command line.
+  - **Grants belong to a pipeline, within roots its operator names.** A provider grants only
+    paths every connector it spawns may read, as system directories are (`Local::grant_read`).
+    What one connector may write, read beyond those, or reach on the network is asked for on
+    the reference that places it (`ConnectorRef::grant_write`, `grant_read`,
+    `grant_network`). A pipeline's author may write that reference, so a path is granted only
+    within a root the operator names on the provider (`Local::grantable_read`,
+    `grantable_write`): a read within a read or a write root, a write within a write root, or
+    the placement is refused (`grant_outside`). By default no root is named, and nothing is
+    granted.
+  - **A root that may be written holds nothing that decides what the host runs or keeps.** It
+    may neither hold nor lie within a connector directory, the directory of the host's
+    executable, a directory the host keeps its own files in (`Local::guarded_dir`: its
+    write-ahead log, its state, secrets it reads itself), or a directory a secret resolver
+    reads from (`SecretResolver::directories`); and it may not hold a binary a placement runs,
+    the directory that binary is in, a script's interpreter, or the sandbox's launcher
+    (`grant_root_guarded`). A directory not there yet is guarded by the nearest one above it
+    that is. `Local` has no step at which it is built, and a binary placed by path is known
+    only at its placement, so the roots are checked at every placement, before anything is
+    spawned.
+  - **What is checked is what is bound.** Each root and each path granted is opened once, its
+    links followed then (on Linux as a location alone, `O_PATH`), and known from then on by
+    the device and inode of what was opened and of every directory above it. Every check
+    compares those, so no name is resolved twice and a link to the same file is the same
+    grant. The placement keeps the descriptors, and bubblewrap binds them
+    (`--bind-fd`, `--ro-bind-fd`) at the path the grant names, at every spawn of the
+    placement: a link retargeted after the check, by a connector that may write where it
+    lies, changes nothing.
+  - **What placements hold is one registry for the process**, whichever provider placed them.
+    A placement holds its grants, the provider's reads among them, and the programs it runs,
+    from its placement until it is dropped and its last connector reaped, not only until a
+    handle drops. A grant that overlaps, contains or lies within a path another placement
+    holds is refused (`grant_overlap`), unless both references state their grants are shared
+    (`share_grants`); so is a write grant over a path the provider lets every connector read.
+    A write grant over a program another placement runs is refused (`grant_covers`), and so is
+    a placement whose program lies where a held grant may write (`program_exposed`), whichever
+    came first, shared or not. Each sandbox has a `/tmp` of its own, in memory, as its
     private scratch directory.
   - `Bubblewrap` is the sandbox rdlt ships, for Linux. The connector sees the host's system
     directories read only, a `/tmp`, `/proc` and `/dev` of its own, and what it was granted;
@@ -101,12 +130,17 @@ given. The host did not enforce it:
 - **A connector is given its standard streams and its socket, exactly.** Another thread may
   open a descriptor without close-on-exec at any moment, so no look at the host's
   descriptors before the `fork` can be exact. The child, after the descriptors it is given
-  are in place, marks every descriptor above them close-on-exec: one `close_range` call with
-  `CLOSE_RANGE_CLOEXEC` on Linux 5.11 and later, and each descriptor up to the process's
-  limit in turn on an older kernel and on macOS. It is the one `pre_exec` hook of the
-  workspace, audited in `rdlt-adopt` (ADR 0048). It marks and closes nothing, so a program
-  executed through `/proc/self/fd` is open still when `exec` opens it, and the host's own
-  descriptors are untouched.
+  are in place, marks every other descriptor from 3 up close-on-exec, below the highest it
+  is given as well as above: `close_range` with `CLOSE_RANGE_CLOEXEC`, Linux 5.11 and later,
+  once for each range between the descriptors given. A sandboxed connector is spawned only
+  where that call works, and is refused otherwise (`sandbox_descriptors`): the host asks the
+  kernel once, and the child fails the spawn should the call fail there. A trusted connector,
+  on an older kernel and on macOS, has each descriptor marked in turn up to the process's
+  soft limit, capped at 65,536: a measure of hygiene, which misses a descriptor numbered
+  above the cap, for a binary trusted as the host is. This hook, `rdlt_adopt::inheriting_only`,
+  is the workspace's only `pre_exec` hook, audited in `rdlt-adopt` (ADR 0048). It marks and
+  closes nothing, so a program executed through `/proc/self/fd` is open still when `exec`
+  opens it, and the host's own descriptors are untouched.
 - **A connector's output is bounded.** Each stream is read at a megabyte a second after a
   burst of four, so a connector that floods waits to write; a line is cut at a kilobyte; the
   log is given 32 lines a second after a burst of 256, as a field of an event the host words,
@@ -157,6 +191,15 @@ Rejected:
   to change, and an embedder may pass one to a child of its own.
 - **Grants on the provider.** One provider runs many pipelines' connectors, and a grant on
   it lets each reach every other's files.
+- **Grants a reference names freely, its author trusted.** An author may be a tenant, and
+  would grant a connector the operator's home directory or a secret directory.
+- **Checking a path and binding it by name.** The name is resolved again when bubblewrap
+  mounts it: a link retargeted between the two binds what was never checked. Resolving
+  every link before the check and binding the resolved path narrows that and does not close
+  it.
+- **Leases per provider, held until a handle drops.** Two providers in one host saw none of
+  each other's grants, and a stopped connector kept writing through its grace while an
+  overlapping grant was held.
 - **Resolving the host's environment and private files by default.** It lets whoever writes
   a configuration send the host's credentials to a connector they choose.
 - **A private copy of the binary to execute.** It breaks a binary that finds its files beside
@@ -175,7 +218,10 @@ Rejected:
   spawned again from the file it was placed from, a sandboxed one is refused until it is
   placed again.
 - An embedder that granted a provider write access, or relied on the default resolver,
-  states grants per reference and gives its resolvers.
+  states grants per reference, names the roots they may lie in and the directories it keeps
+  its own files in, and gives its resolvers.
+- A grant through a link binds what the link led to at placement for the placement's life;
+  placing it again follows the link again.
 - A connector that writes more than a megabyte a second to its standard streams is slowed to
   that, and one slowed past a call's deadline fails that call.
 - A sandboxed connector that does not end at the end of its input is killed after its grace.
@@ -185,6 +231,8 @@ Rejected:
   - on macOS, any confinement of a local connector;
   - what a network grant reaches: the host's network namespace, its loopback services and
     abstract sockets included;
+  - what a read grant reaches beyond reading: a read-only bind still lets a connector connect
+    to a Unix socket beneath it, as a session bus or an agent's under `/run/user`;
   - a secret a connector transforms before it says it, or one an in-process connector
     panics with: an in-process connector is trusted code;
   - the buffers of the transport a configuration is sent through, which are not wiped.
