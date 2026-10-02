@@ -53,6 +53,7 @@ pub struct Opened<S> {
 
 /// A destination table, as the engine names it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TableRef {
     /// The logical table.
     pub path: TablePath,
@@ -73,6 +74,7 @@ pub struct TableRef {
 /// publishes for one key, the row with the greatest `seq` wins. A child table of a merge table
 /// follows its root instead (see [`RootKey`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MergeKey {
     /// The key columns' identifiers.
     pub columns: Vec<Arc<str>>,
@@ -86,7 +88,6 @@ pub struct MergeKey {
     pub changes: Option<ChangeColumns>,
     /// For a history table, the columns recording each version's life; `None` for a table that
     /// keeps one row per key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistoryColumns>,
 }
 
@@ -115,6 +116,7 @@ pub struct MergeKey {
 /// a change sent again from before it is either behind the guard or equal to the version still
 /// current. `unchanged` flags have no place in a history table: its hashes need whole rows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HistoryColumns {
     /// When each version begins, a timestamp.
     pub valid_from: Arc<str>,
@@ -145,6 +147,7 @@ pub struct HistoryColumns {
 /// `op` and `unchanged` are in written batches only: they are never stored, and no schema change
 /// names them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChangeColumns {
     /// The column holding each row's op code, an `Int8`.
     pub op: Arc<str>,
@@ -158,6 +161,7 @@ pub struct ChangeColumns {
 
 /// How a change stream's deletes and truncates remove rows.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Deletion {
     /// The rows are removed.
     Hard,
@@ -186,6 +190,7 @@ pub enum Deletion {
 ///
 /// [`CommitMeta::child_tables`]: crate::CommitMeta::child_tables
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RootKey {
     /// The root table's identifier.
     pub table: Arc<str>,

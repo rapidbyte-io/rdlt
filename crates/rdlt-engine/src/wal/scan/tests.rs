@@ -293,11 +293,15 @@ async fn a_whole_frame_that_does_not_decode_makes_the_log_unreadable() {
         load: load(),
         number: 0,
     };
+    let version = super::super::frame::VERSION;
     for frames in [
-        vec![header(1, load()), framed(99, b"")],
-        vec![header(1, load()), framed(5, b"{\"not\":\"a commit\"}")],
-        vec![header(2, load())],
-        vec![header(1, LoadId::from_parts(UNIX_EPOCH, 6))],
+        vec![header(version, load()), framed(99, b"")],
+        vec![
+            header(version, load()),
+            framed(5, b"{\"not\":\"a commit\"}"),
+        ],
+        vec![header(version + 1, load())],
+        vec![header(version, LoadId::from_parts(UNIX_EPOCH, 6))],
     ] {
         let store = MemoryWal::default();
         for frame in frames {
@@ -347,7 +351,7 @@ async fn a_chunk_before_the_last_that_ends_early_or_garbled_makes_the_log_unread
 #[tokio::test]
 async fn a_scan_indexes_batches_without_decoding_them_and_a_read_refuses_a_garbled_one() {
     let header = serde_json::json!({
-        "version": 1,
+        "version": super::super::frame::VERSION,
         "pipeline": "orders",
         "load": load().to_string(),
         "opened": null,
@@ -409,4 +413,27 @@ fn frame(budget: &MemoryBudget) -> rdlt_connector::Permit {
             .try_acquire_working(4_096)
             .expect("the budget has room"),
     )
+}
+
+#[tokio::test]
+async fn a_log_of_the_previous_format_is_refused() {
+    let header = serde_json::json!({
+        "version": 1,
+        "pipeline": "orders",
+        "load": load().to_string(),
+        "opened": null,
+    });
+    let chunk = Chunk {
+        load: load(),
+        number: 0,
+    };
+    let store = MemoryWal::default();
+    store
+        .append(&pipeline(), chunk, framed(1, header.to_string().as_bytes()))
+        .await
+        .expect("appends");
+    let error = scan(&store, &pipeline(), load())
+        .await
+        .expect_err("the log is of the previous format");
+    assert_eq!(error.code(), Some("wal_unreadable"));
 }

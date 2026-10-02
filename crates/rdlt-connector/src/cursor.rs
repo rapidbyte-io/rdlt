@@ -73,6 +73,7 @@ impl Cursor {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EncodedCursor {
     version: u16,
     base64: String,

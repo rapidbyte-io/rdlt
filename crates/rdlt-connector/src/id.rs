@@ -158,6 +158,7 @@ pub struct StreamName {
 
 /// A [`StreamName`] as serialized, validated before it becomes one.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawStreamName {
     namespace: Option<String>,
     name: String,
