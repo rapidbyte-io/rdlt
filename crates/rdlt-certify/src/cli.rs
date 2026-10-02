@@ -373,7 +373,10 @@ fn target(args: &Args) -> Result<Target, Ended> {
     if !executable {
         return Err(Ended(IO, format!("{named} is not executable")));
     }
-    let local = args.env.iter().fold(Local::new(), Local::env_passthrough);
+    let local = args
+        .env
+        .iter()
+        .fold(Local::trusting_binaries(), Local::env_passthrough);
     Ok(Target::spawned(local, ConnectorRef::new(id).path(path)))
 }
 

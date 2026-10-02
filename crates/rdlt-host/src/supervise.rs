@@ -3,7 +3,6 @@
 //! engine's retry of the attempt reaches it.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use rdlt_connector::wire::TRANSPORT;
 use rdlt_connector::{
@@ -18,14 +17,15 @@ mod session;
 use session::SupervisedSession;
 
 use crate::connect::Open;
-use crate::local::process::{Launch, Process};
+use crate::local::process::{Launch, Process, Unspawned};
 use crate::network::Dial;
 use crate::provider::{ConnectorRef, ProviderError, accepts};
 use crate::remote::{CONNECTOR_LOST, Connection, Options, RemoteDestination, RemoteSource};
+use crate::secrets::{Config, Redactions, SecretError, SecretResolver};
 use rdlt_connector::wire::v1;
 
-/// How long the errors of a lost connector wait for its standard error to close.
-const LAST_WORDS: Duration = Duration::from_secs(1);
+use crate::limits::LAST_WORDS;
+use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
 
 /// How a connector starts: spawned in a process of its own, dialed where it listens, or reached
 /// through a stream a function opens.
@@ -42,17 +42,26 @@ pub(crate) enum Start {
 pub(crate) struct Running {
     pub(crate) connection: Arc<Connection>,
     pub(crate) process: Option<Process>,
+    /// The secrets this start of the connector was sent, which nothing it says may show.
+    pub(crate) redactions: Redactions,
 }
 
 /// Starts a connector, and starts it again, respawned or redialed, once it is lost.
 pub(crate) struct Supervisor {
     start: Start,
     role: Role,
-    config: serde_json::Value,
+    /// What the connector is configured with, each time it is started.
+    configured: Configured,
     options: Options,
     running: Mutex<Running>,
     /// The spec the connector was checked to serve: whatever is started again must serve it.
     checked: ConnectorSpec,
+}
+
+/// A connector's configuration, and what resolves its secret references at each start.
+pub(crate) struct Configured {
+    pub(crate) config: Config,
+    pub(crate) secrets: Arc<dyn SecretResolver>,
 }
 
 /// What a connector must be before it sees its configuration: the connector `reference` names,
@@ -67,7 +76,8 @@ impl Gate<'_> {
     /// accepts.
     fn admit(&self, spec: &v1::ConnectorSpec) -> Result<(), ProviderError> {
         if spec.id != self.reference.id.as_str() {
-            let message = format!("{} serves `{}`", self.found_at, spec.id);
+            let serves = rdlt_connector::text::shown(&spec.id, MAX_ERROR_CODE_BYTES);
+            let message = format!("{} serves `{serves}`", self.found_at);
             return Err(self.refused(ConnectorError::config(message)));
         }
         accepts(self.reference, &spec.version)
@@ -87,18 +97,18 @@ impl Supervisor {
     pub(crate) async fn start(
         start: Start,
         role: Role,
-        config: serde_json::Value,
+        configured: Configured,
         options: Options,
         gate: &Gate<'_>,
     ) -> Result<Self, Spawned> {
         let admit = |spec: &v1::ConnectorSpec| gate.admit(spec).map_err(Spawned::Refused);
-        let running = begin(&start, role, &config, options, &admit).await?;
+        let running = begin(&start, role, &configured, options, &admit).await?;
         let checked = crate::remote::contract_spec(running.connection.spec(), role)
             .map_err(|error| Spawned::Refused(gate.refused(error)))?;
         Ok(Self {
             start,
             role,
-            config,
+            configured,
             options,
             running: Mutex::new(running),
             checked,
@@ -120,7 +130,8 @@ impl Supervisor {
         let mut running = self.running.lock().await;
         if running.connection.is_spent() {
             let admit = |spec: &v1::ConnectorSpec| self.same_identity(spec);
-            let started = begin(&self.start, self.role, &self.config, self.options, &admit)
+            let (start, configured) = (&self.start, &self.configured);
+            let started = begin(start, self.role, configured, self.options, &admit)
                 .await
                 .map_err(Spawned::into_error)?;
             self.same(&started.connection)?;
@@ -161,16 +172,18 @@ impl Supervisor {
         }
     }
 
-    /// `error`, carrying a spawned connector's last words when its transport failed.
+    /// `error` as the host keeps a connector's: scrubbed of the secrets the connector was sent
+    /// and shown, carrying a spawned connector's last words when its transport failed.
     async fn explained(&self, error: ConnectorError) -> ConnectorError {
         let transport = matches!(error.code(), Some(CONNECTOR_LOST | TRANSPORT));
-        if !transport || std::error::Error::source(&error).is_some() {
-            return error;
-        }
+        let explained = std::error::Error::source(&error).is_some();
         let running = self.running.lock().await;
+        let error = error.received(&|text| running.redactions.scrubbed(text));
         match &running.process {
-            Some(process) => error.with_source(process.last_words(LAST_WORDS).await),
-            None => error,
+            Some(process) if transport && !explained => {
+                error.with_source(process.last_words(LAST_WORDS).await)
+            }
+            _ => error,
         }
     }
 
@@ -204,6 +217,8 @@ pub(crate) enum Spawned {
     /// It is not the connector placed: another binary, id or version, refused before it saw its
     /// configuration.
     Refused(ProviderError),
+    /// It is the connector placed, and a secret its configuration refers to did not resolve.
+    Secret(SecretError),
 }
 
 impl Spawned {
@@ -231,6 +246,11 @@ impl Spawned {
                     .with_source(error)
             }
             Self::Connect(error) => error,
+            Self::Secret(error) => {
+                ConnectorError::config("a secret the connector's configuration names is missing")
+                    .with_code(error.code())
+                    .with_source(error)
+            }
             Self::Refused(refused) => {
                 ConnectorError::config("the connector started again is not the connector placed")
                     .with_code("connector_changed")
@@ -246,20 +266,20 @@ pub const TLS: &str = "tls";
 /// Checks the spec a connector handshook with, before it sees its configuration.
 type Admit<'a> = dyn Fn(&v1::ConnectorSpec) -> Result<(), Spawned> + Sync + 'a;
 
-/// Starts the connector as `start` says, handshakes with it, and configures it with `config` once
-/// `admit` accepts its spec.
+/// Starts the connector as `start` says, handshakes with it, and configures it once `admit`
+/// accepts its spec.
 async fn begin(
     start: &Start,
     role: Role,
-    config: &serde_json::Value,
+    configured: &Configured,
     options: Options,
     admit: &Admit<'_>,
 ) -> Result<Running, Spawned> {
-    match start {
-        Start::Spawn(launch) => spawn(launch, role, config, options, admit).await,
+    let io: Box<dyn crate::network::Stream> = match start {
+        Start::Spawn(launch) => return spawn(launch, role, configured, options, admit).await,
         Start::Connect(open) => {
             let deadline = options.deadlines.connect;
-            let io = tokio::time::timeout(deadline, open())
+            tokio::time::timeout(deadline, open())
                 .await
                 .map_err(|_| {
                     Spawned::Unreachable(std::io::Error::new(
@@ -267,65 +287,63 @@ async fn begin(
                         format!("the connector's stream did not open within {deadline:?}"),
                     ))
                 })?
-                .map_err(Spawned::Unreachable)?;
-            let connection = configured(io, role, config, options, admit).await?;
-            Ok(Running {
-                connection,
-                process: None,
-            })
+                .map_err(Spawned::Unreachable)?
         }
-        Start::Dial(dial) => {
-            let io = crate::network::dial(dial, options.deadlines.connect).await?;
-            let connection = configured(io, role, config, options, admit).await?;
-            Ok(Running {
-                connection,
-                process: None,
-            })
-        }
-    }
+        Start::Dial(dial) => Box::new(crate::network::dial(dial, options.deadlines.connect).await?),
+    };
+    let redactions = Redactions::new();
+    let connection = self::configured(io, role, configured, &redactions, options, admit).await?;
+    Ok(Running {
+        connection,
+        process: None,
+        redactions,
+    })
 }
 
-/// Handshakes over `io`, and configures the connector with `config` once `admit` accepts its spec.
+/// Handshakes over `io`, and once `admit` accepts the connector's spec resolves the secrets
+/// of its configuration and configures it: a connector other than was placed is sent no
+/// configuration, and no secret is resolved for it.
 async fn configured<IO>(
     io: IO,
     role: Role,
-    config: &serde_json::Value,
+    configured: &Configured,
+    redactions: &Redactions,
     options: Options,
     admit: &Admit<'_>,
 ) -> Result<Arc<Connection>, Spawned>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
 {
+    let scrubbed =
+        |error: ConnectorError| Spawned::Connect(error.received(&|text| redactions.scrubbed(text)));
     let handshaken = Connection::handshake(io, role, options)
         .await
-        .map_err(Spawned::Connect)?;
+        .map_err(scrubbed)?;
     admit(handshaken.spec())?;
-    handshaken.configure(config).await.map_err(Spawned::Connect)
+    let resolving = configured.config.resolved(&*configured.secrets, redactions);
+    let config_json = resolving.await.map_err(Spawned::Secret)?;
+    // The request owns its text, and the transport its bytes: neither is wiped.
+    let sent = handshaken.configure_json(config_json.as_str().to_owned());
+    sent.await.map_err(scrubbed)
 }
 
-/// Spawns the connector, once its binary is unchanged since it was placed, and handshakes with it.
+/// Spawns the connector, once its binary is unchanged since it was placed, and handshakes
+/// with it.
 async fn spawn(
     launch: &Launch,
     role: Role,
-    config: &serde_json::Value,
+    configured: &Configured,
     options: Options,
     admit: &Admit<'_>,
 ) -> Result<Running, Spawned> {
-    if let Some(expected) = launch.digest {
-        let found = crate::local::digest(&launch.path)
-            .await
-            .map_err(Spawned::Io)?;
-        if found != expected {
-            return Err(Spawned::Refused(ProviderError::DigestMismatch {
-                id: launch.id.clone(),
-                path: launch.path.clone(),
-                expected,
-                found,
-            }));
-        }
-    }
-    let (io, process) = Process::launched(launch).map_err(Spawned::Io)?;
-    let connection = match configured(io, role, config, options, admit).await {
+    let launched = Process::launching(launch.clone()).await;
+    let (io, process) = launched.map_err(|unspawned| match *unspawned {
+        (_, Unspawned::Io(error)) => Spawned::Io(error),
+        (launch, refused) => Spawned::Refused(crate::local::refused(&launch, refused)),
+    })?;
+    let redactions = process.redactions().clone();
+    let connecting = self::configured(io, role, configured, &redactions, options, admit);
+    let connection = match connecting.await {
         Ok(connection) => connection,
         Err(Spawned::Connect(error)) => {
             let words = process.last_words(LAST_WORDS).await;
@@ -344,6 +362,7 @@ async fn spawn(
     Ok(Running {
         connection,
         process: Some(process),
+        redactions,
     })
 }
 

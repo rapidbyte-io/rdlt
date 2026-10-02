@@ -1,7 +1,12 @@
-//! Process placement: a connector found by its path, or by name on the connector directories and
-//! `PATH`, is spawned with its socket on file descriptor 3, and respawned when it is lost.
+//! Process placement: a connector found by its path, or by name in the directories its
+//! operator named, is opened once, spawned from that open file with its socket on file
+//! descriptor 3, inside a sandbox unless its binaries are stated to be trusted, and respawned
+//! when it is lost.
 
+mod binary;
+mod bubblewrap;
 pub(crate) mod process;
+mod sandbox;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -10,18 +15,30 @@ use std::time::Duration;
 use rdlt_connector::{
     BoxFuture, ConnectorError, ConnectorId, ConnectorSpec, Destination, Role, Source,
 };
-use sha2::Digest as _;
 
 use crate::kills::Kills;
-use crate::supervise::{Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
+use crate::secrets::{Config, SecretResolver, Secrets};
+use crate::supervise::{
+    Configured, Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor,
+};
+use binary::{Binary, Unfit};
+pub use bubblewrap::Bubblewrap;
 pub use process::{Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawned, stop_spawned};
-use process::{Launch, Process, executable};
+use process::{Launch, Process, Unspawned};
+pub use sandbox::{Confined, Grants, Launcher, NetworkGrant, Sandbox, SandboxError, Stops};
 
-use crate::provider::{ConnectorRef, Digest, Placed, Placement, Provider, ProviderError};
+use crate::provider::{
+    ConnectorRef, Digest, Honours, Isolation, Placed, Placement, Provider, ProviderError,
+};
 use crate::remote::Options;
 use crate::wire::Wire;
 
 /// Places connectors in processes of their own.
+///
+/// A connector's code is not trusted: it is spawned inside the [`Sandbox`] the provider was
+/// built with ([`Local::sandboxed`]), unless its operator states that every binary the
+/// provider spawns is trusted ([`Local::trusting_binaries`]). There is no third way to build
+/// one.
 ///
 /// Each connector leads a process group this process owns. Dropping a connector asks its
 /// group to stop before the drop returns; the kill that follows its grace needs this process
@@ -29,37 +46,70 @@ use crate::wire::Wire;
 /// [`StopsSpawned`], and listens for the signals that would end it ([`Interrupts`]).
 #[derive(Clone, Debug)]
 pub struct Local {
+    sandbox: Option<Arc<dyn Sandbox>>,
+    grants: Grants,
     dirs: Vec<PathBuf>,
     grace: Duration,
     env_passthrough: Vec<String>,
     options: Options,
     kills: Option<Kills>,
     told: Option<process::Told>,
+    secrets: Arc<dyn SecretResolver>,
 }
 
-impl Default for Local {
-    fn default() -> Self {
+impl Local {
+    fn new(sandbox: Option<Arc<dyn Sandbox>>) -> Self {
         Self {
+            sandbox,
+            grants: Grants::default(),
             dirs: Vec::new(),
             grace: Duration::from_secs(10),
             env_passthrough: Vec::new(),
             options: Options::default(),
             kills: None,
             told: None,
+            secrets: Arc::new(Secrets::new()),
         }
     }
-}
 
-impl Local {
-    /// Finds connectors on `PATH`; stops them with a grace period of 10 s.
-    pub fn new() -> Self {
-        Self::default()
+    /// Spawns each connector inside `sandbox`, with nothing of the host's but what is
+    /// [granted](Self::grant_read); stops them with a grace period of 10 s.
+    pub fn sandboxed(sandbox: impl Sandbox + 'static) -> Self {
+        Self::new(Some(Arc::new(sandbox)))
     }
 
-    /// Looks for connectors in `dir` before `PATH`.
+    /// Spawns each connector with this process's own access to files, the network and other
+    /// processes: for binaries their operator trusts as the host itself.
+    pub fn trusting_binaries() -> Self {
+        Self::new(None)
+    }
+
+    /// Looks for connectors named without a path in `dir`, an absolute path to a directory no
+    /// other user may write; nowhere else is searched.
     #[must_use]
     pub fn connector_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.dirs.push(dir.into());
+        self
+    }
+
+    /// Lets each sandboxed connector read `path`, an absolute path.
+    #[must_use]
+    pub fn grant_read(mut self, path: impl Into<PathBuf>) -> Self {
+        self.grants.read.push(path.into());
+        self
+    }
+
+    /// Lets each sandboxed connector read and write `path`, an absolute path.
+    #[must_use]
+    pub fn grant_write(mut self, path: impl Into<PathBuf>) -> Self {
+        self.grants.write.push(path.into());
+        self
+    }
+
+    /// Lets each sandboxed connector reach the network.
+    #[must_use]
+    pub fn grant_network(mut self) -> Self {
+        self.grants.network = NetworkGrant::Granted;
         self
     }
 
@@ -92,43 +142,13 @@ impl Local {
         self
     }
 
-    /// The binary `reference` names, as an absolute path: its path, or
-    /// `rdlt-connector-<the id's last segment>` in the connector directories, then on `PATH`.
-    pub fn resolve(&self, reference: &ConnectorRef) -> Result<PathBuf, ProviderError> {
-        let not_found = |source| ProviderError::NotFound {
-            id: reference.id.clone(),
-            source,
-        };
-        // Absolute: spawning a bare name would search `PATH`, and a respawn could run elsewhere.
-        let absolute =
-            |path: &Path| std::path::absolute(path).map_err(|error| not_found(Some(error)));
-        if let Some(path) = &reference.path {
-            return if executable(path) {
-                absolute(path)
-            } else {
-                let error = std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("{} is not an executable file", path.display()),
-                );
-                Err(not_found(Some(error)))
-            };
-        }
-        let name = binary_name(&reference.id);
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        self.dirs
-            .iter()
-            .cloned()
-            .chain(std::env::split_paths(&path))
-            .map(|dir| dir.join(&name))
-            .find(|candidate| executable(candidate))
-            .ok_or_else(|| not_found(None))
-            .and_then(|found| absolute(&found))
+    /// Resolves the secret references of each configuration with `secrets`.
+    #[must_use]
+    pub fn secrets(mut self, secrets: impl SecretResolver + 'static) -> Self {
+        self.secrets = Arc::new(secrets);
+        self
     }
 
-    /// A raw connection to the connector `reference` names, before its handshake: its binary,
-    /// spawned with the connection's other end on file descriptor 3, stops once the wire is
-    /// dropped.
-    ///
     /// Tells `told` the process id of each connector as it is spawned, one spawned again after
     /// it was lost too: the id of the process group it leads.
     ///
@@ -140,30 +160,109 @@ impl Local {
         self
     }
 
-    /// Call it within a tokio runtime, which drains and reaps the process.
+    /// Where the binary `reference` names is: its path, or
+    /// `rdlt-connector-<the id's last segment>` in the first connector directory that holds it.
     ///
     /// # Errors
     ///
-    /// [`ProviderError::NotFound`] when the binary cannot be found, and
-    /// [`ProviderError::SpawnFailed`] when it cannot be spawned.
-    pub fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
-        let path = self.resolve(reference)?;
-        let launch = self.launch(reference, &path, None);
-        let (stream, process) =
-            Process::launched(&launch).map_err(|source| spawn_failed(reference, &path, source))?;
-        Ok(Wire::new(stream, Some(process)))
+    /// As [`wire`](Self::wire) fails before it spawns.
+    pub fn resolve(&self, reference: &ConnectorRef) -> Result<PathBuf, ProviderError> {
+        Ok(self.found(reference)?.path().to_owned())
     }
 
-    fn launch(&self, reference: &ConnectorRef, path: &Path, digest: Option<Digest>) -> Launch {
-        Launch {
+    /// What this provider honours of a reference.
+    fn honours(&self) -> Honours {
+        Honours {
+            placement: "process",
+            path: true,
+            endpoint: false,
+            digest: cfg!(target_os = "linux"),
+            isolation: match self.sandbox {
+                Some(_) => &[Isolation::Process, Isolation::Sandbox],
+                None => &[Isolation::Process],
+            },
+        }
+    }
+
+    /// Opens the binary `reference` names, once every requirement of the reference is one
+    /// this provider honours.
+    fn found(&self, reference: &ConnectorRef) -> Result<Binary, ProviderError> {
+        self.honours().admit(reference)?;
+        let found = match &reference.path {
+            Some(path) => Binary::at(path),
+            None => Binary::named(&self.dirs, &binary_name(&reference.id)),
+        };
+        found.map_err(|unfit| match unfit {
+            Unfit::Absent(source) => ProviderError::NotFound {
+                id: reference.id.clone(),
+                source,
+            },
+            Unfit::Shared { path, owner, mode } => ProviderError::Shared {
+                id: reference.id.clone(),
+                path,
+                owner,
+                mode,
+            },
+        })
+    }
+
+    /// How the binary `reference` names is launched, and its digest where this platform
+    /// executes what it hashed: the binary is opened, and its digest compared with what the
+    /// reference requires.
+    async fn launch(&self, reference: &ConnectorRef) -> Result<Launch, ProviderError> {
+        let binary = Arc::new(self.found(reference)?);
+        let digest = if cfg!(target_os = "linux") {
+            let hashed = Arc::clone(&binary);
+            let hashing = tokio::task::spawn_blocking(move || hashed.digest());
+            let hashed = hashing.await.map_err(std::io::Error::other).flatten();
+            Some(hashed.map_err(|source| spawn_failed(reference, binary.path(), source))?)
+        } else {
+            None
+        };
+        if let (Some(expected), Some(found)) = (reference.digest, digest)
+            && expected != found
+        {
+            return Err(ProviderError::DigestMismatch {
+                id: reference.id.clone(),
+                path: binary.path().to_owned(),
+                expected,
+                found,
+            });
+        }
+        Ok(Launch {
             id: reference.id.clone(),
-            path: path.to_owned(),
+            binary,
             digest,
             env_passthrough: self.env_passthrough.clone(),
             grace: self.grace,
             kills: self.kills.clone(),
             told: self.told.clone(),
-        }
+            confinement: self
+                .sandbox
+                .clone()
+                .map(|sandbox| (sandbox, self.grants.clone())),
+        })
+    }
+
+    /// A raw connection to the connector `reference` names, before its handshake: its binary,
+    /// found, checked and spawned as [`source`](Provider::source) spawns it, with the
+    /// connection's other end on file descriptor 3, stops once the wire is dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Unsupported`] for a reference that requires what this provider does
+    /// not honour, [`ProviderError::NotFound`] or [`ProviderError::Shared`] for a binary that
+    /// is not there or not its operator's alone, [`ProviderError::DigestMismatch`] for one of
+    /// another digest than required, [`ProviderError::Sandbox`] where its sandbox cannot be
+    /// made, and [`ProviderError::SpawnFailed`] when it cannot be spawned.
+    pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
+        let launch = self.launch(reference).await?;
+        let launched = Process::launching(launch).await;
+        let (stream, process) = launched.map_err(|unspawned| {
+            let (launch, unspawned) = *unspawned;
+            refused(&launch, unspawned)
+        })?;
+        Ok(Wire::new(stream, Some(process)))
     }
 
     /// Spawns the connector `reference` names as `role`, and checks it is that connector.
@@ -172,42 +271,49 @@ impl Local {
         reference: &ConnectorRef,
         role: Role,
         config: &serde_json::Value,
-    ) -> Result<(Supervisor, ConnectorSpec, PathBuf, Digest), ProviderError> {
-        let path = self.resolve(reference)?;
-        let digest = digest(&path)
-            .await
-            .map_err(|source| spawn_failed(reference, &path, source))?;
-        if let Some(expected) = reference.digest.filter(|expected| *expected != digest) {
-            return Err(ProviderError::DigestMismatch {
-                id: reference.id.clone(),
-                path,
-                expected,
-                found: digest,
-            });
-        }
-        let launch = self.launch(reference, &path, Some(digest));
+    ) -> Result<(Supervisor, ConnectorSpec, PathBuf, Option<Digest>), ProviderError> {
+        let launch = self.launch(reference).await?;
+        let (path, digest) = (launch.binary.path().to_owned(), launch.digest);
         let found_at = path.display().to_string();
         let gate = Gate {
             reference,
             found_at: &found_at,
         };
-        let supervisor = Supervisor::start(
-            Start::Spawn(launch),
-            role,
-            config.clone(),
-            self.options,
-            &gate,
-        )
-        .await
-        .map_err(|spawned| match spawned {
-            Spawned::Io(source) | Spawned::Unreachable(source) | Spawned::Tls(source) => {
-                spawn_failed(reference, &path, source)
-            }
-            Spawned::Connect(source) => handshake_failed(reference, source),
-            Spawned::Refused(refused) => refused,
-        })?;
+        let configured = Configured {
+            config: Config::from(config),
+            secrets: Arc::clone(&self.secrets),
+        };
+        let supervisor =
+            Supervisor::start(Start::Spawn(launch), role, configured, self.options, &gate)
+                .await
+                .map_err(|spawned| match spawned {
+                    Spawned::Io(source) | Spawned::Unreachable(source) | Spawned::Tls(source) => {
+                        spawn_failed(reference, &path, source)
+                    }
+                    Spawned::Connect(source) => handshake_failed(reference, source),
+                    Spawned::Secret(source) => ProviderError::Secret {
+                        id: reference.id.clone(),
+                        source,
+                    },
+                    Spawned::Refused(refused) => refused,
+                })?;
         let spec = supervisor.spec();
         Ok((supervisor, spec, path, digest))
+    }
+}
+
+/// The provider's error for a connector that was not spawned.
+pub(crate) fn refused(launch: &Launch, unspawned: Unspawned) -> ProviderError {
+    let (id, path) = (launch.id.clone(), launch.binary.path().to_owned());
+    match unspawned {
+        Unspawned::Sandbox(source) => ProviderError::Sandbox { id, source },
+        Unspawned::Changed { expected, found } => ProviderError::DigestMismatch {
+            id,
+            path,
+            expected,
+            found,
+        },
+        Unspawned::Io(source) => ProviderError::SpawnFailed { id, path, source },
     }
 }
 
@@ -232,19 +338,6 @@ fn binary_name(id: &ConnectorId) -> String {
     format!("rdlt-connector-{last}")
 }
 
-/// The SHA-256 digest of the file at `path`.
-pub(crate) async fn digest(path: &Path) -> std::io::Result<Digest> {
-    let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let mut file = std::fs::File::open(path)?;
-        let mut hasher = sha2::Sha256::new();
-        std::io::copy(&mut file, &mut hasher)?;
-        Ok(Digest(hasher.finalize().into()))
-    })
-    .await
-    .map_err(std::io::Error::other)?
-}
-
 impl Provider for Local {
     fn source<'a>(
         &'a self,
@@ -258,7 +351,7 @@ impl Provider for Local {
                 connector: Box::new(SupervisedSource(Arc::new(supervisor))) as Box<dyn Source>,
                 spec,
                 placement: Placement::Process { path },
-                digest: Some(digest),
+                digest,
             })
         })
     }
@@ -283,7 +376,7 @@ impl Provider for Local {
                 connector: Box::new(destination) as Box<dyn Destination>,
                 spec,
                 placement: Placement::Process { path },
-                digest: Some(digest),
+                digest,
             })
         })
     }

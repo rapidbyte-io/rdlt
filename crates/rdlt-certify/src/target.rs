@@ -200,6 +200,7 @@ impl Target {
             }
             Reach::Spawned { local, reference } => local
                 .wire(reference)
+                .await
                 .map(|wire| {
                     let witness = wire.witness();
                     (Box::new(wire) as Box<dyn Stream>, witness)
@@ -281,6 +282,7 @@ impl Target {
             path: from.and_then(|reference| reference.path.clone()),
             endpoint: from.and_then(|reference| reference.endpoint.clone()),
             digest: from.and_then(|reference| reference.digest),
+            isolation: from.and_then(|reference| reference.isolation),
         };
         let options = Options {
             read_window: KILL_WINDOW,

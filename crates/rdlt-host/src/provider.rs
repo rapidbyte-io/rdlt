@@ -7,10 +7,14 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod tests;
 
+use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorId, ConnectorSpec, Destination, Source};
 
 /// What a pipeline names as its source or destination: a connector's id, the versions it accepts,
-/// and where to find it when that is not the provider's choice.
+/// where to find it when that is not the provider's choice, and what its placement must be.
+///
+/// Every field given is a requirement. A provider that cannot honour one refuses the
+/// reference with [`ProviderError::Unsupported`]: none is ignored.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ConnectorRef {
     /// The connector's id.
@@ -23,6 +27,8 @@ pub struct ConnectorRef {
     pub endpoint: Option<String>,
     /// The digest its binary must have, for a process placement; any binary when absent.
     pub digest: Option<Digest>,
+    /// The isolation its placement must give; whatever the provider gives when absent.
+    pub isolation: Option<Isolation>,
 }
 
 impl fmt::Debug for ConnectorRef {
@@ -42,6 +48,7 @@ impl fmt::Debug for ConnectorRef {
             .field("path", &self.path)
             .field("endpoint", &endpoint)
             .field("digest", &self.digest)
+            .field("isolation", &self.isolation)
             .finish()
     }
 }
@@ -55,7 +62,15 @@ impl ConnectorRef {
             path: None,
             endpoint: None,
             digest: None,
+            isolation: None,
         }
+    }
+
+    /// Accepts only a placement that isolates the connector as `isolation` says.
+    #[must_use]
+    pub fn isolation(mut self, isolation: Isolation) -> Self {
+        self.isolation = Some(isolation);
+        self
     }
 
     /// Accepts only a binary of digest `digest`, for a process placement.
@@ -84,6 +99,55 @@ impl ConnectorRef {
     pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
         self
+    }
+}
+
+/// The isolation a reference requires between its connector and the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Isolation {
+    /// A process of its own on the host's machine, sandboxed or not.
+    Process,
+    /// A process of its own inside a sandbox: no file, network or process of the host's but
+    /// what it was granted.
+    Sandbox,
+    /// Another machine or container, reached over mutual TLS.
+    Remote,
+}
+
+/// What a kind of placement honours of a reference.
+pub(crate) struct Honours {
+    /// How errors name the placement.
+    pub(crate) placement: &'static str,
+    pub(crate) path: bool,
+    pub(crate) endpoint: bool,
+    pub(crate) digest: bool,
+    /// The isolations it gives.
+    pub(crate) isolation: &'static [Isolation],
+}
+
+impl Honours {
+    /// Refuses `reference` when it requires what the placement does not honour.
+    pub(crate) fn admit(&self, reference: &ConnectorRef) -> Result<(), ProviderError> {
+        let isolated = reference
+            .isolation
+            .is_none_or(|isolation| self.isolation.contains(&isolation));
+        let unhonoured = [
+            ("a path", reference.path.is_some() && !self.path),
+            (
+                "an endpoint",
+                reference.endpoint.is_some() && !self.endpoint,
+            ),
+            ("a digest", reference.digest.is_some() && !self.digest),
+            ("an isolation", !isolated),
+        ];
+        match unhonoured.into_iter().find(|(_, unhonoured)| *unhonoured) {
+            Some((requirement, _)) => Err(ProviderError::Unsupported {
+                id: reference.id.clone(),
+                requirement,
+                placement: self.placement,
+            }),
+            None => Ok(()),
+        }
     }
 }
 
@@ -140,8 +204,51 @@ pub struct Placed<T> {
 }
 
 /// Why a provider could not place a connector.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    /// The reference requires what the placement that would run it does not honour.
+    #[error("connector `{id}` requires {requirement}, which {placement} placement does not honour")]
+    Unsupported {
+        /// The connector's id.
+        id: ConnectorId,
+        /// What the reference requires: `a path`, `an endpoint`, `a digest`, `an isolation`.
+        requirement: &'static str,
+        /// The placement that would have run it.
+        placement: &'static str,
+    },
+    /// A secret the connector's configuration refers to did not resolve, or the configuration
+    /// cannot be held.
+    #[error("the configuration of connector `{id}` could not be prepared")]
+    Secret {
+        /// The connector's id.
+        id: ConnectorId,
+        /// Why, naming the field and never its value.
+        #[source]
+        source: crate::secrets::SecretError,
+    },
+    /// The connector's binary, or the directory it was looked up in, belongs to another user or
+    /// may be written by one: what runs would be that user's choice.
+    #[error("connector `{id}`: {} belongs to user {owner} with mode {mode:o}, so another user may change it", path.display())]
+    Shared {
+        /// The connector's id.
+        id: ConnectorId,
+        /// The file or directory.
+        path: PathBuf,
+        /// The user it belongs to.
+        owner: u32,
+        /// Its permission bits.
+        mode: u32,
+    },
+    /// The sandbox a connector was to be spawned in cannot be used.
+    #[error("connector `{id}` cannot be sandboxed")]
+    Sandbox {
+        /// The connector's id.
+        id: ConnectorId,
+        /// Why.
+        #[source]
+        source: crate::local::SandboxError,
+    },
     /// No connector answers to the reference.
     #[error("no connector `{id}` was found")]
     NotFound {
@@ -228,7 +335,31 @@ pub enum ProviderError {
     },
 }
 
+impl ProviderError {
+    /// The error's stable code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Unsupported { .. } => "placement_unsupported",
+            Self::Secret { source, .. } => source.code(),
+            Self::Sandbox { source, .. } => source.code(),
+            Self::Shared { .. } => "binary_shared",
+            Self::NotFound { .. } => "connector_not_found",
+            Self::VersionMismatch { .. } => "version_mismatch",
+            Self::SpawnFailed { .. } => "spawn_failed",
+            Self::Endpoint { .. } => "endpoint_invalid",
+            Self::Unreachable { .. } => "unreachable",
+            Self::Tls { .. } => "tls",
+            Self::DigestMismatch { .. } => "digest_mismatch",
+            Self::HandshakeFailed { .. } => "handshake_failed",
+        }
+    }
+}
+
 /// Finds connectors by reference and places them.
+///
+/// A configuration's text values may hold secret references, which the provider resolves
+/// only for the connector it has verified, as it sends the configuration
+/// ([`Config`](crate::Config)).
 pub trait Provider: Send + Sync {
     /// The source `reference` names, connected with `config`.
     fn source<'a>(
@@ -256,7 +387,8 @@ pub(crate) fn accepts(reference: &ConnectorRef, version: &str) -> Result<(), Pro
         _ => Err(ProviderError::VersionMismatch {
             id: reference.id.clone(),
             required: required.clone(),
-            found: version.to_owned(),
+            // A connector's own word for its version.
+            found: rdlt_connector::text::shown(version, MAX_ERROR_CODE_BYTES),
         }),
     }
 }

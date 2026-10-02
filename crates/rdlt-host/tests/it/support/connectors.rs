@@ -625,3 +625,59 @@ impl DestinationWriter for WrongWriter {
         Box::pin(async { Ok(WriteStats::default()) })
     }
 }
+
+/// Configuration of [`Echo`]: what it was told, in any shape.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub(crate) struct EchoConfig {
+    /// What its check says back.
+    pub(crate) said: serde_json::Value,
+    /// Whether its connect fails, saying it too.
+    #[serde(default)]
+    pub(crate) refuses: bool,
+}
+
+/// A driver's error that says what it was given.
+#[derive(Debug)]
+pub(crate) struct Refused(String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "the driver refused {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// A source of no streams whose check, and whose connect when told to, fail saying its
+/// configuration back, in the error and in the driver's error behind it.
+#[derive(Debug)]
+pub(crate) struct Echo(serde_json::Value);
+
+impl Echo {
+    fn saying(said: &serde_json::Value) -> ConnectorError {
+        let message = format!("it said {said} and {said:?}");
+        ConnectorError::new(ConnectorErrorKind::Transient, message)
+            .with_code(said.to_string())
+            .with_source(Refused(format!("{said:#}")))
+    }
+}
+
+#[source(id = "test.echo")]
+impl SourceConnector for Echo {
+    type Config = EchoConfig;
+
+    async fn connect(config: EchoConfig, _context: &ConnectContext) -> Result<Self> {
+        if config.refuses {
+            return Err(Self::saying(&config.said));
+        }
+        Ok(Self(config.said))
+    }
+
+    async fn check(&self) -> Result<()> {
+        Err(Self::saying(&self.0))
+    }
+
+    fn streams(&self) -> Streams<Self> {
+        Streams::new()
+    }
+}

@@ -32,12 +32,15 @@ async fn a_connector_that_cannot_be_reached_fails_every_clause_and_is_named_as_g
     let named = exits.display().to_string();
     let targets = [
         (
-            Target::spawned(Local::new(), reference().path(&exits)),
+            Target::spawned(Local::trusting_binaries(), reference().path(&exits)),
             named.as_str(),
             "Spawned",
         ),
         (
-            Target::spawned(Local::new(), reference().path("/nonexistent/connector")),
+            Target::spawned(
+                Local::trusting_binaries(),
+                reference().path("/nonexistent/connector"),
+            ),
             "test.unreached",
             "Spawned",
         ),

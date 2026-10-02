@@ -22,9 +22,14 @@ pub use endpoint::{Endpoint, EndpointError};
 pub(crate) use rewound::Rewound;
 
 use crate::kills::{Kills, Severing};
-use crate::provider::{ConnectorRef, Placed, Placement, Provider, ProviderError};
+use crate::provider::{
+    ConnectorRef, Honours, Isolation, Placed, Placement, Provider, ProviderError,
+};
 use crate::remote::Options;
-use crate::supervise::{Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor};
+use crate::secrets::{Config, SecretResolver, Secrets};
+use crate::supervise::{
+    Configured, Gate, Spawned, Start, SupervisedDestination, SupervisedSource, Supervisor,
+};
 use crate::wire::Wire;
 
 /// A byte stream to a connector, over whatever network reached it.
@@ -75,7 +80,18 @@ pub struct Remote {
     network: Arc<dyn Network>,
     options: Options,
     fallback: Option<Arc<dyn Provider>>,
+    secrets: Arc<dyn SecretResolver>,
 }
+
+/// What remote placement honours of a reference: its endpoint, whose host is the name the
+/// connector's certificate must carry, and the isolation of another machine.
+const HONOURS: Honours = Honours {
+    placement: "remote",
+    path: false,
+    endpoint: true,
+    digest: false,
+    isolation: &[Isolation::Remote],
+};
 
 impl fmt::Debug for Remote {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -86,6 +102,7 @@ impl fmt::Debug for Remote {
             .field("network", &self.network)
             .field("options", &self.options)
             .field("fallback", &self.fallback.is_some())
+            .field("secrets", &self.secrets)
             .finish()
     }
 }
@@ -100,7 +117,15 @@ impl Remote {
             network: Arc::new(Tcp),
             options: Options::default(),
             fallback: None,
+            secrets: Arc::new(Secrets::new()),
         }
+    }
+
+    /// Resolves the secret references of each configuration with `secrets`.
+    #[must_use]
+    pub fn secrets(mut self, secrets: impl SecretResolver + 'static) -> Self {
+        self.secrets = Arc::new(secrets);
+        self
     }
 
     /// Reaches endpoints over `network`, not the operating system's TCP.
@@ -148,15 +173,13 @@ impl Remote {
             reference,
             found_at: &at,
         };
-        Supervisor::start(
-            Start::Dial(dialing),
-            role,
-            config.clone(),
-            self.options,
-            &gate,
-        )
-        .await
-        .map_err(|spawned| refused(reference, &at, spawned))
+        let configured = Configured {
+            config: Config::from(config),
+            secrets: Arc::clone(&self.secrets),
+        };
+        Supervisor::start(Start::Dial(dialing), role, configured, self.options, &gate)
+            .await
+            .map_err(|spawned| refused(reference, &at, spawned))
     }
 
     /// How to reach `endpoint`, for the connector `reference` names.
@@ -164,6 +187,7 @@ impl Remote {
     /// An endpoint that is refused is not repeated in the error: what is wrong with it may be a
     /// credential written into it.
     fn dialing(&self, reference: &ConnectorRef, endpoint: &str) -> Result<Dial, ProviderError> {
+        HONOURS.admit(reference)?;
         let address = Endpoint::parse(endpoint).map_err(|source| ProviderError::Endpoint {
             id: reference.id.clone(),
             source,
@@ -219,6 +243,10 @@ fn refused(reference: &ConnectorRef, endpoint: &str, spawned: Spawned) -> Provid
         Spawned::Connect(source) => ProviderError::HandshakeFailed {
             id: reference.id.clone(),
             source: Box::new(source),
+        },
+        Spawned::Secret(source) => ProviderError::Secret {
+            id: reference.id.clone(),
+            source,
         },
         Spawned::Refused(refused) => refused,
     }

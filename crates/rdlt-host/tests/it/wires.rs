@@ -29,9 +29,10 @@ fn handshake() -> v1::HandshakeRequest {
 
 #[tokio::test]
 async fn a_client_speaks_the_protocol_raw_over_a_spawned_connectors_wire() {
-    let local = Local::new().env_passthrough("LLVM_PROFILE_FILE");
+    let local = Local::trusting_binaries().env_passthrough("LLVM_PROFILE_FILE");
     let wire = local
         .wire(&scripted().path(example("scripted_connector")))
+        .await
         .expect("the connector spawns");
     assert!(format!("{wire:?}").contains("spawned: true"), "{wire:?}");
     let mut client = client(wire, Options::default())
@@ -77,7 +78,9 @@ async fn a_client_speaks_the_protocol_raw_over_a_listening_connectors_wire() {
 
 #[tokio::test]
 async fn a_wire_to_a_connector_that_cannot_be_found_is_not_found() {
-    let local = Local::new().wire(&scripted().path("/nonexistent/connector"));
+    let local = Local::trusting_binaries()
+        .wire(&scripted().path("/nonexistent/connector"))
+        .await;
     assert!(
         matches!(local, Err(ProviderError::NotFound { .. })),
         "{local:?}"

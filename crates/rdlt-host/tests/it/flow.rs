@@ -158,7 +158,13 @@ async fn an_error_at_the_control_string_limit_keeps_its_kind_and_code() {
             (ConnectorErrorKind::Auth, Some("denied")),
             "{length}"
         );
-        assert_eq!(error.to_string().len(), limit, "{length}");
+        // Cut by the connector to the control string limit, and by the host to what it
+        // keeps of an error's text.
+        assert_eq!(
+            error.to_string().len(),
+            rdlt_connector::limits::MAX_ERROR_TEXT_BYTES,
+            "{length}"
+        );
     }
 }
 
