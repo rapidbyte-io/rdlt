@@ -24,6 +24,7 @@ pub struct Emitter<C> {
     sink: PartitionSink,
     cursor_version: u16,
     follow: bool,
+    resumes: bool,
     cursor: PhantomData<fn(&C)>,
 }
 
@@ -33,8 +34,22 @@ impl<C: Serialize> Emitter<C> {
             sink,
             cursor_version,
             follow,
+            resumes: false,
             cursor: PhantomData,
         }
+    }
+
+    /// Says the host gave the read a cursor.
+    pub(crate) fn resuming(mut self, resumes: bool) -> Self {
+        self.resumes = resumes;
+        self
+    }
+
+    /// Whether the host gave the read a cursor to start from; where it gave none, the read's
+    /// cursor is the stream's default, and its host is heard for no position until the read
+    /// sends a checkpoint.
+    pub fn resumes(&self) -> bool {
+        self.resumes
     }
 
     /// Whether the engine asks this read to follow its unbounded partition once caught up,

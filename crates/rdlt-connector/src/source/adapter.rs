@@ -71,11 +71,12 @@ impl<S: SourceConnector, R: ReadStream<S>> ErasedStream<S> for R {
                 follow,
                 ..
             } = request;
+            let resumes = cursor.is_some();
             let cursor = match cursor {
                 Some(cursor) => decode::<S, R>(self, &cursor)?,
                 None => R::Cursor::default(),
             };
-            let mut out = Emitter::new(sink, R::CURSOR_VERSION, follow);
+            let mut out = Emitter::new(sink, R::CURSOR_VERSION, follow).resuming(resumes);
             match ReadStream::read(self, source, &partition, cursor, &mut out).await {
                 Err(error) if error.kind() == ConnectorErrorKind::Stopped => Ok(()),
                 other => other,

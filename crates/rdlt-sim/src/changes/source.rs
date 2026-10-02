@@ -181,7 +181,8 @@ impl ReadStream<SimChangeSource> for Reader {
                 ));
             }
         }
-        world.reports.started(&stream.name, partition.id(), &cursor);
+        let given = out.resumes().then_some(&cursor);
+        world.reports.started(&stream.name, partition.id(), given);
         let reading = Reading {
             world,
             stream,
