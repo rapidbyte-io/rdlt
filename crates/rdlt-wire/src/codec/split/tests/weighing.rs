@@ -226,3 +226,22 @@ fn rows_that_all_fit_are_weighed_in_stretches_each_twice_the_last() {
         (1, 10, 5)
     );
 }
+
+#[test]
+fn rows_past_a_stretch_that_did_not_fit_are_found_by_halving_what_is_left() {
+    // A hundred rows of one value each, for a receiver of thirty-seven values a frame.
+    let batch = batch_of(Arc::new(Int64Array::from(vec![1; 100])));
+    let limits = Limits {
+        batch_values: 37,
+        ..Limits::default()
+    };
+    let mut sender = crate::codec::Encoder::default();
+    sender.schema(&batch.schema()).unwrap();
+    let mut cutting = crate::codec::Cut::new(batch, limits);
+    sender.piece(&mut cutting).unwrap();
+    assert_eq!(cutting.sent, 37);
+    // Stretches of 1, 1, 2, 4, 8 and 16 rows fit; then 32, 16 and 8 do not, 4 do, 2 do not
+    // and 1 does, which leaves none to try.
+    assert_eq!(cutting.probe.weighed, 32 + 32 + 16 + 8 + 4 + 2 + 1);
+    assert_eq!(cutting.weigher.visits(), 12);
+}
