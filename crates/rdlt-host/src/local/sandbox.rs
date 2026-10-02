@@ -2,11 +2,15 @@
 
 use std::ffi::OsString;
 use std::fmt;
-use std::os::fd::RawFd;
+use std::os::fd::{OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::process::Command;
 
 /// What a sandboxed connector may reach beyond its own program: nothing unless granted.
+///
+/// A pipeline grants what its own connector needs, on the reference that places it
+/// ([`ConnectorRef::grant_write`](crate::ConnectorRef::grant_write)); a provider grants only
+/// paths every connector it spawns may read ([`Local::grant_read`](crate::Local::grant_read)).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Grants {
     /// Paths it may read, each absolute.
@@ -15,6 +19,16 @@ pub struct Grants {
     pub write: Vec<PathBuf>,
     /// Whether it may reach the network.
     pub network: NetworkGrant,
+    /// Whether its paths may overlap those another connector the provider runs was granted,
+    /// that connector's grants being shared too: otherwise such a placement is refused.
+    pub shared: bool,
+}
+
+impl Grants {
+    /// Whether nothing is granted.
+    pub fn is_empty(&self) -> bool {
+        self.read.is_empty() && self.write.is_empty() && self.network == NetworkGrant::Denied
+    }
 }
 
 /// Whether a sandboxed connector may reach the network.
@@ -23,7 +37,8 @@ pub enum NetworkGrant {
     /// It has no network but a loopback of its own.
     #[default]
     Denied,
-    /// It shares the host's network.
+    /// It shares the host's network: every interface and route of the host, the host's own
+    /// loopback services, and the abstract Unix sockets of the host's network namespace.
     Granted,
 }
 
@@ -64,6 +79,12 @@ pub struct Launcher {
     pub command: Command,
     /// How the connector is asked to stop.
     pub stops: Stops,
+    /// Descriptors the command's process must find open at the numbers given, beside the
+    /// program and the socket.
+    pub given: Vec<(OwnedFd, RawFd)>,
+    /// Descriptors this process must hold open until the command has spawned, as the file a
+    /// command is executed from.
+    pub held: Vec<OwnedFd>,
 }
 
 /// Why a connector cannot be sandboxed.
@@ -94,6 +115,27 @@ pub enum SandboxError {
         /// The path.
         path: PathBuf,
     },
+    /// A path granted overlaps one another connector running now was granted, and the grants
+    /// are not both shared.
+    #[error("the granted path {} overlaps a path another connector was granted", path.display())]
+    Overlap {
+        /// The path.
+        path: PathBuf,
+    },
+    /// A path granted to be written holds, or is within, what decides which program runs: a
+    /// connector directory, the connector's binary, or the sandbox's launcher.
+    #[error("the path {} granted to be written holds a program the host runs", path.display())]
+    Covers {
+        /// The path.
+        path: PathBuf,
+    },
+    /// The launcher, or a directory above it, belongs to another user or may be written by
+    /// one.
+    #[error("the sandbox launcher at {} may be changed by another user", path.display())]
+    Shared {
+        /// The launcher, or the directory.
+        path: PathBuf,
+    },
 }
 
 impl SandboxError {
@@ -104,6 +146,9 @@ impl SandboxError {
             Self::Missing { .. } => "sandbox_missing",
             Self::Unavailable { .. } => "sandbox_unavailable",
             Self::Grant { .. } => "sandbox_grant",
+            Self::Overlap { .. } => "grant_overlap",
+            Self::Covers { .. } => "grant_covers",
+            Self::Shared { .. } => "sandbox_launcher_shared",
         }
     }
 }
@@ -113,7 +158,8 @@ impl SandboxError {
 ///
 /// The sandbox must give the connector no file, network, process or variable of the host's
 /// but what [`Confined`] names, pass on no descriptor but its standard streams and the
-/// socket, and end everything it started when the process the host spawned is killed.
+/// socket, put no value of the connector's environment where another user may read it, as a
+/// command line, and end everything it started when the process the host spawned is killed.
 pub trait Sandbox: fmt::Debug + Send + Sync {
     /// The command that runs `confined`.
     ///

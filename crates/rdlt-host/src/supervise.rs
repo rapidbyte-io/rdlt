@@ -17,6 +17,7 @@ mod session;
 use session::SupervisedSession;
 
 use crate::connect::Open;
+use crate::local::Witness;
 use crate::local::process::{Launch, Process, Unspawned};
 use crate::network::Dial;
 use crate::provider::{ConnectorRef, ProviderError, accepts};
@@ -42,8 +43,37 @@ pub(crate) enum Start {
 pub(crate) struct Running {
     pub(crate) connection: Arc<Connection>,
     pub(crate) process: Option<Process>,
-    /// The secrets this start of the connector was sent, which nothing it says may show.
-    pub(crate) redactions: Redactions,
+}
+
+/// What explains the errors of calls made on one start of a connector: the secrets every
+/// start was sent, and a witness to that start's process, when this process spawned it.
+#[derive(Clone)]
+pub(crate) struct Words {
+    redactions: Redactions,
+    witness: Option<Witness>,
+}
+
+impl Words {
+    /// `result`, its error as the host keeps a connector's: scrubbed of every secret any start
+    /// of the connector was sent, shown, and carrying the last words of the process the call
+    /// went to when its transport failed.
+    pub(crate) async fn explain<T>(
+        &self,
+        result: rdlt_connector::Result<T>,
+    ) -> rdlt_connector::Result<T> {
+        let Err(error) = result else {
+            return result;
+        };
+        let transport = matches!(error.code(), Some(CONNECTOR_LOST | TRANSPORT));
+        let explained = std::error::Error::source(&error).is_some();
+        let error = error.received(&|text| self.redactions.scrubbed(text));
+        Err(match &self.witness {
+            Some(witness) if transport && !explained => {
+                error.with_source(witness.last_words(LAST_WORDS).await)
+            }
+            _ => error,
+        })
+    }
 }
 
 /// Starts a connector, and starts it again, respawned or redialed, once it is lost.
@@ -54,6 +84,9 @@ pub(crate) struct Supervisor {
     configured: Configured,
     options: Options,
     running: Mutex<Running>,
+    /// Every secret any start of the connector was sent: a connector may say one again after
+    /// it was started anew.
+    redactions: Redactions,
     /// The spec the connector was checked to serve: whatever is started again must serve it.
     checked: ConnectorSpec,
 }
@@ -102,7 +135,8 @@ impl Supervisor {
         gate: &Gate<'_>,
     ) -> Result<Self, Spawned> {
         let admit = |spec: &v1::ConnectorSpec| gate.admit(spec).map_err(Spawned::Refused);
-        let running = begin(&start, role, &configured, options, &admit).await?;
+        let redactions = Redactions::new();
+        let running = begin(&start, role, &configured, options, &admit, &redactions).await?;
         let checked = crate::remote::contract_spec(running.connection.spec(), role)
             .map_err(|error| Spawned::Refused(gate.refused(error)))?;
         Ok(Self {
@@ -111,6 +145,7 @@ impl Supervisor {
             configured,
             options,
             running: Mutex::new(running),
+            redactions,
             checked,
         })
     }
@@ -125,19 +160,30 @@ impl Supervisor {
         Arc::clone(&self.running.lock().await.connection)
     }
 
-    /// The connection to a live connector, starting it again if it was lost.
-    async fn connection(&self) -> Result<Arc<Connection>, ConnectorError> {
+    /// The connection to a live connector, starting it again if it was lost, and what
+    /// explains the errors of calls made on it.
+    async fn connection(&self) -> Result<(Arc<Connection>, Words), ConnectorError> {
         let mut running = self.running.lock().await;
         if running.connection.is_spent() {
             let admit = |spec: &v1::ConnectorSpec| self.same_identity(spec);
             let (start, configured) = (&self.start, &self.configured);
-            let started = begin(start, self.role, configured, self.options, &admit)
-                .await
-                .map_err(Spawned::into_error)?;
+            let starting = begin(
+                start,
+                self.role,
+                configured,
+                self.options,
+                &admit,
+                &self.redactions,
+            );
+            let started = starting.await.map_err(Spawned::into_error)?;
             self.same(&started.connection)?;
             *running = started;
         }
-        Ok(Arc::clone(&running.connection))
+        let words = Words {
+            redactions: self.redactions.clone(),
+            witness: running.process.as_ref().map(Process::witness),
+        };
+        Ok((Arc::clone(&running.connection), words))
     }
 
     /// Whether a connector started again handshook with the id and version first checked, before
@@ -159,32 +205,6 @@ impl Supervisor {
             return Ok(());
         }
         Err(changed(spec.id.as_str(), &spec.version, checked))
-    }
-
-    /// `result`, its error carrying the connector's last words when its transport failed.
-    pub(crate) async fn explain<T>(
-        &self,
-        result: rdlt_connector::Result<T>,
-    ) -> rdlt_connector::Result<T> {
-        match result {
-            Ok(value) => Ok(value),
-            Err(error) => Err(self.explained(error).await),
-        }
-    }
-
-    /// `error` as the host keeps a connector's: scrubbed of the secrets the connector was sent
-    /// and shown, carrying a spawned connector's last words when its transport failed.
-    async fn explained(&self, error: ConnectorError) -> ConnectorError {
-        let transport = matches!(error.code(), Some(CONNECTOR_LOST | TRANSPORT));
-        let explained = std::error::Error::source(&error).is_some();
-        let running = self.running.lock().await;
-        let error = error.received(&|text| running.redactions.scrubbed(text));
-        match &running.process {
-            Some(process) if transport && !explained => {
-                error.with_source(process.last_words(LAST_WORDS).await)
-            }
-            _ => error,
-        }
     }
 
     /// The capabilities the live destination declares.
@@ -274,9 +294,12 @@ async fn begin(
     configured: &Configured,
     options: Options,
     admit: &Admit<'_>,
+    redactions: &Redactions,
 ) -> Result<Running, Spawned> {
     let io: Box<dyn crate::network::Stream> = match start {
-        Start::Spawn(launch) => return spawn(launch, role, configured, options, admit).await,
+        Start::Spawn(launch) => {
+            return spawn(launch, role, configured, options, admit, redactions).await;
+        }
         Start::Connect(open) => {
             let deadline = options.deadlines.connect;
             tokio::time::timeout(deadline, open())
@@ -291,12 +314,10 @@ async fn begin(
         }
         Start::Dial(dial) => Box::new(crate::network::dial(dial, options.deadlines.connect).await?),
     };
-    let redactions = Redactions::new();
-    let connection = self::configured(io, role, configured, &redactions, options, admit).await?;
+    let connection = self::configured(io, role, configured, redactions, options, admit).await?;
     Ok(Running {
         connection,
         process: None,
-        redactions,
     })
 }
 
@@ -335,14 +356,14 @@ async fn spawn(
     configured: &Configured,
     options: Options,
     admit: &Admit<'_>,
+    redactions: &Redactions,
 ) -> Result<Running, Spawned> {
-    let launched = Process::launching(launch.clone()).await;
+    let launched = Process::launching(launch.clone(), redactions.clone()).await;
     let (io, process) = launched.map_err(|unspawned| match *unspawned {
         (_, Unspawned::Io(error)) => Spawned::Io(error),
         (launch, refused) => Spawned::Refused(crate::local::refused(&launch, refused)),
     })?;
-    let redactions = process.redactions().clone();
-    let connecting = self::configured(io, role, configured, &redactions, options, admit);
+    let connecting = self::configured(io, role, configured, redactions, options, admit);
     let connection = match connecting.await {
         Ok(connection) => connection,
         Err(Spawned::Connect(error)) => {
@@ -362,7 +383,6 @@ async fn spawn(
     Ok(Running {
         connection,
         process: Some(process),
-        redactions,
     })
 }
 
@@ -370,23 +390,24 @@ async fn spawn(
 pub(crate) struct SupervisedSource(pub(crate) Arc<Supervisor>);
 
 impl SupervisedSource {
-    async fn source(&self) -> Result<RemoteSource, ConnectorError> {
-        Ok(RemoteSource::new(self.0.connection().await?))
+    async fn source(&self) -> Result<(RemoteSource, Words), ConnectorError> {
+        let (connection, words) = self.0.connection().await?;
+        Ok((RemoteSource::new(connection), words))
     }
 }
 
 impl Source for SupervisedSource {
     fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
         Box::pin(async move {
-            let result = self.source().await?.check().await;
-            self.0.explain(result).await
+            let (source, words) = self.source().await?;
+            words.explain(source.check().await).await
         })
     }
 
     fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<Catalog>> {
         Box::pin(async move {
-            let result = self.source().await?.discover().await;
-            self.0.explain(result).await
+            let (source, words) = self.source().await?;
+            words.explain(source.discover().await).await
         })
     }
 
@@ -396,8 +417,8 @@ impl Source for SupervisedSource {
         state: &'a StreamState,
     ) -> BoxFuture<'a, rdlt_connector::Result<PartitionPlan>> {
         Box::pin(async move {
-            let result = self.source().await?.plan(stream, state).await;
-            self.0.explain(result).await
+            let (source, words) = self.source().await?;
+            words.explain(source.plan(stream, state).await).await
         })
     }
 
@@ -407,8 +428,8 @@ impl Source for SupervisedSource {
         sink: PartitionSink,
     ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
         Box::pin(async move {
-            let result = self.source().await?.read(request, sink).await;
-            self.0.explain(result).await
+            let (source, words) = self.source().await?;
+            words.explain(source.read(request, sink).await).await
         })
     }
 
@@ -418,8 +439,8 @@ impl Source for SupervisedSource {
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(async move {
-            let result = self.source().await?.committed(stream, cursors).await;
-            self.0.explain(result).await
+            let (source, words) = self.source().await?;
+            words.explain(source.committed(stream, cursors).await).await
         })
     }
 }
@@ -431,15 +452,16 @@ pub(crate) struct SupervisedDestination {
 }
 
 impl SupervisedDestination {
-    async fn destination(&self) -> Result<RemoteDestination, ConnectorError> {
-        let destination = RemoteDestination::new(self.supervisor.connection().await?)?;
+    async fn destination(&self) -> Result<(RemoteDestination, Words), ConnectorError> {
+        let (connection, words) = self.supervisor.connection().await?;
+        let destination = RemoteDestination::new(connection)?;
         if *destination.capabilities() != self.capabilities {
             return Err(ConnectorError::new(
                 ConnectorErrorKind::Internal,
                 "the respawned connector declares other capabilities than it first did",
             ));
         }
-        Ok(destination)
+        Ok((destination, words))
     }
 }
 
@@ -450,8 +472,8 @@ impl Destination for SupervisedDestination {
 
     fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
         Box::pin(async move {
-            let result = self.destination().await?.check().await;
-            self.supervisor.explain(result).await
+            let (destination, words) = self.destination().await?;
+            words.explain(destination.check().await).await
         })
     }
 
@@ -460,12 +482,12 @@ impl Destination for SupervisedDestination {
         context: &'a OpenContext,
     ) -> BoxFuture<'a, rdlt_connector::Result<OpenedSession>> {
         Box::pin(async move {
-            let result = self.destination().await?.open(context).await;
-            let opened = self.supervisor.explain(result).await?;
+            let (destination, words) = self.destination().await?;
+            let opened = words.explain(destination.open(context).await).await?;
             Ok(OpenedSession {
                 session: Box::new(SupervisedSession {
                     inner: opened.session,
-                    supervisor: Arc::clone(&self.supervisor),
+                    words,
                 }),
                 ..opened
             })

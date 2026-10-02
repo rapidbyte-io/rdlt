@@ -2155,6 +2155,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "nix",
+ "rdlt-adopt",
  "rdlt-connector",
  "rdlt-connector-reference",
  "rdlt-engine",

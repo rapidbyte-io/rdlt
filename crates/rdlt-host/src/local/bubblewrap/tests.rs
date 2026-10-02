@@ -63,12 +63,14 @@ fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
         &arguments,
         &["--ro-bind-fd", &PROGRAM_FD.to_string(), PROGRAM]
     ));
-    // The program and its arguments end the command, and nothing follows them.
-    assert!(arguments.ends_with(&[
-        "--".to_owned(),
-        PROGRAM.to_owned(),
-        "--rdlt-fd=3".to_owned()
-    ]));
+    // Its own user namespace, in which it may make none.
+    assert!(holds(&arguments, &["--unshare-user", "--disable-userns"]));
+    // Neither the program nor its arguments are among what the descriptor carries.
+    assert!(
+        !arguments
+            .iter()
+            .any(|argument| argument == "--" || argument == "--rdlt-fd=3")
+    );
     // Nothing of the host is bound to be written, and no home directory at all.
     assert!(!arguments.iter().any(|argument| argument == "--bind"));
     assert!(
@@ -89,6 +91,7 @@ fn what_is_granted_is_bound_and_nothing_else_of_the_hosts() {
         read: vec![read.clone()],
         write: vec![write.clone()],
         network: NetworkGrant::Granted,
+        shared: false,
     };
     let arguments = arguments(&grants);
     let (read, write) = (read.to_str().expect("text"), write.to_str().expect("text"));
@@ -168,13 +171,81 @@ fn bubblewrap_where_it_runs_stops_its_connector_by_the_end_of_its_input() {
     match sandbox.launcher(&confined(&grants, &[], &[])) {
         Ok(launcher) => {
             assert_eq!(launcher.stops, Stops::ByInputEnd);
-            assert_eq!(launcher.command.get_program(), "/usr/bin/bwrap");
+            let program = launcher
+                .command
+                .get_program()
+                .to_string_lossy()
+                .into_owned();
+            assert!(program.starts_with("/proc/self/fd/"), "{program}");
             // The launcher's own environment is empty too.
             assert_eq!(launcher.command.get_envs().count(), 0);
         }
-        Err(unusable) => {
-            use std::io::Write as _;
-            writeln!(std::io::stderr(), "skipped: {unusable}").ok();
-        }
+        Err(unusable) => rdlt_testkit::process::without_sandbox(&unusable),
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn no_argument_and_no_value_of_the_environment_is_on_the_launchers_command_line() {
+    let sandbox = Bubblewrap::new();
+    if let Err(unusable) = sandbox.usable() {
+        rdlt_testkit::process::without_sandbox(&unusable);
+        return;
+    }
+    let grants = Grants::default();
+    let env = [(OsString::from("SECRET"), OsString::from("hunter2-in-env"))];
+    let args = [OsString::from("--rdlt-fd=3")];
+    let launcher = sandbox
+        .launcher(&confined(&grants, &env, &args))
+        .expect("a launcher");
+    let line: Vec<String> = std::iter::once(launcher.command.get_program())
+        .chain(launcher.command.get_args())
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
+    assert!(line[0].starts_with("/proc/self/fd/"), "{line:?}");
+    assert_eq!(&line[1..], ["--args", "5", "--", PROGRAM, "--rdlt-fd=3"]);
+    assert_eq!(launcher.command.get_envs().count(), 0);
+    // What it is given instead: every argument, each ended by a NUL, in a file of its own.
+    let [(file, at)] = <[_; 1]>::try_from(launcher.given).expect("one descriptor");
+    assert_eq!(at, 5);
+    let mut read = String::new();
+    std::io::Read::read_to_string(&mut std::fs::File::from(file), &mut read).expect("it reads");
+    assert!(
+        read.contains("--setenv\0SECRET\0hunter2-in-env\0"),
+        "{read:?}"
+    );
+    assert!(read.ends_with('\0'));
+    assert_eq!(launcher.held.len(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_launcher_another_user_may_change_or_a_grant_that_may_write_it_is_refused() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let copy = root.path().join("bwrap");
+    std::fs::copy("/usr/bin/bwrap", &copy).ok();
+    if !copy.exists() {
+        rdlt_testkit::process::without_sandbox(&"no /usr/bin/bwrap to copy");
+        return;
+    }
+    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o775)).expect("a mode");
+    let refused = Bubblewrap::at(&copy)
+        .usable()
+        .expect_err("another user may write it");
+    assert_eq!(refused.code(), "sandbox_launcher_shared");
+    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o755)).expect("a mode");
+    let sandbox = Bubblewrap::at(&copy);
+    if let Err(unusable) = sandbox.usable() {
+        rdlt_testkit::process::without_sandbox(&unusable);
+        return;
+    }
+    let grants = Grants {
+        write: vec![root.path().to_owned()],
+        ..Grants::default()
+    };
+    let refused = sandbox
+        .launcher(&confined(&grants, &[], &[]))
+        .expect_err("it covers");
+    assert_eq!(refused.code(), "grant_covers");
 }

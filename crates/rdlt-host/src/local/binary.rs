@@ -47,12 +47,34 @@ const OPEN: OFlags = OFlags::RDONLY
     .union(OFlags::NOCTTY);
 
 impl Binary {
-    /// Opens the binary at `path`, as its operator wrote the path, links included.
+    /// Opens the binary at `path`, as its operator wrote the path, links included: the
+    /// directories on the way, as written and as the file was reached, must be no other
+    /// user's to change.
     pub(crate) fn at(path: &Path) -> Result<Self, Unfit> {
         let absolute = std::path::absolute(path).map_err(|error| Unfit::Absent(Some(error)))?;
         let fd = rustix::fs::open(&absolute, OPEN, Mode::empty())
             .map_err(|error| Unfit::Absent(Some(error.into())))?;
-        Self::checked(File::from(fd), absolute)
+        let binary = Self::checked(File::from(fd), absolute)?;
+        directories_private(&binary.path)?;
+        directories_private(&binary.real()?)?;
+        Ok(binary)
+    }
+
+    /// Where the open file is, every link resolved.
+    fn real(&self) -> Result<PathBuf, Unfit> {
+        #[cfg(target_os = "linux")]
+        let real = {
+            use std::os::fd::AsRawFd as _;
+            std::fs::read_link(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
+        };
+        #[cfg(not(target_os = "linux"))]
+        let real = std::fs::canonicalize(&self.path);
+        real.map_err(|error| Unfit::Absent(Some(error)))
+    }
+
+    /// Whether a name still leads to the open file: one renamed over, or removed, has none.
+    pub(crate) fn linked(&self) -> io::Result<bool> {
+        Ok(self.file.metadata()?.nlink() > 0)
     }
 
     /// Opens the binary `name` in the first of `dirs` that holds it: each an absolute path to
@@ -72,6 +94,7 @@ impl Binary {
             };
             let opened = File::from(opened);
             private(&opened, dir)?;
+            directories_private(dir)?;
             // What is absent is looked for in the next directory, and so is a link, which is
             // not followed.
             let named = rustix::fs::openat(&opened, name, OPEN | OFlags::NOFOLLOW, Mode::empty());
@@ -134,6 +157,36 @@ impl Binary {
             offset = offset.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
         }
     }
+}
+
+/// Checks that every directory above `path` belongs to this process's user or to the
+/// superuser, and that another user may write none of them, or, where one may, as in `/tmp`,
+/// that the directory is sticky and the entry within it this user's or the superuser's: in a
+/// sticky directory another user can neither remove nor rename an entry they do not own.
+pub(crate) fn directories_private(path: &Path) -> Result<(), Unfit> {
+    let ours = rustix::process::geteuid().as_raw();
+    let trusted = |owner: u32| owner == 0 || owner == ours;
+    let entries = path.ancestors().skip(1).zip(path.ancestors());
+    for (directory, entry) in entries {
+        let metadata = std::fs::metadata(directory).map_err(|error| Unfit::Absent(Some(error)))?;
+        let (owner, mode) = (metadata.uid(), metadata.mode() & 0o7777);
+        let shared = Unfit::Shared {
+            path: directory.to_owned(),
+            owner,
+            mode,
+        };
+        if !trusted(owner) {
+            return Err(shared);
+        }
+        if mode & 0o022 != 0 {
+            let held = std::fs::symlink_metadata(entry);
+            let entry_ours = held.is_ok_and(|held| trusted(held.uid()));
+            if mode & 0o1000 == 0 || !entry_ours {
+                return Err(shared);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Checks that the open `file`, found at `path`, belongs to this process's user or to the

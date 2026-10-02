@@ -1,6 +1,9 @@
 //! What a spawned connector holds open: its standard streams and its socket, and nothing else
 //! of its host's.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use rdlt_host::Provider as _;
 
 use crate::process::{local, scripted};
@@ -75,8 +78,8 @@ async fn a_descriptor_the_host_holds_to_be_inherited_reaches_no_connector() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(done.exists(), "the shell never ran");
-    let found = std::fs::read(&seen).expect("the shell ran");
-    // Nothing of the host's: the number leads to the null device, or to nothing.
+    // Nothing of the host's: the number leads to nothing, so the copy fails before it starts.
+    let found = std::fs::read(&seen).unwrap_or_default();
     assert_eq!(String::from_utf8_lossy(&found), "");
     // And nothing on the connector's side read the host's file, which would have moved it.
     assert_eq!(held.stream_position().expect("its position"), 0);
@@ -86,4 +89,64 @@ async fn a_descriptor_the_host_holds_to_be_inherited_reaches_no_connector() {
 #[cfg(target_os = "linux")]
 fn rdlt_host_inheritable(file: &std::fs::File) {
     rustix::io::fcntl_setfd(file, rustix::io::FdFlags::empty()).expect("the flag clears");
+}
+
+/// Opens and closes a file without close-on-exec, again and again, until `stop` is set, as a
+/// library that knows nothing of the flag does on a thread of its own.
+fn opening(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<u64> {
+    std::thread::spawn(move || {
+        let mut opened = 0;
+        while !stop.load(Ordering::Relaxed) {
+            let flags = rustix::fs::OFlags::RDONLY;
+            if let Ok(file) = rustix::fs::open("/etc/hostname", flags, rustix::fs::Mode::empty()) {
+                opened += 1;
+                std::thread::sleep(std::time::Duration::from_micros(200));
+                drop(file);
+            }
+        }
+        opened
+    })
+}
+
+/// Spawns `count` connectors with `local`, eight at a time, while another thread opens files
+/// without close-on-exec: how many started with a descriptor beside their own.
+async fn leaked(local: rdlt_host::Local, count: usize) -> usize {
+    let stop = Arc::new(AtomicBool::new(false));
+    let opener = opening(Arc::clone(&stop));
+    let mut leaked = 0;
+    for _ in 0..count / 8 {
+        let spawning = (0..8).map(|_| {
+            let local = local.clone();
+            tokio::spawn(async move {
+                let placed = local.source(&scripted(), &only_its_descriptors()).await;
+                let source = placed.expect("the connector starts").connector;
+                source.check().await.is_err()
+            })
+        });
+        for spawned in spawning.collect::<Vec<_>>() {
+            leaked += usize::from(spawned.await.expect("the task ends"));
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    assert!(
+        opener.join().expect("the opener ends") > 0,
+        "the opener opened nothing"
+    );
+    leaked
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_trusted_connector_inherits_a_descriptor_another_thread_opens_as_it_is_spawned() {
+    assert_eq!(leaked(local(), 304).await, 0);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_sandboxed_connector_inherits_a_descriptor_another_thread_opens_as_it_is_spawned() {
+    let sandbox = rdlt_host::Bubblewrap::new();
+    if let Err(unusable) = sandbox.usable() {
+        rdlt_testkit::process::without_sandbox(&unusable);
+        return;
+    }
+    assert_eq!(leaked(rdlt_host::Local::sandboxed(sandbox), 304).await, 0);
 }

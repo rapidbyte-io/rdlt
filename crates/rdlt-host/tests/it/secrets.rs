@@ -157,3 +157,51 @@ async fn a_secret_is_resolved_again_each_time_the_connector_is_started() {
     }
     panic!("the connector was not started again with its secret");
 }
+
+/// Resolves `${secret:rotating}` to a new value each time it is asked: `rotated-1`, then
+/// `rotated-2`.
+#[derive(Debug, Default)]
+struct Rotating {
+    asked: AtomicUsize,
+}
+
+impl SecretResolver for Rotating {
+    fn resolve<'a>(
+        &'a self,
+        _reference: &'a SecretReference,
+    ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
+        let asked = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
+        Box::pin(async move { Ok(Secret::new(format!("rotated-{asked}"))) })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_an_earlier_start_was_sent_is_scrubbed_from_what_a_later_one_says() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let kills = rdlt_host::Kills::new();
+    let script = serde_json::json!({
+        "said": "${secret:rotating}",
+        "remembers": dir.path().join("kept"),
+    });
+    let source = local()
+        .kills(&kills)
+        .secrets(Rotating::default())
+        .source(&scripted(), &script)
+        .await
+        .expect("the connector starts")
+        .connector;
+    let first = source.check().await.expect_err("it says what it was sent");
+    assert!(!texts(&first).contains("rotated"), "{}", texts(&first));
+    kills.kill();
+    // Started again and sent another value, it says both: the earlier one is scrubbed too.
+    for _ in 0..200 {
+        let error = source.check().await.expect_err("it never passes");
+        let said = texts(&error);
+        assert!(!said.contains("rotated"), "{said}");
+        if std::fs::read_to_string(dir.path().join("kept")).is_ok_and(|kept| kept.contains('2')) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the connector was not started again");
+}

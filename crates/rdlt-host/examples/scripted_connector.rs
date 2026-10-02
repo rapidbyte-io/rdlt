@@ -71,6 +71,8 @@ struct Script {
     said: Option<serde_json::Value>,
     /// The row at which a read fails, once: the first time, it creates `marker` and fails.
     fail_once_at: Option<u64>,
+    /// A file where it keeps what it was told to say, so that a later start says it again.
+    remembers: Option<PathBuf>,
 }
 
 /// A cause that says `0`, as a driver's error says what it was given.
@@ -253,7 +255,12 @@ impl SourceConnector for Scripted {
         }
         script.confined().map_err(ConnectorError::config)?;
         if let (Some(said), None) = (&script.said, script.fail_once_at) {
-            return Err(saying(said));
+            let earlier = script.remembers.as_ref().and_then(|kept| {
+                let earlier = std::fs::read_to_string(kept).ok();
+                std::fs::write(kept, said.to_string()).ok();
+                earlier
+            });
+            return Err(saying(&serde_json::json!([earlier, said])));
         }
         for (name, expected) in &script.env {
             let found = std::env::var(name).ok();

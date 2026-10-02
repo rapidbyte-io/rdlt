@@ -7,6 +7,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod tests;
 
+use crate::local::{Grants, NetworkGrant};
 use rdlt_connector::limits::MAX_ERROR_CODE_BYTES;
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorId, ConnectorSpec, Destination, Source};
 
@@ -29,6 +30,9 @@ pub struct ConnectorRef {
     pub digest: Option<Digest>,
     /// The isolation its placement must give; whatever the provider gives when absent.
     pub isolation: Option<Isolation>,
+    /// What its pipeline grants its connector in a sandbox, beyond what the provider grants
+    /// every connector; nothing when empty.
+    pub grants: Grants,
 }
 
 impl fmt::Debug for ConnectorRef {
@@ -49,6 +53,7 @@ impl fmt::Debug for ConnectorRef {
             .field("endpoint", &endpoint)
             .field("digest", &self.digest)
             .field("isolation", &self.isolation)
+            .field("grants", &self.grants)
             .finish()
     }
 }
@@ -63,7 +68,40 @@ impl ConnectorRef {
             endpoint: None,
             digest: None,
             isolation: None,
+            grants: Grants::default(),
         }
+    }
+
+    /// Lets the connector read `path`, an absolute path, in its sandbox.
+    #[must_use]
+    pub fn grant_read(mut self, path: impl Into<PathBuf>) -> Self {
+        self.grants.read.push(path.into());
+        self
+    }
+
+    /// Lets the connector read and write `path`, an absolute path, in its sandbox: no other
+    /// connector of the provider may be granted it, or a path within or above it, while this
+    /// one runs, unless both grants are [shared](Self::share_grants).
+    #[must_use]
+    pub fn grant_write(mut self, path: impl Into<PathBuf>) -> Self {
+        self.grants.write.push(path.into());
+        self
+    }
+
+    /// Lets the connector share the host's network, its loopback services and abstract Unix
+    /// sockets included.
+    #[must_use]
+    pub fn grant_network(mut self) -> Self {
+        self.grants.network = NetworkGrant::Granted;
+        self
+    }
+
+    /// Lets the paths granted overlap those of other connectors whose grants are shared too:
+    /// the operator states the connectors may reach each other's files.
+    #[must_use]
+    pub fn share_grants(mut self) -> Self {
+        self.grants.shared = true;
+        self
     }
 
     /// Accepts only a placement that isolates the connector as `isolation` says.
@@ -115,12 +153,18 @@ pub enum Isolation {
 }
 
 /// What a kind of placement honours of a reference.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each says whether a placement honours one kind of requirement"
+)]
 pub(crate) struct Honours {
     /// How errors name the placement.
     pub(crate) placement: &'static str,
     pub(crate) path: bool,
     pub(crate) endpoint: bool,
     pub(crate) digest: bool,
+    /// Whether it gives a connector what its pipeline grants it.
+    pub(crate) grants: bool,
     /// The isolations it gives.
     pub(crate) isolation: &'static [Isolation],
 }
@@ -139,6 +183,7 @@ impl Honours {
             ),
             ("a digest", reference.digest.is_some() && !self.digest),
             ("an isolation", !isolated),
+            ("grants", !reference.grants.is_empty() && !self.grants),
         ];
         match unhonoured.into_iter().find(|(_, unhonoured)| *unhonoured) {
             Some((requirement, _)) => Err(ProviderError::Unsupported {
@@ -212,7 +257,8 @@ pub enum ProviderError {
     Unsupported {
         /// The connector's id.
         id: ConnectorId,
-        /// What the reference requires: `a path`, `an endpoint`, `a digest`, `an isolation`.
+        /// What the reference requires: `a path`, `an endpoint`, `a digest`, `an isolation`,
+        /// `grants`.
         requirement: &'static str,
         /// The placement that would have run it.
         placement: &'static str,
@@ -324,6 +370,15 @@ pub enum ProviderError {
         /// The digest found.
         found: Digest,
     },
+    /// The connector's binary was replaced or removed since it was placed, and the placement
+    /// runs it in a sandbox, which binds a program by a name the file no longer has.
+    #[error("connector `{id}` at {} was replaced since it was placed", path.display())]
+    Replaced {
+        /// The connector's id.
+        id: ConnectorId,
+        /// Where the binary was found.
+        path: PathBuf,
+    },
     /// The connector started, but did not connect: its handshake, or its own connect, failed.
     #[error("connector `{id}` did not connect")]
     HandshakeFailed {
@@ -350,6 +405,7 @@ impl ProviderError {
             Self::Unreachable { .. } => "unreachable",
             Self::Tls { .. } => "tls",
             Self::DigestMismatch { .. } => "digest_mismatch",
+            Self::Replaced { .. } => "binary_replaced",
             Self::HandshakeFailed { .. } => "handshake_failed",
         }
     }
