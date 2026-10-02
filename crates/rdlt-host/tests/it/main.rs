@@ -7,6 +7,7 @@ mod admission;
 mod canary;
 mod cuts;
 mod descriptors;
+mod dictionaries;
 mod flow;
 mod frames;
 mod grants;
