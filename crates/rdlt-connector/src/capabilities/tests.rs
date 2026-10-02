@@ -78,3 +78,78 @@ fn all_schema_changes_cover_every_widening_the_lattice_makes() {
     assert!(!all.widens(TypeKind::Int64, TypeKind::Float64));
     assert!(!SchemaChanges::default().widens(TypeKind::Int8, TypeKind::Int16));
 }
+
+fn rules() -> super::IdentifierRules {
+    Capabilities::minimal().identifiers
+}
+
+#[test]
+fn identifier_rules_within_their_limits_are_valid() {
+    use crate::limits::{
+        MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN,
+    };
+    let mut rules = rules();
+    rules.max_len = std::num::NonZeroU16::new(MIN_IDENTIFIER_LEN).unwrap();
+    rules.reserved = (0..MAX_RESERVED_WORDS)
+        .map(|word| format!("w{word}"))
+        .collect();
+    rules.reserved_table_prefixes = (0..MAX_RESERVED_PREFIXES)
+        .map(|prefix| {
+            format!("{prefix}").repeat(MAX_RESERVED_BYTES)[..MAX_RESERVED_BYTES].to_owned()
+        })
+        .collect();
+    assert_eq!(rules.validate(), Ok(()));
+}
+
+#[test]
+fn identifier_rules_beyond_their_limits_are_refused() {
+    use super::InvalidRules;
+    use crate::limits::{
+        MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN,
+    };
+    let short = super::IdentifierRules {
+        max_len: std::num::NonZeroU16::new(MIN_IDENTIFIER_LEN - 1).unwrap(),
+        ..rules()
+    };
+    let words = super::IdentifierRules {
+        reserved: (0..=MAX_RESERVED_WORDS)
+            .map(|word| format!("w{word}"))
+            .collect(),
+        ..rules()
+    };
+    let prefixes = super::IdentifierRules {
+        reserved_table_prefixes: (0..=MAX_RESERVED_PREFIXES)
+            .map(|prefix| format!("p{prefix}"))
+            .collect(),
+        ..rules()
+    };
+    let long = "w".repeat(MAX_RESERVED_BYTES + 1);
+    let long_word = super::IdentifierRules {
+        reserved: [long.clone()].into(),
+        ..rules()
+    };
+    let long_prefix = super::IdentifierRules {
+        reserved_table_prefixes: [long].into(),
+        ..rules()
+    };
+    let empty_word = super::IdentifierRules {
+        reserved: [String::new()].into(),
+        ..rules()
+    };
+    let empty_prefix = super::IdentifierRules {
+        reserved_table_prefixes: [String::new()].into(),
+        ..rules()
+    };
+    let cases = [
+        (short, InvalidRules::TooShort),
+        (words, InvalidRules::TooManyWords),
+        (prefixes, InvalidRules::TooManyPrefixes),
+        (long_word, InvalidRules::Word),
+        (long_prefix, InvalidRules::Prefix),
+        (empty_word, InvalidRules::Word),
+        (empty_prefix, InvalidRules::Prefix),
+    ];
+    for (rules, refused) in cases {
+        assert_eq!(rules.validate(), Err(refused));
+    }
+}

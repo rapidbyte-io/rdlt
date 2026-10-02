@@ -391,7 +391,7 @@ fn capabilities(rng: &mut SplitMix64, features: Features) -> Capabilities {
         1 => IdentifierCase::Lower,
         _ => IdentifierCase::Upper,
     };
-    let max_len = [63, 16, 12][usize::try_from(rng.below(3)).unwrap_or(0)];
+    let max_len = [63, 32, 16][usize::try_from(rng.below(3)).unwrap_or(0)];
     capabilities.identifiers.max_len =
         std::num::NonZeroU16::new(max_len).expect("identifier lengths are positive");
     if rng.chance(300) {

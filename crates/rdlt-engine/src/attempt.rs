@@ -102,6 +102,13 @@ pub(crate) async fn run(
         .await
         .map_err(|error| Error::connector(Side::Source, "discovering the catalog", error))?;
     let capabilities = Arc::new(context.destination.capabilities().clone());
+    capabilities.identifiers.validate().map_err(|invalid| {
+        Error::new(
+            ErrorKind::Destination,
+            format!("the destination's identifier rules are refused: {invalid}"),
+        )
+        .with_code("capabilities_invalid")
+    })?;
     let mut planning = Planning {
         context,
         catalog: &catalog,

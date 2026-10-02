@@ -119,7 +119,7 @@ fn kind() -> impl Strategy<Value = TypeKind> {
 fn identifier_rules() -> impl Strategy<Value = IdentifierRules> {
     (
         0..3_u8,
-        1..=u16::MAX,
+        crate::limits::MIN_IDENTIFIER_LEN..=u16::MAX,
         any::<bool>(),
         proptest::collection::btree_set(name(), 0..3),
         proptest::collection::btree_set(name(), 0..3),
@@ -1069,4 +1069,21 @@ fn plans_beyond_their_limits_or_naming_partitions_wrongly_are_refused() {
         };
         assert_eq!(found, expected, "{refused}");
     }
+}
+
+#[test]
+fn identifier_rules_beyond_their_limits_are_refused_where_they_are_received() {
+    let mut rules = v1::IdentifierRules::from(&Capabilities::minimal().identifiers);
+    rules.reserved_table_prefixes = vec![String::new(), "z".repeat(8 << 20)];
+    let refused = IdentifierRules::try_from(rules).unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Invalid::Rejected {
+                what: "identifier rules",
+                ..
+            }
+        ),
+        "{refused}"
+    );
 }

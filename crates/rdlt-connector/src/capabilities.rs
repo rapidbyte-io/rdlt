@@ -149,6 +149,56 @@ pub struct IdentifierRules {
     pub reserved_table_prefixes: BTreeSet<String>,
 }
 
+/// Why identifier rules are refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidRules {
+    /// The longest identifier is shorter than [`MIN_IDENTIFIER_LEN`](crate::limits::MIN_IDENTIFIER_LEN).
+    #[error("identifiers are shorter than the least length an identifier holds")]
+    TooShort,
+    /// More words are reserved than [`MAX_RESERVED_WORDS`](crate::limits::MAX_RESERVED_WORDS).
+    #[error("more words are reserved than the limit")]
+    TooManyWords,
+    /// More table prefixes are reserved than
+    /// [`MAX_RESERVED_PREFIXES`](crate::limits::MAX_RESERVED_PREFIXES).
+    #[error("more table prefixes are reserved than the limit")]
+    TooManyPrefixes,
+    /// A reserved word is empty or longer than
+    /// [`MAX_RESERVED_BYTES`](crate::limits::MAX_RESERVED_BYTES).
+    #[error("a reserved word is empty or beyond the limit of its length")]
+    Word,
+    /// A reserved table prefix is empty, which no table name avoids, or longer than
+    /// [`MAX_RESERVED_BYTES`](crate::limits::MAX_RESERVED_BYTES).
+    #[error("a reserved table prefix is empty or beyond the limit of its length")]
+    Prefix,
+}
+
+impl IdentifierRules {
+    /// Checks the rules against the limits a destination's rules have.
+    ///
+    /// # Errors
+    ///
+    /// The first [`InvalidRules`] the rules are.
+    pub fn validate(&self) -> Result<(), InvalidRules> {
+        use crate::limits::{
+            MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS, MIN_IDENTIFIER_LEN,
+        };
+        let sized = |text: &String| (1..=MAX_RESERVED_BYTES).contains(&text.len());
+        if self.max_len.get() < MIN_IDENTIFIER_LEN {
+            Err(InvalidRules::TooShort)
+        } else if self.reserved.len() > MAX_RESERVED_WORDS {
+            Err(InvalidRules::TooManyWords)
+        } else if self.reserved_table_prefixes.len() > MAX_RESERVED_PREFIXES {
+            Err(InvalidRules::TooManyPrefixes)
+        } else if !self.reserved.iter().all(sized) {
+            Err(InvalidRules::Word)
+        } else if !self.reserved_table_prefixes.iter().all(sized) {
+            Err(InvalidRules::Prefix)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Everything the engine needs to know about a destination before writing to it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {

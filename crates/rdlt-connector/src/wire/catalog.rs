@@ -178,13 +178,23 @@ impl TryFrom<v1::IdentifierRules> for IdentifierRules {
             }
         };
         let max_len: u16 = narrow("identifier length", rules.max_len)?;
-        Ok(Self {
+        // Counted before any is kept.
+        if rules.reserved.len() > crate::limits::MAX_RESERVED_WORDS
+            || rules.reserved_table_prefixes.len() > crate::limits::MAX_RESERVED_PREFIXES
+        {
+            return Err(Invalid::OutOfRange("reserved words"));
+        }
+        let decoded = Self {
             case,
             max_len: NonZeroU16::new(max_len).ok_or(Invalid::OutOfRange("identifier length"))?,
             chars,
             reserved: rules.reserved.into_iter().collect(),
             reserved_table_prefixes: rules.reserved_table_prefixes.into_iter().collect(),
-        })
+        };
+        decoded
+            .validate()
+            .map_err(|invalid| Invalid::rejected("identifier rules", invalid))?;
+        Ok(decoded)
     }
 }
 

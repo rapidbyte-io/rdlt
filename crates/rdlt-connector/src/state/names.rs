@@ -10,10 +10,17 @@ use crate::schema::ColumnKey;
 /// A table's columns mapped to destination identifiers.
 ///
 /// The map is injective, so two columns never share an identifier, and append-only: a mapping,
-/// once added, never changes.
+/// once added, never changes. A recorded map is read back only as such.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(from = "Vec<(ColumnKey, String)>", into = "Vec<(ColumnKey, String)>")]
-pub struct NameMap(BTreeMap<ColumnKey, Arc<str>>);
+#[serde(
+    try_from = "Vec<(ColumnKey, String)>",
+    into = "Vec<(ColumnKey, String)>"
+)]
+pub struct NameMap {
+    names: BTreeMap<ColumnKey, Arc<str>>,
+    /// The column each identifier names.
+    owners: BTreeMap<Arc<str>, ColumnKey>,
+}
 
 /// A mapping a name map refuses.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -39,14 +46,12 @@ pub enum NameConflict {
 impl NameMap {
     /// The identifier of `key`.
     pub fn get(&self, key: &ColumnKey) -> Option<&str> {
-        self.0.get(key).map(AsRef::as_ref)
+        self.names.get(key).map(AsRef::as_ref)
     }
 
     /// The column `name` identifies.
     pub fn owner(&self, name: &str) -> Option<&ColumnKey> {
-        self.0
-            .iter()
-            .find_map(|(key, existing)| (existing.as_ref() == name).then_some(key))
+        self.owners.get(name)
     }
 
     /// Maps `key` to `name`; mapping a column again to the same name is a no-op.
@@ -57,7 +62,7 @@ impl NameMap {
     ) -> Result<(), NameConflict> {
         let key = key.into();
         let name = name.into();
-        if let Some(existing) = self.0.get(&key) {
+        if let Some(existing) = self.names.get(&key) {
             return if *existing == name {
                 Ok(())
             } else {
@@ -73,41 +78,49 @@ impl NameMap {
                 owner: owner.clone(),
             });
         }
-        self.0.insert(key, name);
+        self.owners.insert(Arc::clone(&name), key.clone());
+        self.names.insert(key, name);
         Ok(())
     }
 
     /// The mappings, ordered by column.
     pub fn iter(&self) -> impl Iterator<Item = (&ColumnKey, &str)> {
-        self.0.iter().map(|(key, name)| (key, name.as_ref()))
+        self.names.iter().map(|(key, name)| (key, name.as_ref()))
     }
 
     /// The number of mappings.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.names.len()
     }
 
     /// Whether there are no mappings.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.names.is_empty()
     }
 }
 
-impl From<Vec<(ColumnKey, String)>> for NameMap {
-    fn from(pairs: Vec<(ColumnKey, String)>) -> Self {
-        Self(
-            pairs
-                .into_iter()
-                .map(|(key, name)| (key, Arc::from(name)))
-                .collect(),
-        )
+impl TryFrom<Vec<(ColumnKey, String)>> for NameMap {
+    type Error = NameConflict;
+
+    /// The map of `pairs`, each added in turn: a column mapped twice, or two on one identifier,
+    /// is refused.
+    fn try_from(pairs: Vec<(ColumnKey, String)>) -> Result<Self, NameConflict> {
+        let mut names = Self::default();
+        for (key, name) in pairs {
+            if let Some(existing) = names.get(&key) {
+                let existing = existing.to_owned();
+                return Err(NameConflict::Remapped { key, existing });
+            }
+            names.insert(key, name)?;
+        }
+        Ok(names)
     }
 }
 
 impl From<NameMap> for Vec<(ColumnKey, String)> {
     fn from(names: NameMap) -> Self {
         names
-            .0
+            .names
             .into_iter()
             .map(|(key, name)| (key, name.to_string()))
             .collect()

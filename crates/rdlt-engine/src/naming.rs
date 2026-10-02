@@ -10,6 +10,7 @@
 mod tests;
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use rdlt_connector::{
     ColumnKey, IdentifierCase, IdentifierChars, IdentifierRules, NameMap, TablePath,
@@ -26,15 +27,38 @@ const HASH_DIGITS: usize = 6;
 /// Assigns identifiers under one destination's rules.
 #[derive(Clone, Debug)]
 pub(crate) struct Naming {
-    rules: IdentifierRules,
+    rules: Arc<Folded>,
     /// When set, every identifier carries its hash, seeded with this salt, even one that is free
     /// without it.
     salt: Option<u64>,
 }
 
+/// A destination's rules, its reserved words and table prefixes folded as identifiers are.
+#[derive(Debug)]
+struct Folded {
+    rules: IdentifierRules,
+    reserved: BTreeSet<String>,
+    prefixes: Vec<String>,
+}
+
 impl Naming {
+    /// Naming under `rules`, which are within their limits, as an attempt checks them.
     pub(crate) fn new(rules: IdentifierRules) -> Self {
-        Self { rules, salt: None }
+        let fold = |name: &str| fold(rules.case, name);
+        let reserved = rules.reserved.iter().map(|word| fold(word)).collect();
+        let prefixes = rules
+            .reserved_table_prefixes
+            .iter()
+            .map(|prefix| fold(prefix))
+            .collect();
+        Self {
+            rules: Arc::new(Folded {
+                rules,
+                reserved,
+                prefixes,
+            }),
+            salt: None,
+        }
     }
 
     /// The same rules, appending a hash seeded with `salt` to every identifier.
@@ -43,7 +67,7 @@ impl Naming {
     /// never committed left behind. Each salt names around the columns the ones before it left.
     pub(crate) fn hashing(&self, salt: u64) -> Self {
         Self {
-            rules: self.rules.clone(),
+            rules: Arc::clone(&self.rules),
             salt: Some(salt),
         }
     }
@@ -86,17 +110,24 @@ impl Naming {
         for segment in &segments {
             push_segment(&mut bytes, segment);
         }
-        let mut candidate = join(&segments);
-        let prefixes = &self.rules.reserved_table_prefixes;
-        for _ in 0..=prefixes.iter().map(String::len).max().unwrap_or(0) {
-            let cleaned = self.clean(&candidate);
-            if !prefixes
-                .iter()
-                .any(|prefix| cleaned.starts_with(&self.fold(prefix)))
-            {
+        // A prefix traps one count of leading `_`, or every count from one on: a free count, where
+        // there is one, is at most the number of prefixes, which is bounded.
+        let cleaned = self.clean(&join(&segments));
+        let prefixes = &self.rules.prefixes;
+        for escapes in 0..=prefixes.len() {
+            // The candidate starts with a prefix whose first bytes, as many as there are
+            // escapes, are each `_`, and whose rest the cleaned name starts with.
+            let starts = |prefix: &String| {
+                let escaped = prefix.len().min(escapes);
+                prefix.as_bytes()[..escaped]
+                    .iter()
+                    .all(|byte| *byte == b'_')
+                    && cleaned.starts_with(&prefix[escaped..])
+            };
+            if !prefixes.iter().any(starts) {
+                let candidate = format!("{}{cleaned}", "_".repeat(escapes));
                 return self.identifier(&candidate, &bytes, |name| taken.contains(name));
             }
-            candidate.insert(0, '_');
         }
         Err(Error::new(
             ErrorKind::Destination,
@@ -121,7 +152,7 @@ impl Naming {
         taken: impl Fn(&str) -> bool,
     ) -> Result<String, Error> {
         let base = self.clean(candidate);
-        let max = usize::from(self.rules.max_len.get());
+        let max = usize::from(self.rules.rules.max_len.get());
         let first = truncate(&base, max);
         if self.salt.is_none() && !self.unusable(&first, &taken) {
             return Ok(first);
@@ -145,12 +176,7 @@ impl Naming {
 
     /// Whether `name` may not be used: taken, or a reserved word.
     fn unusable(&self, name: &str, taken: &impl Fn(&str) -> bool) -> bool {
-        taken(name)
-            || self
-                .rules
-                .reserved
-                .iter()
-                .any(|word| self.fold(word) == name)
+        taken(name) || self.rules.reserved.contains(name)
     }
 
     /// `name` folded and cleaned: disallowed characters become `_`, and an identifier that would
@@ -159,13 +185,13 @@ impl Naming {
         let folded = self.fold(name);
         let mut cleaned: String = folded
             .chars()
-            .map(|c| match self.rules.chars {
+            .map(|c| match self.rules.rules.chars {
                 IdentifierChars::AsciiWord if c.is_ascii_alphanumeric() || c == '_' => c,
                 IdentifierChars::Any if !c.is_control() => c,
                 _ => '_',
             })
             .collect();
-        let leading_digit = self.rules.chars == IdentifierChars::AsciiWord
+        let leading_digit = self.rules.rules.chars == IdentifierChars::AsciiWord
             && cleaned.starts_with(|c: char| c.is_ascii_digit());
         if cleaned.is_empty() || leading_digit {
             cleaned.insert(0, '_');
@@ -174,11 +200,16 @@ impl Naming {
     }
 
     fn fold(&self, name: &str) -> String {
-        match self.rules.case {
-            IdentifierCase::Preserve => name.to_owned(),
-            IdentifierCase::Lower => name.to_lowercase(),
-            IdentifierCase::Upper => name.to_uppercase(),
-        }
+        fold(self.rules.rules.case, name)
+    }
+}
+
+/// `name` folded to `case`.
+fn fold(case: IdentifierCase, name: &str) -> String {
+    match case {
+        IdentifierCase::Preserve => name.to_owned(),
+        IdentifierCase::Lower => name.to_lowercase(),
+        IdentifierCase::Upper => name.to_uppercase(),
     }
 }
 
