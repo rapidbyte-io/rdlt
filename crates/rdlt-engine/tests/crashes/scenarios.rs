@@ -117,27 +117,33 @@ fn sqlite_at(dir: &Path) -> Value {
 
 /// A log of two partitions of fifty messages that forgets what it committed, appended to SQLite.
 pub(crate) fn forgetting_log() -> Scenario {
-    forgetting_log_of::<50>("a forgetting log")
+    log_of::<50, false>("a forgetting log")
 }
 
 /// The forgetting log with two hundred messages a partition: more than its source's connection
 /// holds, so a kill finds the source with messages still to send.
 pub(crate) fn long_forgetting_log() -> Scenario {
-    forgetting_log_of::<200>("a long forgetting log")
+    log_of::<200, false>("a long forgetting log")
 }
 
-/// A log named `name` of two partitions of `MESSAGES` messages that forgets what it committed,
-/// appended to SQLite.
-fn forgetting_log_of<const MESSAGES: i64>(name: &'static str) -> Scenario {
+/// A log of two partitions of fifty messages that serves again what it committed, appended to
+/// SQLite without a write-ahead log: its source is told of a commit once it has landed.
+pub(crate) fn replayable_log() -> Scenario {
+    log_of::<50, true>("a log read again")
+}
+
+/// A log named `name` of two partitions of `MESSAGES` messages, appended to SQLite; where not
+/// `REPLAYABLE` it forgets what it committed, and its runs keep a write-ahead log.
+fn log_of<const MESSAGES: i64, const REPLAYABLE: bool>(name: &'static str) -> Scenario {
     Scenario {
-        logged: true,
+        logged: !REPLAYABLE,
         completes: false,
         name,
         config: |dir| {
             let source = json!({ "kind": "log", "config": {
                 "seed": 1, "group_path": dir.join("events.group"),
                 "streams": [{ "name": "events", "partitions": 2, "messages": MESSAGES,
-                              "batch_rows": 8, "replayable": false }],
+                              "batch_rows": 8, "replayable": REPLAYABLE }],
             }});
             let stream = json!({ "name": "events", "read": "incremental", "write": "append" });
             harness(dir, &stream, &source, &sqlite_at(dir))
@@ -160,6 +166,15 @@ fn forgetting_log_of<const MESSAGES: i64>(name: &'static str) -> Scenario {
                 })
                 .collect();
             assert_eq!(messages, every, "{case}");
+            // The source was told every position the destination holds, though the run that
+            // committed the last of them crashed before or after telling it.
+            let kept = std::fs::read(dir.join("events.group")).expect("the group file reads");
+            let mut kept: Vec<(String, String, i64)> =
+                serde_json::from_slice(&kept).expect("the group file lists its positions");
+            kept.sort();
+            let told =
+                ["p0", "p1"].map(|partition| ("events".to_owned(), partition.to_owned(), MESSAGES));
+            assert_eq!(kept, told, "{case}");
         },
     }
 }

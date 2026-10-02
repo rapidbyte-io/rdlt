@@ -258,3 +258,27 @@ fn a_full_read_without_a_log_replaces_its_table_once_through_every_crash() {
 fn a_history_without_a_log_keeps_each_version_once_through_every_crash() {
     sweep(&scenarios::kept_history().unlogged("a history without a log"));
 }
+
+#[test]
+fn a_log_read_again_is_told_every_position_through_a_crash_either_side_of_telling_it() {
+    let scenario = scenarios::replayable_log();
+    // How many commits a run makes: after the last, no later commit tells the source again.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let (status, commits) = run(&scenario.write(dir.path()), None);
+    assert!(
+        status.success(),
+        "{}: a clean run ended {status}",
+        scenario.name
+    );
+    let last = commits.expect("a run to its end reports its commits");
+    for point in ["engine.ack.before", "engine.ack.after"] {
+        for hit in [1, last] {
+            let crashed = at_commit(&scenario, point, hit);
+            assert!(
+                crashed,
+                "{}: {point} at hit {hit} crashed no run",
+                scenario.name
+            );
+        }
+    }
+}
