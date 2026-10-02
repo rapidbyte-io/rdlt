@@ -122,10 +122,10 @@ impl Column {
             return;
         };
         let mut at = start;
-        while at < end && !state.over(weight) {
+        // A run at a time, until no row is left, or a run does not reach past the row it is
+        // in, as none of a valid column does, or the stretch holds more values than asked.
+        while !state.over(weight) {
             let (run, reached) = reach(at);
-            // A run that does not reach past the row it is in is no run: nothing more is
-            // weighed of the column.
             let rows = reached.min(end).saturating_sub(at);
             if rows == 0 {
                 return;
