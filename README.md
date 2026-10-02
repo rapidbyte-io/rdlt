@@ -67,6 +67,8 @@ whose SQL needs no `ON CONFLICT`, row values or schema change inside a commit bu
 generation's swap; each remembers the rows a hard delete or truncate removed, so a change sent again
 never brings one back. The simulation checks every merged table and log against a model of a
 seeded change workload, through faults, crashes, racing runs and changes sent again.
+The SQLite destination refuses a batch holding a float that is no number, or negative zero, which
+SQLite does not keep as they are (`float_unstorable`).
 A source that forgets what it acknowledged, as a message queue does, loads exactly once through a
 write-ahead log: each load logs its batches and commits to a local directory, the source hears once
 a commit's frame is durable, and the next attempt commits again whatever the destination missed,

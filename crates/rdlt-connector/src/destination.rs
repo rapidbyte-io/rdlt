@@ -139,6 +139,9 @@ pub struct HistoryColumns {
 /// - a truncate removes, or marks deleted, every row whose `seq` is smaller than its own; it
 ///   carries no key.
 ///
+/// A source gives each row a position of its own. Where a truncate and a key's row share a
+/// `seq` all the same, the truncate applies first: the row is not before it, and applies.
+///
 /// `op` and `unchanged` are in written batches only: they are never stored, and no schema change
 /// names them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -161,7 +164,9 @@ pub enum Deletion {
     /// The rows stay with their published values, and the column `at` records when they were
     /// deleted.
     ///
-    /// A deleted row takes the deleting row's value in `at`, and its `seq`.
+    /// A deleted row takes the deleting row's value in `at`, and its `seq`. A history table
+    /// reads a version as deleted by that value, so its deletes and truncates each carry one:
+    /// a destination refuses one that does not, as a data error coded `deletion_untimed`.
     Soft {
         /// The column recording when the row was deleted.
         at: Arc<str>,
