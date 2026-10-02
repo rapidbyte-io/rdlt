@@ -23,10 +23,11 @@ pub use key::StateKey;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
-const STATE_VERSION: u16 = 1;
+const STATE_VERSION: u16 = 2;
 
 /// One stored state record, opaque to the destination that keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StateRecord {
     /// The record's key; a commit's `Put` replaces the record with the same key.
     pub key: String,
@@ -59,6 +60,7 @@ pub enum PartitionState {
 /// One piece of pipeline state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum StateEntry {
     /// The fencing epoch.
     Epoch(Epoch),
@@ -108,8 +110,7 @@ pub enum StateEntry {
         /// The schema.
         schema: TableSchema,
         /// The columns of 64-bit integers every stored value of which a 64-bit float holds
-        /// exactly; a record without them holds none such.
-        #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+        /// exactly.
         exact: BTreeSet<Arc<str>>,
     },
     /// A table's destination identifier and its columns' identifiers.
@@ -128,9 +129,7 @@ pub enum StateEntry {
         table: TablePath,
         /// Who made them.
         sequences: Sequences,
-        /// Whether the table is a history table; records written before tables kept
-        /// history hold no flag, as no table did.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        /// Whether the table is a history table.
         history: bool,
         /// The columns its rows were merged by; none for a table never merged.
         key: Vec<ColumnPath>,
@@ -158,6 +157,7 @@ pub enum Sequences {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct VersionedEntry {
     v: u16,
     entry: StateEntry,

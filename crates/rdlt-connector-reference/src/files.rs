@@ -7,6 +7,7 @@ pub(crate) mod io;
 mod manifest;
 mod session;
 mod source;
+mod stored;
 mod tables;
 mod versions;
 

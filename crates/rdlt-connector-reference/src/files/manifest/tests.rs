@@ -393,3 +393,34 @@ fn a_manifest_whose_state_is_not_base64_is_refused_written_or_read() {
     let records = kept.unwrap().unwrap().records().unwrap();
     assert_eq!(&records[0].value[..], b"hello");
 }
+
+#[test]
+fn a_manifest_of_another_format_or_with_a_field_it_does_not_know_is_refused() {
+    let (root, dir) = pipeline();
+    let manifest = Manifest {
+        version: 1,
+        ..Manifest::default()
+    };
+    assert!(put(&dir, &manifest).unwrap());
+    let path = root
+        .path()
+        .join(MANIFESTS)
+        .join("00000000000000000001.json");
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["format"], serde_json::json!(1));
+    let mut other = written.clone();
+    other["format"] = serde_json::json!(2);
+    let mut unformatted = written.clone();
+    unformatted.as_object_mut().unwrap().remove("format");
+    let mut grown = written.clone();
+    grown["unknown"] = serde_json::json!(1);
+    let mut lacking = written.clone();
+    lacking.as_object_mut().unwrap().remove("dropped");
+    let refused = [other, unformatted, grown, lacking];
+    for (index, value) in refused.iter().enumerate() {
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        let error = latest(&dir).unwrap_err();
+        assert_eq!(error.code(), Some(MANIFEST_INVALID), "case {index}");
+    }
+}

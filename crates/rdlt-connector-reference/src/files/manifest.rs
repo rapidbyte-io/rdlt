@@ -21,6 +21,7 @@ use rdlt_connector::{
 use serde::{Deserialize, Serialize};
 
 use super::format::FileFormat;
+use super::stored::Format;
 use super::{io, tables, versions};
 use crate::limits::{MANIFEST_BYTES, RECEIPT_LOADS, TEMPORARY_AGE};
 use crate::rooted::{self, Dir, Limit};
@@ -41,7 +42,10 @@ const LIMIT: Limit = Limit {
 
 /// One version of a pipeline's manifest.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Manifest {
+    /// The manifest's format.
+    pub(super) format: Format,
     /// Grows by one with every open and commit.
     pub(super) version: u64,
     /// The epoch of the latest session.
@@ -56,12 +60,12 @@ pub(super) struct Manifest {
     pub(super) paths: BTreeMap<String, String>,
     /// Tables the pipeline dropped whose catalogs may remain: the next open removes them, before
     /// anything can create the tables again.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub(super) dropped: BTreeSet<String>,
 }
 
 /// A commit's receipt, its commit time in microseconds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct StoredReceipt {
     load_id: LoadId,
     commit_seq: CommitSeq,
@@ -72,6 +76,7 @@ pub(super) struct StoredReceipt {
 
 /// A published file: its path relative to the pipeline's directory, and what it holds.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Listed {
     pub(super) path: String,
     pub(super) rows: u64,
@@ -80,12 +85,12 @@ pub(super) struct Listed {
 
 /// A table's published files and those of generations not yet swapped in.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TableFiles {
     pub(super) files: Vec<Listed>,
     pub(super) generations: BTreeMap<GenerationId, Vec<Listed>>,
     /// A change stream's tombstones: the rows it removed outright, which no earlier change
     /// brings back.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) tombstones: Vec<Listed>,
 }
 

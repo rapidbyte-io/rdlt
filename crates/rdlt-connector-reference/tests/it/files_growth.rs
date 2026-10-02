@@ -505,7 +505,7 @@ async fn a_table_created_again_after_its_drop_keeps_its_catalog() {
     let catalog = root.path().join("_rdlt").join("tables").join("rows");
     let (_, manifest) = latest_manifest(root.path());
     assert!(catalog.exists(), "the catalog of a published table is gone");
-    assert!(manifest.get("dropped").is_none(), "{manifest}");
+    assert_eq!(manifest["dropped"], json!([]), "{manifest}");
     assert_eq!(published_ids(reader.as_ref(), &rows).await, [2]);
     // Dropped again, its catalog goes again; created again and not yet written, its catalog
     // stays through another table's commit.

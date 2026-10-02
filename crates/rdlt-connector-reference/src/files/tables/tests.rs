@@ -403,3 +403,29 @@ fn a_catalog_nested_to_the_limit_is_read_and_changed_again() {
         assert_eq!(names(&rdlt), ["c", "z"], "{nesting:?}");
     }
 }
+
+#[test]
+fn a_catalog_of_another_format_or_with_a_field_it_does_not_know_is_refused() {
+    let (root, rdlt) = private();
+    update(&rdlt, "t", |current| Ok(Some(with(current, "a")))).unwrap();
+    let path = root
+        .path()
+        .join("tables")
+        .join("t")
+        .join("00000000000000000001.json");
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["format"], serde_json::json!(1));
+    let mut other = written.clone();
+    other["format"] = serde_json::json!(2);
+    let mut unformatted = written.clone();
+    unformatted.as_object_mut().unwrap().remove("format");
+    let mut grown = written.clone();
+    grown["unknown"] = serde_json::json!(1);
+    let refused = [other, unformatted, grown];
+    for (index, value) in refused.iter().enumerate() {
+        std::fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        let error = read(&rdlt, "t").unwrap_err();
+        assert_eq!(error.code(), Some(super::CATALOG_INVALID), "case {index}");
+    }
+}

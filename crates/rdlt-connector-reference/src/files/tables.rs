@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, PipelineId, Result, TableSchema};
 
+use serde::{Deserialize, Serialize};
+
+use super::stored::Format;
 use super::{io, versions};
 use crate::limits::{CATALOG_BYTES, OWNER_BYTES, TABLE_NAME_BYTES, TEMPORARY_AGE};
 use crate::rooted::{self, Dir, Limit};
@@ -41,6 +44,14 @@ const OWNER_LIMIT: Limit = Limit {
     name: "owner bytes",
     bytes: OWNER_BYTES,
 };
+
+/// A catalog version as it is stored: its format, and the table's columns.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Catalogued {
+    format: Format,
+    schema: TableSchema,
+}
 
 /// Checks that `name` is a table identifier of this destination, the only names that are ever
 /// part of a path: lower-case ASCII letters, digits and underscores, at most 128 bytes.
@@ -286,19 +297,23 @@ fn latest(rdlt: &Dir, name: &str) -> Result<Option<(u64, TableSchema)>> {
     else {
         return Ok(None);
     };
-    let schema = serde_json::from_slice(&bytes).map_err(|error| {
+    let stored: Catalogued = serde_json::from_slice(&bytes).map_err(|error| {
         let path = dir.at(versions::name(version));
         ConnectorError::data(format!("table catalog {}: {error}", path.display()))
             .with_code(CATALOG_INVALID)
     })?;
-    Ok(Some((version, schema)))
+    Ok(Some((version, stored.schema)))
 }
 
 /// Creates catalog `version` of the table `name` with `schema`, unless it exists; returns whether
 /// it did, removing the versions older than those kept.
 fn create(rdlt: &Dir, name: &str, version: u64, schema: &TableSchema) -> Result<bool> {
     let dir = catalog_created(rdlt, name)?;
-    let json = serde_json::to_vec_pretty(schema).expect("schemas serialize to JSON");
+    let stored = Catalogued {
+        format: Format,
+        schema: schema.clone(),
+    };
+    let json = serde_json::to_vec_pretty(&stored).expect("schemas serialize to JSON");
     let failed = io::failed("writing the catalog", dir.path());
     // A catalog version no reader accepts is never written.
     CATALOG_LIMIT

@@ -172,6 +172,7 @@ impl From<ColumnPath> for Vec<String> {
 /// A table column, as a name map knows it.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub enum ColumnKey {
     /// A source column, by its path from the table's root.
     Source(ColumnPath),

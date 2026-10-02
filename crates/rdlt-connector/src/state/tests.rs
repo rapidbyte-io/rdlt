@@ -95,7 +95,7 @@ fn state_round_trips_through_records() {
 }
 
 #[test]
-fn a_schema_recorded_without_exact_columns_has_none_and_deleting_it_forgets_them() {
+fn a_schema_record_without_its_exact_columns_is_refused_and_deleting_it_forgets_them() {
     let mut state = sample_state();
     let table = TablePath::new(["orders"]).unwrap();
     let key = StateKey::Schema(table.clone()).encode();
@@ -110,13 +110,14 @@ fn a_schema_recorded_without_exact_columns_has_none_and_deleting_it_forgets_them
         .expect("a schema entry")
         .remove("exact")
         .expect("the exact columns are recorded");
-    let older = StateRecord {
+    let lacking = StateRecord {
         key: record.key.clone(),
         value: serde_json::to_vec(&json).unwrap().into(),
     };
-    let mut read = sample_state();
-    read.apply(&StateChange::Put(older)).unwrap();
-    assert!(read.tables[&table].exact.is_empty());
+    assert!(matches!(
+        sample_state().apply(&StateChange::Put(lacking)),
+        Err(StateError::MalformedValue { .. })
+    ));
     state.apply(&StateChange::Delete(key)).unwrap();
     assert!(state.tables[&table].exact.is_empty());
 }
@@ -173,30 +174,30 @@ fn deleting_a_table_s_sequences_forgets_whose_they_are() {
 }
 
 #[test]
-fn a_table_s_sequences_say_whether_it_keeps_history_and_older_records_say_it_does_not() {
+fn a_table_s_sequences_say_whether_it_keeps_history_and_a_record_without_it_is_refused() {
     let table = TablePath::new(["orders"]).unwrap();
-    let history = StateEntry::Sequences {
-        table: table.clone(),
-        sequences: Sequences::Source,
-        history: true,
-        key: vec![ColumnPath::from("id")],
-        change_time: None,
-    };
-    let record = history.to_record();
-    assert_eq!(StateEntry::from_record(&record).unwrap(), history);
-    // A record written before tables kept history holds no flag.
-    let older = record.value.clone();
-    let text = String::from_utf8(older.to_vec()).unwrap();
-    let text = text.replace(r#","history":true"#, "");
-    assert!(!text.contains("history"), "{text}");
-    let older = StateRecord {
-        key: record.key.clone(),
-        value: text.into_bytes().into(),
-    };
-    let Ok(StateEntry::Sequences { history, .. }) = StateEntry::from_record(&older) else {
-        panic!("an older record reads");
-    };
-    assert!(!history);
+    for history in [true, false] {
+        let entry = StateEntry::Sequences {
+            table: table.clone(),
+            sequences: Sequences::Source,
+            history,
+            key: vec![ColumnPath::from("id")],
+            change_time: None,
+        };
+        let record = entry.to_record();
+        assert_eq!(StateEntry::from_record(&record).unwrap(), entry);
+        let text = String::from_utf8(record.value.to_vec()).unwrap();
+        let text = text.replace(&format!(r#","history":{history}"#), "");
+        assert!(!text.contains("history"), "{text}");
+        let lacking = StateRecord {
+            key: record.key.clone(),
+            value: text.into_bytes().into(),
+        };
+        assert!(matches!(
+            StateEntry::from_record(&lacking),
+            Err(StateError::MalformedValue { .. })
+        ));
+    }
 }
 
 #[test]
@@ -226,11 +227,11 @@ fn unreadable_records_are_typed_errors() {
         (
             StateRecord {
                 key: epoch.key.clone(),
-                value: Bytes::from_static(b"{\"v\":2,\"entry\":{}}"),
+                value: Bytes::from_static(b"{\"v\":3,\"entry\":{}}"),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
-                version: 2,
+                version: 3,
             },
         ),
         (
@@ -677,6 +678,72 @@ fn a_schema_nested_past_the_limit_is_refused() {
                 Err(crate::types::TypeError::TooDeep { depth, limit: 64 }) if depth == 65
             ),
             "{nesting:?} nested past the limit"
+        );
+    }
+}
+
+/// The JSON pointers of every object in `value`, `at` and below.
+fn objects(value: &serde_json::Value, at: String, found: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, field) in fields {
+                objects(field, format!("{at}/{name}"), found);
+            }
+            found.push(at);
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                objects(item, format!("{at}/{index}"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn a_state_record_with_a_field_this_build_does_not_know_is_refused() {
+    for record in sample_state().to_records() {
+        let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
+        let mut found = Vec::new();
+        objects(&value, String::new(), &mut found);
+        for pointer in found {
+            let mut grown = value.clone();
+            grown
+                .pointer_mut(&pointer)
+                .and_then(serde_json::Value::as_object_mut)
+                .unwrap()
+                .insert("unknown".to_owned(), serde_json::json!(1));
+            let grown = StateRecord {
+                key: record.key.clone(),
+                value: serde_json::to_vec(&grown).unwrap().into(),
+            };
+            assert!(
+                matches!(
+                    StateEntry::from_record(&grown),
+                    Err(StateError::MalformedValue { .. })
+                ),
+                "{} with a field at {pointer:?}",
+                record.key
+            );
+        }
+    }
+}
+
+#[test]
+fn a_state_record_of_the_previous_format_is_refused() {
+    for record in sample_state().to_records() {
+        let mut value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
+        value["v"] = serde_json::json!(1);
+        let previous = StateRecord {
+            key: record.key.clone(),
+            value: serde_json::to_vec(&value).unwrap().into(),
+        };
+        assert_eq!(
+            StateEntry::from_record(&previous),
+            Err(StateError::UnsupportedVersion {
+                key: record.key.clone(),
+                version: 1
+            })
         );
     }
 }

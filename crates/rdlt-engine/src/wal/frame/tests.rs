@@ -119,7 +119,7 @@ fn every_metadata_frame_decodes_as_it_was_written() {
 }
 
 #[test]
-fn a_seal_logged_before_seals_named_their_phase_decodes_in_phase_0() {
+fn a_seal_that_does_not_name_its_phase_is_refused() {
     let frame = metadata()
         .into_iter()
         .find(|frame| matches!(frame, Frame::Seal(_)))
@@ -133,14 +133,13 @@ fn a_seal_logged_before_seals_named_their_phase_decodes_in_phase_0() {
         .remove("phase")
         .expect("the seal names its phase");
     let payload = serde_json::to_vec(&payload).expect("JSON encodes");
-    let mut older = vec![bytes[0]];
-    older.extend(u32::try_from(payload.len()).expect("short").to_le_bytes());
-    older.extend(crc32c::crc32c(&payload).to_le_bytes());
-    older.extend(&payload);
-    let Frame::Seal(seal) = frame else {
-        unreachable!("the frame is a seal")
-    };
-    assert_eq!(decoded(&older), [Frame::Seal(Seal { phase: 0, ..seal })]);
+    let lacking = super::framed(bytes[0], &payload).expect("a frame");
+    assert!(
+        Frames::new(&lacking)
+            .next()
+            .expect("a whole frame")
+            .is_err()
+    );
 }
 
 proptest! {
@@ -431,5 +430,49 @@ fn a_batch_frame_nested_to_the_limit_reads_back() {
         let batch = decoder.flush().expect("a batch").expect("rows");
         let (frame, read) = round_trip(batch);
         assert_eq!(read, [frame], "{nesting:?}");
+    }
+}
+
+/// The JSON pointers of every object in `value`, `at` and below.
+fn objects(value: &serde_json::Value, at: String, found: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (name, field) in fields {
+                objects(field, format!("{at}/{name}"), found);
+            }
+            found.push(at);
+        }
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                objects(item, format!("{at}/{index}"), found);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
+    for frame in metadata() {
+        let bytes = frame.encode().expect("the frame encodes");
+        let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes[super::HEAD..]) else {
+            continue;
+        };
+        let mut found = Vec::new();
+        objects(&payload, String::new(), &mut found);
+        for pointer in found {
+            let mut grown = payload.clone();
+            grown
+                .pointer_mut(&pointer)
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("an object")
+                .insert("unknown".to_owned(), serde_json::json!(1));
+            let grown = serde_json::to_vec(&grown).expect("JSON encodes");
+            let framed = super::framed(bytes[0], &grown).expect("a frame");
+            assert!(
+                Frames::new(&framed).next().expect("a whole frame").is_err(),
+                "{frame:?} with a field at {pointer:?}"
+            );
+        }
     }
 }

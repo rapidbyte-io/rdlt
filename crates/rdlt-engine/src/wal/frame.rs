@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 
 /// The version of the frames this engine writes.
-pub(crate) const VERSION: u16 = 1;
+pub(crate) const VERSION: u16 = 2;
 
 /// The bytes before a frame's payload: its kind, length and checksum.
 pub(crate) const HEAD: usize = 9;
@@ -49,6 +49,7 @@ pub(crate) enum Frame {
 
 /// Whose log it is, and the last commit the destination had received when the load opened it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Header {
     pub(crate) version: u16,
     pub(crate) pipeline: PipelineId,
@@ -62,6 +63,7 @@ pub(crate) struct Header {
     reason = "a table frame names the table it describes"
 )]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Table {
     pub(crate) index: u32,
     pub(crate) table: TableRef,
@@ -82,6 +84,7 @@ pub(crate) struct Batch {
 
 /// The header a batch frame's payload starts with.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BatchHeader {
     segment: SegmentId,
     table: u32,
@@ -90,16 +93,14 @@ struct BatchHeader {
 /// A segment sealed with its partition's position: `from`, where the destination held the
 /// partition just before the segment's commit, and `state`, where the segment leaves it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Seal {
     pub(crate) segment: SegmentId,
     pub(crate) stream: StreamName,
     pub(crate) partition: PartitionId,
     /// Whether the stream's source can read the segment again.
     pub(crate) replayable: bool,
-    /// The phase of the stream the segment belongs to; a seal logged before seals named it reads
-    /// as phase 0's, and never applies in a later phase, where only a stream that reads again
-    /// could have logged it.
-    #[serde(default)]
+    /// The phase of the stream the segment belongs to.
     pub(crate) phase: u16,
     pub(crate) from: Option<PartitionState>,
     pub(crate) state: PartitionState,
@@ -108,6 +109,7 @@ pub(crate) struct Seal {
 /// A stream's phase a commit begins: the changes that begin it, as the commit's state delta
 /// leads with them — the previous phase's entries deleted, where its partitions start, the phase.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct BegunPhase {
     pub(crate) stream: StreamName,
     pub(crate) phase: u16,

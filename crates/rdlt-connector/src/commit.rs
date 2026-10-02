@@ -14,6 +14,7 @@ use crate::state::StateChange;
 
 /// An inclusive run of consecutive segment ids.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SegmentRange {
     /// The first id in the run.
     pub first: SegmentId,
@@ -138,6 +139,7 @@ impl From<SegmentSet> for Vec<SegmentRange> {
 
 /// Everything one commit publishes: sealed segments and the state they imply.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CommitMeta {
     /// The load committing.
     pub load_id: LoadId,
@@ -155,19 +157,18 @@ pub struct CommitMeta {
     /// whether or not the commit stages rows of its own (see [`RootKey`]).
     ///
     /// [`RootKey`]: crate::RootKey
-    #[serde(default)]
     pub child_tables: Vec<ChildTable>,
     /// Tables to drop with this commit, as a reset of their streams asks: each with its
     /// generations and tombstones, releasing its owner record.
     ///
     /// Only a destination that declares
     /// [`Capabilities::drop_tables`](crate::Capabilities::drop_tables) receives them.
-    #[serde(default)]
     pub drop_tables: Vec<DroppedTable>,
 }
 
 /// A table a commit drops.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DroppedTable {
     /// The table's path, as the pipeline's state names it.
     pub path: TablePath,
@@ -177,6 +178,7 @@ pub struct DroppedTable {
 
 /// A child table of a merge table, as a commit lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChildTable {
     /// The child table's identifier.
     pub table: Arc<str>,
@@ -188,6 +190,7 @@ pub struct ChildTable {
 ///
 /// Re-committing the same `(load_id, commit_seq)` returns the stored receipt without publishing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Receipt {
     /// The load that committed.
     pub load_id: LoadId,
