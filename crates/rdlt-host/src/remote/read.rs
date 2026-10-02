@@ -39,6 +39,7 @@ pub(super) async fn run(
         limits,
         epoch: None,
         schema: 0,
+        quiet: 0,
     };
     let (mut forwarded, mut stopping) = (pending, false);
     let mut kept = Kept::default();
@@ -208,6 +209,8 @@ struct Reader {
     epoch: Option<u64>,
     /// Bytes: what the schema the decoder holds takes, with the message it came from.
     schema: u64,
+    /// Frames since the last event that carried none.
+    quiet: u64,
 }
 
 impl Reader {
@@ -216,7 +219,27 @@ impl Reader {
         self.schema.saturating_add(self.decoder.dictionary_bytes())
     }
 
+    /// What `frame` means to the read.
+    ///
+    /// Frames that carry no event, schemas and dictionaries, cost the engine nothing to take, so
+    /// nothing slows a connector sending them: between events, a schema and a dictionary for each
+    /// of its columns may come, and no more.
     fn event(&mut self, frame: v1::ReadFrame) -> rdlt_connector::Result<Read> {
+        let read = self.decoded(frame)?;
+        if !matches!(read, Read::Nothing) {
+            self.quiet = 0;
+            return Ok(read);
+        }
+        self.quiet += 1;
+        if self.quiet > self.limits.schema_columns.saturating_add(1) {
+            return Err(invalid(&Invalid::OutOfRange(
+                "frames between events that carry none",
+            )));
+        }
+        Ok(read)
+    }
+
+    fn decoded(&mut self, frame: v1::ReadFrame) -> rdlt_connector::Result<Read> {
         use v1::read_frame::Frame;
         let refused = |refusal| frame_error(&rdlt_wire::WireError::Refused(refusal));
         Ok(

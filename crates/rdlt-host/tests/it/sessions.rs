@@ -371,6 +371,49 @@ async fn a_schema_epoch_that_does_not_grow_is_refused() {
     assert_eq!(error.code(), Some("malformed_frame"));
 }
 
+/// What a read of the fake source answering `fault` ends with, within `limits`, once its frames
+/// are all sent: its error, or none while it waits for more.
+async fn read_of(fault: Fault, limits: Limits) -> Option<rdlt_connector::ConnectorError> {
+    let options = Options {
+        limits,
+        ..Options::default()
+    };
+    let connection = Connection::connect(
+        serve_fake(Fake(fault)),
+        Role::Source,
+        &serde_json::json!({}),
+        options,
+    )
+    .await
+    .expect("the fake connects");
+    let eight = std::num::NonZeroUsize::new(8).expect("not zero");
+    let (sink, mut feed) = rdlt_connector::partition_channel(eight);
+    let drain = tokio::spawn(async move { while feed.recv().await.is_some() {} });
+    let request = rdlt_connector::ReadRequest::new(
+        rdlt_connector::StreamName::new("items").expect("a valid stream name"),
+        rdlt_connector::Partition::single(),
+        None,
+    );
+    let source = RemoteSource::new(connection);
+    let read = tokio::time::timeout(Duration::from_secs(2), source.read(request, sink)).await;
+    drain.abort();
+    read.ok().and_then(Result::err)
+}
+
+#[tokio::test]
+async fn frames_that_carry_no_event_are_bounded_between_events() {
+    // A schema of each column's dictionary, and one more, may come between events.
+    let limits = Limits {
+        schema_columns: 4,
+        ..Limits::default()
+    };
+    assert!(read_of(Fault::Schemas(5), limits).await.is_none());
+    let error = read_of(Fault::Schemas(6), limits)
+        .await
+        .expect("the read fails");
+    assert_eq!(error.code(), Some("invalid_message"), "{error}");
+}
+
 #[tokio::test]
 async fn a_connection_holds_a_few_sessions_open_and_a_further_closes_its_oldest() {
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());

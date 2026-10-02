@@ -46,6 +46,8 @@ pub(crate) enum Fault {
     Handshakes(fn(&mut v1::HandshakeResponse)),
     /// It is a destination whose opens answer with a state record of this key.
     Keys(fn() -> String),
+    /// Its reads send this many schemas, each of the next epoch, and nothing else.
+    Schemas(u64),
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -95,6 +97,18 @@ fn spec(id: &str, destination: bool) -> v1::ConnectorSpec {
         source_capabilities: (!destination).then_some(v1::SourceCapabilities {}),
         destination_capabilities: destination.then(|| v1::Capabilities::from(&capabilities)),
     }
+}
+
+/// The IPC schema of one column of ids.
+fn ids() -> Bytes {
+    let arrow = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+        "id",
+        arrow_schema::DataType::Int64,
+        false,
+    )]);
+    rdlt_wire::Encoder::default()
+        .schema(&arrow)
+        .expect("the schema encodes")
 }
 
 impl Fake {
@@ -201,15 +215,18 @@ impl Connector for Fake {
                 frame: Some(v1::read_frame::Frame::Checkpoint(checkpoint)),
             })]
         } else if matches!(self.0, Fault::StaleEpoch) {
-            let arrow = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
-                "id",
-                arrow_schema::DataType::Int64,
-                false,
-            )]);
-            let ipc = rdlt_wire::Encoder::default()
-                .schema(&arrow)
-                .expect("the schema encodes");
-            vec![Ok(schema(ipc.clone())), Ok(schema(ipc))]
+            vec![Ok(schema(ids())), Ok(schema(ids()))]
+        } else if let Fault::Schemas(count) = self.0 {
+            (1..=count)
+                .map(|epoch| {
+                    Ok(v1::ReadFrame {
+                        frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
+                            schema_epoch: epoch,
+                            ipc_schema: ids(),
+                        })),
+                    })
+                })
+                .collect()
         } else if let Fault::Sends(frames) = self.0 {
             let (ipc, frames) = frames();
             let batches = frames.into_iter().map(|frame| v1::ReadFrame {
