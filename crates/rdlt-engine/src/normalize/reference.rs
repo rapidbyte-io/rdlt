@@ -180,13 +180,43 @@ fn encode(value: &Json, out: &mut Vec<u8>) {
     }
 }
 
-/// A float's shortest round-trip text, zero without its sign.
+/// A float's shortest round-trip text, a tie going to the even one, in plain notation; zero
+/// without its sign.
 fn float_text(float: f64) -> String {
     if float == 0.0 {
-        "0".to_owned()
-    } else {
-        float.to_string()
+        return "0".to_owned();
     }
+    let written = serde_json::to_string(&float).expect("a finite float writes");
+    let (mantissa, exponent) = written.split_once('e').unwrap_or((&written, "0"));
+    let negative = mantissa.starts_with('-');
+    let mantissa = mantissa.trim_start_matches('-');
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits = format!("{whole}{fraction}");
+    // The point's place among the digits, which may lie beyond either end.
+    let point =
+        i64::try_from(whole.len()).expect("short") + exponent.parse::<i64>().expect("an exponent");
+    let width = i64::try_from(digits.len()).expect("short");
+    let padded = |zeros: i64| "0".repeat(usize::try_from(zeros).expect("not negative"));
+    let plain = if point <= 0 {
+        format!("0.{}{digits}", padded(-point))
+    } else if point >= width {
+        format!("{digits}{}", padded(point - width))
+    } else {
+        let (before, after) = digits.split_at(usize::try_from(point).expect("within"));
+        format!("{before}.{after}")
+    };
+    let plain = plain.trim_start_matches('0');
+    let plain = if plain.contains('.') {
+        plain.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        plain
+    };
+    let plain = if plain.starts_with('.') {
+        format!("0{plain}")
+    } else {
+        plain.to_owned()
+    };
+    if negative { format!("-{plain}") } else { plain }
 }
 
 fn unreachable_number() -> String {

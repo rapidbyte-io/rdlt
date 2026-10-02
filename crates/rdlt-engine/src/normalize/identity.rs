@@ -14,6 +14,11 @@
 //! entries, and dictionaries and run-end encodings are their values. Dates, times, timestamps and
 //! durations encode as their kind and nanoseconds, so a value's unit, zone or date type does not
 //! change its encoding.
+//!
+//! JSON text is read a token at a time, never recursed into, and its numbers are read exactly:
+//! each encodes as the canonical text of its value, as an integer, a decimal or a float of that
+//! value does. Text that is not JSON fails the encoding; a column of JSON holds none once its
+//! push is checked.
 
 mod canonical;
 #[cfg(test)]
@@ -30,9 +35,9 @@ use arrow_array::{
 use arrow_buffer::NullBuffer;
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
-use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
 use super::as_list;
+use crate::json::{JsonError, Reader, Token, canonical_float, canonical_float32, canonical_number};
 use crate::table::convert::decoded;
 use canonical::{Stored, decimal_scale, temporal_tag, unit_nanoseconds};
 
@@ -61,13 +66,13 @@ pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryAr
             row.clear();
             for encoder in &encoders {
                 match encoder {
-                    Some(encoder) => encoder.write(index, &mut row),
+                    Some(encoder) => encoder.write(index, &mut row)?,
                     None => row.push(NULL),
                 }
             }
-            hash(&row)
+            Ok(hash(&row))
         })
-        .collect();
+        .collect::<Result<_, ArrowError>>()?;
     Ok(BinaryArray::from_iter_values(ids))
 }
 
@@ -247,10 +252,14 @@ impl Encoder {
     }
 
     /// Appends the encoding of the value at `index` to `out`.
-    fn write(&self, index: usize, out: &mut Vec<u8>) {
+    ///
+    /// # Errors
+    ///
+    /// Where the value is JSON text that is not JSON, or nests deeper than the limit.
+    fn write(&self, index: usize, out: &mut Vec<u8>) -> Result<(), ArrowError> {
         if self.is_null(index) {
             out.push(NULL);
-            return;
+            return Ok(());
         }
         match self {
             Self::Null => out.push(NULL),
@@ -276,14 +285,16 @@ impl Encoder {
                 let nanos = (values.value(index) * unit).to_string();
                 length(out, nanos.as_bytes());
             }
-            Self::Json(values) => json(values.value(index), out),
+            Self::Json(values) => json(values.value(index), out).map_err(|error| {
+                ArrowError::ParseError(format!("a value of a column of JSON: {error}"))
+            })?,
             Self::Object(_, fields) => {
                 out.push(OBJECT);
                 for (name, field) in fields {
                     if !field.is_null(index) {
                         out.push(FIELD);
                         length(out, name.as_bytes());
-                        field.write(index, out);
+                        field.write(index, out)?;
                     }
                 }
                 out.push(OBJECT_END);
@@ -292,7 +303,7 @@ impl Encoder {
                 out.push(ARRAY);
                 let offsets = list.value_offsets();
                 for item in offsets[index]..offsets[index + 1] {
-                    items.write(usize::try_from(item).unwrap_or(usize::MAX), out);
+                    items.write(usize::try_from(item).unwrap_or(usize::MAX), out)?;
                 }
                 out.push(ARRAY_END);
             }
@@ -302,55 +313,92 @@ impl Encoder {
                 length(out, formatted(values, index).as_bytes());
             }
         }
+        Ok(())
     }
 }
 
-/// Appends the encoding of the values the JSON `text` renders, or of the text where it is not
-/// JSON.
-fn json(text: &str, out: &mut Vec<u8>) {
-    if let Ok(value) = sonic_rs::from_str::<sonic_rs::Value>(text) {
-        json_value(&value, out);
-    } else {
-        out.push(STRING);
-        length(out, text.as_bytes());
+/// A container of JSON text being encoded: an array's encoding so far, or an object's members
+/// encoded so far and the key of the member being read.
+enum Open {
+    Array(Vec<u8>),
+    Object {
+        members: Vec<(String, Vec<u8>)>,
+        key: String,
+    },
+}
+
+/// Appends the encoding of the value the JSON `text` holds, as the encoding of the Arrow value
+/// holding it would be: its numbers exactly, as their canonical text.
+///
+/// The text is read a token at a time, so it is never recursed into however deep it nests.
+fn json(text: &str, out: &mut Vec<u8>) -> Result<(), JsonError> {
+    let mut reader = Reader::new(text);
+    let mut open: Vec<Open> = Vec::new();
+    while let Some(token) = reader.next()? {
+        match token {
+            Token::Null => place(&mut open, out, None),
+            Token::Bool(value) => place(&mut open, out, Some(&[if value { TRUE } else { FALSE }])),
+            Token::Number(written) => {
+                let mut number = vec![NUMBER];
+                number.extend_from_slice(canonical_number(written)?.as_bytes());
+                number.push(b';');
+                place(&mut open, out, Some(&number));
+            }
+            Token::String(text) => {
+                let mut string = vec![STRING];
+                length(&mut string, text.as_bytes());
+                place(&mut open, out, Some(&string));
+            }
+            Token::Key(name) => {
+                if let Some(Open::Object { key, .. }) = open.last_mut() {
+                    *key = name.into_owned();
+                }
+            }
+            Token::BeginObject => open.push(Open::Object {
+                members: Vec::new(),
+                key: String::new(),
+            }),
+            Token::BeginArray => open.push(Open::Array(vec![ARRAY])),
+            Token::EndObject | Token::EndArray => {
+                let encoded = match open.pop() {
+                    Some(Open::Array(mut items)) => {
+                        items.push(ARRAY_END);
+                        items
+                    }
+                    Some(Open::Object { mut members, .. }) => object(&mut members),
+                    None => return Err(JsonError::Invalid("a container closes that never opened")),
+                };
+                place(&mut open, out, Some(&encoded));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Places the encoding of a value read, `None` for a null, where the container open takes it:
+/// an object leaves out a null member, as a struct's encoding leaves out a null field.
+fn place(open: &mut [Open], out: &mut Vec<u8>, encoded: Option<&[u8]>) {
+    match (open.last_mut(), encoded) {
+        (None, encoded) => out.extend_from_slice(encoded.unwrap_or(&[NULL])),
+        (Some(Open::Array(items)), encoded) => items.extend_from_slice(encoded.unwrap_or(&[NULL])),
+        (Some(Open::Object { .. }), None) => {}
+        (Some(Open::Object { members, key }), Some(encoded)) => {
+            members.push((std::mem::take(key), encoded.to_vec()));
+        }
     }
 }
 
-/// Appends the encoding of `value`, as the encoding of the Arrow value holding it would be.
-fn json_value(value: &sonic_rs::Value, out: &mut Vec<u8>) {
-    if let Some(boolean) = value.as_bool() {
-        out.push(if boolean { TRUE } else { FALSE });
-    } else if let Some(integer) = value.as_i64() {
-        self::integer(out, integer.into());
-    } else if let Some(integer) = value.as_u64() {
-        self::integer(out, integer.into());
-    } else if let Some(float) = value.as_f64() {
-        float64(out, float);
-    } else if let Some(text) = value.as_str() {
-        out.push(STRING);
-        length(out, text.as_bytes());
-    } else if let Some(items) = value.as_array() {
-        out.push(ARRAY);
-        for item in items {
-            json_value(item, out);
-        }
-        out.push(ARRAY_END);
-    } else if let Some(object) = value.as_object() {
-        let mut fields: Vec<(&str, &sonic_rs::Value)> = object
-            .iter()
-            .filter(|(_, field)| !field.is_null())
-            .collect();
-        fields.sort_by_key(|(name, _)| *name);
-        out.push(OBJECT);
-        for (name, field) in fields {
-            out.push(FIELD);
-            length(out, name.as_bytes());
-            json_value(field, out);
-        }
-        out.push(OBJECT_END);
-    } else {
-        out.push(NULL);
+/// The encoding of an object of `members`, in name order.
+fn object(members: &mut [(String, Vec<u8>)]) -> Vec<u8> {
+    members.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let mut encoded = vec![OBJECT];
+    for (name, value) in members.iter() {
+        encoded.push(FIELD);
+        length(&mut encoded, name.as_bytes());
+        encoded.extend_from_slice(value);
     }
+    encoded.push(OBJECT_END);
+    encoded
 }
 
 /// The text of the value at `index` of `values`, as Arrow displays it.
@@ -395,22 +443,17 @@ fn number(row: &mut Vec<u8>, digits: impl FnOnce(&mut Vec<u8>) -> std::io::Resul
     row.push(b';');
 }
 
-/// Floats render as their shortest round-trip text, which for an integral float is the integer;
-/// negative zero renders as zero.
+/// Floats encode as the canonical text of the shortest text that reads back as them, a tie
+/// going to the even one as JSON writers break it: the text the engine writes a float into JSON
+/// as, so the float and that text hash alike. Negative zero is zero.
 fn float64(row: &mut Vec<u8>, value: f64) {
-    if value == 0.0 {
-        number(row, |row| row.write_all(b"0"));
-    } else {
-        number(row, |row| write!(row, "{value}"));
-    }
+    number(row, |row| row.write_all(canonical_float(value).as_bytes()));
 }
 
 fn float32(row: &mut Vec<u8>, value: f32) {
-    if value == 0.0 {
-        number(row, |row| row.write_all(b"0"));
-    } else {
-        number(row, |row| write!(row, "{value}"));
-    }
+    number(row, |row| {
+        row.write_all(canonical_float32(value).as_bytes())
+    });
 }
 
 /// Appends `bytes` after their length, in LEB128.

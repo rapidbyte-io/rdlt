@@ -37,6 +37,7 @@ mod crash;
 mod deadline;
 mod env;
 mod error;
+mod json;
 mod lane;
 mod limits;
 mod naming;
