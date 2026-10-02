@@ -17,7 +17,7 @@ const VERSION: u16 = 1;
 /// A source's memory of what its host may report committed, and its record of what it heard.
 #[derive(Debug, Default)]
 pub(crate) struct Reports {
-    /// The checkpoints the source sent and the cursors its reads started from, since it was
+    /// The checkpoints the source sent and where the reads it accepted started, since it was
     /// last started: a host is heard for these alone, as a served connector hears it.
     sent: Mutex<Arc<Sent>>,
     /// The partitions read since the source was last started, by stream and partition.
@@ -38,11 +38,22 @@ impl Reports {
         self.read.lock().clear();
     }
 
-    /// Notes that a read of `partition` of `stream` starts from `cursor`.
-    pub(crate) fn started<C: Serialize>(&self, stream: &str, partition: &PartitionId, cursor: &C) {
+    /// Notes that the source accepted a read of `partition` of `stream` from `cursor`, none
+    /// where its host gave none: as a served connector, it is then heard for that start.
+    pub(crate) fn started<C: Serialize>(
+        &self,
+        stream: &str,
+        partition: &PartitionId,
+        cursor: Option<&C>,
+    ) {
         let key = (stream.to_owned(), partition.to_string());
         self.read.lock().insert(key);
-        self.note(stream, partition, cursor);
+        let Some(cursor) = cursor else {
+            return;
+        };
+        let name = StreamName::new(stream).expect("valid stream name");
+        let cursor = Cursor::encode(VERSION, cursor).expect("a simulated cursor encodes");
+        self.sent.lock().started(None, &name, partition, &cursor);
     }
 
     /// Notes that a read of `partition` of `stream` sends the checkpoint `cursor`.

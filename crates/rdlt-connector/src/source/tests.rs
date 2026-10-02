@@ -76,6 +76,11 @@ impl ReadStream<Counter> for Numbers {
         if source.limit == 42 {
             return Err(ConnectorError::data("forty-two rows are refused"));
         }
+        if source.limit == 7 {
+            // A counter to seven says whether it was given a cursor.
+            let resumes = if out.resumes() { 1.0 } else { 0.0 };
+            out.metric("resumes", resumes).await?;
+        }
         for n in cursor.n..source.limit {
             out.rows(&[json!({ "n": n })]).await?;
             out.checkpoint(&Next { n: n + 1 }).await?;
@@ -376,4 +381,21 @@ async fn a_following_read_waits_once_caught_up_until_asked_to_stop() {
         let (read, ()) = tokio::join!(read, watch);
         read.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_read_knows_whether_it_was_given_a_cursor_or_starts_from_the_default() {
+    let source = connect(7).await;
+    let told = |events: &[SourceEvent]| match events.first() {
+        Some(SourceEvent::Metric { value, .. }) => *value,
+        other => panic!("no metric first: {other:?}"),
+    };
+    let (read, events) = read_all(source.as_ref(), None).await;
+    read.unwrap();
+    assert!(told(&events) < 0.5);
+    // The default cursor, given, is a cursor given: the host said where to read from.
+    let start = Cursor::encode(2, &Next::default()).unwrap();
+    let (read, events) = read_all(source.as_ref(), Some(start)).await;
+    read.unwrap();
+    assert!(told(&events) > 0.5);
 }

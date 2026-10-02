@@ -9,6 +9,7 @@ use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamNam
 use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WalStore, WriteMode};
 use rdlt_testkit::canon::Canon;
 
+use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
 use super::{FAULTY_RUNS, config, settle};
 use crate::changes::{
@@ -61,11 +62,48 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
         }
         check_acknowledged(&world, round, seed);
     }
-    let violations = world.violations();
+    // What the destination holds once the workload is loaded; the checks that follow load
+    // nothing more.
     let digest = world.store.lock().digest();
+    let reported = Reported {
+        engine: &engine,
+        plans: vec![plan.clone()],
+        world: &world,
+        name: &name,
+        placing: None,
+        stands,
+        repeats: |_, _| true,
+        refusable: world
+            .changes
+            .streams
+            .iter()
+            .all(|stream| stream.replay.is_none()),
+    };
+    reported.check(seed).await;
+    let violations = world.violations();
     World::unregister(&name);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     digest
+}
+
+/// Where state holds `partition` of `stream` at a cursor.
+fn stands(world: &World, stream: &str, partition: &str) -> Option<u64> {
+    let entries = world.store.lock();
+    let entries = entries
+        .states()
+        .flat_map(|records| records.values())
+        .filter_map(|record| StateEntry::from_record(record).ok());
+    let positions = entries.filter_map(|entry| match entry {
+        StateEntry::Partition {
+            stream: named,
+            partition: id,
+            state: PartitionState::Cursor(cursor),
+        } if named.name() == stream && id.as_str() == partition => {
+            cursor.decode::<Position>(1).ok()
+        }
+        _ => None,
+    });
+    positions.map(|position| position.next).max()
 }
 
 /// The pipeline of every change stream, each written as the workload says.
