@@ -9,7 +9,7 @@ use arrow_array::{Array, OffsetSizeTrait};
 use arrow_buffer::ArrowNativeType;
 use arrow_schema::DataType;
 
-use super::{Meter, clamp};
+use super::{JSON, Meter, Within, clamp, item};
 use crate::cost::widths::{BRACKETS, OFFSET, count, null_slot, scalar};
 
 /// Bytes: the index of a row's run, which decoding a run-end encoding takes a row.
@@ -25,6 +25,10 @@ pub(super) struct Place {
     values: usize,
     index: usize,
     nested: bool,
+    planned: bool,
+    /// Where the type the value is converted to lies, or nowhere.
+    target: usize,
+    text: bool,
 }
 
 /// What a value takes, as it was measured against the meter's limit.
@@ -37,19 +41,24 @@ pub(super) enum Named {
 }
 
 /// Whether one value of `data_type` is measured from its offsets or its view alone, in a step:
-/// strings and bytes, but for a string inside a nested value, whose escapes are read.
-fn direct(data_type: &DataType, nested: bool) -> bool {
+/// strings and bytes, but for a string held as a JSON string, whose escapes are read.
+fn direct(data_type: &DataType, within: Within<'_>) -> bool {
     match data_type {
         DataType::Binary | DataType::LargeBinary | DataType::BinaryView => true,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => !nested,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => !within.nested,
         _ => false,
     }
 }
 
-impl Meter<'_> {
-    pub(super) fn list<O: OffsetSizeTrait>(&mut self, array: &dyn Array, rows: Range<usize>) {
+impl Meter {
+    pub(super) fn list<O: OffsetSizeTrait>(
+        &mut self,
+        array: &dyn Array,
+        rows: Range<usize>,
+        within: Within<'_>,
+    ) {
         let list = array.as_list::<O>();
-        self.listed(list.value_offsets(), list.values().as_ref(), rows);
+        self.listed(list.value_offsets(), list.values().as_ref(), rows, within);
     }
 
     /// Measures the `rows` lists whose items are `values` between consecutive `offsets`: each an
@@ -59,16 +68,22 @@ impl Meter<'_> {
         offsets: &[O],
         values: &dyn Array,
         rows: Range<usize>,
+        within: Within<'_>,
     ) {
         let offset = |row: usize| offsets.get(row).map_or(0, |offset| offset.as_usize());
         let items = clamp(offset(rows.start)..offset(rows.end), values.len());
         self.times(rows.len() + 1, OFFSET);
         self.times(rows.len(), BRACKETS);
         self.add(count(items.len()));
-        self.range(values, items, true);
+        self.range(values, items, within.inside(item(within)));
     }
 
-    pub(super) fn list_view<O: OffsetSizeTrait>(&mut self, array: &dyn Array, rows: Range<usize>) {
+    pub(super) fn list_view<O: OffsetSizeTrait>(
+        &mut self,
+        array: &dyn Array,
+        rows: Range<usize>,
+        within: Within<'_>,
+    ) {
         let list = array.as_list_view::<O>();
         let values = list.values().as_ref();
         self.times(rows.len(), 2 * OFFSET + BRACKETS);
@@ -82,8 +97,9 @@ impl Meter<'_> {
                 first..first.saturating_add(list.sizes()[row].as_usize()),
                 values.len(),
             );
-            self.add(count(items.len()));
-            self.range(values, items, true);
+            // Each item its comma, and the place it is taken from.
+            self.times(items.len(), 1 + OFFSET);
+            self.range(values, items, within.inside(item(within)));
         }
     }
 
@@ -103,7 +119,7 @@ impl Meter<'_> {
             if fields.iter().any(|(member, _)| member == id) {
                 let child = union.child(id).as_ref();
                 let at = union.value_offset(row);
-                self.range(child, clamp(at..at.saturating_add(1), child.len()), true);
+                self.range(child, clamp(at..at.saturating_add(1), child.len()), JSON);
             }
         }
     }
@@ -114,14 +130,19 @@ impl Meter<'_> {
     /// was added up so far and against the whole limit, and remembered: within the limit its
     /// bytes, exactly, and beyond it only that it is beyond. Rows naming it again add what was
     /// remembered.
-    fn value(&mut self, values: &dyn Array, index: usize, nested: bool) {
-        if direct(values.data_type(), nested) {
-            return self.range(values, index..index + 1, nested);
+    fn value(&mut self, values: &dyn Array, index: usize, within: Within<'_>) {
+        if direct(values.data_type(), within) {
+            return self.range(values, index..index + 1, within);
         }
         let place = Place {
             values: std::ptr::from_ref(values).cast::<()>().addr(),
             index,
-            nested,
+            nested: within.nested,
+            planned: within.planned,
+            target: within
+                .target
+                .map_or(0, |target| std::ptr::from_ref(target).addr()),
+            text: within.text,
         };
         self.step();
         match self.named.get(&place) {
@@ -130,15 +151,18 @@ impl Meter<'_> {
             None => {}
         }
         let (before, steps) = (std::mem::take(&mut self.spent), self.steps);
-        self.range(values, index..index + 1, nested);
+        let stop = std::mem::replace(&mut self.stop, self.limit);
+        self.range(values, index..index + 1, within);
         let named = if self.over() {
             self.beyond = true;
             Named::Beyond
         } else {
             Named::Bytes(self.spent)
         };
+        self.stop = stop;
         self.spent = self.spent.saturating_add(before);
-        if self.steps.saturating_sub(steps) > self.dear {
+        let dear = self.steps.saturating_sub(steps) > self.dear;
+        if dear && self.named.len() < self.room {
             self.named.insert(place, named);
         }
     }
@@ -149,14 +173,14 @@ impl Meter<'_> {
         &mut self,
         array: &dyn Array,
         rows: Range<usize>,
-        nested: bool,
+        within: Within<'_>,
     ) {
         let dictionary = array.as_dictionary::<K>();
         let (keys, values) = (dictionary.keys(), dictionary.values().as_ref());
         self.times(rows.len(), count(size_of::<K::Native>()));
         if scalar(values.data_type()).is_some() {
             // Every value takes the same, a null too, whatever its key.
-            return self.typed(values, 0..rows.len(), nested);
+            return self.typed(values, 0..rows.len(), within);
         }
         if matches!(values.data_type(), DataType::RunEndEncoded(..)) {
             // Decoding names each key's run through a wider copy of the key.
@@ -177,7 +201,7 @@ impl Meter<'_> {
                 .then(|| keys.values()[row].as_usize())
                 .filter(|key| *key < values.len());
             match key {
-                Some(key) => self.value(values, key, nested),
+                Some(key) => self.value(values, key, within),
                 None => self.add(null),
             }
         }
@@ -188,7 +212,7 @@ impl Meter<'_> {
         &mut self,
         array: &dyn Array,
         rows: Range<usize>,
-        nested: bool,
+        within: Within<'_>,
     ) {
         let runs = array.as_run::<R>();
         let (ends, values) = (runs.run_ends(), runs.values().as_ref());
@@ -209,7 +233,7 @@ impl Meter<'_> {
             let before = self.spent;
             self.add(count(size_of::<R::Native>()));
             if run < values.len() {
-                self.value(values, run, nested);
+                self.value(values, run, within);
             } else {
                 self.add(null_slot(values.data_type()));
             }

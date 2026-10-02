@@ -17,7 +17,8 @@ use super::{DAY, NANOS_PER_SECOND, fixed_offset, naive, nanos, raw};
 pub(crate) fn text(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     let renderer = Renderer::new(array.as_ref())?;
     let nulls = array.logical_nulls();
-    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 24);
+    let capacity = crate::table::convert::text_capacity(array, false);
+    let mut builder = StringBuilder::with_capacity(array.len(), capacity);
     let mut value = String::new();
     for row in 0..array.len() {
         if nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)) {

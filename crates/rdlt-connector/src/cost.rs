@@ -14,13 +14,14 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::ops::Range;
 
+use arrow_array::cast::AsArray as _;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
 
 pub use held::Allocations;
 
 use crate::sink::Push;
-use crate::types::TypeKind;
+use crate::types::{LogicalType, TypeKind};
 use expanded::Meter;
 
 /// What a batch costs whoever holds it.
@@ -104,87 +105,140 @@ impl Rendering {
     /// What `rows` of `array`, a column of its own, expand to, measured up to `limit`.
     pub fn expanded_array(&self, array: &dyn Array, rows: Range<usize>, limit: u64) -> u64 {
         let mut meter = Meter::new(self, limit);
-        meter.column(array, rows);
+        meter.column(array, rows, None);
         meter.spent()
     }
 
     /// A measure of what rows of `batch` expand to, up to `limit`, for measuring many stretches
     /// of them: a value many rows name is measured once for all of them.
-    pub fn measure<'a>(&'a self, batch: &'a RecordBatch, limit: u64) -> Measure<'a> {
+    pub fn measure(&self, batch: &RecordBatch, limit: u64) -> Measure {
+        self.lowering(batch, Vec::new(), 0, limit)
+    }
+
+    /// A measure of what lowering rows of `batch` into their table holds at once, up to `limit`.
+    ///
+    /// `stored` says, for each column of the batch in order, how its table stores it; a column
+    /// it says nothing of is measured as [`Rendering::measure`] measures it. Every row costs
+    /// `row` bytes beside its columns: the columns of the table the batch holds nothing in.
+    pub fn lowering(
+        &self,
+        batch: &RecordBatch,
+        stored: Vec<Option<Stored>>,
+        row: u64,
+        limit: u64,
+    ) -> Measure {
         Measure {
-            batch,
+            batch: batch.clone(),
+            stored,
+            row,
             meter: Meter::new(self, limit),
         }
     }
 }
 
-/// Measures what stretches of one batch's rows expand to, up to a limit.
-pub struct Measure<'a> {
-    batch: &'a RecordBatch,
-    meter: Meter<'a>,
+/// How a table stores one column of a batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stored {
+    /// The type of the table's column, which the batch's values are converted to.
+    pub column: LogicalType,
+    /// Whether the destination stores the column's values as text.
+    pub text: bool,
 }
 
-impl fmt::Debug for Measure<'_> {
+/// A run of rows cut from a batch, and what it was measured to expand to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    /// The row the piece ends before.
+    pub end: usize,
+    /// Bytes: what the piece expands to at most, the sum of the stretches it was measured in;
+    /// for one row beyond the limit, some value beyond it.
+    pub bytes: u64,
+}
+
+/// Measures what stretches of one batch's rows expand to, up to a limit.
+pub struct Measure {
+    batch: RecordBatch,
+    stored: Vec<Option<Stored>>,
+    /// Bytes: what every row costs beside its columns.
+    row: u64,
+    meter: Meter,
+}
+
+impl fmt::Debug for Measure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Measure").finish_non_exhaustive()
     }
 }
 
-impl Measure<'_> {
+impl Measure {
     /// What `rows` expand to: beyond the limit, some value beyond it, where measuring stopped.
     pub fn expanded(&mut self, rows: Range<usize>) -> u64 {
-        self.meter.restart();
-        for column in self.batch.columns() {
+        let limit = self.meter.limit();
+        self.stretch(rows, limit)
+    }
+
+    /// What `rows` expand to, measured no further than `stop` bytes.
+    fn stretch(&mut self, rows: Range<usize>, stop: u64) -> u64 {
+        self.meter.restart(stop);
+        let within = rows.start.min(self.batch.num_rows())..rows.end.min(self.batch.num_rows());
+        self.meter.rows(within.len(), self.row);
+        for (index, column) in self.batch.columns().iter().enumerate() {
             if self.meter.over() {
                 break;
             }
-            self.meter.column(column.as_ref(), rows.clone());
+            let stored = self.stored.get(index).and_then(Option::as_ref);
+            self.meter.column(column.as_ref(), rows.clone(), stored);
         }
         self.meter.spent()
     }
 
-    /// Whether `rows` expand to no more than the limit.
-    fn fits(&mut self, rows: Range<usize>) -> bool {
-        self.expanded(rows);
-        !self.meter.over()
+    /// The next piece of the batch from row `first`: the longest run of rows whose stretches,
+    /// as they were measured, expand to no more than the limit together, and one row at least.
+    ///
+    /// Stretches are measured each twice as long as the last while they fit, and half as long
+    /// once one did not, each no further than what the piece has left: a piece costs about one
+    /// measuring of its rows and of half as many again. The stretches' sum is never less than
+    /// what the rows expand to measured together.
+    pub fn piece(&mut self, first: usize) -> Piece {
+        let (rows, limit) = (self.batch.num_rows(), self.meter.limit());
+        let mut end = first.saturating_add(1).min(rows);
+        let mut bytes = self.stretch(first..end, limit);
+        // How many rows are tried next while every stretch fitted, and once one did not, how
+        // many are known not to fit.
+        let (mut step, mut unfit) = (1_usize, None);
+        while end < rows && bytes <= limit {
+            let tried = match unfit {
+                None => step.min(rows - end),
+                Some(unfit) if unfit > 1 => unfit / 2,
+                Some(_) => break,
+            };
+            let more = self.stretch(end..end + tried, limit - bytes);
+            if more <= limit - bytes {
+                (end, bytes) = (end + tried, bytes + more);
+                step = step.saturating_mul(2);
+                unfit = unfit.map(|unfit| unfit - tried);
+            } else {
+                unfit = Some(tried);
+            }
+        }
+        Piece { end, bytes }
     }
 
-    /// Where to cut the batch so each piece expands to at most the limit: the end of each piece,
-    /// in order, the last being the batch's row count.
+    /// Where to cut the batch so each piece expands to at most the limit: each piece in order,
+    /// the last ending at the batch's row count.
     ///
-    /// A row that alone expands beyond the limit is a piece of its own. The pieces are found by
-    /// searching the rows' running cost, which only grows, so no cost a row is kept.
-    pub fn cuts(&mut self) -> Vec<usize> {
+    /// A row that alone expands beyond the limit is a piece of its own.
+    pub fn cuts(&mut self) -> Vec<Piece> {
         let rows = self.batch.num_rows();
         let mut cuts = Vec::new();
         let mut first = 0;
-        while first < rows && !self.fits(first..rows) {
-            // Doubles the piece while it fits, then searches between the last that fit and the
-            // first that did not; the first row is a piece whether or not it fits.
-            let (mut fitting, mut step) = (first + 1, 1_usize);
-            let mut beyond = rows;
-            while fitting < rows {
-                let next = fitting.saturating_add(step).min(rows);
-                if !self.fits(first..next) {
-                    beyond = next;
-                    break;
-                }
-                fitting = next;
-                step = step.saturating_mul(2);
-            }
-            while beyond - fitting > 1 {
-                let middle = fitting + (beyond - fitting) / 2;
-                if self.fits(first..middle) {
-                    fitting = middle;
-                } else {
-                    beyond = middle;
-                }
-            }
-            cuts.push(fitting);
-            first = fitting;
+        while first < rows {
+            let piece = self.piece(first);
+            first = piece.end;
+            cuts.push(piece);
         }
-        if cuts.last() != Some(&rows) {
-            cuts.push(rows);
+        if cuts.is_empty() {
+            cuts.push(Piece { end: 0, bytes: 0 });
         }
         cuts
     }
@@ -193,8 +247,8 @@ impl Measure<'_> {
     #[cfg(test)]
     pub(crate) fn forgetful(self) -> Self {
         Self {
-            batch: self.batch,
             meter: self.meter.forgetful(),
+            ..self
         }
     }
 
@@ -203,6 +257,47 @@ impl Measure<'_> {
     #[cfg(test)]
     pub(crate) fn work(&self) -> (u64, usize) {
         (self.meter.steps(), self.meter.remembered())
+    }
+}
+
+/// Bytes: an upper bound on the text the values of `array` render to together, for whoever
+/// builds it to hold no more: their JSON text where `json`, else their text as a destination
+/// storing text takes it, bytes in hex.
+///
+/// Strings and bytes are measured exactly, a value of a fixed width at the longest text its
+/// type renders to, and a nested value as the cost model measures its JSON text.
+pub fn text_bytes(array: &dyn Array, json: bool) -> u64 {
+    let rows = widths::count(array.len());
+    let quotes = if json {
+        rows.saturating_mul(widths::BRACKETS)
+    } else {
+        0
+    };
+    if let Some(scalar) = widths::scalar(array.data_type()) {
+        return rows.saturating_mul(scalar.text);
+    }
+    match array.data_type() {
+        DataType::Utf8 => {
+            let text = array.as_string::<i32>();
+            let (first, last) = (text.value_offsets()[0], text.value_offsets()[array.len()]);
+            let range = usize::try_from(first).unwrap_or(0)..usize::try_from(last).unwrap_or(0);
+            let bytes = text.value_data().get(range).unwrap_or_default();
+            let escapes = if json { widths::escapes(bytes) } else { 0 };
+            widths::count(bytes.len())
+                .saturating_add(escapes)
+                .saturating_add(quotes)
+        }
+        DataType::Binary => {
+            let bytes = array.as_binary::<i32>();
+            let (first, last) = (bytes.value_offsets()[0], bytes.value_offsets()[array.len()]);
+            let length = u64::try_from(last.saturating_sub(first)).unwrap_or(0);
+            length.saturating_mul(2).saturating_add(quotes)
+        }
+        _ => {
+            let mut meter = Meter::new(&Rendering::native(), u64::MAX);
+            meter.inside(array);
+            meter.spent()
+        }
     }
 }
 

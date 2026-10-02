@@ -5,7 +5,8 @@ use rdlt_connector::cost::{Allocations, Rendering};
 use rdlt_connector::{Partition, Permit, StreamName};
 
 use super::normalized::{charge_parts, judge, part_growth, share_growth};
-use super::{Held, LOWERING_WINDOW, charge_growth, hold, shred_failed, windows};
+use super::queue::written_bytes;
+use super::{Held, LOWERING_WINDOW, hold, shred_failed, windows};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
@@ -56,14 +57,40 @@ fn charge(batch: &RecordBatch) -> u64 {
     native().cost(batch, u64::MAX).charge()
 }
 
-/// The bytes `batch` keeps alive.
+/// The bytes `batch` keeps alive, its schema with its buffers.
 fn allocated(batch: &RecordBatch) -> u64 {
     Allocations::of(batch).bytes()
+}
+
+/// The bytes the columns of `batch` keep alive.
+fn buffers(batch: &RecordBatch) -> u64 {
+    allocated(batch) - rdlt_connector::cost::schema_bytes(&batch.schema())
 }
 
 fn ids(rows: i64) -> RecordBatch {
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..rows));
     RecordBatch::try_from_iter([("id", ids)]).unwrap()
+}
+
+/// `held` charged for what `prepared` keeps alive that it did not hold, as a unit's lowered parts
+/// are.
+fn charge_growth(budget: &MemoryBudget, prepared: &Prepared, mut held: Held) -> Held {
+    let fresh = prepared.growth(&mut held.allocations.lock());
+    held.grow(budget, fresh);
+    held
+}
+
+/// What holds `batch`, shredded from a chunk charged nothing before it was built.
+fn shredded(budget: &MemoryBudget, batch: &RecordBatch) -> Held {
+    let reserved = vec![budget.charge(0)];
+    hold(
+        budget,
+        &native(),
+        std::slice::from_ref(batch),
+        reserved,
+        Vec::new(),
+    )
+    .remove(0)
 }
 
 /// `batch` as a table of no columns of its own would hold it: after the two constant columns
@@ -85,17 +112,19 @@ fn prepared(batch: &RecordBatch) -> Prepared {
 #[tokio::test]
 async fn shredded_batches_are_charged_before_the_pushes_they_came_from_are_released() {
     let budget = MemoryBudget::new(1 << 20);
-    let pushed: Permit = Box::new(budget.acquire(400).await);
+    let pushed: Permit = Box::new(budget.acquire(400).await.unwrap());
     let batches = [ids(10), ids(1000)];
     let sizes = [charge(&batches[0]), charge(&batches[1])];
     assert!(sizes[1] >= 8_000);
-    let held = hold(&budget, &native(), &batches, vec![pushed]);
+    // Each chunk was charged twenty bytes before it was parsed.
+    let reserved = vec![budget.charge(20), budget.charge(20)];
+    let held = hold(&budget, &native(), &batches, reserved, vec![pushed]);
     assert_eq!(budget.peak(), 400 + sizes[0] + sizes[1]);
     assert_eq!(budget.reserved(), sizes[0] + sizes[1]);
     // Each holds what its batch keeps alive, and spares what it was charged beyond that.
     for ((held, batch), size) in held.iter().zip(&batches).zip(sizes) {
         assert_eq!(held.allocations.lock().bytes(), allocated(batch));
-        assert_eq!(held.spare, size - allocated(batch));
+        assert_eq!(held.spare(), size - allocated(batch));
     }
     drop(held);
     assert_eq!(budget.reserved(), 0);
@@ -105,7 +134,7 @@ async fn shredded_batches_are_charged_before_the_pushes_they_came_from_are_relea
 fn a_lowered_batch_is_charged_for_what_its_unit_did_not_hold() {
     let budget = MemoryBudget::new(1 << 20);
     let unit = ids(1000);
-    let held = hold(&budget, &native(), std::slice::from_ref(&unit), Vec::new()).remove(0);
+    let held = shredded(&budget, &unit);
     let charged = budget.reserved();
     // A batch lowered as it is keeps alive only what its unit holds already.
     let held = charge_growth(&budget, &prepared(&unit.slice(10, 20)), held);
@@ -113,10 +142,10 @@ fn a_lowered_batch_is_charged_for_what_its_unit_did_not_hold() {
     // One lowered into buffers of its own is charged for them.
     let converted = ids(500);
     let held = charge_growth(&budget, &prepared(&converted), held);
-    assert_eq!(budget.reserved(), charged + allocated(&converted));
+    assert_eq!(budget.reserved(), charged + buffers(&converted));
     // And once only, however many pieces keep them alive.
     let held = charge_growth(&budget, &prepared(&converted.slice(0, 5)), held);
-    assert_eq!(budget.reserved(), charged + allocated(&converted));
+    assert_eq!(budget.reserved(), charged + buffers(&converted));
     drop(held);
     assert_eq!(budget.reserved(), 0);
 }
@@ -128,15 +157,15 @@ fn a_units_spare_charge_pays_for_what_lowering_allocates() {
     let size = allocated(&unit);
     let permit: Permit = Box::new(budget.charge(size + 100));
     let held = Held::of(vec![permit], size + 100, std::slice::from_ref(&unit));
-    assert_eq!(held.spare, 100);
+    assert_eq!(held.spare(), 100);
     let lowered = ids(100);
     let held = charge_growth(&budget, &prepared(&lowered), held);
-    assert_eq!(budget.reserved(), size + allocated(&lowered));
-    assert_eq!(held.spare, 0);
+    assert_eq!(budget.reserved(), size + buffers(&lowered));
+    assert_eq!(held.spare(), 0);
     // A piece of the unit shares what it holds, and spares nothing.
     let piece = held.piece();
     assert!(piece.permits.is_empty());
-    assert_eq!(piece.spare, 0);
+    assert_eq!(piece.spare(), 0);
     let grown = budget.reserved();
     drop(charge_growth(&budget, &prepared(&lowered), piece));
     assert_eq!(budget.reserved(), grown);
@@ -146,21 +175,21 @@ fn a_units_spare_charge_pays_for_what_lowering_allocates() {
 fn bytes_reserved_before_a_unit_grows_pay_for_its_growth() {
     let budget = MemoryBudget::new(1 << 20);
     let unit = ids(10);
-    let mut held = hold(&budget, &native(), std::slice::from_ref(&unit), Vec::new()).remove(0);
-    let (charged, spare) = (budget.reserved(), held.spare);
-    held.reserve(&budget, 1_000);
+    let mut held = shredded(&budget, &unit);
+    let (charged, spare) = (budget.reserved(), held.spare());
+    held.reserved(budget.charge(1_000));
     assert_eq!(
         budget.reserved(),
         charged + 1_000,
         "charged before it is built"
     );
-    assert_eq!(held.spare, spare + 1_000);
+    assert_eq!(held.spare(), spare + 1_000);
     // Growth within what was reserved is charged nothing more.
     let lowered = ids(100);
-    assert!(allocated(&lowered) <= spare + 1_000);
+    assert!(buffers(&lowered) <= spare + 1_000);
     let held = charge_growth(&budget, &prepared(&lowered), held);
     assert_eq!(budget.reserved(), charged + 1_000);
-    assert_eq!(held.spare, spare + 1_000 - allocated(&lowered));
+    assert_eq!(held.spare(), spare + 1_000 - buffers(&lowered));
 }
 
 #[test]
@@ -182,21 +211,11 @@ fn a_shredded_batch_expanding_beyond_the_budget_is_charged_the_budget_or_what_it
     assert!(charge(&batch) > 4 * held);
     // A budget between the two: the expansion is charged as far as the budget goes.
     let budget = MemoryBudget::new(2 * held);
-    drop(hold(
-        &budget,
-        &native(),
-        std::slice::from_ref(&batch),
-        Vec::new(),
-    ));
+    drop(shredded(&budget, &batch));
     assert_eq!(budget.peak(), 2 * held);
     // A budget below what the batch keeps alive: that is charged whole.
     let small = MemoryBudget::new(held / 2);
-    drop(hold(
-        &small,
-        &native(),
-        std::slice::from_ref(&batch),
-        Vec::new(),
-    ));
+    drop(shredded(&small, &batch));
     assert_eq!(small.peak(), held);
 }
 
@@ -216,8 +235,8 @@ fn the_loads_constant_columns_count_for_no_growth() {
         discarded_values: 0,
     };
     let mut held = Allocations::default();
-    assert_eq!(prepared.growth(&mut held), allocated(&rows));
-    assert_eq!(held.bytes(), allocated(&rows));
+    assert_eq!(prepared.growth(&mut held), buffers(&rows));
+    assert_eq!(held.bytes(), buffers(&rows));
 }
 
 #[test]
@@ -238,14 +257,14 @@ fn units_are_lowered_in_order_in_windows_of_a_bounded_size() {
 fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
     let budget = MemoryBudget::new(1 << 20);
     let unit = ids(10);
-    let held = hold(&budget, &native(), std::slice::from_ref(&unit), Vec::new()).remove(0);
+    let held = shredded(&budget, &unit);
     let charged = budget.reserved();
     let parts: Vec<(usize, Prepared)> = [ids(100), ids(50)]
         .iter()
         .map(prepared)
         .enumerate()
         .collect();
-    let lowered = allocated(&ids(100)) + allocated(&ids(50));
+    let lowered = buffers(&ids(100)) + buffers(&ids(50));
     let shared = share_growth(&budget, &parts, held);
     assert_eq!(
         budget.reserved(),
@@ -267,7 +286,7 @@ fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
 fn normalized_parts_are_charged_before_they_wait_on_their_tables() {
     let budget = MemoryBudget::new(1 << 22);
     let unit = ids(1000);
-    let held = hold(&budget, &native(), std::slice::from_ref(&unit), Vec::new()).remove(0);
+    let held = shredded(&budget, &unit);
     let charged = budget.reserved();
     let shape = crate::normalize::Shape {
         max_depth: 8,
@@ -290,8 +309,16 @@ fn normalized_parts_are_charged_before_they_wait_on_their_tables() {
                 + lineage.root_row.to_data().buffers()[0].capacity()
         })
         .sum();
+    // Each part's batch has a schema of its own, which it keeps alive too.
+    let schemas: u64 = parts
+        .iter()
+        .map(|part| rdlt_connector::cost::schema_bytes(&part.batch.schema()))
+        .sum();
     let held = charge_parts(&budget, &parts, held);
-    assert_eq!(budget.reserved(), charged + u64::try_from(lineage).unwrap());
+    assert_eq!(
+        budget.reserved(),
+        charged + u64::try_from(lineage).unwrap() + schemas
+    );
     drop(held);
     assert_eq!(budget.reserved(), 0);
 }
@@ -331,7 +358,7 @@ fn judged_parts_are_charged_while_they_are_judged_and_released_after() {
 
 #[test]
 fn a_row_expanding_beyond_the_budget_is_a_source_error_naming_its_stream() {
-    let row = super::slices::RowTooLarge {
+    let row = super::pieces::RowTooLarge {
         expanded: 9_000,
         budget: 4_096,
     };
@@ -346,6 +373,34 @@ fn a_row_expanding_beyond_the_budget_is_a_source_error_naming_its_stream() {
 #[test]
 fn written_bytes_count_a_slices_own_rows() {
     let whole = ids(1000);
-    assert_eq!(super::written_bytes(&whole), 8_125);
-    assert_eq!(super::written_bytes(&whole.slice(0, 10)), 82);
+    assert_eq!(written_bytes(&whole), 8_125);
+    assert_eq!(written_bytes(&whole.slice(0, 10)), 82);
+}
+
+#[tokio::test]
+async fn a_unit_being_cut_holds_its_source_alone_and_releases_the_rest() {
+    let budget = MemoryBudget::new(1 << 20);
+    let unit = ids(100);
+    let source = allocated(&unit);
+    // Two pushes admitted for more than they keep alive, as ones that expand are.
+    let admission = crate::cost::Charging::new(budget.clone(), Arc::new(Rendering::text()));
+    let push = rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Arrow(unit.clone()));
+    let first = rdlt_connector::Admission::admit(&admission, &push)
+        .await
+        .unwrap()
+        .unwrap();
+    let second: Permit = Box::new(budget.charge(500));
+    let charged = budget.reserved();
+    assert!(charged > source + 500);
+    let mut held = Held::of(vec![first, second], charged, std::slice::from_ref(&unit));
+    held.settle();
+    assert_eq!((held.bytes(), held.spare()), (source, 0));
+    assert_eq!(budget.reserved(), source);
+    drop(held);
+    assert_eq!(budget.reserved(), 0);
+    // Permits of another's making are kept as they are.
+    let other: Permit = Box::new(7_u8);
+    let mut foreign = Held::of(vec![other], 900, std::slice::from_ref(&unit));
+    foreign.settle();
+    assert_eq!(foreign.bytes(), 900);
 }

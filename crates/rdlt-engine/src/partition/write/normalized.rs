@@ -10,7 +10,11 @@ use parking_lot::Mutex;
 use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ColumnPath, Permit, StreamName};
 
-use super::{Held, OpenSegment, PartitionContext, PartitionJob, queue, schema_of, stamp, windows};
+use super::pieces::{self, Lowered};
+use super::{
+    Held, OpenSegment, PartitionContext, PartitionJob, queue, reserve, row_too_large, schema_of,
+    stamp, windows,
+};
 use crate::budget::MemoryBudget;
 use crate::compute::run_all;
 use crate::error::Error;
@@ -34,6 +38,7 @@ pub(super) async fn write_normalized(
     units: Vec<(Vec<RecordBatch>, Held)>,
     shape: &Arc<Shape>,
 ) -> Result<(), Error> {
+    let units = sliced(job, context, units).await?;
     let batches: Vec<Vec<RecordBatch>> = units.iter().map(|(parts, _)| parts.clone()).collect();
     let rounding = judged(job, context, batches, shape).await?;
     for window in windows(units) {
@@ -54,12 +59,11 @@ pub(super) async fn write_normalized(
             }
             let stamp = stamp(context, open, received);
             let (unit, discarded) = plan_parts(job, context, parts, &rounding).await?;
-            // The columns the parts hold nothing in are charged before lowering fills them.
-            let fill = unit
-                .iter()
-                .map(|(_, part, plan)| plan.null_fill(part.batch.num_rows()))
-                .fold(0, u64::saturating_add);
-            held.reserve(&context.budget, fill);
+            // What lowering the parts holds is reserved before they are lowered, beyond what
+            // the piece's permits spare.
+            let lowering = lowering_bytes(context, &unit).await;
+            let beyond = lowering.saturating_sub(held.spare());
+            held.reserved(reserve(context, beyond, false).await?);
             open.discarded_values += discarded.values;
             open.discarded_rows += discarded.rows;
             let lower_unit = move || lower_unit(unit, &stamp);
@@ -86,6 +90,52 @@ pub(super) async fn write_normalized(
         }
     }
     Ok(())
+}
+
+/// `units` cut into pieces by what their rows expand to, on the compute pool: a normalized
+/// unit's tables are known only once it is split, so its pieces are cut before, as they arrive.
+async fn sliced(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    units: Vec<(Vec<RecordBatch>, Held)>,
+) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
+    let lowered = Lowered {
+        rendering: context.rendering.as_ref().clone(),
+        stored: Vec::new(),
+        row: 0,
+        max: pieces::piece_bytes(&context.budget),
+        budget: context.budget.capacity(),
+    };
+    let mut cut = Vec::with_capacity(units.len());
+    for (parts, held) in units {
+        let lowered = lowered.clone();
+        let pieces = on_pool(context, move || pieces::sliced(parts, held, lowered)).await;
+        cut.extend(pieces.map_err(|row| row_too_large(job, &row))?);
+    }
+    Ok(cut)
+}
+
+/// Bytes: what lowering `unit`'s parts into their tables holds at once, as the cost model
+/// measures each part for its table, up to the budget; measured on the compute pool.
+async fn lowering_bytes(context: &PartitionContext, unit: &PlannedParts) -> u64 {
+    let (rendering, budget) = (
+        context.rendering.as_ref().clone(),
+        context.budget.capacity(),
+    );
+    let parts: Vec<_> = unit
+        .iter()
+        .map(|(_, part, plan)| (part.batch.clone(), plan.stored(), plan.null_fill(1)))
+        .collect();
+    let measure = move || {
+        let lowering = parts.into_iter().map(|(batch, stored, row)| {
+            let rows = batch.num_rows();
+            rendering
+                .lowering(&batch, stored, row, budget)
+                .expanded(0..rows)
+        });
+        lowering.fold(0, u64::saturating_add)
+    };
+    on_pool(context, measure).await
 }
 
 /// The parts of a unit, each with its table and plan.
@@ -337,7 +387,8 @@ pub(super) fn share_growth(
             .fold(0, u64::saturating_add)
     };
     held.grow(budget, fresh);
-    Arc::new(Mutex::new(held.permits))
+    // Queued with the parts, the unit is released by their writes.
+    Arc::new(Mutex::new(held.staged()))
 }
 
 /// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `held`

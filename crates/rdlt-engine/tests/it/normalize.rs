@@ -848,7 +848,8 @@ async fn a_normalized_unit_that_drops_nothing_takes_no_pool_trips_per_part() {
     let normalized = pool_jobs("pool_normalized", push, normalized("events")).await;
     assert_eq!(
         normalized,
-        plain + 1,
-        "normalizing takes one job; none of its four parts takes a trip of its own"
+        plain + 2,
+        "normalizing takes one job, and measuring its parts for their tables one more; none of \
+         its four parts takes a trip of its own"
     );
 }

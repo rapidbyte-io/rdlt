@@ -392,7 +392,8 @@ fn a_value_beyond_the_limit_is_measured_once_and_known_beyond() {
     let (batch, rendering) = (batch(column), native());
     // A limit the value alone exceeds: every row is beyond it, and is a piece of its own.
     let mut measure = rendering.measure(&batch, bytes / 2);
-    assert_eq!(measure.cuts(), (1..=ROWS).collect::<Vec<_>>());
+    let ends: Vec<usize> = measure.cuts().iter().map(|piece| piece.end).collect();
+    assert_eq!(ends, (1..=ROWS).collect::<Vec<_>>());
     for row in 0..ROWS {
         assert!(measure.expanded(row..row + 1) > bytes / 2);
     }
@@ -438,4 +439,61 @@ proptest! {
         prop_assert_eq!(whole.expanded(first..keys.len()), exact);
         prop_assert_eq!(whole.expanded(first..keys.len()), exact);
     }
+}
+
+/// `rows` list views each naming the same `items` views.
+fn view_lists_named(rows: usize, items: usize) -> ArrayRef {
+    let mut views = StringViewBuilder::new();
+    for _ in 0..items {
+        views.append_value("v");
+    }
+    Arc::new(GenericListViewArray::<i32>::new(
+        item(DataType::Utf8View),
+        ScalarBuffer::from(vec![0_i32; rows]),
+        ScalarBuffer::from(vec![i32::try_from(items).unwrap(); rows]),
+        Arc::new(views.finish()),
+        None,
+    ))
+}
+
+#[test]
+fn cutting_a_batch_costs_about_one_measuring_of_its_rows_and_half_again() {
+    // Rows of list views each naming the same 64 views: every item is a step each time named.
+    const ROWS: usize = 20_000;
+    let column = view_lists_named(ROWS, 64);
+    let (batch, rendering) = (batch(column), native());
+    let mut whole = rendering.measure(&batch, u64::MAX);
+    let expanded = whole.expanded(0..ROWS);
+    let (pass, _) = whole.work();
+    assert!(pass >= steps(ROWS * 64));
+    for pieces in [16, 105, 1_000] {
+        let mut measure = rendering.measure(&batch, expanded / pieces);
+        let cuts = measure.cuts();
+        assert!(cuts.len() >= usize::try_from(pieces).unwrap());
+        let (cutting, _) = measure.work();
+        assert!(
+            cutting <= 2 * pass,
+            "{pieces} pieces took {cutting} steps, a pass {pass}"
+        );
+    }
+}
+
+#[test]
+fn no_more_values_are_remembered_than_take_an_eighth_of_the_limit() {
+    const VALUES: usize = 20_000;
+    // Twenty thousand lists, each dear to measure and each named once.
+    let column = keyed::<Int32Type>(0..VALUES, view_lists(VALUES, 20));
+    let (batch, rendering) = (batch(column), native());
+    let mut unbounded = rendering.measure(&batch, u64::MAX);
+    let expanded = unbounded.expanded(0..VALUES);
+    assert_eq!(unbounded.work().1, VALUES);
+    // A limit of a mebibyte remembers an eighth of it in values of about 64 bytes each, and
+    // measures the same.
+    let mut small = rendering.measure(&batch, 1 << 20);
+    assert!(small.expanded(0..VALUES) > 1 << 20);
+    let mut cut = rendering.measure(&batch, 1 << 20);
+    let pieces = cut.cuts();
+    assert_eq!(pieces.last().map(|piece| piece.end), Some(VALUES));
+    assert!(pieces.iter().map(|piece| piece.bytes).sum::<u64>() >= expanded);
+    assert_eq!(cut.work().1, 2_048);
 }

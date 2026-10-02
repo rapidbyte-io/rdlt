@@ -1,6 +1,8 @@
 //! The invariant tying the cost model to the engine: no consumer of a batch materializes more
 //! than the model says the batch expands to.
 
+mod lowering;
+
 use std::sync::Arc;
 
 use arrow_array::builder::BinaryViewBuilder;
@@ -21,8 +23,14 @@ use rdlt_testkit::drawn::{Drawn, KINDS, Scalar, array, field, values};
 
 use super::{Admitted, Charging};
 use crate::budget::MemoryBudget;
+use crate::env::Env;
 use crate::normalize::as_list;
 use crate::table::convert::{convert, decoded, json, normalize, text};
+
+/// Counts what this crate's tests allocate, for those that hold a peak to a charge: each runs in
+/// a process of its own.
+#[global_allocator]
+static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
 
 /// What `column` expands to, as the engine charges it for a destination storing `native` kinds.
 fn expanded(column: &ArrayRef, native: &[TypeKind]) -> u64 {
@@ -422,7 +430,7 @@ async fn a_push_is_admitted_for_the_larger_of_what_it_holds_and_what_it_becomes(
     let whole = Int64Array::from(vec![7; 100_000]);
     let slice = RecordBatch::try_from_iter([("n", Arc::new(whole.slice(0, 3)) as ArrayRef)]);
     let held = Push::Arrow(slice.unwrap());
-    let permit = admission.admit(&SourceEvent::Push(held)).await;
+    let permit = admission.admit(&SourceEvent::Push(held)).await.unwrap();
     assert!(budget.reserved() >= 800_000, "{}", budget.reserved());
     let admitted = Admitted::of(permit.unwrap()).unwrap();
     assert_eq!(admitted.bytes, budget.reserved());
@@ -436,11 +444,11 @@ async fn a_push_is_admitted_for_the_larger_of_what_it_holds_and_what_it_becomes(
     );
     let expanding = RecordBatch::try_from_iter([("s", Arc::new(keyed.unwrap()) as ArrayRef)]);
     let change = Push::Changes(expanding.unwrap());
-    let permit = admission.admit(&SourceEvent::Push(change)).await;
+    let permit = admission.admit(&SourceEvent::Push(change)).await.unwrap();
     assert!(budget.reserved() >= 10_000_000, "{}", budget.reserved());
     drop(permit);
     let json = Push::Json(bytes::Bytes::from_static(b"[{}]"));
-    let permit = admission.admit(&SourceEvent::Push(json)).await;
+    let permit = admission.admit(&SourceEvent::Push(json)).await.unwrap();
     assert_eq!(budget.reserved(), 4);
     drop(permit);
 }
@@ -453,11 +461,11 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
         cursor,
         answers: None,
     };
-    let held = admission.admit(&checkpoint).await;
+    let held = admission.admit(&checkpoint).await.unwrap();
     assert_eq!(budget.reserved(), 40);
     // Only a commit releases a cursor, so it keeps no push of the whole budget out.
     let json = Push::Json(bytes::Bytes::from(vec![b' '; 100]));
-    let pushed = admission.admit(&SourceEvent::Push(json)).await;
+    let pushed = admission.admit(&SourceEvent::Push(json)).await.unwrap();
     assert_eq!(budget.reserved(), 140);
     drop((held, pushed));
     for event in [
@@ -472,7 +480,7 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
             value: 1.0,
         },
     ] {
-        assert!(admission.admit(&event).await.is_none());
+        assert!(admission.admit(&event).await.unwrap().is_none());
     }
     assert_eq!(budget.reserved(), 0);
     // What a read keeps beside its events is charged at once, apart from what is in flight.
@@ -482,7 +490,8 @@ async fn a_checkpoint_is_admitted_for_its_cursor_and_signals_for_nothing() {
         .admit(&SourceEvent::Push(Push::Json(bytes::Bytes::from_static(
             b"[]",
         ))))
-        .await;
+        .await
+        .unwrap();
     assert_eq!(budget.reserved(), 502);
     drop((kept, pushed));
     assert_eq!(budget.reserved(), 0);
@@ -497,8 +506,48 @@ async fn a_push_expanding_beyond_the_budget_holds_the_budget_and_no_more() {
     let batch = RecordBatch::try_from_iter([("w", wide)]).unwrap();
     let permit = admission
         .admit(&SourceEvent::Push(Push::Arrow(batch)))
-        .await;
+        .await
+        .unwrap();
     assert_eq!(budget.reserved(), 1_000);
     // What it says it holds is what the budget reserved, so nothing later counts as paid for.
     assert_eq!(Admitted::of(permit.unwrap()).unwrap().bytes, 1_000);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkpoint_behind_what_reads_keep_fails_at_the_deadline_and_holds_no_one_up() {
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(3600);
+    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
+    let env = Arc::new(crate::env::SystemEnv::new(pool));
+    let budget = MemoryBudget::new(256 << 20).within(Arc::clone(&env) as Arc<dyn Env>, WAIT);
+    let admission = Charging::new(budget.clone(), Arc::new(Rendering::text()));
+    // Four reads each keep a dictionary of a quarter of the budget, as a decoder's is charged.
+    let kept: Vec<_> = (0..4).map(|_| admission.charge(64 << 20)).collect();
+    assert_eq!(budget.reserved(), 256 << 20);
+    // A checkpoint finds no room, and nothing in flight or waiting for a commit could make any.
+    let cursor = rdlt_connector::Cursor::new(1, &[7; 40]).unwrap();
+    let checkpoint = SourceEvent::Checkpoint {
+        cursor,
+        answers: None,
+    };
+    let started = env.instant();
+    let refused = admission.admit(&checkpoint).await.unwrap_err();
+    assert_eq!(env.instant().duration_since(started), WAIT);
+    assert_eq!(refused.code(), Some("memory_budget_wait_exceeded"));
+    assert!(refused.is_retryable());
+    let said = refused.to_string();
+    assert!(said.contains("268435456 are kept by reads"), "{said}");
+    // The read's failure is the budget's, whichever stream met it.
+    let failed = crate::error::Error::connector(crate::error::Side::Source, "reading", refused);
+    assert_eq!(failed.kind(), crate::ErrorKind::Memory);
+    assert!(failed.is_retryable());
+    // The checkpoint left the queue: a push is admitted at once, as before it.
+    let json = SourceEvent::Push(Push::Json(bytes::Bytes::from_static(b"[{}]")));
+    let pushed = tokio::select! {
+        biased;
+        pushed = admission.admit(&json) => pushed,
+        () = env.sleep(std::time::Duration::from_secs(1)) => panic!("the push waits"),
+    };
+    assert!(pushed.unwrap().is_some());
+    drop(kept);
+    assert_eq!(budget.reserved(), 0);
 }
