@@ -14,6 +14,7 @@ use arrow_schema::{ArrowError, DataType, SchemaRef};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey};
 
 use super::changes::stored;
+use super::met::before;
 use super::retype::retyped;
 use super::sparse::{self, At, Base, Nulls, Pick, Sources};
 use super::tombstones::{self, Tombstones};
@@ -155,7 +156,7 @@ fn meet(versions: &mut Versions, truncates: &[Row], state: &mut Key) {
     };
     let sources = &versions.sources;
     let opened = sources.seq(versions.list[index].opened);
-    let first = pending.partition_point(|by| sources.seq(*by) <= opened);
+    let first = pending.partition_point(|by| before(sources.seq(*by), opened));
     if let Some(by) = pending.get(first) {
         versions.remove(state, *by);
         state.truncated = true;

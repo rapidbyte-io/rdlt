@@ -12,6 +12,7 @@ use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, HistoryColumns, MergeKey
 use rdlt_testkit::drawn::{self, Drawn, Encoding, Shape};
 
 use crate::merge::Merged;
+use crate::merge::met::counted;
 use crate::merge::tests::merge;
 
 /// How a history table is written: rows that are all upserts, or a change stream's.
@@ -570,22 +571,10 @@ fn truncates_of_one_commit_each_close_what_was_current_before_them() {
     assert_eq!(tombstones(&soft), []);
 }
 
-/// The least of three timings of `work`, which a busy machine inflates least.
-fn timed<T>(mut work: impl FnMut() -> T) -> std::time::Duration {
-    (0..3)
-        .map(|_| {
-            let started = std::time::Instant::now();
-            std::hint::black_box(work());
-            started.elapsed()
-        })
-        .min()
-        .expect("three timings")
-}
-
 #[test]
 fn truncates_cost_their_count_and_the_keys_not_their_product() {
-    const KEYS: i64 = 10_000;
-    const TRUNCATES: usize = 2_000;
+    const KEYS: i64 = 2_000;
+    const TRUNCATES: usize = 400;
     for kind in [Kind::Hard, Kind::Soft] {
         let rows: Vec<Row> = (0..KEYS).map(|id| upsert(id, "a", 100, 10)).collect();
         let published = history(&[&rows], kind);
@@ -593,12 +582,16 @@ fn truncates_cost_their_count_and_the_keys_not_their_product() {
         for seq in [1, 200] {
             let truncating = |count: usize| {
                 let truncates: Vec<Row> = (0..count).map(|_| truncate(seq, 50)).collect();
-                timed(|| apply(&published, &[&truncates], kind))
+                counted(|| apply(&published, &[&truncates], kind)).1
             };
             let (one, many) = (truncating(1), truncating(TRUNCATES));
+            // A key's current version is compared with a few of the truncates, as a search of
+            // them in order does: nine for four hundred, not four hundred.
+            let keys = u64::try_from(KEYS).unwrap();
+            assert!(one <= keys, "at {seq}: {one}");
             assert!(
-                many < one * 15,
-                "at {seq}: one truncate took {one:?}, {TRUNCATES} took {many:?}"
+                many <= one * 10,
+                "at {seq}: one truncate took {one} comparisons, {TRUNCATES} took {many}"
             );
         }
     }
