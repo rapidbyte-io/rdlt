@@ -115,7 +115,7 @@ impl Table {
         // A tombstone holds its key under the table's types and its sequence as it compares.
         if let Some(key) = self.merge.as_ref().or(change.table().merge.as_ref()) {
             let kept = crate::merge::tombstone_schema(&arrow, key)
-                .map_err(|error| failed("reading tombstones", &error))?;
+                .map_err(|error| failed("reading tombstones", error))?;
             crate::merge::holds(&self.tombstones, &kept).map_err(conflict)?;
         }
         self.schema = Some(next);
@@ -133,7 +133,7 @@ impl Table {
             .as_ref()
             .map(|schema| Arc::new(schema.to_arrow()));
         crate::merge::admitted(batch, stored.as_ref(), key)
-            .map_err(|error| failed("staging rows", &error))
+            .map_err(|error| failed("staging rows", error))
     }
 
     /// The table's published rows as a reader is given them: a merge table's with every column
@@ -164,7 +164,7 @@ impl Table {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
         let schema = self.merge_schema(staged)?;
         merge_sparse(&schema, &self.published, &self.tombstones, &incoming, key)
-            .map_err(|error| failed("merging rows", &error))
+            .map_err(|error| failed("merging rows", error))
     }
 
     /// The child table's rows once `staged` replaces the children of the roots `roots` publish.
@@ -178,6 +178,6 @@ impl Table {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
         let schema = self.merge_schema(staged)?;
         merge_children_sparse(&schema, &self.published, &incoming, key, root, roots)
-            .map_err(|error| failed("merging child rows", &error))
+            .map_err(|error| failed("merging child rows", error))
     }
 }

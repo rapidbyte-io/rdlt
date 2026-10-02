@@ -79,11 +79,13 @@ pub(crate) fn code(error: &ArrowError) -> Option<&'static str> {
     }
 }
 
-/// `error`, met while `doing`, as a connector's: a refusal is a `Data` error under its code, and
-/// anything else a failure of the merge itself.
-pub(crate) fn failed(doing: &str, error: &ArrowError) -> ConnectorError {
-    match code(error) {
-        Some(code) => ConnectorError::data(format!("{doing}: {error}")).with_code(code),
-        None => ConnectorError::internal(format!("{doing}: {error}")),
+/// `error`, met while `doing`, as a connector's, which keeps it as its cause: a refusal is a
+/// `Data` error under its code, and anything else a failure of the merge itself.
+pub(crate) fn failed(doing: &str, error: ArrowError) -> ConnectorError {
+    let message = format!("{doing}: {error}");
+    match code(&error) {
+        Some(code) => ConnectorError::data(message).with_code(code),
+        None => ConnectorError::internal(message),
     }
+    .with_source(error)
 }
