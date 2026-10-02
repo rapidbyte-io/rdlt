@@ -37,7 +37,7 @@ impl SourceFactory for Plain {
     }
 }
 
-fn handshake(features: &[&str]) -> v1::HandshakeRequest {
+pub(crate) fn handshake(features: &[&str]) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
         protocol_minor: PROTOCOL_MINOR,
@@ -120,12 +120,24 @@ async fn checkpoints(
 }
 
 /// The checkpoints a read of `partition` of `stream` from `cursor` sends, to its end.
-async fn checkpoints_from(
+pub(crate) async fn checkpoints_from(
     client: &mut ConnectorClient<Channel>,
     stream: &str,
     partition: &str,
     cursor: Option<v1::Cursor>,
 ) -> Vec<v1::Cursor> {
+    let read = read_from(client, stream, partition, cursor).await;
+    read.expect("the read ends cleanly")
+}
+
+/// The checkpoints a read of `partition` of `stream` from `cursor` sends, to its end, or what
+/// the read failed with.
+pub(crate) async fn read_from(
+    client: &mut ConnectorClient<Channel>,
+    stream: &str,
+    partition: &str,
+    cursor: Option<v1::Cursor>,
+) -> Result<Vec<v1::Cursor>, tonic::Status> {
     use v1::read_control::Control;
     use v1::read_frame::Frame;
     let start = v1::ReadStart {
@@ -148,13 +160,9 @@ async fn checkpoints_from(
     });
     let (open, pending) = tokio::sync::mpsc::channel(1);
     let controls = tokio_stream::iter(controls).chain(ReceiverStream::new(pending));
-    let mut frames = client
-        .read(controls)
-        .await
-        .expect("the read starts")
-        .into_inner();
+    let mut frames = client.read(controls).await?.into_inner();
     let mut checkpoints = Vec::new();
-    while let Some(frame) = frames.message().await.expect("a frame") {
+    while let Some(frame) = frames.message().await? {
         match frame.frame {
             Some(Frame::Checkpoint(checkpoint)) => {
                 checkpoints.push(checkpoint.cursor.expect("a checkpoint has its cursor"));
@@ -164,10 +172,10 @@ async fn checkpoints_from(
         }
     }
     drop(open);
-    checkpoints
+    Ok(checkpoints)
 }
 
-fn committed(stream: &str, partition: &str, cursor: v1::Cursor) -> v1::CommittedRequest {
+pub(crate) fn committed(stream: &str, partition: &str, cursor: v1::Cursor) -> v1::CommittedRequest {
     v1::CommittedRequest {
         stream: Some(v1::StreamName {
             namespace: None,

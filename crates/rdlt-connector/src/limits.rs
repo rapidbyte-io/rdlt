@@ -21,11 +21,12 @@ pub const MAX_NESTING_DEPTH: u64 = 64;
 /// Bytes: bounds one encoded cursor.
 pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Checkpoints: how many of those its reads sent one host a served source remembers, to hear that
-/// host report one of them committed.
+/// Positions: how many checkpoints its reads sent one host a served source remembers, to hear
+/// that host report one of them committed, and for how many partitions where a read started.
 ///
-/// Beyond them the oldest is forgotten, and a report of it refused as transient. Each costs about
-/// forty bytes, so a host costs the connector some ten megabytes at most.
+/// Beyond them the oldest checkpoint is forgotten, and a report of it refused as transient; the
+/// starts are counted apart, so no number of checkpoints forgets where a read started. Each
+/// costs about forty bytes, so a host costs the connector some twenty megabytes at most.
 pub const MAX_ACKNOWLEDGEABLE: usize = 1 << 18;
 
 /// Bytes: bounds one connector configuration document.

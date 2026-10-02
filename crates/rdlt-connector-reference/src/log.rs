@@ -77,9 +77,15 @@ pub struct LoggedStream {
     /// to read from before its committed offset.
     #[serde(default = "replayable")]
     pub replayable: bool,
-    /// Messages per pushed batch; a checkpoint follows each batch.
+    /// Messages per pushed batch.
     #[serde(default = "ten")]
     pub batch_rows: u64,
+    /// Batches a checkpoint: one follows every so many batches, each batch where it is one.
+    ///
+    /// With more, a read that ends on a batch no checkpoint follows has no cursor past its last
+    /// messages, as a table read to its end has none.
+    #[serde(default = "one")]
+    pub checkpoint_batches: u64,
 }
 
 fn replayable() -> bool {
@@ -88,6 +94,10 @@ fn replayable() -> bool {
 
 fn ten() -> u64 {
     10
+}
+
+fn one() -> u64 {
+    1
 }
 
 /// When the process first read any log: every log grows from then, on tokio's clock, so tests on
@@ -202,6 +212,46 @@ impl Logged {
             .map_or(0, |retention| head.saturating_sub(retention))
     }
 
+    /// Accepts a read of partition `id` from `cursor`, where the log's head is `head`: the
+    /// earliest offset the partition holds.
+    ///
+    /// # Errors
+    ///
+    /// The offsets before what a forgetting log's group committed are gone; an offset past the
+    /// head is none the log issued; and one before the earliest it holds was dropped.
+    fn accept(
+        &self,
+        source: &LogSource,
+        id: &PartitionId,
+        cursor: Offset,
+        head: u64,
+    ) -> Result<u64> {
+        let committed = source.group.position(&self.0.name, id);
+        if !self.0.replayable && committed.is_some_and(|committed| cursor.next < committed) {
+            return Err(ConnectorError::new(
+                ConnectorErrorKind::Transient,
+                format!("partition {id} no longer holds offsets before {committed:?}"),
+            ));
+        }
+        // A host that read from an offset past the head could then report it committed.
+        if cursor.next > head {
+            return Err(ConnectorError::cursor_unissued(format!(
+                "partition {id} holds offsets up to {head}, not {}",
+                cursor.next
+            )));
+        }
+        let earliest = self.earliest(head);
+        // A read from the start reads from the earliest message the log holds; one that would
+        // resume from before it finds its place dropped.
+        if cursor.next > 0 && cursor.next < earliest {
+            return Err(ConnectorError::retention_lost(format!(
+                "partition {id} holds offsets from {earliest}, not {}",
+                cursor.next
+            )));
+        }
+        Ok(earliest)
+    }
+
     /// How long after `elapsed` the stream's partitions may next change; none once they never
     /// will.
     fn changes(&self, elapsed: Duration) -> Option<Duration> {
@@ -296,26 +346,12 @@ impl ReadStream<LogSource> for Logged {
         out: &mut Emitter<Offset>,
     ) -> Result<()> {
         let id = partition.id();
-        let committed = source.group.position(&self.0.name, id);
-        if !self.0.replayable && committed.is_some_and(|committed| cursor.next < committed) {
-            return Err(ConnectorError::new(
-                ConnectorErrorKind::Transient,
-                format!("partition {id} no longer holds offsets before {committed:?}"),
-            ));
-        }
         // A read that does not follow returns at the head as it stood when the read started.
         let head_at_start = self.head(elapsed());
-        let earliest = self.earliest(head_at_start);
-        // A read from the start reads from the earliest message the log holds; one that would
-        // resume from before it finds its place dropped.
-        if cursor.next > 0 && cursor.next < earliest {
-            return Err(ConnectorError::retention_lost(format!(
-                "partition {id} holds offsets from {earliest}, not {}",
-                cursor.next
-            )));
-        }
+        let earliest = self.accept(source, id, cursor, head_at_start)?;
         let mut next = cursor.next.max(earliest);
         let mut partitions = self.partitions(elapsed());
+        let mut batches = 0_u64;
         loop {
             let head = if out.follows() {
                 self.head(elapsed())
@@ -326,7 +362,10 @@ impl ReadStream<LogSource> for Logged {
                 let end = head.min(next.saturating_add(self.0.batch_rows));
                 out.rows(&self.messages(source.seed, id, next..end)).await?;
                 next = end;
-                out.checkpoint(&Offset { next }).await?;
+                batches += 1;
+                if batches.is_multiple_of(self.0.checkpoint_batches.max(1)) {
+                    out.checkpoint(&Offset { next }).await?;
+                }
                 out.behind(self.head(elapsed()).saturating_sub(next))
                     .await?;
             }

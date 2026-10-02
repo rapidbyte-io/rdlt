@@ -113,6 +113,15 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     }
 
     /// Reads one partition from `cursor`, pushing data and checkpoints to `out`.
+    ///
+    /// The cursor comes from the host. Once the read pushes data from it, or ends cleanly, the
+    /// host may report it committed ([`committed`](Self::committed)), as it may any checkpoint
+    /// the read sends. So a stream that acts on such a report refuses, before it pushes
+    /// anything, a cursor it cannot have issued, as one beyond everything it holds
+    /// ([`ConnectorError::cursor_unissued`](crate::ConnectorError::cursor_unissued)). And a
+    /// stream that starts elsewhere than `cursor`, from a position it keeps itself, sends a
+    /// checkpoint of where it starts before anything else: the host is then heard for that
+    /// position, and not for `cursor`.
     fn read(
         &self,
         source: &S,
@@ -122,6 +131,11 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     ) -> impl Future<Output = Result<()>> + Send;
 
     /// Called once `cursors` are committed; sources that acknowledge upstream (CDC) do it here.
+    ///
+    /// Each cursor is a checkpoint a read of its partition sent this host, or where the host's
+    /// latest read of the partition started, which [`read`](Self::read) accepted: a served
+    /// connector refuses a report of anything else before this is called. A position may be
+    /// reported more than once, and one older than the last: a stream never moves back for it.
     fn committed(
         &self,
         _source: &S,
@@ -333,9 +347,13 @@ pub trait Source: Send + Sync {
     ) -> BoxFuture<'a, Result<PartitionPlan>>;
 
     /// Reads one partition into `sink` until it is exhausted or stopped.
+    ///
+    /// A cursor the source cannot have issued is refused before anything is sent: the host of
+    /// a read the source accepts may report where it started as committed.
     fn read(&self, request: ReadRequest, sink: PartitionSink) -> BoxFuture<'_, Result<()>>;
 
-    /// Reports that `cursors` of `stream` are committed.
+    /// Reports that `cursors` of `stream` are committed: each a checkpoint a read sent, or
+    /// where a read the source accepted started.
     fn committed<'a>(
         &'a self,
         stream: &'a StreamName,

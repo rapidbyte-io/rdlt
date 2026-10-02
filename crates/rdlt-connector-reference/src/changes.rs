@@ -289,6 +289,10 @@ impl ReadStream<ChangesSource> for Changed {
                     "the changes before the acknowledged position are gone",
                 ));
             }
+            // The changes' positions are counted from one, and none of them is done.
+            if cursor.done || cursor.next > self.0.changes.saturating_add(1) {
+                return Err(unissued(&self.0.name, id, cursor));
+            }
             return self.read_changes(source.seed, cursor, out).await;
         }
         let index = id
@@ -298,13 +302,33 @@ impl ReadStream<ChangesSource> for Changed {
             .ok_or_else(|| {
                 ConnectorError::data(format!("stream {} has no partition {id}", self.0.name))
             })?;
+        self.read_snapshot(source.seed, id, index, cursor, out)
+            .await
+    }
+}
+
+impl Changed {
+    /// Reads the keys of snapshot partition `id`, the `index`th, from `cursor`.
+    async fn read_snapshot(
+        &self,
+        seed: u64,
+        id: &str,
+        index: u64,
+        cursor: Position,
+        out: &mut Emitter<Position>,
+    ) -> Result<()> {
         let stride = self.0.snapshot_partitions;
         // The partition's rows, by key; the cursor counts those read.
-        let rows: Vec<(i64, Row)> = snapshot(source.seed, &self.0)
+        let rows: Vec<(i64, Row)> = snapshot(seed, &self.0)
             .into_iter()
             .filter(|(id, _)| id.unsigned_abs() % stride == index)
             .collect();
         let total = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+        // A snapshot's cursor counts the rows read, and is done exactly at the last of them.
+        let done = cursor.next >= total && (total > 0 || cursor.done);
+        if cursor.next > total || cursor.done != done {
+            return Err(unissued(&self.0.name, id, cursor));
+        }
         let mut next = cursor.next;
         while next < total {
             let last = (next + self.0.batch_rows).min(total);
@@ -337,9 +361,7 @@ impl ReadStream<ChangesSource> for Changed {
         }
         Ok(())
     }
-}
 
-impl Changed {
     async fn read_changes(
         &self,
         seed: u64,
@@ -371,6 +393,15 @@ impl Changed {
         }
         Ok(())
     }
+}
+
+/// The error of a read asked to start from `cursor`, which no read of `partition` of `stream`
+/// was sent: a host that read from it could then report it committed.
+fn unissued(stream: &str, partition: &str, cursor: Position) -> ConnectorError {
+    ConnectorError::cursor_unissued(format!(
+        "stream {stream} partition {partition} has no position {} (done: {})",
+        cursor.next, cursor.done
+    ))
 }
 
 /// One change row: its op, position, key, value, counter, and whether it leaves `value`

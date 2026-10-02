@@ -109,7 +109,8 @@ pub use destination::{
 };
 pub use emitter::Emitter;
 pub use error::{
-    ConnectorError, ConnectorErrorKind, LimitExceeded, RETENTION_LOST, Result, ResultExt,
+    CURSOR_UNISSUED, ConnectorError, ConnectorErrorKind, LimitExceeded, RETENTION_LOST, Result,
+    ResultExt,
 };
 pub use factory::{RoleFactory, Serve};
 pub use id::{
