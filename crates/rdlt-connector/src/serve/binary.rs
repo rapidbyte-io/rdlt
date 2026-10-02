@@ -30,6 +30,11 @@ use crate::factory::{RoleFactory, Serve};
 /// host holds an equal share of the sessions, or `--max-host-sessions <count>`; it refuses to
 /// listen where the hosts could leave one of them no session. The first `SIGTERM` or `SIGINT`
 /// stops it gracefully; a second, at once.
+///
+/// Either way, `--max-state-bytes <bytes>` sets the bytes of state one request may carry: a
+/// commit's changes, a plan's or a report's positions (by default
+/// [`STATE_BYTES`](rdlt_wire::limits::STATE_BYTES)). A host spawning the connector passes its
+/// own limit.
 pub fn serve<C: Serve>() -> ExitCode {
     Served::from(C::factory()).serve()
 }
@@ -64,16 +69,18 @@ impl Served {
 }
 
 fn run(served: Served) -> Result<(), Failure> {
-    match parse(std::env::args().skip(1))? {
-        Args::Inherited { fd } => inherited_socket(served, fd),
+    let (args, limits) = parse(std::env::args().skip(1))?;
+    match args {
+        Args::Inherited { fd } => inherited_socket(served, fd, limits),
         Args::Listen(listening) => {
             let runtime = runtime()?;
             let served = runtime.block_on(async move {
-                let (stop, now) = signalled().map_err(|error| format!("watching for stops failed: {error}"))?;
+                let (stop, now) =
+                    signalled().map_err(|error| format!("watching for stops failed: {error}"))?;
                 tokio::select! {
                     biased;
                     () = now => Ok(()),
-                    served = listen::listen(Arc::new(served), &listening, Limits::default(), stop) => served,
+                    served = listen::listen(Arc::new(served), &listening, limits, stop) => served,
                 }
             });
             runtime.shutdown_background();
@@ -82,8 +89,8 @@ fn run(served: Served) -> Result<(), Failure> {
     }
 }
 
-/// Serves the socket the host passed at `fd`.
-fn inherited_socket(served: Served, fd: i32) -> Result<(), Failure> {
+/// Serves the socket the host passed at `fd`, enforcing `limits` on what it receives.
+fn inherited_socket(served: Served, fd: i32, limits: Limits) -> Result<(), Failure> {
     // First, before anything in this process opens a file: see `rdlt_adopt::adopt`.
     let socket = rdlt_adopt::adopt(fd)
         .map_err(|error| format!("taking the host's socket failed: {error}"))?;
@@ -98,18 +105,12 @@ fn inherited_socket(served: Served, fd: i32) -> Result<(), Failure> {
         let io = tokio::net::UnixStream::from_std(socket)
             .map_err(|error| format!("the host's socket failed: {error}"))?;
         let stop = told_to_stop().map_err(|error| format!("watching for stops failed: {error}"))?;
-        serve_until(
-            Arc::new(served),
-            io,
-            Limits::default(),
-            Hosted::spawning(),
-            stop,
-        )
-        .await
-        .map_err(|error| match std::error::Error::source(&error) {
-            Some(source) => format!("{error}: {source}"),
-            None => error.to_string(),
-        })
+        serve_until(Arc::new(served), io, limits, Hosted::spawning(), stop)
+            .await
+            .map_err(|error| match std::error::Error::source(&error) {
+                Some(source) => format!("{error}: {source}"),
+                None => error.to_string(),
+            })
     });
     // Reading standard input blocks a thread the runtime would otherwise wait for.
     runtime.shutdown_background();

@@ -68,6 +68,9 @@ pub(crate) struct Launch {
     pub(crate) confinement: Option<Confinement>,
     /// What its placement holds: what it is granted, and the programs it runs.
     pub(crate) lease: Arc<Lease>,
+    /// The bytes of state one request to it may carry, where not the protocol's: the host's own
+    /// limit, so the connector takes what the host sends.
+    pub(crate) state_bytes: Option<u64>,
 }
 
 /// What a host is told of each connector it spawns: its process id.

@@ -1,9 +1,39 @@
 use rdlt_wire::tls::Hosts;
 
+use rdlt_wire::Limits;
+
 use super::{Args, Failure, Listen, parse};
 
 fn parsed(args: &[&str]) -> Result<Args, Failure> {
+    limited(args).map(|(args, _)| args)
+}
+
+fn limited(args: &[&str]) -> Result<(Args, Limits), Failure> {
     parse(args.iter().map(|arg| (*arg).to_owned()))
+}
+
+#[test]
+fn the_state_a_connector_takes_in_one_message_is_its_operators_to_raise() {
+    let (_, limits) = limited(&["--rdlt-fd=3"]).unwrap();
+    assert_eq!(limits, Limits::default());
+    let (args, limits) = limited(&["--rdlt-fd=3", "--max-state-bytes=33554432"]).unwrap();
+    assert_eq!(args, Args::Inherited { fd: 3 });
+    assert_eq!(limits.state_bytes, 33_554_432);
+    let listening = [
+        "--listen=127.0.0.1:0",
+        "--tls-cert=c",
+        "--tls-key=k",
+        "--tls-client-ca=a",
+        "--tls-allow-host=h",
+        "--max-state-bytes",
+        "1024",
+    ];
+    assert_eq!(limited(&listening).unwrap().1.state_bytes, 1024);
+    for refused in ["0", "lots", "-1"] {
+        let flag = format!("--max-state-bytes={refused}");
+        let error = limited(&["--rdlt-fd=3", &flag]).unwrap_err();
+        assert!(error.to_string().contains("max-state-bytes"), "{error}");
+    }
 }
 
 #[test]

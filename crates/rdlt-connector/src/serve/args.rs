@@ -59,7 +59,7 @@ pub(crate) struct Listen {
 }
 
 /// Every argument a connector binary takes.
-const NAMES: [&str; 9] = [
+const NAMES: [&str; 10] = [
     "rdlt-fd",
     "listen",
     "tls-cert",
@@ -69,7 +69,12 @@ const NAMES: [&str; 9] = [
     "tls-client-crl",
     "max-sessions",
     "max-host-sessions",
+    STATE_BYTES,
 ];
+
+/// The argument that raises or lowers the bytes of state one message may carry, from
+/// [`rdlt_wire::limits::STATE_BYTES`].
+const STATE_BYTES: &str = "max-state-bytes";
 
 /// The argument given once for each host accepted.
 const HOST: &str = "tls-allow-host";
@@ -172,9 +177,25 @@ impl Given {
     }
 }
 
-/// The binary's arguments.
-pub(crate) fn parse(args: impl Iterator<Item = String>) -> Result<Args, Failure> {
+/// The binary's arguments, and the limits it enforces on what it receives: the protocol's, but
+/// for `--max-state-bytes <bytes>`.
+pub(crate) fn parse(
+    args: impl Iterator<Item = String>,
+) -> Result<(Args, rdlt_wire::Limits), Failure> {
     let mut given = Given::read(args)?;
+    let mut limits = rdlt_wire::Limits::default();
+    if let Some(bytes) = given.take(STATE_BYTES) {
+        limits.state_bytes = bytes
+            .parse()
+            .ok()
+            .filter(|bytes| *bytes > 0)
+            .ok_or_else(|| format!("`--{STATE_BYTES} {bytes}` is not a count of bytes"))?;
+    }
+    Ok((invoked(given)?, limits))
+}
+
+/// What `given` asks the binary to do.
+fn invoked(mut given: Given) -> Result<Args, Failure> {
     match (given.take("rdlt-fd"), given.take("listen")) {
         (Some(fd), None) => {
             if given.listens() {

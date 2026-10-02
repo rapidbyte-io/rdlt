@@ -56,6 +56,16 @@ pub(crate) struct Commanded {
     pub(crate) held: Vec<OwnedFd>,
 }
 
+/// The arguments `launch`'s binary is given: the socket it serves, and the bytes of state one
+/// request may carry where the host's limit is not the protocol's.
+pub(crate) fn arguments(launch: &Launch) -> Vec<OsString> {
+    let socket = OsString::from(format!("--rdlt-fd={SOCKET_FD}"));
+    let state = launch
+        .state_bytes
+        .map(|bytes| OsString::from(format!("--max-state-bytes={bytes}")));
+    std::iter::once(socket).chain(state).collect()
+}
+
 /// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with only
 /// the environment `launch` keeps, in a process group of its own, inheriting no other
 /// descriptor of this process; and how the connector is asked to stop.
@@ -73,7 +83,7 @@ pub(crate) fn command(
             return Err(Unspawned::Changed { expected, found });
         }
     }
-    let args = [OsString::from(format!("--rdlt-fd={SOCKET_FD}"))];
+    let args = arguments(launch);
     let kept = |name: &String| Some((OsString::from(name), std::env::var_os(name)?));
     let env: Vec<(OsString, OsString)> = launch.env_passthrough.iter().filter_map(kept).collect();
     let mut given = vec![(socket, SOCKET_FD)];
