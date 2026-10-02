@@ -148,6 +148,8 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
             dictionary_bytes: 2 << 20,
             schema_bytes: (2 << 20) / 5,
             schema_columns: 7_489,
+            catalog_bytes: 1 << 20,
+            state_bytes: 2 << 20,
             ..Limits::default()
         }
     );

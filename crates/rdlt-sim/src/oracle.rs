@@ -78,9 +78,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     let streaming = world.workload.features.streaming;
     let config = config(&mut rng, streaming, endless(&world.workload));
     let (limits, budget) = (config.limits(), config.memory().get());
-    // Over the network a batch crosses as its rows and no more, and cursors as large as a cursor
-    // may be outlast a stopping connector's drain (ADR 0039): a source there presses no harder
-    // than its workload does.
+    // Over the network a batch crosses as its rows and no more, and cursors as large as may be
+    // pass, together, the state an open's answer may carry (ADR 0042): no pressing there.
     if net.is_none() {
         world.press(pressed(seed, &config));
     }

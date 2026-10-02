@@ -1,5 +1,5 @@
 use rdlt_wire::Limits;
-use rdlt_wire::limits::{MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+use rdlt_wire::limits::{Class, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
 
 use super::{admitted, kept, least, row_overhead};
 use crate::budget::Shares;
@@ -27,6 +27,10 @@ fn the_default_budget_admits_these_limits() {
             // What the 0.4 MiB of a schema's message carries of short names, fewer than the
             // 8,192 that 8 MiB of tables' records holds at a kilobyte a column.
             schema_columns: 7_489,
+            // What the 16 MiB of answers being decoded holds of one decoded: a catalog at
+            // sixteen times its bytes, state at eight, any other control message the protocol's.
+            catalog_bytes: MIB,
+            state_bytes: 2 * MIB,
             ..Limits::default()
         }
     );
@@ -48,6 +52,15 @@ fn the_least_memory_admits_these_limits() {
             limits.schema_columns
         ),
         (MIN_FRAME_BYTES, 3_698_142, 15_538, 264_152, 52_830, 943)
+    );
+    // What a sixteenth of the budget holds of one answer decoded.
+    assert_eq!(
+        (
+            limits.catalog_bytes,
+            limits.state_bytes,
+            limits.control_message_bytes
+        ),
+        (132_076, 264_152, 132_076)
     );
 }
 
@@ -96,6 +109,15 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
             limits.json_push_bytes.saturating_mul(3) <= shares.intake,
             "{what}"
         );
+        // A frame decoded fits what pushes may take, where the budget admits a peer at all, and
+        // any other answer decoded the share of answers being decoded: each is charged there
+        // before it is decoded.
+        let decoded = |class| u64::try_from(limits.decoded(class)).expect("bytes");
+        let peer = limits.admit_peer().is_ok();
+        assert!(!peer || decoded(Class::Data) <= shares.intake, "{what}");
+        for class in [Class::Catalog, Class::State, Class::Control] {
+            assert!(decoded(class) <= shares.control, "{what}: {class:?}");
+        }
         // Every read's waiting cursor and answer, and half the share, fit the cursors' share.
         let readers = u64::try_from(readers).expect("a count");
         let cursors = limits.cursor_bytes.saturating_mul(2 * (readers + 1));

@@ -5,6 +5,7 @@
 mod acknowledged;
 mod admission;
 mod canary;
+mod charged;
 mod cuts;
 mod decoded;
 mod descriptors;

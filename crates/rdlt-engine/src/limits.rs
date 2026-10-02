@@ -42,8 +42,10 @@ pub(crate) const READ_SHARE: u64 = 4;
 /// 16th of the budget, 16 MiB of the default 256 MiB.
 ///
 /// A remote connector's catalogs, plans, opened state and other answers decode into many times
-/// the bytes they take on the wire; each is charged at what its scan counts before it is decoded,
-/// and waits for no push.
+/// the bytes they take on the wire; each is charged at what its scan counts before it is decoded.
+/// The catalog, state and control message limits a connector is told are what the share holds
+/// of one such message decoded, so one that keeps to them is refused nothing; answers wait for
+/// no push.
 pub(crate) const CONTROL_SHARE: u64 = 16;
 
 /// The most one request for what lowering holds may take: a quarter of the budget.
