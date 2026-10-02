@@ -37,12 +37,16 @@ impl SecretResolver for Vault {
     }
 }
 
+/// A secret longer than a reference to it.
+const LONG: &str = "a secret much longer than the reference that names it, sixty-four";
+
 fn vault() -> Vault {
     Vault(BTreeMap::from([
         (("env", "DB_PASSWORD"), "hunter2"),
         (("file", "/run/secrets/token"), "tok\"en\\9"),
         (("secret", "api-key"), "k-12345"),
         (("secret", "empty"), ""),
+        (("secret", "long"), LONG),
     ]))
 }
 
@@ -228,6 +232,14 @@ async fn a_configuration_holds_a_bounded_number_of_references_and_bytes() {
     );
     let fits = format!("\"{}\"", "x".repeat(CONFIG_BYTES - 2));
     assert!(Config::parse(fits).is_ok());
+    // A configuration within the bound whose secrets take it beyond is refused as it is sent:
+    // a text of its quotes, the secret and the rest, in exactly the bound and one beyond.
+    let around = |rest: usize| json!(format!("{}${{secret:long}}", "x".repeat(rest)));
+    let exactly = CONFIG_BYTES - 2 - LONG.len();
+    let (sent, _) = resolved(&around(exactly)).await;
+    assert_eq!(sent.expect("within the bound").len(), CONFIG_BYTES);
+    let (beyond, _) = resolved(&around(exactly + 1)).await;
+    assert!(matches!(beyond, Err(SecretError::TooLarge { limit }) if limit == CONFIG_BYTES));
 }
 
 #[test]

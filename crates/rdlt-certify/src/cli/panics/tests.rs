@@ -38,3 +38,39 @@ fn a_panic_is_printed_as_one_bounded_line_a_terminal_does_not_obey() {
     let said = panicking(|| std::panic::panic_any(7_u8));
     assert!(said.ends_with(": with no message"), "{said}");
 }
+
+/// A process that contains its panics, as rdlt-certify does, and panics saying a secret its
+/// configuration held.
+#[test]
+#[ignore = "run by the test below, as the process that panics"]
+fn stand_in_that_contains_a_panic_saying_a_secret() {
+    super::super::redactions().add("hunter2");
+    super::contain();
+    panic!("the configuration held hunter2\u{1b}[2J");
+}
+
+#[test]
+fn a_panic_of_this_process_is_said_on_one_line_scrubbed_of_its_secrets() {
+    let mut command = rdlt_testkit::process::stand_in(
+        "cli::panics::tests::stand_in_that_contains_a_panic_saying_a_secret",
+    );
+    command
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let child = rdlt_testkit::process::guarded(&mut command).expect("the stand-in runs");
+    let output = child.wait_with_output().expect("it ends");
+    assert!(!output.status.success());
+    let said = String::from_utf8_lossy(&output.stderr);
+    let line = said
+        .lines()
+        .find(|line| line.starts_with("rdlt-certify: panicked at "))
+        .unwrap_or_else(|| panic!("no contained line: {said}"));
+    assert!(
+        line.ends_with(r"the configuration held ***\u{1b}[2J"),
+        "{line}"
+    );
+    assert!(
+        !said.contains("hunter2") && !said.contains('\u{1b}'),
+        "{said}"
+    );
+}

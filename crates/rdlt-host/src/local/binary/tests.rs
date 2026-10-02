@@ -261,6 +261,19 @@ fn a_binary_by_path_is_refused_where_a_directory_above_it_or_on_its_link_is_anot
         matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == open),
         "{refused:?}"
     );
+    // A link in a private directory, to a binary in one another user may write: the
+    // directories the file was reached through are checked too.
+    let held = dir(root.path(), "held");
+    let shared = dir(&open, "shared");
+    file(&shared.join("binary"), b"x", 0o755);
+    std::fs::set_permissions(&open, PermissionsExt::from_mode(0o755)).expect("its mode is set");
+    std::fs::set_permissions(&shared, PermissionsExt::from_mode(0o777)).expect("its mode is set");
+    std::os::unix::fs::symlink(shared.join("binary"), held.join("link")).expect("a link");
+    let refused = Binary::at(&held.join("link"));
+    assert!(
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == shared),
+        "{refused:?}"
+    );
 }
 
 #[test]

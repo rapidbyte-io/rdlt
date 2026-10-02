@@ -175,3 +175,21 @@ async fn what_a_placement_holds_is_held_until_its_last_connector_is_reaped() {
     assert_eq!(stopping.await.expect("it returns"), Ok(()));
     drop(writing(&leases, &granted).expect("reaped, it is free"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panic_while_a_connector_is_launched_is_raised_where_it_was_asked_for() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let mut launch = sleeper(directory.path());
+    launch.told = Some(super::Told::new(|_| panic!("the host's own code panics")));
+    let launching = tokio::spawn(async move {
+        Process::launching(launch, Redactions::new())
+            .await
+            .map(drop)
+            .map_err(drop)
+    });
+    let joined = launching.await.expect_err("it panics, not fails");
+    assert!(joined.is_panic());
+    // What it spawned before the panic is stopped with every connector.
+    let stopping = tokio::task::spawn_blocking(|| super::stop_spawned(Duration::from_secs(20)));
+    assert_eq!(stopping.await.expect("it returns"), Ok(()));
+}

@@ -94,7 +94,7 @@ fn read_private(
         return Err(SecretFault::Refused);
     };
     for name in through {
-        let opened = rustix::fs::openat(&at, *name, listing | OFlags::NOFOLLOW, Mode::empty());
+        let opened = rustix::fs::openat(&at, *name, listing.union(OFlags::NOFOLLOW), Mode::empty());
         at = File::from(opened.map_err(opening)?);
     }
     // No link followed at the name, no waiting on a pipe, nothing kept across an exec.
