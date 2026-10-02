@@ -145,16 +145,20 @@ fn holding(file: &File, metadata: &std::fs::Metadata, path: &Path) -> io::Result
     Ok(parent)
 }
 
-/// Where `file` is now, every link resolved.
-#[cfg(target_os = "linux")]
-fn located(file: &File, _path: &Path) -> io::Result<PathBuf> {
-    use std::os::fd::AsRawFd as _;
-    std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
-}
-
-/// Where `file`, reached at `path`, is, every link resolved: this platform resolves the path
-/// again, and runs no sandbox whose grants the answer could mislead.
-#[cfg(not(target_os = "linux"))]
-fn located(_file: &File, path: &Path) -> io::Result<PathBuf> {
-    std::fs::canonicalize(path)
+/// Where `file`, reached at `path`, is now, every link resolved: on Linux as the kernel names
+/// what is open; elsewhere `path` is resolved again, where no sandbox runs whose grants the
+/// answer could mislead.
+fn located(file: &File, path: &Path) -> io::Result<PathBuf> {
+    #[cfg(target_os = "linux")]
+    let located = {
+        use std::os::fd::AsRawFd as _;
+        let _ = path;
+        std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let located = {
+        let _ = file;
+        std::fs::canonicalize(path)
+    };
+    located
 }

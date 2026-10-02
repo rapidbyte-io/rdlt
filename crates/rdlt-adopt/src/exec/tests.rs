@@ -124,6 +124,8 @@ fn every_descriptor_from_three_up_but_those_given_is_marked() {
         (vec![3, 4, 5, 10], vec![(6, 9), (11, max)]),
         (vec![7], vec![(3, 6), (8, max)]),
         (vec![4, max], vec![(3, 3), (5, max - 1)]),
+        // A standard stream among those given changes nothing.
+        (vec![0, 1, 2, 7], vec![(3, 6), (8, max)]),
     ] {
         ASKED.with_borrow_mut(Vec::clear);
         mark_except(&kept, Marking::AtOnce, recorded).expect("marked");

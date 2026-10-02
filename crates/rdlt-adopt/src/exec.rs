@@ -45,7 +45,7 @@ pub enum Marking {
 /// through `/proc/self/fd` is still open when `exec` opens it. The parent's descriptors are
 /// untouched. Where the kernel cannot mark a range at once, `marking` says what is done.
 pub fn inheriting_only(command: &mut Command, given: &[RawFd], marking: Marking) {
-    let mut kept: Vec<RawFd> = given.iter().copied().filter(|fd| *fd > 2).collect();
+    let mut kept = given.to_vec();
     kept.sort_unstable();
     kept.dedup();
     let kept = kept.into_boxed_slice();
@@ -75,8 +75,8 @@ pub fn marks_at_once() -> bool {
     })
 }
 
-/// Marks every descriptor of this process from 3 up but `kept`, sorted, each above 2, as
-/// `marking` says, through `at_once` where it can.
+/// Marks every descriptor of this process from 3 up but `kept`, sorted, as `marking` says,
+/// through `at_once` where it can.
 fn mark_except(
     kept: &[RawFd],
     marking: Marking,
@@ -90,7 +90,8 @@ fn mark_except(
         let Some(next) = fd.checked_add(1) else {
             return Ok(());
         };
-        first = next;
+        // A standard stream given stays where it is, and so does what is marked from.
+        first = first.max(next);
     }
     mark_range(first, RawFd::MAX, marking, at_once)
 }
