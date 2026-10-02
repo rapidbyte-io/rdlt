@@ -1,6 +1,7 @@
 //! The parse itself: serde seeds that walk a chunk's records as sonic-rs parses them, appending
 //! each value to its column.
 
+mod skip;
 #[cfg(test)]
 mod tests;
 
@@ -8,12 +9,14 @@ use std::cell::Cell;
 use std::fmt;
 
 use arrow_buffer::i256;
-use serde::de::{self, DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
-use super::build::{Column, Record, Scalar};
+use super::build::{Column, List, Record, Scalar};
+use super::meter::{Columns, Meter, Over};
 use super::observe::{Observed, Shape};
 use super::render::Render;
+pub(crate) use skip::Skip;
 
 /// The deepest a value may nest, counting the record itself as depth 1.
 pub(crate) const MAX_DEPTH: u64 = rdlt_connector::limits::MAX_NESTING_DEPTH;
@@ -31,13 +34,14 @@ pub(crate) fn nest<T>(parse: impl FnOnce() -> T) -> T {
     stacker::maybe_grow(RED_ZONE, SEGMENT, parse)
 }
 
-/// What a parse carries besides its columns: why it stopped, and whether any column stopped
-/// building.
-#[derive(Default)]
+/// What a parse carries besides its columns: what its builders may take and the columns its
+/// records may hold, why it stopped, and what it found that a later parse needs.
 pub(crate) struct Context {
     fault: Cell<Option<ShredError>>,
     spoiled: Cell<bool>,
     imprecise: Cell<bool>,
+    pub(crate) meter: Meter,
+    pub(crate) columns: Columns,
 }
 
 /// The smallest magnitude of a float that may be an integer beyond 64 bits the fast parse
@@ -51,6 +55,17 @@ pub(crate) const DECIMAL_LIMIT: u128 = 100_000_000_000_000_000_000_000_000_000_0
 const VAST_DIGITS: usize = 76;
 
 impl Context {
+    /// A parse whose builders take what `meter` lets them, of records holding `columns`.
+    pub(crate) fn new(meter: Meter, columns: Columns) -> Self {
+        Self {
+            fault: Cell::new(None),
+            spoiled: Cell::new(false),
+            imprecise: Cell::new(false),
+            meter,
+            columns,
+        }
+    }
+
     /// Stops the parse with `error`.
     pub(crate) fn fail<E: de::Error>(&self, error: ShredError) -> E {
         let message = error.to_string();
@@ -66,6 +81,11 @@ impl Context {
     /// Whether a column stopped building.
     pub(crate) fn spoiled(&self) -> bool {
         self.spoiled.get()
+    }
+
+    /// Notes that a column stopped building.
+    pub(crate) fn spoil(&self) {
+        self.spoiled.set(true);
     }
 
     /// Notes `value`, a float the parse read, which may be an integer beyond 64 bits rounded to
@@ -85,6 +105,11 @@ impl Context {
     pub(crate) fn imprecise(&self) -> bool {
         self.imprecise.get()
     }
+}
+
+/// The error that stops a parse whose builders would take more than its meter has room for.
+fn over<E: de::Error>(_: Over) -> E {
+    E::custom("the chunk's builders would take more than it was admitted for")
 }
 
 /// The position of an object key among a record's fields, trying `hint` first.
@@ -111,7 +136,7 @@ impl Visitor<'_> for Field<'_> {
 
     fn visit_str<E: de::Error>(self, name: &str) -> Result<usize, E> {
         self.record
-            .position(name, self.hint)
+            .position(name, self.hint, &self.context.columns)
             .map_err(|error| self.context.fail(error))
     }
 }
@@ -201,12 +226,12 @@ fn object<'de, A: MapAccess<'de>>(
             })?;
             fields += 1;
         }
-        record.end_row(fields);
-        Ok(())
+        record.end_row(fields, &context.meter).map_err(over)
     })
 }
 
-/// One value, `depth` levels deep, appended to `column`.
+/// One value, `depth` levels deep, appended to `column`, which a column made for it is sized for
+/// `capacity` rows of.
 struct Value<'a> {
     column: &'a mut Column,
     context: &'a Context,
@@ -215,9 +240,17 @@ struct Value<'a> {
 }
 
 impl<'a> Value<'a> {
-    fn scalar(self, value: Scalar<'_>) {
-        if !self.column.scalar(value, self.capacity) {
-            self.spoil();
+    fn scalar<E: de::Error>(self, value: Scalar<'_>) -> Result<(), E> {
+        match self
+            .column
+            .scalar(value, self.capacity, &self.context.meter)
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                self.spoil();
+                Ok(())
+            }
+            Err(refused) => Err(over(refused)),
         }
     }
 
@@ -225,11 +258,26 @@ impl<'a> Value<'a> {
     /// value instead.
     fn spoil(self) -> Skip<'a> {
         self.column.spoil();
-        self.context.spoiled.set(true);
+        self.context.spoil();
         Skip {
             context: self.context,
             depth: self.depth,
         }
+    }
+
+    /// Makes the column, holding nulls only, one of `observed`, sized as a value of it is.
+    fn make<E: de::Error>(&mut self, observed: &Observed) -> Result<(), E> {
+        if let Column::Null(nulls) = *self.column {
+            if let Observed::Array(..) = observed {
+                self.context
+                    .columns
+                    .add()
+                    .map_err(|error| self.context.fail(error))?;
+            }
+            *self.column =
+                Column::new(observed, nulls, self.capacity, &self.context.meter).map_err(over)?;
+        }
+        Ok(())
     }
 }
 
@@ -240,20 +288,21 @@ impl<'de> DeserializeSeed<'de> for Value<'_> {
         if self.depth > MAX_DEPTH {
             return Err(self.context.fail(ShredError::TooDeep));
         }
-        if let Column::Json(builder) = self.column {
+        if let Column::Json(..) = self.column {
             let mut text = String::new();
             let render = Render {
                 text: &mut text,
                 context: self.context,
             };
             render.deserialize(deserializer)?;
+            let meter = &self.context.meter;
             // Only a JSON null renders as `null`; a string holding it is quoted.
-            if text == "null" {
-                builder.append_null();
+            let appended = if text == "null" {
+                self.column.null(meter)
             } else {
-                builder.append_value(text);
-            }
-            return Ok(());
+                self.column.json(&text, meter)
+            };
+            return appended.map_err(over);
         }
         deserializer.deserialize_any(self)
     }
@@ -266,35 +315,29 @@ impl<'de> Visitor<'de> for Value<'_> {
         formatter.write_str("a JSON value")
     }
 
-    fn visit_unit<E>(self) -> Result<(), E> {
-        self.column.null();
-        Ok(())
+    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
+        self.column.null(&self.context.meter).map_err(over)
     }
 
     fn visit_bool<E: de::Error>(self, value: bool) -> Result<(), E> {
-        self.scalar(Scalar::Bool(value));
-        Ok(())
+        self.scalar(Scalar::Bool(value))
     }
 
     fn visit_i64<E: de::Error>(self, value: i64) -> Result<(), E> {
-        self.scalar(Scalar::Int(value));
-        Ok(())
+        self.scalar(Scalar::Int(value))
     }
 
     fn visit_u64<E: de::Error>(self, value: u64) -> Result<(), E> {
-        self.scalar(i64::try_from(value).map_or(Scalar::Wide(value), Scalar::Int));
-        Ok(())
+        self.scalar(i64::try_from(value).map_or(Scalar::Wide(value), Scalar::Int))
     }
 
     fn visit_f64<E: de::Error>(self, value: f64) -> Result<(), E> {
         self.context.float(value);
-        self.scalar(Scalar::Float(value));
-        Ok(())
+        self.scalar(Scalar::Float(value))
     }
 
     fn visit_i128<E: de::Error>(self, value: i128) -> Result<(), E> {
-        self.scalar(Scalar::Huge(value));
-        Ok(())
+        self.scalar(Scalar::Huge(value))
     }
 
     /// An integer beyond 38 digits, as its digits: the exact parse visits such integers so, since
@@ -308,44 +351,33 @@ impl<'de> Visitor<'de> for Value<'_> {
         let vast = (digits.trim_start_matches('-').len() <= VAST_DIGITS)
             .then(|| i256::from_string(digits))
             .flatten();
-        self.scalar(vast.map_or(Scalar::Beyond, Scalar::Vast));
-        Ok(())
+        self.scalar(vast.map_or(Scalar::Beyond, Scalar::Vast))
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<(), E> {
-        self.scalar(Scalar::Text(value));
-        Ok(())
+        self.scalar(Scalar::Text(value))
     }
 
-    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<(), A::Error> {
-        if let Column::Null(nulls) = *self.column {
-            *self.column = Column::new(&Observed::Object(Shape::default()), nulls, self.capacity);
-        }
+    fn visit_map<A: MapAccess<'de>>(mut self, map: A) -> Result<(), A::Error> {
+        self.make(&Observed::Object(Shape::default()))?;
         match self.column {
             Column::Struct(record) => object(record, map, self.context, self.depth),
             _ => self.spoil().visit_map(map),
         }
     }
 
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(mut self, mut seq: A) -> Result<(), A::Error> {
         nest(move || {
-            if let Column::Null(nulls) = *self.column {
-                *self.column = Column::new(
-                    &Observed::Array(Box::new(Observed::Null)),
-                    nulls,
-                    self.capacity,
-                );
-            }
+            self.make(&Observed::Array(Box::new(Observed::Null), 0))?;
             let Column::List(list) = self.column else {
                 return self.spoil().visit_seq(seq);
             };
             let mut items = 0;
             while seq
-                .next_element_seed(Value {
-                    column: list.item(),
+                .next_element_seed(Item {
+                    list: &mut *list,
                     context: self.context,
                     depth: self.depth + 1,
-                    capacity: self.capacity,
                 })?
                 .is_some()
             {
@@ -357,89 +389,24 @@ impl<'de> Visitor<'de> for Value<'_> {
     }
 }
 
-/// One value, `depth` levels deep, of a column that stopped building: only its nesting is
-/// checked.
-struct Skip<'a> {
+/// The next item of an array, `depth` levels deep, appended to `list`'s item column.
+struct Item<'a> {
+    list: &'a mut List,
     context: &'a Context,
     depth: u64,
 }
 
-impl<'de> DeserializeSeed<'de> for Skip<'_> {
+impl<'de> DeserializeSeed<'de> for Item<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > MAX_DEPTH {
-            return Err(self.context.fail(ShredError::TooDeep));
+        let (column, capacity) = self.list.item(&self.context.meter).map_err(over)?;
+        Value {
+            column,
+            context: self.context,
+            depth: self.depth,
+            capacity,
         }
-        deserializer.deserialize_any(self)
-    }
-}
-
-impl<'de> Visitor<'de> for Skip<'_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a JSON value")
-    }
-
-    fn visit_unit<E>(self) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_bool<E>(self, _: bool) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_i64<E>(self, _: i64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_u64<E>(self, _: u64) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<(), E> {
-        // The column's values are rendered as JSON text when it is built again, exactly only
-        // once the chunk is parsed exactly.
-        self.context.float(value);
-        Ok(())
-    }
-
-    fn visit_i128<E>(self, _: i128) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_bytes<E>(self, _: &[u8]) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_str<E>(self, _: &str) -> Result<(), E> {
-        Ok(())
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        nest(move || {
-            while map.next_key::<IgnoredAny>()?.is_some() {
-                map.next_value_seed(Skip {
-                    context: self.context,
-                    depth: self.depth + 1,
-                })?;
-            }
-            Ok(())
-        })
-    }
-
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        nest(move || {
-            let depth = self.depth + 1;
-            while seq
-                .next_element_seed(Skip {
-                    context: self.context,
-                    depth,
-                })?
-                .is_some()
-            {}
-            Ok(())
-        })
+        .deserialize(deserializer)
     }
 }

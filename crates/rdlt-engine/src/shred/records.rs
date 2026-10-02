@@ -20,6 +20,8 @@ pub(super) struct Chunk {
     pub(super) rows: usize,
     /// How many records of the pushes come before the chunk's first.
     pub(super) before: usize,
+    /// Bytes of the records, the whitespace around them left out.
+    pub(super) bytes: usize,
 }
 
 /// Consecutive records of one push.
@@ -67,6 +69,7 @@ pub(super) fn chunks(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<Chunk>,
         let mut span: Option<Range<usize>> = None;
         while let Some(record) = records.next_record()? {
             size += record.len();
+            chunk.bytes += record.len();
             chunk.rows += 1;
             span = Some(span.map_or(record.start, |span| span.start)..record.end);
             if size >= chunk_bytes {
@@ -91,6 +94,7 @@ impl Chunk {
             parts: Vec::new(),
             rows: 0,
             before,
+            bytes: 0,
         }
     }
 

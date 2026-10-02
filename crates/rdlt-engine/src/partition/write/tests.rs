@@ -4,10 +4,11 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::cost::Allocations;
 use rdlt_connector::{Partition, Permit, StreamName};
 
+use super::Held;
 use super::held::shredded;
 use super::normalized::{judge, part_growth};
 use super::queue::written_bytes;
-use super::{Held, shred_failed};
+use super::units::shred_failed;
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
@@ -81,7 +82,7 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
     let batches = [ids(10), ids(1000)];
     let alive = allocated(&batches[0]) + allocated(&batches[1]);
     assert!(alive > 8_000 && alive < 3 * 40_000);
-    let held = shredded(pushed, &batches);
+    let held = shredded(pushed, None, &batches);
     // The text is gone: the pushes hold what the batches keep alive, and nothing was asked of
     // the budget for them.
     assert_eq!((budget.reserved(), budget.peak()), (alive, 3 * 42_000));
@@ -102,15 +103,32 @@ async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_adm
     let pushed = vec![json(&budget, 100).await, json(&budget, 100).await];
     let batch = ids(1000);
     assert!(allocated(&batch) > 600);
-    let held = shredded(pushed, std::slice::from_ref(&batch));
+    let held = shredded(pushed, None, std::slice::from_ref(&batch));
     assert_eq!((budget.reserved(), budget.peak()), (600, 600));
     drop(held);
     assert_eq!(budget.reserved(), 0);
     // Permits of another's making are kept as they are.
     let other: Permit = Box::new(7_u8);
-    let foreign = shredded(vec![other], std::slice::from_ref(&batch));
+    let foreign = shredded(vec![other], None, std::slice::from_ref(&batch));
     assert_eq!(foreign.len(), 1);
     assert_eq!(foreign[0].permits.len(), 1);
+}
+
+#[tokio::test]
+async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_they_keep_alive() {
+    let budget = MemoryBudget::new(1 << 24);
+    let pushed = vec![json(&budget, 100).await];
+    let batch = ids(1000);
+    let alive = allocated(&batch);
+    let beyond = budget.acquire_working(alive).await.unwrap();
+    assert_eq!(budget.reserved(), 300 + alive);
+    let held = shredded(pushed, Some(beyond), std::slice::from_ref(&batch));
+    // The pushes hold all they were admitted for, and the reservation the rest of what the
+    // batch keeps alive; what it reserved beyond that goes back.
+    assert_eq!(budget.reserved(), alive);
+    assert_eq!(held[0].permits.len(), 1);
+    drop(held);
+    assert_eq!(budget.reserved(), 0);
 }
 
 #[tokio::test]

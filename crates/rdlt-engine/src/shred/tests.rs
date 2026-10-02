@@ -10,8 +10,23 @@ use rdlt_connector::{DecimalType, Field, LogicalType, TableSchema};
 
 use super::differential::shredded;
 use super::reference::Code;
-use super::{chunks, parse, shred};
+use super::{Parsed, ShredLimits, chunks, parse, shred};
 use crate::compute::RayonPool;
+
+/// The limits of pushes whose records may hold as many columns as the wire's schemas.
+pub(crate) fn limits() -> ShredLimits {
+    ShredLimits::new(MAX_COLUMNS)
+}
+
+/// The first chunk of `text`, parsed with room to build whatever it holds.
+fn parsed(text: &str) -> Parsed {
+    let records = Bytes::from(text.to_owned());
+    let roomy = ShredLimits {
+        admitted: 1 << 20,
+        ..limits()
+    };
+    parse(chunks(&[records], 1 << 20).unwrap().remove(0), roomy).unwrap()
+}
 
 /// The batch `pushes` shred into, in chunks of `chunk_bytes`.
 fn batch_of(pushes: &[&str], chunk_bytes: usize) -> RecordBatch {
@@ -505,7 +520,7 @@ async fn parallel_shredding_keeps_the_pushes_order() {
             Bytes::from(lines.join("\n"))
         })
         .collect();
-    let batches = shred(&pool, &pushes, 256).await.unwrap();
+    let batches = shred(&pool, &pushes, 256, limits()).await.unwrap();
     assert!(batches.len() > 40);
     let numbers: Vec<i64> = batches
         .iter()
@@ -549,10 +564,9 @@ fn rows_repeating_their_keys_order_find_every_key_without_a_search() {
     let lines: Vec<String> = (0..100)
         .map(|n| format!(r#"{{"a":{n},"b":"x","c":{{"d":{n}}}}}"#))
         .collect();
-    let records = Bytes::from(lines.join("\n"));
-    let parsed = parse(chunks(&[records], 1 << 20).unwrap().remove(0)).unwrap();
+    let parsed = parsed(&lines.join("\n"));
     // Only the first row searches, for the keys it adds.
-    assert_eq!(parsed.record.searches(), 3);
+    assert_eq!(parsed.record.unwrap().searches(), 3);
 }
 
 #[test]
@@ -585,10 +599,6 @@ fn every_kind_keeps_its_type_across_chunks() {
 
 #[test]
 fn only_a_chunk_whose_columns_stopped_building_is_parsed_again() {
-    let parsed = |text: &str| {
-        let records = Bytes::from(text.to_owned());
-        parse(chunks(&[records], 1 << 20).unwrap().remove(0)).unwrap()
-    };
     assert!(!parsed("{\"a\":1}\n{\"a\":2.5}\n{\"b\":[1]}").spoiled);
     assert!(parsed("{\"a\":1}\n{\"a\":\"x\"}").spoiled);
     assert!(parsed("{\"a\":{\"b\":true}}\n{\"a\":{\"b\":[]}}").spoiled);
@@ -658,10 +668,11 @@ fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
         &crate::compute::Inline,
         &[Bytes::from(push)],
         1 << 20,
+        limits(),
     ));
     assert_eq!(
         error.unwrap_err(),
-        super::ShredError::TooManyColumns(columns + 1)
+        super::ShredError::TooManyColumns(MAX_COLUMNS + 1, MAX_COLUMNS)
     );
 }
 
@@ -679,7 +690,8 @@ fn nested_objects_are_bound_by_the_column_limit_too() {
     let second = format!("{{\"l\":[{}]}}", wide_object(half, half));
     let in_lists = [Bytes::from(first), Bytes::from(second)];
     assert_eq!(shredded(&in_lists, 1).unwrap_err(), Code("limit_exceeded"));
-    let fits = format!("{{\"o\":{}}}", wide_object(0, columns));
+    // The object's own column and its fields together are the limit.
+    let fits = format!("{{\"o\":{}}}", wide_object(0, columns - 1));
     assert_eq!(batch_of(&[&fits], 1 << 20).num_rows(), 1);
 }
 
@@ -691,49 +703,52 @@ fn sparse_wide_records_are_refused_before_they_are_built() {
 }
 
 #[test]
-fn cells_are_bounded_at_the_limit() {
-    assert!(super::within_cells(1 << 12, 1 << 13));
-    assert!(!super::within_cells(1 << 12, (1 << 13) + 1));
-    assert!(!super::within_cells((1 << 12) + 1, 1 << 13));
-    assert!(super::within_cells(u64::MAX, 0));
-    assert!(!super::within_cells(u64::MAX, 2));
+fn cells_are_bounded_at_the_limit_before_anything_is_built() {
+    // 4096 rows under 8192 columns are the limit's 2^25 cells; one row more is past it. The
+    // chunk's builders would take more than its text was admitted for, so it is only observed.
+    let at = |rows: usize| {
+        let push = format!("{}{}", "{}\n".repeat(rows - 1), wide_object(0, 8192));
+        let chunk = chunks(&[Bytes::from(push)], 1 << 30).unwrap().remove(0);
+        let parsed = parse(chunk, limits()).unwrap();
+        assert!(parsed.record.is_none(), "observed, not built");
+        super::join(&[parsed], limits()).map(|_| ())
+    };
+    assert_eq!(at(4096), Ok(()));
+    assert_eq!(at(4097), Err(super::ShredError::TooManyCells(4097 * 8192)));
 }
 
 #[test]
-fn only_columns_holding_values_count_toward_the_cells() {
-    let shape = |text: &str| {
-        let records = Bytes::from(text.to_owned());
-        parse(chunks(&[records], 1 << 20).unwrap().remove(0))
-            .unwrap()
-            .shape
+fn cells_count_a_list_s_items_at_their_own_level() {
+    let cells = |text: &str| {
+        let parsed = parsed(text);
+        let rows = u64::try_from(parsed.chunk.rows).unwrap();
+        super::cost::built(&parsed.shape, &parsed.shape, rows).cells
     };
     assert_eq!(
-        shape(r#"{"a":1,"b":null,"c":{"d":"x","e":null},"l":[true],"x":{}}"#).leaves(),
+        cells(r#"{"a":1,"b":null,"c":{"d":"x","e":null},"l":[true],"x":{}}"#),
         3
     );
+    assert_eq!(cells(r#"{"l":[{"p":1,"q":"x","r":true}],"m":[null]}"#), 3);
+    // Three items under three fields, and the record's own column.
     assert_eq!(
-        shape(r#"{"l":[{"p":1,"q":"x","r":true}],"m":[null]}"#).leaves(),
-        3
+        cells(r#"{"n":1,"l":[{"p":1},{"q":"x"},{"r":true}]}"#),
+        1 + 3 * 3
     );
 }
 
 #[test]
 fn chunks_that_lack_columns_or_hold_them_in_another_order_are_fitted_without_parsing_again() {
-    let parsed = |text: &str| {
-        let records = Bytes::from(text.to_owned());
-        parse(chunks(&[records], 1 << 20).unwrap().remove(0)).unwrap()
-    };
     let chunks = [
         parsed(r#"{"a":1,"o":{"x":1}}"#),
         parsed(r#"{"b":"t","a":2.5,"l":[]}"#),
         parsed(r#"{"a":null,"o":{"y":true,"x":2},"l":[1]}"#),
         parsed(r#"{"a":"x"}"#),
     ];
-    let joined = super::join(&chunks[..3]).unwrap();
+    let joined = super::join(&chunks[..3], limits()).unwrap().0;
     for chunk in &chunks[..3] {
         assert!(!chunk.spoiled && super::conform::shape_fits(&chunk.shape, &joined));
     }
-    let with_text = super::join(&chunks).unwrap();
+    let with_text = super::join(&chunks, limits()).unwrap().0;
     assert!(!super::conform::shape_fits(&chunks[0].shape, &with_text));
 }
 
@@ -764,6 +779,7 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
         &crate::compute::Inline,
         &[Bytes::from(push)],
         1 << 20,
+        limits(),
     ))
     .unwrap_err();
     let message = error.to_string();
@@ -779,7 +795,8 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
         Bytes::from("{\"a\":1}\n{\"a\":2}"),
         Bytes::from("{\"a\":3}\n{\"a\":}"),
     ];
-    let later = crate::compute::ready(shred(&crate::compute::Inline, &pushes, 1)).unwrap_err();
+    let later =
+        crate::compute::ready(shred(&crate::compute::Inline, &pushes, 1, limits())).unwrap_err();
     assert!(later.to_string().contains("record 4:"), "{later}");
 }
 
@@ -811,6 +828,7 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
             &crate::compute::Inline,
             &[Bytes::from(push)],
             1 << 20,
+            limits(),
         ))
     };
     let shredded = std::thread::Builder::new()
@@ -833,4 +851,59 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
         .unwrap()
         .join();
     assert!(shredded.is_ok());
+}
+
+#[test]
+fn a_push_takes_more_than_it_was_admitted_for_only_where_its_batches_hold_more() {
+    let excess = |text: String| {
+        let pushes = [Bytes::from(text)];
+        crate::compute::ready(super::observe(
+            &crate::compute::Inline,
+            &pushes,
+            1 << 20,
+            limits(),
+        ))
+        .unwrap()
+        .excess()
+    };
+    // Records of a few fields each hold less than twice their text.
+    let dense: Vec<String> = (0..1_000)
+        .map(|n| format!(r#"{{"id":{n},"name":"user-{n}","score":{n}.5,"o":{{"a":true}}}}"#))
+        .collect();
+    assert_eq!(excess(dense.join("\n")), 0);
+    // Three thousand rows each naming one of three hundred keys: every row a cell in each.
+    let sparse: Vec<String> = (0..3_000)
+        .map(|n| format!("{{\"k{}\":1}}", n % 300))
+        .collect();
+    let taken = excess(sparse.join("\n"));
+    let cells = 3_000 * 300;
+    assert!((cells * 8..cells * 9).contains(&taken), "{taken}");
+}
+
+#[test]
+fn the_column_limit_counts_every_column_a_chunk_holds_and_the_join_of_all() {
+    let shredded = |pushes: &[&str], columns: u64| {
+        let pushes: Vec<Bytes> = pushes
+            .iter()
+            .map(|push| Bytes::from(push.to_string()))
+            .collect();
+        let limits = ShredLimits {
+            columns,
+            ..limits()
+        };
+        crate::compute::ready(shred(&crate::compute::Inline, &pushes, 1, limits)).map(|_| ())
+    };
+    // An object and its fields, a list and its items, at any depth.
+    let nested = r#"{"o":{"a":1,"l":[{"b":1}]}}"#;
+    assert_eq!(shredded(&[nested], 5), Ok(()));
+    assert_eq!(
+        shredded(&[nested], 4),
+        Err(super::ShredError::TooManyColumns(5, 4))
+    );
+    // Chunks within the limit each may join into a shape past it.
+    assert_eq!(shredded(&[r#"{"a":1,"b":1}"#, r#"{"c":1}"#], 3), Ok(()));
+    assert_eq!(
+        shredded(&[r#"{"a":1,"b":1}"#, r#"{"c":1,"d":1}"#], 3),
+        Err(super::ShredError::TooManyColumns(4, 3))
+    );
 }

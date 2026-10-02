@@ -1,4 +1,5 @@
-//! What a push's values say about each column's type, joined as values are seen.
+//! What a push's values say about each column's type, joined as values are seen, and what they
+//! take to build: a list's items are counted, so each level of a nested column has its rows.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -31,8 +32,8 @@ pub(crate) enum Observed {
     Text,
     /// Objects, with the fields seen in any of them.
     Object(Shape),
-    /// Arrays, with the join of their items.
-    Array(Box<Observed>),
+    /// Arrays: the join of their items, and how many items they held together.
+    Array(Box<Observed>, u64),
     /// Values of kinds no narrower type holds together.
     Json,
 }
@@ -66,6 +67,11 @@ impl Shape {
         self.fields.push((name, observed));
     }
 
+    /// What the field at `position` held, to observe more values in.
+    pub(crate) fn field_mut(&mut self, position: usize) -> &mut Observed {
+        &mut self.fields[position].1
+    }
+
     /// Joins `other` into this shape; fields new to it follow its own, in `other`'s order.
     pub(crate) fn join(&mut self, other: &Self) {
         for (name, observed) in &other.fields {
@@ -76,21 +82,13 @@ impl Shape {
         }
     }
 
-    /// The most fields any object of the shape has, itself or nested at any depth.
-    pub(crate) fn widest(&self) -> usize {
+    /// How many columns the shape has, as a schema's columns are counted: each field at any
+    /// depth, and each list's items.
+    pub(crate) fn columns(&self) -> u64 {
         self.fields
             .iter()
-            .map(|(_, observed)| observed.widest())
-            .fold(self.fields.len(), usize::max)
-    }
-
-    /// How many columns holding values the shape has, counting nested fields and list items and
-    /// leaving out columns of nulls only.
-    pub(crate) fn leaves(&self) -> u64 {
-        self.fields
-            .iter()
-            .map(|(_, observed)| observed.leaves())
-            .sum()
+            .map(|(_, observed)| 1 + observed.below())
+            .fold(0, u64::saturating_add)
     }
 
     /// The shape's fields as logical fields, every one nullable.
@@ -119,8 +117,9 @@ impl Observed {
                 shape.join(more);
                 return;
             }
-            (Self::Array(item), Self::Array(more)) => {
+            (Self::Array(item, items), Self::Array(more, count)) => {
                 item.join(more);
+                *items = items.saturating_add(*count);
                 return;
             }
             (Self::Int { exact }, Self::Int { exact: more }) => Self::Int {
@@ -143,21 +142,11 @@ impl Observed {
         *self = joined;
     }
 
-    /// How many columns holding values the values fill.
-    fn leaves(&self) -> u64 {
+    /// How many columns the values hold below their own: an object's fields, a list's items.
+    fn below(&self) -> u64 {
         match self {
-            Self::Null => 0,
-            Self::Object(shape) => shape.leaves(),
-            Self::Array(item) => item.leaves(),
-            _ => 1,
-        }
-    }
-
-    /// The most fields any object among the values has, at any depth.
-    fn widest(&self) -> usize {
-        match self {
-            Self::Object(shape) => shape.widest(),
-            Self::Array(item) => item.widest(),
+            Self::Object(shape) => shape.columns(),
+            Self::Array(item, _) => 1 + item.below(),
             _ => 0,
         }
     }
@@ -182,7 +171,7 @@ impl Observed {
             Self::Object(shape) => LogicalType::Struct(
                 Fields::new(shape.logical_fields()).expect("a shape's field names are distinct"),
             ),
-            Self::Array(item) => {
+            Self::Array(item, _) => {
                 LogicalType::List(Box::new(Field::new("item", item.logical_type(), true)))
             }
             Self::Json => LogicalType::Json,

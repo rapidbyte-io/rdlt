@@ -9,6 +9,7 @@ mod pieces;
 mod queue;
 #[cfg(test)]
 mod tests;
+mod units;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -22,14 +23,12 @@ use self::changes::{CHANGE_ROW, Ignored, split_changes};
 use self::held::Held;
 use self::pieces::{Lowered, Piece, Pieces};
 use self::queue::queue;
-use super::coalesce::{Flushed, Unit};
+use super::coalesce::Flushed;
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
-use crate::budget::{Denied, MemoryBudget, Reservation, Shares};
+use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
-use crate::json::{self, NotJson};
 use crate::limits::ROW_EXCEEDS_BUDGET;
-use crate::shred::{self, ShredError};
 use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
@@ -39,65 +38,9 @@ pub(super) async fn write_flushed(
     open: &mut OpenSegment,
     flushed: Flushed,
 ) -> Result<(), Error> {
-    let permits = flushed.permits;
-    let units = match flushed.unit {
-        Unit::Arrow(batches) => {
-            check_json(job, context, &batches).await?;
-            let held = Held::of(permits, &batches);
-            vec![(batches, held)]
-        }
-        Unit::Json(pushes) => {
-            let failed = |error: ShredError| shred_failed(job, &error);
-            let compute = context.env.compute();
-            let chunk_bytes = context.batch.chunk_bytes().get();
-            // The pushes were admitted for their text and for the batches it becomes, so the
-            // batches are paid for before they are built.
-            let batches = shred::shred(compute, &pushes, chunk_bytes)
-                .await
-                .map_err(failed)?;
-            drop(pushes);
-            let held = held::shredded(permits, &batches);
-            batches
-                .into_iter()
-                .zip(held)
-                .map(|(batch, held)| (vec![batch], held))
-                .collect()
-        }
-    };
+    let units = units::of(job, context, flushed).await?;
     write(job, context, open, units).await
 }
-
-/// Checks, on the compute pool, that every value the columns of JSON of `batches` hold is JSON
-/// nested within the limit: one that is not fails the write before anything reads it.
-async fn check_json(
-    job: &PartitionJob,
-    context: &PartitionContext,
-    batches: &[RecordBatch],
-) -> Result<(), Error> {
-    if !batches
-        .first()
-        .is_some_and(|batch| json::holds_json(&batch.schema()))
-    {
-        return Ok(());
-    }
-    let batches = batches.to_vec();
-    let check = move || batches.iter().try_for_each(json::check_batch);
-    let checked = run_all(context.env.compute(), [check]).await.pop();
-    let Some(Err(NotJson { column, error })) = checked else {
-        return Ok(());
-    };
-    let message = format!(
-        "stream {}: column {} of a push holds a value that is not JSON: {error}",
-        job.stream,
-        rdlt_connector::text::shown(&column, MAX_NAME_SHOWN),
-    );
-    Err(Error::new(ErrorKind::Source, message)
-        .with_code(error.code())
-        .with_stream(&job.stream))
-}
-
-/// Bytes: the most of a column's name an error quotes.
-const MAX_NAME_SHOWN: usize = 256;
 
 /// Reserves `bytes` for the lowering this partition does next, all of them in one request, so
 /// it waits only for what other lowerings hold; the wait ends when the attempt is cancelled, and
@@ -106,6 +49,24 @@ async fn reserve(
     job: &PartitionJob,
     context: &PartitionContext,
     bytes: u64,
+) -> Result<Reservation, Error> {
+    let too_large = |large: TooLarge| {
+        let row = pieces::RowTooLarge {
+            expanded: large.asked,
+            limit: large.limit,
+        };
+        row_too_large(job, &row)
+    };
+    reserving(job, context, bytes, too_large).await
+}
+
+/// Reserves `bytes` of what lowering holds, as [`reserve`] does: `too_large` is the error for
+/// more than one request may take.
+async fn reserving(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    bytes: u64,
+    too_large: impl FnOnce(TooLarge) -> Error,
 ) -> Result<Reservation, Error> {
     let reserved = tokio::select! {
         biased;
@@ -116,27 +77,8 @@ async fn reserve(
     };
     reserved.map_err(|denied| match denied {
         Denied::Exhausted(exhausted) => Error::memory(exhausted).with_stream(&job.stream),
-        Denied::TooLarge(large) => row_too_large(
-            job,
-            &pieces::RowTooLarge {
-                expanded: large.asked,
-                limit: large.limit,
-            },
-        ),
+        Denied::TooLarge(large) => too_large(large),
     })
-}
-
-/// The error for a JSON push the shredder refused.
-fn shred_failed(job: &PartitionJob, error: &ShredError) -> Error {
-    let message = format!(
-        "stream {}: a JSON push cannot be loaded: {error}",
-        job.stream
-    );
-    let failed = match error {
-        ShredError::Internal(_) => Error::internal(message),
-        _ => Error::new(ErrorKind::Source, message),
-    };
-    failed.with_code(error.code()).with_stream(&job.stream)
 }
 
 /// How many times what lowering a piece takes is reserved for it: once, and once more where the

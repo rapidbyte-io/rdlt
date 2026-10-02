@@ -45,7 +45,8 @@ pub async fn shred_on(
     pushes: &[Bytes],
     chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, Refused> {
-    Ok(shred::shred(pool, pushes, chunk_bytes).await?)
+    let limits = shred::ShredLimits::new(rdlt_connector::limits::MAX_COLUMNS);
+    Ok(shred::shred(pool, pushes, chunk_bytes, limits).await?)
 }
 
 /// `batch` normalized as a stream normalized to `max_depth` whose rows `key` identifies: each

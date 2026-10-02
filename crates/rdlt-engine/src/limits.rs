@@ -114,8 +114,20 @@ pub(crate) const BUDGET_WAIT_EXCEEDED: &str = "memory_budget_wait_exceeded";
 /// The code of the error for a push that keeps more alive than pushes may take of the budget.
 pub(crate) const PUSH_EXCEEDS_BUDGET: &str = "push_exceeds_budget";
 
+/// The code of the error for JSON pushes whose batches take more beyond what the pushes were
+/// admitted for than a request may take.
+pub(crate) const JSON_EXCEEDS_BUDGET: &str = "json_exceeds_budget";
+
 /// The code of the error for one row that takes more to lower than a request may take.
 pub(crate) const ROW_EXCEEDS_BUDGET: &str = "row_exceeds_budget";
 
 /// The code of the error for a seal's or a commit's frame that takes more than the log's share.
 pub(crate) const LOG_FRAME_EXCEEDS_BUDGET: &str = "log_frame_exceeds_budget";
+
+/// Cells: the most one shred of JSON pushes builds, a cell being a row under a column holding
+/// values, at every level of a nested column, a list's items being the rows of its items' level.
+///
+/// Every row takes a cell in every column of its level, so sparse, wide records would build far
+/// more than their text; past this, the pushes fail with `limit_exceeded` before anything is
+/// built.
+pub(crate) const MAX_CELLS: u64 = 1 << 25;
