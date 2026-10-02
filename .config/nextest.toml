@@ -57,12 +57,6 @@ slow-timeout = { period = "10s", terminate-after = 2 }
 filter = "package(rdlt-certify) & binary(it) & test(/^(cli|spawned|killed)::/)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The crossing properties send every part of every layout over every layout: seconds each alone,
-# past ten beside the rest of the suite.
-[[profile.mutants.overrides]]
-filter = "package(rdlt-wire) & test(/crosses_as_its_rows_and_as_weighed$/)"
-slow-timeout = { period = "30s", terminate-after = 2 }
-
 # The SQLite differential tests run hundreds of cases, each syncing a database to disk: on a shared
 # runner beside the rest of the suite one took over a minute unmutated, failing a shard's baseline.
 # They wait long enough that only a hang times out; cargo-mutants' own timeout scales with it.

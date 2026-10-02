@@ -306,12 +306,17 @@ fn wrappers(c: &ArrayRef, every_key: bool) -> Vec<(&'static str, ArrayRef)> {
     out
 }
 
-/// Every layout over the leaf named `leaf`, and every layout over each of those.
-pub(crate) fn over(leaf: &str) -> Vec<Named> {
+/// Into how many shares [`over`] deals the layouts over a leaf.
+pub(crate) const SHARES: usize = 5;
+
+/// One share of the layouts over the leaf named `leaf`, and every layout over each of those:
+/// the layouts are dealt in turn into [`SHARES`] shares, of which this is share `share`.
+pub(crate) fn over(leaf: &str, share: usize) -> Vec<Named> {
     let mut columns = Vec::new();
     let leaves = leaves().into_iter();
     for (leaf_name, leaf) in leaves.filter(|(name, _)| name == leaf) {
-        for (first_name, first) in wrappers(&leaf, true) {
+        let firsts = wrappers(&leaf, true).into_iter().enumerate();
+        for (_, (first_name, first)) in firsts.filter(|(at, _)| at % SHARES == share) {
             let name = format!("{first_name}<{leaf_name}>");
             if first.len() >= 3 {
                 for (second_name, second) in wrappers(&first, false) {
@@ -328,5 +333,8 @@ pub(crate) fn over(leaf: &str) -> Vec<Named> {
 /// Every layout over every leaf, and every layout over each of those.
 pub(crate) fn columns() -> Vec<Named> {
     let leaves = leaves().into_iter();
-    leaves.flat_map(|(name, _)| over(&name)).collect()
+    let shares = leaves.flat_map(|(name, _)| (0..SHARES).map(move |share| (name.clone(), share)));
+    shares
+        .flat_map(|(name, share)| over(&name, share))
+        .collect()
 }
