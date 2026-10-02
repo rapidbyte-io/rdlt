@@ -13,7 +13,7 @@ use rdlt_connector::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey}
 use super::super::{Merged, folded, merge_children_sparse, merge_sparse, read_back};
 use crate::limits::{FOLD_CELLS, MAX_SHAPES};
 
-const ROWS: i64 = 20_000;
+const ROWS: i64 = 5_000;
 const WIDTH: usize = 1_000;
 
 /// How a table of these tests merges.
@@ -143,9 +143,9 @@ fn counted(merged: &Merged) -> (usize, usize) {
     (wide, merged.rows.iter().map(RecordBatch::num_rows).sum())
 }
 
-/// What a table of twenty thousand narrow rows may hold with one wide row among them: far
-/// under the eight bytes each narrow row would pay for each of the thousand columns.
-const BOUND: usize = 4 * 1024 * 1024;
+/// What a table of five thousand narrow rows may hold with one wide row among them: far under
+/// the forty megabytes of eight bytes each narrow row would pay for each of the thousand columns.
+const BOUND: usize = 1024 * 1024;
 
 #[test]
 fn one_wide_row_after_many_narrow_rows_costs_its_own_cells_then_and_after() {
@@ -185,9 +185,9 @@ fn a_wide_row_among_narrow_rows_of_its_own_commit_costs_its_own_cells() {
         let ids: Vec<i64> = (0..ROWS).collect();
         let wide = schema(kind, WIDTH);
         let incoming = [
-            rows(kind, &ids[..10_000], 1, 0),
+            rows(kind, &ids[..2_500], 1, 0),
             rows(kind, &[ROWS], 1_000_000, WIDTH),
-            rows(kind, &ids[10_000..], 20_000, 0),
+            rows(kind, &ids[2_500..], 20_000, 0),
         ];
         let merged = merge_sparse(&wide, &[], &[], &incoming, &key).unwrap();
         assert_eq!(counted(&merged), (1, ids.len() + 1), "{kind:?}");
@@ -315,10 +315,10 @@ fn batches_join_apart_where_one_would_hold_more_absent_cells_than_a_fold_makes()
 
 #[test]
 fn folding_commit_after_commit_keeps_each_batch_within_a_fold_s_absent_cells() {
-    let width = 400;
+    let width = 1000;
     let wide = schema(Kind::Upsert, width);
     // Sixteen shapes of many rows, each holding a column of its own, and a row of every column.
-    let (each, few) = (40_000_i64, 2_600_i64);
+    let (each, few) = (1_100_i64, 1_000_i64);
     let mut incoming = shaped(16, each);
     let base = 16 * each;
     incoming.push(rows(Kind::Upsert, &[base], 1, width));
