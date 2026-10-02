@@ -179,7 +179,7 @@ fn a_reads_dictionaries_are_charged_while_its_decoder_holds_them() {
 #[test]
 fn batches_of_a_schema_sent_again_before_each_keep_one_schema_alive() {
     use rdlt_connector::cost::{Allocations, schema_bytes};
-    // Sixteen columns named in 60,000 bytes each: about a megabyte of schema.
+    // Sixteen columns named in sixty kilobytes each: about a megabyte of schema.
     let columns = (0..16).map(|index| {
         let name = format!("{index:02}{}", "n".repeat(59_998));
         let ones: ArrayRef = Arc::new(arrow_array::Int8Array::from(vec![1_i8]));

@@ -753,8 +753,8 @@ fn a_schema_sent_again_is_the_schema_the_decoder_holds() {
         .schema(&encoder.schema(&other.schema()).unwrap())
         .unwrap();
     assert!(!Arc::ptr_eq(&first, &changed));
-    let decoded = decoder.frame(&encoder.batch(&other).unwrap()[0]).unwrap();
-    assert_eq!(decoded, Some(other));
+    let read = decoder.frame(&encoder.batch(&other).unwrap()[0]).unwrap();
+    assert_eq!(read, Some(other));
 }
 
 #[test]
