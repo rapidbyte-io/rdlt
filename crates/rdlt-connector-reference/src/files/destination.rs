@@ -44,14 +44,15 @@ pub struct FilesDestinationConfig {
     /// How files store rows.
     #[serde(default)]
     pub format: FileFormat,
-    /// Milliseconds: how long a schema change, a writer or a release waits for a table's lock
-    /// before it fails as a transient error; 30 seconds where unset.
-    #[serde(default = "default_lock_wait_ms")]
-    pub lock_wait_ms: u64,
+    /// How long a schema change, a writer or a release waits for a table's lock before it fails
+    /// as a transient error, as seconds and nanoseconds (`{"secs": 30, "nanos": 0}`); 30 seconds
+    /// where unset.
+    #[serde(default = "default_lock_wait")]
+    pub lock_wait: Duration,
 }
 
-fn default_lock_wait_ms() -> u64 {
-    u64::try_from(LOCK_WAIT.as_millis()).unwrap_or(u64::MAX)
+fn default_lock_wait() -> Duration {
+    LOCK_WAIT
 }
 
 /// Writes each flushed batch to its own file and publishes a commit by creating the pipeline's
@@ -90,7 +91,7 @@ impl DestinationConnector for FilesDestination {
         Ok(Self {
             root: config.root.into(),
             format: config.format,
-            lock_wait: Duration::from_millis(config.lock_wait_ms),
+            lock_wait: config.lock_wait,
             rdlt: Arc::default(),
         })
     }
