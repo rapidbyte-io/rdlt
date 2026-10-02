@@ -246,22 +246,42 @@ given:
     keys and captured changes of a change stream's snapshot, which a snapshot read builds; 1024
     truncates.
   - Sums of a cursor and a configured size saturate. The generator refuses a cursor at a row
-    of another partition (`cursor_invalid`) and ends at the last row a number holds. A cursor
-    past the end reads nothing; a log's cursor past its head waits, since the head starts again
-    with each process. When the awaited message arrives is computed in numbers twice as wide as
-    an offset, the wait is never under a millisecond, and for the last offset a number holds,
-    which no head passes, the read waits only to be stopped.
+    of another partition (`cursor_invalid`) and ends at the last row a number holds. When a
+    message a log's read waits for arrives is computed in numbers twice as wide as an offset,
+    and the wait is never under a millisecond.
+  - A log's read starts only where the log issued the offset, in this process or one before
+    it, since a start a source accepts is a position its host may report (ADR 0044): an offset
+    up to the head, or up to what the group has committed. One past that is refused for good
+    as `cursor_unissued`. So the head may not fall back between processes. A group kept in a
+    file began when its lock file was made, which the keeper's first process does and nothing
+    writes again, and every process counts the head from that moment of the calendar: an
+    offset an earlier process issued is at or under the head of a later one. The logs of
+    groups kept nowhere grow from when their process first connected a log source, whichever
+    group, so none falls back while the process runs, and begin again with the next process.
+    A log of such a group that does not grow has the head its configuration says, in every
+    process. One
+    that grows cannot tell an offset an earlier process issued from one nobody did: it accepts
+    such a start, sends nothing before its head is there, and until then ends the read as a
+    failure to try again (`cursor_ahead`), a stopped following read too, so the start is
+    neither refused for good nor one its host is heard for. A read at the head waits, or ends
+    cleanly where it does not follow.
   - A keeper's file is named `*.group` or `*.slot` (`keeper_path_invalid`): a keeper replaces
     its file whole, so none is replaced that is not named as a keeper's. Which file a path
     leads to, and how it is opened and written, is ADR 0047's: a keeper is known by the
     directory that holds its file and the name there, so every path to one file is one keeper.
   - A group's or a slot's name is any but the empty one (`keeper_name_invalid`), which is the
     default keeper's. A named keeper and one kept in a file are different kinds of key, so no
-    name is a file's keeper, and a log's beginning is kept by the keeper it belongs to.
-  - Named keepers are shared by every source of a process that names them, whoever connected
-    it, and are kept for as long as the process runs. Keying them by the connecting host as
-    well, and freeing one with its last session, waits for the connect context to carry the
-    host, which the served side brings.
+    name is a file's keeper.
+  - A keeper is its host's, as a memory store is (ADR 0044): where a connector listens for
+    hosts, a group or a slot is known by the host named to the connector and its name, the
+    default one too, so two hosts naming one group share nothing. A keeper's file is one
+    host's while a source holds it, and refused any other. A keeper kept for a host named to
+    a listening connector, or in a file, is freed with the last source that holds it: a named
+    one forgets what it held, as with its process, and a file's lock is let go; the name is
+    forgotten when a keeper is next asked for, so what hosts name costs a listening connector
+    nothing once they are gone. A named keeper of the process's own host is kept for the
+    process, as a broker keeps a group between its consumers: its names are its one host's
+    configuration, and a run that connects its source again finds what the last committed.
   - A source acknowledges only partitions its stream has, all of a call's or none, and the log
     source reads no other.
   - A stream that does not serve again what it acknowledged needs a named group or slot
@@ -278,6 +298,13 @@ given:
 - A stream holding a float that is no number, or negative zero, does not load into SQLite.
 - `_rdlt_receipts` grows by a row a commit, and a change table's tombstones by a row a key
   hard-deleted, until the engine declares what it may still repeat.
+- A growing log whose group is kept nowhere accepts a start past its head and fails the read
+  to be tried again until the head is there: a host that wants a forged start refused keeps
+  the group in a file. A group file's beginning is the calendar's: a clock set back between
+  processes lowers the head, and an offset issued and not yet committed may then be refused;
+  so may one where the lock file is made anew.
+- A named group or slot a listening connector keeps for a host forgets what it was told once
+  no source of that host holds it.
 - An operator who shared a SQLite file or its directory with a group must serve its readers
   another way. Where the open of a new database fails after its file was created, an empty
   private file stays.
