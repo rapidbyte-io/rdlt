@@ -29,10 +29,16 @@ or malformed ones with a typed error; the contract's types convert to and from i
 feature, one handshaken session per connection. The engine loads through it with `rdlt-host`'s
 `RemoteSource` and `RemoteDestination`: errors cross whole, reads and writes keep within credit,
 heartbeats notice a lost connector, and each call has its deadline. A provider places each
-connector in process or in a process of its own: `rdlt-host`'s `Local` spawns a connector binary
-with its socket on file descriptor 3, drains its output, keeps its last words for its errors,
-stops it when done and respawns it when it is lost, and the engine's integration suite runs
-against the reference connectors both ways. `rdlt-host`'s `Remote` reaches connectors listening
+connector by policy (ADR 0043): in process only what its embedder trusts
+(`Registry::trusted`), and in a process of its own inside a sandbox (`Local::sandboxed`, with
+bubblewrap on Linux) unless its binaries are stated to be trusted
+(`Local::trusting_binaries`). `Local` finds a binary only in the directories configured,
+executes the file it opened and hashed, gives it its socket on file descriptor 3 and nothing
+else of the host's, bounds and shows its output, keeps its last words for its errors, stops it
+when done and respawns it when it is lost. A configuration's secrets are references
+(`${env:NAME}`, `${file:/path}`, `${secret:name}`) resolved for the connector the host has
+verified and scrubbed from whatever it says back. The engine's integration suite runs against
+the reference connectors both ways. `rdlt-host`'s `Remote` reaches connectors listening
 on the network over mutual TLS 1.3, redialing them when they are lost, and the integration suite
 runs against them too. A listening connector accepts only the hosts named to it, by a name in
 their certificates, and holds a bounded number of connections at each stage: peers that never

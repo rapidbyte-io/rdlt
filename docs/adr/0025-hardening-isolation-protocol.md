@@ -89,7 +89,9 @@ follows H1c.
     (`DigestMismatch`, and `connector_changed` to the engine).
   - Rejected: executing from a content-addressed private copy to close the window between
     hashing and executing. It costs a copy of every binary, and whoever can write the binary's
-    path already controls the host.
+    path already controls the host. Amended 2026-10-02 (ADR 0043): the window is closed
+    without a copy, by hashing and executing one open file, and a binary another user may
+    write is refused; a raw wire compares the digest too.
 - **A served read knows whether its partition ends.** `ReadStart.unbounded` carries it.
 - **The files destination's directories are durable.**
   - A directory it creates is synced into its parent, and each new file's directory after the
