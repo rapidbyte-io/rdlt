@@ -298,61 +298,177 @@ async fn resolve(
 }
 
 #[tokio::test]
-async fn the_environment_resolves_its_variables_and_named_secrets_under_their_prefix() {
-    let env = EnvSecrets::reading(variables);
-    let secrets = Secrets::new().reading(env);
-    for resolver in [&env as &dyn SecretResolver, &secrets] {
-        let found = resolve(resolver, SecretKind::Env, "DB_PASSWORD").await;
-        assert_eq!(found.expect("set"), "hunter2");
-        let found = resolve(resolver, SecretKind::Named, "api-key.2").await;
-        assert_eq!(found.expect("set"), "k-12345");
-        let longest = resolve(resolver, SecretKind::Env, "LONGEST").await;
-        assert_eq!(
-            longest.expect("set").len(),
-            usize::try_from(SECRET_BYTES).expect("fits")
-        );
-        let faults = [
-            (SecretKind::Env, "API_KEY_2"),
-            (SecretKind::Named, "DB_PASSWORD"),
-            (SecretKind::Env, "UNSET"),
-        ];
-        for (kind, name) in faults {
-            let fault = resolve(resolver, kind, name).await.expect_err("unset");
-            assert!(matches!(fault, SecretFault::Missing), "{name}: {fault:?}");
-        }
-        let fault = resolve(resolver, SecretKind::Env, "NOT_TEXT")
+async fn the_environment_resolves_only_the_variables_its_operator_lists() {
+    let listed = EnvSecrets::allowing(["DB_PASSWORD", "LONGEST", "NOT_TEXT", "TOO_LONG", "UNSET"])
+        .reading(variables);
+    let prefixed = EnvSecrets::prefixed("DB_").reading(variables);
+    let found = resolve(&listed, SecretKind::Env, "DB_PASSWORD").await;
+    assert_eq!(found.expect("listed"), "hunter2");
+    let found = resolve(&prefixed, SecretKind::Env, "DB_PASSWORD").await;
+    assert_eq!(found.expect("under the prefix"), "hunter2");
+    let longest = resolve(&listed, SecretKind::Env, "LONGEST").await;
+    assert_eq!(
+        longest.expect("set").len(),
+        usize::try_from(SECRET_BYTES).expect("fits")
+    );
+    for (resolver, name) in [
+        (&listed, "HOME"),
+        (&listed, "DB_PASSWORDX"),
+        (&prefixed, "HOME"),
+    ] {
+        let fault = resolve(resolver, SecretKind::Env, name)
             .await
-            .expect_err("no text");
-        assert!(matches!(fault, SecretFault::NotText), "{fault:?}");
-        let fault = resolve(resolver, SecretKind::Env, "TOO_LONG")
-            .await
-            .expect_err("too long");
-        assert!(matches!(fault, SecretFault::TooLong { limit } if limit == SECRET_BYTES));
+            .expect_err("not listed");
+        assert!(matches!(fault, SecretFault::Refused), "{name}: {fault:?}");
     }
-    let fault = resolve(&env, SecretKind::File, "/etc/hostname")
+    // An empty prefix lists nothing.
+    let empty = EnvSecrets::prefixed("").reading(variables);
+    let fault = resolve(&empty, SecretKind::Env, "DB_PASSWORD")
         .await
-        .expect_err("no file");
-    assert!(matches!(fault, SecretFault::Unsupported));
-    // The host's own environment is what is read by default.
-    let own = resolve(&EnvSecrets::new(), SecretKind::Env, "CARGO_PKG_NAME").await;
+        .expect_err("nothing");
+    assert!(matches!(fault, SecretFault::Refused));
+    let fault = resolve(&listed, SecretKind::Env, "UNSET")
+        .await
+        .expect_err("unset");
+    assert!(matches!(fault, SecretFault::Missing));
+    let fault = resolve(&listed, SecretKind::Env, "NOT_TEXT")
+        .await
+        .expect_err("no text");
+    assert!(matches!(fault, SecretFault::NotText), "{fault:?}");
+    let fault = resolve(&listed, SecretKind::Env, "TOO_LONG")
+        .await
+        .expect_err("too long");
+    assert!(matches!(fault, SecretFault::TooLong { limit } if limit == SECRET_BYTES));
+    for kind in [SecretKind::File, SecretKind::Named] {
+        let fault = resolve(&listed, kind, "DB_PASSWORD")
+            .await
+            .expect_err("no such kind");
+        assert!(matches!(fault, SecretFault::Refused));
+    }
+    // The host's own environment is what is read where nothing else is said.
+    let own = EnvSecrets::allowing(["CARGO_PKG_NAME"]);
+    let own = resolve(&own, SecretKind::Env, "CARGO_PKG_NAME").await;
     assert_eq!(own.expect("cargo sets it"), "rdlt-host");
 }
 
 #[tokio::test]
-async fn an_embedders_resolver_takes_named_secrets_and_nothing_else() {
-    let secrets = Secrets::new()
-        .reading(EnvSecrets::reading(variables))
-        .named(vault());
-    let found = resolve(&secrets, SecretKind::Named, "api-key").await;
+async fn named_secrets_come_from_the_store_the_operator_gives_and_from_nothing_else() {
+    let by_prefix = Secrets::new().named(EnvSecrets::named("RDLT_SECRET_").reading(variables));
+    let found = resolve(&by_prefix, SecretKind::Named, "api-key.2").await;
+    assert_eq!(found.expect("set"), "k-12345");
+    let fault = resolve(&by_prefix, SecretKind::Env, "DB_PASSWORD")
+        .await
+        .expect_err("no env");
+    assert!(matches!(fault, SecretFault::Refused));
+    let vaulted = Secrets::new().named(vault());
+    let found = resolve(&vaulted, SecretKind::Named, "api-key").await;
     assert_eq!(found.expect("the vault holds it"), "k-12345");
-    // Not read from the environment once a resolver is given.
-    let fault = resolve(&secrets, SecretKind::Named, "api-key.2")
+    // Not read from the environment once a store is given.
+    let fault = resolve(&vaulted, SecretKind::Named, "api-key.2")
         .await
         .expect_err("unset");
     assert!(matches!(fault, SecretFault::Missing));
-    let found = resolve(&secrets, SecretKind::Env, "DB_PASSWORD").await;
-    assert_eq!(found.expect("set"), "hunter2");
-    assert_eq!(format!("{secrets:?}"), "Secrets { named: true, .. }");
+    let shown = format!("{vaulted:?}");
+    assert!(
+        shown.contains("named: true") && shown.contains("env: None"),
+        "{shown}"
+    );
+}
+
+#[tokio::test]
+async fn by_default_no_reference_of_any_kind_resolves() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let private = file(directory.path(), "secret", b"top-secret", 0o600);
+    for (kind, name) in [
+        (SecretKind::Env, "HOME"),
+        (SecretKind::Env, "CARGO_PKG_NAME"),
+        (SecretKind::File, private.as_str()),
+        (SecretKind::Named, "anything"),
+    ] {
+        let fault = resolve(&Secrets::new(), kind, name)
+            .await
+            .expect_err("refused");
+        assert!(matches!(fault, SecretFault::Refused), "{kind}: {fault:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_configuration_author_reaches_no_secret_of_the_host_the_operator_did_not_list() {
+    let outside = tempfile::tempdir().expect("a temporary directory");
+    let listed = tempfile::tempdir().expect("a temporary directory");
+    let private = file(outside.path(), "secret", b"top-secret", 0o600);
+    file(listed.path(), "token", b"t-123", 0o600);
+    let document = serde_json::json!({
+        "password": format!("${{file:{private}}}"),
+        "home": "${env:HOME}",
+    });
+    let scoped = Secrets::new()
+        .env(EnvSecrets::allowing(["PGPASSWORD"]))
+        .files(FileSecrets::within([listed.path()]));
+    for secrets in [Secrets::new(), scoped.clone()] {
+        let redactions = Redactions::new();
+        let sent = Config::from(&document)
+            .resolved(&secrets, &redactions)
+            .await;
+        let error = sent.expect_err("refused");
+        assert_eq!(error.code(), "secret_refused");
+        let said = format!("{error} {error:?}");
+        assert!(said.contains("config field "), "{said}");
+        assert!(
+            !said.contains("top-secret") && !said.contains(&private) && !said.contains("HOME"),
+            "{said}"
+        );
+    }
+    let token = format!("${{file:{}}}", listed.path().join("token").display());
+    let sent = Config::from(&serde_json::json!({ "token": token }))
+        .resolved(&scoped, &Redactions::new())
+        .await;
+    assert_eq!(sent.expect("listed").as_str(), r#"{"token":"t-123"}"#);
+}
+
+#[tokio::test]
+async fn a_file_reference_reaches_only_what_lies_beneath_a_listed_directory_through_no_link() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let listed = root.path().join("listed");
+    std::fs::create_dir_all(listed.join("sub")).expect("directories");
+    file(&listed.join("sub"), "token", b"t-123", 0o600);
+    file(root.path(), "beside", b"top-secret", 0o600);
+    std::os::unix::fs::symlink(root.path(), listed.join("up")).expect("a link");
+    let files = FileSecrets::within([&listed]);
+    let reach = |path: std::path::PathBuf| {
+        let files = files.clone();
+        async move { resolve(&files, SecretKind::File, path.to_str().expect("text")).await }
+    };
+    assert_eq!(
+        reach(listed.join("sub/token")).await.expect("beneath"),
+        "t-123"
+    );
+    for (path, refused) in [
+        (listed.join("../beside"), true),
+        (listed.join("sub/../../beside"), true),
+        (root.path().join("beside"), true),
+        (listed.clone(), true),
+        (listed.join("up/beside"), false),
+    ] {
+        let fault = reach(path.clone()).await.expect_err("not reached");
+        if refused {
+            assert!(
+                matches!(fault, SecretFault::Refused),
+                "{}: {fault:?}",
+                path.display()
+            );
+        } else {
+            assert!(
+                matches!(fault, SecretFault::NotRegular),
+                "{}: {fault:?}",
+                path.display()
+            );
+        }
+    }
+    // A listed directory another user may write is no place for secrets.
+    std::fs::set_permissions(&listed, PermissionsExt::from_mode(0o777)).expect("its mode is set");
+    let fault = reach(listed.join("sub/token")).await.expect_err("shared");
+    assert!(matches!(fault, SecretFault::Shared { .. }), "{fault:?}");
 }
 
 /// A file in `directory` holding `text`, with `mode`.
@@ -374,28 +490,35 @@ async fn a_private_file_resolves_to_its_text_without_the_line_end_at_its_end() {
         ("lines", b"hunter\n2\n\n", "hunter\n2\n"),
         ("empty", b"", ""),
     ] {
-        for resolver in [&FileSecrets::new() as &dyn SecretResolver, &Secrets::new()] {
+        let files = FileSecrets::within([directory.path()]);
+        let secrets = Secrets::new().files(files.clone());
+        for resolver in [&files as &dyn SecretResolver, &secrets] {
             let found = resolve(resolver, SecretKind::File, &at(name, text)).await;
             assert_eq!(found.expect("it reads"), secret, "{name}");
         }
     }
     let read_only = file(directory.path(), "read-only", b"hunter2", 0o400);
     assert_eq!(
-        resolve(&FileSecrets, SecretKind::File, &read_only)
-            .await
-            .expect("it reads"),
+        resolve(
+            &FileSecrets::within([directory.path()]),
+            SecretKind::File,
+            &read_only
+        )
+        .await
+        .expect("it reads"),
         "hunter2"
     );
     let longest = usize::try_from(SECRET_BYTES).expect("fits");
+    let files = FileSecrets::within([directory.path()]);
     let found = resolve(
-        &FileSecrets,
+        &files,
         SecretKind::File,
         &at("longest", &vec![b'x'; longest]),
     )
     .await;
     assert_eq!(found.expect("it reads").len(), longest);
     let found = resolve(
-        &FileSecrets,
+        &files,
         SecretKind::File,
         &at("ended", &[vec![b'x'; longest], b"\r\n".to_vec()].concat()),
     )
@@ -407,10 +530,14 @@ async fn a_private_file_resolves_to_its_text_without_the_line_end_at_its_end() {
 async fn a_file_that_is_not_private_regular_text_within_the_limit_is_refused() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let private = file(directory.path(), "private", b"hunter2", 0o600);
-    let fault = |path: String| async move {
-        resolve(&FileSecrets, SecretKind::File, &path)
-            .await
-            .expect_err("it is refused")
+    let files = FileSecrets::within([directory.path()]);
+    let fault = |path: String| {
+        let files = files.clone();
+        async move {
+            resolve(&files, SecretKind::File, &path)
+                .await
+                .expect_err("it is refused")
+        }
     };
     for mode in [
         0o640, 0o604, 0o620, 0o602, 0o610, 0o601, 0o644, 0o666, 0o4640,
@@ -426,7 +553,13 @@ async fn a_file_that_is_not_private_regular_text_within_the_limit_is_refused() {
     std::os::unix::fs::symlink(&private, &linked).expect("a link");
     let linked = linked.to_str().expect("text").to_owned();
     assert!(matches!(fault(linked).await, SecretFault::NotRegular));
-    let inside = directory.path().to_str().expect("text").to_owned();
+    std::fs::create_dir(directory.path().join("inside")).expect("a directory");
+    let inside = directory
+        .path()
+        .join("inside")
+        .to_str()
+        .expect("text")
+        .to_owned();
     assert!(matches!(fault(inside).await, SecretFault::NotRegular));
     let pipe = directory.path().join("pipe");
     let made = std::process::Command::new("mkfifo").arg(&pipe).status();
@@ -446,10 +579,14 @@ async fn a_file_that_is_not_private_regular_text_within_the_limit_is_refused() {
 async fn a_private_file_that_holds_no_text_or_too_much_is_refused_and_no_fault_says_what_is_there()
 {
     let directory = tempfile::tempdir().expect("a temporary directory");
-    let fault = |path: String| async move {
-        resolve(&FileSecrets, SecretKind::File, &path)
-            .await
-            .expect_err("it is refused")
+    let files = FileSecrets::within([directory.path()]);
+    let fault = |path: String| {
+        let files = files.clone();
+        async move {
+            resolve(&files, SecretKind::File, &path)
+                .await
+                .expect_err("it is refused")
+        }
     };
     let binary = file(directory.path(), "binary", &[0xff, 0xfe], 0o600);
     assert!(matches!(fault(binary).await, SecretFault::NotText));
@@ -467,10 +604,10 @@ async fn a_private_file_that_holds_no_text_or_too_much_is_refused_and_no_fault_s
             "{excess}"
         );
     }
-    let unsupported = resolve(&FileSecrets, SecretKind::Env, "HOME")
+    let unsupported = resolve(&files, SecretKind::Env, "HOME")
         .await
         .expect_err("no env");
-    assert!(matches!(unsupported, SecretFault::Unsupported));
+    assert!(matches!(unsupported, SecretFault::Refused));
     // No fault says what a file holds or where it is.
     let refused = fault(file(directory.path(), "shared", b"hunter2", 0o644)).await;
     let said = format!("{refused} {refused:?}");

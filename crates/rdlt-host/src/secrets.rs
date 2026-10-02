@@ -115,10 +115,16 @@ impl Config {
             let Some(resolved) = resolving.await else {
                 continue;
             };
-            let resolved = resolved.map_err(|(kind, source)| SecretError::Unresolved {
-                field: field.clone(),
-                kind,
-                source,
+            let resolved = resolved.map_err(|(kind, source)| match source {
+                SecretFault::Refused => SecretError::Refused {
+                    field: field.clone(),
+                    kind,
+                },
+                source => SecretError::Unresolved {
+                    field: field.clone(),
+                    kind,
+                    source,
+                },
             })?;
             grown = grown.saturating_add(resolved.len());
             text.zeroize();
@@ -178,6 +184,14 @@ pub enum SecretError {
         /// What is wrong with the reference.
         fault: ReferenceFault,
     },
+    /// A reference names what the host's operator lets no configuration reach.
+    #[error("config field {field}: its {kind} reference is to nothing this host resolves")]
+    Refused {
+        /// The field, as a path of keys and indexes.
+        field: String,
+        /// The reference's kind.
+        kind: SecretKind,
+    },
     /// A reference did not resolve.
     #[error("config field {field}: its {kind} reference did not resolve")]
     Unresolved {
@@ -199,6 +213,7 @@ impl SecretError {
         match self {
             Self::NotJson | Self::TooLarge { .. } | Self::TooMany { .. } => "config_invalid",
             Self::Reference { .. } => "secret_reference",
+            Self::Refused { .. } => "secret_refused",
             Self::Unresolved { .. } => "secret_unresolved",
         }
     }
