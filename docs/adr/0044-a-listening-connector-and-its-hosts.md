@@ -188,6 +188,12 @@ Rejected:
   can then report that position: it is one of the hosts named to the connector, which may
   already read and write through it. It cannot report a position the source refuses to read
   from, so a source that follows the rule is never moved beyond what it holds.
+- A source that refuses every report can still see a run succeed where its partition ends
+  done. Each attempt that has a position to report is refused and fails; each of them landed
+  rows, so none counts against the run, and once the partition is recorded done state holds no
+  cursor for it and the next attempt has nothing to report. No row is lost or doubled, and
+  the position that trails is the refusing source's own. Failing such a run needs the report
+  that is owed kept in state, which belongs with the design of the log and its replay.
 - A source that accepts a cursor it did not issue, and acts on reports, can be moved there by
   a host named to it. The rule is the connector author's to keep; certification does not yet
   check it.

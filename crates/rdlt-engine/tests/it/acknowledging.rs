@@ -525,7 +525,7 @@ async fn a_report_refused_is_made_again_though_its_partition_then_ends_done() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_source_that_refuses_every_report_is_told_by_each_attempt_until_its_partition_is_done() {
+async fn a_run_whose_partition_ends_done_succeeds_though_its_source_refused_every_report() {
     let events = ending_past_its_checkpoint(true);
     let (script, source) = Script::new(vec![events]).connect("ack_done_refused").await;
     script.limited_acks.store(usize::MAX, Ordering::SeqCst);
