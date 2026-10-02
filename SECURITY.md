@@ -25,7 +25,8 @@ complete, run only connectors you trust. The mechanisms in place today:
   keep a firewall in front of a connector. Refused connections are reported in one line an
   interval;
 - a connector's own binary serves no certification probe, and a source hears a host report
-  committed only the checkpoints it sent that host and the positions that host read from;
+  committed only the checkpoints it sent that host and where that host's reads started, once
+  the source accepted them;
 - an endpoint that is refused is never repeated in an error;
 - a connector's process starts with a cleared environment, and receives its configuration only
   after the host has checked its identity and, where one is named, its binary's digest;
