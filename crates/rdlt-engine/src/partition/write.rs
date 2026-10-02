@@ -1,6 +1,7 @@
 //! Writing what a partition gathered: shredding JSON, fitting each batch to its table, lowering
 //! it a piece at a time and queueing each piece on its lane with the memory it holds.
 
+mod allowance;
 mod changes;
 mod held;
 mod normalized;
@@ -13,27 +14,22 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::cost::Rendering;
+use parking_lot::Mutex;
+use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ColumnPath, Permit, TableSchema};
 
-use self::changes::split_changes;
+use self::changes::{CHANGE_ROW, Ignored, split_changes};
 use self::held::Held;
 use self::pieces::{Lowered, Piece, Pieces};
 use self::queue::queue;
 use super::coalesce::{Flushed, Unit};
-use super::{OpenSegment, PartitionContext, PartitionJob};
-use crate::budget::{MemoryBudget, Reservation};
+use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
+use crate::budget::{Denied, Reservation};
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
+use crate::limits::ROW_EXCEEDS_BUDGET;
 use crate::shred::{self, ShredError};
-use crate::table::{ChangeRows, Incoming, LoweringPlan, Prepared, Stamp};
-
-/// Bytes a chunk of JSON is charged before it is parsed, for each byte of its text.
-///
-/// It is what the chunk's values take once built, but for the nulls of sparse records, which
-/// the shredder's limit on cells bounds. What the chunk's batch costs is charged in its place
-/// once it is built.
-const JSON_BUILT: u64 = 2;
+use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -45,31 +41,20 @@ pub(super) async fn write_flushed(
     let permits = flushed.permits;
     let units = match flushed.unit {
         Unit::Arrow(batches) => {
-            let held = Held::of(permits, flushed.bytes, &batches);
+            let held = Held::of(permits, &batches);
             vec![(batches, held)]
         }
         Unit::Json(pushes) => {
             let failed = |error: ShredError| shred_failed(job, &error);
             let compute = context.env.compute();
             let chunk_bytes = context.batch.chunk_bytes().get();
-            let chunks = shred::scan(compute, &pushes, chunk_bytes)
+            // The pushes were admitted for their text and for the batches it becomes, so the
+            // batches are paid for before they are built.
+            let batches = shred::shred(compute, &pushes, chunk_bytes)
                 .await
                 .map_err(failed)?;
-            // Each chunk is charged before any is parsed.
-            let mut reserved = Vec::with_capacity(chunks.len());
-            for chunk in &chunks {
-                let bytes = chunk.bytes().saturating_mul(JSON_BUILT);
-                reserved.push(reserve(context, bytes, false).await?);
-            }
-            let batches = shred::shred_chunks(compute, chunks).await.map_err(failed)?;
             drop(pushes);
-            let held = hold(
-                &context.budget,
-                &context.rendering,
-                &batches,
-                reserved,
-                permits,
-            );
+            let held = held::shredded(permits, &batches);
             batches
                 .into_iter()
                 .zip(held)
@@ -80,18 +65,31 @@ pub(super) async fn write_flushed(
     write(job, context, open, units).await
 }
 
-/// Reserves `bytes` for work this partition has begun, `large` for one row that takes more than
-/// a piece: the wait ends when the attempt is cancelled, and at the budget's deadline.
+/// Reserves `bytes` for the lowering this partition does next, all of them in one request, so
+/// it waits only for what other lowerings hold; the wait ends when the attempt is cancelled, and
+/// at the budget's deadline.
 async fn reserve(
+    job: &PartitionJob,
     context: &PartitionContext,
     bytes: u64,
-    large: bool,
 ) -> Result<Reservation, Error> {
-    tokio::select! {
+    let reserved = tokio::select! {
         biased;
-        () = context.cancel.cancelled() => Err(Error::cancelled("the attempt was cancelled")),
-        reserved = context.budget.acquire_working(bytes, large) => reserved.map_err(Error::memory),
-    }
+        () = context.cancel.cancelled() => {
+            return Err(Error::cancelled("the attempt was cancelled"));
+        }
+        reserved = context.budget.acquire_working(bytes) => reserved,
+    };
+    reserved.map_err(|denied| match denied {
+        Denied::Exhausted(exhausted) => Error::memory(exhausted).with_stream(&job.stream),
+        Denied::TooLarge(large) => row_too_large(
+            job,
+            &pieces::RowTooLarge {
+                expanded: large.asked,
+                limit: large.limit,
+            },
+        ),
+    })
 }
 
 /// The error for a JSON push the shredder refused.
@@ -107,31 +105,10 @@ fn shred_failed(job: &PartitionJob, error: &ShredError) -> Error {
     failed.with_code(error.code()).with_stream(&job.stream)
 }
 
-/// What holds each of `batches`, shredded from chunks `reserved` was charged for, each charged
-/// as `rendering` costs it before `permits`, which held the pushes they were shredded from, are
-/// released: the budget always accounts for one or the other.
-fn hold(
-    budget: &MemoryBudget,
-    rendering: &Rendering,
-    batches: &[RecordBatch],
-    reserved: Vec<Reservation>,
-    permits: Vec<Permit>,
-) -> Vec<Held> {
-    let held = batches
-        .iter()
-        .zip(reserved)
-        .map(|(batch, mut reserved)| {
-            // What the batch keeps alive, or what it becomes where that is more, as far as the
-            // budget goes: it is lowered a piece at a time.
-            let cost = rendering.cost(batch, budget.capacity());
-            let bytes = cost.held.max(cost.expanded.min(budget.capacity()));
-            reserved.resize(bytes);
-            let permit: Permit = Box::new(reserved);
-            Held::of(vec![permit], bytes, std::slice::from_ref(batch))
-        })
-        .collect();
-    drop(permits);
-    held
+/// How many times what lowering a piece takes is reserved for it: once, and once more where the
+/// load keeps a log, for the frame the lowered batch is logged as.
+fn reserved_times(context: &PartitionContext) -> u64 {
+    1 + u64::from(context.wal.is_some())
 }
 
 /// Lowers `units`, each some batches of one schema and the memory they hold, into the partition's
@@ -140,11 +117,11 @@ fn hold(
 /// - Each unit's plan is found in order, since finding it may change the table.
 /// - The unit is then cut into pieces by what lowering each holds at once as its table stores
 ///   it: its columns converted to the table's types and rendered as the destination stores
-///   them, and the columns it holds nothing in. A row that alone takes more than the budget
-///   fails the write.
-/// - Each piece reserves that from the budget before it is lowered, waiting for what a write
-///   releases, never for what a unit being lowered holds. Pieces whose bytes were there at
-///   once are lowered together on the compute pool, [`LOWERING_WINDOW`] at most.
+///   them, the columns it holds nothing in, and the metadata lowering adds. A row that alone
+///   takes more than one request may fails the write.
+/// - Each piece reserves that from the budget before it is lowered. The partition waits for a
+///   piece only while it holds none it has not handed to its lane; pieces the budget has room
+///   for at once are lowered together on the compute pool, [`LOWERING_WINDOW`] at most.
 ///
 /// The units are one flush, which chunks and pieces cut however their sizes fall, so its integers
 /// are judged together: where it was cut decides no column's type.
@@ -162,38 +139,36 @@ async fn write(
         .iter()
         .flat_map(|unit| unit.incoming.rounding.iter().cloned())
         .collect();
+    let times = reserved_times(context);
+    let shares = context.budget.shares();
     let mut window = Window::default();
     for mut unit in judged {
         unit.incoming.rounding.clone_from(&rounding);
         let plan = context.tables.plan(job.table, unit.incoming).await?;
-        // The unit's pieces reserve what lowering takes: the unit holds its source alone.
-        unit.held.settle();
-        let max = pieces::piece_bytes(&context.budget);
+        let (stored, changes) = match job.changes {
+            Some(_) => (changes::aligned(&unit.parts[0], &plan.stored()), CHANGE_ROW),
+            None => (plan.stored(), 0),
+        };
         let lowered = Lowered {
             rendering: context.rendering.as_ref().clone(),
-            stored: plan.stored(),
-            row: plan.null_fill(1),
-            max,
-            budget: context.budget.capacity(),
+            stored,
+            row: plan.row_bytes().saturating_add(changes),
+            item: 0,
+            max: shares.piece / times,
+            limit: shares.request / times,
         };
         let mut pieces = Pieces::new(unit.parts, lowered);
-        let (mut held, mut first) = (Some(unit.held), 0);
+        let mut held = Some(unit.held);
         while let Some(piece) = next(job, context, &mut pieces).await? {
-            let large = piece.bytes > max;
-            let reserved =
-                if let Some(reserved) = context.budget.try_acquire_working(piece.bytes, large) {
-                    reserved
-                } else {
-                    // What was reserved is lowered and queued first, so a write releases it.
-                    window.lower(job, context, open).await?;
-                    reserve(context, piece.bytes, large).await?
-                };
-            let changes = unit
-                .changes
-                .as_ref()
-                .map(|rows| rows.slice(first, piece.rows));
-            first += piece.rows;
-            let stamp = stamp(context, open, u64::try_from(piece.rows).unwrap_or(u64::MAX));
+            let bytes = piece.bytes.saturating_mul(times);
+            let reserved = window.reserved(job, context, open, bytes).await?;
+            let ignored = job.changes.map_or_else(Ignored::default, |mode| {
+                changes::ignored(mode, &piece.parts)
+            });
+            open.deletes_ignored += ignored.deletes;
+            open.truncates_ignored += ignored.truncates;
+            let rows = u64::try_from(piece.rows).unwrap_or(u64::MAX);
+            let stamp = stamp(context, open, rows.saturating_sub(ignored.rows()));
             let Some(unit_held) = &held else {
                 return Err(Error::internal("a unit was cut after its last piece"));
             };
@@ -204,8 +179,8 @@ async fn write(
                 // written.
                 unit: if pieces.done() { held.take() } else { None },
             };
-            let plan = Arc::clone(&plan);
-            let run = move || lower(&piece.parts, &plan, &stamp, changes.as_ref());
+            let (plan, stream, mode) = (Arc::clone(&plan), job.stream.clone(), job.changes);
+            let run = move || lower(&stream, mode, &piece.parts, &plan, &stamp);
             window.push(Box::new(run), lowering);
             if window.len() == LOWERING_WINDOW {
                 window.lower(job, context, open).await?;
@@ -240,7 +215,7 @@ async fn next(
 /// What holds a piece while it is lowered and until it is written.
 struct Lowering {
     /// The allocations its unit holds, which what it is lowered to may share.
-    allocations: Arc<parking_lot::Mutex<rdlt_connector::cost::Allocations>>,
+    allocations: Arc<Mutex<Allocations>>,
     /// What lowering the piece holds, reserved before it is lowered.
     reserved: Reservation,
     /// For a unit's last piece, what holds the unit.
@@ -267,9 +242,36 @@ impl Window {
         self.runs.len()
     }
 
+    /// Reserves `bytes` for a piece to lower with those the window holds, where the budget has
+    /// them at once; nothing where the window is empty, or the piece must wait: a partition
+    /// waits only while it holds no piece it has not handed over.
+    fn reserve(&self, context: &PartitionContext, bytes: u64) -> Option<Reservation> {
+        if self.held.is_empty() {
+            return None;
+        }
+        context.budget.try_acquire_working(bytes)
+    }
+
+    /// Reserves `bytes` for a piece: with those the window holds where the budget has them at
+    /// once, or after the window's pieces are lowered and handed to their lane, so the wait is
+    /// for bytes a write releases and this partition holds none of them.
+    async fn reserved(
+        &mut self,
+        job: &PartitionJob,
+        context: &PartitionContext,
+        open: &mut OpenSegment,
+        bytes: u64,
+    ) -> Result<Reservation, Error> {
+        if let Some(reserved) = self.reserve(context, bytes) {
+            return Ok(reserved);
+        }
+        self.lower(job, context, open).await?;
+        reserve(job, context, bytes).await
+    }
+
     /// Lowers the window's pieces on the compute pool and queues them, in order: each then holds
-    /// what it was lowered to and its unit did not hold already, in place of what was reserved
-    /// for lowering it.
+    /// what it was lowered to and its unit did not hold already, where that is less than was
+    /// reserved for lowering it, and its frame in the log what the frame takes.
     async fn lower(
         &mut self,
         job: &PartitionJob,
@@ -280,40 +282,57 @@ impl Window {
             std::mem::take(&mut self.runs),
             std::mem::take(&mut self.held),
         );
+        let times = reserved_times(context);
         let lowered: Vec<_> = run_all(context.env.compute(), runs)
             .await
             .into_iter()
             .zip(held)
             .map(|(prepared, mut lowering)| {
                 prepared.map(|prepared| {
+                    let frame = frame_part(&mut lowering.reserved, times);
+                    let frame = frame.map(|frame| Box::new(frame) as Permit);
                     let fresh = prepared.growth(&mut lowering.allocations.lock());
-                    lowering.reserved.resize(fresh);
-                    (prepared, lowering)
+                    lowering.reserved.shrink(fresh);
+                    (prepared, lowering, frame)
                 })
             })
             .collect();
         for lowered in lowered {
-            let (prepared, mut lowering) = lowered?;
-            // Queued, the piece is released by a write, with its unit where it is the last.
-            lowering.reserved.stage();
-            let unit = lowering.unit.map(Held::staged);
+            let (prepared, lowering, frame) = lowered?;
+            let unit = lowering.unit.map(|unit| unit.permits);
             let reservation: Permit = Box::new((lowering.reserved, unit));
-            queue(job, context, open, job.table, prepared, reservation).await?;
+            queue(
+                job,
+                context,
+                open,
+                job.table,
+                prepared,
+                (reservation, frame),
+            )
+            .await?;
         }
         Ok(())
     }
 }
 
-/// A unit with rows, its change columns and its columns as they arrive.
+/// The part of `reserved`, what a piece reserved `times` times over, that holds its frame in the
+/// log: all but one of them, where it was reserved more than once.
+fn frame_part(reserved: &mut Reservation, times: u64) -> Option<Reservation> {
+    let logged = reserved.bytes() - reserved.bytes() / times.max(1);
+    (times > 1).then(|| reserved.split(logged))
+}
+
+/// A unit with rows and its columns as they arrive.
 struct Judged {
+    /// The unit's batches as they were pushed, a change stream's with their change columns.
     parts: Vec<RecordBatch>,
-    changes: Option<ChangeRows>,
     incoming: Incoming,
     held: Held,
 }
 
-/// `units` with rows, a change stream's split into data and change columns, each with its
-/// columns as they arrive, its own integers judged.
+/// `units` with rows, each with its columns as they arrive, its own integers judged; a change
+/// stream's by its data columns, none of them copied, and without the units whose every row the
+/// stream ignores, which `open` counts.
 fn judged(
     job: &PartitionJob,
     open: &mut OpenSegment,
@@ -321,26 +340,29 @@ fn judged(
 ) -> Result<Vec<Judged>, Error> {
     let mut judged = Vec::with_capacity(units.len());
     for (parts, held) in units {
-        let (parts, changes) = match job.changes {
-            Some(mode) => {
-                let (data, changes) = split_changes(job, mode, open, &parts)?;
-                (vec![data], Some(changes))
-            }
-            None => (parts, None),
-        };
-        if parts.iter().all(|batch| batch.num_rows() == 0) {
+        let rows: usize = parts.iter().map(RecordBatch::num_rows).sum();
+        let ignored = job
+            .changes
+            .map_or_else(Ignored::default, |mode| changes::ignored(mode, &parts));
+        if u64::try_from(rows).unwrap_or(u64::MAX) == ignored.rows() {
+            open.deletes_ignored += ignored.deletes;
+            open.truncates_ignored += ignored.truncates;
             continue;
         }
-        let schema = schema_of(job, &parts[0])?;
+        let data = match job.changes {
+            Some(_) => parts.iter().map(changes::data).collect::<Result<_, _>>()?,
+            None => parts.clone(),
+        };
+        let data: Vec<RecordBatch> = data;
+        let schema = schema_of(job, &data[0])?;
         let paths = schema
             .fields()
             .iter()
             .map(|field| ColumnPath::from(field.name()))
             .collect();
-        let incoming = Incoming::of(schema, paths, &parts);
+        let incoming = Incoming::of(schema, paths, &data);
         judged.push(Judged {
             parts,
-            changes,
             incoming,
             held,
         });
@@ -377,39 +399,36 @@ fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> S
 /// what each reserved before it was lowered.
 const LOWERING_WINDOW: usize = 8;
 
-/// `items` in order, in windows of at most [`LOWERING_WINDOW`].
-fn windows<T>(items: Vec<T>) -> Vec<Vec<T>> {
-    let mut windows = Vec::with_capacity(items.len().div_ceil(LOWERING_WINDOW));
-    let mut items = items.into_iter().peekable();
-    while items.peek().is_some() {
-        windows.push(items.by_ref().take(LOWERING_WINDOW).collect());
-    }
-    windows
-}
-
-/// The error for a row that alone expands beyond the whole budget: no slice of it can be lowered
-/// within the budget.
+/// The error for a row that alone takes more to lower than a request may take of the budget:
+/// no piece of it can be reserved.
 fn row_too_large(job: &PartitionJob, row: &pieces::RowTooLarge) -> Error {
     Error::new(
         ErrorKind::Source,
         format!(
-            "stream {}: one row expands to more than {} bytes, beyond the memory budget of {}",
-            job.stream, row.expanded, row.budget
+            "stream {}: lowering one row takes more than {} bytes, beyond the {} one request may \
+             take of the memory budget",
+            job.stream, row.expanded, row.limit
         ),
     )
-    .with_code("row_exceeds_budget")
+    .with_code(ROW_EXCEEDS_BUDGET)
     .with_stream(&job.stream)
 }
 
-/// `parts`, one batch once concatenated, as `plan` lowers it, with a change stream's `changes`.
+/// `parts`, a piece of a unit, one batch once concatenated, as `plan` lowers it; a change
+/// stream's split into its data and its change columns first, read as `mode` says.
 fn lower(
+    stream: &rdlt_connector::StreamName,
+    mode: Option<ChangeMode>,
     parts: &[RecordBatch],
     plan: &LoweringPlan,
     stamp: &Stamp,
-    changes: Option<&ChangeRows>,
 ) -> Result<Prepared, Error> {
+    if let Some(mode) = mode {
+        let (data, changes) = split_changes(stream, mode, parts)?;
+        return plan.prepare(&data, None, stamp, Some(&changes));
+    }
     // A lone batch concatenates to itself without a copy.
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts)
         .map_err(|error| Error::internal(format!("coalescing batches: {error}")))?;
-    plan.prepare(&batch, None, stamp, changes)
+    plan.prepare(&batch, None, stamp, None)
 }

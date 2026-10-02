@@ -14,7 +14,7 @@ use bytes::Bytes;
 use super::ShredError;
 
 /// Whole records of some pushes: the span of each push they lie in.
-pub(crate) struct Chunk {
+pub(super) struct Chunk {
     parts: Vec<Part>,
     /// How many records the chunk holds.
     pub(super) rows: usize,
@@ -40,12 +40,6 @@ enum Form {
 }
 
 impl Chunk {
-    /// Bytes: the text of the chunk's records, with what separates them.
-    pub(crate) fn bytes(&self) -> u64 {
-        let bytes: usize = self.parts.iter().map(|part| part.span.len()).sum();
-        u64::try_from(bytes).unwrap_or(u64::MAX)
-    }
-
     /// The records, in order.
     pub(super) fn records(&self) -> impl Iterator<Item = &[u8]> {
         self.parts.iter().flat_map(|part| {

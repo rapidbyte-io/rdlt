@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use rdlt_connector::cost::{Allocations, Rendering};
+use rdlt_connector::cost::Allocations;
 use rdlt_connector::{Partition, Permit, StreamName};
 
-use super::normalized::{charge_parts, judge, part_growth, share_growth};
+use super::held::shredded;
+use super::normalized::{judge, part_growth};
 use super::queue::written_bytes;
-use super::{Held, LOWERING_WINDOW, hold, shred_failed, windows};
+use super::{Held, shred_failed};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
@@ -47,16 +48,6 @@ fn a_refused_push_is_a_source_error_and_a_shredder_bug_an_internal_one() {
     );
 }
 
-/// A destination storing every value as it is.
-fn native() -> Rendering {
-    Rendering::new(rdlt_testkit::drawn::KINDS)
-}
-
-/// What `batch` is charged.
-fn charge(batch: &RecordBatch) -> u64 {
-    native().cost(batch, u64::MAX).charge()
-}
-
 /// The bytes `batch` keeps alive, its schema with its buffers.
 fn allocated(batch: &RecordBatch) -> u64 {
     Allocations::of(batch).bytes()
@@ -72,151 +63,72 @@ fn ids(rows: i64) -> RecordBatch {
     RecordBatch::try_from_iter([("id", ids)]).unwrap()
 }
 
-/// `held` charged for what `prepared` keeps alive that it did not hold, as a unit's lowered parts
-/// are.
-fn charge_growth(budget: &MemoryBudget, prepared: &Prepared, mut held: Held) -> Held {
-    let fresh = prepared.growth(&mut held.allocations.lock());
-    held.grow(budget, fresh);
-    held
-}
-
-/// What holds `batch`, shredded from a chunk charged nothing before it was built.
-fn shredded(budget: &MemoryBudget, batch: &RecordBatch) -> Held {
-    let reserved = vec![budget.charge(0)];
-    hold(
-        budget,
-        &native(),
-        std::slice::from_ref(batch),
-        reserved,
-        Vec::new(),
-    )
-    .remove(0)
-}
-
-/// `batch` as a table of no columns of its own would hold it: after the two constant columns
-/// every table leads its metadata with.
-fn prepared(batch: &RecordBatch) -> Prepared {
-    let constant = || arrow_array::new_null_array(&arrow_schema::DataType::Null, batch.num_rows());
-    let columns = [("load", constant()), ("at", constant())]
-        .into_iter()
-        .chain([("id", Arc::clone(batch.column(0)))]);
-    let batch = RecordBatch::try_from_iter(columns).unwrap();
-    Prepared {
-        batch,
-        view: crate::table::testing::view("t"),
-        discarded_rows: 0,
-        discarded_values: 0,
-    }
+/// What admitted a JSON push of `bytes` of text under `budget`.
+async fn json(budget: &MemoryBudget, bytes: usize) -> Permit {
+    let admission = crate::cost::Charging::new(budget.clone().read_by(1));
+    let text = bytes::Bytes::from(vec![b' '; bytes]);
+    let push = rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Json(text));
+    let admitted = rdlt_connector::Admission::admit(&admission, &push).await;
+    admitted.unwrap().unwrap()
 }
 
 #[tokio::test]
-async fn shredded_batches_are_charged_before_the_pushes_they_came_from_are_released() {
-    let budget = MemoryBudget::new(1 << 20);
-    let pushed: Permit = Box::new(budget.acquire(400).await.unwrap());
+async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_admitted_for() {
+    let budget = MemoryBudget::new(1 << 24);
+    // Two pushes of text, each admitted for its text and the batches it becomes.
+    let pushed = vec![json(&budget, 40_000).await, json(&budget, 2_000).await];
+    assert_eq!(budget.reserved(), 3 * 42_000);
     let batches = [ids(10), ids(1000)];
-    let sizes = [charge(&batches[0]), charge(&batches[1])];
-    assert!(sizes[1] >= 8_000);
-    // Each chunk was charged twenty bytes before it was parsed.
-    let reserved = vec![budget.charge(20), budget.charge(20)];
-    let held = hold(&budget, &native(), &batches, reserved, vec![pushed]);
-    assert_eq!(budget.peak(), 400 + sizes[0] + sizes[1]);
-    assert_eq!(budget.reserved(), sizes[0] + sizes[1]);
-    // Each holds what its batch keeps alive, and spares what it was charged beyond that.
-    for ((held, batch), size) in held.iter().zip(&batches).zip(sizes) {
+    let alive = allocated(&batches[0]) + allocated(&batches[1]);
+    assert!(alive > 8_000 && alive < 3 * 40_000);
+    let held = shredded(pushed, &batches);
+    // The text is gone: the pushes hold what the batches keep alive, and nothing was asked of
+    // the budget for them.
+    assert_eq!((budget.reserved(), budget.peak()), (alive, 3 * 42_000));
+    for (held, batch) in held.iter().zip(&batches) {
         assert_eq!(held.allocations.lock().bytes(), allocated(batch));
-        assert_eq!(held.spare(), size - allocated(batch));
     }
+    // The batches share what holds them until the last is written.
+    let mut held = held.into_iter();
+    drop(held.next());
+    assert_eq!(budget.reserved(), alive);
     drop(held);
     assert_eq!(budget.reserved(), 0);
 }
 
-#[test]
-fn a_lowered_batch_is_charged_for_what_its_unit_did_not_hold() {
-    let budget = MemoryBudget::new(1 << 20);
-    let unit = ids(1000);
-    let held = shredded(&budget, &unit);
-    let charged = budget.reserved();
-    // A batch lowered as it is keeps alive only what its unit holds already.
-    let held = charge_growth(&budget, &prepared(&unit.slice(10, 20)), held);
-    assert_eq!(budget.reserved(), charged);
-    // One lowered into buffers of its own is charged for them.
-    let converted = ids(500);
-    let held = charge_growth(&budget, &prepared(&converted), held);
-    assert_eq!(budget.reserved(), charged + buffers(&converted));
-    // And once only, however many pieces keep them alive.
-    let held = charge_growth(&budget, &prepared(&converted.slice(0, 5)), held);
-    assert_eq!(budget.reserved(), charged + buffers(&converted));
+#[tokio::test]
+async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_admitted() {
+    let budget = MemoryBudget::new(1 << 24);
+    let pushed = vec![json(&budget, 100).await, json(&budget, 100).await];
+    let batch = ids(1000);
+    assert!(allocated(&batch) > 600);
+    let held = shredded(pushed, std::slice::from_ref(&batch));
+    assert_eq!((budget.reserved(), budget.peak()), (600, 600));
     drop(held);
     assert_eq!(budget.reserved(), 0);
+    // Permits of another's making are kept as they are.
+    let other: Permit = Box::new(7_u8);
+    let foreign = shredded(vec![other], std::slice::from_ref(&batch));
+    assert_eq!(foreign.len(), 1);
+    assert_eq!(foreign[0].permits.len(), 1);
 }
 
-#[test]
-fn a_units_spare_charge_pays_for_what_lowering_allocates() {
+#[tokio::test]
+async fn a_piece_reserved_twice_over_gives_half_to_its_frame_in_the_log() {
     let budget = MemoryBudget::new(1 << 20);
-    let unit = ids(10);
-    let size = allocated(&unit);
-    let permit: Permit = Box::new(budget.charge(size + 100));
-    let held = Held::of(vec![permit], size + 100, std::slice::from_ref(&unit));
-    assert_eq!(held.spare(), 100);
-    let lowered = ids(100);
-    let held = charge_growth(&budget, &prepared(&lowered), held);
-    assert_eq!(budget.reserved(), size + buffers(&lowered));
-    assert_eq!(held.spare(), 0);
-    // A piece of the unit shares what it holds, and spares nothing.
-    let piece = held.piece();
-    assert!(piece.permits.is_empty());
-    assert_eq!(piece.spare(), 0);
-    let grown = budget.reserved();
-    drop(charge_growth(&budget, &prepared(&lowered), piece));
-    assert_eq!(budget.reserved(), grown);
-}
-
-#[test]
-fn bytes_reserved_before_a_unit_grows_pay_for_its_growth() {
-    let budget = MemoryBudget::new(1 << 20);
-    let unit = ids(10);
-    let mut held = shredded(&budget, &unit);
-    let (charged, spare) = (budget.reserved(), held.spare());
-    held.reserved(budget.charge(1_000));
+    let mut piece = budget.acquire_working(1_000).await.unwrap();
+    assert!(super::frame_part(&mut piece, 1).is_none());
+    assert_eq!(piece.bytes(), 1_000);
+    let frame = super::frame_part(&mut piece, 2).unwrap();
     assert_eq!(
-        budget.reserved(),
-        charged + 1_000,
-        "charged before it is built"
+        (piece.bytes(), frame.bytes(), budget.reserved()),
+        (500, 500, 1_000)
     );
-    assert_eq!(held.spare(), spare + 1_000);
-    // Growth within what was reserved is charged nothing more.
-    let lowered = ids(100);
-    assert!(buffers(&lowered) <= spare + 1_000);
-    let held = charge_growth(&budget, &prepared(&lowered), held);
-    assert_eq!(budget.reserved(), charged + 1_000);
-    assert_eq!(held.spare(), spare + 1_000 - buffers(&lowered));
-}
-
-#[test]
-fn a_shredded_batch_expanding_beyond_the_budget_is_charged_the_budget_or_what_it_holds() {
-    // Nested values cost their JSON text: far more than these lists of small integers hold.
-    let items: ArrayRef = Arc::new(arrow_array::Int8Array::from(vec![1; 10_000]));
-    let lists: ArrayRef = Arc::new(arrow_array::ListArray::new(
-        Arc::new(arrow_schema::Field::new(
-            "item",
-            arrow_schema::DataType::Int8,
-            true,
-        )),
-        arrow_buffer::OffsetBuffer::from_lengths([10_000]),
-        items,
-        None,
-    ));
-    let batch = RecordBatch::try_from_iter([("l", lists)]).unwrap();
-    let held = allocated(&batch);
-    assert!(charge(&batch) > 4 * held);
-    // A budget between the two: the expansion is charged as far as the budget goes.
-    let budget = MemoryBudget::new(2 * held);
-    drop(shredded(&budget, &batch));
-    assert_eq!(budget.peak(), 2 * held);
-    // A budget below what the batch keeps alive: that is charged whole.
-    let small = MemoryBudget::new(held / 2);
-    drop(shredded(&small, &batch));
-    assert_eq!(small.peak(), held);
+    // Each is released by whoever holds it: the lane its piece, the log's writer its frame.
+    drop(piece);
+    assert_eq!(budget.reserved(), 500);
+    drop(frame);
+    assert_eq!(budget.reserved(), 0);
 }
 
 #[test]
@@ -237,64 +149,21 @@ fn the_loads_constant_columns_count_for_no_growth() {
     let mut held = Allocations::default();
     assert_eq!(prepared.growth(&mut held), buffers(&rows));
     assert_eq!(held.bytes(), buffers(&rows));
+    // What a unit holds already is no growth, however many pieces keep it alive.
+    assert_eq!(prepared.growth(&mut held), 0);
 }
 
 #[test]
-fn units_are_lowered_in_order_in_windows_of_a_bounded_size() {
-    let units: Vec<usize> = (0..20).collect();
-    let windows = windows(units);
-    assert!(
-        windows
-            .iter()
-            .all(|window| (1..=LOWERING_WINDOW).contains(&window.len()))
-    );
-    assert_eq!(windows.concat(), (0..20).collect::<Vec<_>>());
-    assert_eq!(windows.len(), 20_usize.div_ceil(LOWERING_WINDOW));
-    assert!(super::windows(Vec::<usize>::new()).is_empty());
-}
-
-#[test]
-fn a_units_parts_hold_its_memory_until_the_last_is_staged() {
-    let budget = MemoryBudget::new(1 << 20);
-    let unit = ids(10);
-    let held = shredded(&budget, &unit);
-    let charged = budget.reserved();
-    let parts: Vec<(usize, Prepared)> = [ids(100), ids(50)]
-        .iter()
-        .map(prepared)
-        .enumerate()
-        .collect();
-    let lowered = buffers(&ids(100)) + buffers(&ids(50));
-    let shared = share_growth(&budget, &parts, held);
-    assert_eq!(
-        budget.reserved(),
-        charged + lowered,
-        "the unit's bytes and its parts'"
-    );
-    let first = Arc::clone(&shared);
-    drop(shared);
-    assert_eq!(
-        budget.reserved(),
-        charged + lowered,
-        "held while a part waits to be staged"
-    );
-    drop(first);
-    assert_eq!(budget.reserved(), 0);
-}
-
-#[test]
-fn normalized_parts_are_charged_before_they_wait_on_their_tables() {
-    let budget = MemoryBudget::new(1 << 22);
+fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
     let unit = ids(1000);
-    let held = shredded(&budget, &unit);
-    let charged = budget.reserved();
+    let held = Held::of(Vec::new(), std::slice::from_ref(&unit));
     let shape = crate::normalize::Shape {
         max_depth: 8,
         whole: std::collections::BTreeSet::new(),
         key: Vec::new(),
     };
     let parts = crate::normalize::normalize(&unit, &shape).unwrap();
-    // The part keeps the unit's column alive, which is charged already: its lineage is new.
+    // The part keeps the unit's column alive, which is held already: its lineage is new.
     let lineage: usize = parts
         .iter()
         .map(|part| {
@@ -314,18 +183,22 @@ fn normalized_parts_are_charged_before_they_wait_on_their_tables() {
         .iter()
         .map(|part| rdlt_connector::cost::schema_bytes(&part.batch.schema()))
         .sum();
-    let held = charge_parts(&budget, &parts, held);
-    assert_eq!(
-        budget.reserved(),
-        charged + u64::try_from(lineage).unwrap() + schemas
-    );
-    drop(held);
-    assert_eq!(budget.reserved(), 0);
+    let mut allocations = held.allocations.lock();
+    let made: u64 = parts
+        .iter()
+        .map(|part| part_growth(part, &mut allocations))
+        .sum();
+    assert_eq!(made, u64::try_from(lineage).unwrap() + schemas);
+    // Counted once: the parts are held from then on.
+    let again: u64 = parts
+        .iter()
+        .map(|part| part_growth(part, &mut allocations))
+        .sum();
+    assert_eq!(again, 0);
 }
 
 #[test]
-fn judged_parts_are_charged_while_they_are_judged_and_released_after() {
-    let budget = MemoryBudget::new(1 << 30);
+fn a_units_parts_are_judged_by_the_path_of_their_table() {
     let shape = crate::normalize::Shape {
         max_depth: 2,
         whole: std::collections::BTreeSet::new(),
@@ -335,32 +208,24 @@ fn judged_parts_are_charged_while_they_are_judged_and_released_after() {
         let values: ArrayRef = Arc::new(Int64Array::from(values));
         RecordBatch::try_from_iter([("n", values)]).unwrap()
     };
-    let units: Vec<Vec<crate::normalize::Part>> = [vec![1_i64 << 60], vec![1, 2, 3]]
-        .into_iter()
-        .map(|values| crate::normalize::normalize(&integers(values), &shape).unwrap())
-        .collect();
-    let mut allocations = Allocations::default();
-    let bytes: u64 = units
-        .iter()
-        .flatten()
-        .map(|part| part_growth(part, &mut allocations))
-        .sum();
-    assert!(bytes > 0);
-    let rounding = judge(&job(), &budget, units).unwrap();
-    assert_eq!(budget.peak(), bytes);
-    assert_eq!(budget.reserved(), 0);
-    let root: Vec<String> = rounding[&Vec::new()]
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    assert_eq!(root, ["n"]);
+    let judged = |values: Vec<i64>| {
+        let parts = crate::normalize::normalize(&integers(values), &shape).unwrap();
+        let rounding = judge(&job(), parts).unwrap();
+        let root: Vec<String> = rounding[&Vec::new()]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        root
+    };
+    assert_eq!(judged(vec![1_i64 << 60, 1]), ["n"]);
+    assert!(judged(vec![1, 2, 3]).is_empty());
 }
 
 #[test]
-fn a_row_expanding_beyond_the_budget_is_a_source_error_naming_its_stream() {
+fn a_row_beyond_what_a_request_may_take_is_a_source_error_naming_its_stream() {
     let row = super::pieces::RowTooLarge {
         expanded: 9_000,
-        budget: 4_096,
+        limit: 4_096,
     };
     let error = super::row_too_large(&job(), &row);
     assert_eq!(
@@ -368,6 +233,8 @@ fn a_row_expanding_beyond_the_budget_is_a_source_error_naming_its_stream() {
         (ErrorKind::Source, Some("row_exceeds_budget"))
     );
     assert_eq!(error.stream(), Some(&job().stream));
+    let said = error.to_string();
+    assert!(said.contains("9000") && said.contains("4096"), "{said}");
 }
 
 #[test]
@@ -377,30 +244,67 @@ fn written_bytes_count_a_slices_own_rows() {
     assert_eq!(written_bytes(&whole.slice(0, 10)), 82);
 }
 
-#[tokio::test]
-async fn a_unit_being_cut_holds_its_source_alone_and_releases_the_rest() {
-    let budget = MemoryBudget::new(1 << 20);
-    let unit = ids(100);
-    let source = allocated(&unit);
-    // Two pushes admitted for more than they keep alive, as ones that expand are.
-    let admission = crate::cost::Charging::new(budget.clone(), Arc::new(Rendering::text()));
-    let push = rdlt_connector::SourceEvent::Push(rdlt_connector::Push::Arrow(unit.clone()));
-    let first = rdlt_connector::Admission::admit(&admission, &push)
-        .await
-        .unwrap()
-        .unwrap();
-    let second: Permit = Box::new(budget.charge(500));
-    let charged = budget.reserved();
-    assert!(charged > source + 500);
-    let mut held = Held::of(vec![first, second], charged, std::slice::from_ref(&unit));
-    held.settle();
-    assert_eq!((held.bytes(), held.spare()), (source, 0));
-    assert_eq!(budget.reserved(), source);
-    drop(held);
-    assert_eq!(budget.reserved(), 0);
-    // Permits of another's making are kept as they are.
-    let other: Permit = Box::new(7_u8);
-    let mut foreign = Held::of(vec![other], 900, std::slice::from_ref(&unit));
-    foreign.settle();
-    assert_eq!(foreign.bytes(), 900);
+/// A change batch of `rows` inserts of one id each, and `deletes` deletes after them.
+fn changes(rows: i64, deletes: i64) -> RecordBatch {
+    use rdlt_connector::{ChangeOp, OP_COLUMN, SEQ_COLUMN};
+    let all = usize::try_from(rows + deletes).unwrap();
+    let ops = (0..rows + deletes).map(|row| {
+        if row < rows {
+            ChangeOp::Insert.code()
+        } else {
+            ChangeOp::Delete.code()
+        }
+    });
+    let seqs = arrow_array::FixedSizeBinaryArray::try_from_iter(vec![[7_u8; 16]; all].into_iter());
+    let columns: [(&str, ArrayRef); 3] = [
+        (
+            "id",
+            Arc::new(Int64Array::from_iter_values(0..rows + deletes)),
+        ),
+        (
+            OP_COLUMN,
+            Arc::new(arrow_array::Int8Array::from_iter_values(ops)),
+        ),
+        (SEQ_COLUMN, Arc::new(seqs.unwrap())),
+    ];
+    RecordBatch::try_from_iter(columns).unwrap()
+}
+
+#[test]
+fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
+    use super::changes::{aligned, data, ignored, split_changes};
+    let mode = crate::partition::ChangeMode {
+        merge: true,
+        deletes: crate::plan::DeleteMode::Ignore,
+        truncates: crate::plan::OnTruncate::Ignore,
+        partial_updates: false,
+    };
+    let unit = changes(1_000, 10);
+    let held = Held::of(Vec::new(), std::slice::from_ref(&unit));
+    // Its data columns are judged as they lie: nothing of the unit is copied for them, and
+    // they keep alive only a schema of their own.
+    let judged = data(&unit).unwrap();
+    assert_eq!(judged.num_columns(), 1);
+    let schema = rdlt_connector::cost::schema_bytes(&judged.schema());
+    assert_eq!(held.allocations.lock().add(&judged), schema);
+    // The rows the stream ignores are counted from their ops, where they lie.
+    let counted = ignored(mode, std::slice::from_ref(&unit));
+    assert_eq!(
+        (counted.deletes, counted.truncates, counted.rows()),
+        (10, 0, 10)
+    );
+    // How the table stores each data column is told by the batch's own columns.
+    let stored = rdlt_connector::cost::Stored {
+        column: rdlt_connector::LogicalType::Int64,
+        text: false,
+    };
+    let by_batch = aligned(&unit, &[Some(stored.clone())]);
+    assert_eq!(by_batch.len(), 3);
+    assert_eq!(by_batch[0].as_ref().map(|stored| stored.text), Some(false));
+    assert!(by_batch[1].is_none() && by_batch[2].is_none());
+    // A piece is split, and loses the rows its stream ignores, only as it is lowered.
+    let stream = StreamName::new("events").unwrap();
+    let piece = [unit.slice(1_000, 10), unit.slice(0, 5)];
+    let (data, rows) = split_changes(&stream, mode, &piece).unwrap();
+    assert_eq!((data.num_rows(), rows.op.len()), (5, 5));
 }

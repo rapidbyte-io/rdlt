@@ -77,16 +77,16 @@ async fn each_table_version_is_described_once_before_its_first_batch() {
         let write = |segment| {
             let (log, budget, first) = (log.clone(), budget.clone(), first.clone());
             async move {
-                log.batch(&Inline, &budget, 0, &first, SegmentId(segment), &ids(0))
+                logged(&log, &budget, 0, &first, SegmentId(segment), &ids(0))
                     .await
                     .expect("the batch is logged");
             }
         };
         tokio::join!(write(0), write(1), write(2), write(3));
-        log.batch(&Inline, &budget, 0, &at(&orders, 2), SegmentId(4), &ids(10))
+        logged(&log, &budget, 0, &at(&orders, 2), SegmentId(4), &ids(10))
             .await
             .expect("the batch is logged");
-        log.batch(&Inline, &budget, 1, &at(&items, 1), SegmentId(4), &ids(20))
+        logged(&log, &budget, 1, &at(&items, 1), SegmentId(4), &ids(20))
             .await
             .expect("the batch is logged");
         log.commit(&budget, Vec::new(), Vec::new(), &meta(&[0, 1, 2, 3, 4]))
@@ -146,7 +146,7 @@ async fn a_logged_load_reads_back_as_it_was_written() {
         bytes: 24,
     };
     let written = async {
-        log.batch(&Inline, &budget, 0, &orders, SegmentId(1), &ids(0))
+        logged(&log, &budget, 0, &orders, SegmentId(1), &ids(0))
             .await
             .expect("the batch is logged");
         let sealed = vec![Sealed {
@@ -230,7 +230,7 @@ async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segme
         let mut seq = CommitSeq::FIRST;
         for round in 0..5_u64 {
             let (full, empty) = (10 * round + 1, 10 * round + 2);
-            log.batch(&Inline, &budget, 0, &orders, SegmentId(full), &ids(0))
+            logged(&log, &budget, 0, &orders, SegmentId(full), &ids(0))
                 .await
                 .expect("the batch is logged");
             // An idle partition seals an empty segment, which no commit publishes.
@@ -304,6 +304,74 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
             .expect("durable");
         assert_eq!(committing.peak(), commit);
         assert_eq!(committing.reserved(), 0);
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
+/// Logs `batch` of `segment`, lowered for `view` of table `table`, its frame held by `budget`.
+async fn logged(
+    log: &LoadLog,
+    budget: &MemoryBudget,
+    table: usize,
+    view: &TableView,
+    segment: SegmentId,
+    batch: &RecordBatch,
+) -> Result<(), crate::Error> {
+    let held = frame(budget);
+    log.batch(&Inline, held, table, view, segment, batch).await
+}
+
+/// What a piece reserved of `budget` for its frame in the log.
+fn frame(budget: &MemoryBudget) -> rdlt_connector::Permit {
+    Box::new(
+        budget
+            .try_acquire_working(4_096)
+            .expect("the budget has room"),
+    )
+}
+
+#[tokio::test]
+async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_the_log_s_share() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
+        .await
+        .expect("the log starts");
+    let written = async move {
+        // One that records state is charged for it before it is encoded, twice over, which is
+        // more than its frame takes.
+        let mut third = meta(&[3]);
+        third.commit_seq = CommitSeq::FIRST;
+        third.state_delta = vec![rdlt_connector::StateChange::Put(
+            rdlt_connector::StateRecord {
+                key: "k".repeat(1_000),
+                value: vec![7; 9_000].into(),
+            },
+        )];
+        let begun = vec![crate::wal::frame::BegunPhase {
+            stream: StreamName::new("orders").expect("a valid stream"),
+            phase: 1,
+            changes: vec![rdlt_connector::StateChange::Delete("d".repeat(5_000))],
+        }];
+        let recording = MemoryBudget::new(1 << 20);
+        log.commit(&recording, Vec::new(), begun, &third)
+            .await
+            .expect("durable");
+        assert_eq!(recording.peak(), 2 * 15_000);
+        assert_eq!(recording.reserved(), 0);
+        // A frame beyond the log's share of the budget is refused, and nothing is reserved.
+        let small = MemoryBudget::new(64_000);
+        let mut fourth = third.clone();
+        fourth.commit_seq = third.commit_seq.next();
+        let refused = log.commit(&small, Vec::new(), Vec::new(), &fourth).await;
+        let refused = refused.expect_err("the frame passes the log's share");
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (crate::ErrorKind::Wal, Some("log_frame_exceeds_budget"))
+        );
+        assert_eq!((small.reserved(), small.peak()), (0, 0));
         drop(log);
     };
     let (ended, ()) = tokio::join!(task, written);

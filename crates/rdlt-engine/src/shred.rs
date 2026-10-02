@@ -32,8 +32,7 @@ use crate::compute::{ComputePool, run_all};
 
 use build::Record;
 use observe::Shape;
-pub(crate) use records::Chunk;
-use records::chunks;
+use records::{Chunk, chunks};
 use visit::{Context, Row};
 
 /// Why a JSON push cannot be shredded.
@@ -239,37 +238,21 @@ fn job<T>(work: impl FnOnce() -> T) -> T {
     stacker::maybe_grow(JOB_STACK, JOB_SEGMENT, work)
 }
 
-/// The records of the JSON `pushes`, in order, in chunks of about `chunk_bytes`, found on `pool`.
+/// Shreds the JSON `pushes`, in order, into one batch per chunk of about `chunk_bytes`, on `pool`.
 ///
 /// A push is a JSON array of objects, or objects on their own lines; blank lines are skipped.
-pub(crate) async fn scan(
-    pool: &dyn ComputePool,
-    pushes: &[Bytes],
-    chunk_bytes: usize,
-) -> Result<Vec<Chunk>, ShredError> {
-    let scanned = pushes.to_vec();
-    run_all(pool, [move || chunks(&scanned, chunk_bytes)])
-        .await
-        .pop()
-        .ok_or_else(|| ShredError::Internal("the scan of the pushes returned nothing".to_owned()))?
-}
-
-/// Shreds the JSON `pushes`, in order, into one batch per chunk of about `chunk_bytes`, on `pool`.
-#[cfg(any(test, feature = "bench"))]
 pub(crate) async fn shred(
     pool: &dyn ComputePool,
     pushes: &[Bytes],
     chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, ShredError> {
-    let chunks = scan(pool, pushes, chunk_bytes).await?;
-    shred_chunks(pool, chunks).await
-}
-
-/// Shreds `chunks`, in order, into one batch each, on `pool`.
-pub(crate) async fn shred_chunks(
-    pool: &dyn ComputePool,
-    chunks: Vec<Chunk>,
-) -> Result<Vec<RecordBatch>, ShredError> {
+    let scanned = pushes.to_vec();
+    let chunks = run_all(pool, [move || chunks(&scanned, chunk_bytes)])
+        .await
+        .pop()
+        .ok_or_else(|| {
+            ShredError::Internal("the scan of the pushes returned nothing".to_owned())
+        })??;
     let parsed: Vec<Parsed> = run_all(
         pool,
         chunks.into_iter().map(|chunk| move || job(|| parse(chunk))),

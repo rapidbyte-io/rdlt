@@ -90,10 +90,10 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
     let budget = MemoryBudget::new(1 << 20);
     let (orders, items) = (view("orders"), view("items"));
     let written = async {
-        log.batch(&Inline, &budget, 0, &orders, SegmentId(1), &ids(0))
+        log.batch(&Inline, frame(&budget), 0, &orders, SegmentId(1), &ids(0))
             .await
             .expect("logged");
-        log.batch(&Inline, &budget, 1, &items, SegmentId(1), &ids(10))
+        log.batch(&Inline, frame(&budget), 1, &items, SegmentId(1), &ids(10))
             .await
             .expect("logged");
         log.commit(&budget, vec![sealed(1)], Vec::new(), &meta(1, &[1]))
@@ -109,7 +109,7 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
         if received {
             log.committed(&receipt).await.expect("logged");
         }
-        log.batch(&Inline, &budget, 0, &orders, SegmentId(2), &ids(20))
+        log.batch(&Inline, frame(&budget), 0, &orders, SegmentId(2), &ids(20))
             .await
             .expect("logged");
         log.commit(&budget, vec![sealed(2)], begun, &meta(2, &[2]))
@@ -387,4 +387,13 @@ async fn a_batch_read_past_its_frame_is_refused() {
         .await
         .expect_err("more than the batch's frame");
     assert_eq!(error.code(), Some("wal_unreadable"));
+}
+
+/// What a piece reserved of `budget` for its frame in the log.
+fn frame(budget: &MemoryBudget) -> rdlt_connector::Permit {
+    Box::new(
+        budget
+            .try_acquire_working(4_096)
+            .expect("the budget has room"),
+    )
 }

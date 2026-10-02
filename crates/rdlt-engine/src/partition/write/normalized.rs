@@ -10,24 +10,30 @@ use parking_lot::Mutex;
 use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ColumnPath, Permit, StreamName};
 
+use super::allowance::{Cutter, PartPiece};
 use super::pieces::{self, Lowered};
 use super::{
-    Held, OpenSegment, PartitionContext, PartitionJob, queue, reserve, row_too_large, schema_of,
-    stamp, windows,
+    Held, LOWERING_WINDOW, OpenSegment, PartitionContext, PartitionJob, queue, reserve,
+    row_too_large, schema_of, stamp,
 };
-use crate::budget::MemoryBudget;
 use crate::compute::run_all;
+use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
+use crate::limits::MIN_PIECE;
 use crate::normalize::{self, Dropped, Part, Pruned, Shape};
 use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Lowers `units` of a stream that normalizes as `shape` into its table and child tables, and
-/// queues them on their lanes, a window of units at a time.
+/// queues them on their lanes.
 ///
-/// Each unit is concatenated and normalized on the compute pool. Its parts' tables and plans are
-/// then found in order, since finding them may add child tables or change tables, and the parts
-/// are lowered on the pool. A unit's parts share the permits holding its memory, charged with its
-/// growth before any part waits on its lane.
+/// - Each unit is cut, before its tables are known, into pieces whose split makes no more than a
+///   piece may hold.
+/// - Each piece then asks the budget once, for all a request may take: what its split makes and
+///   an allowance for lowering its parts. It is split on the compute pool, its parts' tables and
+///   plans are found in order, parents first, and each part is cut by what lowering it into its
+///   own table holds. What the piece asked for beyond what it needs is given back.
+/// - The parts' pieces are lowered inside the allowance: the partition waits for its own pieces
+///   to be written, never for the budget, while it holds any of them.
 ///
 /// The units are one flush, so each table's integers are judged over all of them, as the rows
 /// arrive: where the flush was cut decides no column's type.
@@ -38,73 +44,102 @@ pub(super) async fn write_normalized(
     units: Vec<(Vec<RecordBatch>, Held)>,
     shape: &Arc<Shape>,
 ) -> Result<(), Error> {
-    let units = sliced(job, context, units).await?;
-    let batches: Vec<Vec<RecordBatch>> = units.iter().map(|(parts, _)| parts.clone()).collect();
-    let rounding = judged(job, context, batches, shape).await?;
-    for window in windows(units) {
-        let (batches, reservations): (Vec<_>, Vec<_>) = window.into_iter().unzip();
-        let jobs = batches.into_iter().map(|parts| {
-            let (shape, stream) = (Arc::clone(shape), job.stream.clone());
-            move || split(&stream, &parts, &shape)
-        });
-        let split = run_all(context.env.compute(), jobs).await;
-        let mut planned = Vec::with_capacity(split.len());
-        for (parts, held) in split.into_iter().zip(reservations) {
-            let parts = parts?;
-            // The parts wait on their tables' changes, so their memory is held from now.
-            let mut held = charge_parts(&context.budget, &parts, held);
-            let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
-            if received == 0 {
-                continue;
-            }
-            let stamp = stamp(context, open, received);
-            let (unit, discarded) = plan_parts(job, context, parts, &rounding).await?;
-            // What lowering the parts holds is reserved before they are lowered, beyond what
-            // the piece's permits spare.
-            let lowering = lowering_bytes(context, &unit).await;
-            let beyond = lowering.saturating_sub(held.spare());
-            held.reserved(reserve(context, beyond, false).await?);
-            open.discarded_values += discarded.values;
-            open.discarded_rows += discarded.rows;
-            let lower_unit = move || lower_unit(unit, &stamp);
-            planned.push((lower_unit, held));
+    let pieces = sliced(job, context, units).await?;
+    let cut = pieces
+        .iter()
+        .map(|(parts, _, bytes)| (parts.clone(), *bytes));
+    let rounding = judged(job, context, cut.collect(), shape).await?;
+    let request = context.budget.shares().request;
+    for (parts, held, _) in pieces {
+        let mut reserved = reserve(job, context, request).await?;
+        let (shape, stream) = (Arc::clone(shape), job.stream.clone());
+        let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
+        // What the split made beside the unit is held until the last of it is written.
+        let made = {
+            let mut allocations = held.allocations.lock();
+            let made = parts.iter().map(|part| part_growth(part, &mut allocations));
+            made.fold(0, u64::saturating_add)
+        };
+        let received = parts.first().map_or(0, |part| part.batch.num_rows() as u64);
+        if received == 0 {
+            continue;
         }
-        let (jobs, reservations): (Vec<_>, Vec<_>) = planned.into_iter().unzip();
-        let lowered: Vec<_> = run_all(context.env.compute(), jobs)
-            .await
-            .into_iter()
-            .zip(reservations)
-            .map(|(prepared, held)| {
-                prepared.map(|prepared| {
-                    let shared = share_growth(&context.budget, &prepared, held);
-                    (prepared, shared)
-                })
-            })
-            .collect();
-        for lowered in lowered {
-            let (prepared, shared) = lowered?;
-            for (table, prepared) in prepared {
-                let reservation: Permit = Box::new(Arc::clone(&shared));
-                queue(job, context, open, table, prepared, reservation).await?;
+        let stamp = stamp(context, open, received);
+        let (unit, discarded) = plan_parts(job, context, parts, &rounding).await?;
+        open.discarded_values += discarded.values;
+        open.discarded_rows += discarded.rows;
+        let cutter = Cutter::within(context, request.saturating_sub(made));
+        let rendering = context.rendering.as_ref().clone();
+        let cut = on_pool(context, move || cutter.cut(&rendering, unit)).await;
+        let cut = cut.map_err(|row| row_too_large(job, &row))?;
+        // The allowance is as much as the pieces lowered at once take: the rest is given back.
+        let allowance = cutter.for_pieces(&cut);
+        reserved.shrink(made.saturating_add(allowance.bytes));
+        let hold = Arc::new(Mutex::new((reserved, held.permits)));
+        let mut cut = cut.into_iter().peekable();
+        while let Some(piece) = cut.next() {
+            // The partition waits for its allowance only while it holds no piece it has not
+            // handed to its lane; the pieces the allowance has room for are lowered together.
+            let taken = allowance.take(&context.budget, &context.cancel, &piece);
+            let taken = taken.await?;
+            let mut window = vec![(piece, taken)];
+            while window.len() < LOWERING_WINDOW {
+                let Some(taken) = cut.peek().and_then(|next| allowance.try_take(next)) else {
+                    break;
+                };
+                window.extend(cut.next().map(|piece| (piece, taken)));
+            }
+            let (pieces, taken): (Vec<_>, Vec<_>) = window.into_iter().unzip();
+            let tables: Vec<usize> = pieces.iter().map(|piece| piece.table).collect();
+            let prepared = lower(context, pieces, stamp).await;
+            for ((prepared, taken), table) in prepared.into_iter().zip(taken).zip(tables) {
+                // The piece on its lane and its frame in the log each hold their part of the
+                // allowance, and with it what the piece reserved, until they are written.
+                let part = |taken| Box::new((taken, Arc::clone(&hold))) as Permit;
+                let permits = (part(taken.piece), taken.frame.map(part));
+                queue(job, context, open, table, prepared?, permits).await?;
             }
         }
     }
     Ok(())
 }
 
-/// `units` cut into pieces by what their rows expand to, on the compute pool: a normalized
-/// unit's tables are known only once it is split, so its pieces are cut before, as they arrive.
+/// `pieces` lowered on the compute pool, in order: each in a job of its own, or all in one where
+/// they are small, so a unit of a few rows takes no trip to the pool for each of its parts.
+async fn lower(
+    context: &PartitionContext,
+    pieces: Vec<PartPiece>,
+    stamp: Stamp,
+) -> Vec<Result<Prepared, Error>> {
+    let lowering = move |piece: PartPiece| {
+        let lineage = Some(&piece.lineage);
+        piece.plan.prepare(&piece.batch, lineage, &stamp, None)
+    };
+    let bytes = pieces.iter().map(|piece| piece.bytes);
+    if bytes.fold(0, u64::saturating_add) <= MIN_PIECE {
+        return on_pool(context, move || pieces.into_iter().map(lowering).collect()).await;
+    }
+    let lowerings = pieces.into_iter().map(|piece| move || lowering(piece));
+    run_all(context.env.compute(), lowerings).await
+}
+
+/// `units` cut into pieces by what splitting their rows makes, on the compute pool: a normalized
+/// unit's tables are known only once it is split, so its pieces are cut before, as they arrive,
+/// and their parts again by their own tables once they are.
 async fn sliced(
     job: &PartitionJob,
     context: &PartitionContext,
     units: Vec<(Vec<RecordBatch>, Held)>,
-) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
+) -> Result<Vec<(Vec<RecordBatch>, Held, u64)>, Error> {
+    let shares = context.budget.shares();
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
         stored: Vec::new(),
-        row: 0,
-        max: pieces::piece_bytes(&context.budget),
-        budget: context.budget.capacity(),
+        row: LINEAGE_ROW,
+        item: LINEAGE_ITEM,
+        // What the split makes is measured as rows expand, and may be twice that.
+        max: shares.piece / SPLIT_COPIES,
+        limit: shares.request / (2 * SPLIT_COPIES),
     };
     let mut cut = Vec::with_capacity(units.len());
     for (parts, held) in units {
@@ -115,31 +150,8 @@ async fn sliced(
     Ok(cut)
 }
 
-/// Bytes: what lowering `unit`'s parts into their tables holds at once, as the cost model
-/// measures each part for its table, up to the budget; measured on the compute pool.
-async fn lowering_bytes(context: &PartitionContext, unit: &PlannedParts) -> u64 {
-    let (rendering, budget) = (
-        context.rendering.as_ref().clone(),
-        context.budget.capacity(),
-    );
-    let parts: Vec<_> = unit
-        .iter()
-        .map(|(_, part, plan)| (part.batch.clone(), plan.stored(), plan.null_fill(1)))
-        .collect();
-    let measure = move || {
-        let lowering = parts.into_iter().map(|(batch, stored, row)| {
-            let rows = batch.num_rows();
-            rendering
-                .lowering(&batch, stored, row, budget)
-                .expanded(0..rows)
-        });
-        lowering.fold(0, u64::saturating_add)
-    };
-    on_pool(context, measure).await
-}
-
 /// The parts of a unit, each with its table and plan.
-type PlannedParts = Vec<(usize, Part, Arc<LoweringPlan>)>;
+pub(super) type PlannedParts = Vec<(usize, Part, Arc<LoweringPlan>)>;
 
 /// What planning a unit's parts discarded: the values of new arrays, and the rows that went with
 /// dropped parents.
@@ -275,51 +287,36 @@ fn rounding_of(job: &PartitionJob, part: &Part) -> Result<BTreeSet<ColumnPath>, 
     Ok(Incoming::of(schema, paths, std::slice::from_ref(&part.batch)).rounding)
 }
 
-/// Where a flush was cut into several units, the columns of each table holding, in any unit's
-/// rows, a value a 64-bit float would round; the units are normalized a window at a time to judge
-/// them, and their parts dropped.
+/// Where a flush was cut into several pieces, the columns of each table holding, in any piece's
+/// rows, a value a 64-bit float would round.
+///
+/// Each piece is split to judge it and its parts dropped, one at a time: a piece reserves what
+/// its split makes before it is split, and holds nothing of it while the next waits.
 async fn judged(
     job: &PartitionJob,
     context: &PartitionContext,
-    units: Vec<Vec<RecordBatch>>,
+    pieces: Vec<(Vec<RecordBatch>, u64)>,
     shape: &Arc<Shape>,
 ) -> Result<Rounding, Error> {
     let mut rounding = Rounding::new();
-    if units.len() < 2 {
+    if pieces.len() < 2 {
         return Ok(rounding);
     }
-    for window in windows(units) {
-        let jobs = window.into_iter().map(|parts| {
-            let (shape, stream) = (Arc::clone(shape), job.stream.clone());
-            move || split(&stream, &parts, &shape)
-        });
-        let parts = run_all(context.env.compute(), jobs)
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-        for (path, columns) in judge(job, &context.budget, parts)? {
+    for (parts, bytes) in pieces {
+        let _held = reserve(job, context, bytes.saturating_mul(SPLIT_COPIES)).await?;
+        let (shape, stream) = (Arc::clone(shape), job.stream.clone());
+        let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
+        for (path, columns) in judge(job, parts)? {
             rounding.entry(path).or_default().extend(columns);
         }
     }
     Ok(rounding)
 }
 
-/// The columns of each table holding, in any of `units`' parts, a value a 64-bit float would
-/// round; the parts are charged to `budget` while they are judged.
-pub(super) fn judge(
-    job: &PartitionJob,
-    budget: &MemoryBudget,
-    units: Vec<Vec<Part>>,
-) -> Result<Rounding, Error> {
-    let mut allocations = Allocations::default();
-    let bytes = units
-        .iter()
-        .flatten()
-        .map(|part| part_growth(part, &mut allocations))
-        .fold(0, u64::saturating_add);
-    let _held = budget.charge(bytes);
+/// The columns of each table holding, in any of `parts`, a value a 64-bit float would round.
+pub(super) fn judge(job: &PartitionJob, parts: Vec<Part>) -> Result<Rounding, Error> {
     let mut rounding = Rounding::new();
-    for part in units.into_iter().flatten() {
+    for part in parts {
         let columns = rounding_of(job, &part)?;
         rounding.entry(part.path).or_default().extend(columns);
     }
@@ -342,16 +339,6 @@ fn pruning_failed(job: &PartitionJob, error: &ArrowError) -> Error {
     Error::internal(format!("stream {}: dropping children: {error}", job.stream))
 }
 
-/// `unit`'s parts as their plans lower them.
-fn lower_unit(unit: PlannedParts, stamp: &Stamp) -> Result<Vec<(usize, Prepared)>, Error> {
-    unit.into_iter()
-        .map(|(table, part, plan)| {
-            let prepared = plan.prepare(&part.batch, Some(&part.lineage), stamp, None)?;
-            Ok((table, prepared))
-        })
-        .collect()
-}
-
 /// The error for rows of a new array in a stream whose schema is frozen.
 fn frozen(job: &PartitionJob, path: &[Arc<str>]) -> Error {
     let array = path.join(".");
@@ -372,25 +359,6 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
     normalize::normalize(&batch, shape).map_err(failed)
 }
 
-/// The permits of `held` with the growth of `prepared`, a unit's lowered parts, beyond them
-/// charged, shared by the parts: the unit's memory is held until the last part is staged.
-pub(super) fn share_growth(
-    budget: &MemoryBudget,
-    prepared: &[(usize, Prepared)],
-    mut held: Held,
-) -> Arc<Mutex<Vec<Permit>>> {
-    let fresh = {
-        let mut allocations = held.allocations.lock();
-        prepared
-            .iter()
-            .map(|(_, prepared)| prepared.growth(&mut allocations))
-            .fold(0, u64::saturating_add)
-    };
-    held.grow(budget, fresh);
-    // Queued with the parts, the unit is released by their writes.
-    Arc::new(Mutex::new(held.staged()))
-}
-
 /// The bytes of the allocations `part`'s batch and lineage keep alive beyond those `held`
 /// holds, which then holds them too.
 pub(super) fn part_growth(part: &Part, held: &mut Allocations) -> u64 {
@@ -404,17 +372,4 @@ pub(super) fn part_growth(part: &Part, held: &mut Allocations) -> u64 {
         .into_iter()
         .map(|array| held.add_array(array.as_ref()))
         .fold(batch, u64::saturating_add)
-}
-
-/// `held` with the growth of `parts`, a unit's normalized parts, beyond it charged.
-pub(super) fn charge_parts(budget: &MemoryBudget, parts: &[Part], mut held: Held) -> Held {
-    let fresh = {
-        let mut allocations = held.allocations.lock();
-        parts
-            .iter()
-            .map(|part| part_growth(part, &mut allocations))
-            .fold(0, u64::saturating_add)
-    };
-    held.grow(budget, fresh);
-    held
 }

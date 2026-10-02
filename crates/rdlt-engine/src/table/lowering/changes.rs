@@ -34,11 +34,30 @@ pub(crate) struct ChangeRows {
     pub(crate) unchanged: Option<BinaryArray>,
 }
 
+/// For each field of `batch`, a change batch, its place among the data's fields; none for a
+/// change column.
+pub(crate) fn data_ordinals(batch: &RecordBatch) -> Vec<Option<usize>> {
+    let mut data = 0;
+    let schema = batch.schema();
+    let fields = schema.fields().iter();
+    fields
+        .map(|field| {
+            let change = matches!(
+                field.name().as_str(),
+                OP_COLUMN | SEQ_COLUMN | UNCHANGED_COLUMN
+            );
+            (!change).then(|| {
+                data += 1;
+                data - 1
+            })
+        })
+        .collect()
+}
+
 impl ChangeRows {
     /// `batch`, a valid change batch, as its data and its change columns: the flags of
     /// `_rdlt_unchanged` move from the batch's field ordinals to the data's.
     pub(crate) fn split(batch: &RecordBatch) -> Result<(RecordBatch, Self), ArrowError> {
-        let schema = batch.schema();
         let column = |name: &str| {
             batch
                 .column_by_name(name)
@@ -47,23 +66,21 @@ impl ChangeRows {
         let op = column(OP_COLUMN)?.as_primitive::<Int8Type>().clone();
         let seq = arrow_cast::cast(column(SEQ_COLUMN)?, &DataType::Binary)?;
         let seq = seq.as_binary::<i32>().clone();
-        let mut data_ordinal = Vec::with_capacity(schema.fields().len());
-        let mut kept = Vec::new();
-        for (ordinal, field) in schema.fields().iter().enumerate() {
-            let change = matches!(
-                field.name().as_str(),
-                OP_COLUMN | SEQ_COLUMN | UNCHANGED_COLUMN
-            );
-            data_ordinal.push((!change).then_some(kept.len()));
-            if !change {
-                kept.push(ordinal);
-            }
-        }
+        let data_ordinal = data_ordinals(batch);
         let unchanged = batch
             .column_by_name(UNCHANGED_COLUMN)
             .map(|flags| remap(flags.as_binary::<i32>(), &data_ordinal));
-        let data = batch.project(&kept)?;
+        let data = Self::data(batch)?;
         Ok((data, Self { op, seq, unchanged }))
+    }
+
+    /// The data columns of `batch`, a change batch, as they are: none is copied.
+    pub(crate) fn data(batch: &RecordBatch) -> Result<RecordBatch, ArrowError> {
+        let ordinals = data_ordinals(batch);
+        let kept: Vec<usize> = (0..ordinals.len())
+            .filter(|ordinal| ordinals[*ordinal].is_some())
+            .collect();
+        batch.project(&kept)
     }
 
     /// The rows `keep` keeps.
@@ -77,18 +94,6 @@ impl ChangeRows {
                 None => None,
             },
         })
-    }
-
-    /// The `rows` rows from `first`.
-    pub(crate) fn slice(&self, first: usize, rows: usize) -> Self {
-        Self {
-            op: self.op.slice(first, rows),
-            seq: self.seq.slice(first, rows),
-            unchanged: self
-                .unchanged
-                .as_ref()
-                .map(|flags| flags.slice(first, rows)),
-        }
     }
 
     /// The op of row `row`.

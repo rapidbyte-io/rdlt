@@ -8,26 +8,15 @@ mod tests;
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::{Measure, Rendering, Stored};
 
-use super::{Held, LOWERING_WINDOW};
-use crate::budget::MemoryBudget;
+use super::Held;
 
-/// The fewest bytes a piece holds, so a small budget still lowers rows in useful batches.
-const MIN_PIECE: u64 = 64 << 10;
-
-/// The most bytes lowering a piece holds: a window of lowerings takes half the budget, and the
-/// batches lowered from it about the other half.
-pub(super) fn piece_bytes(budget: &MemoryBudget) -> u64 {
-    let window = u64::try_from(2 * LOWERING_WINDOW).unwrap_or(u64::MAX);
-    (budget.capacity() / window).max(MIN_PIECE)
-}
-
-/// A row that alone takes more than the budget to lower.
+/// A row that alone takes more to lower than what is asked of the budget for it may.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RowTooLarge {
     /// Bytes: what lowering the row takes, as far as it was measured.
     pub(super) expanded: u64,
-    /// Bytes: the budget.
-    pub(super) budget: u64,
+    /// Bytes: the most a row may take.
+    pub(super) limit: u64,
 }
 
 /// How a unit's batches are measured: as their table stores them, where its plan is known.
@@ -36,12 +25,15 @@ pub(super) struct Lowered {
     pub(super) rendering: Rendering,
     /// How the table stores each column of the unit's batches; empty before its plan is found.
     pub(super) stored: Vec<Option<Stored>>,
-    /// Bytes: what each row takes in the columns of the table the unit holds nothing in.
+    /// Bytes: what each row takes beside its columns: the columns of the table the unit holds
+    /// nothing in, and the metadata lowering adds.
     pub(super) row: u64,
+    /// Bytes: what each item a list names takes beside itself, where items become rows.
+    pub(super) item: u64,
     /// Bytes: the most lowering one piece holds, but for a row that alone takes more.
     pub(super) max: u64,
-    /// Bytes: the budget, beyond which a row is refused.
-    pub(super) budget: u64,
+    /// Bytes: the most one row may take, beyond which it is refused.
+    pub(super) limit: u64,
 }
 
 /// Rows of a unit to lower together, and what lowering them holds at most.
@@ -94,8 +86,9 @@ impl Pieces {
                 rendering: Rendering::text(),
                 stored: Vec::new(),
                 row: 0,
+                item: 0,
                 max: 0,
-                budget: 0,
+                limit: 0,
             },
         )
     }
@@ -153,21 +146,23 @@ impl Pieces {
         let (pieces, alone) = self.measures.get_or_insert_with(|| {
             let measure = |limit| {
                 let stored = lowered.stored.clone();
-                lowered
+                let measure = lowered
                     .rendering
-                    .lowering(batch, stored, lowered.row, limit)
+                    .lowering(batch, stored, lowered.row, limit);
+                measure.with_items(lowered.item)
             };
-            (measure(lowered.max), measure(lowered.budget))
+            (measure(lowered.max), measure(lowered.limit))
         });
         let cut = pieces.piece(self.row);
         let (rows, mut bytes) = (cut.end - self.row, cut.bytes);
         if bytes > lowered.max {
-            // One row beyond a piece: measured against the budget, each value it names once.
+            // One row beyond a piece: measured against what a row may take, each value it names
+            // once.
             bytes = alone.expanded(self.row..cut.end);
-            if bytes > lowered.budget {
+            if bytes > lowered.limit {
                 return Err(RowTooLarge {
                     expanded: bytes,
-                    budget: lowered.budget,
+                    limit: lowered.limit,
                 });
             }
         }
@@ -176,25 +171,24 @@ impl Pieces {
 }
 
 /// `parts`, a unit `held` holds, cut into pieces as `lowered` measures them, before its tables
-/// are known: each piece's batches, in order, and what holds it.
+/// are known: each piece's batches, in order, what holds it, and what it was measured to take.
 ///
-/// The unit's permits stay with its last piece, so they hold until all of it is written; the
-/// others share its allocations and are charged as they grow.
+/// The unit's permits stay with its last piece, so they hold until all of it is written.
 ///
 /// # Errors
 ///
-/// A [`RowTooLarge`] for a row that alone takes more than the budget.
+/// A [`RowTooLarge`] for a row that alone takes more than a row may.
 pub(super) fn sliced(
     parts: Vec<RecordBatch>,
     held: Held,
     lowered: Lowered,
-) -> Result<Vec<(Vec<RecordBatch>, Held)>, RowTooLarge> {
+) -> Result<Vec<(Vec<RecordBatch>, Held, u64)>, RowTooLarge> {
     let mut pieces = Pieces::new(parts, lowered);
     let mut cut = Vec::new();
     while let Some(piece) = pieces.next()? {
-        cut.push((piece.parts, held.piece()));
+        cut.push((piece.parts, held.piece(), piece.bytes));
     }
-    if let Some((_, last)) = cut.last_mut() {
+    if let Some((_, last, _)) = cut.last_mut() {
         *last = held;
     }
     Ok(cut)
