@@ -178,6 +178,21 @@ fn map(keys: &ArrayRef, values: &ArrayRef) -> ArrayRef {
     Arc::new(MapArray::new(field, offsets, entries, None, false))
 }
 
+/// A column of each type only its field's extension names: UUIDs and JSON text.
+fn extensions() -> Vec<(ArrowField, ArrayRef)> {
+    let named = |name: &str, column: ArrayRef| {
+        let extension = [("ARROW:extension:name".to_owned(), name.to_owned())];
+        let field = ArrowField::new("c", column.data_type().clone(), true);
+        (field.with_metadata(extension.into()), column)
+    };
+    let uuids = FixedSizeBinaryArray::try_from_iter(vec![[0xff_u8; 16]; ROWS].into_iter());
+    let json = StringArray::from(vec![r#"{"a":[1,2,3],"b":"\u0001"}"#; ROWS]);
+    vec![
+        named("arrow.uuid", Arc::new(uuids.unwrap())),
+        named("arrow.json", Arc::new(json)),
+    ]
+}
+
 /// `column` as it is, behind keys and as runs.
 fn encodings(column: &ArrayRef) -> Vec<ArrayRef> {
     let keys = Int32Array::from_iter_values((0..ROWS).rev().map(|row| i32::try_from(row).unwrap()));
@@ -281,8 +296,15 @@ fn lowered(
 #[test]
 fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_than_its_charge() {
     let (mut lowerings, mut beyond) = (0, Vec::new());
-    for column in numbers().into_iter().chain(others()) {
-        let field = ArrowField::new("c", column.data_type().clone(), true);
+    let mut kinds = std::collections::BTreeSet::new();
+    let plain = |column: ArrayRef| {
+        (
+            ArrowField::new("c", column.data_type().clone(), true),
+            column,
+        )
+    };
+    let columns = numbers().into_iter().chain(others()).map(plain);
+    for (field, column) in columns.chain(extensions()) {
         let from = Field::from_arrow(&field).expect("a logical type");
         let from = from.logical_type();
         // A column of nulls is built as its table stores it, charged as the rows the batch
@@ -290,6 +312,7 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
         if *from == LogicalType::Null {
             continue;
         }
+        kinds.insert(from.kind());
         // Every type the column's table may hold it in, each once.
         let mut held: Vec<LogicalType> = Vec::new();
         for to in joined().iter().map(|other| from.join(other)) {
@@ -315,6 +338,10 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
         }
     }
     assert!(lowerings > 1_000, "{lowerings} lowerings were measured");
+    // Every kind of logical type was lowered, but nulls, which are built and not converted.
+    let every: std::collections::BTreeSet<_> = rdlt_testkit::drawn::KINDS.into_iter().collect();
+    let missing: Vec<_> = every.difference(&kinds).collect();
+    assert_eq!(missing, [&rdlt_connector::TypeKind::Null], "{kinds:?}");
     beyond.sort();
     beyond.dedup();
     assert!(
