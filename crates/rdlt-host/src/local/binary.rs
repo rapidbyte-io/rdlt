@@ -89,7 +89,9 @@ impl Binary {
                 );
                 return Err(Unfit::Absent(Some(relative)));
             }
-            let listing = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+            let listing = OFlags::RDONLY
+                .union(OFlags::DIRECTORY)
+                .union(OFlags::CLOEXEC);
             let Ok(opened) = rustix::fs::openat(CWD, dir, listing, Mode::empty()) else {
                 continue;
             };

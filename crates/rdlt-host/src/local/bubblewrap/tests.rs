@@ -58,6 +58,24 @@ fn a_connector_is_confined_to_what_it_is_granted_and_run_from_its_descriptor() {
     }
     assert!(!arguments.iter().any(|argument| argument == "--share-net"));
     assert!(holds(&arguments, &["--setenv", "KEPT", "a value"]));
+    // Each system directory as it is on the host: bound read only, or the link it is.
+    for system in super::SYSTEM {
+        match std::fs::symlink_metadata(system) {
+            Ok(found) if found.is_symlink() => {
+                let target = std::fs::read_link(system).expect("a link");
+                let target = target.to_str().expect("text");
+                assert!(
+                    holds(&arguments, &["--symlink", target, system]),
+                    "{system}"
+                );
+            }
+            Ok(_) => assert!(
+                holds(&arguments, &["--ro-bind", system, system]),
+                "{system}"
+            ),
+            Err(_) => assert!(!arguments.iter().any(|argument| argument == system)),
+        }
+    }
     assert!(holds(&arguments, &["--proc", "/proc"]));
     assert!(holds(&arguments, &["--dev", "/dev"]));
     assert!(holds(&arguments, &["--tmpfs", "/tmp"]));

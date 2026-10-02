@@ -551,11 +551,20 @@ pub(crate) mod bubblewrap {
             .await
             .expect("the connector starts")
             .connector;
-        kills.kill();
-        // Another file takes the name, as an upgrade by rename does.
+        // Another file takes the name, as an upgrade by rename does, and only then is the
+        // connector lost: whenever it is spawned again, its binary has been replaced.
         let upgrade = dir.path().join("upgrade");
         std::fs::copy(&binary, &upgrade).expect("the binary copies");
         std::fs::rename(&upgrade, &binary).expect("the upgrade takes the name");
+        kills.kill();
+        // Asked only once the kill has landed: before, the connector killed may answer still.
+        for _ in 0..ENDING.as_millis() / 20 {
+            if kills.landed() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(kills.landed(), 1, "the kill never landed");
         for _ in 0..100 {
             let Err(error) = source.check().await else {
                 panic!("a replaced binary was spawned again");
