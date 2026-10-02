@@ -36,6 +36,7 @@ fn each_admission_measures_against_its_own_limit() {
         control_string_bytes: 8,
         batch_values: 9,
         schema_bytes: 10,
+        dictionary_bytes: 11,
     };
     let refused =
         |result: Result<(), Refusal>| result.map_err(|refusal| (refusal.field, refusal.limit));
@@ -64,6 +65,7 @@ fn limits_cross_the_wire_unchanged() {
         control_string_bytes: 8,
         batch_values: 9,
         schema_bytes: 10,
+        dictionary_bytes: 11,
     };
     assert_eq!(Limits::from(v1::Limits::from(limits)), limits);
 }
@@ -83,6 +85,7 @@ fn the_default_limits_are_the_protocols() {
             control_string_bytes: 65_536,
             batch_values: 67_108_864,
             schema_bytes: 4_194_304,
+            dictionary_bytes: 67_108_864,
         }
     );
 }
@@ -185,6 +188,7 @@ fn the_lesser_of_two_ends_limits_is_the_lesser_of_each() {
         control_string_bytes: 8,
         batch_values: 9,
         schema_bytes: 10,
+        dictionary_bytes: 11,
     };
     let high = Limits {
         frame_bytes: 11,
@@ -197,6 +201,7 @@ fn the_lesser_of_two_ends_limits_is_the_lesser_of_each() {
         control_string_bytes: 18,
         batch_values: 19,
         schema_bytes: 20,
+        dictionary_bytes: 21,
     };
     assert_eq!(low.lesser(&high), low);
     assert_eq!(high.lesser(&low), low);
@@ -217,7 +222,10 @@ fn dictionaries_and_staged_frames_are_bounded_in_frames() {
         frame_bytes: 10,
         ..Limits::default()
     };
-    assert_eq!((limits.dictionary_bytes(), limits.staged_bytes()), (10, 40));
+    assert_eq!(
+        (limits.held_dictionary_bytes(), limits.staged_bytes()),
+        (10, 40)
+    );
     assert_eq!(limits.admit_dictionaries(10), Ok(()));
     assert_eq!(
         limits.admit_dictionaries(11),
@@ -231,13 +239,25 @@ fn dictionaries_and_staged_frames_are_bounded_in_frames() {
     assert_eq!(limits.admit_staged(40), Ok(()));
     let refusal = limits.admit_staged(41).unwrap_err();
     assert_eq!((refusal.field, refusal.limit), ("staged bytes", 40));
-    // A receiver that lifts the frame limit lifts these with it.
+    // A limit of their own below a frame's bytes bounds dictionaries, and staged frames not.
+    let fewer = Limits {
+        dictionary_bytes: 4,
+        ..limits
+    };
+    assert_eq!(
+        (fewer.held_dictionary_bytes(), fewer.staged_bytes()),
+        (4, 40)
+    );
+    let refusal = fewer.admit_dictionaries(5).unwrap_err();
+    assert_eq!((refusal.field, refusal.limit), ("dictionary bytes", 4));
+    // A receiver that lifts both limits lifts these with them.
     let unlimited = Limits {
         frame_bytes: u64::MAX,
+        dictionary_bytes: u64::MAX,
         ..Limits::default()
     };
     assert_eq!(unlimited.admit_staged(u64::MAX), Ok(()));
     assert_eq!(unlimited.admit_dictionaries(u64::MAX), Ok(()));
-    assert_eq!(Limits::default().dictionary_bytes(), 64 << 20);
+    assert_eq!(Limits::default().held_dictionary_bytes(), 64 << 20);
     assert_eq!(Limits::default().staged_bytes(), 256 << 20);
 }
