@@ -125,6 +125,8 @@ struct Parsed {
     spoiled: bool,
     /// Whether the chunk is parsed with exact numbers, as one holding an integer beyond 64 bits is.
     exact: bool,
+    /// Whether a value of a column that stopped building held a float.
+    json_floats: bool,
     /// Bytes the speculative build took.
     spent: u64,
 }
@@ -214,6 +216,7 @@ fn parse(chunk: Chunk, limits: ShredLimits) -> Result<Parsed, ShredError> {
             record: Some(record),
             spoiled: context.spoiled(),
             exact,
+            json_floats: context.json_floats(),
             spent: context.meter.spent(),
             chunk,
         });
@@ -244,6 +247,7 @@ fn observed(chunk: Chunk, exact: bool, limits: ShredLimits) -> Result<Parsed, Sh
             shape,
             spoiled: true,
             exact,
+            json_floats: context.json_floats(),
             spent: 0,
         });
     }
@@ -345,7 +349,7 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
         cells = cells.saturating_add(size.cells);
         let again =
             chunk.record.is_none() || chunk.spoiled || !conform::shape_fits(&chunk.shape, &joined);
-        let exact = chunk.exact;
+        let exact = chunk.exact || chunk.json_floats || cost::floats_in_json(&joined, &chunk.shape);
         let bytes = count(chunk.chunk.bytes);
         let takes = if again {
             // Text grows as it is written, to twice the chunk's at most.

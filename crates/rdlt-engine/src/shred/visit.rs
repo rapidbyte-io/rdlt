@@ -5,7 +5,7 @@ mod skip;
 #[cfg(test)]
 mod tests;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 
 use arrow_buffer::i256;
@@ -40,6 +40,10 @@ pub(crate) struct Context {
     fault: Cell<Option<ShredError>>,
     spoiled: Cell<bool>,
     imprecise: Cell<bool>,
+    /// Whether a value of a column that stopped building held a float.
+    json_floats: Cell<bool>,
+    /// The text of the number the exact parse visits, which JSON text renders as it is.
+    number: RefCell<Option<String>>,
     pub(crate) meter: Meter,
     pub(crate) columns: Columns,
 }
@@ -61,6 +65,8 @@ impl Context {
             fault: Cell::new(None),
             spoiled: Cell::new(false),
             imprecise: Cell::new(false),
+            json_floats: Cell::new(false),
+            number: RefCell::new(None),
             meter,
             columns,
         }
@@ -104,6 +110,27 @@ impl Context {
     /// Whether the parse read a float that may be a rounded integer, or must parse again exactly.
     pub(crate) fn imprecise(&self) -> bool {
         self.imprecise.get()
+    }
+
+    /// Notes that a value of a column that stopped building held a float.
+    pub(crate) fn json_float(&self) {
+        self.json_floats.set(true);
+    }
+
+    /// Whether a value of a column that stopped building held a float: building it again as JSON
+    /// text then needs the number as it was written.
+    pub(crate) fn json_floats(&self) -> bool {
+        self.json_floats.get()
+    }
+
+    /// Notes `text`, the number the exact parse visits next.
+    pub(crate) fn number(&self, text: &str) {
+        *self.number.borrow_mut() = Some(text.to_owned());
+    }
+
+    /// The text of the number being visited, where the exact parse noted it.
+    pub(crate) fn number_text(&self) -> Option<String> {
+        self.number.borrow_mut().take()
     }
 }
 
@@ -247,6 +274,9 @@ impl<'a> Value<'a> {
         {
             Ok(true) => Ok(()),
             Ok(false) => {
+                if let Scalar::Float(_) = value {
+                    self.context.json_float();
+                }
                 self.spoil();
                 Ok(())
             }
@@ -255,8 +285,11 @@ impl<'a> Value<'a> {
     }
 
     /// Stops the column building, since its values joined to `Json`, and checks the rest of this
-    /// value instead.
+    /// value instead; the floats it held are then rendered as JSON text.
     fn spoil(self) -> Skip<'a> {
+        if self.column.observed().floats() {
+            self.context.json_float();
+        }
         self.column.spoil();
         self.context.spoil();
         Skip {
@@ -332,6 +365,7 @@ impl<'de> Visitor<'de> for Value<'_> {
     }
 
     fn visit_f64<E: de::Error>(self, value: f64) -> Result<(), E> {
+        self.context.number_text();
         self.context.float(value);
         self.scalar(Scalar::Float(value))
     }

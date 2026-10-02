@@ -854,6 +854,48 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
 }
 
 #[test]
+fn numbers_in_a_column_of_json_keep_the_text_they_were_written_as() {
+    let written = [
+        "0.12345678901234567891",
+        "1234567890123456.78",
+        "1.50",
+        "1E2",
+        "-0.0",
+        "2.5e-3",
+        "18446744073709551616",
+    ];
+    let records: Vec<String> = written
+        .iter()
+        .map(|number| format!("{{\"a\":{number}}}"))
+        .chain([
+            r#"{"a":"x"}"#.to_owned(),
+            r#"{"a":{"p":[1.25e-3,0.10]}}"#.to_owned(),
+        ])
+        .collect();
+    let expected: Vec<Option<String>> = written
+        .iter()
+        .map(|number| Some((*number).to_owned()))
+        .chain([
+            Some("\"x\"".to_owned()),
+            Some(r#"{"p":[1.25e-3,0.10]}"#.to_owned()),
+        ])
+        .collect();
+    // In one chunk, where the column stops building; and a chunk a record, where only the join
+    // makes it JSON.
+    for chunk_bytes in [1 << 20, 1] {
+        let refs: Vec<&str> = records.iter().map(String::as_str).collect();
+        let batch = batch_of(&[&refs.join("\n")], chunk_bytes);
+        assert_eq!(types(&batch)[0].1, LogicalType::Json);
+        assert_eq!(texts(&batch, 0), expected, "chunks of {chunk_bytes}");
+    }
+    // A column of floats keeps reading them as floats.
+    let floats = batch_of(&["{\"f\":1.50}\n{\"f\":-0.0}"], 1 << 20);
+    let values = floats.column(0).as_primitive::<Float64Type>().values();
+    let bits: Vec<u64> = values.iter().map(|value| value.to_bits()).collect();
+    assert_eq!(bits, [1.5_f64.to_bits(), 0.0_f64.to_bits()]);
+}
+
+#[test]
 fn a_push_takes_more_than_it_was_admitted_for_only_where_its_batches_hold_more() {
     let excess = |text: String| {
         let pushes = [Bytes::from(text)];

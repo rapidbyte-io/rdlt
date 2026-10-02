@@ -58,8 +58,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<Json, E> {
-        // Negative zero reads as zero, as sonic-rs reads it.
-        Ok(Json::Float(if value == 0.0 { 0.0 } else { value }))
+        Ok(Json::Float(value))
     }
 
     fn visit_str<E>(self, value: &str) -> Result<Json, E> {
@@ -249,6 +248,8 @@ fn prepare(value: &Json, logical: &LogicalType) -> serde_json::Value {
                 (key.clone(), prepare(value, field.logical_type()))
             })
             .collect(),
+        // Negative zero reads as zero in a column of floats; JSON text keeps it as written.
+        (Json::Float(float), _) if *float == 0.0 => serde_json::Value::from(0.0),
         _ => value.to_serde(),
     }
 }

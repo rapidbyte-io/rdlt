@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use super::{built, fitted, holds_text, sized};
+use super::{built, fitted, floats_in_json, holds_text, sized};
 use crate::shred::observe::{Observed, Shape};
 use crate::shred::records::chunks;
 use crate::shred::tests::limits;
@@ -87,11 +87,15 @@ fn fitting_a_chunk_takes_the_columns_it_lacks_and_the_integers_it_casts() {
 }
 
 #[test]
-fn a_shape_holds_text_where_a_column_of_text_or_json_lies_at_any_depth() {
+fn a_column_of_json_needs_its_floats_as_written_wherever_they_lie() {
+    let (floats, _) = observed(r#"{"a":{"x":[0.5]},"b":1}"#);
     let (ints, _) = observed(r#"{"a":{"x":[1]},"b":1}"#);
-    let (json, _) = observed(r#"{"a":{"x":["t"]},"b":"x"}"#);
-    let mut joined = ints.clone();
+    let (json, _) = observed(r#"{"a":"text","b":"text"}"#);
+    let mut joined = floats.clone();
     joined.join(&json);
+    assert!(floats_in_json(&joined, &floats));
+    assert!(!floats_in_json(&joined, &ints));
+    assert!(!floats_in_json(&floats, &floats), "no column of JSON");
     assert!(holds_text(&json) && holds_text(&joined));
     assert!(!holds_text(&ints));
 }

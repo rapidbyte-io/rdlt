@@ -98,6 +98,11 @@ impl Shape {
             .map(|(name, observed)| Field::new(Arc::clone(name), observed.logical_type(), true))
             .collect()
     }
+
+    /// Whether any field holds a float, at any depth.
+    pub(crate) fn floats(&self) -> bool {
+        self.fields.iter().any(|(_, observed)| observed.floats())
+    }
 }
 
 impl Observed {
@@ -148,6 +153,16 @@ impl Observed {
             Self::Object(shape) => shape.columns(),
             Self::Array(item, _) => 1 + item.below(),
             _ => 0,
+        }
+    }
+
+    /// Whether the values hold a float, at any depth.
+    pub(crate) fn floats(&self) -> bool {
+        match self {
+            Self::Float => true,
+            Self::Object(shape) => shape.floats(),
+            Self::Array(item, _) => item.floats(),
+            _ => false,
         }
     }
 

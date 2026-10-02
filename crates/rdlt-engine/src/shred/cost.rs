@@ -53,6 +53,16 @@ pub(crate) fn fitted(joined: &Shape, local: &Shape, rows: u64) -> u64 {
         .fold(0, u64::saturating_add)
 }
 
+/// Whether a column of `joined` that is JSON holds, in the records observed as `local`, a value
+/// with a float in it: rendered as JSON text, it needs the float as it was written.
+pub(crate) fn floats_in_json(joined: &Shape, local: &Shape) -> bool {
+    joined.fields().iter().any(|(name, observed)| {
+        local
+            .get(name)
+            .is_some_and(|local| node_floats_in_json(observed, local))
+    })
+}
+
 /// Whether `joined` holds a column of text or of JSON at any depth.
 pub(crate) fn holds_text(joined: &Shape) -> bool {
     joined
@@ -141,6 +151,17 @@ fn fitting(joined: &Observed, local: Option<&Observed>, rows: u64) -> u64 {
             node(joined, local, rows).bytes
         }
         _ => 0,
+    }
+}
+
+fn node_floats_in_json(joined: &Observed, local: &Observed) -> bool {
+    match (joined, local) {
+        (Observed::Json, local) => local.floats(),
+        (Observed::Object(joined), Observed::Object(local)) => floats_in_json(joined, local),
+        (Observed::Array(joined, _), Observed::Array(local, _)) => {
+            node_floats_in_json(joined, local)
+        }
+        _ => false,
     }
 }
 
