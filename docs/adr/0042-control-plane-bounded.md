@@ -67,9 +67,29 @@ still taken largely on trust:
     waiting holds none, and none waits on another body to finish its message.
   - A served connection holds at most 200 open calls, set explicitly.
   - A served connector takes the state one request may carry from `--max-state-bytes`, spawned or
-    listening; a host spawning a connector passes its own `state_bytes` where it is not the
-    protocol's, so raising the host's limit raises both ends'. Either end's decoder and encoder
-    are set to the largest of any class, so a state limit above a frame's takes effect.
+    listening; a host spawning a connector passes its own `state_bytes` where it raises the
+    protocol's, so raising the host's limit raises both ends', and a host whose budget takes less
+    still sends as much. Either end's decoder and encoder are set to the largest of any class, so
+    a state limit above a frame's takes effect.
+- **What decoding a remote connector's answers holds is charged to the run's memory budget
+  before it is decoded** (ADR 0039). Every call of a run or a reset into a connector, reads too,
+  is made within a charge (`rdlt_wire::bounded::charging`); the host's transport charges each
+  message of its answer at what the scan counts before tonic decodes it, and holds the charge
+  until it is decoded: a read releases a frame's before its event waits for room, a writer each
+  answer's, and a unary answer's ends with the call.
+  - A read's frame is charged to what pushes may take, which the batch it carries is admitted to
+    next: a frame decodes into twice its bytes at most, 8.5 MB at the least memory, where a read's
+    part of the reads' share is 516 KiB, so the reads' share could not hold one; the row bound
+    already keeps a frame within half of what pushes may take.
+  - Every other answer is charged to a share of its own, a sixteenth of the budget, which waits
+    for no push. The catalog, state and control message limits a connector is told are what
+    that share holds of one answer decoded, at sixteen, eight and sixteen times their bytes, so a
+    connector that keeps to them is refused nothing: 1 MiB, 2 MiB and 256 KiB at the default
+    budget, 129 KiB, 258 KiB and 129 KiB at the least.
+  - A charge waits as any request of the budget does, in turn, and fails its call at the
+    budget's deadline; one larger than its share fails it at once. No charge is held while
+    another is waited for, and none while its holder waits for anything but the answer's bytes.
+  - A served connector has no engine budget: its window bounds what it holds of requests.
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64
@@ -115,7 +135,8 @@ still taken largely on trust:
   barrier asks count until they are sealed, as only a barrier, raised by rows that are due, seals
   them; but those a partition held when it did not answer a barrier within `barrier_wait` count
   no more, so it is asked again only once it has written as much again, and a partition that
-  never answers makes no later event wait a barrier out. Rows of a partition that seals on its
+  never answers makes no later event wait a barrier out. A barrier that stops waiting because a
+  cursor waits for room asks again those still owing: their answer may be that cursor. Rows of a partition that seals on its
   own count until a commit passes them by, and again once sealed, so a partition that
   checkpoints only at its end keeps no commit due.
 - **Machine strings and the protocol are the host's to check.** A code a connector's error
@@ -140,8 +161,13 @@ still taken largely on trust:
   connector, its `--max-state-bytes`, or the source plans fewer. A message within its bytes may
   still be refused for what it decodes to, when its fields are far smaller than any a connector
   sends.
-- A host's decoded bounds are what one message may hold before it is decoded; once the engine's
-  memory budget admits control messages, they are charged at that bound before decoding.
+- A host's decoded bounds are what one message may hold before it is decoded, and a run charges
+  what each holds to its budget. An open's answer carries all the state a pipeline committed:
+  one whose state passes what the budget's state limit holds is refused until the memory is
+  raised; cursors as large as a cursor may be, of more partitions than about seventeen, pass it.
+  The handshake, a configuration's answer and calls made outside a run are not charged.
+- An engine reading one partition at once needs 53.7 MB rather than 33.8 MB, and pushes may take
+  a sixteenth of the budget less.
 - A pipeline whose stream, partition or recorded identifier holds a hidden or reordering
   character, or whose recorded table name falls under a prefix its destination reserves, must be
   renamed or reset.

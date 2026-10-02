@@ -35,7 +35,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | log | 1/16 | 16 MiB | seal, commit and table frames from before they are encoded until they are appended |
   | tables | 1/32 | 8 MiB | what a commit records of each changed table, its schema and names, from the change until the commit lands |
   | reads | 1/4 | 64 MiB | what reads keep beside their events: a decoder's schema and dictionaries |
-  | data | the rest, 41/64 | 164 MiB | pushes waiting to be lowered, and what lowering makes of them |
+  | answers | 1/16 | 16 MiB | what decoding a remote connector's answers holds, but a read's frames, from before each is decoded until it is (ADR 0042) |
+  | data | the rest, 37/64 | 148 MiB | pushes waiting to be lowered, and what lowering makes of them; a read's frame from before it is decoded until it is |
 
   - Within the data, one request for lowering takes a quarter of the budget at most, and
     pushes never take the last quarter: a request for lowering always fits once the pieces
@@ -78,11 +79,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | Limit | Derived from | Least memory, 16 partitions | Default 256 MiB, 16 partitions | Wire default |
   |---|---|---|---|---|
   | frame bytes | what pushes may take less what a read keeps, and half a request less what a row of the widest table takes beside its values | 4,194,304 | 33,306,271 | 64 MiB |
-  | json push bytes | a third of what pushes may take | 4,402,549 | 34,952,533 | 64 MiB |
+  | json push bytes | a third of what pushes may take | 3,698,142 | 29,360,128 | 64 MiB |
   | cursor bytes | the cursors' share over twice one more than the partitions, which a quarter of the log's holds | 15,538 | 123,361 | 4 MiB |
   | dictionary bytes | half of what a read keeps | 264,152 | 2,097,152 | 64 MiB |
   | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 52,830 | 419,430 | 4 MiB |
   | schema columns | the tables' share over a kilobyte a column, and schema bytes over 56 a column | 943 | 7,489 | 10,000 |
+  | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 132,076 | 1,048,576 | 4 MiB |
+  | state bytes | the answers' share over eight, as for state | 264,152 | 2,097,152 | 16 MiB |
+  | control message bytes | the answers' share over sixteen | 132,076 | 262,144 | 256 KiB |
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer
     at once, with room for one more: a barrier's answers always fit, so a source that keeps to
@@ -115,9 +119,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
   (`MIN_FRAME_BYTES`, 4 MiB), or whose dictionary limit is below the protocol's least
   (`MIN_DICTIONARY_BYTES`, 256 KiB), is refused when the engine's configuration is built, with
   `memory_below_minimum` naming the least memory that admits it: 33,811,576 bytes at the
-  default sixteen partitions and 33,835,072 at one (`EngineConfig::least_memory`). Half a
+  default sixteen partitions and 53,687,073 at one (`EngineConfig::least_memory`). Half a
   request for lowering must hold a frame and the row beside it, so the least is about eight
-  frames whatever the partitions.
+  frames at sixteen partitions; a read of one partition keeps up to the whole reads' share,
+  and a frame beside it must fit what pushes may take, which sets its least.
 - **A peer's dictionary limit has a least.** A handshake whose limits set a dictionary limit
   below `MIN_DICTIONARY_BYTES`, none included, is refused at either end with
   `limit_below_minimum`, as any limit below its least is; a handshake that sets no limits at
