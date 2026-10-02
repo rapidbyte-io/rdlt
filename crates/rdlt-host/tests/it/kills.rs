@@ -148,6 +148,19 @@ async fn lands(kills: &Kills, landed: u64) -> bool {
     false
 }
 
+/// Waits, within a bound a busy machine keeps, for process `pid` to lead a session of its
+/// own; whether it does.
+async fn own_session(pid: i32) -> bool {
+    let pid = nix::unistd::Pid::from_raw(pid);
+    for _ in 0..3000 {
+        if nix::unistd::getsid(Some(pid)) == Ok(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    false
+}
+
 /// How often `kills` have landed once a second has passed in which one more could.
 async fn landed_after_a_while(kills: &Kills) -> u64 {
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -214,8 +227,13 @@ async fn a_kill_that_leaves_a_holder_of_the_connection_alive_has_not_landed() {
         .expect("the connector starts")
         .connector;
     // In a session of its own, the sleeper holds the connector's end of the connection, and
-    // outlives the kill of the connector's group.
+    // outlives the kill of the connector's group: once it has left the group, which it does
+    // after the launcher wrote its id.
     let holder = sleeper(directory.path());
+    assert!(
+        own_session(holder).await,
+        "the sleeper never left the connector's group"
+    );
     kills.kill();
     assert_eq!(landed_after_a_while(&kills).await, 0);
     assert_eq!((kills.count(), kills.landed()), (1, 0));
