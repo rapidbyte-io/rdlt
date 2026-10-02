@@ -316,3 +316,33 @@ fn runs_are_weighed_no_further_once_a_stretch_holds_more_values_than_asked() {
     // The run that takes the stretch beyond four values is the last weighed.
     assert_eq!(weigher.weigh_rows(0..10).values, 2 * 3);
 }
+
+#[test]
+fn lists_with_no_null_are_weighed_as_one_stretch_whatever_their_validity_buffer() {
+    use arrow_array::ListArray;
+    use arrow_buffer::{NullBuffer, OffsetBuffer};
+    use arrow_schema::Field;
+    // Two lists of views, rebuilt where they go, each valid by a buffer saying so.
+    let views: ArrayRef = Arc::new(StringViewArray::from(vec!["a", "b", "c"]));
+    let field = Arc::new(Field::new("item", views.data_type().clone(), true));
+    let offsets = OffsetBuffer::from_lengths([1, 2]);
+    let valid = NullBuffer::new_valid(2);
+    let lists = ListArray::new(field, offsets, views, Some(valid));
+    // The lists, then their items in one stretch, each view looked at.
+    let (weight, _, visits) = whole(Arc::new(lists));
+    assert_eq!((weight.0, visits), (2 + 3, 1 + 1 + 3));
+}
+
+#[test]
+fn a_weigher_shows_the_layout_of_each_column_it_weighs() {
+    let views: ArrayRef = Arc::new(StringViewArray::from(vec!["a"]));
+    let tags: ArrayRef = Arc::new(StringArray::from(vec!["t"]));
+    let keyed: ArrayRef =
+        Arc::new(DictionaryArray::try_new(Int8Array::from(vec![0]), tags).unwrap());
+    let batch = RecordBatch::try_from_iter([("v", views), ("k", keyed)]).unwrap();
+    let shown = format!("{:?}", Weigher::new(&batch));
+    assert!(
+        shown.contains("columns: [views, dictionary keys]"),
+        "{shown}"
+    );
+}
