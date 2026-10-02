@@ -26,7 +26,7 @@ use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun,
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
-use crate::naming::Naming;
+use crate::naming::{Naming, recorded};
 use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob, Slots};
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
@@ -119,18 +119,13 @@ async fn opened_run(
         .await
         .map_err(|error| Error::connector(Side::Source, "discovering the catalog", error))?;
     let capabilities = Arc::new(context.destination.capabilities().clone());
-    capabilities.identifiers.validate().map_err(|invalid| {
-        Error::new(
-            ErrorKind::Destination,
-            format!("the destination's identifier rules are refused: {invalid}"),
-        )
-        .with_code("capabilities_invalid")
-    })?;
+    let naming = Naming::checked(&capabilities.identifiers)?;
+    recorded::check(&naming, &opened.state)?;
     let mut planning = Planning {
         context,
         catalog: &catalog,
         state: &opened.state,
-        naming: Naming::new(capabilities.identifiers.clone()),
+        naming,
         capabilities,
     };
     let tables = Tables::new(Arc::clone(&opened.session)).committed(&opened.state);

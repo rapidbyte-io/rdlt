@@ -33,14 +33,11 @@ fn journal(name: &str) -> Journal {
 struct RecorderConfig {
     journal: String,
     #[serde(default)]
-    duplicate_state: bool,
-    #[serde(default)]
     fail_discard: bool,
 }
 
 struct Recorder {
     journal: Journal,
-    duplicate_state: bool,
     fail_discard: bool,
 }
 
@@ -64,7 +61,6 @@ impl DestinationConnector for Recorder {
     async fn connect(config: RecorderConfig, _context: &ConnectContext) -> Result<Self> {
         Ok(Self {
             journal: journal(&config.journal),
-            duplicate_state: config.duplicate_state,
             fail_discard: config.fail_discard,
         })
     }
@@ -79,15 +75,10 @@ impl DestinationConnector for Recorder {
             .lock()
             .unwrap()
             .push(format!("open {}", context.pipeline));
-        let record = StateRecord {
+        let state = vec![StateRecord {
             key: "k".to_owned(),
             value: Bytes::from_static(b"v"),
-        };
-        let state = if self.duplicate_state {
-            vec![record.clone(), record]
-        } else {
-            vec![record]
-        };
+        }];
         Ok(Opened {
             session: RecorderSession {
                 journal: Arc::clone(&self.journal),
@@ -248,24 +239,6 @@ async fn sessions_forward_every_call() {
             "commit 1",
             "close"
         ]
-    );
-}
-
-#[tokio::test]
-async fn repeated_state_keys_are_refused_at_open() {
-    let destination = destination_factory::<Recorder>()
-        .connect(
-            json!({ "journal": "duplicate", "duplicate_state": true }),
-            ConnectContext::new(),
-        )
-        .await
-        .unwrap();
-    let error = destination.open(&context()).await.unwrap_err();
-    assert_eq!(error.code(), Some("state_duplicate_key"));
-    assert_eq!(
-        *journal("duplicate").lock().unwrap(),
-        ["open orders", "close"],
-        "no discard for a refused open, and the session is closed"
     );
 }
 

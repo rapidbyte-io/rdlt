@@ -257,6 +257,14 @@ fn unreadable_records_are_typed_errors() {
 }
 
 #[test]
+fn state_holding_a_key_twice_is_refused() {
+    let epoch = StateEntry::Epoch(Epoch(1)).to_record();
+    let again = StateEntry::Epoch(Epoch(2)).to_record();
+    let refused = PipelineState::from_records(&[epoch.clone(), again]).unwrap_err();
+    assert_eq!(refused, StateError::Repeated { key: epoch.key });
+}
+
+#[test]
 fn keys_in_a_non_canonical_form_are_malformed() {
     let entry = StateEntry::Partition {
         stream: stream("s"),

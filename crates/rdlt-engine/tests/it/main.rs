@@ -29,6 +29,7 @@ mod normalized;
 mod owned;
 mod phases;
 mod placement;
+mod recorded;
 mod replanning;
 mod reset;
 mod schema;
