@@ -26,27 +26,46 @@ still taken largely on trust:
 - **Each call's messages are decoded within the limit of what the call carries.** `Limits` gains
   `catalog_bytes` (4 MiB), `state_bytes` (16 MiB: an open's answer, a plan and its request, a
   commit's request, a report of committed positions) and `control_message_bytes` (256 KiB),
-  carried in the handshake as fields 12 to 14. A handshake and its answer, which come before
-  either end knows the other's limits, are bounded by `HANDSHAKE_BYTES` (4 MiB). A configuration,
-  a schema change and a read's start are bounded by their field's limit and 64 KiB more; only
-  reads and writes take frames.
-  - The host decodes each answer with a client of its class, over one channel. A served
-    connector decodes each request with a server of its class, chosen by the call's path. Each
-    decoder refuses a length beyond its class before it reserves it.
-  - A message beyond its class is refused by tonic's own length check, as an `OutOfRange` status
-    the host reports as a transport failure naming the sizes; a body-level parser of its own
-    would duplicate that check.
+  carried in the handshake as fields 12 to 14. A handshake and its answer, and a configuration's
+  answer, which carries a destination's identifier rules, are bounded by `HANDSHAKE_BYTES`
+  (4 MiB). A configuration, a schema change and a read's start are bounded by their field's
+  limit and 64 KiB more; only reads and writes take frames. A connector's configuration schema
+  is bounded on its own, at 1 MiB (`MAX_CONFIG_SCHEMA_BYTES`).
+  - Each end passes a message to tonic only once it has arrived whole (`rdlt_wire::bounded`):
+    within its class's bytes on the wire, refused from its prefix, so no decoder reserves a
+    length before its bytes arrive; and, for every message but a frame, counted by a scan of its
+    encoding (`rdlt_wire::scan`) within what its class may hold decoded:
+    `Limits::decoded`, 4 times the wire bound for a handshake, a configuration and a read's
+    start, 8 for state, 16 (`DECODED_PER_BYTE`) for a catalog, a schema change and any other
+    control message: 64 MiB for a catalog and 128 MiB for state by default. The scan walks the
+    encoding by forms `cargo xtask codegen` generates from the `.proto` files, each message's
+    size and the kind of each field, and counts each message its size, three times for an entry
+    of a repeated field, and each string or bytes its length: no less than decoding holds at its
+    peak, which tests measure on the heap.
+  - A message beyond either bound fails its call as `OutOfRange`, which the host reports as a
+    non-retryable transport failure naming the sizes, before anything decodes it. Measured at the
+    class limits, a refused 4 MiB catalog of empty entries holds 12 MiB at its peak, a refused
+    16 MiB plan or open answer 48 MiB, and a served commit of empty child tables 25 MiB.
+  - On a served connection, the requests still arriving hold at most four of its largest
+    messages together; a request beyond that window fails as `ResourceExhausted`.
   - A served connection holds at most 200 open calls, set explicitly.
+  - A served connector takes the state one request may carry from `--max-state-bytes`, spawned or
+    listening; a host spawning a connector passes its own `state_bytes` where it is not the
+    protocol's, so raising the host's limit raises both ends'.
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64
   reserved prefixes of 256 bytes each, and an identifier at least 16 bytes long. Naming folds the
-  rules once; the coordinator tracks partitions by id and counts what has ended.
+  rules once; the coordinator tracks partitions by id and counts what has ended. An attempt reads
+  no more than 16,384 partitions at once, whatever the streams it selects and the phases it
+  begins.
 - **Names are what a reader sees.** Stream names, namespaces, partition ids and table path
   segments refuse every character that shown text escapes (ADR 0037's classifier); naming
   replaces them for a destination that takes any character. Every destination identifier the
   wire carries is non-empty, within 65,535 bytes and free of them, and a table's schema version
-  is at least one. Column paths are source data and stay as they are.
+  is at least one. Column paths are source data and stay as they are. A table's name, its hash
+  appended, never falls under a prefix the destination reserves: one that would is passed over
+  and the name escaped once more, the same way every time.
 - **Every wait on a connector has a deadline.**
   - The engine ends every call into a source or a destination but a read at
     `EngineConfig::connector_wait` (30 minutes), in every placement.
@@ -55,7 +74,8 @@ still taken largely on trust:
     by the write-ack deadline, however many answers arrive; a credit of no bytes is refused.
   - A served connection whose writes make no progress for its send wait (60 s) is closed, and a
     stopping connector's drain ends at its drain wait (30 minutes), both `ListenLimits` fields.
-  - A failed attempt, and a failed replay, close the session they opened.
+  - A failed attempt, and a failed replay, close the session they opened, waiting for the close
+    no longer than `EngineConfig::close_wait` (60 s).
 - **What a connector says cannot silently change what was committed.**
   - A receipt must answer its own commit, by load and sequence, or the commit fails as
     `receipt_mismatch`; receipt counters are summed with checked arithmetic.
@@ -63,15 +83,20 @@ still taken largely on trust:
     another key or change time, or by an empty catalog key, is refused until the table is reset.
   - Opened state holds each key once; a recorded name map is injective; a recorded table name
     must be one the destination's rules could have given, under no reserved prefix and no other
-    table's. An epoch never passes its largest value.
+    table's. An epoch never passes its largest value. State written before a table recorded its
+    key and change time is refused as `state_invalid`, naming the missing field: nothing
+    published keeps such state.
+  - A reset is how a pipeline recovers, so it checks no recorded name: it forgets what it resets,
+    and drops a table only under a name the rules admit, never one under a reserved prefix.
 - **A connector's failure steers retries only as far as the engine allows.** Only a rate limit
   keeps the wait it asks for, held between the retry policy's first and longest delays. A fence
   is a destination session's alone, and a stop ends a read cleanly only where the engine stopped
   it; otherwise each is the side's failure. A retention reset whose read loses its place again
   before sealing a row fails the attempt as retryable, so backoff and attempts bound it.
-- **The commit policy is due by rows a commit can take.** Rows a partition wrote and has not
-  sealed count until a commit passes them by, and again once sealed, so a partition that never
-  checkpoints keeps no commit due.
+- **The commit policy is due by rows a commit can take.** Rows of a partition that seals when a
+  barrier asks count until they are sealed, as only a barrier, raised by rows that are due, seals
+  them. Rows of a partition that seals on its own count until a commit passes them by, and again
+  once sealed, so a partition that checkpoints only at its end keeps no commit due.
 - **Machine strings and the protocol are the host's to check.** A code a connector's error
   carries must be `[a-z0-9_.-]`, within the code limit, and none of the host's own codes
   (`connector_lost`, `deadline_exceeded`, `tls`, `transport`); otherwise it is `invalid_code`.
@@ -79,21 +104,29 @@ still taken largely on trust:
   major, a spec whose id does not parse or whose version is not one, and a feature it did not
   offer. Status details that do not decode as base64 are dropped by the host's transport before
   tonic reads them.
-- **A read's frames that carry no event are bounded by count**: at most a schema and a dictionary
-  for each column between events. A read's data credit stays unchecked by the host: it grants
-  credit back as the engine takes each frame, so an overrun is undetectable at the receiver
-  (ADR 0016).
+- **A read's frames the engine takes for nothing are bounded by count** between two events of its
+  data, rows or a checkpoint: schemas and dictionaries to a schema and a dictionary for each
+  column, and log lines, metrics, lags and replans to 1,024 (`MAX_FREE_FRAMES`), neither kind
+  ending the other's run. A read's data credit stays unchecked by the host: it grants credit back
+  as the engine takes each frame, so an overrun is undetectable at the receiver (ADR 0016).
+- **A served connection's send wait counts any byte as progress**: a host taking a byte a minute
+  keeps its connection, holding only its own share, and a stop's drain ends it.
 
 ## Consequences
 
 - A catalog over 4 MiB, state over 16 MiB or a plan of more than 16,384 partitions is refused
-  until the operator raises the host's limit or the source plans fewer.
+  until the operator raises the host's limits (`Options::limits`) and, for a listening
+  connector, its `--max-state-bytes`, or the source plans fewer. A message within its bytes may
+  still be refused for what it decodes to, when its fields are far smaller than any a connector
+  sends.
+- A host's decoded bounds are what one message may hold before it is decoded; once the engine's
+  memory budget admits control messages, they are charged at that bound before decoding.
 - A pipeline whose stream, partition or recorded identifier holds a hidden or reordering
   character, or whose recorded table name falls under a prefix its destination reserves, must be
   renamed or reset.
 - A destination's identifier rules beyond their limits, or with a maximum length under 16, are
   refused at the handshake and before any run or reset.
 - A connector built before the protocol's version was answered is refused; none is published.
-- A failed attempt's close waits at most the connector wait, 30 minutes by default, before the
-  retry begins, for a destination that never answers it.
+- A failed attempt's close waits at most the close wait, a minute by default, before the retry
+  begins, for a destination that never answers it.
 - H2b's state limits must fit within `state_bytes`, and its dictionary limit takes field 11.
