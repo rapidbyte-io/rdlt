@@ -130,6 +130,16 @@ fn a_row_without_a_sequence_or_an_op_a_change_stream_has_is_refused_under_its_co
         &(Arc::new(Int64Array::from(vec![1])) as ArrayRef),
     );
     assert_eq!(merged(&flags, Deletion::Hard), Some("flags_invalid"));
+}
+
+#[test]
+fn rows_without_their_sequence_or_their_key_s_column_are_refused_under_their_code() {
+    let batch = written(&[row(1, "a", 1)]);
+    let unsequenced = with(
+        &batch,
+        "seq",
+        &(Arc::new(BinaryArray::from(vec![None::<&[u8]>])) as ArrayRef),
+    );
     // A plain merge table's rows need their sequence too, and a batch its sequence column.
     let plain = rdlt_connector::MergeKey {
         changes: None,
@@ -141,6 +151,22 @@ fn a_row_without_a_sequence_or_an_op_a_change_stream_has_is_refused_under_its_co
     let keyless = batch.project(&[0, 1, 3]).expect("a projection");
     let refused = merge(&stored_schema(), &[], &[], &[keyless], &plain);
     assert_eq!(refusal(refused), Some("merge_key_invalid"));
+    // Rows that lack their key's column are no rows of a null key.
+    let unkeyed = batch.project(&[1, 2, 3]).expect("a projection");
+    let refused = merge(
+        &stored_schema(),
+        &[],
+        &[],
+        std::slice::from_ref(&unkeyed),
+        &plain,
+    );
+    assert_eq!(refusal(refused), Some("merge_key_invalid"));
+    let changes = batch.project(&[1, 2, 3, 4, 5]).expect("a projection");
+    assert_eq!(merged(&changes, Deletion::Hard), Some("merge_key_invalid"));
+    assert_eq!(
+        refusal(admitted(&unkeyed, None, &plain)),
+        Some("merge_key_invalid")
+    );
 }
 
 #[test]
