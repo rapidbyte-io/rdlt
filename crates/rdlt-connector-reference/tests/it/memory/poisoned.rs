@@ -114,8 +114,7 @@ async fn commit(destination: &dyn Destination, load: u128, batch: Option<RecordB
 }
 
 async fn ids(reader: &dyn PublishedReader) -> Vec<i64> {
-    let mut ids: Vec<i64> = reader
-        .published(&table())
+    let mut ids: Vec<i64> = rdlt_connector::PublishedRows::gather(reader, &table())
         .await
         .expect("the table reads")
         .iter()
