@@ -200,6 +200,10 @@ bounded by a limit with a typed refusal (ADR 0039):
   before it is lowered. A row that alone takes more than a quarter of the budget is refused.
 - A checkpoint never waits behind data, and a read keeps no more than its part of a quarter of
   the budget, so reads cannot starve checkpoints or pushes.
+- What a connector is told at the handshake it may send, a frame, a JSON push, a cursor, its
+  dictionaries and its schema, is what the budget admits, so a connector that keeps to it is
+  refused nothing for the budget's sake; an engine whose memory admits less than the protocol's
+  least frame is refused when it is configured.
 - No wait on the budget is for ever: at its deadline, an hour by default, the attempt fails with
   `memory_budget_wait_exceeded`, saying what held the budget. No connector's error can claim
   that kind or code.
