@@ -11,7 +11,8 @@ use proptest::prelude::*;
 use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, HistoryColumns, MergeKey};
 use rdlt_testkit::drawn::{self, Drawn, Encoding, Shape};
 
-use crate::merge::{Merged, merge};
+use crate::merge::Merged;
+use crate::merge::tests::merge;
 
 /// How a history table is written: rows that are all upserts, or a change stream's.
 #[derive(Clone, Copy, PartialEq, Eq)]

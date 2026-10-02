@@ -326,23 +326,6 @@ fn composed_batch(
     batch(held_schema(&sources.schema, columns), arrays, picks.len())
 }
 
-/// The cells `batches`, each of the columns it holds, lack of the columns of `schema`: the rows
-/// of each batch times the columns it does not hold, which a destination writing every column
-/// of every row makes.
-pub(super) fn absent(schema: &SchemaRef, batches: &[RecordBatch]) -> u64 {
-    let columns = u64::try_from(schema.fields().len()).unwrap_or(u64::MAX);
-    batches.iter().fold(0_u64, |absent, batch| {
-        let held = schema
-            .fields()
-            .iter()
-            .filter(|field| batch.column_by_name(field.name()).is_some())
-            .count();
-        let lacking = columns.saturating_sub(u64::try_from(held).unwrap_or(u64::MAX));
-        let rows = u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
-        absent.saturating_add(rows.saturating_mul(lacking))
-    })
-}
-
 /// `batches`, each of the columns it holds, as batches of every column of `schema`, at its
 /// types: a column a batch does not hold is nulls, one array for every such column of its type
 /// and length.

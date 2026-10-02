@@ -88,6 +88,21 @@ fn published_in(
     Ok(())
 }
 
+/// `batches` of `table`, each of the columns its rows hold, as a reader is given them: every
+/// column of `schema`, one a batch never had as nulls its rows share.
+fn whole(
+    table: &str,
+    schema: &arrow_schema::SchemaRef,
+    batches: Vec<RecordBatch>,
+) -> Result<Vec<RecordBatch>> {
+    let lacks = |batch: &RecordBatch| batch.num_columns() != schema.fields().len();
+    if !batches.iter().any(lacks) {
+        return Ok(batches);
+    }
+    let doing = format!("reading table {table}");
+    crate::merge::read_back(schema, &batches).map_err(|error| crate::merge::failed(&doing, &error))
+}
+
 /// Every batch the pipeline whose directory `dir` is publishes of `table`, as the manifest
 /// `latest` reads lists them.
 ///
@@ -108,8 +123,8 @@ pub(super) fn published_by(
         let files = manifest.tables.get(table);
         let mut batches = Vec::new();
         for file in files.into_iter().flat_map(|files| &files.files) {
-            match manifest::read(dir, &file.path, schema) {
-                Ok(read) => batches.extend(read),
+            match manifest::read_held(dir, &file.path, schema) {
+                Ok(read) => batches.extend(whole(table, schema, read)?),
                 Err(error) if error.code() == Some(io::FILE_MISSING) => {
                     let newer = latest(dir)?.is_some_and(|now| now.version != manifest.version);
                     return if newer { Ok(None) } else { Err(error) };

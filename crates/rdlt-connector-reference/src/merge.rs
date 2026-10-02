@@ -6,7 +6,7 @@ mod refused;
 mod retype;
 mod sparse;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod tombstones;
 mod written;
 
@@ -24,7 +24,6 @@ use arrow_row::{RowConverter, Rows, SortField};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ConnectorError, MergeKey, RootKey, TableRef};
 
-use crate::limits::MAX_ABSENT_CELLS;
 use sparse::{At, Base, Nulls, Pick, Sources, assemble};
 
 /// Refuses a writer of `table` where it is a replace generation of a history table, which merges
@@ -88,52 +87,9 @@ pub(crate) fn merge_sparse(
         (None, Some(changes)) => {
             changes::merge_changes(schema, published, buried, incoming, key, changes)?
         }
-        (None, None) => {
-            return Ok(Merged {
-                rows: upsert(schema, published, incoming, key)?,
-                tombstones: Vec::new(),
-            });
-        }
+        (None, None) => (upsert(schema, published, incoming, key)?, Vec::new()),
     };
     Ok(Merged { rows, tombstones })
-}
-
-/// As [`merge_sparse`], the rows given back as batches of every column of the table: for a
-/// destination whose files hold every column of every row.
-///
-/// Such a destination pays for the cells its rows never had: the rows of each batch times the
-/// columns it does not hold. More than [`MAX_ABSENT_CELLS`] of them is a `Data` error coded
-/// `merge_too_wide`, raised before any is made.
-pub(crate) fn merge(
-    schema: &SchemaRef,
-    published: &[RecordBatch],
-    buried: &[RecordBatch],
-    incoming: &[RecordBatch],
-    key: &MergeKey,
-) -> Result<Merged, ArrowError> {
-    let merged = merge_sparse(schema, published, buried, incoming, key)?;
-    let stored = match &key.changes {
-        Some(changes) => changes::stored(schema, changes),
-        None => Arc::clone(schema),
-    };
-    Ok(Merged {
-        rows: every_column(&stored, &merged.rows)?,
-        tombstones: merged.tombstones,
-    })
-}
-
-/// `rows`, batches of the columns they hold, as batches of every column of `schema`, where that
-/// makes no more absent cells than a destination may be charged.
-fn every_column(schema: &SchemaRef, rows: &[RecordBatch]) -> Result<Vec<RecordBatch>, ArrowError> {
-    let absent = sparse::absent(schema, rows);
-    if absent > MAX_ABSENT_CELLS {
-        let message = format!(
-            "the table's rows would hold {absent} cells of columns they never had, over the \
-             limit of {MAX_ABSENT_CELLS}"
-        );
-        return Err(refused::refused(refused::MERGE_TOO_WIDE, message));
-    }
-    sparse::every_column(schema, rows, &mut Nulls::default())
 }
 
 /// `rows`, batches of the columns they hold, as a reader is given them: batches of every column
@@ -315,20 +271,6 @@ pub(crate) fn merge_children_sparse(
         over: &[],
     });
     assemble(&sources, picks)
-}
-
-/// As [`merge_children_sparse`], the rows given back as batches of every column of the table,
-/// charged as [`merge`] charges them.
-pub(crate) fn merge_children(
-    schema: &SchemaRef,
-    published: &[RecordBatch],
-    incoming: &[RecordBatch],
-    key: &MergeKey,
-    root: &RootKey,
-    roots: &[RecordBatch],
-) -> Result<Vec<RecordBatch>, ArrowError> {
-    let rows = merge_children_sparse(schema, published, incoming, key, root, roots)?;
-    every_column(schema, &rows)
 }
 
 /// `batch`'s column `name` as `Binary`, which an id or a sequence is.

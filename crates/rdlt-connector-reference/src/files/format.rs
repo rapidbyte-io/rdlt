@@ -4,6 +4,7 @@
 //! fails the write, and the file is removed.
 
 mod batches;
+mod held;
 pub(super) mod ipc;
 mod json;
 pub(super) mod lines;
@@ -124,6 +125,27 @@ impl FileFormat {
         let mut reader = Reader::open(self, dir, name, schema)?;
         let mut batches = Vec::new();
         while let Some(batch) = reader.next()? {
+            batches.push(batch);
+        }
+        Ok(batches)
+    }
+
+    /// The rows of the file `name` in `dir` as batches of the columns they hold: an Arrow
+    /// file's as written, JSON lines under the columns of `schema` their lines name.
+    pub(super) fn read_held(
+        self,
+        dir: &Dir,
+        name: &str,
+        schema: &SchemaRef,
+    ) -> Result<Vec<RecordBatch>> {
+        if self == Self::Arrow {
+            return self.read(dir, name, schema);
+        }
+        let path = dir.at(name);
+        let file = dir.file(name).map_err(io::listed("opening", &path))?;
+        let mut rows = held::Held::new(file, schema);
+        let mut batches = Vec::new();
+        while let Some(batch) = rows.next().map_err(|error| decoded(&path, error))? {
             batches.push(batch);
         }
         Ok(batches)

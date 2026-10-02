@@ -8,9 +8,9 @@ use arrow_array::{ArrayRef, BinaryArray, Int8Array, Int64Array, RecordBatch, Str
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey, RootKey};
 
+use super::super::Merged;
 use super::super::refused::code;
-use super::super::{Merged, merge, merge_children};
-use super::{key, soft, stored_schema};
+use super::{key, merge, merge_children, soft, stored_schema};
 
 fn position(seq: u64) -> Vec<u8> {
     let mut bytes = vec![0; 16];
