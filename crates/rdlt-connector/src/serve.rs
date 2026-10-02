@@ -13,6 +13,7 @@ mod probes;
 #[cfg(feature = "certify")]
 mod published;
 mod read;
+mod sending;
 mod service;
 mod sessions;
 mod until;
@@ -20,6 +21,7 @@ mod write;
 
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
@@ -80,19 +82,29 @@ impl Served {
     }
 }
 
-/// Whom a connection serves: the host, where a listening connector accepted it by name, and
-/// how many destination sessions it may hold open at once.
+/// Whom a connection serves: the host, where a listening connector accepted it by name, how
+/// many destination sessions it may hold open at once, how long its writes may make no
+/// progress, and how long a stop drains it.
 struct Hosted {
     name: Option<Arc<str>>,
     sessions: usize,
+    send: Duration,
+    drain: Duration,
 }
 
 impl Hosted {
     /// The host that spawned the connector, or serves it in its own process: it has no name.
     fn spawning() -> Self {
+        Self::named(None, &crate::limits::ListenLimits::default())
+    }
+
+    /// The host `name`, served within `limits`.
+    fn named(name: Option<Arc<str>>, limits: &crate::limits::ListenLimits) -> Self {
         Self {
-            name: None,
-            sessions: crate::limits::ListenLimits::default().connection_sessions(),
+            name,
+            sessions: limits.connection_sessions(),
+            send: limits.send,
+            drain: limits.drain,
         }
     }
 }
@@ -103,10 +115,10 @@ impl Hosted {
 pub struct ServeError(#[source] hyper::Error);
 
 /// How often a served connection pings its host over HTTP/2, as the host's heartbeat pings it.
-const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(5);
+const KEEP_ALIVE: Duration = Duration::from_secs(5);
 
 /// How long a ping may go unanswered before the host counts as gone.
-const KEEP_ALIVE_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+const KEEP_ALIVE_PATIENCE: Duration = Duration::from_secs(30);
 
 /// Serves the protocol on `io`, enforcing `limits` on what it receives, until the host closes the
 /// connection, which ends it cleanly.
@@ -158,6 +170,7 @@ where
             .keep_alive_timeout(KEEP_ALIVE_PATIENCE);
         builder
     };
+    let io = sending::Sending::within(io, host.send);
     let connection = builder.serve_connection(TokioIo::new(io), TowerToHyperService::new(service));
     tokio::pin!(connection, stop);
     let served = tokio::select! {
@@ -167,7 +180,10 @@ where
             // Ends the host's heartbeat stream, which would otherwise hold the connection open.
             stopping.cancel();
             connection.as_mut().graceful_shutdown();
-            connection.await
+            // Calls still in flight once the drain is over end with the connection.
+            tokio::time::timeout(host.drain, connection)
+                .await
+                .unwrap_or(Ok(()))
         }
     };
     served.or_else(|error| {

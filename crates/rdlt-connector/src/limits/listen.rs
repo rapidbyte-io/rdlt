@@ -40,6 +40,13 @@ pub struct ListenLimits {
     /// How often refused connections are reported: one line for each such span in which any was
     /// refused, however many were.
     pub report_every: Duration,
+    /// How long a connection's writes may make no progress, its host taking none of the bytes
+    /// sent to it, before the connection is closed: a host that vanished, or holds its window
+    /// shut, keeps HTTP/2's own pings from being sent.
+    pub send: Duration,
+    /// How long a stopping connector lets the calls in flight on a connection finish before it
+    /// closes the connection.
+    pub drain: Duration,
 }
 
 impl Default for ListenLimits {
@@ -54,6 +61,8 @@ impl Default for ListenLimits {
             session_descriptors: 4,
             own_descriptors: 64,
             report_every: Duration::from_secs(10),
+            send: Duration::from_secs(60),
+            drain: Duration::from_mins(30),
         }
     }
 }

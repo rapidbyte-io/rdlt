@@ -14,6 +14,8 @@ fn the_defaults_keep_unauthenticated_peers_far_below_the_sessions_they_could_sta
     assert_eq!(limits.session_descriptors, 4);
     assert_eq!(limits.own_descriptors, 64);
     assert_eq!(limits.report_every, Duration::from_secs(10));
+    assert_eq!(limits.send, Duration::from_secs(60));
+    assert_eq!(limits.drain, Duration::from_mins(30));
     assert_eq!(limits.descriptors(), 64 + 1 + 64 + 256 * 4 + 64);
 }
 
