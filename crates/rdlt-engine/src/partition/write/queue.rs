@@ -25,16 +25,15 @@ pub(super) fn written_bytes(batch: &RecordBatch) -> u64 {
 }
 
 /// Queues `prepared` on `table`'s lane with `reservation`, the permits holding its bytes, which
-/// travel with it.
-///
-/// Growth beyond what a push held was charged at once; later pushes pay it back by waiting.
+/// travel with it; where the load keeps a log, `frame` holds what the batch's frame takes there,
+/// reserved with the piece before it was lowered.
 pub(super) async fn queue(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
     table: usize,
     prepared: Prepared,
-    reservation: Permit,
+    (reservation, frame): (Permit, Option<Permit>),
 ) -> Result<(), Error> {
     open.discarded_rows += prepared.discarded_rows;
     open.discarded_values += prepared.discarded_values;
@@ -43,19 +42,13 @@ pub(super) async fn queue(
         return Ok(());
     }
     let bytes = written_bytes(&prepared.batch);
-    if let Some(log) = &context.wal {
+    if let (Some(log), Some(frame)) = (&context.wal, frame) {
         // Queued for the log before the partition can seal the segment, so the frame of the
         // commit that takes the segment, queued after the seal, follows this batch's.
         let compute = context.env.compute();
-        log.batch(
-            compute,
-            &context.budget,
-            table,
-            &prepared.view,
-            open.id,
-            &prepared.batch,
-        )
-        .await?;
+        let (view, batch) = (&prepared.view, &prepared.batch);
+        log.batch(compute, frame, table, view, open.id, batch)
+            .await?;
     }
     let lane = context.lanes.route(table, job.partition.id());
     context

@@ -8,7 +8,7 @@ use rdlt_connector::Permit;
 use rdlt_connector::cost::Rendering;
 
 use super::super::Held;
-use super::{Lowered, MIN_PIECE, Pieces, RowTooLarge, piece_bytes};
+use super::{Lowered, Pieces, RowTooLarge};
 use crate::budget::MemoryBudget;
 
 /// A batch of `rows` rows numbered from `first`, beside a run of one 1 KB value.
@@ -28,8 +28,8 @@ fn encoded(first: i64, rows: i32) -> RecordBatch {
 
 /// What holds a unit of no batches of its own under one permit of `bytes`.
 fn held(budget: &MemoryBudget, bytes: u64) -> Held {
-    let permit: Permit = Box::new(budget.charge(bytes));
-    Held::of(vec![permit], bytes, &[])
+    let permit: Permit = Box::new(budget.try_acquire_working(bytes).unwrap());
+    Held::of(vec![permit], &[])
 }
 
 /// A destination storing every value as it is.
@@ -37,21 +37,24 @@ fn native() -> Rendering {
     Rendering::new(rdlt_testkit::drawn::KINDS)
 }
 
-/// How batches are measured before their table is known: pieces of `max` bytes under `budget`.
-fn unplanned(max: u64, budget: u64) -> Lowered {
+/// How batches are measured before their table is known: pieces of `max` bytes, of rows of
+/// `limit` at most.
+fn unplanned(max: u64, limit: u64) -> Lowered {
     Lowered {
         rendering: native(),
         stored: Vec::new(),
         row: 0,
+        item: 0,
         max,
-        budget,
+        limit,
     }
 }
 
 /// `units` cut into pieces of at most `max` bytes, under a budget no row exceeds.
 fn sliced(units: Vec<(Vec<RecordBatch>, Held)>, max: u64) -> Vec<(Vec<RecordBatch>, Held)> {
     let cut = |(parts, held)| super::sliced(parts, held, unplanned(max, u64::MAX)).unwrap();
-    units.into_iter().flat_map(cut).collect()
+    let pieces = units.into_iter().flat_map(cut);
+    pieces.map(|(parts, held, _)| (parts, held)).collect()
 }
 
 /// What `batch` expands to.
@@ -88,11 +91,8 @@ fn a_unit_larger_than_a_slice_is_cut_in_order_and_holds_its_permits_to_the_last_
     assert_eq!(ids(&pieces), (0..8_000).collect::<Vec<_>>());
     let (last, others) = pieces.split_last().unwrap();
     assert_eq!(last.1.permits.len(), 1);
-    assert!(
-        others
-            .iter()
-            .all(|(_, held)| held.permits.is_empty() && held.spare() == 0)
-    );
+    assert!(others.iter().all(|(_, held)| held.permits.is_empty()));
+    assert_eq!(budget.reserved(), 64);
     drop(pieces);
     assert_eq!(budget.reserved(), 0);
 }
@@ -107,12 +107,6 @@ fn a_unit_within_a_slice_stays_whole_and_a_row_larger_than_one_is_its_own_piece(
     let rows = sliced(vec![(vec![encoded(0, 3)], held(&budget, 64))], 10);
     assert_eq!(rows.len(), 3);
     assert_eq!(ids(&rows), [0, 1, 2]);
-}
-
-#[test]
-fn slices_share_the_budget_among_a_window_of_lowerings() {
-    assert_eq!(piece_bytes(&MemoryBudget::new(256 << 20)), 16 << 20);
-    assert_eq!(piece_bytes(&MemoryBudget::new(1 << 10)), MIN_PIECE);
 }
 
 #[test]
@@ -183,30 +177,30 @@ fn rows_fill_each_slice_to_its_last_byte() {
 }
 
 #[test]
-fn a_row_expanding_beyond_the_budget_is_refused_and_one_within_it_is_its_own_piece() {
+fn a_row_expanding_beyond_what_a_row_may_take_is_refused_and_one_within_it_is_its_own_piece() {
     let budget = MemoryBudget::new(1 << 30);
     // Three rows of a 1 KB value, in slices of 100 bytes.
-    let cut = |budget_bytes: u64| {
+    let cut = |limit: u64| {
         super::sliced(
             vec![encoded(0, 3)],
             held(&budget, 64),
-            unplanned(100, budget_bytes),
+            unplanned(100, limit),
         )
     };
     assert_eq!(cut(2_000).unwrap().len(), 3);
     let Err(refused) = cut(500) else {
-        panic!("a row beyond the budget was cut");
+        panic!("a row beyond the limit was cut");
     };
-    assert_eq!(refused.budget, 500);
+    assert_eq!(refused.limit, 500);
     assert!(refused.expanded > 500, "{refused:?}");
-    // A row exactly the budget fits it.
+    // A row of exactly the limit is within it.
     let row = native().expanded(&encoded(0, 1), 0..1, u64::MAX);
     assert_eq!(cut(row).unwrap().len(), 3);
     assert_eq!(
         cut(row - 1).err(),
         Some(RowTooLarge {
             expanded: row,
-            budget: row - 1
+            limit: row - 1
         })
     );
 }
@@ -273,12 +267,42 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
 fn a_piece_of_a_unit_shares_the_allocations_the_unit_holds() {
     let budget = MemoryBudget::new(1 << 30);
     let parts = vec![encoded(0, 100)];
-    let permit: Permit = Box::new(budget.charge(64));
-    let unit = Held::of(vec![permit], 64, &parts);
+    let unit = Held::of(held(&budget, 64).permits, &parts);
     let pieces = sliced(vec![(parts, unit)], 2_000);
     assert!(pieces.len() > 1);
     let (last, others) = pieces.split_last().unwrap();
     for (_, held) in others {
         assert!(Arc::ptr_eq(&held.allocations, &last.1.allocations));
     }
+}
+
+#[test]
+fn each_piece_says_what_it_was_measured_to_take_and_items_cost_what_they_are_told() {
+    let budget = MemoryBudget::new(1 << 30);
+    let cut = super::sliced(
+        vec![encoded(0, 3)],
+        held(&budget, 64),
+        unplanned(100, u64::MAX),
+    )
+    .unwrap();
+    let row = native().expanded(&encoded(0, 1), 0..1, u64::MAX);
+    assert_eq!(
+        cut.iter().map(|(_, _, bytes)| *bytes).collect::<Vec<_>>(),
+        [row, row, row]
+    );
+    // A list's items take what each is said to take beside itself, where they become rows.
+    let lists = arrow_array::ListArray::from_iter_primitive::<Int32Type, _, _>(
+        (0..10).map(|_| Some(vec![Some(1), Some(2), Some(3)])),
+    );
+    let lists = RecordBatch::try_from_iter([("list", Arc::new(lists) as ArrayRef)]).unwrap();
+    let measured = |item: u64| {
+        let lowered = Lowered {
+            item,
+            ..unplanned(u64::MAX, u64::MAX)
+        };
+        pieces(lists.clone(), lowered)
+    };
+    let (plain, itemized) = (measured(0), measured(100));
+    assert_eq!(plain.len(), 1);
+    assert_eq!(itemized[0].1 - plain[0].1, 30 * 100);
 }

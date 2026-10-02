@@ -257,6 +257,17 @@ fn joined() -> Vec<LogicalType> {
     types
 }
 
+/// Every type a table may hold a column of `from` in, each once.
+fn held_in(from: &LogicalType) -> Vec<LogicalType> {
+    let mut held: Vec<LogicalType> = Vec::new();
+    for to in joined().iter().map(|other| from.join(other)) {
+        if !held.contains(&to) {
+            held.push(to);
+        }
+    }
+    held
+}
+
 /// What `run` allocates at its peak, beyond what was allocated when it began.
 fn peak<T>(run: impl FnOnce() -> T) -> (T, u64) {
     HEAP.reset_peak_usage();
@@ -313,13 +324,7 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
             continue;
         }
         kinds.insert(from.kind());
-        // Every type the column's table may hold it in, each once.
-        let mut held: Vec<LogicalType> = Vec::new();
-        for to in joined().iter().map(|other| from.join(other)) {
-            if !held.contains(&to) {
-                held.push(to);
-            }
-        }
+        let held = held_in(from);
         for encoded in encodings(&column) {
             for to in &held {
                 for as_text in [false, true] {
@@ -347,6 +352,98 @@ fn lowering_a_column_into_any_type_its_table_may_hold_it_in_allocates_no_more_th
     assert!(
         beyond.is_empty(),
         "{} of {lowerings} lowerings allocated beyond their charge:\n{}",
+        beyond.len(),
+        beyond.join("\n")
+    );
+}
+
+/// Every column this file lowers, with the field that names its type, in every encoding.
+fn every_column() -> Vec<(ArrowField, ArrayRef)> {
+    let plain = |column: ArrayRef| {
+        (
+            ArrowField::new("c", column.data_type().clone(), true),
+            column,
+        )
+    };
+    let columns = numbers().into_iter().chain(others()).map(plain);
+    let mut every = Vec::new();
+    for (field, column) in columns.chain(extensions()) {
+        for encoded in encodings(&column) {
+            let field = field.clone().with_data_type(encoded.data_type().clone());
+            every.push((field, encoded));
+        }
+    }
+    every
+}
+
+/// What a piece of `batch` reserves before it is split: its rows as they arrive, with the
+/// lineage of each row and each item, for every copy the split may hold.
+fn split_estimate(batch: &RecordBatch) -> u64 {
+    use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
+    let measure = Rendering::native().lowering(batch, Vec::new(), LINEAGE_ROW, u64::MAX);
+    let mut measure = measure.with_items(LINEAGE_ITEM);
+    measure
+        .expanded(0..batch.num_rows())
+        .saturating_mul(SPLIT_COPIES)
+}
+
+#[test]
+fn a_column_through_a_normalizing_plan_is_split_and_lowered_within_what_is_reserved_for_it() {
+    use crate::normalize::{Shape, normalize};
+    let shape = Shape {
+        max_depth: 8,
+        whole: std::collections::BTreeSet::new(),
+        key: Vec::new(),
+    };
+    let (mut splits, mut lowerings, mut tables, mut beyond) = (0, 0, 0, Vec::new());
+    for (field, column) in every_column() {
+        let kind = column.data_type().clone();
+        let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
+        let estimate = split_estimate(&batch);
+        let (parts, peak) = peak(|| normalize(&batch, &shape));
+        let parts = parts.expect("every column normalizes");
+        splits += 1;
+        tables += parts.len();
+        if peak > estimate + SLACK {
+            beyond.push(format!(
+                "splitting {kind}: reserved {estimate}, allocated {peak}"
+            ));
+        }
+        // Each part is then cut and reserved by its own table's types, as a plain batch is.
+        for part in parts {
+            let fields = part.batch.schema();
+            for (field, column) in fields.fields().iter().zip(part.batch.columns()) {
+                let from = Field::from_arrow(field).expect("a logical type");
+                let from = from.logical_type();
+                if *from == LogicalType::Null {
+                    continue;
+                }
+                let held = held_in(from);
+                for (to, as_text) in held.iter().flat_map(|to| [(to, false), (to, true)]) {
+                    let Some((charge, peak)) = lowered(column, from, to, as_text) else {
+                        continue;
+                    };
+                    lowerings += 1;
+                    if peak > charge + SLACK {
+                        let part = column.data_type();
+                        beyond.push(format!(
+                            "{kind} split to {part} into {to:?}, as text {as_text}: charged \
+                             {charge}, allocated {peak}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(splits > 100, "{splits} columns were split");
+    assert!(tables > splits, "{tables} tables of {splits} columns");
+    assert!(lowerings > 1_000, "{lowerings} lowerings were measured");
+    beyond.sort();
+    beyond.dedup();
+    assert!(
+        beyond.is_empty(),
+        "{} of {splits} splits and {lowerings} lowerings allocated beyond what was reserved:\n{}",
         beyond.len(),
         beyond.join("\n")
     );
