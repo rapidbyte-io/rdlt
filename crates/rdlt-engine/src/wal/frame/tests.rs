@@ -335,3 +335,19 @@ fn a_batch_of_empty_lists_of_runs_reads_back_as_the_engine_logged_it() {
     let (frame, read) = round_trip(batch);
     assert_eq!(read, [frame]);
 }
+
+#[test]
+fn a_batch_that_cannot_be_encoded_fails_with_the_encoders_error_as_its_cause() {
+    use arrow_array::types::Int8Type;
+    use arrow_array::{ArrayRef, DictionaryArray, Int8Array, StringArray};
+    // A dictionary whose values are a dictionary: no schema message describes it.
+    let tags: ArrayRef = Arc::new(StringArray::from(vec!["a"]));
+    let inner = DictionaryArray::<Int8Type>::try_new(Int8Array::from(vec![0]), tags).unwrap();
+    let keys = Int8Array::from(vec![0]);
+    let outer = DictionaryArray::<Int8Type>::try_new(keys, Arc::new(inner)).unwrap();
+    let batch = RecordBatch::try_from_iter([("c", Arc::new(outer) as ArrayRef)]).unwrap();
+    let report = super::arrow::encode(&batch).unwrap_err().report();
+    assert_eq!(report.message, "encoding a write-ahead log batch");
+    assert_eq!(report.causes.len(), 1, "{report:?}");
+    assert!(report.causes[0].contains("dictionary"), "{report:?}");
+}
