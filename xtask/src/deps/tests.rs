@@ -56,15 +56,18 @@ fn a_crate_missing_from_the_rules_is_reported() {
     );
 }
 
-// The audited crate's function is sound only as its one caller uses it: no other crate may reach
-// it, in its tests either.
+// The audited crate's functions are sound only as their callers use them: the connector crate
+// adopts a host's socket, the host crate spawns with no inherited descriptor, and no other
+// crate may reach either, in its tests either.
 #[test]
-fn only_the_connector_crate_uses_the_audited_crate() {
+fn only_the_connector_and_host_crates_use_the_audited_crate() {
     let names = crates(&["rdlt-adopt", "rdlt-connector", "rdlt-host", "rdlt-engine"]);
-    let allowed = edge("rdlt-connector", "rdlt-adopt", false);
-    assert_eq!(check(&names, &[allowed]), Vec::new());
-    for case in [
+    let allowed = [
+        edge("rdlt-connector", "rdlt-adopt", false),
         edge("rdlt-host", "rdlt-adopt", false),
+    ];
+    assert_eq!(check(&names, &allowed), Vec::new());
+    for case in [
         edge("rdlt-engine", "rdlt-adopt", false),
         edge("rdlt-host", "rdlt-adopt", true),
         edge("rdlt-connector", "rdlt-adopt", true),

@@ -24,7 +24,13 @@ use crate::workspaces;
 pub(crate) const AUDITED_CRATE: &str = "crates/rdlt-adopt";
 
 /// Every file of the audited crate, relative to it.
-const AUDITED_FILES: &[&str] = &["Cargo.toml", "src/lib.rs", "src/tests.rs"];
+pub(crate) const AUDITED_FILES: &[&str] = &[
+    "Cargo.toml",
+    "src/lib.rs",
+    "src/tests.rs",
+    "src/exec.rs",
+    "src/exec/tests.rs",
+];
 
 /// Macros that compile another file's contents into the file that calls them.
 const INCLUDES: &[&str] = &["include", "include_str", "include_bytes"];

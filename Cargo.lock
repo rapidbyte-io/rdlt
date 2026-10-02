@@ -1990,6 +1990,7 @@ dependencies = [
 name = "rdlt-adopt"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "nix",
 ]
 
