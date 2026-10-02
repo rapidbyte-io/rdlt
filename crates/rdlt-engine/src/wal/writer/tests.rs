@@ -431,3 +431,60 @@ async fn a_commit_after_a_failed_append_fails_as_retryably_as_the_append_did() {
         .expect("the writer ends");
     }
 }
+
+#[tokio::test]
+async fn a_retired_table_s_schema_frame_is_kept_no_more() {
+    let store = Arc::new(MemoryWal::default());
+    drive(Arc::clone(&store), |writer| async move {
+        for command in [table(0), table(1), batch(1, 0), batch(1, 1)] {
+            send(&writer, command).await;
+        }
+        let (command, answer) = commit(1, &[1]);
+        send(&writer, command).await;
+        answer.await.expect("the writer answers").expect("durable");
+        send(&writer, Command::Retire { tables: vec![0] }).await;
+        // The next chunk still describes the table that stays; the retired one is unknown.
+        send(&writer, batch(2, 1)).await;
+        let (command, answer) = commit(2, &[2]);
+        send(&writer, command).await;
+        answer.await.expect("the writer answers").expect("durable");
+        send(&writer, batch(3, 0)).await;
+        let (command, answer) = commit(3, &[3]);
+        send(&writer, command).await;
+        // The batch failed: the writer answers every later command with its failure.
+        let failed = answer.await.expect("the writer answers").unwrap_err();
+        assert_eq!(failed.kind(), ErrorKind::Wal);
+    })
+    .await
+    .expect("the writer ends");
+    let second = chunks(&store)
+        .into_iter()
+        .find(|(number, _)| *number == 1)
+        .expect("a second chunk");
+    assert_eq!(second.1[..3], ["header", "schema 1", "batch 2 of 1"]);
+}
+
+#[tokio::test]
+async fn a_retired_table_never_appended_releases_what_its_frame_held() {
+    let store = Arc::new(MemoryWal::default());
+    let budget = crate::budget::MemoryBudget::new(1 << 20);
+    let observed = budget.clone();
+    drive(Arc::clone(&store), |writer| async move {
+        let Command::Table { index, frame, .. } = table(0) else {
+            unreachable!("a table's command")
+        };
+        let held = budget
+            .acquire_log(100)
+            .await
+            .expect("the log's share has room");
+        let held = Box::new(held);
+        send(&writer, Command::Table { index, frame, held }).await;
+        send(&writer, Command::Retire { tables: vec![0] }).await;
+        let (command, answer) = commit(1, &[]);
+        send(&writer, command).await;
+        answer.await.expect("the writer answers").expect("durable");
+        assert_eq!(observed.reserved(), 0);
+    })
+    .await
+    .expect("the writer ends");
+}
