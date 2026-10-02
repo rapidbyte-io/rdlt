@@ -16,8 +16,8 @@ fn the_default_budget_admits_these_limits() {
             // Half the 64 MiB a request for lowering takes, less a row's nulls and metadata in
             // a table of every column it may have.
             frame_bytes: 32 * MIB - 7_489 * 33 - 1_024,
-            // A third of the 100 MiB pushes may take.
-            json_push_bytes: 100 * MIB / 3,
+            // A third of the 84 MiB pushes may take.
+            json_push_bytes: 84 * MIB / 3,
             // A cursor waiting and an answer for each of sixteen reads, and half the share.
             cursor_bytes: 4 * MIB / 34,
             // A read keeps 4 MiB: half for its dictionaries, half for its schema, whose
@@ -35,7 +35,8 @@ fn the_default_budget_admits_these_limits() {
 #[test]
 fn the_least_memory_admits_these_limits() {
     assert_eq!(least(16), 33_811_576);
-    assert_eq!(least(1), 33_835_072);
+    // One read keeps all of the reads' share, and a frame beside it fits what pushes may take.
+    assert_eq!(least(1), 53_687_073);
     let limits = admitted(Shares::of(least(16)), 16);
     assert_eq!(
         (
@@ -46,7 +47,7 @@ fn the_least_memory_admits_these_limits() {
             limits.schema_bytes,
             limits.schema_columns
         ),
-        (MIN_FRAME_BYTES, 4_402_549, 15_538, 264_152, 52_830, 943)
+        (MIN_FRAME_BYTES, 3_698_142, 15_538, 264_152, 52_830, 943)
     );
 }
 

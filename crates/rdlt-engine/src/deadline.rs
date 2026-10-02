@@ -1,4 +1,6 @@
-//! Every call the engine makes into a connector, but a read, ended at the engine's wait for it.
+//! Every call the engine makes into a connector, but a read, ended at the engine's wait for it;
+//! and every call, reads too, made [charging](rdlt_wire::bounded::charging) what decoding its
+//! answers holds to the run's memory budget, where the connector is remote.
 //!
 //! A read may be silent for as long as its source has nothing to send; any other call that does
 //! not return keeps a run from ending, whether the connector is served out of process, where its
@@ -7,6 +9,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,18 +21,41 @@ use rdlt_connector::{
     SegmentId, Source, StreamName, StreamState, TableChange, TableRef, WriteStats,
 };
 
+use rdlt_wire::bounded::{Charge, charging};
+
+use crate::budget::{Decoding, MemoryBudget};
 use crate::env::Env;
 
-/// The engine's wait for a call into a connector, on its clock.
+/// The engine's wait for a call into a connector, on its clock, and what decoding its answers
+/// is charged to.
 #[derive(Clone)]
 pub(crate) struct Waits {
     env: Arc<dyn Env>,
     wait: Duration,
+    charge: Option<Arc<dyn Charge>>,
 }
 
 impl Waits {
     pub(crate) fn new(env: Arc<dyn Env>, wait: Duration) -> Self {
-        Self { env, wait }
+        Self {
+            env,
+            wait,
+            charge: None,
+        }
+    }
+
+    /// The waits, what decoding each call's answers holds charged to `budget`.
+    pub(crate) fn charging(mut self, budget: &MemoryBudget) -> Self {
+        self.charge = Some(Arc::new(Decoding(budget.clone())));
+        self
+    }
+
+    /// `call`, what decoding its answers holds charged where the waits charge it.
+    async fn charged<T>(&self, call: impl Future<Output = T>) -> T {
+        match &self.charge {
+            Some(charge) => charging(Arc::clone(charge), call).await,
+            None => call.await,
+        }
     }
 
     /// `source`, its calls but reads ended at the wait.
@@ -55,7 +81,7 @@ impl Waits {
         tokio::select! {
             biased;
             // An answer and the wait's end together: the answer wins.
-            answer = call => answer,
+            answer = self.charged(call) => answer,
             () = self.env.sleep(wait) => Err(ConnectorError::new(
                 ConnectorErrorKind::Transient,
                 format!("{what} took longer than the engine's wait of {wait:?}"),
@@ -91,7 +117,7 @@ impl Source for WaitedSource {
     }
 
     fn read(&self, request: ReadRequest, sink: PartitionSink) -> BoxFuture<'_, Result<()>> {
-        self.inner.read(request, sink)
+        Box::pin(self.waits.charged(self.inner.read(request, sink)))
     }
 
     fn committed<'a>(

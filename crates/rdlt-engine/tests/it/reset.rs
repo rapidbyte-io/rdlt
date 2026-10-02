@@ -579,3 +579,69 @@ async fn a_reset_of_no_streams_is_refused_before_it_fences_anything() {
         .await
         .expect("the running session commits");
 }
+
+/// `inner`, noting whether each discovery it answers is made charging what decoding a remote
+/// connector's answers holds to a memory budget.
+struct Noting {
+    inner: Arc<dyn Source>,
+    charged: Arc<parking_lot::Mutex<Vec<bool>>>,
+}
+
+impl Source for Noting {
+    fn check(&self) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.inner.check()
+    }
+
+    fn discover(&self) -> BoxFuture<'_, rdlt_connector::Result<rdlt_connector::Catalog>> {
+        Box::pin(async move {
+            let charged = rdlt_wire::bounded::current().is_some();
+            self.charged.lock().push(charged);
+            self.inner.discover().await
+        })
+    }
+
+    fn plan<'a>(
+        &'a self,
+        stream: &'a rdlt_connector::StreamName,
+        state: &'a rdlt_connector::StreamState,
+    ) -> BoxFuture<'a, rdlt_connector::Result<rdlt_connector::PartitionPlan>> {
+        self.inner.plan(stream, state)
+    }
+
+    fn read(
+        &self,
+        request: rdlt_connector::ReadRequest,
+        sink: rdlt_connector::PartitionSink,
+    ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
+        self.inner.read(request, sink)
+    }
+
+    fn committed<'a>(
+        &'a self,
+        stream: &'a rdlt_connector::StreamName,
+        cursors: &'a [(rdlt_connector::PartitionId, rdlt_connector::Cursor)],
+    ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
+        self.inner.committed(stream, cursors)
+    }
+}
+
+#[tokio::test]
+async fn a_reset_charges_what_decoding_its_connectors_answers_holds() {
+    load(Target::Memory, "noted", "noted_reset").await;
+    let charged = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let source = Arc::new(Noting {
+        inner: log("noted").await,
+        charged: Arc::clone(&charged),
+    });
+    engine(commit_every(16))
+        .reset(
+            "noted",
+            &["events"],
+            ResetScope::Positions,
+            source,
+            Target::Memory.destination("noted_reset").await,
+        )
+        .await
+        .expect("the reset commits");
+    assert_eq!(*charged.lock(), [true]);
+}

@@ -38,6 +38,14 @@ pub(crate) const COLUMN_RECORD: u64 = 512;
 /// and a read that would keep more fails with `limit_exceeded` at the frame that would pass it.
 pub(crate) const READ_SHARE: u64 = 4;
 
+/// What decoding a connector's answers holds, from before a message is decoded until it is: a
+/// 16th of the budget, 16 MiB of the default 256 MiB.
+///
+/// A remote connector's catalogs, plans, opened state and other answers decode into many times
+/// the bytes they take on the wire; each is charged at what its scan counts before it is decoded,
+/// and waits for no push.
+pub(crate) const CONTROL_SHARE: u64 = 16;
+
 /// The most one request for what lowering holds may take: a quarter of the budget.
 ///
 /// One row that takes more to lower fails its write with `row_exceeds_budget`. As much of the
