@@ -13,9 +13,10 @@ use rdlt_connector::{ColumnPath, Permit, StreamName};
 use super::allowance::{Cutter, PartPiece};
 use super::pieces::{self, Lowered};
 use super::{
-    Held, LOWERING_WINDOW, OpenSegment, PartitionContext, PartitionJob, queue, reserve,
-    row_too_large, schema_of, stamp,
+    Held, OpenSegment, PartitionContext, PartitionJob, full, queue, reserve, row_too_large,
+    schema_of, stamp,
 };
+use crate::budget::Shares;
 use crate::compute::run_all;
 use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
@@ -83,7 +84,7 @@ pub(super) async fn write_normalized(
             let taken = allowance.take(&context.budget, &context.cancel, &piece);
             let taken = taken.await?;
             let mut window = vec![(piece, taken)];
-            while window.len() < LOWERING_WINDOW {
+            while !full(window.len()) {
                 let Some(taken) = cut.peek().and_then(|next| allowance.try_take(next)) else {
                     break;
                 };
@@ -123,6 +124,16 @@ async fn lower(
     run_all(context.env.compute(), lowerings).await
 }
 
+/// Bytes: the most the rows of a piece cut before its split may take as they arrive, and a row's
+/// alone: what the split makes is twice that, within a piece's share of `shares`, and a row's
+/// within half a request's.
+pub(super) fn split_bounds(shares: Shares) -> (u64, u64) {
+    (
+        shares.piece / SPLIT_COPIES,
+        shares.request / SPLIT_COPIES / 2,
+    )
+}
+
 /// `units` cut into pieces by what splitting their rows makes, on the compute pool: a normalized
 /// unit's tables are known only once it is split, so its pieces are cut before, as they arrive,
 /// and their parts again by their own tables once they are.
@@ -131,15 +142,15 @@ async fn sliced(
     context: &PartitionContext,
     units: Vec<(Vec<RecordBatch>, Held)>,
 ) -> Result<Vec<(Vec<RecordBatch>, Held, u64)>, Error> {
-    let shares = context.budget.shares();
+    let (max, limit) = split_bounds(context.budget.shares());
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
         stored: Vec::new(),
         row: LINEAGE_ROW,
         item: LINEAGE_ITEM,
         // What the split makes is measured as rows expand, and may be twice that.
-        max: shares.piece / SPLIT_COPIES,
-        limit: shares.request / (2 * SPLIT_COPIES),
+        max,
+        limit,
     };
     let mut cut = Vec::with_capacity(units.len());
     for (parts, held) in units {

@@ -49,8 +49,9 @@ pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
         schema_columns: columns,
         frame_bytes: shares.intake.saturating_sub(kept).min(row),
         json_push_bytes: shares.intake / JSON_CHARGE,
-        cursor_bytes: (shares.cursors / readers.saturating_add(1).saturating_mul(2))
-            .min(shares.log / (2 * RECORDED)),
+        // A quarter of the log's share, which a commit recording each cursor twice holds, is
+        // the cursors' share itself: the partitions' bound is the lesser.
+        cursor_bytes: shares.cursors / readers.saturating_add(1).saturating_mul(2),
         schema_bytes,
         dictionary_bytes: kept / 2,
         ..defaults
@@ -88,8 +89,7 @@ pub(crate) fn kept(shares: Shares, readers: usize) -> u64 {
 /// of [`rdlt_wire::limits::MIN_FRAME_BYTES`] among them, read by `readers` reads at once.
 pub(crate) fn least(readers: usize) -> u64 {
     let admits = |capacity: u64| admitted(Shares::of(capacity), readers).admit_peer().is_ok();
-    // What a budget admits grows with it, but for a byte of rounding: found by halving, then
-    // walked down past any budget a byte smaller that admits as much.
+    // What a budget admits grows with it: found by halving.
     let (mut low, mut high) = (0_u64, 1_u64 << 40);
     while low < high {
         let middle = low + (high - low) / 2;
@@ -98,9 +98,6 @@ pub(crate) fn least(readers: usize) -> u64 {
         } else {
             low = middle + 1;
         }
-    }
-    while low > 0 && admits(low - 1) {
-        low -= 1;
     }
     low
 }

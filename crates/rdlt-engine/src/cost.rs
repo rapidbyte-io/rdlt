@@ -160,26 +160,22 @@ impl Admission for Charging {
             .kept
             .fetch_add(bytes, Ordering::SeqCst)
             .saturating_add(bytes);
-        let within = (kept <= self.read_share).then(|| self.budget.keep(bytes));
-        match within {
-            Some(Ok(reservation)) => Ok(Box::new(Kept {
+        // Within its part, a read always finds room: the parts together are the share.
+        if kept <= self.read_share
+            && let Ok(reservation) = self.budget.keep(bytes)
+        {
+            return Ok(Box::new(Kept {
                 bytes,
                 total: Arc::clone(&self.kept),
                 _reservation: reservation,
-            })),
-            beyond => {
-                self.kept.fetch_sub(bytes, Ordering::SeqCst);
-                let limit = match beyond {
-                    Some(Err(large)) => large.limit.min(self.read_share),
-                    _ => self.read_share,
-                };
-                Err(ConnectorError::exceeds(LimitExceeded {
-                    name: "read kept bytes",
-                    limit,
-                    actual: kept,
-                }))
-            }
+            }));
         }
+        self.kept.fetch_sub(bytes, Ordering::SeqCst);
+        Err(ConnectorError::exceeds(LimitExceeded {
+            name: "read kept bytes",
+            limit: self.read_share,
+            actual: kept,
+        }))
     }
 }
 

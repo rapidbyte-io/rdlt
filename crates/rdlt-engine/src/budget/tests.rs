@@ -555,3 +555,31 @@ async fn a_part_split_off_a_reservation_is_released_on_its_own() {
     drop(rest);
     assert_eq!((budget.reserved(), budget.peak()), (0, 1_000));
 }
+
+#[tokio::test]
+async fn a_waiter_gone_before_it_is_admitted_gives_back_what_it_was_admitted() {
+    let budget = MemoryBudget::new(6_400);
+    // The cursors' share, a hundred bytes, held whole while a waiter queues behind it.
+    let holding = budget.acquire_cursor(100).await.unwrap();
+    let (_, receiver) = budget
+        .shared
+        .lock()
+        .wait(super::Class::Cursor, 60)
+        .expect("a share with room for it some day");
+    drop(receiver);
+    // Releasing admits the waiter, which is gone: what it was admitted goes back to the share
+    // under the lock its admission holds, without counting toward the peak.
+    let (done, released) = std::sync::mpsc::channel();
+    let releasing = std::thread::spawn(move || {
+        drop(holding);
+        done.send(()).ok();
+    });
+    released
+        .recv_timeout(Duration::from_secs(5))
+        .expect("releasing returns");
+    releasing.join().unwrap();
+    assert_eq!(budget.reserved(), 0);
+    assert_eq!(budget.peak(), 100);
+    let again = tokio::time::timeout(Duration::from_secs(5), budget.acquire_cursor(100));
+    assert_eq!(again.await.unwrap().unwrap().bytes(), 100);
+}

@@ -126,17 +126,14 @@ impl Pieces {
                 self.cut = Some(run);
                 break;
             }
-            let batch = &self.parts[self.part];
-            piece.parts.push(if self.row == 0 && run.rows == rows {
-                batch.clone()
-            } else {
-                batch.slice(self.row, run.rows)
-            });
+            piece
+                .parts
+                .push(self.parts[self.part].slice(self.row, run.rows));
             piece.rows += run.rows;
             piece.bytes = piece.bytes.saturating_add(run.bytes);
             self.row += run.rows;
         }
-        Ok((piece.rows > 0 || !piece.parts.is_empty()).then_some(piece))
+        Ok((piece.rows > 0).then_some(piece))
     }
 
     /// The next run of the batch being cut, from its row `self.row`.

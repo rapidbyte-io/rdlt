@@ -1744,3 +1744,35 @@ fn columns_a_batch_holds_nothing_in_are_nulls_as_the_destination_stores_them() {
     let created = lowering(&resolver, &Model::default(), &batch);
     assert_eq!(created.null_fill(ROWS), 0);
 }
+
+#[test]
+fn a_rows_metadata_of_bytes_costs_forty_bytes_a_column() {
+    let row_bytes = |capabilities: Capabilities, lineage: bool| {
+        let mut resolver = resolver(capabilities, plan(), &["id"]);
+        if lineage {
+            resolver.meta.id = Some("_rdlt_id".into());
+        }
+        let ids = batch(vec![("id", Arc::new(Int64Array::from(vec![1_i64])) as _)]);
+        let incoming = Incoming::declared(TableSchema::from_arrow(&ids.schema()).unwrap());
+        let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
+        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+        let metadata: Vec<LogicalType> = view
+            .physical
+            .iter()
+            .skip(view.model.columns.len() + 2)
+            .map(|field| field.logical_type().clone())
+            .collect();
+        let plan = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
+        (plan.row_bytes(), metadata)
+    };
+    // A keyed table's sequence, and a normalized row's id, are bytes: forty bytes a row each,
+    // an id's sixteen, its offset and its validity, rather than an empty value's slot.
+    assert_eq!(
+        row_bytes(capabilities(), false),
+        (40, vec![LogicalType::Binary])
+    );
+    assert_eq!(
+        row_bytes(capabilities(), true),
+        (80, vec![LogicalType::Binary, LogicalType::Binary])
+    );
+}

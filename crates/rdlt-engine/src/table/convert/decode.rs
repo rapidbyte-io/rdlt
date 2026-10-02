@@ -143,17 +143,14 @@ fn keyed(array: &ArrayRef, values: &DataType) -> Result<ArrayRef, ArrowError> {
     take(decoded.as_ref(), &places, CHECKED)
 }
 
-/// Whether a value of `data_type` holds a run-end encoding at any depth.
+/// Whether a value of `data_type`, taken through a null key, takes a run-end encoding from the
+/// place the key's bytes name: one of its own, or one in a struct's or a union's members.
+///
+/// Taken through a null key, a list takes none of its items and a dictionary none of its values,
+/// whatever they hold.
 fn holds_runs(data_type: &DataType) -> bool {
     match data_type {
         DataType::RunEndEncoded(..) => true,
-        DataType::Dictionary(_, values) => holds_runs(values),
-        DataType::List(item)
-        | DataType::LargeList(item)
-        | DataType::ListView(item)
-        | DataType::LargeListView(item)
-        | DataType::FixedSizeList(item, _)
-        | DataType::Map(item, _) => holds_runs(item.data_type()),
         DataType::Struct(fields) => fields.iter().any(|field| holds_runs(field.data_type())),
         DataType::Union(fields, _) => fields
             .iter()
@@ -220,10 +217,8 @@ fn within(values: &ArrayRef, first: usize, named: usize) -> ArrayRef {
     if first == 0 && named == values.len() {
         Arc::clone(values)
     } else {
-        values.slice(
-            first.min(values.len()),
-            named.min(values.len() - first.min(values.len())),
-        )
+        let first = first.min(values.len());
+        values.slice(first, named.min(values.len().saturating_sub(first)))
     }
 }
 
@@ -275,3 +270,6 @@ fn keyed_runs<R: RunEndIndexType>(array: &ArrayRef, keys: &UInt64Array) -> (Arra
     });
     (Arc::clone(runs.values()), named.collect())
 }
+
+#[cfg(test)]
+mod tests;

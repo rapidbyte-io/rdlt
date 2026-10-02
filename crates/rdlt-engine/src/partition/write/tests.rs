@@ -308,3 +308,81 @@ fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
     let (data, rows) = split_changes(&stream, mode, &piece).unwrap();
     assert_eq!((data.num_rows(), rows.op.len()), (5, 5));
 }
+
+#[test]
+fn a_unit_whose_every_row_its_stream_ignores_is_counted_and_dropped() {
+    let mode = crate::partition::ChangeMode {
+        merge: true,
+        deletes: crate::plan::DeleteMode::Ignore,
+        truncates: crate::plan::OnTruncate::Ignore,
+        partial_updates: false,
+    };
+    let job = PartitionJob {
+        changes: Some(mode),
+        ..job()
+    };
+    let mut open = super::super::OpenSegment::new(rdlt_connector::SegmentId(1));
+    // What the units before it counted.
+    (open.deletes_ignored, open.truncates_ignored) = (2, 3);
+    // Seven deletes, the last two of them made truncates.
+    let deletes = changes(0, 7);
+    let ops = (0..7).map(|row| {
+        let op = if row < 5 {
+            rdlt_connector::ChangeOp::Delete
+        } else {
+            rdlt_connector::ChangeOp::Truncate
+        };
+        op.code()
+    });
+    let mut columns = deletes.columns().to_vec();
+    columns[1] = Arc::new(arrow_array::Int8Array::from_iter_values(ops));
+    let unit = RecordBatch::try_new(deletes.schema(), columns).unwrap();
+    let held = Held::of(Vec::new(), std::slice::from_ref(&unit));
+    let judged = super::judged(&job, &mut open, vec![(vec![unit], held)]).unwrap();
+    assert!(judged.is_empty());
+    assert_eq!((open.deletes_ignored, open.truncates_ignored), (7, 5));
+}
+
+#[test]
+fn a_piece_and_a_row_take_their_shares_over_what_is_reserved_for_them() {
+    let shares = crate::budget::Shares::of(64 << 20);
+    assert_eq!((shares.piece, shares.request), (4 << 20, 16 << 20));
+    assert_eq!(super::piece_bounds(shares, 1), (4 << 20, 16 << 20));
+    assert_eq!(super::piece_bounds(shares, 2), (2 << 20, 8 << 20));
+    // Before its split, a piece's rows as they arrive take half a piece, and a row a quarter of
+    // a request: the split makes twice that.
+    assert_eq!(super::normalized::split_bounds(shares), (2 << 20, 4 << 20));
+}
+
+#[test]
+fn eight_pieces_are_lowered_together_at_most() {
+    assert!(!super::full(7));
+    assert!(super::full(8));
+    assert!(super::full(9));
+}
+
+/// A piece held in a window: a run that lowers nothing, holding `bytes` of `budget`.
+fn windowed(window: &mut super::Window, budget: &MemoryBudget, bytes: u64) {
+    let lowering = super::Lowering {
+        allocations: Arc::new(parking_lot::Mutex::new(Allocations::default())),
+        reserved: budget.try_acquire_working(bytes).unwrap(),
+        unit: None,
+    };
+    let run: super::Run = Box::new(|| Err(crate::error::Error::internal("not lowered")));
+    window.push(run, lowering);
+}
+
+#[test]
+fn a_window_reserves_a_piece_beside_those_it_holds_only_where_the_budget_has_room_at_once() {
+    let budget = MemoryBudget::new(64 << 20);
+    let mut window = super::Window::default();
+    // An empty window reserves nothing: its piece waits for the budget like any request.
+    assert!(window.reserve(&budget, 1).is_none());
+    windowed(&mut window, &budget, 1 << 20);
+    windowed(&mut window, &budget, 1 << 20);
+    assert_eq!(window.len(), 2);
+    let beside = window.reserve(&budget, 1 << 20).expect("room at once");
+    assert_eq!(beside.bytes(), 1 << 20);
+    // More than a request may take is never reserved at once.
+    assert!(window.reserve(&budget, 17 << 20).is_none());
+}
