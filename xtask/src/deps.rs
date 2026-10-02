@@ -19,7 +19,7 @@ const RULES: &[(&str, &[&str])] = &[
     ),
     ("rdlt-connector-macros", &[]),
     ("rdlt-wire", &[]),
-    ("rdlt-host", &["rdlt-connector", "rdlt-wire"]),
+    ("rdlt-host", &["rdlt-adopt", "rdlt-connector", "rdlt-wire"]),
     ("rdlt-engine", &["rdlt-connector", "rdlt-wire"]),
     ("rdlt-sql", &["rdlt-engine", "rdlt-connector"]),
     (
@@ -54,7 +54,7 @@ const RULES: &[(&str, &[&str])] = &[
 ];
 
 /// Crates nothing may use as a dev-dependency: those nothing depends on at all, and the audited
-/// `unsafe` crate, which only the crate [`RULES`] names may use.
+/// `unsafe` crate, which only the crates [`RULES`] names may use.
 const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-cli", "rdlt-sim", "xtask"];
 
 /// A dependency of one workspace crate on another.

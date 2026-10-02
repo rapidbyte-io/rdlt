@@ -24,7 +24,10 @@ fn tree() -> tempfile::TempDir {
         &format!("{AUDITED_CRATE}/Cargo.toml"),
         manifest,
     );
-    for file in ["src/lib.rs", "src/tests.rs"] {
+    for file in super::AUDITED_FILES
+        .iter()
+        .filter(|file| file.starts_with("src/"))
+    {
         let contents = "#[expect(unsafe_code, reason = \"audited\")]\nfn f() {}\n";
         write(root.path(), &format!("{AUDITED_CRATE}/{file}"), contents);
     }
@@ -242,7 +245,10 @@ fn the_audited_files_bring_in_no_other_file() {
             4,
         ),
     ];
-    for file in ["src/lib.rs", "src/tests.rs"] {
+    for file in super::AUDITED_FILES
+        .iter()
+        .filter(|file| file.starts_with("src/"))
+    {
         for (source, line) in sources {
             let found = in_file(&format!("{AUDITED_CRATE}/{file}"), source);
             assert_eq!(
