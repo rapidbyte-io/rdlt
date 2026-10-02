@@ -155,6 +155,15 @@ fn a_merge_key_of_no_column_or_of_columns_the_table_lacks_is_refused() {
 }
 
 #[test]
+fn a_recorded_merge_key_of_no_column_is_refused_rather_than_indexed() {
+    // A staged segment's record names the key it was written by; one edited to name no column
+    // decodes, and its commit is refused before any statement indexes the key's first column.
+    let key = crate::sqlgen::merge_key("[]", "seq").unwrap();
+    assert!(key.columns.is_empty());
+    invalid(published(&key, &HELD), "a recorded key of no column");
+}
+
+#[test]
 fn a_merge_key_s_deletion_time_and_history_columns_are_the_table_s() {
     for (kind, key) in keys() {
         let history = key.history.iter().flat_map(|history| {

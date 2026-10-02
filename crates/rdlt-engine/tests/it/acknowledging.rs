@@ -494,6 +494,28 @@ async fn a_source_that_refuses_every_report_fails_the_run_once_no_attempt_is_lef
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_report_refused_with_no_wait_fails_a_default_run_once_no_attempt_is_left() {
+    let (script, source) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
+        .connect("ack_no_wait")
+        .await;
+    script.limited_acks.store(usize::MAX, Ordering::SeqCst);
+    *script.limited_wait.lock() = Some(Duration::ZERO);
+    // One commit, at the partition's end, lands every row in the first attempt.
+    let running = engine(commit_every(100)).run(
+        incremental("ack-no-wait"),
+        source,
+        memory("ack_no_wait").await,
+    );
+    // Each attempt after the first lands a commit that records the partition where it stood:
+    // no progress, so the default policy's five attempts end the run.
+    let outcome = tokio::time::timeout(Duration::from_secs(600), running).await;
+    let outcome = outcome.expect("the run ends once no attempt is left");
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    assert_eq!(outcome.report.attempted, 5);
+    assert_eq!(outcome.report.rows, 10);
+}
+
 /// A stream of fifteen rows in batches of five, with a checkpoint after the second batch and
 /// none after the last: its partition ends done after its last checkpoint.
 fn ending_past_its_checkpoint(replayable: bool) -> ScriptStream {
