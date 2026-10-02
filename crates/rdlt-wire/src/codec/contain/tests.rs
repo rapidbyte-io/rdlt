@@ -31,6 +31,9 @@ impl Reached {
 /// Counts the panics that reach the hook of threads `counted` holds for; those of other threads,
 /// other tests' among them, go to the hook installed before.
 fn counting(counted: impl Fn(&thread::Thread) -> bool + Send + Sync + 'static) -> Reached {
+    // The decoder wraps the hook once, on whichever thread decodes first: that is over before
+    // this test takes the hook, so the two cannot each take it and one lose the other's.
+    super::QUIET.call_once(quieted);
     let turn = TURN.lock().unwrap_or_else(PoisonError::into_inner);
     let count = Arc::new(AtomicUsize::new(0));
     let (seen, before) = (Arc::clone(&count), panic::take_hook());
