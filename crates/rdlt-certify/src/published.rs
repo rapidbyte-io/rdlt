@@ -17,12 +17,22 @@ use crate::protocol::{configure_request, request};
 use crate::target::Target;
 
 /// What reads back what the destination `target` reaches published, with `config`.
-#[derive(Debug)]
 pub struct ReadBackProbe<'a> {
     target: &'a Target,
     config: String,
     /// Why the handshake offering the read-back failed, when it did: each read-back fails so.
     failed: Option<String>,
+}
+
+/// Shows the target alone: the configuration may hold credentials, and what failed is the
+/// connector's own words.
+impl std::fmt::Debug for ReadBackProbe<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ReadBackProbe")
+            .field("target", self.target)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A probe reading back what the destination `target` reaches published, with `config`; `None`

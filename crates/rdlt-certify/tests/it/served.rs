@@ -226,3 +226,21 @@ async fn s_ack_does_not_apply_through_the_protocol_to_a_source_that_tells_nothin
         "{report}"
     );
 }
+
+#[tokio::test]
+async fn a_read_back_probe_shows_nothing_of_its_configuration_or_of_what_its_connector_said() {
+    use rdlt_connector::readable_destination_factory;
+    let served =
+        Served::new().with_destination(readable_destination_factory::<MemoryDestination>());
+    let target = Target::served(served);
+    // A field the destination does not know: its handshake fails, saying so.
+    let config = serde_json::json!({ "store": "probe_debug", "password": "hunter2-SECRET" });
+    let probe = rdlt_certify::read_back(&target, &config)
+        .await
+        .expect("a probe whose read-backs fail");
+    let shown = format!("{probe:?} {probe:#?}");
+    assert!(shown.contains("ReadBackProbe"), "{shown}");
+    for hidden in ["hunter2", "password", "probe_debug", "failed"] {
+        assert!(!shown.contains(hidden), "{hidden}: {shown}");
+    }
+}

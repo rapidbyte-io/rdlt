@@ -6,7 +6,7 @@ mod session;
 #[cfg(test)]
 mod tests;
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,7 +18,9 @@ use rdlt_certify::{
     certify_destination_observed, certify_source_observed, json, markdown, plain, read_back,
 };
 use rdlt_connector::ConnectorId;
-use rdlt_host::{ConnectorRef, Endpoint, Identity, Local, Remote, StopsSpawned};
+use rdlt_host::{
+    Bubblewrap, ConnectorRef, Endpoint, Identity, Local, Redactions, Remote, StopsSpawned,
+};
 use session::{STOPPING, Session, ending, signalled};
 
 /// Every clause that applies to the connector was seen to be met.
@@ -35,6 +37,10 @@ const IO: u8 = 74;
 /// Certifies a connector against the protocol's conformance clauses.
 #[derive(Debug, Parser)]
 #[command(name = "rdlt-certify", version)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each is a switch of the command line, independent of the others"
+)]
 struct Args {
     /// The connector: its binary's path, or the `grpcs://host:port` endpoint it listens at.
     #[arg(required_unless_present = "clauses")]
@@ -42,12 +48,24 @@ struct Args {
     /// Certify this role alone; by default, every role the connector serves.
     #[arg(long, value_enum)]
     role: Option<Role>,
-    /// The connector's configuration, as JSON.
-    #[arg(long, default_value = "{}", conflicts_with = "config_file")]
-    config: String,
-    /// A file holding the connector's configuration, as JSON.
-    #[arg(long)]
+    /// A file holding the connector's configuration, as JSON, or `-` to read it from standard
+    /// input; an empty object without it; a text value may refer to a secret as `${env:NAME}`
+    /// or `${file:/absolute/path}`, which no report then shows.
+    #[arg(long, value_name = "PATH")]
     config_file: Option<PathBuf>,
+    /// Runs the connector's binary with your own access to files, the network and other
+    /// processes, in no sandbox: for a binary you trust as you trust this command.
+    #[arg(long, conflicts_with_all = ["grant_read", "grant_write", "grant_network"])]
+    trusted: bool,
+    /// A path the sandboxed connector may read.
+    #[arg(long, value_name = "PATH")]
+    grant_read: Vec<PathBuf>,
+    /// A path the sandboxed connector may read and write.
+    #[arg(long, value_name = "PATH")]
+    grant_write: Vec<PathBuf>,
+    /// Lets the sandboxed connector reach the network.
+    #[arg(long)]
+    grant_network: bool,
     /// An environment variable a spawned connector keeps; it otherwise starts with none.
     #[arg(long = "env", value_name = "NAME")]
     env: Vec<String>,
@@ -129,10 +147,18 @@ pub(crate) fn main() -> ExitCode {
     match ran {
         Ok(code) => ExitCode::from(code),
         Err(Ended(code, message)) => {
+            let message = redactions().scrubbed(message);
             writeln!(std::io::stderr(), "rdlt-certify: {message}").ok();
             ExitCode::from(code)
         }
     }
+}
+
+/// The secrets the configuration's references resolved to: nothing this command prints holds
+/// one.
+pub(crate) fn redactions() -> &'static Redactions {
+    static REDACTIONS: std::sync::OnceLock<Redactions> = std::sync::OnceLock::new();
+    REDACTIONS.get_or_init(Redactions::new)
 }
 
 fn run(args: &Args) -> Result<u8, Ended> {
@@ -305,19 +331,51 @@ fn ran(report: &Report) -> bool {
         .any(|result| !matches!(result.outcome, Outcome::Inapplicable(_)))
 }
 
-/// The configuration the command line gives, as JSON.
+/// Bytes read of a configuration at most, one beyond what a configuration may hold.
+const CONFIG_READ: u64 = rdlt_host::limits::CONFIG_BYTES as u64 + 1;
+
+/// The configuration the command line names, from its file or from standard input, with each
+/// secret it refers to resolved, and kept from everything printed from here on.
+///
+/// It is never taken from the command line itself, which other users of the machine can read.
 fn config(args: &Args) -> Result<serde_json::Value, Ended> {
-    let (text, source) = match &args.config_file {
-        Some(path) => {
-            let text = std::fs::read_to_string(path).map_err(|error| {
-                Ended(IO, format!("reading {} failed: {error}", path.display()))
-            })?;
-            (text, path.display().to_string())
-        }
-        None => (args.config.clone(), "--config".to_owned()),
+    let Some(path) = &args.config_file else {
+        return Ok(serde_json::json!({}));
     };
-    serde_json::from_str(&text)
-        .map_err(|error| Ended(USAGE, format!("{source} is no JSON configuration: {error}")))
+    let (read, source) = if path.as_os_str() == "-" {
+        let mut text = String::new();
+        let read = std::io::stdin()
+            .lock()
+            .take(CONFIG_READ)
+            .read_to_string(&mut text);
+        (read.map(|_| text), "standard input".to_owned())
+    } else {
+        let opened = std::fs::File::open(path);
+        let read = opened.and_then(|file| {
+            let mut text = String::new();
+            file.take(CONFIG_READ)
+                .read_to_string(&mut text)
+                .map(|_| text)
+        });
+        (read, path.display().to_string())
+    };
+    let text = read.map_err(|error| Ended(IO, format!("reading {source} failed: {error}")))?;
+    // What is wrong with it is said without quoting it.
+    let unusable = |error: rdlt_host::SecretError| {
+        let cause = std::error::Error::source(&error);
+        let cause = cause.map(|cause| format!(": {cause}")).unwrap_or_default();
+        let message = format!("the configuration in {source} cannot be used: {error}{cause}");
+        Ended(USAGE, message)
+    };
+    let held = rdlt_host::Config::parse(text).map_err(&unusable)?;
+    let resolving = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
+    let secrets = rdlt_host::Secrets::new();
+    let resolved = resolving
+        .block_on(held.resolved(&secrets, redactions()))
+        .map_err(&unusable)?;
+    serde_json::from_str(&resolved).map_err(|_| unusable(rdlt_host::SecretError::NotJson))
 }
 
 /// The connector the command line names, and how to reach it.
@@ -373,16 +431,39 @@ fn target(args: &Args) -> Result<Target, Ended> {
     if !executable {
         return Err(Ended(IO, format!("{named} is not executable")));
     }
-    let local = args
-        .env
-        .iter()
-        .fold(Local::trusting_binaries(), Local::env_passthrough);
-    Ok(Target::spawned(local, ConnectorRef::new(id).path(path)))
+    Ok(Target::spawned(
+        local(args)?,
+        ConnectorRef::new(id).path(path),
+    ))
 }
 
-/// Prints `text` on standard output: a closed pipe ends quietly, and any other failure is an I/O
-/// error.
+/// What spawns the connector's binary: inside a sandbox, with what the command line grants
+/// it, unless the command line states the binary is trusted.
+fn local(args: &Args) -> Result<Local, Ended> {
+    let local = if args.trusted {
+        Local::trusting_binaries()
+    } else {
+        let sandbox = Bubblewrap::new();
+        sandbox.usable().map_err(|error| {
+            let message = format!("{error}; --trusted runs a binary you trust in no sandbox");
+            Ended(IO, message)
+        })?;
+        let local = Local::sandboxed(sandbox);
+        let local = args.grant_read.iter().fold(local, Local::grant_read);
+        let local = args.grant_write.iter().fold(local, Local::grant_write);
+        if args.grant_network {
+            local.grant_network()
+        } else {
+            local
+        }
+    };
+    Ok(args.env.iter().fold(local, Local::env_passthrough))
+}
+
+/// Prints `text` on standard output, scrubbed of the configuration's secrets: a closed pipe
+/// ends quietly, and any other failure is an I/O error.
 fn print(text: &str) -> Result<(), Ended> {
+    let text = redactions().scrubbed(text.to_owned());
     let mut stdout = std::io::stdout().lock();
     match stdout
         .write_all(text.as_bytes())

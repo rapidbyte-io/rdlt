@@ -8,16 +8,54 @@ use tokio::process::Command;
 use crate::listening::listening;
 use crate::spawned::example;
 
+/// Runs `rdlt-certify` with `args`, as the tests of what it certifies run it: a configuration
+/// given after `--config` is written to its standard input, since it takes none on its command
+/// line, and a connector's binary is one the tests trust, unless `args` say how it is confined.
 async fn certify(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
+    let config = args.iter().position(|arg| *arg == "--config");
+    let mut given: Vec<&str> = args.to_vec();
+    let config = config.map(|at| {
+        let config = given.remove(at + 1);
+        given.splice(at..=at, ["--config-file", "-"]);
+        config
+    });
+    let spawned = given
+        .first()
+        .is_some_and(|target| std::path::Path::new(target).is_file());
+    let confined = given
+        .iter()
+        .any(|arg| arg.starts_with("--grant") || *arg == "--sandboxed");
+    given.retain(|arg| *arg != "--sandboxed");
+    if spawned && !confined {
+        given.push("--trusted");
+    }
+    certify_given(&given, config.unwrap_or_default(), &[]).await
+}
+
+/// Runs `rdlt-certify` with exactly `args`, `input` on its standard input and `env` in its
+/// environment.
+async fn certify_given(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
+    use tokio::io::AsyncWriteExt as _;
+    let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
         .args(args)
         .env(
             "LLVM_PROFILE_FILE",
             std::env::var_os("LLVM_PROFILE_FILE").unwrap_or_default(),
         )
-        .output()
+        .envs(env.iter().copied())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("rdlt-certify runs");
+    let mut stdin = certifying.stdin.take().expect("its input is piped");
+    // It may end without reading its input: a closed pipe is no failure of the test.
+    stdin.write_all(input.as_bytes()).await.ok();
+    drop(stdin);
+    certifying
+        .wait_with_output()
         .await
-        .expect("rdlt-certify runs")
+        .expect("rdlt-certify ends")
 }
 
 fn code(output: &Output) -> Option<i32> {
@@ -425,9 +463,13 @@ async fn a_wrong_command_line_exits_sixty_four() {
         .into_iter()
         .chain(tls)
         .collect::<Vec<_>>();
-    let cases: [&[&str]; 10] = [
+    let cases: [&[&str]; 13] = [
         &[],
-        &["connector", "--config", "{not json"],
+        // No configuration is taken on the command line, where every user can read it.
+        &["connector", "--trusted", "--config", "{}"],
+        &["connector", "--trusted", "--grant-network"],
+        &["connector", "--trusted", "--grant-read", "/usr"],
+        &["connector", "--trusted", "--grant-write", "/tmp"],
         &["grpcs://localhost:1"],
         &["connector", "--role", "sink"],
         &no_port,
@@ -635,6 +677,7 @@ async fn an_interrupted_or_terminated_certification_stops_its_connectors_before_
                 "destination",
                 "--env",
                 "LLVM_PROFILE_FILE",
+                "--trusted",
             ])
             .env(
                 "LLVM_PROFILE_FILE",
@@ -683,7 +726,7 @@ async fn a_second_interrupt_kills_what_a_certification_spawned_and_ends_it_at_on
     let directory = tempfile::tempdir().expect("a temporary directory");
     let launched = stubborn(directory.path());
     let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
-        .args([launched.as_str(), "--role", "destination"])
+        .args([launched.as_str(), "--role", "destination", "--trusted"])
         .stdout(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
@@ -758,4 +801,167 @@ async fn a_target_that_is_no_file_is_not_repeated_in_what_is_reported() {
         let said = String::from_utf8_lossy(&said);
         assert!(!said.contains("hunter2"), "{target}: {said}");
     }
+}
+
+#[tokio::test]
+async fn a_configuration_that_is_no_json_document_is_refused_without_being_quoted() {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let args = [binary, "--trusted", "--config-file", "-"];
+    for unusable in [
+        "{not json: hunter2-canary",
+        "",
+        r#"{"a": "${vault:hunter2-canary}"}"#,
+    ] {
+        let output = certify_given(&args, unusable, &[]).await;
+        assert_eq!(code(&output), Some(64), "{unusable}");
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(said.contains("standard input"), "{said}");
+        assert!(
+            !said.contains("hunter2") && output.stdout.is_empty(),
+            "{said}"
+        );
+    }
+}
+
+/// A canary no output may hold, and the reports of a destination certified with it, as text
+/// and as JSON: the SQLite destination is told a path it cannot open, and says so.
+async fn reports_with_a_secret(config: &str, env: &[(&str, &str)]) -> Vec<String> {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let mut reports = Vec::new();
+    for output in ["plain", "json"] {
+        let args = [
+            binary,
+            "--trusted",
+            "--role",
+            "destination",
+            "--config-file",
+            "-",
+            "--output",
+            output,
+        ];
+        let certified = certify_given(&args, config, env).await;
+        assert_eq!(code(&certified), Some(1), "{output}");
+        let stdout = String::from_utf8_lossy(&certified.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&certified.stderr).into_owned();
+        reports.push(format!("{stdout}{stderr}"));
+    }
+    reports
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_the_configuration_refers_to_is_in_no_report_however_the_connector_says_it() {
+    let canary = "hunter2-CANARY-0123456789";
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let file = directory.path().join("secret");
+    std::fs::write(&file, format!("{canary}\n")).expect("the secret writes");
+    std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .expect("the secret is private");
+    let by_file = format!("${{file:{}}}", file.display());
+    for reference in ["${env:RDLT_TEST_CANARY}", by_file.as_str()] {
+        // A path that holds the secret, which the connector quotes back in each failure.
+        let config = serde_json::json!({ "path": format!("/nonexistent/{reference}/store.db") });
+        let env = [("RDLT_TEST_CANARY", canary)];
+        for report in reports_with_a_secret(&config.to_string(), &env).await {
+            assert!(
+                report.contains("/nonexistent/***/store.db"),
+                "{reference}: {report}"
+            );
+            assert!(
+                !report.contains("hunter2") && !report.contains("CANARY"),
+                "{report}"
+            );
+        }
+    }
+    // The same path written out is no secret, and is said: the scrub is of what is referred to.
+    let literal = serde_json::json!({ "path": format!("/nonexistent/{canary}/store.db") });
+    for report in reports_with_a_secret(&literal.to_string(), &[]).await {
+        assert!(report.contains(canary), "{report}");
+    }
+}
+
+#[tokio::test]
+async fn a_secret_that_does_not_resolve_ends_the_certification_before_any_connector_runs() {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let args = [binary, "--trusted", "--config-file", "-"];
+    let config = r#"{"path": "hunter2-canary ${env:RDLT_TEST_UNSET_VARIABLE}"}"#;
+    let output = certify_given(&args, config, &[]).await;
+    assert_eq!(code(&output), Some(64));
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains("config field path"), "{said}");
+    assert!(
+        !said.contains("hunter2") && !said.contains("RDLT_TEST_UNSET"),
+        "{said}"
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_binary_is_certified_inside_a_sandbox_unless_it_is_said_to_be_trusted() {
+    let binary = example("serve_source");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let config = r#"{"seed": 7, "streams": [{"name": "events", "rows": 5}]}"#;
+    let args = [
+        binary,
+        "--config-file",
+        "-",
+        "--require",
+        "partial",
+        "--kill-seed",
+        "515",
+    ];
+    let output = certify_given(&args, config, &[]).await;
+    let said = String::from_utf8_lossy(&output.stderr);
+    if rdlt_host::Bubblewrap::new().usable().is_ok() {
+        // The generator needs nothing of its host: it keeps every clause in a sandbox.
+        assert_eq!(code(&output), Some(0), "{said}");
+    } else {
+        // No sandbox here: nothing is run, and the way to run a trusted binary is said.
+        assert_eq!(code(&output), Some(74), "{said}");
+        assert!(
+            said.contains("--trusted") && output.stdout.is_empty(),
+            "{said}"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
+    if rdlt_host::Bubblewrap::new().usable().is_err() {
+        use std::io::Write as _;
+        writeln!(
+            std::io::stderr(),
+            "skipped: bubblewrap makes no sandbox here"
+        )
+        .ok();
+        return;
+    }
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let store = directory.path().to_str().expect("a UTF-8 path");
+    let config = serde_json::json!({ "path": directory.path().join("store.db") }).to_string();
+    let common = [
+        binary,
+        "--role",
+        "destination",
+        "--config-file",
+        "-",
+        "--output",
+        "json",
+    ];
+    // Confined, the destination finds no such directory, and every clause fails on it.
+    let confined = certify_given(&common, &config, &[]).await;
+    assert_eq!(code(&confined), Some(1));
+    assert!(!directory.path().join("store.db").exists());
+    // Granted the directory, it writes its store there.
+    let granted = [&common[..], &["--grant-write", store]].concat();
+    let granted = certify_given(&granted, &config, &[]).await;
+    let report: serde_json::Value =
+        serde_json::from_slice(&granted.stdout).expect("the report is JSON");
+    assert_ne!(report["verdict"], "failed", "{report}");
+    assert!(directory.path().join("store.db").exists());
 }
