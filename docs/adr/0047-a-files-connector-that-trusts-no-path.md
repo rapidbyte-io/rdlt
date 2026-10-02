@@ -154,14 +154,20 @@ when it is read and never written in a form its reader refuses.
 - **A merge table's files hold the columns their rows hold.** A merge gives the destination
   its rows as batches of the columns they hold, as ADR 0049 says, and each is written under
   those columns: JSON lines, which name their own columns, as one file, and Arrow, where a
-  file holds one set of columns, as a file a batch, at most sixteen and a few more where the
-  merge could not join the smaller ones within its bound. A file is read back as the columns
-  its rows hold, JSON lines in runs of lines that name about the same columns, so one row of
-  many columns among many rows of few costs the table its own cells in the file and where it
-  is read. The halving cut above measures each file's batches under the file's own columns.
-  A file a writer staged, and a tombstone file, is read under its whole schema as before. The
+  file holds one set of columns, as a file a batch, after the smallest batches past sixteen
+  are joined in groups of at most 2^20 cells without a value. A file is read back as the
+  columns its rows hold, JSON lines in runs of lines that name about the same columns, so one
+  row of many columns among many rows of few costs the table its own cells in the file and
+  where it is read. The halving cut above measures each file's batches under the file's own
+  columns, and a joined batch it cuts is read back as the columns each part holds. A file a
+  writer staged, and a tombstone file, is read under its whole schema as before. The
   compaction of lists is unchanged: lines of any columns share a file and read back as above,
   and Arrow files of differing columns join with none, as files of differing schemas never did.
+- **Locks are on the open file.** A table's lock and a keeper's are `flock` locks on a lock
+  file, taken through the standard library on Linux and macOS alike: they belong to the
+  descriptor that took them, and no other open or close of the file in the process releases
+  them. Record locks, which any close in the process releases, are SQLite's alone, and ADR
+  0049 says how its files are never opened to be inspected.
 - **The keeper is bounded, private and durable before it moves.** A keeper holds 4096
   positions. An acknowledgement that moves a position writes the whole file through a temporary,
   synced and renamed, and the keeper stands at the position only once that write is durable: a
