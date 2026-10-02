@@ -181,8 +181,14 @@ impl ReadStream<SimChangeSource> for Reader {
                 ));
             }
         }
+        world.reports.started(&stream.name, partition.id(), &cursor);
+        let reading = Reading {
+            world,
+            stream,
+            partition: partition.id(),
+        };
         if partition.id().as_str() == CHANGES_PARTITION {
-            return read_changes(world, stream, cursor, out).await;
+            return read_changes(reading, cursor, out).await;
         }
         let index = partition
             .id()
@@ -190,7 +196,7 @@ impl ReadStream<SimChangeSource> for Reader {
             .strip_prefix('s')
             .and_then(|index| index.parse::<u64>().ok())
             .ok_or_else(|| ConnectorError::data(format!("no partition {}", partition.id())))?;
-        read_snapshot(world, stream, index, cursor, out).await
+        read_snapshot(reading, index, cursor, out).await
     }
 
     async fn committed(
@@ -201,6 +207,9 @@ impl ReadStream<SimChangeSource> for Reader {
         let (world, stream) = (&source.world, self.stream(source));
         let name = self.name();
         for (partition, cursor) in cursors {
+            world
+                .reports
+                .hear(&stream.name, partition, cursor, cursor.next)?;
             if !stream.replayable {
                 // It hears once the engine's log holds the changes, before they land; the oracle
                 // checks they did once the round is over.
@@ -226,13 +235,30 @@ impl ReadStream<SimChangeSource> for Reader {
     }
 }
 
+/// A read of one partition of a stream, in its world.
+#[derive(Clone, Copy)]
+struct Reading<'a> {
+    world: &'a World,
+    stream: &'a ChangeStream,
+    partition: &'a PartitionId,
+}
+
+impl Reading<'_> {
+    /// Sends the checkpoint `position`, which the source remembers it sent.
+    async fn checkpoint(self, out: &mut Emitter<Position>, position: &Position) -> Result<()> {
+        let reports = &self.world.reports;
+        reports.note(&self.stream.name, self.partition, position);
+        out.checkpoint(position).await
+    }
+}
+
 /// Reads the changes the source holds this round, from `cursor`.
 async fn read_changes(
-    world: &World,
-    stream: &ChangeStream,
+    reading: Reading<'_>,
     cursor: Position,
     out: &mut Emitter<Position>,
 ) -> Result<()> {
+    let (world, stream) = (reading.world, reading.stream);
     let batch_rows = usize::try_from(stream.batch_rows).unwrap_or(1);
     let visible = stream.rounds[world.phase().min(stream.rounds.len() - 1)];
     let mut next = usize::try_from(cursor.next).unwrap_or(usize::MAX);
@@ -243,7 +269,7 @@ async fn read_changes(
             .map(|index| Change::of(&stream.events[index], index as u64 + 1))
             .collect();
         out.changes(batch(stream, &rows)).await?;
-        out.checkpoint(&cursor).await?;
+        reading.checkpoint(out, &cursor).await?;
     }
     while next < visible {
         world.latency().await;
@@ -260,7 +286,7 @@ async fn read_changes(
             next: next as u64,
             done: false,
         };
-        out.checkpoint(&position).await?;
+        reading.checkpoint(out, &position).await?;
     }
     // A source reading ahead pushes changes of the next round with no checkpoint after them.
     let ahead = (next + batch_rows).min(stream.events.len());
@@ -282,12 +308,12 @@ fn changes() -> Vec<Partition> {
 /// Reads snapshot partition `index` from `cursor`: its keys' rows as inserts at the position the
 /// snapshot captured.
 async fn read_snapshot(
-    world: &World,
-    stream: &ChangeStream,
+    reading: Reading<'_>,
     index: u64,
     cursor: Position,
     out: &mut Emitter<Position>,
 ) -> Result<()> {
+    let (world, stream) = (reading.world, reading.stream);
     let batch_rows = usize::try_from(stream.batch_rows).unwrap_or(1);
     let keys: Vec<(i64, Merged)> = stream
         .snapshot()
@@ -316,18 +342,18 @@ async fn read_snapshot(
         out.changes(batch(stream, &rows)).await?;
         next = end;
         let done = next >= keys.len();
-        out.checkpoint(&Position {
+        let position = Position {
             next: next as u64,
             done,
-        })
-        .await?;
+        };
+        reading.checkpoint(out, &position).await?;
     }
     if cursor == Position::default() && keys.is_empty() {
         let position = Position {
             next: 0,
             done: true,
         };
-        out.checkpoint(&position).await?;
+        reading.checkpoint(out, &position).await?;
     }
     Ok(())
 }

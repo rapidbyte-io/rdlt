@@ -7,6 +7,7 @@ mod expected;
 mod intruder;
 mod names;
 mod refusals;
+mod reports;
 mod reset;
 mod rows;
 mod scenario;
@@ -100,13 +101,19 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Digest
     }
     let last = PHASES - 1;
     if !stopped && simulation.reset(seed, last).await {
-        let (_, stopped) = simulation.converge(last, &mut rng).await;
+        let (_, short) = simulation.converge(last, &mut rng).await;
+        stopped = short;
         settle(seed).await;
         check_contents(&simulation.world, last, stopped, seed);
         check_acknowledged(&simulation.world, stopped, seed);
     }
-    let violations = simulation.world.violations();
+    // What the destination holds once the workload is loaded; the checks that follow load
+    // nothing more.
     let digest = simulation.world.store.lock().digest();
+    if !stopped {
+        simulation.check_reports(seed).await;
+    }
+    let violations = simulation.world.violations();
     World::unregister(&simulation.name);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     digest
@@ -203,6 +210,9 @@ impl Simulation {
         until: Until,
     ) -> Ran {
         let seed = self.seed;
+        // Each run meets a source started for it, as a spawned connector is: it remembers
+        // nothing an earlier run was sent.
+        self.world.reports.restart();
         let mut prediction = refusals::predict(&self.world, &self.relaxed, phase);
         if until.follows() {
             // A run that follows the source may end before the rows a refusal needs arrive.
