@@ -368,3 +368,36 @@ async fn a_document_nested_to_the_limit_loads_on_every_run() {
         }
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_arrow_push_holding_text_that_is_not_json_in_a_json_column_fails_unwritten() {
+    use arrow_array::StructArray;
+    use arrow_schema::{DataType, Field, Fields, Schema};
+    let json = Field::new("a", DataType::Utf8, true).with_metadata(
+        [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())]
+            .into_iter()
+            .collect(),
+    );
+    let fields = Fields::from(vec![json, Field::new("b", DataType::Int64, true)]);
+    // Text that would close its own value inside the struct's JSON and add members beside it.
+    let texts: ArrayRef = Arc::new(StringArray::from(vec![r#"1,"b":999,"admin":true"#]));
+    let ints: ArrayRef = Arc::new(Int64Array::from(vec![5]));
+    let nested = StructArray::new(fields.clone(), vec![texts, ints], None);
+    let schema = Schema::new(vec![Field::new("s", DataType::Struct(fields), true)]);
+    let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(nested)]).unwrap();
+    let store = "spliced_json";
+    let source = batches(store, vec![BatchStream::new("events", vec![batch])]).await;
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline(store, [stream("events")]),
+            source,
+            memory(store).await,
+        )
+        .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Source, Some("json_invalid"))
+    );
+    assert_eq!(published_rows(store, "events"), 0);
+}

@@ -2,14 +2,17 @@
 //! nests, nesting bounded, and numbers as they are written, so none is read through a float.
 //!
 //! Columns of JSON hold such text, from a connector's Arrow batches or rendered by the shredder;
-//! row identity reads it.
+//! row identity reads it, and so does the check every such column of a push meets first.
 
+mod check;
 #[cfg(test)]
 mod tests;
 
 use std::borrow::Cow;
 
 use rdlt_connector::limits::MAX_NESTING_DEPTH;
+
+pub(crate) use check::{NotJson, check_batch, holds_json};
 
 /// Digits: the most a JSON number's exponent may have, beside its leading zeros, so its value's
 /// place is a 64-bit integer whatever its digits are.
