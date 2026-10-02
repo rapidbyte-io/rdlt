@@ -190,20 +190,26 @@ Whatever a connector sends is reserved from the memory budget before the engine 
 bounded by a limit with a typed refusal (ADR 0039):
 
 - The budget is never passed. It is divided into shares, for the cursors of checkpoints, the
-  log's frames, what reads keep, and data, and a reservation is made only where it fits its
-  share. One that could never fit is refused: `push_exceeds_budget`, `row_exceeds_budget`,
-  `log_frame_exceeds_budget`, and `limit_exceeded` naming `cursor bytes` or `read kept bytes`.
+  log's frames, what commits record of tables, what reads keep, and data, and a reservation is
+  made only where it fits its share. One that could never fit is refused:
+  `push_exceeds_budget`, `row_exceeds_budget`, `log_frame_exceeds_budget`,
+  `table_exceeds_budget`, and `limit_exceeded` naming `cursor bytes` or `read kept bytes`.
 - A push reserves what it keeps alive, its schema included; JSON text reserves three times
   itself, for the batches it becomes.
 - A batch is lowered a piece at a time, through plans that normalize too. Each piece reserves
   what lowering it holds, as its table stores it and with the nulls of the columns it lacks,
   before it is lowered. A row that alone takes more than a quarter of the budget is refused.
 - A checkpoint never waits behind data, and a read keeps no more than its part of a quarter of
-  the budget, so reads cannot starve checkpoints or pushes.
+  the budget, so reads cannot starve checkpoints or pushes. Every read holds a slot, and the
+  part is the share divided by the slots; a following run reads fewer unbounded partitions than
+  it has slots, or is refused with `partitions_too_few`.
 - What a connector is told at the handshake it may send, a frame, a JSON push, a cursor, its
-  dictionaries and its schema, is what the budget admits, so a connector that keeps to it is
-  refused nothing for the budget's sake; an engine whose memory admits less than the protocol's
-  least frame is refused when it is configured.
+  dictionaries, its schema and its columns, is what the budget admits, each limit derived so
+  the worst case it admits, all at once, fits its share: a connector that keeps to them is
+  refused nothing for the budget's sake and waits on it for nothing but commits. An engine
+  whose memory admits less than the protocol's least frame or dictionary limit is refused when
+  it is configured, and a peer that sets a dictionary limit below the protocol's least is
+  refused at the handshake.
 - No wait on the budget is for ever: at its deadline, an hour by default, the attempt fails with
   `memory_budget_wait_exceeded`, saying what held the budget. No connector's error can claim
   that kind or code.
