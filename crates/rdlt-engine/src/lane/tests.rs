@@ -59,6 +59,13 @@ impl DestinationWriter for Recording {
     }
 }
 
+impl Drop for Recording {
+    fn drop(&mut self) {
+        let entry = format!("close t{} v{}", self.table, self.version);
+        self.log.lock().push(entry);
+    }
+}
+
 /// A session whose writers record what they stage, each named after its table: `t<index>`.
 struct Session {
     log: Log,
@@ -145,8 +152,9 @@ fn budgeted(
         };
         all.add(resolver(&name), &table, Model::default());
     }
+    let writers = crate::config::GrowthLimits::default().writers();
     Lanes::new(
-        NonZeroUsize::new(count).unwrap(),
+        (NonZeroUsize::new(count).unwrap(), writers),
         &Arc::new(all),
         NonZeroUsize::new(window).unwrap(),
         budget,
@@ -320,7 +328,8 @@ async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_f
     let at = |version| (0, 0, SchemaVersion(version));
     write_at(&lanes, &budget, at(1), 1, 2).await.unwrap();
     write_at(&lanes, &budget, at(2), 1, 3).await.unwrap();
-    // A partition still lowering for the older version writes after the table changed.
+    // A partition still lowering for the older version writes after the table changed: the
+    // older version's writer, retired by the newer's first write, opens again.
     write_at(&lanes, &budget, at(1), 2, 4).await.unwrap();
     lanes.flush().await.unwrap();
     assert_eq!(
@@ -328,8 +337,11 @@ async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_f
         [
             "open t0 v1",
             "t0 v1 s1 r2",
+            "t0 v1 flush",
+            "close t0 v1",
             "open t0 v2",
             "t0 v2 s1 r3",
+            "open t0 v1",
             "t0 v1 s2 r4",
             "t0 v1 flush",
             "t0 v2 flush"
@@ -401,6 +413,60 @@ async fn a_lane_flushes_its_writers_once_the_budget_is_pressed() {
         .expect("the lane releases what it flushed");
     assert!(log.lock().iter().any(|entry| entry == "t0 v0 flush"));
     drop(waiting);
+    drop(lanes);
+    lane.await.unwrap().unwrap();
+}
+
+/// How many writers `log` says are open.
+fn open(log: &Log) -> usize {
+    let log = log.lock();
+    let opened = log.iter().filter(|entry| entry.starts_with("open")).count();
+    let closed = log
+        .iter()
+        .filter(|entry| entry.starts_with("close"))
+        .count();
+    opened - closed
+}
+
+#[tokio::test]
+async fn a_lane_retires_the_writer_of_a_superseded_version() {
+    let log = Log::default();
+    let budget = MemoryBudget::new(1_000_000);
+    let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    for version in 1..=50 {
+        write_at(&lanes, &budget, (0, 0, SchemaVersion(version)), 1, 1)
+            .await
+            .unwrap();
+    }
+    lanes.flush().await.unwrap();
+    assert_eq!(open(&log), 1);
+    // What a retired writer staged was flushed before it closed.
+    let retired = log.lock().iter().position(|entry| entry == "close t0 v1");
+    let flushed = log.lock().iter().position(|entry| entry == "t0 v1 flush");
+    assert!(flushed.is_some() && flushed < retired, "{:?}", log.lock());
+    drop(lanes);
+    lane.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_lane_holds_no_more_writers_than_its_share() {
+    let log = Log::default();
+    let budget = MemoryBudget::new(1_000_000);
+    let tables = 200;
+    let (lanes, mut tasks) = lanes(1, tables, &log, [false, false, false], 8);
+    let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+    let share = crate::config::GrowthLimits::default().writers().get();
+    for table in 0..tables {
+        write(&lanes, &budget, 0, table, 1, 1).await.unwrap();
+        assert!(open(&log) <= share, "{} writers open", open(&log));
+    }
+    // Every table's writes reach the destination, flushed before a writer closes.
+    lanes.flush().await.unwrap();
+    for table in 0..tables {
+        let flushed = format!("t{table} v0 flush");
+        assert!(log.lock().contains(&flushed), "{flushed}");
+    }
     drop(lanes);
     lane.await.unwrap().unwrap();
 }

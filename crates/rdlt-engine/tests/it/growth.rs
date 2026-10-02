@@ -110,7 +110,7 @@ async fn a_stream_adding_child_tables_past_the_default_limit_is_refused() {
 #[tokio::test(start_paused = true)]
 async fn child_tables_recorded_by_earlier_runs_count_toward_the_limit() {
     let store = "growth_recorded_children";
-    let limited = || commit_every(1000).growth(GrowthLimits::new(3).expect("a valid limit"));
+    let limited = || commit_every(1000).growth(GrowthLimits::new(3, 128).expect("a valid limit"));
     let runs = [
         json!({ "id": 1, "a0": [1], "a1": [2] }),
         json!({ "id": 2, "b0": [3] }),
@@ -133,4 +133,32 @@ async fn child_tables_recorded_by_earlier_runs_count_toward_the_limit() {
     )
     .await;
     refused(&outcome, "child_tables_exceeded");
+}
+
+#[tokio::test]
+async fn a_table_changed_by_every_push_loads_through_a_served_destination() {
+    use crate::support::targets::Target;
+    // A served connection carries at most 200 calls, and each open writer is one: a writer per
+    // schema version kept open would wait for a call it never gets.
+    let target = Target::SpawnedJsonl;
+    let store = target.name("growth_versions");
+    let pushes: Vec<String> = (0..250)
+        .map(|push| json!({ "id": push, format!("k{push}"): 1 }).to_string())
+        .collect();
+    let pushes: Vec<&str> = pushes.iter().map(String::as_str).collect();
+    let source = batches(&store, vec![BatchStream::json("events", &pushes)]).await;
+    let outcome = engine(commit_every(1_000_000))
+        .run(
+            pipeline(&store, [stream("events")]),
+            source,
+            target.destination(&store).await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(target.ids(&store, "events"), (0..250).collect::<Vec<i64>>());
 }
