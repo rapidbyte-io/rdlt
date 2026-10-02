@@ -106,6 +106,7 @@ pub struct EngineConfig {
     memory_wait: Duration,
     connector_wait: Duration,
     stop_wait: Duration,
+    close_wait: Duration,
     batch: BatchPolicy,
     /// The commit policy set, where one is; each run resolves an unset one for what it reads.
     commit: Option<CommitPolicy>,
@@ -128,6 +129,7 @@ impl EngineConfig {
             memory_wait: None,
             connector_wait: None,
             stop_wait: None,
+            close_wait: None,
             batch: None,
             commit: None,
             replan: None,
@@ -186,6 +188,12 @@ impl EngineConfig {
         self.stop_wait
     }
 
+    /// How long a failed attempt waits for the destination to close the session it opened; one
+    /// that takes longer is left to the destination to release.
+    pub fn close_wait(&self) -> Duration {
+        self.close_wait
+    }
+
     /// How pushes are coalesced and JSON is shredded.
     pub fn batch(&self) -> &BatchPolicy {
         &self.batch
@@ -230,6 +238,7 @@ impl Default for EngineConfig {
             memory_wait: crate::limits::BUDGET_WAIT,
             connector_wait: Duration::from_mins(30),
             stop_wait: Duration::from_secs(60),
+            close_wait: Duration::from_secs(60),
             batch: BatchPolicy::default(),
             commit: None,
             replan: Duration::from_secs(60),
@@ -251,6 +260,7 @@ pub struct EngineConfigBuilder {
     memory_wait: Option<Duration>,
     connector_wait: Option<Duration>,
     stop_wait: Option<Duration>,
+    close_wait: Option<Duration>,
     batch: Option<BatchPolicy>,
     commit: Option<CommitPolicy>,
     replan: Option<Duration>,
@@ -324,6 +334,13 @@ impl EngineConfigBuilder {
         self
     }
 
+    /// How long a failed attempt waits for its session to close (default 60 s); more than zero.
+    #[must_use]
+    pub fn close_wait(mut self, wait: Duration) -> Self {
+        self.close_wait = Some(wait);
+        self
+    }
+
     /// How to coalesce pushes and shred JSON (default: [`BatchPolicy::default`]).
     #[must_use]
     pub fn batch(mut self, policy: BatchPolicy) -> Self {
@@ -393,6 +410,8 @@ impl EngineConfigBuilder {
                 .ok_or_else(|| invalid("connector_wait"))?,
             stop_wait: positive(self.stop_wait, defaults.stop_wait)
                 .ok_or_else(|| invalid("stop_wait"))?,
+            close_wait: positive(self.close_wait, defaults.close_wait)
+                .ok_or_else(|| invalid("close_wait"))?,
             batch: self.batch.unwrap_or(defaults.batch),
             commit: self.commit,
             replan: match self.replan {

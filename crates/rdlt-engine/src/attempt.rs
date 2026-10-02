@@ -8,6 +8,7 @@ mod streams;
 mod tests;
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -96,9 +97,19 @@ pub(crate) async fn run(
     if ran.is_err() {
         // A failed attempt's session releases what it holds now; the failure matters more than
         // any error from closing, and a session the coordinator closed stays closed.
-        drop(session.close().await);
+        closed_within(context, session.close()).await;
     }
     ran
+}
+
+/// Waits for `closing`, a close after a failure, no longer than the close wait: the failure is
+/// what the run reports, and the next attempt should not wait on a destination that is stuck.
+pub(super) async fn closed_within<T>(context: &RunContext, closing: impl Future<Output = T>) {
+    tokio::select! {
+        biased;
+        _ = closing => {}
+        () = context.env.sleep(context.config.close_wait()) => {}
+    }
 }
 
 /// Runs the attempt as [`run`] does, on the session it opened.
@@ -166,7 +177,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
     let state = match PipelineState::from_records(&state) {
         Ok(state) => state,
         Err(error) => {
-            drop(session.close().await);
+            closed_within(context, session.close()).await;
             return Err(Error::new(
                 ErrorKind::Destination,
                 format!("reading pipeline state: {error}"),

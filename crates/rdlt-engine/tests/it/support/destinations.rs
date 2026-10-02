@@ -222,6 +222,8 @@ pub(crate) enum Step {
     StallWrites,
     /// Every open answers with a state record that is not one.
     GarbleState,
+    /// Every commit fails, and no close of a session ever returns.
+    StallClose,
 }
 
 /// `inner`, failing with a transient error at `step`, or panicking there.
@@ -314,7 +316,7 @@ impl DestinationSession for FailingSession {
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
         let once = self.step == Step::CommitOnce && !self.lost.swap(true, Ordering::SeqCst);
-        if self.step == Step::Commit || once {
+        if matches!(self.step, Step::Commit | Step::StallClose) || once {
             return Box::pin(async { Err(injected()) });
         }
         Box::pin(async move {
@@ -338,6 +340,9 @@ impl DestinationSession for FailingSession {
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
+        if self.step == Step::StallClose {
+            return Box::pin(std::future::pending());
+        }
         self.inner.close()
     }
 }
