@@ -135,7 +135,7 @@ async fn source(config: &Config, kills: Option<&Kills>) -> Result<Arc<dyn Source
         other => return Err(format!("no source {other}")),
     };
     if place.spawned {
-        let placed = host(kills)
+        let placed = host(kills, config.engine()?.limits())
             .source(&reference(id, served, place)?, &place.config)
             .await
             .map_err(|error| error.to_string())?;
@@ -165,7 +165,7 @@ async fn destination(
         other => return Err(format!("no destination {other}")),
     };
     if place.spawned {
-        let placed = host(kills)
+        let placed = host(kills, config.engine()?.limits())
             .destination(&reference(id, served, place)?, &place.config)
             .await
             .map_err(|error| error.to_string())?;
@@ -187,12 +187,14 @@ async fn destination(
 /// holds is still reading when a commit is asked, however slowly the host runs.
 const READ_WINDOW: u64 = 512;
 
-/// The host spawning connectors, killing them by `kills` where given.
-fn host(kills: Option<&Kills>) -> Local {
+/// The host spawning connectors, each told `limits`, those the engine admits within, and killed
+/// by `kills` where given.
+fn host(kills: Option<&Kills>, limits: rdlt_wire::Limits) -> Local {
     // Each connector is told as it is spawned, by its process id: the id of the process group
     // it leads, which what watches the run checks is gone once the run has ended.
     let options = Options {
         read_window: READ_WINDOW,
+        limits,
         ..Options::default()
     };
     let local = Local::trusting_binaries()

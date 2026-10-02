@@ -59,16 +59,17 @@ impl Scenario {
     /// Writes the harness configuration into `dir` with its source and destination spawned in
     /// processes of their own, and the keys of `extra`, a kill or a pause; its path.
     ///
-    /// The run has a memory budget of a quarter of a mebibyte, about the least whose shares
-    /// hold a scenario's schemas, cursors and commit frames, and an event a partition, and its
-    /// source reads within a credit of less than a batch: the source waits for commits, its reads
-    /// in flight across them, whatever its connection could buffer.
+    /// The run has about the least memory budget an engine takes, an event a partition, and
+    /// writes as small as its pushes, and its source reads within a credit of less than a batch:
+    /// the source waits for commits, its reads in flight across them, whatever its connection
+    /// could buffer.
     pub(crate) fn write_spawned(&self, dir: &Path, extra: &Value) -> PathBuf {
         let mut config = self.configured(dir);
         config["source"]["spawned"] = json!(true);
         config["destination"]["spawned"] = json!(true);
-        config["memory"] = json!(256 << 10);
+        config["memory"] = json!(11 << 20);
         config["partition_buffer"] = json!(1);
+        config["batch_rows"] = json!(8);
         for (key, value) in extra.as_object().expect("extra keys") {
             match key.as_str() {
                 "source_launcher" => config["source"]["launcher"] = value.clone(),
@@ -248,17 +249,40 @@ fn changes_of(dir: &Path, stream: &ChangedStream) -> Value {
 
 /// A change stream whose slot forgets what it acknowledged, merged into JSON-lines files.
 pub(crate) fn forgetting_changes() -> Scenario {
+    forgetting_changes_of::<20, 120>("a forgetting change stream")
+}
+
+/// The forgetting change stream of four hundred keys and six hundred changes: a snapshot and
+/// changes longer than its source sends before the engine writes, so a kill finds the source
+/// with rows still to send.
+pub(crate) fn long_forgetting_changes() -> Scenario {
+    forgetting_changes_of::<400, 600>("a long forgetting change stream")
+}
+
+/// The orders of a change stream of `KEYS` keys and `CHANGES` changes whose slot forgets what it
+/// acknowledged.
+fn forgetting_orders<const KEYS: u64, const CHANGES: u64>() -> ChangedStream {
+    ChangedStream {
+        keys: KEYS,
+        changes: CHANGES,
+        ..orders(false, false)
+    }
+}
+
+/// A change stream named `name` of `KEYS` keys and `CHANGES` changes whose slot forgets what it
+/// acknowledged, merged into JSON-lines files.
+fn forgetting_changes_of<const KEYS: u64, const CHANGES: u64>(name: &'static str) -> Scenario {
     Scenario {
         logged: true,
         completes: false,
-        name: "a forgetting change stream",
+        name,
         config: |dir| {
             let stream = json!({ "name": "orders", "read": "cdc", "write": "merge" });
             let files = json!({ "kind": "files", "config": { "root": dir.join("out"), "format": "jsonl" } });
             harness(
                 dir,
                 &stream,
-                &changes_of(dir, &orders(false, false)),
+                &changes_of(dir, &forgetting_orders::<KEYS, CHANGES>()),
                 &files,
             )
         },
@@ -276,7 +300,11 @@ pub(crate) fn forgetting_changes() -> Scenario {
                     assert!(table.insert(id, merged).is_none(), "{case}: key {id} twice");
                 }
             }
-            assert_eq!(table, expected(4, &orders(false, false)), "{case}");
+            assert_eq!(
+                table,
+                expected(4, &forgetting_orders::<KEYS, CHANGES>()),
+                "{case}"
+            );
         },
     }
 }

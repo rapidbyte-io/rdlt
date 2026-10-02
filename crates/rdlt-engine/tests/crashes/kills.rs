@@ -369,7 +369,7 @@ fn a_spawned_source_killed_as_it_reads_is_spawned_again_and_loses_nothing() {
         "source",
         &[json!(1), json!(3)],
     );
-    connector_killed(&scenarios::forgetting_changes(), "source", &[json!(1)]);
+    connector_killed(&scenarios::long_forgetting_changes(), "source", &[json!(1)]);
 }
 
 #[test]

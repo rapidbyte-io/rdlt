@@ -14,7 +14,7 @@ fn connectors_on_the_simulated_network_are_placed_there_and_serve_the_engine() {
         let name = "network-placed";
         let _world = World::register(name, &mut rng);
         let config = serde_json::json!({ "world": name });
-        let placing = Placing::new(net, options(&mut rng));
+        let placing = Placing::new(net, &options(&mut rng, rdlt_wire::Limits::default()));
         let source = placing.source(&config).await.check().await;
         let destination = placing.destination(&config).await.check().await;
         World::unregister(name);
@@ -31,7 +31,7 @@ fn a_disrupted_network_loses_connectors_and_the_healed_one_serves_them_again() {
         let name = "network-disrupted";
         let _world = World::register(name, &mut rng);
         let config = serde_json::json!({ "world": name });
-        let placing = Placing::new(net, options(&mut rng));
+        let placing = Placing::new(net, &options(&mut rng, rdlt_wire::Limits::default()));
         let source = placing.source(&config).await;
         // The source is checked again and again while the network is disrupted.
         let checks = async {
@@ -61,7 +61,7 @@ fn a_call_the_network_held_lands_before_the_disrupted_work_is_over() {
         let name = "network-held";
         let world = World::register(name, &mut rng);
         let config = serde_json::json!({ "world": name });
-        let placing = Placing::new(net, options(&mut rng));
+        let placing = Placing::new(net, &options(&mut rng, rdlt_wire::Limits::default()));
         let destination = placing.destination(&config).await;
         let before = world.store.lock().digest();
         // A session is opened while the network holds what the engine sends, and the work ends,

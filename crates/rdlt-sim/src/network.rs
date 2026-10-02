@@ -240,14 +240,14 @@ pub(crate) struct Placing {
 
 impl Placing {
     /// Places connectors on `net`, running their connections with `options`.
-    pub(crate) fn new(net: Arc<Net>, options: Options) -> Self {
+    pub(crate) fn new(net: Arc<Net>, options: &Options) -> Self {
         let remote = Remote::new(identity(&net.client), net.pki.ca())
             .network(Turmoil)
-            .options(options);
+            .options(*options);
         Self {
             net,
             remote,
-            remote_options: options,
+            remote_options: *options,
         }
     }
 
@@ -320,8 +320,8 @@ fn reference(side: Side, id: rdlt_connector::ConnectorId) -> ConnectorRef {
 
 /// The options the engine's connections run with, drawn from `rng`: heartbeats between 50 ms and
 /// a second apart, two to five of them missed before a connector counts as lost, and between
-/// 200 ms and 3 s to connect.
-pub(crate) fn options(rng: &mut SplitMix64) -> Options {
+/// 200 ms and 3 s to connect; its connectors are told `limits`, those the engine admits within.
+pub(crate) fn options(rng: &mut SplitMix64, limits: Limits) -> Options {
     Options {
         heartbeat: Duration::from_millis(50 + rng.below(950)),
         missed: NonZeroU32::new(2 + u32::try_from(rng.below(4)).unwrap_or(0))
@@ -330,6 +330,7 @@ pub(crate) fn options(rng: &mut SplitMix64) -> Options {
             connect: Duration::from_millis(200 + rng.below(2800)),
             ..Deadlines::default()
         },
+        limits,
         ..Options::default()
     }
 }

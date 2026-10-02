@@ -92,6 +92,42 @@ pub struct World {
     produced: Mutex<Option<BTreeMap<(usize, usize), usize>>>,
     /// Wakes reads that follow a partition when more of its rows arrive.
     pub(crate) arrived: Notify,
+    /// How hard the source presses on the engine's memory budget.
+    pressure: Mutex<Pressure>,
+}
+
+/// How hard a source presses on the engine's memory budget: the bytes each Arrow batch it pushes
+/// keeps alive beside its rows, and the bytes each cursor carries beside its offset.
+///
+/// Both are drawn against the limits the engine admits within, so a push or a cursor is never
+/// refused, and several of them fill their share of the budget: pushes then wait for room as
+/// lowering releases it, and cursors for a commit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Pressure {
+    /// Bytes: the allocation each Arrow batch keeps alive, of which its rows take the first.
+    pub(crate) ballast: usize,
+    /// Bytes: what each cursor carries beside its offset.
+    pub(crate) pad: usize,
+}
+
+impl Pressure {
+    /// The pressure drawn from `rng` for an engine admitting within `limits`, of a budget whose
+    /// cursors may take `cursors` bytes: in three worlds of four a push of a fifth to nine
+    /// tenths of a frame, in half of them cursors of an eighth to a third of their share.
+    pub(crate) fn draw(rng: &mut SplitMix64, limits: &rdlt_wire::Limits, cursors: u64) -> Self {
+        let within = |limit: u64, low: u64, high: u64, chance: u64, rng: &mut SplitMix64| {
+            let low = limit / low;
+            let bytes = rng
+                .chance(chance)
+                .then(|| low + rng.below((limit / high).saturating_sub(low).max(1)));
+            usize::try_from(bytes.unwrap_or(0)).unwrap_or(0)
+        };
+        let frame = limits.frame_bytes.saturating_mul(9) / 10;
+        Self {
+            ballast: within(frame, 5, 1, 750, rng),
+            pad: within(cursors.min(limits.cursor_bytes), 8, 3, 500, rng),
+        }
+    }
 }
 
 static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mutex::default);
@@ -116,9 +152,20 @@ impl World {
             reports: Reports::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
+            pressure: Mutex::default(),
         });
         WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
         world
+    }
+
+    /// Presses on the engine's memory budget as `pressure` says from now on.
+    pub(crate) fn press(&self, pressure: Pressure) {
+        *self.pressure.lock() = pressure;
+    }
+
+    /// How hard the source presses on the engine's memory budget.
+    pub(crate) fn pressure(&self) -> Pressure {
+        *self.pressure.lock()
     }
 
     /// A world whose change workload and faults derive from `rng`, and which of its merge streams
@@ -157,6 +204,7 @@ impl World {
             reports: Reports::default(),
             produced: Mutex::new(None),
             arrived: Notify::new(),
+            pressure: Mutex::default(),
         });
         WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
         world
