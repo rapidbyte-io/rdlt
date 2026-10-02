@@ -320,3 +320,34 @@ fn a_name_holding_a_nul_is_no_table_s() {
         assert_eq!(refusal(plain.named(name)), reserved, "{name:?}");
     }
 }
+
+#[test]
+fn a_witness_of_a_table_yet_to_be_created_plans_no_swap_and_forgets_no_tombstones() {
+    use crate::id::GenerationId;
+    let mine = pipeline("mine");
+    let (_, planner) = database();
+    let claimed = standing("orders", None, &[]).created(&mine).unwrap();
+    let generations = [("_rdlt_gen".to_owned(), GenerationId(1))];
+    for listed in [&generations[..], &[]] {
+        let swap = planner.swap(&claimed, true, GenerationId(1), listed);
+        assert_eq!(refusal(swap).0, ConnectorErrorKind::Internal, "{listed:?}");
+    }
+    let forget = planner.forget_tombstones(&claimed);
+    assert_eq!(refusal(forget).0, ConnectorErrorKind::Internal);
+    // The witness of a table its pipeline owns plans both.
+    let owned = standing("orders", Some("mine"), &["orders"])
+        .owned(&mine)
+        .unwrap();
+    assert!(
+        !planner
+            .swap(&owned, true, GenerationId(1), &[])
+            .unwrap()
+            .is_empty()
+    );
+    let forgotten = planner.forget_tombstones(&owned).unwrap();
+    assert!(
+        forgotten.sql.starts_with("DELETE FROM"),
+        "{}",
+        forgotten.sql
+    );
+}

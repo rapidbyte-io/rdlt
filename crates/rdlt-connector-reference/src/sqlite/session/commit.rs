@@ -174,7 +174,7 @@ fn swap(
     // The rows a change stream removed from the table swapped out never come back to its successor.
     let tombstones = planner.tombstone_table(table.name());
     if !columns(transaction, planner.dialect(), &tombstones)?.is_empty() {
-        run(transaction, &planner.forget_tombstones(table))?;
+        run(transaction, &planner.forget_tombstones(table)?)?;
     }
     Ok(())
 }
