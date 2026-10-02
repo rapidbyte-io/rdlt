@@ -77,7 +77,8 @@ pub const STATE_BYTES: u64 = 16 * 1024 * 1024;
 pub const CONTROL_MESSAGE_BYTES: u64 = 256 * 1024;
 
 /// Bytes: bounds a handshake and its answer, which come before either end knows the other's
-/// limits; a destination's identifier rules at their limits fit.
+/// limits, and a configuration's answer: a connector's spec, and a destination's identifier
+/// rules at their limits within it, fit.
 pub const HANDSHAKE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Bytes: what a message holds beside the field a limit bounds.

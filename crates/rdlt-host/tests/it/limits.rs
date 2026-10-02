@@ -243,3 +243,27 @@ async fn a_state_key_beyond_the_control_string_limit_is_refused_where_it_is_rece
         Some("control string bytes")
     );
 }
+
+#[tokio::test]
+async fn a_destination_s_identifier_rules_at_their_limits_are_configured() {
+    use crate::support::fake::{Fake, Fault, serve_fake};
+    use rdlt_connector::Destination as _;
+    use rdlt_connector::limits::{MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS};
+    let io = serve_fake(Fake(Fault::WideRules));
+    let connection = Connection::connect(
+        io,
+        Role::Destination,
+        &serde_json::json!({}),
+        Options::default(),
+    )
+    .await
+    .expect("the destination configures");
+    let destination =
+        rdlt_host::RemoteDestination::new(connection).expect("its capabilities are taken");
+    let rules = &destination.capabilities().identifiers;
+    assert_eq!(
+        (rules.reserved.len(), rules.reserved_table_prefixes.len()),
+        (MAX_RESERVED_WORDS, MAX_RESERVED_PREFIXES)
+    );
+    assert_eq!(rules.validate(), Ok(()));
+}

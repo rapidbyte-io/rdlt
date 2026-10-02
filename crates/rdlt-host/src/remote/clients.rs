@@ -17,7 +17,7 @@ pub type Client = ConnectorClient<Checked>;
 /// One client a class of answer, over one channel.
 #[derive(Clone, Debug)]
 pub(crate) struct Clients {
-    /// The handshake's.
+    /// The handshake's and the configuration's, whose answers carry a connector's spec.
     pub(crate) handshake: Client,
     /// Calls answered with a control message: a configuration, a check, a report of committed
     /// positions, a schema change, a commit, a close, a write's answers and heartbeats.
