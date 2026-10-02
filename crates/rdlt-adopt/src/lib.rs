@@ -30,7 +30,6 @@ mod tests;
 
 use std::io;
 use std::os::fd::{BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
-use std::os::unix::fs::FileTypeExt as _;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -59,14 +58,17 @@ pub fn adopt(fd: RawFd) -> io::Result<UnixStream> {
             format!("file descriptor {fd} is a standard stream, not the host's socket"),
         ));
     }
-    // Resolves only while `fd` is open, on Linux and macOS alike.
-    let metadata = std::fs::metadata(format!("/dev/fd/{fd}")).map_err(|error| {
-        io::Error::new(
+    // Asked of the descriptor itself: `/dev/fd`, on macOS, at times answers that a descriptor
+    // this process holds is not there.
+    if !is_open(fd) {
+        return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("file descriptor {fd} is not open: {error}"),
-        )
-    })?;
-    if !metadata.file_type().is_socket() {
+            format!("file descriptor {fd} is not open"),
+        ));
+    }
+    let metadata = nix::sys::stat::fstat(borrowed(fd)).map_err(io::Error::from)?;
+    let kind = nix::sys::stat::SFlag::from_bits_truncate(metadata.st_mode);
+    if kind & nix::sys::stat::SFlag::S_IFMT != nix::sys::stat::SFlag::S_IFSOCK {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("file descriptor {fd} is not a socket"),
@@ -94,17 +96,36 @@ pub fn adopt(fd: RawFd) -> io::Result<UnixStream> {
     inherited.try_clone()
 }
 
+/// Whether descriptor `fd` is open in this process, as the kernel answers for the number: a
+/// connector's own check of what it was started with asks this, as [`adopt`] does.
+pub fn is_open(fd: RawFd) -> bool {
+    #[expect(
+        unsafe_code,
+        reason = "asking whether a number names a descriptor takes the number"
+    )]
+    // SAFETY: `fcntl` with `F_GETFD` takes a number and touches no memory; a number that names
+    // no descriptor fails, and nothing is opened, closed or kept.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    flags >= 0
+}
+
+/// Open descriptor `fd`, borrowed.
+fn borrowed(fd: RawFd) -> BorrowedFd<'static> {
+    #[expect(
+        unsafe_code,
+        reason = "reading an inherited descriptor's state borrows it"
+    )]
+    // SAFETY: `adopt` checked that `fd` is open, and nothing closes it while `adopt` reads its
+    // type and flags; the borrow is used for those reads alone and neither closes nor keeps it.
+    unsafe {
+        BorrowedFd::borrow_raw(fd)
+    }
+}
+
 /// Whether open descriptor `fd` is close-on-exec.
 fn close_on_exec(fd: RawFd) -> io::Result<bool> {
     use nix::fcntl::{FcntlArg, FdFlag, fcntl};
-    #[expect(
-        unsafe_code,
-        reason = "reading an inherited descriptor's flags borrows it"
-    )]
-    // SAFETY: `adopt` checked that `fd` is open; it is borrowed for this call only, which reads
-    // its flags and neither closes nor keeps it.
-    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-    let flags = fcntl(borrowed, FcntlArg::F_GETFD).map_err(io::Error::from)?;
+    let flags = fcntl(borrowed(fd), FcntlArg::F_GETFD).map_err(io::Error::from)?;
     Ok(FdFlag::from_bits_truncate(flags).contains(FdFlag::FD_CLOEXEC))
 }
 
