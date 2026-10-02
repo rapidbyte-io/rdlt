@@ -56,9 +56,12 @@ pub(super) async fn replay(
     let Some(replaying) = replaying else {
         return replayed;
     };
-    let closed = replaying.session.close().await;
-    // A failed replay's failure matters more than any error from closing.
-    replayed.and(closed)
+    if replayed.is_err() {
+        // A failed replay's failure matters more than any error from closing.
+        super::closed_within(context, replaying.session.close()).await;
+        return replayed;
+    }
+    replaying.session.close().await
 }
 
 /// Replays as [`replay`] does, opening the session into `replaying` the first commit needs.

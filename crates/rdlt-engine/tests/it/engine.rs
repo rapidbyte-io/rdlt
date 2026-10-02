@@ -723,6 +723,30 @@ async fn every_failed_attempt_closes_the_session_it_opened() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_failed_attempt_waits_for_its_close_no_longer_than_the_close_wait() {
+    use crate::support::destinations::{Step, failing};
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 1, 20, 5)])
+        .connect("stuck_close")
+        .await;
+    let started = tokio::time::Instant::now();
+    let outcome = engine(retrying(2))
+        .run(
+            pipeline(
+                "stuck-close",
+                [stream("events").read(ReadMode::Incremental)],
+            ),
+            source,
+            failing(memory("stuck_close").await, Step::StallClose),
+        )
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let elapsed = started.elapsed();
+    // Two closes of a minute each, not two of the connector wait.
+    assert!(elapsed >= Duration::from_secs(120), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(180), "{elapsed:?}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_stopped_partition_commits_only_up_to_its_last_checkpoint() {
     let mut sparse = ScriptStream::new("events", 1, 15, 5);
     sparse.checkpoint_every = 2;
