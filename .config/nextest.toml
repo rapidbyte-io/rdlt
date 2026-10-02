@@ -51,6 +51,12 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 filter = "package(rdlt-host) & test(/^process::/)"
 slow-timeout = { period = "10s", terminate-after = 2 }
 
+# The certifier's command-line and spawned tests run the binary against real connectors: a full
+# pass waits out a second of real time four times and kills a process, more beside other tests.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-certify) & binary(it) & test(/^(cli|spawned|killed)::/)"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
 # The SQLite differential tests run hundreds of cases, each syncing a database to disk: on a shared
 # runner beside the rest of the suite one took over a minute unmutated, failing a shard's baseline.
 # They wait long enough that only a hang times out; cargo-mutants' own timeout scales with it.
