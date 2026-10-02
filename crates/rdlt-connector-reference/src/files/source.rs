@@ -326,7 +326,7 @@ enum Pushed {
 /// The pushes of one file, from a position on.
 enum Pushes {
     Jsonl(JsonLines),
-    Arrow(Reader),
+    Arrow(Box<Reader>),
 }
 
 impl Pushes {
@@ -371,7 +371,7 @@ impl Pushes {
                 if reader.skip(read) < read {
                     return Err(beyond(&path, read));
                 }
-                Ok(Self::Arrow(reader))
+                Ok(Self::Arrow(Box::new(reader)))
             }
         }
     }
