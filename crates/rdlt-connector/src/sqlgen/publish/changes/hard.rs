@@ -27,16 +27,28 @@ impl<D: SqlDialect> SqlPlanner<D> {
              _rdlt_upserts AS (SELECT _rdlt_l.* FROM _rdlt_live _rdlt_l WHERE _rdlt_l.{op} IN (0, 1) \
              AND NOT EXISTS (SELECT 1 FROM _rdlt_deleted _rdlt_d WHERE {on_dl} AND \
              _rdlt_l.{seq} < _rdlt_d.{q})), \
-             _rdlt_last AS (SELECT {keys}, MAX({seq}) AS {q} FROM _rdlt_upserts GROUP BY {keys}) \
-             SELECT ",
+             _rdlt_last AS (SELECT {keys}, MAX({seq}) AS {q} FROM _rdlt_upserts GROUP BY {keys})\
+             {flags} SELECT ",
             on_dl = changed.on("_rdlt_d", "_rdlt_l"),
+            flags = kept(changed),
         ));
         let staged = changed.staged_by(&mut sql);
         sql.push(&format!(
             "{staged}, {}, {MERGED} FROM _rdlt_last _rdlt_m JOIN _rdlt_upserts _rdlt_u ON {} AND \
-             _rdlt_u.{seq} = _rdlt_m.{q} UNION ALL SELECT ",
+             _rdlt_u.{seq} = _rdlt_m.{q}{} UNION ALL SELECT ",
             merged(changed),
             changed.on("_rdlt_u", "_rdlt_m"),
+            if changed.flags() {
+                format!(
+                    " LEFT JOIN _rdlt_set _rdlt_s ON {} LEFT JOIN _rdlt_vals _rdlt_n ON {} LEFT \
+                     JOIN _rdlt_kept _rdlt_k ON {}",
+                    changed.on("_rdlt_s", "_rdlt_m"),
+                    changed.on("_rdlt_n", "_rdlt_m"),
+                    changed.on("_rdlt_k", "_rdlt_m"),
+                )
+            } else {
+                String::new()
+            },
         ));
         let staged = changed.staged_by(&mut sql);
         sql.push(&format!(
@@ -54,32 +66,42 @@ impl<D: SqlDialect> SqlPlanner<D> {
     }
 }
 
-/// The columns of each changed key's row, `_rdlt_m`, whose last upsert is `_rdlt_u`: each as it
-/// sets it, or where it flags the column unchanged, as the key's upserts before it or its row
-/// left it.
-fn merged(changed: &Changed<'_>) -> String {
-    // The row the table holds counts unless the commit deleted its key or truncated it; it is
-    // found by its key, never by reading the table whole.
-    let kept = format!(
-        " AND NOT EXISTS (SELECT 1 FROM _rdlt_deleted _rdlt_d WHERE {}) AND NOT EXISTS (SELECT 1 \
-         FROM _rdlt_cut _rdlt_c WHERE _rdlt_k.{} < _rdlt_c.{})",
-        changed.on("_rdlt_d", "_rdlt_k"),
+/// Where rows may flag columns unchanged, the common table expressions a flagged column is
+/// read from: what the key's upserts set, and `_rdlt_kept`, the row the table holds of each
+/// changed key unless the commit deleted its key or truncated it, found by its key and never by
+/// reading the table whole.
+fn kept(changed: &Changed<'_>) -> String {
+    if !changed.flags() {
+        return String::new();
+    }
+    format!(
+        ", {}, _rdlt_kept AS (SELECT {} FROM _rdlt_last _rdlt_m CROSS JOIN {} _rdlt_p WHERE {} \
+         AND NOT EXISTS (SELECT 1 FROM _rdlt_deleted _rdlt_d WHERE {}) AND NOT EXISTS (SELECT 1 \
+         FROM _rdlt_cut _rdlt_c WHERE _rdlt_p.{} < _rdlt_c.{}))",
+        changed.settings(),
+        changed.names("_rdlt_p"),
+        changed.target,
+        changed.on("_rdlt_p", "_rdlt_m"),
+        changed.on("_rdlt_d", "_rdlt_p"),
         changed.seq,
         changed.q,
-    );
+    )
+}
+
+/// The columns of each changed key's row, `_rdlt_m`, whose last upsert is `_rdlt_u`: each as it
+/// sets it, or for a column rows may flag unchanged, as the last upsert not flagging it set it,
+/// `_rdlt_n`'s, or else as the row the table holds, `_rdlt_k`, left it.
+fn merged(changed: &Changed<'_>) -> String {
     let columns: Vec<String> = changed
         .columns
         .iter()
-        .enumerate()
-        .map(|(ordinal, column)| {
+        .map(|column| {
             // Staging refuses a flag on a key or the sequence, so theirs are set by every row.
-            if changed.unchanged.is_none() {
+            if !changed.flaggable(column) {
                 return format!("_rdlt_u.{column}");
             }
             format!(
-                "CASE WHEN {} THEN {} ELSE _rdlt_u.{column} END",
-                changed.flagged("_rdlt_u", ordinal),
-                changed.chained_past(column, ordinal, "_rdlt_m", (&changed.target, &kept)),
+                "CASE WHEN _rdlt_s.{column} IS NULL THEN _rdlt_k.{column} ELSE _rdlt_n.{column} END"
             )
         })
         .collect();

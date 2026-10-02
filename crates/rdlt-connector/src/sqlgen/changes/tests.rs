@@ -58,7 +58,7 @@ fn a_change_stream_stages_its_directions_and_keeps_tombstones_of_its_key() {
         .map(|column| (column.name.as_str(), column.declared.as_str()))
         .skip(4 + fields.len())
         .collect();
-    assert_eq!(staged, [("op", "INTEGER"), ("unchanged", "TEXT")]);
+    assert_eq!(staged, [("op", "INTEGER"), ("unchanged", "BLOB")]);
     let kept: Vec<(&str, &str)> = tombstones
         .iter()
         .map(|column| (column.name.as_str(), column.declared.as_str()))
@@ -108,7 +108,7 @@ fn written(flags: &[Option<Vec<u8>>]) -> RecordBatch {
 }
 
 #[test]
-fn unchanged_flags_stage_as_the_ordinals_of_the_table_columns_they_name() {
+fn unchanged_flags_stage_as_a_byte_at_the_ordinal_of_each_table_column_they_name() {
     let (connection, planner) = database();
     let orders = changed("orders");
     let fields = [
@@ -124,11 +124,12 @@ fn unchanged_flags_stage_as_the_ordinals_of_the_table_columns_they_name() {
     let flags = staged
         .column_by_name("unchanged")
         .unwrap()
-        .as_string::<i32>();
-    let flags: Vec<Option<&str>> = (0..flags.len())
+        .as_binary::<i32>();
+    let flags: Vec<Option<&[u8]>> = (0..flags.len())
         .map(|row| (!flags.is_null(row)).then(|| flags.value(row)))
         .collect();
-    assert_eq!(flags, [Some(",2,"), None, None, None]);
+    // One byte a column, up to the last a row flags.
+    assert_eq!(flags, [Some(&[0, 0, 1][..]), None, None, None]);
     assert_eq!(staged.num_columns(), batch.num_columns());
     // A table merging no changes stages its batches as they are.
     let plain = staged_changes(&batch, &table("orders"), &target).unwrap();
@@ -438,7 +439,7 @@ fn staging_flags_costs_a_pass_over_a_row_s_fields_not_a_search_for_each() {
             .unwrap()
     };
     let (plain, flagged) = (timed(&batch(false)), timed(&batch(true)));
-    // Each flagged row also writes its thousand ordinals as text.
+    // Each flagged row also writes a byte for each of its thousand columns.
     assert!(
         flagged < plain * 40 + std::time::Duration::from_millis(200),
         "unflagged rows took {plain:?}, rows flagging every column {flagged:?}"
@@ -447,7 +448,11 @@ fn staging_flags_costs_a_pass_over_a_row_s_fields_not_a_search_for_each() {
     let flags = staged
         .column_by_name("unchanged")
         .unwrap()
-        .as_string::<i32>();
-    assert!(flags.value(0).starts_with(",2,3,4,"));
-    assert!(flags.value(ROWS - 1).ends_with(&format!(",{},", WIDTH + 1)));
+        .as_binary::<i32>();
+    // The key and the sequence, columns 0 and 1, are never flagged.
+    for row in [0, ROWS - 1] {
+        let (set_always, flagged) = flags.value(row).split_at(2);
+        assert_eq!(set_always, [0, 0]);
+        assert_eq!(flagged, vec![1; WIDTH]);
+    }
 }

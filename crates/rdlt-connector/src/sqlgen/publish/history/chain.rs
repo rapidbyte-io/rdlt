@@ -213,7 +213,8 @@ fn chain(versioned: &Versioned<'_>) -> String {
         .map_or(String::new(), |at| format!(" OR _rdlt_l.{at} IS NOT NULL"));
     format!(
         ", _rdlt_ordered AS (SELECT _rdlt_e.*, ROW_NUMBER() OVER (PARTITION BY {keys} ORDER BY \
-         CASE WHEN {kind} = 0 THEN 0 ELSE 1 END, {seq}, {kind}) AS {pos} FROM _rdlt_events \
+         CASE WHEN {kind} = 0 THEN 0 ELSE 1 END, {seq}, CASE WHEN {kind} = 3 THEN 0 ELSE 1 \
+         END, {kind}) AS {pos} FROM _rdlt_events \
          _rdlt_e), \
          _rdlt_prior AS (SELECT _rdlt_o.*, MAX(CASE WHEN {kind} IN (0, 1) THEN {pos} END) OVER \
          ({before}) AS {last}, MAX(CASE WHEN {kind} IN (2, 3) THEN {pos} END) OVER ({before}) AS \
