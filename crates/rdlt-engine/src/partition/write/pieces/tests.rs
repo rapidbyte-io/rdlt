@@ -8,7 +8,7 @@ use rdlt_connector::Permit;
 use rdlt_connector::cost::Rendering;
 
 use super::super::Held;
-use super::{MIN_SLICE, RowTooLarge, slice_bytes};
+use super::{Lowered, MIN_PIECE, Pieces, RowTooLarge, piece_bytes};
 use crate::budget::MemoryBudget;
 
 /// A batch of `rows` rows numbered from `first`, beside a run of one 1 KB value.
@@ -37,9 +37,21 @@ fn native() -> Rendering {
     Rendering::new(rdlt_testkit::drawn::KINDS)
 }
 
+/// How batches are measured before their table is known: pieces of `max` bytes under `budget`.
+fn unplanned(max: u64, budget: u64) -> Lowered {
+    Lowered {
+        rendering: native(),
+        stored: Vec::new(),
+        row: 0,
+        max,
+        budget,
+    }
+}
+
 /// `units` cut into pieces of at most `max` bytes, under a budget no row exceeds.
 fn sliced(units: Vec<(Vec<RecordBatch>, Held)>, max: u64) -> Vec<(Vec<RecordBatch>, Held)> {
-    super::sliced(units, &native(), max, u64::MAX).unwrap()
+    let cut = |(parts, held)| super::sliced(parts, held, unplanned(max, u64::MAX)).unwrap();
+    units.into_iter().flat_map(cut).collect()
 }
 
 /// What `batch` expands to.
@@ -79,7 +91,7 @@ fn a_unit_larger_than_a_slice_is_cut_in_order_and_holds_its_permits_to_the_last_
     assert!(
         others
             .iter()
-            .all(|(_, held)| held.permits.is_empty() && held.spare == 0)
+            .all(|(_, held)| held.permits.is_empty() && held.spare() == 0)
     );
     drop(pieces);
     assert_eq!(budget.reserved(), 0);
@@ -99,8 +111,8 @@ fn a_unit_within_a_slice_stays_whole_and_a_row_larger_than_one_is_its_own_piece(
 
 #[test]
 fn slices_share_the_budget_among_a_window_of_lowerings() {
-    assert_eq!(slice_bytes(&MemoryBudget::new(256 << 20)), 16 << 20);
-    assert_eq!(slice_bytes(&MemoryBudget::new(1 << 10)), MIN_SLICE);
+    assert_eq!(piece_bytes(&MemoryBudget::new(256 << 20)), 16 << 20);
+    assert_eq!(piece_bytes(&MemoryBudget::new(1 << 10)), MIN_PIECE);
 }
 
 #[test]
@@ -116,9 +128,11 @@ fn pieces_fill_a_slice_to_its_last_byte() {
     assert_eq!(pieces.len(), 1);
     assert_eq!(ids(&pieces), (0..20).collect::<Vec<_>>());
     let empty = plain(0).slice(0, 0);
+    drop(pieces);
+    // A unit of no rows has no piece, and what held it is released.
     let pieces = sliced(vec![(vec![empty], held(&budget, 8))], 160);
-    assert_eq!(pieces.len(), 1);
-    assert_eq!(pieces[0].0[0].num_rows(), 0);
+    assert!(pieces.is_empty());
+    assert_eq!(budget.reserved(), 0);
 }
 
 #[test]
@@ -172,23 +186,86 @@ fn rows_fill_each_slice_to_its_last_byte() {
 fn a_row_expanding_beyond_the_budget_is_refused_and_one_within_it_is_its_own_piece() {
     let budget = MemoryBudget::new(1 << 30);
     // Three rows of a 1 KB value, in slices of 100 bytes.
-    let unit = || vec![(vec![encoded(0, 3)], held(&budget, 64))];
-    let pieces = super::sliced(unit(), &native(), 100, 2_000).unwrap();
-    assert_eq!(pieces.len(), 3);
-    let Err(refused) = super::sliced(unit(), &native(), 100, 500) else {
-        panic!("a row beyond the budget was sliced");
+    let cut = |budget_bytes: u64| {
+        super::sliced(
+            vec![encoded(0, 3)],
+            held(&budget, 64),
+            unplanned(100, budget_bytes),
+        )
+    };
+    assert_eq!(cut(2_000).unwrap().len(), 3);
+    let Err(refused) = cut(500) else {
+        panic!("a row beyond the budget was cut");
     };
     assert_eq!(refused.budget, 500);
     assert!(refused.expanded > 500, "{refused:?}");
     // A row exactly the budget fits it.
     let row = native().expanded(&encoded(0, 1), 0..1, u64::MAX);
-    assert_eq!(super::sliced(unit(), &native(), 100, row).unwrap().len(), 3);
+    assert_eq!(cut(row).unwrap().len(), 3);
     assert_eq!(
-        super::sliced(unit(), &native(), 100, row - 1).err(),
+        cut(row - 1).err(),
         Some(RowTooLarge {
             expanded: row,
             budget: row - 1
         })
+    );
+}
+
+/// A million small integers in one column.
+fn small() -> RecordBatch {
+    let column: ArrayRef = Arc::new(arrow_array::Int8Array::from(vec![1_i8; 1_000_000]));
+    RecordBatch::try_from_iter([("n", column)]).unwrap()
+}
+
+/// The rows and bytes of each piece of `batch`, cut as `lowered` measures it.
+fn pieces(batch: RecordBatch, lowered: Lowered) -> Vec<(usize, u64)> {
+    let mut pieces = Pieces::new(vec![batch], lowered);
+    let mut cut = Vec::new();
+    while let Some(piece) = pieces.next().unwrap() {
+        cut.push((piece.rows, piece.bytes));
+    }
+    cut
+}
+
+#[test]
+fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
+    use rdlt_connector::cost::Stored;
+    use rdlt_connector::{DecimalType, LogicalType};
+    const MAX: u64 = 1 << 20;
+    // As it arrives, a million bytes are one piece.
+    assert_eq!(
+        pieces(small(), unplanned(MAX, u64::MAX)),
+        [(1_000_000, 1_000_000)]
+    );
+    // In a column of 256-bit decimals each is 33 bytes while it is lowered: the byte it is and
+    // the 32 it becomes.
+    let wide = Stored {
+        column: LogicalType::Decimal(DecimalType::new(76, 0).unwrap()),
+        text: false,
+    };
+    let stored = Lowered {
+        stored: vec![Some(wide.clone())],
+        ..unplanned(MAX, u64::MAX)
+    };
+    let cut = pieces(small(), stored);
+    assert_eq!(cut.len(), 32, "{cut:?}");
+    assert!(
+        cut.iter()
+            .all(|(rows, bytes)| *bytes == 33 * *rows as u64 && *bytes <= MAX)
+    );
+    assert_eq!(cut.iter().map(|(rows, _)| rows).sum::<usize>(), 1_000_000);
+    // Stored as text there, each takes its text beside, and each row the columns of the table
+    // the unit holds nothing in.
+    let text = Lowered {
+        stored: vec![Some(Stored { text: true, ..wide })],
+        row: 100,
+        ..unplanned(MAX, u64::MAX)
+    };
+    let cut = pieces(small(), text);
+    assert!(cut.len() > 200, "{} pieces", cut.len());
+    assert!(
+        cut.iter()
+            .all(|(rows, bytes)| *bytes >= 215 * *rows as u64 && *bytes <= MAX)
     );
 }
 

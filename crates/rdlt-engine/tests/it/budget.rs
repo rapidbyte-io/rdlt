@@ -50,7 +50,7 @@ fn costing_a_batch_allocates_nothing_a_value() {
     let cuts = rendering.measure(&batch, 1 << 20).cuts();
     let peak = HEAP.peak_usage().saturating_sub(before);
     assert!(cost.expanded >= u64::try_from(ITEMS).expect("a count"));
-    assert_eq!(cuts, [1]);
+    assert_eq!(cuts.len(), 1);
     assert!(peak < 64 << 10, "costing allocated {peak} bytes");
 }
 
@@ -62,9 +62,9 @@ fn costing(batch: &RecordBatch, max: u64) -> (usize, u64) {
     let cost = rendering.cost(batch, u64::MAX);
     let cuts = rendering.measure(batch, max).cuts();
     let peak = HEAP.peak_usage().saturating_sub(before);
-    assert_eq!(cuts.last(), Some(&batch.num_rows()));
+    assert_eq!(cuts.last().map(|piece| piece.end), Some(batch.num_rows()));
     // The cuts themselves are a word a piece.
-    let cuts = cuts.capacity() * size_of::<usize>();
+    let cuts = cuts.capacity() * size_of::<rdlt_connector::cost::Piece>();
     (peak.saturating_sub(cuts), cost.charge())
 }
 

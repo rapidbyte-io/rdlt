@@ -24,7 +24,8 @@ const TEMPORAL_TEXT: u64 = 64;
 pub(super) struct Scalar {
     /// Bytes: the value in its type, or in the plain type its logical type names where wider.
     pub(super) slot: u64,
-    /// Bytes: the longest text the value renders to, quoted as JSON quotes it.
+    /// Bytes: the longest text the value renders to, quoted as JSON quotes it, in its type or
+    /// in the plain type its logical type names where that renders longer.
     pub(super) text: u64,
     /// The kinds a destination must store natively for the value to stay as it is.
     pub(super) kinds: &'static [TypeKind],
@@ -43,13 +44,11 @@ pub(super) fn scalar(data_type: &DataType) -> Option<Scalar> {
         DataType::Null => scalar(1, NULL_TEXT, &[K::Null]),
         DataType::Boolean => scalar(1, 5, &[K::Bool]),
         DataType::Int8 => scalar(1, 4, &[K::Int8]),
-        DataType::Int16 => scalar(2, 6, &[K::Int16]),
-        DataType::UInt8 => scalar(2, 4, &[K::Int16]),
-        DataType::Int32 => scalar(4, 11, &[K::Int32]),
-        DataType::UInt16 => scalar(4, 5, &[K::Int32]),
-        DataType::Int64 => scalar(8, 20, &[K::Int64]),
-        DataType::UInt32 => scalar(8, 10, &[K::Int64]),
-        DataType::UInt64 => scalar(16, 22, &[K::Decimal]),
+        // An unsigned integer is stored in, and rendered from, the next wider signed type.
+        DataType::Int16 | DataType::UInt8 => scalar(2, 6, &[K::Int16]),
+        DataType::Int32 | DataType::UInt16 => scalar(4, 11, &[K::Int32]),
+        DataType::Int64 | DataType::UInt32 => scalar(8, 20, &[K::Int64]),
+        DataType::UInt64 => scalar(16, 26, &[K::Decimal]),
         DataType::Float16 | DataType::Float32 => scalar(4, 16, &[K::Float32]),
         DataType::Float64 => scalar(8, 25, &[K::Float64]),
         DataType::Decimal32(precision, scale)
@@ -127,13 +126,17 @@ pub(super) fn null_slot(data_type: &DataType) -> u64 {
 pub(super) fn keys(fields: &Fields) -> u64 {
     fields
         .iter()
-        .map(|field| {
-            let name = field.name().as_bytes();
-            count(name.len())
-                .saturating_add(escapes(name))
-                .saturating_add(4)
-        })
+        .map(|field| key(field.name()))
         .fold(BRACKETS, u64::saturating_add)
+}
+
+/// The bytes a field named `name` adds to a row of its struct's JSON text beside its value: the
+/// name quoted and escaped, its colon and its comma.
+pub(super) fn key(name: &str) -> u64 {
+    let name = name.as_bytes();
+    count(name.len())
+        .saturating_add(escapes(name))
+        .saturating_add(4)
 }
 
 /// The bytes escaping adds to `text` in a JSON string: a quote, a backslash and the short

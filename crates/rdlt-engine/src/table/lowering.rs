@@ -17,6 +17,7 @@ use std::time::SystemTime;
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, new_null_array};
 use parking_lot::Mutex;
+use rdlt_connector::cost::Stored;
 use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName};
 
 use super::TableView;
@@ -126,6 +127,25 @@ impl LoweringPlan {
             .filter(|(source, _)| source.is_null())
             .map(|(_, lowered)| rdlt_connector::cost::nulls(&lowered.to_arrow(), rows))
             .fold(0, u64::saturating_add)
+    }
+
+    /// How the plan's table stores each incoming column, in the batch's order: the type of its
+    /// column, and whether the destination stores it as text; nothing for a column the plan
+    /// sends nowhere, or sends typed null, which [`LoweringPlan::null_fill`] counts.
+    pub(crate) fn stored(&self) -> Vec<Option<Stored>> {
+        let mut stored = vec![None; self.routes.len()];
+        let columns = self.view.model.columns.iter().zip(&self.view.lowered);
+        for ((column, lowered), source) in columns.zip(&self.sources) {
+            if let Source::Incoming(index, from) = source
+                && *from != LogicalType::Null
+            {
+                stored[*index] = Some(Stored {
+                    column: column.logical_type().clone(),
+                    text: lowered != column.logical_type(),
+                });
+            }
+        }
+        stored
     }
 
     /// Whether the schema policy drops some of the rows the plan lowers: those holding a value of

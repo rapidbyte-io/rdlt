@@ -300,7 +300,8 @@ pub(crate) fn json(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
         .with_explicit_nulls(true)
         .with_encoder_factory(Arc::new(Extensions));
     let mut encoder = make_encoder(&field, array.as_ref(), &options)?;
-    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 8);
+    // Sized by what the cost model says the text takes at most, which the piece was charged.
+    let mut builder = StringBuilder::with_capacity(array.len(), text_capacity(&array, true));
     let mut buffer = Vec::new();
     for row in 0..array.len() {
         if array.is_null(row) {
@@ -322,7 +323,8 @@ pub(crate) fn text(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
         LogicalType::Struct(_) | LogicalType::List(_) | LogicalType::Json => json(array, logical),
         LogicalType::Uuid | LogicalType::Binary => {
             let array = normalize(array, logical)?;
-            let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 36);
+            let mut builder =
+                StringBuilder::with_capacity(array.len(), text_capacity(&array, false));
             for row in 0..array.len() {
                 if array.is_null(row) {
                     builder.append_null();
@@ -338,6 +340,14 @@ pub(crate) fn text(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
         }
         _ => temporal::text(array),
     }
+}
+
+/// Bytes: what a builder of the text of `array`'s values reserves, the most the cost model says
+/// the text takes, so the builder never grows.
+pub(super) fn text_capacity(array: &ArrayRef, json: bool) -> usize {
+    let bytes = rdlt_connector::cost::text_bytes(array.as_ref(), json);
+    // A bound no allocation could hold is not reserved: the builder then grows as it must.
+    usize::try_from(bytes).unwrap_or(0)
 }
 
 /// `bytes` in lower-case hex; a UUID's 16 bytes in its hyphenated form.

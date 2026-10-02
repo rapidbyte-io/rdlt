@@ -79,6 +79,18 @@ impl ChangeRows {
         })
     }
 
+    /// The `rows` rows from `first`.
+    pub(crate) fn slice(&self, first: usize, rows: usize) -> Self {
+        Self {
+            op: self.op.slice(first, rows),
+            seq: self.seq.slice(first, rows),
+            unchanged: self
+                .unchanged
+                .as_ref()
+                .map(|flags| flags.slice(first, rows)),
+        }
+    }
+
     /// The op of row `row`.
     pub(crate) fn op(&self, row: usize) -> Option<ChangeOp> {
         ChangeOp::from_code(self.op.value(row))

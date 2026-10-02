@@ -20,6 +20,7 @@ mod following_changes;
 mod history;
 mod json;
 mod ledger;
+mod lowering;
 mod merge;
 mod normalize;
 mod normalized;
