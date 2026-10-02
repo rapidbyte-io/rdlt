@@ -2045,6 +2045,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "subtle",
  "thiserror",
  "tokio",
  "tokio-rustls",
@@ -2052,6 +2053,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
