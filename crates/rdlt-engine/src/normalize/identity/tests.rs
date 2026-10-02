@@ -278,3 +278,105 @@ fn an_encoded_column_hashes_by_the_values_its_rows_name() {
     let repeated: ArrayRef = Arc::new(StringArray::from(vec!["a", "a", "b"]));
     assert_eq!(keyed_ids(runs), keyed_ids(repeated));
 }
+
+/// A batch of one column `k` of JSON text holding `values`.
+fn json_column(values: Vec<Option<String>>) -> RecordBatch {
+    let field = arrow_schema::Field::new("k", DataType::Utf8, true)
+        .with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into());
+    let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
+    RecordBatch::try_new(
+        schema,
+        vec![Arc::new(StringArray::from(values)) as ArrayRef],
+    )
+    .unwrap()
+}
+
+/// The ids of rows keyed by the JSON text `values`, each its own batch's.
+fn json_ids(values: &[&str]) -> Vec<Vec<u8>> {
+    let batch = json_column(
+        values
+            .iter()
+            .map(|value| Some((*value).to_owned()))
+            .collect(),
+    );
+    root_ids(&batch, &[Arc::from("k")])
+        .unwrap()
+        .iter()
+        .map(|id| id.unwrap().to_vec())
+        .collect()
+}
+
+#[test]
+fn json_text_nested_past_the_limit_is_refused_on_a_small_stack() {
+    let limit = usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH).unwrap();
+    let nested = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    let hashing = std::thread::Builder::new()
+        .stack_size(256 << 10)
+        .spawn(move || {
+            [limit, limit + 1, 100_000].map(|depth| {
+                let batch = json_column(vec![Some(nested(depth))]);
+                (
+                    root_ids(&batch, &[]).is_ok(),
+                    root_ids(&batch, &[Arc::from("k")]).is_ok(),
+                )
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        hashing.join().unwrap(),
+        [(true, true), (false, false), (false, false)]
+    );
+}
+
+#[test]
+fn json_numbers_hash_by_their_exact_value() {
+    let ids = json_ids(&[
+        "18446744073709551616",
+        "18446744073709551617",
+        "0.12345678901234567891",
+        "0.12345678901234567892",
+        r#"{"a":18446744073709551616}"#,
+        r#"{"a":18446744073709551999}"#,
+        "1e400",
+        "1.0000000000000000000001e400",
+    ]);
+    for pair in ids.chunks(2) {
+        assert_ne!(pair[0], pair[1], "values a float rounds alike hash apart");
+    }
+    // One value hashes alike whatever holds it: JSON text, a decimal, an integer or a float.
+    let huge = Decimal128Array::from(vec![18_446_744_073_709_551_616_i128])
+        .with_precision_and_scale(38, 0)
+        .unwrap();
+    assert_eq!(keyed_ids(Arc::new(huge))[0], ids[0]);
+    let one = json_ids(&["1", "1.0", "10e-1", "1E0"]);
+    assert!(one.iter().all(|id| *id == one[0]));
+    assert_eq!(keyed_ids(Arc::new(Int64Array::from(vec![1])))[0], one[0]);
+    assert_eq!(
+        keyed_ids(Arc::new(Float64Array::from(vec![1.0])))[0],
+        one[0]
+    );
+    let tenth = json_ids(&["0.1", "1e-1"]);
+    assert_eq!(tenth[0], tenth[1]);
+    assert_eq!(
+        keyed_ids(Arc::new(Float64Array::from(vec![0.1])))[0],
+        tenth[0]
+    );
+}
+
+#[test]
+fn json_text_that_is_not_json_is_refused_not_hashed_as_a_string() {
+    for text in ["abc", "", "{\"a\":}", "[1,]", "\"abc"] {
+        let batch = json_column(vec![Some(text.to_owned())]);
+        assert!(root_ids(&batch, &[Arc::from("k")]).is_err(), "{text:?}");
+        assert!(root_ids(&batch, &[]).is_err(), "{text:?}");
+    }
+    let string = json_ids(&["\"abc\""]);
+    assert_eq!(
+        keyed_ids(Arc::new(StringArray::from(vec!["abc"])))[0],
+        string[0],
+        "a JSON string hashes as the text it holds"
+    );
+    let nulls = json_column(vec![None, Some("null".to_owned())]);
+    let ids = root_ids(&nulls, &[Arc::from("k")]).unwrap();
+    assert_eq!(ids.value(0), ids.value(1), "a JSON null hashes as a null");
+}
