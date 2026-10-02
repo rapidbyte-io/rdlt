@@ -227,14 +227,15 @@ fn engine_killed(scenario: &Scenario, draws: u32) {
 }
 
 /// Kills the spawned `victim` of the harness running `scenario` before each commit of `before`,
-/// a source only as it reads; the run must ride the kill out on a later attempt.
+/// a source before each write of `before`, as it reads; the run must ride the kill out on a
+/// later attempt.
 fn connector_killed(scenario: &Scenario, victim: &str, before: &[Value]) {
     for before in before {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let kill = json!({ "victim": victim, "before": before });
         let config = scenario.write_spawned(dir.path(), &json!({ "kill": kill }));
         let context = format!(
-            "{}: the {victim} killed before commit {before}",
+            "{}: the {victim} killed before commit or write {before}",
             scenario.name
         );
         let run = Watched::spawn(&config);
@@ -265,7 +266,10 @@ fn connector_killed(scenario: &Scenario, victim: &str, before: &[Value]) {
             .and_then(|line| serde_json::from_str(line).ok())
             .expect("a report");
         let attempted = report["attempted"].as_u64().expect("a count of attempts");
-        assert!(attempted >= 2, "{context}: the kill failed no attempt");
+        assert!(
+            attempted >= 2,
+            "{context}: the kill failed no attempt: {lines:?}"
+        );
         scenario.verify(dir.path(), &context);
     }
 }

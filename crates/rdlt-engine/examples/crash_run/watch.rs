@@ -1,23 +1,26 @@
 //! Watching a run as it loads: the source's reads as they begin and the destination's commits as
-//! they land, told on standard output, and a spawned connector killed before a chosen commit.
+//! they land, told on standard output, and a spawned connector killed before a chosen commit, or
+//! a source before a chosen write.
 
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
 use rdlt_connector::{
     BoxFuture, Capabilities, Catalog, CommitMeta, Cursor, Destination, DestinationSession,
     DestinationWriter, OpenContext, OpenedSession, PartitionId, PartitionPlan, PartitionSink,
-    ReadRequest, Receipt, Result, Source, StreamName, StreamState, TableChange, TableRef,
+    ReadRequest, Receipt, Result, SegmentId, Source, StreamName, StreamState, TableChange,
+    TableRef, WriteStats,
 };
 use rdlt_host::Kills;
 
 use crate::config::{Before, Kill, Named, Victim};
 
-/// How long a killed connector takes to die, at most: the kill's reaper sends `SIGKILL` as it
-/// runs next, so a commit after the wait goes to a connector already dead.
-const DYING: Duration = Duration::from_millis(200);
+/// How long a killed connector may take to be gone before the run goes on regardless, and
+/// the test that watches it fails.
+const DYING: Duration = Duration::from_secs(60);
 
 /// What a run's watch knows: the reads begun and in flight, the commits asked for and landed, the
 /// kill to make, and where the run waits to be killed.
@@ -29,8 +32,13 @@ pub(crate) struct Watch {
     reading: AtomicU64,
     asked: AtomicU64,
     commits: AtomicU64,
+    /// The writes the destination was asked for.
+    writes: AtomicU64,
     kill: Option<(Kills, Kill)>,
     killed: AtomicBool,
+    /// Held by the write that kills a source until the source is gone, and taken by every
+    /// write after it: none goes on while the source dies.
+    dying: tokio::sync::Mutex<()>,
 }
 
 impl Watch {
@@ -61,27 +69,64 @@ impl Watch {
         self.tell(format!("read {read}")).await;
     }
 
-    /// Before the commit `meta`: kills where it is the chosen one, telling the reads then in
-    /// flight, and waits for the kill to land.
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "the harness stands for the CLI, outside the engine, on the real clock"
-    )]
+    /// Before the commit `meta`: kills the destination where it is the chosen one, and waits
+    /// for it to be gone, so the commit goes to a connector already dead.
     async fn committing(&self, meta: &CommitMeta) {
         let asked = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
         let Some((kills, kill)) = &self.kill else {
             return;
         };
-        let reading = self.reading.load(Ordering::SeqCst);
         let chosen = match (kill.victim, kill.before) {
-            (Victim::Source, Before::Commit(commit)) => asked >= commit && reading > 0,
+            (Victim::Source, _) => false,
             (Victim::Destination, Before::Commit(commit)) => asked == commit,
-            (_, Before::Named(Named::Publish)) => !meta.finish_generations.is_empty(),
+            (Victim::Destination, Before::Named(Named::Publish)) => {
+                !meta.finish_generations.is_empty()
+            }
         };
-        if chosen && !self.killed.swap(true, Ordering::SeqCst) {
-            kills.kill();
-            writeln!(std::io::stdout(), "killed reading {reading}").ok();
-            tokio::time::sleep(DYING).await;
+        if chosen {
+            self.kills(kills).await;
+        }
+    }
+
+    /// Before a write: kills the source where the write is the chosen one, and holds this
+    /// write and every later one until the source is gone.
+    ///
+    /// The engine takes no more of a source than its budget holds and its writes carry away,
+    /// and the source reads within a credit of less than a batch: with its writes held, what
+    /// the engine took is bounded, so a source with more to send is killed as it reads,
+    /// however the host's tasks and threads are scheduled.
+    async fn writing(&self) {
+        let written = self.writes.fetch_add(1, Ordering::SeqCst) + 1;
+        let Some((kills, kill)) = &self.kill else {
+            return;
+        };
+        let (Victim::Source, Before::Commit(write)) = (kill.victim, kill.before) else {
+            return;
+        };
+        if written < write {
+            return;
+        }
+        let _held = self.dying.lock().await;
+        self.kills(kills).await;
+    }
+
+    /// Kills through `kills`, once, telling the reads then in flight, and waits for the
+    /// connector killed to be gone: the thread that owns it has reaped it.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the harness stands for the CLI, outside the engine, on the real clock"
+    )]
+    async fn kills(&self, kills: &Kills) {
+        if self.killed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let reading = self.reading.load(Ordering::SeqCst);
+        let alive = rdlt_host::spawned().len();
+        kills.kill();
+        writeln!(std::io::stdout(), "killed reading {reading}").ok();
+        let until = tokio::time::Instant::now() + DYING;
+        while rdlt_host::spawned().len() >= alive && tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 
@@ -179,7 +224,11 @@ impl DestinationSession for Session {
         &'a mut self,
         table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
-        self.inner.writer(table)
+        Box::pin(async move {
+            let inner = self.inner.writer(table).await?;
+            let watch = Arc::clone(&self.watch);
+            Ok(Box::new(Writer { inner, watch }) as Box<dyn DestinationWriter>)
+        })
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
@@ -193,5 +242,23 @@ impl DestinationSession for Session {
 
     fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
         self.inner.close()
+    }
+}
+
+struct Writer {
+    inner: Box<dyn DestinationWriter>,
+    watch: Arc<Watch>,
+}
+
+impl DestinationWriter for Writer {
+    fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.watch.writing().await;
+            self.inner.write(segment, batch).await
+        })
+    }
+
+    fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
+        self.inner.flush()
     }
 }

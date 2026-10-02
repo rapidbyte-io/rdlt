@@ -25,7 +25,7 @@ use rdlt_connector_reference::{
     ChangesSource, FilesDestination, GeneratorSource, LogSource, SqliteDestination,
 };
 use rdlt_engine::{Engine, LocalWal, RayonPool, RunStatus, SystemEnv};
-use rdlt_host::{ConnectorRef, Kills, Local, Provider as _};
+use rdlt_host::{ConnectorRef, Kills, Local, Options, Provider as _};
 
 use config::{Config, Victim};
 use watch::Watch;
@@ -153,12 +153,22 @@ async fn destination(
     Ok(Arc::from(connected))
 }
 
+/// Bytes of credit a spawned source reads within: less than a batch, so a source is never
+/// more than a frame ahead of what the engine took, and one with more to send than the run
+/// holds is still reading when a commit is asked, however slowly the host runs.
+const READ_WINDOW: u64 = 512;
+
 /// The host spawning connectors, killing them by `kills` where given.
 fn host(kills: Option<&Kills>) -> Local {
     // Each connector is told as it is spawned, by its process id: the id of the process group
     // it leads, which what watches the run checks is gone once the run has ended.
+    let options = Options {
+        read_window: READ_WINDOW,
+        ..Options::default()
+    };
     let local = Local::trusting_binaries()
         .env_passthrough("LLVM_PROFILE_FILE")
+        .options(options)
         .on_spawn(|connector| {
             writeln!(std::io::stdout(), "connector {connector}").ok();
         });

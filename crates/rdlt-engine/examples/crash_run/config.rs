@@ -72,21 +72,22 @@ pub(crate) struct Place {
     pub(crate) launcher: Option<PathBuf>,
 }
 
-/// A spawned connector killed before a commit: a source only as it reads.
+/// A spawned connector killed as a run loads: a destination before a commit, a source before
+/// a write.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Kill {
     pub(crate) victim: Victim,
-    /// The commit the kill falls before; a source's, the first from it on with a read in
-    /// flight.
+    /// The commit a destination's kill falls before; a source's falls before the write of
+    /// that number, which is held, with every write after it, until the source is gone.
     pub(crate) before: Before,
 }
 
-/// The commit a kill falls before.
+/// The commit, or for a source the write, a kill falls before.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum Before {
-    /// The commit of this number, counted across attempts.
+    /// The commit, or the write, of this number, counted across attempts.
     Commit(u64),
     /// The commit named so.
     Named(Named),
