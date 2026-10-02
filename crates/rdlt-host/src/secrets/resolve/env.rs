@@ -57,6 +57,8 @@ impl EnvSecrets {
     /// with `_` for every character that is neither a letter nor a digit, as
     /// `EnvSecrets::named("RDLT_SECRET_")` does; to be given as a store of named secrets
     /// ([`Secrets::named`](super::Secrets::named)).
+    ///
+    /// The prefix may not be empty: under an empty one every reference is refused.
     pub fn named(prefix: impl Into<String>) -> Self {
         Self::scoped(Scope::Named(prefix.into()))
     }
@@ -76,7 +78,9 @@ impl EnvSecrets {
             (Scope::Prefix(prefix), SecretKind::Env) => {
                 (!prefix.is_empty() && name.starts_with(prefix.as_str())).then(|| name.clone())
             }
-            (Scope::Named(prefix), SecretKind::Named) => Some(named_variable(prefix, name)),
+            (Scope::Named(prefix), SecretKind::Named) => {
+                (!prefix.is_empty()).then(|| named_variable(prefix, name))
+            }
             _ => None,
         }
     }
