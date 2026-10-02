@@ -723,3 +723,52 @@ fn a_dictionary_replaces_the_one_of_its_id_and_a_schema_forgets_them_all() {
         .unwrap();
     assert_eq!(decoder.dictionary_bytes(), 0);
 }
+
+#[test]
+fn a_schema_sent_again_is_the_schema_the_decoder_holds() {
+    let batch = ints(3);
+    let mut encoder = Encoder::default();
+    let mut decoder = Decoder::new(Limits::default());
+    let first = decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
+    let before = decoder
+        .frame(&encoder.batch(&batch).unwrap()[0])
+        .unwrap()
+        .unwrap();
+    // The same schema, sent again for the next epoch: the batches after it share the first.
+    let again = decoder
+        .schema(&encoder.schema(&batch.schema()).unwrap())
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &again));
+    let after = decoder
+        .frame(&encoder.batch(&batch).unwrap()[0])
+        .unwrap()
+        .unwrap();
+    assert!(Arc::ptr_eq(&before.schema(), &after.schema()));
+    assert_eq!(before, after);
+    // A schema that differs is its own, and the frames after it are in it.
+    let other = samples::batch_of(Arc::new(StringArray::from(vec!["a"])));
+    let changed = decoder
+        .schema(&encoder.schema(&other.schema()).unwrap())
+        .unwrap();
+    assert!(!Arc::ptr_eq(&first, &changed));
+    let decoded = decoder.frame(&encoder.batch(&other).unwrap()[0]).unwrap();
+    assert_eq!(decoded, Some(other));
+}
+
+#[test]
+fn a_schema_sent_again_forgets_the_dictionaries_before_it() {
+    let batch = keyed(1, 1_000, "x");
+    let mut encoder = Encoder::default();
+    let mut decoder = Decoder::new(Limits::default());
+    let schema = encoder.schema(&batch.schema()).unwrap();
+    decoder.schema(&schema).unwrap();
+    let frames = encoder.batch(&batch).unwrap();
+    assert_eq!(decoder.frame(&frames[0]).unwrap(), None);
+    assert!(decoder.dictionary_bytes() >= 1_000);
+    decoder.schema(&schema).unwrap();
+    assert_eq!(decoder.dictionary_bytes(), 0);
+    // The batch's keys name a dictionary the decoder no longer holds.
+    assert!(decoder.frame(&frames[1]).is_err());
+}
