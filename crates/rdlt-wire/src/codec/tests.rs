@@ -991,3 +991,21 @@ fn a_sender_counts_the_dictionaries_its_receiver_holds_from_the_batches_before()
         decoder.frame(&frame).unwrap();
     }
 }
+
+#[test]
+fn a_schemas_message_is_measured_as_its_sender_encodes_it() {
+    let nested = Field::new_list("items", Field::new("item", DataType::Utf8, true), true);
+    let schemas = [
+        samples::batch().schema(),
+        keyed(3, 10, "x").schema(),
+        Arc::new(Schema::new(vec![nested])),
+    ];
+    for schema in schemas {
+        let sent = Encoder::default().schema(&schema).unwrap();
+        assert_eq!(
+            super::schema_message_bytes(&schema),
+            sent.len(),
+            "{schema:?}"
+        );
+    }
+}

@@ -381,3 +381,130 @@ fn every_stream_an_engine_reads_is_loaded_as_it_reads_it() {
     }
     assert!(planned(&stream(&[], true)).is_none());
 }
+
+/// A source of one partition that checkpoints once, with a cursor of the bytes its
+/// configuration says, and ends.
+struct Cursors {
+    bytes: usize,
+}
+
+impl rdlt_connector::Source for Cursors {
+    fn check(&self) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn discover(
+        &self,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<rdlt_connector::Catalog>> {
+        Box::pin(async { Ok(rdlt_connector::Catalog::default()) })
+    }
+
+    fn plan<'a>(
+        &'a self,
+        _: &'a rdlt_connector::StreamName,
+        _: &'a rdlt_connector::StreamState,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<rdlt_connector::PartitionPlan>> {
+        Box::pin(async { Err(rdlt_connector::ConnectorError::internal("nothing to plan")) })
+    }
+
+    fn read(
+        &self,
+        _: rdlt_connector::ReadRequest,
+        mut sink: rdlt_connector::PartitionSink,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        let bytes = self.bytes;
+        Box::pin(async move {
+            let cursor = rdlt_connector::Cursor::new(1, &vec![b'c'; bytes])?;
+            let checkpoint = rdlt_connector::SourceEvent::Checkpoint {
+                cursor,
+                answers: None,
+            };
+            sink.send(checkpoint).await
+        })
+    }
+
+    fn committed<'a>(
+        &'a self,
+        _: &'a rdlt_connector::StreamName,
+        _: &'a [(rdlt_connector::PartitionId, rdlt_connector::Cursor)],
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Connects [`Cursors`] from `{ "bytes": n }`.
+struct CursorsFactory(rdlt_connector::ConnectorSpec);
+
+impl rdlt_connector::SourceFactory for CursorsFactory {
+    fn spec(&self) -> &rdlt_connector::ConnectorSpec {
+        &self.0
+    }
+
+    fn connect(
+        &self,
+        config: serde_json::Value,
+        _: rdlt_connector::ConnectContext,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<Box<dyn rdlt_connector::Source>>>
+    {
+        Box::pin(async move {
+            let bytes = config["bytes"]
+                .as_u64()
+                .and_then(|bytes| usize::try_from(bytes).ok());
+            let bytes = bytes.ok_or_else(|| rdlt_connector::ConnectorError::config("no bytes"))?;
+            Ok(Box::new(Cursors { bytes }) as Box<dyn rdlt_connector::Source>)
+        })
+    }
+}
+
+/// Reads a partition of a source of cursors of `bytes`, placed as a kill clause places its
+/// target, told `admitted`: how the read ended.
+async fn read_through_a_kill_clause(
+    admitted: &rdlt_wire::Limits,
+    bytes: usize,
+) -> rdlt_connector::Result<()> {
+    let id = rdlt_connector::ConnectorId::parse("test.cursors").expect("an id");
+    let spec = rdlt_connector::ConnectorSpec {
+        id: id.clone(),
+        version: "0.0.0".to_owned(),
+        role: rdlt_connector::Role::Source,
+        config_schema: serde_json::json!({}),
+    };
+    let served = rdlt_connector::serve::Served::new().with_source(Box::new(CursorsFactory(spec)));
+    let target = crate::Target::served(served);
+    let (provider, reference) = target.provider(&id, &rdlt_host::Kills::new(), admitted);
+    let config = serde_json::json!({ "bytes": bytes });
+    let placed = provider.source(&reference, &config).await.expect("placed");
+    let (sink, mut feed) =
+        rdlt_connector::partition_channel(std::num::NonZeroUsize::new(4).expect("not zero"));
+    let request = rdlt_connector::ReadRequest::new(
+        rdlt_connector::StreamName::new("events").expect("a name"),
+        rdlt_connector::Partition::new(rdlt_connector::PartitionId::parse("p0").expect("an id")),
+        None,
+    );
+    let drained = async { while feed.recv().await.is_some() {} };
+    let (read, ()) = tokio::join!(placed.connector.read(request, sink), drained);
+    read
+}
+
+#[tokio::test]
+async fn a_kill_clause_tells_its_target_the_limits_its_engine_admits_exactly() {
+    let admitted = super::limits().expect("the limits");
+    // Those of an engine of the clause's budget: a cursor of sixteen kilobytes, where the wire
+    // takes four mebibytes.
+    let engine = rdlt_engine::EngineConfig::builder()
+        .memory(34 << 20)
+        .build()
+        .expect("valid");
+    assert_eq!(admitted, engine.limits());
+    let limit = usize::try_from(admitted.cursor_bytes).expect("a size");
+    assert_eq!(limit, 16_384);
+    for bytes in [limit - 1, limit] {
+        read_through_a_kill_clause(&admitted, bytes)
+            .await
+            .unwrap_or_else(|error| panic!("{bytes} bytes: {error}"));
+    }
+    let refused = read_through_a_kill_clause(&admitted, limit + 1)
+        .await
+        .expect_err("a cursor beyond what the engine admits");
+    assert!(refused.to_string().contains("cursor bytes"), "{refused}");
+}
