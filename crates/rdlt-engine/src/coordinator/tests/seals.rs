@@ -126,7 +126,10 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
     let (mut coordinator, _harness) = setup.coordinator().await;
     for segment in 1..=2 {
         coordinator.observe(Progress::Sealed(seal(0, segment, 1, segment, None)));
-        assert!(!coordinator.commit_due(), "{segment} cursors of a limit of three");
+        assert!(
+            !coordinator.commit_due(),
+            "{segment} cursors of a limit of three"
+        );
     }
     coordinator.observe(Progress::Sealed(seal(0, 3, 1, 3, None)));
     assert!(coordinator.commit_due());

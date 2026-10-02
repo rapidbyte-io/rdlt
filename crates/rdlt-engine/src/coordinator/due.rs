@@ -2,7 +2,9 @@
 //!
 //! A commit takes sealed segments. Rows a partition has written and not sealed are counted too,
 //! as a barrier may seal them. A partition that seals when a barrier asks keeps its rows counted
-//! until it seals them: only a barrier seals them, and only rows that are due raise one. Rows of a
+//! until it seals them: only a barrier seals them, and only rows that are due raise one; but rows
+//! it held when it did not answer a barrier in time count no more, so one that never answers
+//! makes no later event wait a barrier out until it has written as much again. Rows of a
 //! partition that seals on its own are passed by a commit that does not take them, and count
 //! again once sealed: a partition that checkpoints only at its end would otherwise keep every
 //! later event due, each a barrier and a commit of whatever else sealed.
@@ -44,9 +46,12 @@ impl Counts {
 #[derive(Debug, Default)]
 struct Unsealed {
     counts: Counts,
+    /// What of `counts` makes a commit due.
+    counted: Counts,
     /// Whether a barrier seals these rows: their partition seals when one asks.
     asked: bool,
-    /// Whether a commit passed these rows by.
+    /// Whether a commit passed these rows by, their partition sealing on its own: no row it
+    /// writes counts until it seals.
     passed: bool,
 }
 
@@ -57,6 +62,7 @@ impl Due {
         unsealed.asked = asked;
         unsealed.counts.add(rows, bytes);
         if !unsealed.passed {
+            unsealed.counted.add(rows, bytes);
             self.fresh.add(rows, bytes);
         }
     }
@@ -73,15 +79,27 @@ impl Due {
         self.forget(partition);
     }
 
+    /// `partition` was asked to seal and did not within the barrier's wait: what it wrote so far
+    /// makes no commit due, and what it writes next does, so it is asked again only once it has
+    /// written more.
+    pub(super) fn unanswered(&mut self, partition: usize) {
+        if let Some(unsealed) = self.unsealed.get_mut(&partition) {
+            self.fresh.take(std::mem::take(&mut unsealed.counted));
+        }
+    }
+
     /// A commit is about to take every seal, and pass by every row not sealed that no barrier
     /// seals.
     pub(super) fn committing(&mut self) {
         self.sealed = Counts::default();
         self.fresh = Counts::default();
         for unsealed in self.unsealed.values_mut() {
-            unsealed.passed = !unsealed.asked;
             if unsealed.asked {
-                self.fresh.add(unsealed.counts.rows, unsealed.counts.bytes);
+                self.fresh
+                    .add(unsealed.counted.rows, unsealed.counted.bytes);
+            } else {
+                unsealed.passed = true;
+                unsealed.counted = Counts::default();
             }
         }
     }
@@ -99,9 +117,7 @@ impl Due {
     /// Forgets what `partition` wrote since it last sealed: its counts, where it wrote any.
     fn forget(&mut self, partition: usize) -> Option<Counts> {
         let unsealed = self.unsealed.remove(&partition)?;
-        if !unsealed.passed {
-            self.fresh.take(unsealed.counts);
-        }
+        self.fresh.take(unsealed.counted);
         Some(unsealed.counts)
     }
 }
