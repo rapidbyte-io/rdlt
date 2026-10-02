@@ -238,7 +238,7 @@ async fn pump(
 ) {
     let (sink, mut feed) = partition_channel(EVENTS);
     // What the source pushes is cut to the host's frames as it is sent.
-    let sink = sink.cut();
+    let sink = sink.cut().within(host);
     // A barrier pending when the read started is the source's to answer from its first push.
     if let Some(barrier) = std::num::NonZeroU64::new(barrier) {
         feed.request_checkpoint(barrier.get());
