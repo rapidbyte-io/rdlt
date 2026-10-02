@@ -66,6 +66,16 @@ impl Coordinator {
             }
             collected.positions.insert(seal.partition, seal.state);
         }
+        // A partition done with no cursor among the seals is told the cursor it stood at: a
+        // report of it that failed is not made by any later attempt, which plans it no more.
+        for (partition, state) in &collected.positions {
+            let stood = &self.parts.partitions[*partition].stands;
+            if let (PartitionState::Done, Some(PartitionState::Cursor(cursor))) = (state, stood)
+                && !collected.reported.contains_key(partition)
+            {
+                collected.reported.insert(*partition, cursor.clone());
+            }
+        }
         collected
     }
 

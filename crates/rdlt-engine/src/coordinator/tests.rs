@@ -1188,6 +1188,7 @@ async fn a_commit_is_progress_unless_it_only_records_partitions_where_they_stood
         (vec![cursor(5)], false)
     );
     // A row, a position that moved, a partition done, or a table's schema: each is progress.
+    // A partition done with no checkpoint in the commit is told where it stood.
     assert_eq!(
         committed_from_five(at(5), 1, None).await,
         (vec![cursor(5)], true)
@@ -1198,7 +1199,7 @@ async fn a_commit_is_progress_unless_it_only_records_partitions_where_they_stood
     );
     assert_eq!(
         committed_from_five(PartitionState::Done, 0, None).await,
-        (Vec::new(), true)
+        (vec![cursor(5)], true)
     );
     assert_eq!(
         committed_from_five(at(5), 0, Some(schema())).await,
