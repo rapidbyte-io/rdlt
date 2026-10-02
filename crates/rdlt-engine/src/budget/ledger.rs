@@ -8,7 +8,9 @@ use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 use super::Reservation;
-use crate::limits::{CURSOR_SHARE, LOG_SHARE, MIN_PIECE, PIECE_SHARE, READ_SHARE, REQUEST_SHARE};
+use crate::limits::{
+    CURSOR_SHARE, LOG_SHARE, MIN_PIECE, PIECE_SHARE, READ_SHARE, REQUEST_SHARE, TABLE_SHARE,
+};
 use crate::watch;
 
 /// Whose bytes a reservation holds: which share they are of.
@@ -22,6 +24,9 @@ pub(crate) enum Class {
     Cursor,
     /// A seal's or a commit's frame on its way into the log.
     Log,
+    /// What a commit records of a table's schema and names, from the schema change that makes
+    /// it until the commit recording it lands.
+    Tables,
     /// What a read keeps beside its events.
     Read,
 }
@@ -34,6 +39,7 @@ impl Class {
             Self::Work => "lowering",
             Self::Cursor => "a cursor",
             Self::Log => "a log frame",
+            Self::Tables => "a table's records",
             Self::Read => "what reads keep",
         }
     }
@@ -46,6 +52,8 @@ pub(crate) struct Shares {
     pub(crate) cursors: u64,
     /// The log's seal and commit frames.
     pub(crate) log: u64,
+    /// What commits record of tables' schemas and names.
+    pub(crate) tables: u64,
     /// What all reads keep together.
     pub(crate) reads: u64,
     /// Pushes and what lowering makes of them: the rest of the budget.
@@ -62,16 +70,18 @@ pub(crate) struct Shares {
 impl Shares {
     /// The shares of a budget of `capacity` bytes.
     pub(crate) fn of(capacity: u64) -> Self {
-        let (cursors, log, reads) = (
+        let (cursors, log, tables, reads) = (
             capacity / CURSOR_SHARE,
             capacity / LOG_SHARE,
+            capacity / TABLE_SHARE,
             capacity / READ_SHARE,
         );
-        let data = capacity - cursors - log - reads;
+        let data = capacity - cursors - log - tables - reads;
         let request = (capacity / REQUEST_SHARE).min(data);
         Self {
             cursors,
             log,
+            tables,
             reads,
             data,
             request,
@@ -93,7 +103,8 @@ struct Waiter {
 #[error(
     "{asked} bytes for {what} waited {waited:?} for room in a memory budget of {capacity}: \
      pushes hold {intake} bytes, lowering {work}, cursors waiting for a commit {cursors}, the \
-     log's frames {log}, and {reads} are kept by reads"
+     log's frames {log}, tables' records waiting for a commit {tables}, and {reads} are kept by \
+     reads"
 )]
 pub(crate) struct Exhausted {
     /// What the request was for.
@@ -110,6 +121,8 @@ pub(crate) struct Exhausted {
     pub(crate) cursors: u64,
     /// Bytes the log's frames hold.
     pub(crate) log: u64,
+    /// Bytes tables' records waiting for a commit hold.
+    pub(crate) tables: u64,
     /// Bytes reads keep.
     pub(crate) reads: u64,
     /// How long the request waited.
@@ -146,24 +159,32 @@ pub(super) struct Ledger {
     work: u64,
     cursors: u64,
     log: u64,
+    tables: u64,
     reads: u64,
     pub(super) peak: u64,
     /// The requests waiting for each share, in arrival order; reads never wait.
-    waiting: [VecDeque<Waiter>; 4],
+    waiting: [VecDeque<Waiter>; 5],
     next: u64,
     /// How many holders of pieces queued for a write wait for them to be written.
     pressing: usize,
     /// Whether whoever holds bytes a write releases should write them now.
     pub(super) pressed: watch::Sender<bool>,
-    /// Whether a cursor waits for the cursors a commit releases.
+    /// Whether a cursor or a table's records wait for what a commit releases.
     pub(super) cursor_waits: watch::Sender<bool>,
     /// How many requests for pushes or lowering waited, and how many cursors.
     pub(super) waited: (u64, u64),
 }
 
-/// The classes that wait, in the order their waiters are admitted: cursors and the log's frames
-/// first, which no push holds up, then lowering, which releases bytes, then pushes.
-const WAITING: [Class; 4] = [Class::Cursor, Class::Log, Class::Work, Class::Intake];
+/// The classes that wait, in the order their waiters are admitted: cursors, the log's frames and
+/// tables' records first, which no push holds up, then lowering, which releases bytes, then
+/// pushes.
+const WAITING: [Class; 5] = [
+    Class::Cursor,
+    Class::Log,
+    Class::Tables,
+    Class::Work,
+    Class::Intake,
+];
 
 impl Ledger {
     pub(super) fn new(capacity: u64) -> Self {
@@ -174,6 +195,7 @@ impl Ledger {
             work: 0,
             cursors: 0,
             log: 0,
+            tables: 0,
             reads: 0,
             peak: 0,
             waiting: Default::default(),
@@ -187,7 +209,7 @@ impl Ledger {
 
     /// Bytes reserved, every share together.
     pub(super) fn reserved(&self) -> u64 {
-        self.intake + self.work + self.cursors + self.log + self.reads
+        self.intake + self.work + self.cursors + self.log + self.tables + self.reads
     }
 
     fn queue(&mut self, class: Class) -> Option<&mut VecDeque<Waiter>> {
@@ -201,6 +223,7 @@ impl Ledger {
             Class::Work => &mut self.work,
             Class::Cursor => &mut self.cursors,
             Class::Log => &mut self.log,
+            Class::Tables => &mut self.tables,
             Class::Read => &mut self.reads,
         }
     }
@@ -212,6 +235,7 @@ impl Ledger {
             Class::Work => self.shares.request,
             Class::Cursor => self.shares.cursors,
             Class::Log => self.shares.log,
+            Class::Tables => self.shares.tables,
             Class::Read => self.shares.reads,
         }
     }
@@ -236,6 +260,7 @@ impl Ledger {
             Class::Work => data + bytes <= self.shares.data,
             Class::Cursor => self.cursors + bytes <= self.shares.cursors,
             Class::Log => self.log + bytes <= self.shares.log,
+            Class::Tables => self.tables + bytes <= self.shares.tables,
             Class::Read => self.reads + bytes <= self.shares.reads,
         }
     }
@@ -277,7 +302,7 @@ impl Ledger {
         match class {
             Class::Cursor => self.waited.1 = self.waited.1.saturating_add(1),
             Class::Intake | Class::Work => self.waited.0 = self.waited.0.saturating_add(1),
-            Class::Log | Class::Read => {}
+            Class::Log | Class::Tables | Class::Read => {}
         }
         self.press();
         Some((id, receiver))
@@ -300,6 +325,7 @@ impl Ledger {
             work: self.work,
             cursors: self.cursors,
             log: self.log,
+            tables: self.tables,
             reads: self.reads,
             waited,
         }
@@ -326,7 +352,8 @@ impl Ledger {
         };
         let pressed = self.pressing > 0 || waits(Class::Work) || waits(Class::Intake);
         self.pressed.send_replace(pressed);
-        self.cursor_waits.send_replace(waits(Class::Cursor));
+        self.cursor_waits
+            .send_replace(waits(Class::Cursor) || waits(Class::Tables));
     }
 
     /// The next waiting request that is admitted, and its class: the first of each share in

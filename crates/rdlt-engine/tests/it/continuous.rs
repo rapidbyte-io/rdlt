@@ -11,7 +11,10 @@ use rdlt_connector::{
     StreamState, acknowledging_source_factory,
 };
 use rdlt_connector_reference::LogSource;
-use rdlt_engine::{CommitPolicy, EngineConfig, EngineConfigBuilder, RunStatus, StopMode, Until};
+use rdlt_engine::{
+    CommitPolicy, EngineConfig, EngineConfigBuilder, ErrorKind, RetryPolicy, RunStatus, StopMode,
+    Until,
+};
 use serde_json::{Value, json};
 
 use crate::support::{engine, memory, pipeline, published_json, stream};
@@ -190,14 +193,15 @@ async fn a_following_run_starts_the_partitions_its_source_adds() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_following_run_reads_more_unbounded_partitions_than_it_has_read_slots() {
+async fn a_following_run_reads_its_unbounded_partitions_each_in_a_slot_of_its_own() {
     let source = log(
         "wide",
         json!({ "name": "events", "partitions": 6, "messages": 3 }),
     )
     .await;
     let plan = pipeline("wide", [incremental()]).with_until(Until::For(Duration::from_secs(1)));
-    let outcome = engine(following().partitions(2))
+    // One slot more than the unbounded partitions, for every other read to take in turn.
+    let outcome = engine(following().partitions(7))
         .run(plan, source, memory("wide").await)
         .await;
     assert_eq!(
@@ -207,6 +211,64 @@ async fn a_following_run_reads_more_unbounded_partitions_than_it_has_read_slots(
         outcome.error
     );
     assert_eq!(exactly_once("wide", "wide", 6).await, [3; 6]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn seventeen_followed_reads_each_keeping_all_its_part_read_at_once() {
+    // Each read keeps the reads' share of the default budget over the run's eighteen slots.
+    let part = (256 << 20) / 4 / 18;
+    let source = Arc::new(crate::lowering::Keeping {
+        source: log(
+            "kept_parts",
+            json!({ "name": "events", "partitions": 17, "messages": 3 }),
+        )
+        .await,
+        bytes: part,
+    });
+    let plan =
+        pipeline("kept_parts", [incremental()]).with_until(Until::For(Duration::from_secs(1)));
+    let outcome = engine(following().partitions(18))
+        .run(plan, source, memory("kept_parts").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert!(outcome.report.peak_memory >= 17 * part);
+    assert_eq!(exactly_once("kept_parts", "kept_parts", 17).await, [3; 17]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_following_run_with_as_many_unbounded_partitions_as_slots_is_refused_at_once() {
+    let source = log(
+        "too_wide",
+        json!({ "name": "events", "partitions": 6, "messages": 3 }),
+    )
+    .await;
+    let plan =
+        pipeline("too_wide", [incremental()]).with_until(Until::For(Duration::from_secs(60)));
+    let started = tokio::time::Instant::now();
+    let outcome = engine(
+        following()
+            .partitions(6)
+            .retry(RetryPolicy::default().max_attempts(1)),
+    )
+    .run(plan, source, memory("too_wide").await)
+    .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Config, Some("partitions_too_few"))
+    );
+    assert!(!error.is_retryable());
+    // Refused as the read that would take the last slot starts, not after any wait.
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "{:?}",
+        started.elapsed()
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -338,7 +400,7 @@ async fn a_deadline_that_finds_the_run_failing_ends_it_failed() {
     )
     .await;
     let plan = pipeline("down", [incremental()]).with_until(Until::For(Duration::from_secs(2)));
-    let retry = rdlt_engine::RetryPolicy::default()
+    let retry = RetryPolicy::default()
         .max_attempts(1_000)
         .initial(Duration::from_millis(50))
         .max_delay(Duration::from_millis(200));

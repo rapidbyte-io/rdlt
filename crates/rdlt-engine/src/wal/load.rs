@@ -90,17 +90,18 @@ impl LoadLog {
     }
 
     /// Logs `batch` of `segment`, lowered for `view` of the attempt's table `table`, encoded on
-    /// `compute`; `budget` holds the frame's bytes until it is appended.
+    /// `compute`; `held` holds the frame's bytes until it is appended, and `budget` its table's
+    /// schema frame where it is the first.
     pub(crate) async fn batch(
         &self,
         compute: &dyn ComputePool,
+        budget: &MemoryBudget,
         mut held: Permit,
-        table: usize,
-        view: &TableView,
+        (table, view): (usize, &TableView),
         segment: SegmentId,
         batch: &RecordBatch,
     ) -> Result<(), Error> {
-        let index = self.describe(table, view).await?;
+        let index = self.describe(budget, table, view).await?;
         let batch = frame::Batch {
             segment,
             table: index,
@@ -126,7 +127,12 @@ impl LoadLog {
 
     /// The index of `view` of the attempt's table `table` in the log, its schema frame sent first
     /// where it has none.
-    async fn describe(&self, table: usize, view: &TableView) -> Result<u32, Error> {
+    async fn describe(
+        &self,
+        budget: &MemoryBudget,
+        table: usize,
+        view: &TableView,
+    ) -> Result<u32, Error> {
         let key = (table, view.table.version, view.table.generation);
         let mut tables = self.tables.lock().await;
         if let Some(index) = tables.get(&key) {
@@ -134,13 +140,19 @@ impl LoadLog {
         }
         let index = u32::try_from(tables.len())
             .map_err(|_| Error::internal("a load writes more table versions than a log names"))?;
+        // Reserved before it is encoded for what it takes at most, until it is first appended.
+        let schema = view.physical_schema();
+        let held = reserved(budget, described(&schema)).await?;
         let frame = Frame::Schema(frame::Table {
             index,
             table: view.table.clone(),
-            schema: view.physical_schema(),
+            schema,
         })
         .encode()?;
-        self.writer.send(Command::Table { index, frame }).await?;
+        let held = Box::new(settled(budget, held, frame.len()).await?);
+        self.writer
+            .send(Command::Table { index, frame, held })
+            .await?;
         tables.insert(key, index);
         Ok(index)
     }
@@ -156,6 +168,7 @@ impl LoadLog {
         sealed: Vec<Sealed>,
         begun: Vec<frame::BegunPhase>,
         meta: &CommitMeta,
+        prepaid: u64,
     ) -> Result<(), Error> {
         // The commit settles every segment it sealed, those it publishes nothing of included, so
         // its receipt lets their chunks go.
@@ -169,7 +182,8 @@ impl LoadLog {
             // in base64, and for the frame as it is once it exists.
             let cursors = [seal.from.as_ref(), Some(&seal.state)];
             let cursors = cursors.into_iter().flatten().map(recorded);
-            let held = reserved(budget, cursors.fold(0, u64::saturating_add)).await?;
+            let bytes = cursors.fold(FRAMED, u64::saturating_add);
+            let held = reserved(budget, bytes).await?;
             let frame = Frame::Seal(frame::Seal {
                 segment,
                 stream: seal.stream,
@@ -188,25 +202,18 @@ impl LoadLog {
             };
             self.writer.send(seal).await?;
         }
-        // Reserved before they are encoded for the state they record, and for the frames as they
-        // are once they exist.
-        let changes = begun.iter().flat_map(|begun| &begun.changes);
-        let state = changes.chain(&meta.state_delta).map(|change| match change {
-            rdlt_connector::StateChange::Put(record) => {
-                count(record.key.len().saturating_add(record.value.len()))
-            }
-            rdlt_connector::StateChange::Delete(key) => count(key.len()),
-        });
-        let state = state.fold(0_u64, |bytes, record| {
-            bytes.saturating_add(RECORDED.saturating_mul(record))
-        });
-        let held = reserved(budget, state).await?;
+        // Reserved before they are encoded for what they take at most, but what they record of
+        // tables, which each table's change reserved.
+        let held = reserved(budget, commit_bytes(&begun, meta).saturating_sub(prepaid)).await?;
         let mut frames = Vec::new();
         for begun in begun {
             frames.extend_from_slice(&Frame::Begun(begun).encode()?);
         }
         frames.extend_from_slice(&frame::commit(meta)?);
-        let held = settled(budget, held, frames.len()).await?;
+        let frame = frames
+            .len()
+            .saturating_sub(usize::try_from(prepaid).unwrap_or(usize::MAX));
+        let held = settled(budget, held, frame).await?;
         let held = Box::new(held);
         let (durable, answer) = oneshot::channel();
         self.writer
@@ -279,23 +286,68 @@ async fn reserved(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Erro
         })
 }
 
+/// Bytes: what a frame takes beside the records it holds, at most: its head, its kind and the
+/// names and numbers it carries.
+const FRAMED: u64 = 4 << 10;
+
+/// Bytes: what a record of state takes in a frame beside its key and value, at most.
+const PER_RECORD: u64 = 64;
+
+/// Bytes: the most the frames of the commit `meta` and of the phases `begun` with it take: each
+/// record's key and value written twice over, what a record and a frame take beside, and the
+/// segments, generations and tables the commit names.
+fn commit_bytes(begun: &[frame::BegunPhase], meta: &CommitMeta) -> u64 {
+    let changes = begun.iter().flat_map(|begun| &begun.changes);
+    let record = |change: &rdlt_connector::StateChange| match change {
+        rdlt_connector::StateChange::Put(record) => {
+            count(record.key.len().saturating_add(record.value.len()))
+        }
+        rdlt_connector::StateChange::Delete(key) => count(key.len()),
+    };
+    let records = changes.chain(&meta.state_delta).map(|change| {
+        RECORDED
+            .saturating_mul(record(change))
+            .saturating_add(PER_RECORD)
+    });
+    let named = [
+        meta.finish_generations.len(),
+        meta.child_tables.len(),
+        meta.drop_tables.len(),
+    ];
+    let named = named.into_iter().map(count);
+    let named = named.fold(meta.segments.len(), u64::saturating_add);
+    let named = named.saturating_mul(NAMED);
+    let frames = count(begun.len()).saturating_add(1).saturating_mul(FRAMED);
+    records.fold(named.saturating_add(frames), u64::saturating_add)
+}
+
+/// Bytes: the most a segment, a generation or a table a commit names takes in its frame.
+const NAMED: u64 = 1 << 10;
+
+/// Bytes: the most a table's schema frame takes: its schema written twice over, as its fields
+/// with their names take, and a frame beside.
+fn described(schema: &rdlt_connector::TableSchema) -> u64 {
+    let fields = rdlt_connector::cost::schema_bytes(&schema.to_arrow());
+    RECORDED.saturating_mul(fields).saturating_add(FRAMED)
+}
+
 /// What holds a frame of `frame` bytes that `held` was reserved for before it was encoded: what
 /// the frame takes, the rest released.
 ///
-/// A frame of more than was reserved for it, as one that records little but itself, gives back
-/// what it held and asks for what it takes in one request, so it never waits while it holds.
+/// A frame larger than was reserved for it keeps what it holds and waits for the rest: the
+/// writer releases what the log's share holds without asking for more.
 async fn settled(
     budget: &MemoryBudget,
     mut held: Reservation,
     frame: usize,
-) -> Result<Reservation, Error> {
+) -> Result<(Reservation, Option<Reservation>), Error> {
     let frame = count(frame);
     if frame > held.bytes() {
-        drop(held);
-        return reserved(budget, frame).await;
+        let more = reserved(budget, frame - held.bytes()).await?;
+        return Ok((held, Some(more)));
     }
     held.shrink(frame);
-    Ok(held)
+    Ok((held, None))
 }
 
 fn count(bytes: usize) -> u64 {

@@ -5,6 +5,7 @@ mod barriers;
 mod coalesce;
 mod latest;
 mod progress;
+mod slots;
 #[cfg(test)]
 mod tests;
 mod write;
@@ -19,7 +20,7 @@ use rdlt_connector::{
     Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, RETENTION_LOST,
     ReadRequest, SegmentId, Source, SourceEvent, StreamName, admitted_partition_channel,
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
@@ -36,6 +37,7 @@ use barriers::Barriers;
 use coalesce::{Coalescer, Pushed};
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
+pub(crate) use slots::Slots;
 use write::write_flushed;
 
 /// One partition to read.
@@ -95,7 +97,7 @@ pub(crate) struct PartitionContext {
     /// Fires when the attempt is cancelled.
     pub(crate) cancel: CancellationToken,
     /// Limits how many partitions read at once.
-    pub(crate) slots: Arc<Semaphore>,
+    pub(crate) slots: Slots,
     /// The next segment id of the load.
     pub(crate) segments: Arc<AtomicU64>,
     pub(crate) buffer: NonZeroUsize,
@@ -134,17 +136,18 @@ impl PartitionContext {
 
 /// Reads `job` to its end, or until the attempt stops or is cancelled.
 pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Result<(), Error> {
-    // A followed unbounded partition reads for as long as the run, mostly waiting: it holds no
-    // slot, or a stream with more of them than slots would never read the rest.
-    let slotless = job.follow && job.partition.is_unbounded();
+    // Every read holds a slot, so no more reads keep bytes than the reads' share is divided
+    // among. A followed unbounded read holds one for as long as the run; fewer of them than
+    // slots run at once, so the other reads always have a slot to take in turn.
+    let _endless = context.slots.endless(&job)?;
     let _slot = tokio::select! {
         biased;
         // Cancellation wins: a partition that has not started never needs to.
         () = context.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
         // A stop request comes next: a partition still waiting for a slot ends without reading.
         () = job.stop.cancelled() => None,
-        () = std::future::ready(()), if slotless => None,
-        slot = context.slots.acquire() => Some(slot.map_err(|_| Error::internal("partition slots closed"))?),
+        // A read waits for a slot as long as a request waits for bytes.
+        slot = context.slots.read(&context.budget, &job) => Some(slot?),
     };
     if job.stop.is_cancelled() {
         return context.report(Progress::Ended {

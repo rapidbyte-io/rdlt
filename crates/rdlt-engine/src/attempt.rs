@@ -17,7 +17,7 @@ use rdlt_connector::{
     Cursor, Destination, Epoch, GenerationId, LoadId, OpenContext, OpenedSession, Partition,
     PipelineState, Source, StreamName,
 };
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
@@ -27,7 +27,7 @@ use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
 use crate::naming::Naming;
-use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob};
+use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob, Slots};
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
@@ -184,7 +184,7 @@ async fn launch(
         barrier: barrier_feed,
         stop: stop_reads.clone(),
         cancel: cancel.clone(),
-        slots: Arc::new(Semaphore::new(context.config.partitions().get())),
+        slots: Slots::new(context.config.partitions()),
         segments: Arc::new(AtomicU64::new(1)),
         buffer: context.config.partition_buffer(),
         load_id,
@@ -233,6 +233,8 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
     let count = lane_count(&context.config, context.destination.as_ref());
     let (lanes, tasks) = Lanes::new(count, tables, context.config.lane_window(), &context.budget);
     let cancel = scope.token().clone();
+    // A change of a table's schema reserves what its commit records, until the attempt ends.
+    tables.charge(context.budget.clone(), cancel.clone());
     for lane in tasks {
         scope.spawn(lane.run(cancel.clone()));
     }

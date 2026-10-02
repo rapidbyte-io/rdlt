@@ -153,7 +153,7 @@ mod running {
 
     /// The load's memory budget, about the least an engine takes: its shares bound what a
     /// source sends ahead of commits.
-    const MEMORY: u64 = 11 << 20;
+    const MEMORY: u64 = 34 << 20;
 
     /// The rows a batch the engine writes holds, at most.
     const BATCH_ROWS: u64 = 8;

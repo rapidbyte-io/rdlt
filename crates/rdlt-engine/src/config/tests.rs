@@ -129,8 +129,9 @@ fn memory_below_what_the_protocol_s_least_frame_needs_is_refused_naming_the_leas
         assert!(said.contains(&format!("is {least} bytes")), "{said}");
         assert!(said.contains(&format!("{partitions} partitions")), "{said}");
     }
-    // About ten mebibytes at the default sixteen partitions, and the default is far above it.
-    assert_eq!(EngineConfig::least_memory(16), 10_324_437);
+    // About thirty-two mebibytes at the default sixteen partitions, and the default is far
+    // above it.
+    assert_eq!(EngineConfig::least_memory(16), 33_811_576);
     assert!(EngineConfig::builder().build().is_ok());
 }
 
@@ -141,9 +142,12 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
     assert_eq!(
         defaults,
         Limits {
-            json_push_bytes: 36 << 20,
+            frame_bytes: (32 << 20) - 7_489 * 33 - 1_024,
+            json_push_bytes: (100 << 20) / 3,
+            cursor_bytes: (4 << 20) / 34,
             dictionary_bytes: 2 << 20,
             schema_bytes: (2 << 20) / 5,
+            schema_columns: 7_489,
             ..Limits::default()
         }
     );

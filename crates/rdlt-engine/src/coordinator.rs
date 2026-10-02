@@ -6,6 +6,7 @@
 //! partitions keep reading while it runs.
 
 mod acks;
+mod barrier;
 mod delta;
 mod phases;
 mod replan;
@@ -379,30 +380,6 @@ impl Coordinator {
         self.sealed.push(seal);
     }
 
-    /// Asks every reading on-demand partition to checkpoint, and waits until each has answered,
-    /// ended, or `barrier_wait` has passed.
-    async fn raise_barrier(&mut self) -> Result<(), Error> {
-        self.barrier += 1;
-        let barrier = self.barrier;
-        self.parts.barrier.send_replace(barrier);
-        let mut deadline = self.parts.env.sleep(self.parts.barrier_wait);
-        while self
-            .parts
-            .partitions
-            .iter()
-            .any(|partition| partition.owes(barrier))
-        {
-            tokio::select! {
-                biased;
-                () = self.parts.cancel.cancelled() => return Err(cancelled()),
-                // Once the wait is over, the commit takes whatever is sealed.
-                () = &mut deadline => break,
-                progress = self.parts.progress.recv() => self.observe(progress.ok_or_else(cancelled)?),
-            }
-        }
-        Ok(())
-    }
-
     /// Commits every sealed segment with the state that goes with it, then acknowledges the
     /// committed cursors to the source.
     ///
@@ -454,12 +431,10 @@ impl Coordinator {
             child_tables: self.parts.tables.child_tables(),
             drop_tables: Vec::new(),
         };
-        if let Some(log) = &self.parts.wal {
-            // Every batch of the commit's segments was queued for the log before its partition
-            // sealed it: the commit's frame, queued now, follows them all.
-            log.commit(&self.parts.budget, collected.sealed, begun, &meta)
-                .await?;
-            crash_point!("engine.ack.early");
+        if self
+            .log_commit(&meta, tables.prepaid, collected.sealed, begun)
+            .await?
+        {
             self.acknowledge(&collected.reported, false).await?;
         }
         // The commit completing a stream publishes it: a replace swaps its generation in.

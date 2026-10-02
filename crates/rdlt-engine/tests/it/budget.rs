@@ -117,7 +117,7 @@ fn costing_remembers_less_than_it_charges() {
 
 #[tokio::test(start_paused = true)]
 async fn list_views_naming_one_child_load_within_the_budget() {
-    const BUDGET: u64 = 12 << 20;
+    const BUDGET: u64 = 34 << 20;
     const ROWS: usize = 2_000;
     // Each batch is 16 KB of views and 16 KB of items, and 32 MB once every row holds its items.
     let steps = Arc::new(|step: usize| {
@@ -151,7 +151,7 @@ async fn list_views_naming_one_child_load_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn views_naming_one_buffer_load_within_the_budget() {
-    const BUDGET: u64 = 12 << 20;
+    const BUDGET: u64 = 34 << 20;
     // Nine hundred views of one 64 KB value: 14 KB of views, 58 MB once each row holds its own.
     let steps = Arc::new(|step: usize| {
         let mut views = BinaryViewBuilder::new();
@@ -187,7 +187,7 @@ async fn views_naming_one_buffer_load_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn batches_keeping_large_buffers_alive_load_within_the_budget() {
-    const BUDGET: u64 = 16 << 20;
+    const BUDGET: u64 = 34 << 20;
     const PUSHES: usize = 48;
     // Each push is three rows of a buffer of 4 MiB, checkpointed so it is written alone, into a
     // destination that keeps what it is written until it is flushed.
@@ -226,7 +226,7 @@ async fn batches_keeping_large_buffers_alive_load_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
-    const BUDGET: u64 = 12 << 20;
+    const BUDGET: u64 = 34 << 20;
     // Three hundred null keys over values 16 MiB wide: a few hundred bytes pushed.
     let steps = Arc::new(|step: usize| {
         let values = new_null_array(&DataType::FixedSizeBinary(16 << 20), 0);
@@ -250,12 +250,16 @@ async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
 
 #[tokio::test(start_paused = true)]
 async fn checkpoints_with_large_cursors_load_within_the_budget() {
-    const BUDGET: u64 = 16 << 20;
-    // Three hundred megabytes of cursors, each half of what cursors may take of the budget, and
-    // not one row, under a policy that commits by rows.
+    const BUDGET: u64 = 34 << 20;
+    // Three hundred megabytes of cursors, each as large as a read of one partition is told it
+    // may send, near a quarter of the cursors' share, and not one row, under a policy that
+    // commits by rows.
     let steps = Arc::new(|step: usize| (step < 2_400).then_some(Step::Checkpoint(128 << 10)));
     let source = making("budget_cursors", steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000)
+        .memory(BUDGET)
+        .partitions(1)
+        .lanes(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -277,8 +281,8 @@ async fn checkpoints_with_large_cursors_load_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn rows_sealed_under_large_cursors_load_within_the_budget() {
-    const BUDGET: u64 = 16 << 20;
-    // A row then a cursor of half what cursors may take of the budget, eight hundred times, a
+    const BUDGET: u64 = 34 << 20;
+    // A row then a cursor of near a quarter of the cursors' share, eight hundred times, a
     // hundred megabytes of them: every seal has a row, so none replaces the seal before it.
     let steps = Arc::new(|step: usize| {
         if step >= 1_600 {
@@ -291,7 +295,10 @@ async fn rows_sealed_under_large_cursors_load_within_the_budget() {
         })
     });
     let source = making("budget_sealed", steps).await;
-    let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
+    let config = commit_every(1_000_000)
+        .memory(BUDGET)
+        .partitions(1)
+        .lanes(1);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -373,7 +380,7 @@ async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
 
 #[tokio::test(start_paused = true)]
 async fn a_push_of_very_many_small_records_loads_within_the_budget() {
-    const BUDGET: u64 = 16 << 20;
+    const BUDGET: u64 = 34 << 20;
     const RECORDS: usize = 250_000;
     // A quarter of a million records of eight bytes each, as much text as pushes may take of
     // the budget once it is charged for what it becomes: a range a record would take twice it.
@@ -404,7 +411,7 @@ async fn a_push_of_very_many_small_records_loads_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn a_null_typed_column_loads_within_the_budget_however_wide_its_table_column() {
-    const BUDGET: u64 = 16 << 20;
+    const BUDGET: u64 = 34 << 20;
     const ROWS: usize = 100_000;
     // A row gives the column a struct of two hundred decimals, sixteen bytes each; a hundred
     // thousand rows then hold nothing in it, in a column typed null.

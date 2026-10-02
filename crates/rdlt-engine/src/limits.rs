@@ -19,6 +19,18 @@ pub(crate) const CURSOR_SHARE: u64 = 64;
 /// each twice over in base64.
 pub(crate) const LOG_SHARE: u64 = 16;
 
+/// What commits record of tables, each table's schema and names, from the schema change that
+/// makes a record until the commit recording it lands: a 32nd of the budget.
+///
+/// A table whose records take more than the share is refused at its schema change, with
+/// `table_exceeds_budget`, before the destination or any commit sees it; and the columns a
+/// connector is told a schema may hold are what the share admits.
+pub(crate) const TABLE_SHARE: u64 = 32;
+
+/// Bytes: what a commit records of a column, its type and its two names, at most for names of
+/// up to a hundred and fifty bytes: what the columns a schema may hold are derived from.
+pub(crate) const COLUMN_RECORD: u64 = 512;
+
 /// What reads keep beside their events for as long as they last, as a remote read's decoder
 /// keeps its dictionaries and its schema: a quarter of the budget for all reads together.
 ///
@@ -60,6 +72,13 @@ pub(crate) const RECORDED: u64 = 2;
 /// The code of the error for a configuration whose memory admits less than the protocol's
 /// least frame.
 pub(crate) const MEMORY_BELOW_MINIMUM: &str = "memory_below_minimum";
+
+/// The code of the error for a followed unbounded read beyond what a run's partitions leave room
+/// for: each holds a slot as long as the run, and one slot must stay for every other read.
+pub(crate) const PARTITIONS_TOO_FEW: &str = "partitions_too_few";
+
+/// The code of the error for a table whose records take more than the tables' share.
+pub(crate) const TABLE_EXCEEDS_BUDGET: &str = "table_exceeds_budget";
 
 /// The code of the error a wait on the memory budget ends with at its deadline.
 pub(crate) const BUDGET_WAIT_EXCEEDED: &str = "memory_budget_wait_exceeded";

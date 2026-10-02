@@ -3,13 +3,38 @@
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::{Cursor, PartitionId, PartitionState, StateChange};
+use rdlt_connector::{CommitMeta, Cursor, PartitionId, PartitionState, StateChange};
 
 use super::Coordinator;
 use super::delta::Collected;
+use crate::crash::crash_point;
 use crate::error::{Error, Side};
+use crate::wal::Sealed;
+use crate::wal::frame::BegunPhase;
 
 impl Coordinator {
+    /// Where the load keeps a log, logs the commit `meta` of `sealed`, beginning the phases
+    /// `begun`: whether it did.
+    ///
+    /// What the commit records of tables, `prepaid` bytes, was reserved as each table changed.
+    pub(super) async fn log_commit(
+        &self,
+        meta: &CommitMeta,
+        prepaid: u64,
+        sealed: Vec<Sealed>,
+        begun: Vec<BegunPhase>,
+    ) -> Result<bool, Error> {
+        let Some(log) = &self.parts.wal else {
+            return Ok(false);
+        };
+        // Every batch of the commit's segments was queued for the log before its partition
+        // sealed it: the commit's frame, queued now, follows them all.
+        log.commit(&self.parts.budget, sealed, begun, meta, prepaid)
+            .await?;
+        crash_point!("engine.ack.early");
+        Ok(true)
+    }
+
     /// Whether the commit of `collected`, whose state changes before its receipt are `delta`,
     /// is progress: it publishes a row, or records anything but a partition where it stood.
     ///

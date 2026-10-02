@@ -47,8 +47,15 @@ pub(super) async fn queue(
         // commit that takes the segment, queued after the seal, follows this batch's.
         let compute = context.env.compute();
         let (view, batch) = (&prepared.view, &prepared.batch);
-        log.batch(compute, frame, table, view, open.id, batch)
-            .await?;
+        log.batch(
+            compute,
+            &context.budget,
+            frame,
+            (table, view),
+            open.id,
+            batch,
+        )
+        .await?;
     }
     let lane = context.lanes.route(table, job.partition.id());
     context

@@ -21,8 +21,13 @@ const QUEUED: usize = 16;
 
 /// A frame for the writer, encoded, with what it says about the log.
 pub(crate) enum Command {
-    /// A table's schema frame, appended to each chunk before the first batch of the table in it.
-    Table { index: u32, frame: Bytes },
+    /// A table's schema frame, appended to each chunk before the first batch of the table in it,
+    /// and the memory it holds until it is first appended.
+    Table {
+        index: u32,
+        frame: Bytes,
+        held: Permit,
+    },
     /// A batch frame of `segment`, for the table at `table`, and the memory it holds until it
     /// is appended.
     Batch {
@@ -88,6 +93,7 @@ impl WalWriter {
             header,
             headed: None,
             tables: BTreeMap::new(),
+            describing: BTreeMap::new(),
             written: BTreeMap::new(),
             pending: BTreeMap::new(),
             settled: Settled::default(),
@@ -152,6 +158,8 @@ struct Log {
     /// The chunk whose header frame is written.
     headed: Option<u64>,
     tables: BTreeMap<u32, Bytes>,
+    /// What holds each table's schema frame until it is first appended.
+    describing: BTreeMap<u32, Permit>,
     written: BTreeMap<u64, Written>,
     /// The segments of each commit without a receipt.
     pending: BTreeMap<CommitSeq, SegmentSet>,
@@ -178,8 +186,9 @@ impl Log {
 
     async fn handle(&mut self, command: Command) {
         match command {
-            Command::Table { index, frame } => {
+            Command::Table { index, frame, held } => {
                 self.tables.insert(index, frame);
+                self.describing.insert(index, held);
             }
             Command::Batch {
                 segment,
@@ -264,6 +273,8 @@ impl Log {
                 ))
             })?;
             self.append(schema).await?;
+            // Appended once, the frame is the writer's to keep for the chunks after.
+            drop(self.describing.remove(&table));
             self.current().tables.insert(table);
         }
         self.append(frame).await?;

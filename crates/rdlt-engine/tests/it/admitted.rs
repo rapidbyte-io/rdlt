@@ -18,7 +18,7 @@ async fn a_source_sending_all_the_default_budget_admits_is_refused_nothing() {
         usize::try_from(limits.frame_bytes).expect("a size"),
         usize::try_from(limits.cursor_bytes).expect("a size"),
     );
-    assert_eq!((json, frame, cursor), (36 << 20, 64 << 20, 4 << 20));
+    assert_eq!((json, frame, cursor), (34_952_533, 33_306_271, 123_361));
     // A JSON push of one record as long as a push may be, a batch keeping alive all a batch
     // may, and a cursor as long as a cursor may be, each sealed by a checkpoint.
     let steps: Steps = Arc::new(move |step| match step {

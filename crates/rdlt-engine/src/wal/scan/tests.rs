@@ -12,6 +12,7 @@ use super::{batch, scan};
 use crate::budget::MemoryBudget;
 use crate::compute::Inline;
 use crate::error::ErrorKind;
+use crate::table::TableView;
 use crate::table::testing::view;
 use crate::wal::frame::BegunPhase;
 use crate::wal::load::{LoadLog, Sealed};
@@ -79,6 +80,18 @@ fn begun() -> BegunPhase {
     }
 }
 
+/// Logs `batch` of `segment` for `table` in `log`, its frame held by `budget`.
+async fn log_batch(
+    log: &LoadLog,
+    budget: &MemoryBudget,
+    table: (usize, &TableView),
+    segment: SegmentId,
+    batch: &RecordBatch,
+) -> Result<(), crate::Error> {
+    log.batch(&Inline, budget, frame(budget), table, segment, batch)
+        .await
+}
+
 /// A log as [`logged`] writes it, whose second commit begins the phases `begun`.
 async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryWal> {
     let store = Arc::new(MemoryWal::default());
@@ -90,13 +103,13 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
     let budget = MemoryBudget::new(1 << 20);
     let (orders, items) = (view("orders"), view("items"));
     let written = async {
-        log.batch(&Inline, frame(&budget), 0, &orders, SegmentId(1), &ids(0))
+        log_batch(&log, &budget, (0, &orders), SegmentId(1), &ids(0))
             .await
             .expect("logged");
-        log.batch(&Inline, frame(&budget), 1, &items, SegmentId(1), &ids(10))
+        log_batch(&log, &budget, (1, &items), SegmentId(1), &ids(10))
             .await
             .expect("logged");
-        log.commit(&budget, vec![sealed(1)], Vec::new(), &meta(1, &[1]))
+        log.commit(&budget, vec![sealed(1)], Vec::new(), &meta(1, &[1]), 0)
             .await
             .expect("durable");
         let receipt = Receipt {
@@ -109,10 +122,10 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
         if received {
             log.committed(&receipt).await.expect("logged");
         }
-        log.batch(&Inline, frame(&budget), 0, &orders, SegmentId(2), &ids(20))
+        log_batch(&log, &budget, (0, &orders), SegmentId(2), &ids(20))
             .await
             .expect("logged");
-        log.commit(&budget, vec![sealed(2)], begun, &meta(2, &[2]))
+        log.commit(&budget, vec![sealed(2)], begun, &meta(2, &[2]), 0)
             .await
             .expect("durable");
         drop(log);

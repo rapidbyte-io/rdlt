@@ -217,6 +217,7 @@ fn no_connector_error_is_of_the_memory_budget_s_kind_or_code() {
         work: 0,
         cursors: 0,
         log: 0,
+        tables: 0,
         reads: 25,
         waited: Duration::from_secs(3600),
     };
