@@ -15,8 +15,18 @@ use std::sync::Mutex;
 /// holds the pipe whose closing ends its group.
 static GUARDIANS: Mutex<Vec<Child>> = Mutex::new(Vec::new());
 
-/// What a guardian runs: it waits for its input to end, then kills the group named to it.
-const GUARDING: &str = "read -r _; kill -KILL -- \"-$1\" 2>/dev/null";
+/// What a guardian runs: it notes when the group's leader started, waits for its input to
+/// end, then kills the group named to it, unless the leader's id is another process's by then.
+///
+/// A group's id cannot be another group's while any member of it lives, so a group whose
+/// leader is gone and members live is still the group guarded. Where a process holds the
+/// leader's id and started at another time, the id was reused, and nothing is sent.
+///
+/// A second argument stands in for the start noted, as a test of a reused id gives it.
+const GUARDING: &str = "started=${2-$(ps -o lstart= -p \"$1\" 2>/dev/null)}; read -r _; \
+    now=$(ps -o lstart= -p \"$1\" 2>/dev/null); \
+    [ -n \"$now\" ] && [ \"$now\" != \"$started\" ] && exit 0; \
+    kill -KILL -- \"-$1\" 2>/dev/null";
 
 /// Has the process group `leader` leads killed when this process ends, a kill of this
 /// process included: `leader` is a child spawned to lead a group of its own.
@@ -145,3 +155,23 @@ pub fn outliving(test: &str, patience: std::time::Duration) -> Vec<u32> {
 
 #[cfg(test)]
 mod tests;
+
+/// The variable that, set to anything but `0`, makes a test that needs a sandbox fail where
+/// none can be made, rather than skip: CI sets it, so a sandbox test never passes without
+/// having run.
+pub const REQUIRE_SANDBOX: &str = "RDLT_REQUIRE_SANDBOX";
+
+/// Says why a test that needs a sandbox does not run here, as the caller then returns.
+///
+/// # Panics
+///
+/// Panics where [`REQUIRE_SANDBOX`] is set.
+pub fn without_sandbox(why: &dyn std::fmt::Display) {
+    use std::io::Write as _;
+    let required = std::env::var_os(REQUIRE_SANDBOX).is_some_and(|required| required != "0");
+    assert!(
+        !required,
+        "a sandbox is required here, and none can be made: {why}"
+    );
+    writeln!(io::stderr(), "skipped: no sandbox can be made here: {why}").ok();
+}
