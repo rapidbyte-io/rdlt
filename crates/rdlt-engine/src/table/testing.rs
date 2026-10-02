@@ -26,6 +26,7 @@ pub(crate) fn resolver(stream: &str) -> Resolver {
         naming,
         capabilities: Arc::new(capabilities),
         root: None,
+        columns: u64::MAX,
     }
 }
 

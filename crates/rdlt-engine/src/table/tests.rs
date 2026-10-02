@@ -61,6 +61,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
             history: None,
         },
         root: None,
+        columns: u64::MAX,
     }
 }
 

@@ -77,3 +77,35 @@ fn a_change_past_the_last_an_attempt_counts_is_refused() {
     let error = normalized.resolve(&counted, &nulls).unwrap_err();
     assert_eq!(error.code(), Some("schema_version_exhausted"));
 }
+
+#[test]
+fn a_table_is_as_wide_as_its_columns_and_their_nested_fields() {
+    let item = rdlt_connector::Field::new("item", LogicalType::Int64, true);
+    let fields = rdlt_connector::Fields::new(vec![
+        rdlt_connector::Field::new("a", LogicalType::Int64, true),
+        rdlt_connector::Field::new("b", LogicalType::List(Box::new(item)), true),
+    ])
+    .unwrap();
+    let columns = [
+        ("id", LogicalType::Int64),
+        ("s", LogicalType::Struct(fields)),
+    ];
+    // id, s, a, b and b's item; the metadata columns are the engine's own.
+    let mut resolver = resolver(capabilities(), plan(), &[]);
+    resolver.columns = 5;
+    let model = created(&resolver, &columns);
+    resolver.columns = 4;
+    let error = resolver
+        .resolve(&Model::default(), &schema(&columns))
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Schema);
+    assert_eq!(error.code(), Some("table_columns_exceeded"));
+    // A table already wider than the limit still takes batches that change nothing.
+    let same = resolver.resolve(&model, &schema(&columns)).unwrap();
+    assert!(same.changes.is_empty());
+    let wider = schema(&[("id", LogicalType::Int64), ("c", LogicalType::Int64)]);
+    assert_eq!(
+        resolver.resolve(&model, &wider).unwrap_err().code(),
+        Some("table_columns_exceeded")
+    );
+}

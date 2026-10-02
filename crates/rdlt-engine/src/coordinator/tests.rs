@@ -214,6 +214,7 @@ impl Setup {
                     history: None,
                 },
                 root: None,
+                columns: u64::MAX,
             };
             let index = tables.add(resolver, &table(None), Model::default());
             if let (0, Some(schema)) = (index, &self.schema) {

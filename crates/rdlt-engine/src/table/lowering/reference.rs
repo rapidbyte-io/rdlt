@@ -105,8 +105,14 @@ fn holding(view: &TableView, name: &str, logical: &LogicalType, exact: bool) -> 
     variants.sort_unstable();
     let own = view
         .model
-        .column(&ColumnKey::Source(path.clone()))
-        .map(|(index, _)| index);
+        .names
+        .get(&ColumnKey::Source(path.clone()))
+        .and_then(|name| {
+            view.model
+                .columns
+                .iter()
+                .position(|field| field.name() == name)
+        });
     let cast = |index: usize| {
         exact
             && *logical == LogicalType::Int64

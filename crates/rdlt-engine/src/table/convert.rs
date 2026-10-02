@@ -6,6 +6,7 @@
 mod decode;
 mod encoders;
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -56,27 +57,21 @@ pub(crate) fn convert(
         (LogicalType::Struct(from_fields), LogicalType::Struct(to_fields)) => {
             let source = normalize_to(array, &wide_dates(&from.to_arrow()))?;
             let source = source.as_struct();
+            let arriving: BTreeMap<&str, (usize, &LogicalType)> = from_fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| (field.name(), (index, field.logical_type())))
+                .collect();
             let columns = to_fields
                 .iter()
-                .map(|field| {
-                    match from_fields
-                        .iter()
-                        .position(|candidate| candidate.name() == field.name())
-                    {
-                        Some(index) => convert(
-                            source.column(index),
-                            from_fields
-                                .iter()
-                                .nth(index)
-                                .expect("the position came from these fields")
-                                .logical_type(),
-                            field.logical_type(),
-                        ),
-                        None => Ok(new_null_array(
-                            &field.logical_type().to_arrow(),
-                            source.len(),
-                        )),
+                .map(|field| match arriving.get(field.name()) {
+                    Some((index, logical)) => {
+                        convert(source.column(*index), logical, field.logical_type())
                     }
+                    None => Ok(new_null_array(
+                        &field.logical_type().to_arrow(),
+                        source.len(),
+                    )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             let DataType::Struct(fields) = to.to_arrow() else {
