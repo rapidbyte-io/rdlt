@@ -283,7 +283,8 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
 - A unit whose every column is converted is charged for its source and what it was lowered to
   until its last piece is flushed.
 - A push that keeps alive more than pushes may take of the budget, 108 MiB of the default, is
-  refused; so is JSON text beyond a third of that. What a push keeps alive is bounded by the
+  refused; so is JSON text beyond a third of that, 36 MiB, though the wire carries a JSON push
+  of 64 MiB: such a push needs a budget of 456 MiB. What a push keeps alive is bounded by the
   frame, batch-bytes and dictionary limits besides.
 - What lowering reserves is a sum, the value decoded, converted and rendered: a column stored as
   text is lowered in smaller pieces.
