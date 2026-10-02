@@ -60,7 +60,8 @@ the engine advances within a run. Its inserts, updates, partial updates and dele
 under the seq guard, with deletes hard, soft or ignored; a truncate, which names no key, removes or
 marks deleted every row sequenced before it. A change log appends every change instead.
 A push is charged the larger of what it keeps alive and what its rows become once decoded and
-rendered, and is lowered a slice at a time within the memory budget;
+rendered, and is lowered a piece at a time, each piece reserving what its table stores it as from
+the memory budget before it is lowered;
 JSON integers load exactly at any width, as decimals within 76 digits and as JSON text beyond; a
 merge key keeps matching its stored rows or refuses to change type; and an unbounded partition, as
 a change stream's, resumes from its last checkpoint rather than ending.
