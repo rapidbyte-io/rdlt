@@ -138,9 +138,14 @@ struct Look<'a> {
 }
 
 impl<'a> Look<'a> {
-    /// Joins a value observed as `observed` into the node.
+    /// Joins a value observed as `observed` into the node; one that makes it `Json` from a
+    /// node holding floats notes them, which building it as JSON text needs written as they were.
     fn join(&mut self, observed: &Observed) {
+        let floats = self.node.floats() || observed.floats();
         self.node.join(observed);
+        if floats && *self.node == Observed::Json {
+            self.context.json_float();
+        }
     }
 
     fn scalar(mut self, value: Scalar<'_>) {
@@ -197,6 +202,7 @@ impl<'de> Visitor<'de> for Look<'_> {
     }
 
     fn visit_f64<E>(self, value: f64) -> Result<(), E> {
+        self.context.number_text();
         self.context.float(value);
         self.scalar(Scalar::Float(value));
         Ok(())

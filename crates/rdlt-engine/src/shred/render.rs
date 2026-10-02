@@ -1,7 +1,8 @@
 //! Values of `Json` columns, rendered as compact JSON text as they are parsed.
 //!
 //! Only a chunk's second parse renders, over records its first parse already checked, so rendering
-//! recurses no deeper than the nesting limit.
+//! recurses no deeper than the nesting limit. Numbers keep the text they were written as: integers
+//! read exactly render as their digits, and a float only as the exact parse noted its text.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -77,9 +78,16 @@ impl<'de> Visitor<'de> for Render<'_> {
         Ok(())
     }
 
-    fn visit_f64<E: serde::de::Error>(mut self, value: f64) -> Result<(), E> {
+    /// A float, as it was written: a chunk whose column of JSON holds one is built with the
+    /// exact parse, which notes each number's text.
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<(), E> {
         self.context.float(value);
-        self.serialized(&value)
+        let Some(written) = self.context.number_text() else {
+            let missing = "a float of a column of JSON came without the text it was written as";
+            return Err(self.context.fail(ShredError::Internal(missing.to_owned())));
+        };
+        self.text.push_str(&written);
+        Ok(())
     }
 
     fn visit_i128<E: serde::de::Error>(self, value: i128) -> Result<(), E> {
