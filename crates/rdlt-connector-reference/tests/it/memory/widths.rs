@@ -145,3 +145,26 @@ async fn a_table_of_many_shapes_keeps_each_row_under_its_own_columns_over_many_c
         assert!(bytes < 4 * 1024 * 1024, "commit {commit}: {bytes} bytes");
     }
 }
+
+#[tokio::test]
+async fn a_row_of_a_shape_of_its_own_costs_a_batch_of_the_columns_it_holds() {
+    let destination = store("shapes-of-one").await;
+    let mut session = open(destination.as_ref(), "p", 1).await;
+    loaded(&mut session, 1, rows(0..1, 400)).await;
+    // Four hundred rows, each holding a column no other does, written a batch each: the table
+    // keeps a batch for each, of three columns, and joins none.
+    let mut writer = session.session.writer(&events()).await.expect("a writer");
+    for shape in 0..400_i64 {
+        let column = usize::try_from(shape).expect("a column");
+        let batch = only(shape + 1..shape + 2, column);
+        writer.write(SegmentId(2), batch).await.expect("buffers");
+    }
+    writer.flush().await.expect("the flush stages");
+    let commit = meta(&session, 1, 2, &[2]);
+    session.session.commit(&commit).await.expect("the commit");
+    let held = published("shapes-of-one", "events");
+    assert_eq!(held.len(), 401);
+    // Every column of every row would be over a megabyte of cells.
+    let bytes = held_bytes(&held);
+    assert!(bytes < 256 * 1024, "the table holds {bytes} bytes");
+}
