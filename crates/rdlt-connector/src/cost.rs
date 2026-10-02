@@ -18,7 +18,7 @@ use arrow_array::cast::AsArray as _;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
 
-pub use held::Allocations;
+pub use held::{Allocations, schema_bytes};
 
 use crate::sink::Push;
 use crate::types::{LogicalType, TypeKind};
