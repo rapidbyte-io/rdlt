@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rdlt_connector::limits::{MAX_ERROR_CAUSES, MAX_ERROR_TEXT_BYTES};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 use serde::Serialize;
 
@@ -182,19 +183,26 @@ impl Error {
         self.retry_after
     }
 
-    /// The failure with its whole chain of causes, for reports.
+    /// The failure with its chain of causes, for reports: each text
+    /// [shown](rdlt_connector::text::shown), since a connector's words may be in any of
+    /// them, and at most [`MAX_ERROR_CAUSES`] causes.
     pub fn report(&self) -> ErrorReport {
+        let shown =
+            |text: &dyn fmt::Display| rdlt_connector::text::shown(text, MAX_ERROR_TEXT_BYTES);
         let mut causes = Vec::new();
         let mut cause = StdError::source(self);
         while let Some(error) = cause {
-            causes.push(error.to_string());
+            if causes.len() == MAX_ERROR_CAUSES {
+                break;
+            }
+            causes.push(shown(&error));
             cause = error.source();
         }
         ErrorReport {
             kind: self.kind,
-            stream: self.stream.as_ref().map(ToString::to_string),
-            code: self.code.as_deref().map(str::to_owned),
-            message: self.context.clone(),
+            stream: self.stream.as_ref().map(|stream| shown(stream)),
+            code: self.code.as_deref().map(|code| shown(&code)),
+            message: shown(&self.context),
             causes,
             retryable: self.retryable,
         }
