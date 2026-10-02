@@ -86,6 +86,8 @@ message Limits {
   uint64 batch_values = 9;
   // Bytes in one schema message.
   uint64 schema_bytes = 10;
+  // Bytes the dictionaries one read or write holds at once take, where less than a frame's.
+  uint64 dictionary_bytes = 11;
 }
 
 // Opens the conversation.

@@ -138,6 +138,9 @@ pub struct Limits {
     pub batch_values: u64,
     /// Bytes in one schema message.
     pub schema_bytes: u64,
+    /// Bytes the dictionaries one read or write holds at once take, where that is less than
+    /// [`DICTIONARY_FRAMES`] frames' bytes.
+    pub dictionary_bytes: u64,
 }
 
 impl Default for Limits {
@@ -153,6 +156,7 @@ impl Default for Limits {
             control_string_bytes: CONTROL_STRING_BYTES,
             batch_values: BATCH_VALUES,
             schema_bytes: SCHEMA_BYTES,
+            dictionary_bytes: FRAME_BYTES * DICTIONARY_FRAMES,
         }
     }
 }
@@ -197,10 +201,11 @@ impl Limits {
             .saturating_add(64 * 1024)
     }
 
-    /// Bytes: bounds the dictionaries one read or write holds at once, [`DICTIONARY_FRAMES`]
-    /// frames' worth.
-    pub fn dictionary_bytes(&self) -> u64 {
-        self.frame_bytes.saturating_mul(DICTIONARY_FRAMES)
+    /// Bytes: bounds the dictionaries one read or write holds at once: [`DICTIONARY_FRAMES`]
+    /// frames' worth, or [`Limits::dictionary_bytes`] where that is less.
+    pub fn held_dictionary_bytes(&self) -> u64 {
+        let frames = self.frame_bytes.saturating_mul(DICTIONARY_FRAMES);
+        frames.min(self.dictionary_bytes)
     }
 
     /// Bytes: bounds what one write stages between two flushes, [`STAGED_FRAMES`] frames' worth.
@@ -212,9 +217,9 @@ impl Limits {
     ///
     /// # Errors
     ///
-    /// A [`Refusal`] when they exceed [`Limits::dictionary_bytes`].
+    /// A [`Refusal`] when they exceed [`Limits::held_dictionary_bytes`].
     pub fn admit_dictionaries(&self, bytes: u64) -> Result<(), Refusal> {
-        Self::admit("dictionary bytes", self.dictionary_bytes(), bytes)
+        Self::admit("dictionary bytes", self.held_dictionary_bytes(), bytes)
     }
 
     /// Admits what a write would have staged since its last flush, `bytes` together.
@@ -250,6 +255,7 @@ impl Limits {
             control_string_bytes: self.control_string_bytes.min(other.control_string_bytes),
             batch_values: self.batch_values.min(other.batch_values),
             schema_bytes: self.schema_bytes.min(other.schema_bytes),
+            dictionary_bytes: self.dictionary_bytes.min(other.dictionary_bytes),
         }
     }
 
@@ -347,6 +353,7 @@ impl From<Limits> for v1::Limits {
             control_string_bytes: limits.control_string_bytes,
             batch_values: limits.batch_values,
             schema_bytes: limits.schema_bytes,
+            dictionary_bytes: limits.dictionary_bytes,
         }
     }
 }
@@ -368,6 +375,7 @@ impl From<v1::Limits> for Limits {
             control_string_bytes: or(limits.control_string_bytes, defaults.control_string_bytes),
             batch_values: or(limits.batch_values, defaults.batch_values),
             schema_bytes: or(limits.schema_bytes, defaults.schema_bytes),
+            dictionary_bytes: or(limits.dictionary_bytes, defaults.dictionary_bytes),
         }
     }
 }

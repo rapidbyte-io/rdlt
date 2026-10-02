@@ -76,12 +76,15 @@ impl Cut {
     /// dictionary's values: they go in a frame of their own and cannot be cut.
     fn dictionaries(&mut self) -> Result<(), Refusal> {
         let limits = self.limits;
+        let mut held = 0_u64;
         for weight in self.weigher.dictionaries() {
             Limits::admit("batch values", limits.batch_values, weight.values)?;
             Limits::admit("view bytes", limits.frame_bytes, weight.view_bytes)?;
             Limits::admit("frame bytes", limits.frame_bytes, weight.frame_bytes())?;
+            held = held.saturating_add(weight.frame_bytes());
         }
-        Ok(())
+        // The receiver holds them together until the next schema.
+        limits.admit_dictionaries(held)
     }
 
     /// What `rows` rows from `start` add to the piece being weighed.

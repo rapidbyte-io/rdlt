@@ -1645,6 +1645,9 @@ pub struct Limits {
     /// Bytes in one schema message.
     #[prost(uint64, tag = "10")]
     pub schema_bytes: u64,
+    /// Bytes the dictionaries one read or write holds at once take, where less than a frame's.
+    #[prost(uint64, tag = "11")]
+    pub dictionary_bytes: u64,
 }
 /// Opens the conversation.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
