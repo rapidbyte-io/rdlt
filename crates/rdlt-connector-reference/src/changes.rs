@@ -44,7 +44,7 @@ pub struct ChangesConfig {
     /// The file the slot is kept in instead, which outlives the process as a replication slot
     /// outlives its clients; `slot` names none then.
     ///
-    /// A path from the root, each directory on its way by its name, to a file named `*.slot`.
+    /// A path to a file named `*.slot`.
     #[serde(default)]
     pub slot_path: Option<std::path::PathBuf>,
 }

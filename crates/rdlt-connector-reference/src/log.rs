@@ -37,7 +37,7 @@ pub struct LogConfig {
     /// The file the group's offsets are kept in instead, which outlives the process as a
     /// broker keeps them; `group` names none then.
     ///
-    /// A path from the root, each directory on its way by its name, to a file named `*.group`.
+    /// A path to a file named `*.group`.
     #[serde(default)]
     pub group_path: Option<std::path::PathBuf>,
 }

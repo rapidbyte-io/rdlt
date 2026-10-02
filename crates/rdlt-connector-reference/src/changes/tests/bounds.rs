@@ -96,25 +96,24 @@ async fn a_position_of_a_partition_the_stream_never_has_is_not_acknowledged() {
 }
 
 #[tokio::test]
-async fn a_slot_is_kept_only_in_a_file_named_whole_and_as_a_slot_s() {
-    let dir = tempfile::tempdir().unwrap();
+async fn a_slot_is_kept_only_in_a_file_named_as_a_slot_s() {
+    let dir = crate::scratch::tempdir().unwrap();
     let inside = |name: &str| dir.path().join(name);
-    let paths = [
-        std::path::PathBuf::from("orders.slot"),
-        inside("nested/../orders.slot"),
-        inside("./orders.slot"),
-        inside("orders.group"),
-        inside("orders"),
-        inside(".slot"),
-    ];
-    for path in paths {
-        let config = json!({
+    let kept_at = |path: std::path::PathBuf| {
+        json!({
             "seed": 3, "slot_path": path,
             "streams": [{ "name": "orders", "keys": 6, "changes": 40 }],
-        });
-        let refused = connect(config).await.err().expect("the path is refused");
+        })
+    };
+    for path in [inside("orders.group"), inside("orders"), inside(".slot")] {
+        let refused = connect(kept_at(path)).await.err();
+        let refused = refused.expect("the path is refused");
         assert_eq!(refused.kind(), ConnectorErrorKind::Config);
         assert_eq!(refused.code(), Some("keeper_path_invalid"), "{refused}");
+    }
+    // However the path is written, the file it leads to is the slot's.
+    for path in [inside("orders.slot"), inside("./orders.slot")] {
+        connect(kept_at(path)).await.expect("the slot's file");
     }
 }
 
