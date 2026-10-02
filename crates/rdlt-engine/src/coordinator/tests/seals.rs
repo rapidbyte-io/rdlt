@@ -126,12 +126,12 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
     let (mut coordinator, _harness) = setup.coordinator().await;
     for segment in 1..=2 {
         coordinator.observe(Progress::Sealed(seal(0, segment, 1, segment, None)));
-        assert!(!coordinator.due(), "{segment} cursors of a limit of three");
+        assert!(!coordinator.commit_due(), "{segment} cursors of a limit of three");
     }
     coordinator.observe(Progress::Sealed(seal(0, 3, 1, 3, None)));
-    assert!(coordinator.due());
+    assert!(coordinator.commit_due());
     coordinator.sealed.take();
-    assert!(!coordinator.due());
+    assert!(!coordinator.commit_due());
     // A share of nothing, as a budget of a few bytes has, is not due without a cursor.
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
@@ -139,7 +139,7 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
     );
     setup.budget = 8;
     let (coordinator, _harness) = setup.coordinator().await;
-    assert!(!coordinator.due());
+    assert!(!coordinator.commit_due());
 }
 
 #[tokio::test(start_paused = true)]

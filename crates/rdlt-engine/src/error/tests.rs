@@ -18,7 +18,7 @@ fn connector_errors_map_to_engine_kinds_by_side() {
         (K::Auth, Side::Destination, ErrorKind::Config, false),
         (K::Unsupported, Side::Source, ErrorKind::Config, false),
         (K::Fenced, Side::Destination, ErrorKind::Fenced, false),
-        (K::Stopped, Side::Source, ErrorKind::Cancelled, false),
+        (K::Stopped, Side::Source, ErrorKind::Source, false),
         (K::Transient, Side::Source, ErrorKind::Source, true),
         (
             K::Transient,
@@ -41,6 +41,65 @@ fn connector_errors_map_to_engine_kinds_by_side() {
         assert_eq!(error.is_retryable(), retryable, "{kind:?} from {side:?}");
         assert_eq!(error.code(), Some("x.code"));
     }
+}
+
+#[test]
+fn a_connector_cannot_claim_a_stop_or_a_fence_but_a_session_s_fence() {
+    use ConnectorErrorKind as K;
+    let kinds = [
+        K::Config,
+        K::Auth,
+        K::Transient,
+        K::RateLimited,
+        K::Data,
+        K::Unsupported,
+        K::Fenced,
+        K::Stopped,
+        K::Internal,
+    ];
+    for kind in kinds {
+        for side in [Side::Source, Side::Destination] {
+            let mapped = Error::connector(side, "doing something", connector(kind)).kind();
+            let fenced = kind == K::Fenced && side == Side::Destination;
+            assert_eq!(
+                mapped == ErrorKind::Fenced,
+                fenced,
+                "{kind:?} from {side:?}"
+            );
+            assert!(
+                !matches!(
+                    mapped,
+                    ErrorKind::Cancelled | ErrorKind::Internal | ErrorKind::Wal
+                ),
+                "{kind:?} from {side:?} is {mapped:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn only_a_rate_limit_keeps_the_wait_it_asks_for() {
+    use rdlt_connector::wire::v1;
+    let asking = |kind: v1::ErrorKind| {
+        let wire = v1::Error {
+            kind: kind as i32,
+            message: "wait".to_owned(),
+            code: None,
+            retry_after: Some(v1::Duration {
+                seconds: 9,
+                nanos: 0,
+            }),
+            limit: None,
+        };
+        let error = ConnectorError::try_from(wire).unwrap();
+        Error::connector(Side::Source, "reading", error).retry_after()
+    };
+    assert_eq!(
+        asking(v1::ErrorKind::RateLimited),
+        Some(Duration::from_secs(9))
+    );
+    assert_eq!(asking(v1::ErrorKind::Transient), None);
+    assert_eq!(asking(v1::ErrorKind::Data), None);
 }
 
 #[test]

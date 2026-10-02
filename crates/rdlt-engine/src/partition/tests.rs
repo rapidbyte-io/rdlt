@@ -14,6 +14,7 @@ fn received(received: u64, written: u64, cursor: Option<u64>) -> Ingested {
             ..OpenSegment::default()
         },
         last_cursor: cursor.map(|next| Cursor::encode(1, &next).unwrap()),
+        sealed_rows: 0,
         stopped: false,
         coalescer: Coalescer::new(BatchPolicy::default()),
     }

@@ -20,6 +20,8 @@ pub(crate) enum Progress {
     },
     /// Rows were queued for staging.
     Written {
+        /// The partition's index in the attempt.
+        partition: usize,
         /// Rows queued.
         rows: u64,
         /// Their bytes in memory.
@@ -48,6 +50,8 @@ pub(crate) enum Progress {
     },
     /// Rows were staged to a segment no commit will take: no checkpoint sealed them.
     Abandoned {
+        /// The partition's index in the attempt.
+        partition: usize,
         /// Rows abandoned.
         rows: u64,
         /// Their bytes in memory.

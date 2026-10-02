@@ -198,6 +198,9 @@ enum Shape {
     /// Its first read, counted here, reads on until the log has grown by 20, then fails as
     /// though the log had dropped where the read stood, as a consumer overtaken mid-read is.
     Overtaken(AtomicUsize),
+    /// Every read, counted here, checkpoints where it began, with no rows, then fails as though
+    /// the log had dropped where it stood.
+    Looping(AtomicUsize),
 }
 
 impl Reshaped {
@@ -290,6 +293,19 @@ impl Source for Reshaped {
                     let every = |_: &SourceEvent| true;
                     self.forwarding(request, sink, None, every).await?;
                     tokio::time::sleep(Duration::from_secs(2)).await;
+                    Err(ConnectorError::retention_lost(
+                        "the log dropped where the read stood",
+                    ))
+                }
+                Shape::Looping(ref reads) => {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    let cursor = Cursor::encode(1, &json!({ "next": 0 })).expect("a cursor");
+                    let mut sink = sink;
+                    let checkpoint = SourceEvent::Checkpoint {
+                        cursor,
+                        answers: None,
+                    };
+                    sink.send(checkpoint).await?;
                     Err(ConnectorError::retention_lost(
                         "the log dropped where the read stood",
                     ))
@@ -565,4 +581,24 @@ async fn a_stream_s_lag_leaves_out_ended_partitions_its_source_then_retired() {
     );
     // p2's reads each ended at its head saying it was 100 behind, until its source retired it.
     assert_eq!(outcome.report.streams["events"].behind, Some(0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn retention_resets_that_seal_no_rows_spend_the_retry_budget() {
+    let looping = Some(Shape::Looping(AtomicUsize::new(0)));
+    let outcome = after_retention_through("looping", RetentionLoss::Reset, looping).await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(error.code(), Some(rdlt_connector::RETENTION_LOST));
+    assert!(
+        error.is_retryable(),
+        "the next attempt may find rows to seal"
+    );
+    // Each attempt resets once, and fails at the loss after a reset that sealed nothing.
+    let attempts = rdlt_engine::RetryPolicy::default().attempts().get();
+    assert_eq!(outcome.report.attempted, u64::from(attempts));
+    assert_eq!(
+        outcome.report.streams["events"].retention_resets,
+        u64::from(attempts)
+    );
 }

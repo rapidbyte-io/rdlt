@@ -73,5 +73,9 @@ pub(super) async fn queue(
         .await?;
     open.rows += rows;
     open.bytes += bytes;
-    context.report(Progress::Written { rows, bytes })
+    context.report(Progress::Written {
+        partition: job.index,
+        rows,
+        bytes,
+    })
 }
