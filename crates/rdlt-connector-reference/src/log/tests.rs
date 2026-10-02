@@ -578,3 +578,33 @@ async fn a_group_s_name_is_neither_empty_nor_a_file_keeper_s() {
         connect(&forgets, name).await;
     }
 }
+
+/// What a read of a log that does not follow pushes, in a runtime of its own whose clock is
+/// paused: the offsets of a source of `group` holding five messages and gaining ten a second.
+fn read_alone(group: &'static str) -> Vec<u64> {
+    let reading = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .expect("a runtime");
+        runtime.block_on(async {
+            let stream = json!({
+                "name": "events", "partitions": 1, "messages": 5, "per_second": 10,
+            });
+            let source = connect(&stream, group).await;
+            let (ended, sent) = read(source.as_ref(), None, None).await;
+            ended.expect("the read ends");
+            sent.offsets
+        })
+    });
+    reading.join().expect("the read's thread ends")
+}
+
+#[test]
+fn a_group_s_logs_grow_from_when_the_group_was_first_connected_not_another_s() {
+    assert_eq!(read_alone("grows_first"), [0, 1, 2, 3, 4]);
+    // Time passes for the process, in which another group's source was connected already.
+    std::thread::sleep(Duration::from_millis(350));
+    assert_eq!(read_alone("grows_second"), [0, 1, 2, 3, 4]);
+}

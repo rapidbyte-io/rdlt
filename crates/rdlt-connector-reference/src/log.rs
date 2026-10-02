@@ -4,9 +4,11 @@
 #[cfg(test)]
 mod tests;
 
-use std::sync::{Arc, OnceLock};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Field, Partitioning};
 use schemars::JsonSchema;
@@ -82,15 +84,9 @@ pub struct LoggedStream {
     /// `group_path`.
     #[serde(default = "replayable")]
     pub replayable: bool,
-    /// Messages per pushed batch, at most 100000.
+    /// Messages per pushed batch, at most 100000; a checkpoint follows each batch.
     #[serde(default = "ten")]
     pub batch_rows: u64,
-    /// Batches a checkpoint: one follows every so many batches, each batch where it is one.
-    ///
-    /// With more, a read that ends on a batch no checkpoint follows has no cursor past its last
-    /// messages, as a table read to its end has none.
-    #[serde(default = "one")]
-    pub checkpoint_batches: u64,
 }
 
 fn replayable() -> bool {
@@ -101,20 +97,17 @@ fn ten() -> u64 {
     10
 }
 
-fn one() -> u64 {
-    1
-}
+/// When each consumer group of the process was first connected: its logs grow from then, on
+/// tokio's clock, so tests on a paused clock see logs grow as they advance it.
+///
+/// Sources of one group read the same logs, so they share when those began; a group's logs do
+/// not grow by the time that passed before the group was connected, which is another group's.
+static ORIGINS: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
 
-/// When the process first read any log: every log grows from then, on tokio's clock, so tests on
-/// a paused clock see logs grow as they advance it.
-fn origin() -> Instant {
-    static ORIGIN: OnceLock<Instant> = OnceLock::new();
-    *ORIGIN.get_or_init(Instant::now)
-}
-
-/// How long ago the process first read any log.
-fn elapsed() -> Duration {
-    Instant::now().saturating_duration_since(origin())
+/// When the logs of the group known as `group` began: now, where no source of it was connected
+/// before.
+fn origin(group: String) -> Instant {
+    *ORIGINS.lock().entry(group).or_insert_with(Instant::now)
 }
 
 /// The most partitions `stream` ever has: its first and the ones it gains.
@@ -140,6 +133,15 @@ pub struct LogSource {
     seed: u64,
     streams: Vec<LoggedStream>,
     group: Arc<Kept<u64>>,
+    /// When the group's logs began.
+    origin: Instant,
+}
+
+impl LogSource {
+    /// How long ago the source's logs began.
+    fn elapsed(&self) -> Duration {
+        Instant::now().saturating_duration_since(self.origin)
+    }
 }
 
 #[source(id = "io.rapidbyte.log", acknowledged)]
@@ -179,10 +181,15 @@ impl SourceConnector for LogSource {
         {
             return Err(unnamed(&forgets.name, "group"));
         }
-        origin();
+        // A group kept in a file and one named alike are told apart as their keepers are.
+        let known = match (&config.group_path, &config.group) {
+            (Some(path), _) => format!("file:{}", path.display()),
+            (None, name) => name.clone().unwrap_or_default(),
+        };
         Ok(Self {
             seed: config.seed,
             streams: config.streams,
+            origin: origin(known),
             group: match &config.group_path {
                 Some(path) => GROUPS
                     .at(path)
@@ -267,46 +274,6 @@ impl Logged {
             .map_or(0, |retention| head.saturating_sub(retention))
     }
 
-    /// Accepts a read of partition `id` from `cursor`, where the log's head is `head`: the
-    /// earliest offset the partition holds.
-    ///
-    /// # Errors
-    ///
-    /// The offsets before what a forgetting log's group committed are gone; an offset past the
-    /// head is none the log issued; and one before the earliest it holds was dropped.
-    fn accept(
-        &self,
-        source: &LogSource,
-        id: &PartitionId,
-        cursor: Offset,
-        head: u64,
-    ) -> Result<u64> {
-        let committed = source.group.position(&self.0.name, id);
-        if !self.0.replayable && committed.is_some_and(|committed| cursor.next < committed) {
-            return Err(ConnectorError::new(
-                ConnectorErrorKind::Transient,
-                format!("partition {id} no longer holds offsets before {committed:?}"),
-            ));
-        }
-        // A host that read from an offset past the head could then report it committed.
-        if cursor.next > head {
-            return Err(ConnectorError::cursor_unissued(format!(
-                "partition {id} holds offsets up to {head}, not {}",
-                cursor.next
-            )));
-        }
-        let earliest = self.earliest(head);
-        // A read from the start reads from the earliest message the log holds; one that would
-        // resume from before it finds its place dropped.
-        if cursor.next > 0 && cursor.next < earliest {
-            return Err(ConnectorError::retention_lost(format!(
-                "partition {id} holds offsets from {earliest}, not {}",
-                cursor.next
-            )));
-        }
-        Ok(earliest)
-    }
-
     /// How long after `elapsed` the stream's partitions may next change; none once they never
     /// will.
     fn changes(&self, elapsed: Duration) -> Option<Duration> {
@@ -361,6 +328,40 @@ pub fn message(seed: u64, stream: &str, partition: &PartitionId, offset: u64) ->
     format!("m{:016x}", mix(seed ^ mix(named ^ mix(offset))))
 }
 
+impl Logged {
+    /// The offset a read of the partition `id` from `cursor` starts at, the log's head standing
+    /// at `head`: the cursor's, or the earliest message the log still holds.
+    ///
+    /// A partition the stream never has is a data error; a log that forgets what its group
+    /// committed refuses a read from before it; and a read that would resume from a message the
+    /// log dropped finds its place lost.
+    fn resumed(
+        &self,
+        source: &LogSource,
+        id: &PartitionId,
+        cursor: Offset,
+        head: u64,
+    ) -> Result<u64> {
+        self.member(id)?;
+        let committed = source.group.position(&self.0.name, id);
+        if !self.0.replayable && committed.is_some_and(|committed| cursor.next < committed) {
+            return Err(ConnectorError::new(
+                ConnectorErrorKind::Transient,
+                format!("partition {id} no longer holds offsets before {committed:?}"),
+            ));
+        }
+        let earliest = self.earliest(head);
+        // A read from the start reads from the earliest message the log holds.
+        if cursor.next > 0 && cursor.next < earliest {
+            return Err(ConnectorError::retention_lost(format!(
+                "partition {id} holds offsets from {earliest}, not {}",
+                cursor.next
+            )));
+        }
+        Ok(cursor.next.max(earliest))
+    }
+}
+
 impl ReadStream<LogSource> for Logged {
     type Cursor = Offset;
 
@@ -380,12 +381,8 @@ impl ReadStream<LogSource> for Logged {
             .with_replayable(self.0.replayable)
     }
 
-    async fn partitions(
-        &self,
-        _source: &LogSource,
-        _state: &StreamState,
-    ) -> Result<Vec<Partition>> {
-        (0..self.partitions(elapsed()))
+    async fn partitions(&self, source: &LogSource, _state: &StreamState) -> Result<Vec<Partition>> {
+        (0..self.partitions(source.elapsed()))
             .map(|index| {
                 let id = PartitionId::parse(format!("p{index}")).internal("partition id")?;
                 Ok(if self.0.bounded {
@@ -405,16 +402,13 @@ impl ReadStream<LogSource> for Logged {
         out: &mut Emitter<Offset>,
     ) -> Result<()> {
         let id = partition.id();
-        self.member(id)?;
         // A read that does not follow returns at the head as it stood when the read started.
-        let head_at_start = self.head(elapsed());
-        let earliest = self.accept(source, id, cursor, head_at_start)?;
-        let mut next = cursor.next.max(earliest);
-        let mut partitions = self.partitions(elapsed());
-        let mut batches = 0_u64;
+        let head_at_start = self.head(source.elapsed());
+        let mut next = self.resumed(source, id, cursor, head_at_start)?;
+        let mut partitions = self.partitions(source.elapsed());
         loop {
             let head = if out.follows() {
-                self.head(elapsed())
+                self.head(source.elapsed())
             } else {
                 head_at_start
             };
@@ -422,11 +416,8 @@ impl ReadStream<LogSource> for Logged {
                 let end = head.min(next.saturating_add(self.0.batch_rows));
                 out.rows(&self.messages(source.seed, id, next..end)).await?;
                 next = end;
-                batches += 1;
-                if batches.is_multiple_of(self.0.checkpoint_batches.max(1)) {
-                    out.checkpoint(&Offset { next }).await?;
-                }
-                out.behind(self.head(elapsed()).saturating_sub(next))
+                out.checkpoint(&Offset { next }).await?;
+                out.behind(self.head(source.elapsed()).saturating_sub(next))
                     .await?;
             }
             if self.0.bounded || !out.follows() {
@@ -434,15 +425,18 @@ impl ReadStream<LogSource> for Logged {
             }
             // The first partition says when the stream's partitions change, as a consumer that
             // sees a topic's partitions increased does.
-            let now = self.partitions(elapsed());
+            let now = self.partitions(source.elapsed());
             if id.as_str() == "p0" && now != partitions {
                 partitions = now;
                 out.replan().await?;
             }
-            let wake = [self.arrives(next, elapsed()), self.changes(elapsed())]
-                .into_iter()
-                .flatten()
-                .min();
+            let wake = [
+                self.arrives(next, source.elapsed()),
+                self.changes(source.elapsed()),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             match wake {
                 None => {
                     out.stopped().await;
@@ -458,6 +452,8 @@ impl ReadStream<LogSource> for Logged {
     }
 
     /// Commits each partition's offset in the source's consumer group.
+    ///
+    /// Nothing is committed where a partition is none the stream ever has.
     async fn committed(&self, source: &LogSource, cursors: &[(PartitionId, Offset)]) -> Result<()> {
         for (partition, _) in cursors {
             self.member(partition)?;
