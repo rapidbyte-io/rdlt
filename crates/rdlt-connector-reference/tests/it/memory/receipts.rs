@@ -64,3 +64,29 @@ async fn a_commit_of_a_load_many_loads_back_is_answered_and_applies_nothing() {
     }
     assert_eq!(ids("receipts-loads", "orders"), loaded);
 }
+
+#[tokio::test]
+async fn a_commit_naming_every_segment_publishes_what_was_staged_without_walking_each_id() {
+    let destination = store("receipts-wide").await;
+    let orders = table("orders", "orders", None);
+    let mut session = open(destination.as_ref(), "p", 1).await;
+    stage(&mut session, &orders, 7, &[1, 2]).await;
+    let every = rdlt_connector::SegmentSet::try_from(vec![rdlt_connector::SegmentRange {
+        first: SegmentId(0),
+        last: SegmentId(u64::MAX),
+    }])
+    .expect("one range");
+    let wide = CommitMeta {
+        segments: every,
+        ..meta(&session, 1, 1, &[])
+    };
+    // A walk of every id the range names would not end within the test's life.
+    let committed = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        session.session.commit(&wide),
+    )
+    .await
+    .expect("the commit ends");
+    assert_eq!(committed.expect("the commit lands").rows, 2);
+    assert_eq!(ids("receipts-wide", "orders"), [1, 2]);
+}

@@ -76,12 +76,13 @@ impl SegmentSet {
             .is_some_and(|range| range.first <= id)
     }
 
-    /// The number of ids in the set.
+    /// The number of ids in the set; a set of every id, one more than a `u64` holds, has
+    /// `u64::MAX`.
     pub fn len(&self) -> u64 {
         self.ranges
             .iter()
-            .map(|range| range.last.0 - range.first.0 + 1)
-            .sum()
+            .map(|range| (range.last.0 - range.first.0).saturating_add(1))
+            .fold(0, u64::saturating_add)
     }
 
     /// Whether the set is empty.
@@ -89,7 +90,8 @@ impl SegmentSet {
         self.ranges.is_empty()
     }
 
-    /// The ids, ascending.
+    /// The ids, ascending: as many as the set holds, so only a set built from ids, not ranges a
+    /// peer sent, is walked so.
     pub fn iter(&self) -> impl Iterator<Item = SegmentId> + '_ {
         self.ranges
             .iter()
