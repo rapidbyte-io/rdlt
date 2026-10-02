@@ -1,3 +1,4 @@
+mod catalog;
 mod claims;
 mod floats;
 mod kit;
