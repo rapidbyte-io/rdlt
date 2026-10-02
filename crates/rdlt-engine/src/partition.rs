@@ -230,11 +230,9 @@ async fn read_and_ingest(
 ) -> Result<(Ingested, rdlt_connector::Result<()>), Error> {
     // Each push and checkpoint reserves what it costs before it enters the channel, so a source
     // buffers nothing outside the budget (spec §7.5).
-    let admission = Arc::new(Charging::new(
-        context.budget.clone(),
-        Arc::clone(&context.rendering),
-    ));
-    let (sink, feed) = admitted_partition_channel(context.buffer, admission);
+    let admission = Arc::new(Charging::new(context.budget.clone()));
+    let charging = Arc::clone(&admission) as Arc<dyn rdlt_connector::Admission>;
+    let (sink, feed) = admitted_partition_channel(context.buffer, charging);
     let request = ReadRequest::new(
         job.stream.clone(),
         job.partition.clone(),
@@ -266,7 +264,13 @@ async fn read_and_ingest(
         both = both => both,
     };
     // An ingest failure ends the read, so it is the cause when both fail.
-    Ok((ingested?, read))
+    let ingested = ingested?;
+    // A read that failed once the budget refused one of its events failed for the budget,
+    // whatever error its source answered the refusal with.
+    if let (Err(_), Some(exhausted)) = (&read, admission.exhausted()) {
+        return Err(Error::memory(exhausted).with_stream(&job.stream));
+    }
+    Ok((ingested, read))
 }
 
 /// Where a partition that read to its end resumes, if anywhere new.

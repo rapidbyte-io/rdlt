@@ -79,7 +79,8 @@ impl Engine {
             source,
             destination,
             budget: MemoryBudget::new(self.config.memory().get())
-                .within(Arc::clone(&self.env), self.config.memory_wait()),
+                .within(Arc::clone(&self.env), self.config.memory_wait())
+                .read_by(self.config.partitions().get()),
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
         };

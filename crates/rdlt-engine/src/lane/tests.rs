@@ -189,7 +189,7 @@ async fn write_at(
         version,
         segment: SegmentId(segment),
         batch: rows(count),
-        reservation: Box::new(budget.acquire(10).await),
+        reservation: Box::new(budget.acquire(10).await.expect("the budget has room")),
     };
     lanes.write(lane, write).await
 }
@@ -388,7 +388,8 @@ async fn a_write_holds_its_bytes_until_its_writer_flushes_them() {
 #[tokio::test]
 async fn a_lane_flushes_its_writers_once_the_budget_is_pressed() {
     let log = Log::default();
-    let budget = MemoryBudget::new(20);
+    // Pushes may take 27 bytes of this budget: two writes of ten and no third.
+    let budget = MemoryBudget::new(64);
     let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
