@@ -158,11 +158,20 @@ async fn a_host_out_of_patience_kills_what_it_spawned_before_it_returns() {
 /// A host of two connectors the launcher in `directory` becomes, started in `mode`, once it is
 /// ready, with the members its connectors started.
 async fn hosting(directory: &Path, mode: &str) -> (tokio::process::Child, Vec<i32>) {
+    hosting_configured(directory, mode, "{}").await
+}
+
+/// A host as [`hosting`] starts it, whose connectors are configured with `config`, as JSON.
+async fn hosting_configured(
+    directory: &Path,
+    mode: &str,
+    config: &str,
+) -> (tokio::process::Child, Vec<i32>) {
     use tokio::io::AsyncBufReadExt as _;
     let launched = launcher(directory);
     let mut host = tokio::process::Command::new(example("connector_host"))
         .arg(launched.path.as_ref().expect("the launcher's path"))
-        .arg(mode)
+        .args([mode, config])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
@@ -202,6 +211,25 @@ async fn a_host_asked_to_end_by_any_signal_it_hears_stops_its_connectors_groups_
     }
 }
 
+/// Whether `member` has ended within [`ENDING`], reaped or not: `ps` says so of one that
+/// nothing reaped, which a signal still reaches.
+async fn ended(member: i32) -> bool {
+    let unreaped = || {
+        let state = std::process::Command::new("ps")
+            .args(["-o", "state=", "-p", &member.to_string()])
+            .output();
+        state.is_ok_and(|state| state.stdout.trim_ascii_start().starts_with(b"Z"))
+    };
+    let deadline = tokio::time::Instant::now() + ENDING;
+    while tokio::time::Instant::now() < deadline {
+        if wait_gone(member, Duration::ZERO).await || unreaped() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
 /// Kills the process group of each of `members`, so that what a member started ends too.
 fn kill_groups(members: &[i32]) {
     for member in members {
@@ -215,14 +243,19 @@ fn kill_groups(members: &[i32]) {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_host_that_drops_its_connectors_and_returns_has_asked_each_group_to_stop() {
     let directory = tempfile::tempdir().expect("a temporary directory");
-    let (mut host, members) = hosting(directory.path(), "leave").await;
+    // Connectors that end only when killed: each leads its group for as long as the host
+    // lives, so what reaches its members is the stop the drop sent, and nothing a leader's
+    // own exit would have its host send.
+    let lingering = r#"{"linger": "forever"}"#;
+    let (mut host, members) = hosting_configured(directory.path(), "leave", lingering).await;
     let status = host.wait().await.expect("the host ends");
     assert_eq!(status.code(), Some(0));
     let [first, ignoring, second, also_ignoring] = members.as_slice() else {
         panic!("{members:?}");
     };
-    // Asked before the drop returned, what ends when asked has ended.
-    let asked = all_gone(&[*first, *second]).await;
+    // Asked before the drop returned, what ends when asked has ended: its leader lives and
+    // reaps nothing, so it is there still, as what ended and nothing reaped.
+    let asked = ended(*first).await && ended(*second).await;
     // What ignores being asked is killed only by a host that waits: this one did not.
     let alive =
         |member: &i32| nix::sys::signal::kill(nix::unistd::Pid::from_raw(*member), None).is_ok();

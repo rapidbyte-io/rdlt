@@ -72,7 +72,7 @@ impl Held {
 
     /// Asks the group to stop, before it returns: the end of its leader's standard input and
     /// `SIGTERM` to every member, sent once, while its leader is seen to be this process's
-    /// running child.
+    /// unreaped child, running or exited.
     ///
     /// The thread that owns the group kills it once its grace has passed.
     pub(super) fn stop(&self) {
@@ -80,7 +80,8 @@ impl Held {
         let Some(leader) = state.leader else {
             return;
         };
-        if state.killing.is_some() || Leader::of(&asked(leader)) != Leader::Running {
+        // A leader that exited and is unreaped still names its group: its members are asked.
+        if state.killing.is_some() || Leader::of(&asked(leader)) == Leader::Lost {
             return;
         }
         drop(state.stdin.take());
