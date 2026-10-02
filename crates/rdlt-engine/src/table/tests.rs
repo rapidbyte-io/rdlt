@@ -733,6 +733,7 @@ fn models_come_from_committed_state() {
         sequences: None,
         exact: model.exact.clone(),
         history: false,
+        ..TableState::default()
     };
     // A model read from state starts this attempt's revisions afresh.
     assert_eq!(

@@ -35,6 +35,7 @@ use crate::table::{SharedSession, Tables};
 use crate::wal::{LoadLog, Positions};
 use crate::watch;
 
+pub(crate) use sequences::Keying;
 use streams::Planning;
 
 /// Everything a run's attempts share.

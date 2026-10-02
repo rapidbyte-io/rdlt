@@ -54,11 +54,13 @@ impl Planning<'_> {
         };
         let shape = normalized(self.context, plan, spec);
         unnormalizable(plan, shape.is_some())?;
+        let key = merge_key(plan, spec)?;
         let (resolver, table, model) =
-            self.table(plan, spec, generation, tables, shape.is_some())?;
+            self.table(plan, spec, &key, generation, tables, shape.is_some())?;
         // Refused before the table changes, and recorded by the attempt's first commit.
-        let sequences = sequences::to_record(plan, tables.recorded_table(&table.path))?
-            .map(|(sequences, history)| (table.path.clone(), sequences, history));
+        let recorded = tables.recorded_table(&table.path);
+        let sequences = sequences::to_record(plan, recorded, &key, spec.change_time())?
+            .map(|keying| (table.path.clone(), keying));
         let index = tables.add_normalized(resolver, &table, model, shape.clone());
         if let Some(declared) = spec.schema() {
             let incoming = match &shape {
@@ -103,12 +105,12 @@ impl Planning<'_> {
         &self,
         plan: &StreamPlan,
         spec: &StreamSpec,
+        key: &[ColumnPath],
         generation: Option<GenerationId>,
         tables: &Tables,
         normalized: bool,
     ) -> Result<(Resolver, TableRef, Model), Error> {
         let name = plan.name();
-        let key = merge_key(plan, spec)?;
         let path = TablePath::new([name.to_string()]).map_err(|error| {
             Error::internal(format!("stream {name} has no valid table path: {error}"))
         })?;
@@ -140,7 +142,7 @@ impl Planning<'_> {
             settings: Settings {
                 pipeline: *self.context.plan.schema_settings(),
                 stream: plan.clone(),
-                key,
+                key: key.to_vec(),
                 owner: None,
             },
             capabilities: Arc::clone(&self.capabilities),
@@ -304,6 +306,14 @@ pub(super) fn merge_key(plan: &StreamPlan, spec: &StreamSpec) -> Result<Vec<Colu
             .with_code("merge_key_missing")
             .with_stream(name)
         })?;
+    // A plan's key names a column, as the plan checks; a catalog's may name none.
+    if key.is_empty() {
+        return Err(Error::config(format!(
+            "stream {name}: merging needs a key, and the source's catalog names a key of no column"
+        ))
+        .with_code("merge_key_missing")
+        .with_stream(name));
+    }
     if key.iter().any(|column| column.segments().count() > 1) {
         return Err(Error::config(format!(
             "stream {name}: the merge key names a nested column"

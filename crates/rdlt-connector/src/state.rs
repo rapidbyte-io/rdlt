@@ -1,6 +1,7 @@
 //! Pipeline state and how it is stored: as keyed records the destination keeps opaque.
 
 mod error;
+mod key;
 mod names;
 #[cfg(test)]
 mod tests;
@@ -15,9 +16,10 @@ use serde::{Deserialize, Serialize};
 use crate::commit::Receipt;
 use crate::cursor::Cursor;
 use crate::id::{Epoch, GenerationId, PartitionId, SchemaVersion, StreamName, TablePath};
-use crate::schema::TableSchema;
+use crate::schema::{ColumnPath, TableSchema};
 
 pub use error::StateError;
+pub use key::StateKey;
 pub use names::{NameConflict, NameMap};
 
 /// The state value format this crate writes and reads.
@@ -52,57 +54,6 @@ pub enum PartitionState {
     Cursor(Cursor),
     /// The partition is fully read.
     Done,
-}
-
-/// Which state record an entry is.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StateKey {
-    /// The fencing epoch.
-    Epoch,
-    /// A stream's phase.
-    Phase(StreamName),
-    /// A partition's position.
-    Partition(StreamName, PartitionId),
-    /// A stream's full read in progress.
-    Generation(StreamName),
-    /// A stream's recently completed full reads.
-    Completed(StreamName),
-    /// The epoch of a stream's last reset.
-    Reset(StreamName),
-    /// A table's schema.
-    Schema(TablePath),
-    /// A table's name map.
-    Names(TablePath),
-    /// Who made a table's sequences.
-    Sequences(TablePath),
-    /// The last commit's receipt.
-    Receipt,
-}
-
-impl StateKey {
-    /// The record key.
-    #[expect(
-        clippy::missing_panics_doc,
-        reason = "state keys always serialize to JSON"
-    )]
-    pub fn encode(&self) -> String {
-        serde_json::to_string(self).expect("state keys serialize to JSON")
-    }
-
-    /// The key a record key names; only the exact text [`StateKey::encode`] writes is accepted, so
-    /// one key cannot hide under two record keys.
-    pub fn parse(key: &str) -> Result<Self, StateError> {
-        let malformed = || StateError::MalformedKey {
-            key: key.to_owned(),
-        };
-        let parsed: Self = serde_json::from_str(key).map_err(|_| malformed())?;
-        if parsed.encode() == key {
-            Ok(parsed)
-        } else {
-            Err(malformed())
-        }
-    }
 }
 
 /// One piece of pipeline state.
@@ -170,8 +121,8 @@ pub enum StateEntry {
         /// The columns' identifiers.
         names: NameMap,
     },
-    /// Who made the sequences of the rows a table holds, and whether it keeps every version of
-    /// each key.
+    /// Who made the sequences of the rows a table holds, whether it keeps every version of each
+    /// key, the key its rows merge by, and the column its versions begin at.
     Sequences {
         /// The table.
         table: TablePath,
@@ -181,6 +132,11 @@ pub enum StateEntry {
         /// history hold no flag, as no table did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         history: bool,
+        /// The columns its rows were merged by; none for a table never merged.
+        key: Vec<ColumnPath>,
+        /// The column a history table's versions begin at; none where they begin as their rows
+        /// arrive, and for a table that keeps no history.
+        change_time: Option<ColumnPath>,
     },
     /// The last commit's receipt.
     Receipt(Receipt),
@@ -302,8 +258,43 @@ pub struct TableState {
     pub sequences: Option<Sequences>,
     /// Whether the table keeps every version of each key, as its sequences' record says.
     pub history: bool,
+    /// The columns the table's rows were merged by, as its sequences' record says; none for a
+    /// table never merged.
+    pub key: Vec<ColumnPath>,
+    /// The column a history table's versions begin at, as its sequences' record says.
+    pub change_time: Option<ColumnPath>,
     /// The columns of 64-bit integers every stored value of which a 64-bit float holds exactly.
     pub exact: BTreeSet<Arc<str>>,
+}
+
+impl TableState {
+    /// Pushes to `entries` the entries that record this table, at `path`.
+    fn record(&self, path: &TablePath, entries: &mut Vec<StateEntry>) {
+        if let Some((version, schema)) = &self.schema {
+            entries.push(StateEntry::Schema {
+                table: path.clone(),
+                version: *version,
+                schema: schema.clone(),
+                exact: self.exact.clone(),
+            });
+        }
+        if let Some(physical) = &self.physical {
+            entries.push(StateEntry::Names {
+                table: path.clone(),
+                physical: Arc::clone(physical),
+                names: self.names.clone(),
+            });
+        }
+        if let Some(sequences) = self.sequences {
+            entries.push(StateEntry::Sequences {
+                table: path.clone(),
+                sequences,
+                history: self.history,
+                key: self.key.clone(),
+                change_time: self.change_time.clone(),
+            });
+        }
+    }
 }
 
 /// Everything a pipeline has committed: epoch, cursors, schemas, names and the last receipt.
@@ -370,28 +361,7 @@ impl PipelineState {
             });
         }
         for (path, table) in &self.tables {
-            if let Some((version, schema)) = &table.schema {
-                entries.push(StateEntry::Schema {
-                    table: path.clone(),
-                    version: *version,
-                    schema: schema.clone(),
-                    exact: table.exact.clone(),
-                });
-            }
-            if let Some(physical) = &table.physical {
-                entries.push(StateEntry::Names {
-                    table: path.clone(),
-                    physical: Arc::clone(physical),
-                    names: table.names.clone(),
-                });
-            }
-            if let Some(sequences) = table.sequences {
-                entries.push(StateEntry::Sequences {
-                    table: path.clone(),
-                    sequences,
-                    history: table.history,
-                });
-            }
+            table.record(path, &mut entries);
         }
         if let Some(receipt) = &self.last_receipt {
             entries.push(StateEntry::Receipt(receipt.clone()));
@@ -444,8 +414,7 @@ impl PipelineState {
                 exact,
             } => {
                 let state = self.tables.entry(table).or_default();
-                state.schema = Some((version, schema));
-                state.exact = exact;
+                (state.schema, state.exact) = (Some((version, schema)), exact);
             }
             StateEntry::Names {
                 table,
@@ -453,17 +422,18 @@ impl PipelineState {
                 names,
             } => {
                 let state = self.tables.entry(table).or_default();
-                state.physical = Some(physical);
-                state.names = names;
+                (state.physical, state.names) = (Some(physical), names);
             }
             StateEntry::Sequences {
                 table,
                 sequences,
                 history,
+                key,
+                change_time,
             } => {
                 let state = self.tables.entry(table).or_default();
-                state.sequences = Some(sequences);
-                state.history = history;
+                (state.sequences, state.history) = (Some(sequences), history);
+                (state.key, state.change_time) = (key, change_time);
             }
             StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
         }
@@ -511,6 +481,8 @@ impl PipelineState {
                 if let Some(state) = self.tables.get_mut(table) {
                     state.sequences = None;
                     state.history = false;
+                    state.key.clear();
+                    state.change_time = None;
                 }
             }
             StateKey::Receipt => self.last_receipt = None,

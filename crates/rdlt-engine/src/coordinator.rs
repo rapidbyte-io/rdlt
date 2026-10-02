@@ -21,12 +21,13 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, Receipt, Sequences, Source,
-    StateChange, StateEntry, StreamName, TablePath,
+    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, Receipt, Source, StateChange,
+    StateEntry, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::attempt::Keying;
 use crate::budget::MemoryBudget;
 use crate::config::CommitPolicy;
 use crate::crash::crash_point;
@@ -57,9 +58,9 @@ pub(crate) struct StreamRun {
     pub(crate) stopped: bool,
     /// For a stream read in phases, its place in them.
     pub(crate) phases: Option<Phases>,
-    /// Who made the sequences of the stream's table, and whether it keeps history, where state
-    /// records otherwise; the next commit records them.
-    pub(crate) sequences: Option<(TablePath, Sequences, bool)>,
+    /// How the stream's table sequences and matches its rows, where state records otherwise; the
+    /// next commit records it.
+    pub(crate) sequences: Option<(TablePath, Keying)>,
     /// Whether the stream's source can read again what it acknowledged; one that cannot learns
     /// its position once the load's log holds it, before the destination commits.
     pub(crate) replayable: bool,

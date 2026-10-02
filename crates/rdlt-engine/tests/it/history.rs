@@ -476,6 +476,61 @@ async fn a_change_whose_change_time_alone_moved_opens_no_version() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_change_time_other_than_the_one_a_history_table_began_with_is_refused() {
+    let at = |micros: i64| -> ArrayRef {
+        Arc::new(arrow_array::TimestampMicrosecondArray::from(vec![micros]).with_timezone("UTC"))
+    };
+    let rows = || {
+        batch(vec![
+            ("id", ints(&[1])),
+            ("v", text(&["a"])),
+            ("at", at(1_000)),
+            ("created", at(10)),
+        ])
+    };
+    let run = |events: BatchStream| async move {
+        engine(commit_every(10))
+            .run(
+                pipeline("rebased", [stream("events").write(WriteMode::History)]),
+                batches("rebased", vec![events]).await,
+                memory("rebased").await,
+            )
+            .await
+    };
+    let keyed = || BatchStream::new("events", vec![rows()]).primary_key(&["id"]);
+    let first = run(keyed().change_time("at")).await;
+    assert_eq!(
+        first.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        first.error
+    );
+    // Another column, or none, would open a version for an unchanged row and begin it at
+    // another basis: the table's versions began at `at`.
+    for events in [keyed().change_time("created"), keyed()] {
+        let outcome = run(events).await;
+        assert_eq!(outcome.report.status, RunStatus::Failed);
+        let error = outcome.error.expect("the run failed");
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Config, Some("table_change_time_mismatch"))
+        );
+    }
+    let again = run(keyed().change_time("at")).await;
+    assert_eq!(
+        again.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        again.error
+    );
+    let published = rdlt_connector_reference::published("rebased", "events");
+    assert_eq!(
+        published.iter().map(RecordBatch::num_rows).sum::<usize>(),
+        1
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_history_read_again_after_a_reset_holds_the_versions_its_changes_make() {
     let spec = timed();
     for scope in [ResetScope::Positions, ResetScope::Tables] {

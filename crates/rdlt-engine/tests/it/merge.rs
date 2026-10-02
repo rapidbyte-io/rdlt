@@ -89,6 +89,65 @@ async fn the_plan_key_wins_over_the_primary_key() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_merge_key_other_than_the_one_a_table_was_merged_by_is_refused() {
+    let rows = |ids: &[i64], tenants: &[i64]| {
+        vec![batch(vec![("id", ints(ids)), ("tenant", ints(tenants))])]
+    };
+    let run = |events: BatchStream, plan: rdlt_engine::StreamPlan| async move {
+        engine(commit_every(1))
+            .run(
+                pipeline("rekeyed", [plan]),
+                batches("rekeyed", vec![events]).await,
+                memory("rekeyed").await,
+            )
+            .await
+    };
+    let first = BatchStream::new("events", rows(&[1, 2, 3, 4], &[7, 7, 7, 7])).primary_key(&["id"]);
+    let outcome = run(first, merging("events")).await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    // The catalog's key changes, or the plan names another: either would merge the next rows
+    // by a key the stored rows were not merged by.
+    let catalog = BatchStream::new("events", rows(&[5], &[7])).primary_key(&["tenant"]);
+    let planned = BatchStream::new("events", rows(&[5], &[7])).primary_key(&["id"]);
+    for (events, plan) in [
+        (catalog, merging("events")),
+        (planned, merging("events").key(["tenant"])),
+    ] {
+        let outcome = run(events, plan).await;
+        assert_eq!(outcome.report.status, RunStatus::Failed);
+        let error = outcome.error.expect("the run failed");
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Config, Some("table_key_mismatch"))
+        );
+    }
+    assert_eq!(published_json("rekeyed", "events").len(), 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_keyed_write_by_an_empty_catalog_key_is_refused() {
+    for write in [WriteMode::Merge, WriteMode::History] {
+        let store = format!("keyless_{write:?}").to_lowercase();
+        let rows = vec![batch(vec![("id", ints(&[1, 1])), ("v", text(&["a", "b"]))])];
+        let events = BatchStream::new("events", rows).primary_key(&[]);
+        let outcome = engine(commit_every(1))
+            .run(
+                pipeline(&store.replace('_', "-"), [stream("events").write(write)]),
+                batches(&store, vec![events]).await,
+                memory(&store).await,
+            )
+            .await;
+        assert_eq!(outcome.report.status, RunStatus::Failed, "{write:?}");
+        let error = outcome.error.expect("the run failed");
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Config, Some("merge_key_missing")),
+            "{write:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_merge_is_idempotent_when_a_commit_response_is_lost() {
     let rows = vec![
         batch(vec![("id", ints(&[1, 2])), ("v", text(&["a", "b"]))]),
