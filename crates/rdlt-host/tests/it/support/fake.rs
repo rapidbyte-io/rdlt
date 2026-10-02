@@ -29,6 +29,8 @@ pub(crate) enum Fault {
     Silent,
     /// Its reads send the same schema epoch twice.
     StaleEpoch,
+    /// Its handshake says its limits, but no dictionary limit among them.
+    NoDictionaryLimit,
     /// Its reads know no barrier in their start, as a connector built before it could carry one,
     /// and have nothing to read: each answers a barrier its controls ask for before its first
     /// credit, and ends at that credit.
@@ -77,7 +79,10 @@ impl Connector for Fake {
         Ok(Response::new(v1::HandshakeResponse {
             spec: Some(spec("test.fake")),
             accepted_features: Vec::new(),
-            limits: None,
+            limits: matches!(self.0, Fault::NoDictionaryLimit).then(|| v1::Limits {
+                dictionary_bytes: 0,
+                ..rdlt_wire::Limits::default().into()
+            }),
         }))
     }
 

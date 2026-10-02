@@ -70,8 +70,9 @@ impl Service {
             }
             Ok(v1::Role::Unspecified) | Err(_) => return Err(unsupported("no role named", "role")),
         };
-        // A host may not make this connector send frames smaller than the protocol's least.
-        let host = Limits::from(request.limits.unwrap_or_default());
+        // A host may not make this connector send frames smaller than the protocol's least; one
+        // that says no limits keeps the protocol's defaults.
+        let host = request.limits.map(Limits::from).unwrap_or_default();
         host.admit_peer()
             .map_err(|shortfall| crate::wire::shortfall_error(&shortfall))?;
         let spec = self.spec(spec, None);

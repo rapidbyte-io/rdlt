@@ -92,12 +92,22 @@ fn the_default_limits_are_the_protocols() {
 
 #[test]
 fn a_limit_the_peer_leaves_unset_is_the_protocols_default() {
+    // But the dictionaries' limit, which a peer sets as it is: one of none is below the least.
     let unset = v1::Limits::default();
-    assert_eq!(Limits::from(unset), Limits::default());
+    assert_eq!(
+        Limits::from(unset),
+        Limits {
+            dictionary_bytes: 0,
+            ..Limits::default()
+        }
+    );
+    let refused = Limits::from(unset).admit_peer().unwrap_err();
+    assert_eq!((refused.field, refused.actual), ("dictionary bytes", 0));
     let partly = v1::Limits {
         batch_rows: 7,
         batch_values: 8,
         schema_bytes: 9,
+        dictionary_bytes: 10,
         ..v1::Limits::default()
     };
     assert_eq!(
@@ -106,6 +116,7 @@ fn a_limit_the_peer_leaves_unset_is_the_protocols_default() {
             batch_rows: 7,
             batch_values: 8,
             schema_bytes: 9,
+            dictionary_bytes: 10,
             ..Limits::default()
         }
     );
@@ -121,46 +132,75 @@ fn the_credit_window_and_a_messages_overhead_are_the_protocols() {
     assert_eq!(limits.message_bytes(), 10 + 65_536);
 }
 
-#[test]
-fn a_peers_limits_are_admitted_from_the_protocols_minimums_up() {
-    use super::{
-        LIMIT_BELOW_MINIMUM, MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_FRAME_BYTES, Shortfall,
-    };
-    assert_eq!(
-        (MIN_FRAME_BYTES, MIN_BATCH_ROWS, MIN_BATCH_VALUES),
-        (4_194_304, 1_024, 1_048_576)
-    );
-    assert_eq!(Limits::default().admit_peer(), Ok(()));
-    let least = Limits {
+/// The least limits a peer may set: each a sender cuts batches to at its protocol minimum.
+fn least() -> Limits {
+    use super::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+    Limits {
         frame_bytes: MIN_FRAME_BYTES,
         batch_rows: MIN_BATCH_ROWS,
         batch_values: MIN_BATCH_VALUES,
+        dictionary_bytes: MIN_DICTIONARY_BYTES,
         ..Limits::default()
+    }
+}
+
+#[test]
+fn a_peers_limit_below_its_protocol_minimum_is_refused() {
+    use super::{
+        LIMIT_BELOW_MINIMUM, MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES,
+        MIN_FRAME_BYTES, Shortfall,
     };
-    assert_eq!(least.admit_peer(), Ok(()));
-    let below = |field, minimum| {
-        Err(Shortfall {
+    type Field = fn(&mut Limits) -> &mut u64;
+    let short: [(Field, &str, u64); 4] = [
+        (
+            |limits| &mut limits.frame_bytes,
+            "frame bytes",
+            MIN_FRAME_BYTES,
+        ),
+        (
+            |limits| &mut limits.batch_rows,
+            "batch rows",
+            MIN_BATCH_ROWS,
+        ),
+        (
+            |limits| &mut limits.batch_values,
+            "batch values",
+            MIN_BATCH_VALUES,
+        ),
+        (
+            |limits| &mut limits.dictionary_bytes,
+            "dictionary bytes",
+            MIN_DICTIONARY_BYTES,
+        ),
+    ];
+    for (field, name, minimum) in short {
+        let mut limits = least();
+        *field(&mut limits) = minimum - 1;
+        let shortfall = Shortfall {
             code: LIMIT_BELOW_MINIMUM,
-            field,
+            field: name,
             minimum,
             actual: minimum - 1,
-        })
-    };
-    let frame = Limits {
-        frame_bytes: MIN_FRAME_BYTES - 1,
-        ..least
-    };
-    assert_eq!(frame.admit_peer(), below("frame bytes", MIN_FRAME_BYTES));
-    let rows = Limits {
-        batch_rows: MIN_BATCH_ROWS - 1,
-        ..least
-    };
-    assert_eq!(rows.admit_peer(), below("batch rows", MIN_BATCH_ROWS));
-    let values = Limits {
-        batch_values: MIN_BATCH_VALUES - 1,
-        ..least
-    };
-    assert_eq!(values.admit_peer(), below("batch values", MIN_BATCH_VALUES));
+        };
+        assert_eq!(limits.admit_peer(), Err(shortfall));
+    }
+}
+
+#[test]
+fn a_peers_limits_are_admitted_from_the_protocols_minimums_up() {
+    use super::{MIN_BATCH_ROWS, MIN_BATCH_VALUES, MIN_DICTIONARY_BYTES, MIN_FRAME_BYTES};
+    assert_eq!(
+        (
+            MIN_FRAME_BYTES,
+            MIN_BATCH_ROWS,
+            MIN_BATCH_VALUES,
+            MIN_DICTIONARY_BYTES
+        ),
+        (4_194_304, 1_024, 1_048_576, 262_144)
+    );
+    assert_eq!(Limits::default().admit_peer(), Ok(()));
+    let least = least();
+    assert_eq!(least.admit_peer(), Ok(()));
     // Limits a sender does not cut batches to have no minimum: one too low only refuses.
     let others = Limits {
         schema_columns: 1,

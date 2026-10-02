@@ -84,6 +84,48 @@ async fn a_host_of_another_major_version_is_refused_at_the_handshake() {
 }
 
 #[tokio::test]
+async fn a_host_that_sets_no_dictionary_limit_is_refused_at_the_handshake() {
+    // A host that says no limits at all keeps the protocol's defaults; one that says limits
+    // says its dictionary limit too.
+    let unset = [
+        Some(v1::Limits {
+            dictionary_bytes: 0,
+            ..Limits::default().into()
+        }),
+        Some(v1::Limits {
+            dictionary_bytes: rdlt_wire::limits::MIN_DICTIONARY_BYTES - 1,
+            ..Limits::default().into()
+        }),
+    ];
+    for limits in unset {
+        let mut client = raw_client(served(memory())).await;
+        let status = client
+            .handshake(v1::HandshakeRequest {
+                limits,
+                ..handshake(PROTOCOL_MAJOR, v1::Role::Source)
+            })
+            .await
+            .unwrap_err();
+        let error = carried(&status);
+        assert_eq!(error.code(), Some("limit_below_minimum"), "{error}");
+        assert!(error.to_string().contains("dictionary bytes"), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn a_connector_that_says_no_dictionary_limit_is_refused_at_the_handshake() {
+    let io = serve_fake(Fake(Fault::NoDictionaryLimit));
+    let refused = Connection::connect(io, Role::Source, &rows(1), Options::default())
+        .await
+        .expect_err("the handshake is refused");
+    assert_eq!(refused.code(), Some("limit_below_minimum"), "{refused}");
+    assert!(
+        refused.to_string().contains("dictionary bytes"),
+        "{refused}"
+    );
+}
+
+#[tokio::test]
 async fn a_call_before_the_handshake_is_refused() {
     let mut client = raw_client(served(memory())).await;
     let status = client.check(v1::CheckRequest {}).await.unwrap_err();

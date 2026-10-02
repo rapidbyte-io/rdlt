@@ -14,6 +14,7 @@ mod split;
 mod tests;
 mod weigh;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -47,6 +48,8 @@ pub struct Encoder {
     context: IpcWriteContext,
     /// The columns of the schema last encoded, as its receiver converts it.
     columns: Option<Columns>,
+    /// The dictionaries its receiver holds since that schema, by id: what each takes there.
+    held: HashMap<i64, u64>,
     /// How many batches were encoded, for tests of what a cut costs.
     #[cfg(test)]
     encodes: usize,
@@ -60,6 +63,7 @@ impl Default for Encoder {
             options: IpcWriteOptions::default(),
             context: IpcWriteContext::default(),
             columns: None,
+            held: HashMap::new(),
             #[cfg(test)]
             encodes: 0,
         }
@@ -76,6 +80,7 @@ impl Encoder {
     /// schema message describes: nothing is to be sent for it, and the epoch before it is over.
     pub fn schema(&mut self, schema: &Schema) -> Result<Bytes, WireError> {
         self.columns = None;
+        self.held.clear();
         if schema
             .fields()
             .iter()
@@ -138,6 +143,16 @@ impl Encoder {
             frame(encoded),
         ))
     }
+}
+
+/// Bytes: what the schema message carrying `schema` takes, as a sender encodes it, which its
+/// receiver holds to [`Limits::schema_bytes`](crate::Limits::schema_bytes).
+pub fn schema_message_bytes(schema: &Schema) -> usize {
+    let mut tracker = DictionaryTracker::new(false);
+    IpcDataGenerator {}
+        .schema_to_bytes_with_dictionary_tracker(schema, &mut tracker, &IpcWriteOptions::default())
+        .ipc_message
+        .len()
 }
 
 /// Whether `data_type`, or a type nested in it, is a dictionary whose values are a dictionary.

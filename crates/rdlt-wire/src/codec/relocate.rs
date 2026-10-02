@@ -23,14 +23,32 @@ impl Relocated {
     }
 }
 
+/// Where `buffer` lies once laid out after `end` bytes: its start and its end.
+fn placed_at(end: usize, buffer: &Placed<'_>) -> (usize, usize) {
+    let start = end.next_multiple_of(buffer.alignment);
+    (start, start.saturating_add(buffer.bytes.len()))
+}
+
+/// Bytes: what the buffers `walked` describes take laid out in order, each at its alignment.
+fn laid_out(walked: &Walked<'_>) -> usize {
+    let placed = walked.placed.iter();
+    placed.fold(0, |at, buffer| placed_at(at, buffer).1)
+}
+
+/// Bytes: the allocation a decoder holds a frame of `walked` in, as [`relocated`] makes it.
+///
+/// Whoever sends a frame measures with it what its receiver will hold, and the receiver what it
+/// holds, so the two never disagree.
+pub(crate) fn held_bytes(walked: &Walked<'_>) -> u64 {
+    let bytes = arrow_buffer::bit_util::round_upto_multiple_of_64(laid_out(walked));
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
 /// Copies `walked`'s buffers, those `batch` describes in order, into one allocation.
 pub(super) fn relocated(batch: RecordBatch<'_>, walked: &Walked<'_>) -> Relocated {
     let placed = &walked.placed;
-    let end = |end: usize, buffer: &Placed<'_>| {
-        let start = end.next_multiple_of(buffer.alignment);
-        (start, start.saturating_add(buffer.bytes.len()))
-    };
-    let capacity = placed.iter().fold(0, |at, buffer| end(at, buffer).1);
+    let end = placed_at;
+    let capacity = laid_out(walked);
     let mut body = MutableBuffer::with_capacity(capacity);
     let mut buffers = Vec::with_capacity(placed.len());
     for buffer in placed {
