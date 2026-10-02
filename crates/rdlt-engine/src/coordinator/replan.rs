@@ -53,30 +53,33 @@ impl Coordinator {
             return Ok(());
         };
         let named: BTreeSet<&PartitionId> = planned.partitions.iter().map(Partition::id).collect();
-        let reading = phases.reading.clone();
         let template = phases.template;
         let committed = phases.committed.clone();
-        let mut dropped = Vec::new();
-        for index in &reading {
-            let run = &self.parts.partitions[*index];
-            if named.contains(&run.id) {
+        let mut dropped = BTreeSet::new();
+        let mut retired = Vec::new();
+        for (id, index) in &phases.reading {
+            if named.contains(id) {
                 continue;
             }
             // Ended or not, a partition the plan no longer names lags no more.
-            dropped.push(run.id.clone());
+            dropped.insert(id.clone());
+            let run = &self.parts.partitions[*index];
             if !run.ended {
                 run.stop.cancel();
+            } else if !self.sealing.contains(index) {
+                // Its end committed, its place is free for another.
+                retired.push(id.clone());
             }
         }
-        let unsettled: BTreeSet<&PartitionId> = reading
+        let unsettled: BTreeSet<&PartitionId> = phases
+            .reading
             .iter()
-            .map(|index| &self.parts.partitions[*index])
-            .filter(|run| !run.ended)
-            .map(|run| &run.id)
+            .filter(|(_, index)| !self.parts.partitions[**index].ended)
+            .map(|(id, _)| id)
             .chain(
-                self.sealed
+                self.sealing
                     .iter()
-                    .map(|seal| &self.parts.partitions[seal.partition].id),
+                    .map(|index| &self.parts.partitions[*index].id),
             )
             .collect();
         let starts: Vec<_> = planned
@@ -91,6 +94,11 @@ impl Coordinator {
                 None => Some((partition.clone(), None)),
             })
             .collect();
+        if let Some(phases) = self.parts.streams[stream].phases.as_mut() {
+            for id in retired {
+                self.retired.extend(phases.reading.remove(&id));
+            }
+        }
         for (partition, cursor) in starts {
             self.launch(stream, template, partition, cursor)?;
         }

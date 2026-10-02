@@ -42,6 +42,7 @@ impl Coordinator {
             held: Vec::new(),
         };
         let seals = self.sealed.take();
+        self.sealing.clear();
         if self.parts.wal.is_some() {
             collected.sealed = self.logged(&seals, begun);
         }

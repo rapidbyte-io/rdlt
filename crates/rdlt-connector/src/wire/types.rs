@@ -195,6 +195,21 @@ impl TryFrom<v1::TableSchema> for TableSchema {
     type Error = Invalid;
 
     fn try_from(schema: v1::TableSchema) -> Result<Self, Invalid> {
+        // Each node of each field's type is a column, nested ones too: counted before any is
+        // read.
+        let columns = schema
+            .fields
+            .iter()
+            .map(|field| {
+                field
+                    .r#type
+                    .as_ref()
+                    .map_or(1, |logical| logical.nodes.len())
+            })
+            .fold(0_usize, usize::saturating_add);
+        if u64::try_from(columns).unwrap_or(u64::MAX) > crate::limits::MAX_COLUMNS {
+            return Err(Invalid::OutOfRange("schema columns"));
+        }
         let fields = schema
             .fields
             .into_iter()

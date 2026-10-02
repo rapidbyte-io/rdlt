@@ -1,6 +1,8 @@
 //! What a source tells the coordinator beside its data: that a stream's partitions changed, how
 //! far its reads are behind, and where it read again after its retention dropped their place.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use rdlt_connector::PartitionId;
 
 use super::Coordinator;
@@ -36,22 +38,27 @@ impl Coordinator {
             return;
         }
         let stream = run.stream;
-        self.lag
-            .entry(stream)
-            .or_default()
-            .insert(run.id.clone(), records);
+        let lag = self.lag.entry(stream).or_default();
+        let before = lag.each.insert(run.id.clone(), records).unwrap_or(0);
+        lag.total = lag.total - u128::from(before) + u128::from(records);
         self.report_lag(stream);
     }
 
     /// Forgets how far behind `stream`'s partitions `forgotten` were, as a partition a plan no
     /// longer names, or one of a phase that ended, no longer lags; every partition where `None`.
-    pub(super) fn forget_lag(&mut self, stream: usize, forgotten: Option<&[PartitionId]>) {
+    pub(super) fn forget_lag(&mut self, stream: usize, forgotten: Option<&BTreeSet<PartitionId>>) {
         let Some(lag) = self.lag.get_mut(&stream) else {
             return;
         };
         match forgotten {
-            Some(forgotten) => lag.retain(|id, _| !forgotten.contains(id)),
-            None => lag.clear(),
+            Some(forgotten) => {
+                for id in forgotten {
+                    if let Some(records) = lag.each.remove(id) {
+                        lag.total -= u128::from(records);
+                    }
+                }
+            }
+            None => *lag = Lag::default(),
         }
         self.report_lag(stream);
     }
@@ -60,11 +67,11 @@ impl Coordinator {
     /// that still lags said.
     fn report_lag(&self, stream: usize) {
         let name = self.parts.streams[stream].name.clone();
-        let lag = self.lag.get(&stream).filter(|lag| !lag.is_empty());
+        let lag = self.lag.get(&stream).filter(|lag| !lag.each.is_empty());
         let mut log = self.parts.log.lock();
         match lag {
             Some(lag) => {
-                let total = lag.values().copied().fold(0_u64, u64::saturating_add);
+                let total = u64::try_from(lag.total).unwrap_or(u64::MAX);
                 log.behind.insert(name, total);
             }
             None => {
@@ -85,4 +92,12 @@ impl Coordinator {
             .entry(name)
             .or_default() += 1;
     }
+}
+
+/// How far behind a stream's partitions last said they are, and their total, kept as each says:
+/// a total of at most a `u64` for each of fewer than `u64::MAX` partitions fits a `u128`.
+#[derive(Debug, Default)]
+pub(super) struct Lag {
+    each: BTreeMap<PartitionId, u64>,
+    total: u128,
 }

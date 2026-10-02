@@ -40,7 +40,7 @@ use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
 use crate::table::Tables;
 use crate::wal::{LoadLog, Positions};
 use crate::watch;
-pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher};
+pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher, plan_of};
 use waiting::WaitingSeals;
 
 /// A stream as one attempt loads it.
@@ -195,11 +195,21 @@ pub(crate) struct Coordinator {
     /// Streams whose sources said their partitions changed, to plan again.
     replans: BTreeSet<usize>,
     /// How many records each stream's partitions last said their reads are behind, by stream.
-    lag: BTreeMap<usize, BTreeMap<PartitionId, u64>>,
+    lag: BTreeMap<usize, signals::Lag>,
+    /// How many tracked partitions have not ended.
+    unended: usize,
+    /// The partitions that owe the newest barrier an answer.
+    owing: BTreeSet<usize>,
+    /// The partitions with seals no commit has taken yet.
+    sealing: BTreeSet<usize>,
+    /// The places of ended partitions no stream reads any more, which a partition a plan names
+    /// takes once no seal of theirs waits for a commit.
+    retired: BTreeSet<usize>,
 }
 
 impl Coordinator {
     pub(crate) fn new(parts: CoordinatorParts) -> Self {
+        let unended = parts.partitions.iter().filter(|run| !run.ended).count();
         Self {
             cursors_may_free: true,
             parts,
@@ -211,6 +221,10 @@ impl Coordinator {
             stopping: false,
             replans: BTreeSet::new(),
             lag: BTreeMap::new(),
+            unended,
+            owing: BTreeSet::new(),
+            sealing: BTreeSet::new(),
+            retired: BTreeSet::new(),
         }
     }
 
@@ -327,17 +341,20 @@ impl Coordinator {
     }
 
     fn all_ended(&self) -> bool {
-        self.parts
-            .partitions
-            .iter()
-            .all(|partition| partition.ended)
+        self.unended == 0
     }
 
     fn observe(&mut self, progress: Progress) {
         // Whatever arrives, wherever it is heard, may be a seal a commit frees cursors with.
         self.cursors_may_free = true;
         match progress {
-            Progress::Started { partition } => self.parts.partitions[partition].started = true,
+            Progress::Started { partition } => {
+                let run = &mut self.parts.partitions[partition];
+                run.started = true;
+                if run.owes(self.barrier) {
+                    self.owing.insert(partition);
+                }
+            }
             Progress::Written { rows, bytes } => {
                 self.pending_rows += rows;
                 self.pending_bytes += bytes;
@@ -363,8 +380,10 @@ impl Coordinator {
             }
             Progress::RetentionReset { partition } => self.reset(partition),
             Progress::Ended { partition, stopped } => {
+                self.owing.remove(&partition);
                 let partition = &mut self.parts.partitions[partition];
                 partition.ended = true;
+                self.unended -= 1;
                 let stream = &mut self.parts.streams[partition.stream];
                 stream.remaining -= 1;
                 stream.stopped |= stopped;
@@ -377,7 +396,11 @@ impl Coordinator {
         if let Some(barrier) = seal.answers {
             let partition = &mut self.parts.partitions[seal.partition];
             partition.answered = partition.answered.max(barrier);
+            if !partition.owes(self.barrier) {
+                self.owing.remove(&seal.partition);
+            }
         }
+        self.sealing.insert(seal.partition);
         self.sealed.push(seal);
     }
 

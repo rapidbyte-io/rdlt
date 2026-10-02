@@ -8,7 +8,9 @@ use rdlt_engine::{
 };
 
 use crate::support::destinations::limited;
-use crate::support::script::{Fault, Hang, PushKind, Script, ScriptStream, id, reconnect};
+use crate::support::script::{
+    Fault, Hang, Planning, PushKind, Script, ScriptStream, id, reconnect,
+};
 use crate::support::{
     commit_every, counting_engine, engine, every_id, generator, memory, pipeline, published_ids,
     published_rows, retrying, stream, until,
@@ -663,7 +665,7 @@ async fn a_failure_at_any_step_of_an_attempt_names_its_side() {
     let mut discover = events();
     discover.fail_discover = true;
     let mut plan = events();
-    plan.fail_plan = true;
+    plan.planning = Planning::Fails;
     let mut ack = events();
     ack.fail_ack = true;
     let discovered = run(memory("fail-discover").await, discover, "fail-discover").await;
@@ -885,4 +887,23 @@ async fn arrow_batches_are_lowered_on_the_compute_pool() {
     );
     let jobs = jobs.load(Ordering::SeqCst);
     assert!(jobs >= 5, "{jobs} compute jobs for five batches");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_plan_naming_a_partition_twice_fails_its_stream_before_anything_is_read() {
+    let mut script = Script::new(vec![ScriptStream::new("events", 1, 30, 7)]);
+    script.planning = Planning::Twice;
+    let (script, source) = script.connect("plan_twice").await;
+    let plan = pipeline("plan-twice", [stream("events").read(ReadMode::Incremental)]);
+    let outcome = engine(commit_every(10))
+        .run(plan, source, memory("plan_twice").await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Source, Some("plan_invalid"), false)
+    );
+    assert_eq!(script.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(outcome.report.rows, 0);
 }

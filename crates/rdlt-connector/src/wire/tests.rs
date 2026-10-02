@@ -903,3 +903,170 @@ fn what_the_codec_refuses_is_reported_by_what_went_wrong() {
         );
     }
 }
+
+#[test]
+fn a_catalog_beyond_its_stream_limit_is_refused_before_its_streams_are_read() {
+    // Each stream has no name, which reading one would refuse first.
+    let streams = vec![v1::StreamSpec::default(); crate::limits::MAX_CATALOG_STREAMS + 1];
+    let refused = Catalog::try_from(v1::Catalog { streams }).unwrap_err();
+    assert!(
+        matches!(refused, Invalid::OutOfRange("catalog streams")),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_schema_of_more_columns_than_its_limit_is_refused_before_it_is_built() {
+    use v1::type_node::Kind;
+    let limit = usize::try_from(crate::limits::MAX_COLUMNS).unwrap();
+    let int = || one_node(Kind::Int64(v1::Unit {}));
+    let field = |name: String, logical: v1::LogicalType| v1::Field {
+        name,
+        r#type: Some(logical),
+        nullable: true,
+    };
+    let flat = |count: usize| v1::TableSchema {
+        fields: (0..count)
+            .map(|index| field(format!("c{index}"), int()))
+            .collect(),
+    };
+    assert!(TableSchema::try_from(flat(limit)).is_ok());
+    let refused = TableSchema::try_from(flat(limit + 1)).unwrap_err();
+    assert!(
+        matches!(refused, Invalid::OutOfRange("schema columns")),
+        "{refused}"
+    );
+    // A struct's fields are columns too: one struct of the limit's fields is one too many.
+    let mut nodes = vec![v1::TypeNode {
+        name: String::new(),
+        nullable: true,
+        kind: Some(Kind::Struct(u32::try_from(limit).unwrap())),
+    }];
+    nodes.extend((0..limit).map(|index| v1::TypeNode {
+        name: format!("f{index}"),
+        nullable: true,
+        kind: Some(Kind::Int64(v1::Unit {})),
+    }));
+    let nested = v1::TableSchema {
+        fields: vec![field("s".to_owned(), v1::LogicalType { nodes })],
+    };
+    let refused = TableSchema::try_from(nested).unwrap_err();
+    assert!(
+        matches!(refused, Invalid::OutOfRange("schema columns")),
+        "{refused}"
+    );
+}
+
+fn planned(ids: &[String], unbounded: &[String]) -> v1::PlanResponse {
+    v1::PlanResponse {
+        partitions: ids.to_vec(),
+        phase: None,
+        starts: Vec::new(),
+        unbounded: unbounded.to_vec(),
+    }
+}
+
+#[test]
+fn a_plan_crosses_the_wire_with_its_unbounded_partitions_and_starts() {
+    use crate::source::{Partition, PartitionPlan};
+    let id = |id: &str| PartitionId::parse(id).unwrap();
+    let plan = PartitionPlan::new(vec![
+        Partition::new(id("a")),
+        Partition::new(id("b")).unbounded(),
+    ])
+    .phase(3)
+    .start(id("b"), Cursor::encode(1, &7_u64).unwrap());
+    assert_eq!(crossed::<_, v1::PlanResponse>(&plan).unwrap(), plan);
+}
+
+#[test]
+fn a_plan_of_every_partition_unbounded_is_read_in_linear_time() {
+    use crate::source::PartitionPlan;
+    let limit = crate::limits::MAX_PLAN_PARTITIONS;
+    let ids: Vec<String> = (0..limit).map(|index| format!("p{index:08}")).collect();
+    let reversed: Vec<String> = ids.iter().rev().cloned().collect();
+    // Looking each id up in the other list takes minutes at the limit; sets take milliseconds.
+    let started = std::time::Instant::now();
+    let plan = PartitionPlan::try_from(planned(&ids, &reversed)).unwrap();
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+    assert_eq!(plan.partitions.len(), limit);
+    assert!(
+        plan.partitions
+            .iter()
+            .all(crate::source::Partition::is_unbounded)
+    );
+}
+
+/// `names`, owned.
+fn names(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+/// A start of `partition` from a cursor.
+fn start(partition: &str) -> v1::PartitionState {
+    v1::PartitionState {
+        partition: partition.to_owned(),
+        state: Some(v1::partition_state::State::Cursor(v1::Cursor {
+            version: 1,
+            bytes: Bytes::from_static(b"0"),
+        })),
+    }
+}
+
+#[test]
+fn plans_beyond_their_limits_or_naming_partitions_wrongly_are_refused() {
+    use crate::source::PartitionPlan;
+    let limit = crate::limits::MAX_PLAN_PARTITIONS;
+    // Ids that are no partition ids, which reading one would refuse first.
+    let beyond = vec![String::new(); limit + 1];
+    let cases = [
+        (planned(&beyond, &[]), "plan partitions"),
+        (
+            planned(&names(&["a"]), &names(&["a", "b"])),
+            "plan partitions",
+        ),
+        (
+            v1::PlanResponse {
+                starts: vec![start("a"), start("a")],
+                ..planned(&names(&["a"]), &[])
+            },
+            "plan partitions",
+        ),
+        (
+            planned(&names(&["a", "b"]), &names(&["a", "a"])),
+            "unbounded repeats",
+        ),
+        (
+            planned(&names(&["a", "b"]), &names(&["c"])),
+            "unbounded unknown",
+        ),
+        (
+            v1::PlanResponse {
+                starts: vec![start("a"), start("a")],
+                ..planned(&names(&["a", "b"]), &[])
+            },
+            "start repeats",
+        ),
+        (planned(&names(&["a", "a"]), &[]), "plan rejected"),
+        (
+            v1::PlanResponse {
+                starts: vec![start("c")],
+                ..planned(&names(&["a"]), &[])
+            },
+            "plan rejected",
+        ),
+    ];
+    for (planned, expected) in cases {
+        let refused = PartitionPlan::try_from(planned).unwrap_err();
+        let found = match &refused {
+            Invalid::OutOfRange("plan partitions") => "plan partitions",
+            Invalid::Duplicate("unbounded partition") => "unbounded repeats",
+            Invalid::Unknown("unbounded partition") => "unbounded unknown",
+            Invalid::Duplicate("start") => "start repeats",
+            Invalid::Rejected { what: "plan", .. } => "plan rejected",
+            other => panic!("{other}"),
+        };
+        assert_eq!(found, expected, "{refused}");
+    }
+}

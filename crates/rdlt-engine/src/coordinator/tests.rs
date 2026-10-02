@@ -4,6 +4,7 @@
 )]
 
 mod lag;
+mod scale;
 mod seals;
 
 use std::num::NonZeroUsize;

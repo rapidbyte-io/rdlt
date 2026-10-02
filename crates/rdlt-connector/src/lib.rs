@@ -98,7 +98,7 @@ pub use capabilities::{
     Capabilities, CommitKind, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules,
     NestedSupport, SchemaChanges, WriteModes,
 };
-pub use catalog::{Catalog, Checkpointing, DuplicateStream, Partitioning, ReadMode, StreamSpec};
+pub use catalog::{Catalog, Checkpointing, InvalidCatalog, Partitioning, ReadMode, StreamSpec};
 pub use change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, validate_change_batch};
 pub use commit::{
     ChildTable, CommitMeta, DroppedTable, Receipt, SegmentRange, SegmentSet, UnorderedRanges,
@@ -140,8 +140,8 @@ pub use sink::{
     admitted_partition_channel, partition_channel,
 };
 pub use source::{
-    ACKNOWLEDGED_CODE, POSITION_UNSENT, Partition, PartitionPlan, ReadRequest, ReadStream, Sent,
-    Source, SourceConnector, SourceFactory, Streams, source_factory,
+    ACKNOWLEDGED_CODE, InvalidPlan, POSITION_UNSENT, Partition, PartitionPlan, ReadRequest,
+    ReadStream, Sent, Source, SourceConnector, SourceFactory, Streams, source_factory,
 };
 #[cfg(feature = "certify")]
 pub use source::{AcknowledgedReader, Acknowledging, acknowledging_source_factory};

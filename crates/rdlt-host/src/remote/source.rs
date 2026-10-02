@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use rdlt_connector::wire::{Invalid, v1};
 use rdlt_connector::{
-    BoxFuture, Catalog, ConnectorError, ConnectorErrorKind, Cursor, Partition, PartitionId,
-    PartitionPlan, PartitionSink, ReadRequest, Source, StreamName, StreamState,
+    BoxFuture, Catalog, ConnectorError, ConnectorErrorKind, Cursor, PartitionId, PartitionPlan,
+    PartitionSink, ReadRequest, Source, StreamName, StreamState,
 };
 
 use super::{Connection, read};
@@ -76,53 +76,7 @@ impl Source for RemoteSource {
             let planned = connection
                 .call(deadline, "the plan", client.plan(request))
                 .await?;
-            let phase = planned
-                .phase
-                .map(|phase| {
-                    u16::try_from(phase).map_err(|_| invalid(&Invalid::OutOfRange("phase")))
-                })
-                .transpose()?;
-            // An unbounded partition must be one of the plan's.
-            if planned
-                .unbounded
-                .iter()
-                .any(|id| !planned.partitions.contains(id))
-            {
-                return Err(invalid(&Invalid::Unknown("unbounded partition")));
-            }
-            let unbounded = planned.unbounded;
-            let partitions = planned
-                .partitions
-                .into_iter()
-                .map(|id| {
-                    let never_ends = unbounded.contains(&id);
-                    PartitionId::parse(id)
-                        .map(|id| {
-                            let partition = Partition::new(id);
-                            if never_ends {
-                                partition.unbounded()
-                            } else {
-                                partition
-                            }
-                        })
-                        .map_err(|error| invalid(&Invalid::rejected("partition id", error)))
-                })
-                .collect::<rdlt_connector::Result<Vec<_>>>()?;
-            let mut starts = std::collections::BTreeMap::new();
-            for start in planned.starts {
-                let partition = PartitionId::parse(start.partition)
-                    .map_err(|error| invalid(&Invalid::rejected("partition id", error)))?;
-                let Some(v1::partition_state::State::Cursor(cursor)) = start.state else {
-                    return Err(invalid(&Invalid::Missing("start cursor")));
-                };
-                let cursor = Cursor::try_from(cursor).map_err(|error| invalid(&error))?;
-                starts.insert(partition, cursor);
-            }
-            Ok(PartitionPlan {
-                phase,
-                partitions,
-                starts,
-            })
+            PartitionPlan::try_from(planned).map_err(|error| invalid(&error))
         })
     }
 

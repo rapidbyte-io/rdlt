@@ -126,6 +126,10 @@ impl TryFrom<v1::Catalog> for Catalog {
     type Error = Invalid;
 
     fn try_from(catalog: v1::Catalog) -> Result<Self, Invalid> {
+        // Counted before any stream is read.
+        if catalog.streams.len() > crate::limits::MAX_CATALOG_STREAMS {
+            return Err(Invalid::OutOfRange("catalog streams"));
+        }
         let streams = catalog
             .streams
             .into_iter()

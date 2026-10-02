@@ -107,14 +107,26 @@ impl ScriptStream {
     }
 }
 
+/// How a scripted source plans partitions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Planning {
+    /// A partition for each of a stream's partitions.
+    #[default]
+    Planned,
+    /// Planning fails.
+    Fails,
+    /// The plan names its first partition twice.
+    Twice,
+}
+
 /// Everything one scripted source does and observes.
 #[derive(Default)]
 pub(crate) struct Script {
     pub(crate) streams: Vec<ScriptStream>,
     /// Whether discovering the catalog fails.
     pub(crate) fail_discover: bool,
-    /// Whether planning partitions fails.
-    pub(crate) fail_plan: bool,
+    /// How it plans partitions.
+    pub(crate) planning: Planning,
     /// Whether acknowledging committed cursors fails.
     pub(crate) fail_ack: bool,
     /// Acknowledgements to refuse with a rate limit before accepting them.
@@ -263,11 +275,13 @@ impl ReadStream<ScriptSource> for Scripted {
         source: &ScriptSource,
         _state: &StreamState,
     ) -> Result<Vec<Partition>> {
-        if source.script.fail_plan {
+        let planning = source.script.planning;
+        if planning == Planning::Fails {
             return Err(ConnectorError::data("planning failed"));
         }
         let count = source.script.streams[self.index].rows.len();
-        Ok((0..count)
+        let named = (0..count).chain((planning == Planning::Twice).then_some(0));
+        Ok(named
             .map(|index| Partition::new(PartitionId::parse(format!("p{index}")).expect("valid id")))
             .collect())
     }

@@ -135,7 +135,7 @@ impl PartitionContext {
 }
 
 /// Reads `job` to its end, or until the attempt stops or is cancelled.
-pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Result<(), Error> {
+pub(crate) async fn run(job: PartitionJob, context: Arc<PartitionContext>) -> Result<(), Error> {
     // Every read holds a slot, so no more reads keep bytes than the reads' share is divided
     // among. A followed unbounded read holds one for as long as the run; fewer of them than
     // slots run at once, so the other reads always have a slot to take in turn.
@@ -155,10 +155,17 @@ pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Res
             stopped: true,
         });
     }
+    // The read's state is allocated once it starts: a partition waiting for a slot holds its
+    // job alone.
+    Box::pin(read(job, &context)).await
+}
+
+/// Reads `job`, which holds its slot, to its end, sealing or abandoning what it read last.
+async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), Error> {
     context.report(Progress::Started {
         partition: job.index,
     })?;
-    let ingested = read_resetting(&mut job, &context).await?;
+    let ingested = read_resetting(&mut job, context).await?;
     let end = (!ingested.stopped)
         .then(|| end_state(&ingested, job.partition.is_unbounded()))
         .flatten();
@@ -169,7 +176,7 @@ pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Res
             let seal = ingested.open.seal(job.index, state, None, held?);
             context.report(Progress::Sealed(seal))?;
         }
-        None => abandon(&ingested.open, &context).await?,
+        None => abandon(&ingested.open, context).await?,
     }
     context.report(Progress::Ended {
         partition: job.index,
