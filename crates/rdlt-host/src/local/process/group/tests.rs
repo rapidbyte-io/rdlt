@@ -160,3 +160,28 @@ fn a_connectors_exit_is_told_before_its_group_is_asked_whether_it_is_empty() {
         (Some(3), false)
     );
 }
+
+/// Waits until `member` is gone, for 20 s at most.
+fn gone(member: Pid) -> bool {
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while kill(member, None).is_ok() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    kill(member, None).is_err()
+}
+
+#[test]
+fn a_stop_asks_the_members_of_a_group_whose_leader_has_exited_and_is_unreaped() {
+    let (child, member) = leading("exit 0");
+    let leader = rustix::process::Pid::from_child(&child);
+    while Leader::of(&super::asked(leader)) == Leader::Running {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // No thread owns the group: what reaches its member, the stop itself sent.
+    let owned = owned(child, Duration::from_secs(1000));
+    owned.held().stop();
+    let asked = gone(member);
+    kill(member, Signal::SIGKILL).ok();
+    owned.discarded();
+    assert!(asked, "the member of an exited leader was not asked to end");
+}
