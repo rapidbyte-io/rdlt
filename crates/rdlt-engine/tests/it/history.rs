@@ -145,7 +145,9 @@ async fn every_destination_keeps_each_version_a_change_stream_makes() {
             let store = format!("history_changes_{soft}");
             let spec = timed();
             let plan = pipeline("history", [history_of("orders", deletes)]);
-            let outcome = engine(commit_every(16))
+            // Over two hundred changes in commits of sixty-four: several commits, each of
+            // which a files destination syncs to disk, which is what the test's time is.
+            let outcome = engine(commit_every(64))
                 .run(
                     plan,
                     changes(8, &spec).await,
