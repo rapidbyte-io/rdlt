@@ -60,7 +60,7 @@ pub(crate) enum ShredError {
         rdlt_connector::limits::MAX_NESTING_DEPTH
     )]
     TooDeep,
-    /// An object repeats a key.
+    /// An object repeats a key, which is shown cut to a limit.
     #[error("an object repeats the key {0:?}")]
     DuplicateKey(String),
     /// The records hold more columns than the limit, the second.

@@ -854,6 +854,30 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
 }
 
 #[test]
+fn a_refusal_quotes_a_key_or_a_number_cut_to_its_limit() {
+    let key = "k".repeat(4 << 20);
+    let digits = "9".repeat(4 << 20);
+    for push in [
+        format!("{{\"{key}\":1,\"{key}\":2}}"),
+        format!("{{\"a\":1}}\n{{\"a\":{{\"{key}\":1,\"{key}\":2}}}}"),
+        format!("{{\"a\":{digits}e999999999}}"),
+    ] {
+        let error = crate::compute::ready(shred(
+            &crate::compute::Inline,
+            &[Bytes::from(push)],
+            1 << 30,
+            limits(),
+        ))
+        .unwrap_err();
+        assert!(
+            error.to_string().len() <= 2 * crate::limits::QUOTED_BYTES,
+            "{} bytes",
+            error.to_string().len()
+        );
+    }
+}
+
+#[test]
 fn numbers_in_a_column_of_json_keep_the_text_they_were_written_as() {
     let written = [
         "0.12345678901234567891",
