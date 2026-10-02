@@ -762,3 +762,91 @@ async fn a_read_that_ignores_its_stop_is_dropped_at_the_stop_wait() {
     assert!(waited >= WAIT && waited < WAIT * 2, "{waited:?}");
     assert_eq!(published_rows("stop_ignored", "events"), 20);
 }
+
+/// A source of one stream of one partition whose read ends saying it was stopped: at once
+/// where `unasked`, else once the engine has stopped it.
+struct SaysStopped {
+    unasked: bool,
+}
+
+impl rdlt_connector::Source for SaysStopped {
+    fn check(&self) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn discover(
+        &self,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<rdlt_connector::Catalog>> {
+        Box::pin(async {
+            let spec = rdlt_connector::StreamSpec::new(StreamName::new("events").expect("a name"));
+            Ok(rdlt_connector::Catalog::new(vec![spec]).expect("a catalog"))
+        })
+    }
+
+    fn plan<'a>(
+        &'a self,
+        _stream: &'a StreamName,
+        _state: &'a rdlt_connector::StreamState,
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<rdlt_connector::PartitionPlan>> {
+        Box::pin(async {
+            Ok(rdlt_connector::PartitionPlan::new(vec![
+                rdlt_connector::Partition::single(),
+            ]))
+        })
+    }
+
+    fn read(
+        &self,
+        _request: rdlt_connector::ReadRequest,
+        sink: rdlt_connector::PartitionSink,
+    ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<()>> {
+        Box::pin(async move {
+            if !self.unasked {
+                sink.stopped().await;
+            }
+            Err(rdlt_connector::ConnectorError::stopped())
+        })
+    }
+
+    fn committed<'a>(
+        &'a self,
+        _stream: &'a StreamName,
+        _cursors: &'a [(rdlt_connector::PartitionId, rdlt_connector::Cursor)],
+    ) -> rdlt_connector::BoxFuture<'a, rdlt_connector::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_ends_stopped_only_where_the_engine_stopped_it() {
+    let plan = || pipeline("says-stopped", [stream("events")]);
+    let unasked = engine(commit_every(10)).run(
+        plan(),
+        Arc::new(SaysStopped { unasked: true }),
+        memory("says_stopped").await,
+    );
+    let outcome = unasked.await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.is_retryable()),
+        (ErrorKind::Source, false)
+    );
+    let asked = engine(commit_every(10)).run(
+        plan(),
+        Arc::new(SaysStopped { unasked: false }),
+        memory("says_stopped").await,
+    );
+    let control = asked.control();
+    let stopping = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        control.stop(StopMode::AfterCommit);
+    };
+    let (outcome, ()) = tokio::join!(asked, stopping);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Stopped,
+        "{:?}",
+        outcome.error
+    );
+}

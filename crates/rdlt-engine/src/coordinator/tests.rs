@@ -452,7 +452,11 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
     .start()
     .await;
     harness.send(Progress::Started { partition: 0 });
-    harness.send(Progress::Written { rows: 5, bytes: 40 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 5,
+        bytes: 40,
+    });
     harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
     harness.end(0, false);
     task.await.unwrap().unwrap();
@@ -490,6 +494,7 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
     let (task, harness) = setup.start().await;
     for segment in 1..=3 {
         harness.send(Progress::Written {
+            partition: 0,
             rows: 10,
             bytes: 80,
         });
@@ -527,12 +532,28 @@ async fn rows_a_partition_abandoned_make_no_commit_due() {
     setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
     let (task, mut harness) = setup.start().await;
     harness.send(Progress::Started { partition: 0 });
-    harness.send(Progress::Written { rows: 6, bytes: 48 });
-    harness.send(Progress::Abandoned { rows: 6, bytes: 48 });
-    harness.send(Progress::Written { rows: 6, bytes: 48 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 6,
+        bytes: 48,
+    });
+    harness.send(Progress::Abandoned {
+        partition: 0,
+        rows: 6,
+        bytes: 48,
+    });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 6,
+        bytes: 48,
+    });
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(harness.barrier.borrow_and_update(), 0, "no commit was due");
-    harness.send(Progress::Written { rows: 4, bytes: 32 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 4,
+        bytes: 32,
+    });
     harness.barrier.changed().await.unwrap();
     assert_eq!(
         harness.barrier.borrow_and_update(),
@@ -554,6 +575,7 @@ async fn rows_that_miss_a_commit_stay_due_until_they_seal() {
     let (task, harness) = setup.start().await;
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Written {
+        partition: 0,
         rows: 10,
         bytes: 80,
     });
@@ -563,6 +585,61 @@ async fn rows_that_miss_a_commit_stay_due_until_they_seal() {
     harness.seal(0, 1, 10, PartitionState::Cursor(cursor(10)), None);
     until(|| harness.commit_count() == 1).await;
     harness.end(0, false);
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn rows_a_commit_passed_by_unsealed_make_none_due_until_they_seal() {
+    // p0 checkpoints only at its end; p1 answers every barrier.
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 2)],
+        vec![partition("p0", false), partition("p1", true)],
+    );
+    setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
+    setup.barrier_wait = Duration::from_secs(1);
+    let (task, mut harness) = setup.start().await;
+    harness.send(Progress::Started { partition: 0 });
+    harness.send(Progress::Started { partition: 1 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 10,
+        bytes: 80,
+    });
+    harness.barrier.changed().await.unwrap();
+    // p0's rows can make one commit due, which takes none of them. p1's rows after it each
+    // seal at once: they take a commit only once they reach the threshold.
+    for segment in 1..=9 {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        harness.send(Progress::Written {
+            partition: 1,
+            rows: 1,
+            bytes: 8,
+        });
+        harness.seal(1, segment, 1, PartitionState::Cursor(cursor(segment)), None);
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        harness.commit_count(),
+        0,
+        "nine rows a commit can take are not ten"
+    );
+    assert_eq!(
+        harness.barrier.borrow_and_update(),
+        1,
+        "no barrier since the first"
+    );
+    harness.send(Progress::Written {
+        partition: 1,
+        rows: 1,
+        bytes: 8,
+    });
+    harness.seal(1, 10, 1, PartitionState::Cursor(cursor(10)), None);
+    until(|| harness.commit_count() == 1).await;
+    // p0's rows, once sealed, make the next commit due.
+    harness.seal(0, 11, 10, PartitionState::Cursor(cursor(10)), None);
+    until(|| harness.commit_count() == 2).await;
+    harness.end(0, false);
+    harness.end(1, false);
     task.await.unwrap().unwrap();
 }
 
@@ -594,7 +671,11 @@ async fn a_commit_waits_for_on_demand_partitions_to_answer_its_barrier() {
     let started = tokio::time::Instant::now();
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Started { partition: 1 });
-    harness.send(Progress::Written { rows: 1, bytes: 8 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 1,
+        bytes: 8,
+    });
     harness.barrier.changed().await.unwrap();
     assert_eq!(harness.barrier.borrow_and_update(), 1);
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -627,7 +708,11 @@ async fn an_unanswered_barrier_gives_up_after_its_wait() {
     harness.send(Progress::Started { partition: 0 });
     harness.send(Progress::Started { partition: 1 });
     harness.seal(1, 1, 1, PartitionState::Cursor(cursor(1)), None);
-    harness.send(Progress::Written { rows: 1, bytes: 8 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 1,
+        bytes: 8,
+    });
     until(|| harness.commit_count() == 1).await;
     assert!(started.elapsed() >= Duration::from_secs(30));
     harness.end(0, false);
@@ -682,7 +767,11 @@ async fn a_new_table_schema_is_recorded_by_the_first_commit_only() {
     setup.schema = Some(schema());
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
-    harness.send(Progress::Written { rows: 1, bytes: 8 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 1,
+        bytes: 8,
+    });
     until(|| harness.commit_count() == 1).await;
     harness.seal(0, 2, 1, PartitionState::Cursor(cursor(2)), None);
     harness.end(0, false);
@@ -757,10 +846,15 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
         vec![stream(WriteMode::Replace, Some(new_cycle(7, &["old"])), 1)],
         vec![partition("p0", false)],
     );
-    setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
+    // The interval commits what the partition sealed by then, the read's start with it.
+    setup.policy = CommitPolicy::new(Some(Duration::from_secs(10)), None, None).unwrap();
     let (task, harness) = setup.start().await;
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 1,
+        bytes: 8,
+    });
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
-    harness.send(Progress::Written { rows: 1, bytes: 8 });
     until(|| harness.commit_count() == 1).await;
     harness.seal(0, 2, 1, PartitionState::Done, None);
     harness.end(0, false);
@@ -965,10 +1059,18 @@ async fn the_byte_threshold_commits_as_bytes_arrive() {
     setup.policy = CommitPolicy::new(None, None, Some(100)).unwrap();
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
-    harness.send(Progress::Written { rows: 1, bytes: 60 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 1,
+        bytes: 60,
+    });
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(harness.commit_count(), 0, "60 of 100 bytes");
-    harness.send(Progress::Written { rows: 1, bytes: 40 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 1,
+        bytes: 40,
+    });
     until(|| harness.commit_count() == 1).await;
     harness.end(0, false);
     task.await.unwrap().unwrap();
@@ -1128,7 +1230,13 @@ async fn each_logged_seal_names_where_its_partition_stood_before_its_commit() {
     setup.wal = Some(Arc::clone(&store));
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
     let (task, harness) = setup.start().await;
-    let written = || harness.send(Progress::Written { rows: 1, bytes: 8 });
+    let written = || {
+        harness.send(Progress::Written {
+            partition: 0,
+            rows: 1,
+            bytes: 8,
+        });
+    };
     written();
     harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
     until(|| harness.commit_count() == 1).await;
@@ -1173,7 +1281,11 @@ async fn a_log_that_fails_to_close_after_every_commit_landed_fails_no_attempt() 
     setup.wal = Some(Arc::clone(&store));
     setup.policy = CommitPolicy::new(None, Some(1), None).unwrap();
     let (task, harness) = setup.start().await;
-    harness.send(Progress::Written { rows: 3, bytes: 24 });
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 3,
+        bytes: 24,
+    });
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     until(|| harness.commit_count() == 1).await;
     // Every commit landed; the disk fails only as the log closes, which a replay finds received.

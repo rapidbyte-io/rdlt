@@ -5,6 +5,7 @@ mod barriers;
 mod coalesce;
 mod latest;
 mod progress;
+mod retention;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -17,8 +18,8 @@ use std::time::SystemTime;
 
 use rdlt_connector::cost::Rendering;
 use rdlt_connector::{
-    Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, RETENTION_LOST,
-    ReadRequest, SegmentId, Source, SourceEvent, StreamName, admitted_partition_channel,
+    Cursor, LoadId, Partition, PartitionFeed, PartitionState, Permit, Push, ReadRequest, SegmentId,
+    Source, SourceEvent, StreamName, admitted_partition_channel,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -38,6 +39,7 @@ use coalesce::{Coalescer, Pushed};
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
 pub(crate) use slots::Slots;
+use retention::read_resetting;
 use write::write_flushed;
 
 /// One partition to read.
@@ -178,7 +180,7 @@ async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), E
             let seal = ingested.open.seal(job.index, state, None, held?);
             context.report(Progress::Sealed(seal))?;
         }
-        None => abandon(&ingested.open, context).await?,
+        None => abandon(job.index, &ingested.open, context).await?,
     }
     context.report(Progress::Ended {
         partition: job.index,
@@ -186,45 +188,15 @@ async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), E
     })
 }
 
-/// Reads `job` as [`read_and_ingest`] does; where the source's retention dropped where the read
-/// stood and the stream says to reset, reads again from the source's earliest, counted.
-///
-/// A read had a place to lose where it resumed from a cursor or checkpointed since; one from the
-/// beginning that never checkpointed fails instead, as nothing earlier is left to reset to. The
-/// failed read's open segment is abandoned: no checkpoint seals the rows it holds.
-async fn read_resetting(
-    job: &mut PartitionJob,
-    context: &PartitionContext,
-) -> Result<Ingested, Error> {
-    loop {
-        let (ingested, read) = read_and_ingest(job, context).await?;
-        let error = match read {
-            Ok(()) => return Ok(ingested),
-            Err(error) => error,
-        };
-        let resets = job.reset_retention
-            && ingested.last_cursor.is_some()
-            && error.code() == Some(RETENTION_LOST);
-        if !resets {
-            return Err(Error::connector(
-                Side::Source,
-                format!("reading stream {}", job.stream),
-                error,
-            )
-            .with_stream(&job.stream));
-        }
-        abandon(&ingested.open, context).await?;
-        context.report(Progress::RetentionReset {
-            partition: job.index,
-        })?;
-        job.cursor = None;
-    }
-}
-
 /// Lets `open` go uncommitted: its rows no longer make a commit due, and the write-ahead log may
 /// drop what it holds of it.
-async fn abandon(open: &OpenSegment, context: &PartitionContext) -> Result<(), Error> {
+async fn abandon(
+    partition: usize,
+    open: &OpenSegment,
+    context: &PartitionContext,
+) -> Result<(), Error> {
     context.report(Progress::Abandoned {
+        partition,
         rows: open.rows,
         bytes: open.bytes,
     })?;
@@ -314,6 +286,8 @@ fn end_state(ingested: &Ingested, unbounded: bool) -> Option<PartitionState> {
 struct Ingested {
     open: OpenSegment,
     last_cursor: Option<Cursor>,
+    /// Rows of the segments the read sealed.
+    sealed_rows: u64,
     stopped: bool,
     /// Pushes gathered and not yet written.
     coalescer: Coalescer,
@@ -375,6 +349,7 @@ async fn ingest(
     let mut ingested = Ingested {
         open: OpenSegment::new(context.next_segment()),
         last_cursor: job.cursor.clone(),
+        sealed_rows: 0,
         stopped: false,
         coalescer: Coalescer::new(context.batch),
     };
@@ -462,6 +437,7 @@ impl Ingested {
                 self.flush(job, context).await?;
                 let next = OpenSegment::new(context.next_segment());
                 let sealed = std::mem::replace(&mut self.open, next);
+                self.sealed_rows = self.sealed_rows.saturating_add(sealed.rows);
                 let state = PartitionState::Cursor(cursor.clone());
                 self.last_cursor = Some(cursor);
                 // The permit that admitted the checkpoint holds its cursor until its commit.

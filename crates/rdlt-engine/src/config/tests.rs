@@ -265,3 +265,23 @@ fn a_connector_call_and_a_stopped_read_wait_their_defaults_or_more_than_zero() {
         assert_eq!(zero.build().unwrap_err().code(), Some("config_invalid"));
     }
 }
+
+#[test]
+fn a_wait_a_failure_asks_for_is_held_between_the_first_and_the_longest_delay() {
+    let policy = RetryPolicy::default()
+        .initial(Duration::from_secs(2))
+        .max_delay(Duration::from_secs(60));
+    assert_eq!(policy.within(Duration::ZERO), Duration::from_secs(2));
+    assert_eq!(
+        policy.within(Duration::from_secs(1)),
+        Duration::from_secs(2)
+    );
+    assert_eq!(
+        policy.within(Duration::from_secs(7)),
+        Duration::from_secs(7)
+    );
+    assert_eq!(
+        policy.within(Duration::from_secs(3600)),
+        Duration::from_secs(60)
+    );
+}

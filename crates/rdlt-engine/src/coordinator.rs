@@ -8,6 +8,7 @@
 mod acks;
 mod barrier;
 mod delta;
+mod due;
 mod phases;
 mod replan;
 mod signals;
@@ -187,9 +188,8 @@ pub(crate) struct Coordinator {
     sealed: WaitingSeals,
     /// Whether something arrived since the last commit.
     cursors_may_free: bool,
-    /// Rows and bytes written but not yet committed.
-    pending_rows: u64,
-    pending_bytes: u64,
+    /// The rows and bytes a commit could take.
+    due: due::Due,
     barrier: u64,
     stopping: bool,
     /// Streams whose sources said their partitions changed, to plan again.
@@ -215,8 +215,7 @@ impl Coordinator {
             parts,
             seq: CommitSeq::FIRST,
             sealed: WaitingSeals::default(),
-            pending_rows: 0,
-            pending_bytes: 0,
+            due: due::Due::default(),
             barrier: 0,
             stopping: false,
             replans: BTreeSet::new(),
@@ -290,7 +289,7 @@ impl Coordinator {
                 progress = self.parts.progress.recv() => {
                     self.observe(progress.ok_or_else(cancelled)?);
                     self.replan_signalled().await?;
-                    if self.due() {
+                    if self.commit_due() {
                         timer = self.commit_now().await?;
                     }
                 }
@@ -311,11 +310,9 @@ impl Coordinator {
 
     /// Whether a commit is due: by the policy's rows and bytes, or by the cursors of the seals
     /// waiting, which hold budget only a commit releases, once they take half their share.
-    fn due(&self) -> bool {
+    fn commit_due(&self) -> bool {
         let cursors = (self.parts.budget.shares().cursors / 2).max(1);
-        self.parts
-            .policy
-            .is_due(self.pending_rows, self.pending_bytes)
+        self.parts.policy.is_due(self.due.rows(), self.due.bytes())
             || self.sealed.cursor_bytes() >= cursors
     }
 
@@ -355,14 +352,12 @@ impl Coordinator {
                     self.owing.insert(partition);
                 }
             }
-            Progress::Written { rows, bytes } => {
-                self.pending_rows += rows;
-                self.pending_bytes += bytes;
-            }
-            Progress::Abandoned { rows, bytes } => {
-                self.pending_rows = self.pending_rows.saturating_sub(rows);
-                self.pending_bytes = self.pending_bytes.saturating_sub(bytes);
-            }
+            Progress::Written {
+                partition,
+                rows,
+                bytes,
+            } => self.due.written(partition, rows, bytes),
+            Progress::Abandoned { partition, .. } => self.due.abandoned(partition),
             Progress::Sealed(seal) => self.seal(seal),
             Progress::Moved { partition, epoch } => {
                 if let Some(seal) = self.parts.latest.seal(partition, epoch) {
@@ -401,6 +396,7 @@ impl Coordinator {
             }
         }
         self.sealing.insert(seal.partition);
+        self.due.sealed(seal.partition);
         self.sealed.push(seal);
     }
 
@@ -409,6 +405,8 @@ impl Coordinator {
     ///
     /// Commits nothing when there is nothing to publish or record.
     async fn commit(&mut self) -> Result<(), Error> {
+        // The commit takes every seal; rows not sealed by now it passes by, until they are.
+        self.due.committing();
         // A new phase's stale entries go before its partitions' positions, which may reuse ids;
         // the log records its partitions' seals from where the phase starts them.
         let begun = self.phase_delta();
@@ -505,11 +503,6 @@ impl Coordinator {
         completing: &[usize],
     ) -> Result<(), Error> {
         self.seq = self.seq.next();
-        // Rows still unsealed stay pending, so they make the next commit due as soon as they seal.
-        for counts in streams.values() {
-            self.pending_rows = self.pending_rows.saturating_sub(counts.rows);
-            self.pending_bytes = self.pending_bytes.saturating_sub(counts.bytes);
-        }
         for stream in &mut self.parts.streams {
             if let Some(cycle) = &mut stream.cycle {
                 cycle.recorded = true;

@@ -128,19 +128,22 @@ impl Error {
 
     /// Classifies a connector's `error` from `side`, keeping it as the cause.
     ///
-    /// Configuration, credential and capability failures are [`ErrorKind::Config`]; a fenced
-    /// session is [`ErrorKind::Fenced`]; a stopped read is [`ErrorKind::Cancelled`]; everything
-    /// else belongs to the side. Only transient and rate-limited failures are retryable. No
-    /// connector's error is of the kind or code a wait on the memory budget fails with.
+    /// Configuration, credential and capability failures are [`ErrorKind::Config`]; a session a
+    /// newer one fenced is [`ErrorKind::Fenced`]; everything else belongs to the side, a stop
+    /// among it, since the engine knows which reads it stopped. Only transient and rate-limited
+    /// failures are retryable, and only a rate limit keeps the wait it asks for. No connector's
+    /// error is of the kind or code a wait on the memory budget fails with.
     pub(crate) fn connector(side: Side, context: impl Into<String>, error: ConnectorError) -> Self {
         use ConnectorErrorKind as K;
         let kind = match (error.kind(), side) {
             (K::Config | K::Auth | K::Unsupported, _) => ErrorKind::Config,
-            (K::Fenced, _) => ErrorKind::Fenced,
-            (K::Stopped, _) => ErrorKind::Cancelled,
+            (K::Fenced, Side::Destination) => ErrorKind::Fenced,
             (_, Side::Source) => ErrorKind::Source,
             (_, Side::Destination) => ErrorKind::Destination,
         };
+        let retry_after = error
+            .retry_after()
+            .filter(|_| error.kind() == K::RateLimited);
         Self {
             kind,
             context: context.into(),
@@ -151,9 +154,16 @@ impl Error {
                 .filter(|code| *code != BUDGET_WAIT_EXCEEDED)
                 .map(Arc::from),
             retryable: error.is_retryable(),
-            retry_after: error.retry_after(),
+            retry_after,
             source: Some(Box::new(error)),
         }
+    }
+
+    /// The failure, which a new attempt may mend.
+    #[must_use]
+    pub(crate) fn retryable(mut self) -> Self {
+        self.retryable = true;
+        self
     }
 
     /// Keeps `source` as the error's cause.
