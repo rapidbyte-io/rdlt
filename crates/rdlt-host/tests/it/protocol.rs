@@ -608,3 +608,36 @@ async fn a_handshake_answer_the_host_did_not_agree_to_is_refused() {
         .await
         .expect("the handshake agrees");
 }
+
+#[tokio::test]
+async fn a_configuration_schema_beyond_its_limit_is_refused_at_the_handshake() {
+    use crate::support::fake::{Fake, Fault, serve_fake};
+    use rdlt_connector::limits::MAX_CONFIG_SCHEMA_BYTES;
+    /// A configuration schema of `bytes`.
+    fn schema(bytes: usize) -> String {
+        format!("{{\"description\":\"{}\"}}", "x".repeat(bytes - 18))
+    }
+    assert_eq!(
+        schema(MAX_CONFIG_SCHEMA_BYTES).len(),
+        MAX_CONFIG_SCHEMA_BYTES
+    );
+    let at: fn(&mut v1::HandshakeResponse) = |answer| {
+        answer.spec.as_mut().unwrap().config_schema_json = schema(MAX_CONFIG_SCHEMA_BYTES);
+    };
+    let io = serve_fake(Fake(Fault::Handshakes(at)));
+    Connection::handshake(io, Role::Source, Options::default())
+        .await
+        .expect("a schema at its limit is taken");
+    let beyond: fn(&mut v1::HandshakeResponse) = |answer| {
+        answer.spec.as_mut().unwrap().config_schema_json = schema(MAX_CONFIG_SCHEMA_BYTES + 1);
+    };
+    let io = serve_fake(Fake(Fault::Handshakes(beyond)));
+    let refused = Connection::handshake(io, Role::Source, Options::default())
+        .await
+        .expect_err("a schema beyond its limit is refused");
+    assert_eq!(refused.code(), Some("limit_exceeded"), "{refused}");
+    assert_eq!(
+        refused.limit().map(|limit| limit.name),
+        Some("config schema bytes")
+    );
+}

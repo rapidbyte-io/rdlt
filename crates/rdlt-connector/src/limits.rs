@@ -75,6 +75,9 @@ pub const MAX_ERROR_CODE_BYTES: usize = 128;
 /// Causes: bounds the chain of causes of a connector's error a host keeps.
 pub const MAX_ERROR_CAUSES: usize = 8;
 
+/// Bytes: bounds the JSON schema of a connector's configuration, as its handshake answers it.
+pub const MAX_CONFIG_SCHEMA_BYTES: usize = 1024 * 1024;
+
 /// Bytes: bounds one connector configuration document.
 ///
 /// Factories receive configuration already parsed, so the code that reads it as bytes checks this

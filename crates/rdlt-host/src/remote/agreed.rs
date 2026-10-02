@@ -3,13 +3,15 @@
 //! A connector of another protocol would be driven with messages it reads otherwise, so the host
 //! refuses it itself rather than trust it to refuse. Its spec's id and version are machine
 //! strings the host shows and compares: an id that does not parse, or a version that is not one,
-//! is refused before anything shows it. A feature it accepts must be one the host offered.
+//! is refused before anything shows it, and its configuration's schema, which the host parses,
+//! is bounded. A feature it accepts must be one the host offered.
 
 #[cfg(test)]
 mod tests;
 
+use rdlt_connector::limits::MAX_CONFIG_SCHEMA_BYTES;
 use rdlt_connector::wire::{Invalid, v1};
-use rdlt_connector::{ConnectorError, ConnectorErrorKind};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 use rdlt_wire::PROTOCOL_MAJOR;
 
 use super::source::invalid;
@@ -52,10 +54,29 @@ pub(super) fn agreed(
         .spec
         .as_ref()
         .ok_or_else(|| invalid(&Invalid::Missing("spec")))?;
+    spec_within(spec)
+}
+
+/// Checks `spec`, a connector's as it answers it: its id parses, its version is one, and its
+/// configuration's schema is within its limit.
+///
+/// # Errors
+///
+/// `invalid_message` for a malformed id or version, `limit_exceeded` for a schema beyond
+/// [`MAX_CONFIG_SCHEMA_BYTES`].
+pub(super) fn spec_within(spec: &v1::ConnectorSpec) -> Result<(), ConnectorError> {
     rdlt_connector::ConnectorId::parse(&spec.id)
         .map_err(|error| invalid(&Invalid::rejected("connector id", error)))?;
     if !version(&spec.version) {
         return Err(invalid(&Invalid::rejected("connector version", Malformed)));
+    }
+    let bytes = spec.config_schema_json.len();
+    if bytes > MAX_CONFIG_SCHEMA_BYTES {
+        return Err(ConnectorError::exceeds(LimitExceeded {
+            name: "config schema bytes",
+            limit: u64::try_from(MAX_CONFIG_SCHEMA_BYTES).unwrap_or(u64::MAX),
+            actual: u64::try_from(bytes).unwrap_or(u64::MAX),
+        }));
     }
     Ok(())
 }
