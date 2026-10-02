@@ -208,6 +208,16 @@ pub enum Class {
 }
 
 impl Class {
+    /// Bytes a message of the class may hold once decoded for each byte it takes on the wire.
+    pub const fn decoded_per_byte(self) -> usize {
+        match self {
+            Self::Data => 2,
+            Self::Handshake | Self::Config | Self::Cursor => 4,
+            Self::State => 8,
+            Self::Control | Self::Catalog | Self::Schema => DECODED_PER_BYTE,
+        }
+    }
+
     /// Every class.
     pub const ALL: [Self; 8] = [
         Self::Handshake,
@@ -303,13 +313,8 @@ impl Limits {
     /// [scan](crate::scan) counts it before it is decoded: so many times its wire bound, as
     /// [`DECODED_PER_BYTE`] says for each class.
     pub fn decoded(&self, class: Class) -> usize {
-        let per_byte = match class {
-            Class::Data => 2,
-            Class::Handshake | Class::Config | Class::Cursor => 4,
-            Class::State => 8,
-            Class::Control | Class::Catalog | Class::Schema => DECODED_PER_BYTE,
-        };
-        self.decoding(class).saturating_mul(per_byte)
+        self.decoding(class)
+            .saturating_mul(class.decoded_per_byte())
     }
 
     /// The most bytes a message of any class may take on the wire: the most a decoder that takes
