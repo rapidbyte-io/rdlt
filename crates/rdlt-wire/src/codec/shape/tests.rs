@@ -836,9 +836,24 @@ fn a_run_end_column_of_no_values_decodes_as_arrows_writer_sends_it() {
         // Arrow's writer describes one run ending at zero there, which its reader refuses.
         let nodes = Parts::of(&frames[0].header).nodes;
         assert!(nodes.windows(2).any(|pair| pair == [(0, 0), (1, 0)]));
-        let got = decoder.frame(&frames[0]);
-        assert_eq!(got.unwrap(), Some(batch.clone()), "{}", batch.schema());
+        let (got, shape) = decoder.shaped(&frames[0]).unwrap();
+        assert_eq!(got, Some(batch.clone()), "{}", batch.schema());
+        // The run and the value under it are read by nothing, and counted by nothing.
+        let rows = u64::try_from(batch.num_rows()).unwrap();
+        assert_eq!((shape.values, shape.view_bytes), (rows, 0));
     }
+    // Nor are the bytes a view under it names.
+    let text = "a text too long for its view to hold";
+    let values = arrow_array::StringViewArray::from(vec![text; 3]);
+    let ends = Int32Array::from(vec![2, 3, 5]);
+    let runs = RunArray::try_new(&ends, &values).unwrap();
+    let batch = batch_of(Arc::new(runs.slice(0, 0)));
+    let (mut decoder, frames) = received(&batch);
+    let (got, shape) = decoder.shaped(&frames[0]).unwrap();
+    assert_eq!(got, Some(batch));
+    assert_eq!((shape.values, shape.view_bytes), (0, 0));
+    // The frame does hold the value: the writer sent it.
+    assert!(frames[0].body.len() >= text.len());
 }
 
 #[test]

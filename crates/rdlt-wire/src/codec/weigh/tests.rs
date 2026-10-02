@@ -158,3 +158,133 @@ fn a_stretch_of_rows_weighs_what_its_rows_weigh_one_at_a_time() {
         }
     }
 }
+
+/// What every row of `column` weighs as one piece, the overhead of its frame, and what
+/// weighing it looked at.
+fn whole(column: ArrayRef) -> ((u64, u64, u64), u64, u64) {
+    let batch = batch_of(column);
+    let mut weigher = Weigher::new(&batch);
+    weigher.begin();
+    let weight = weigher.weigh_rows(0..batch.num_rows());
+    let weight = (weight.values, weight.view_bytes, weight.frame_bits);
+    (weight, weigher.overhead(), weigher.visits())
+}
+
+/// The overhead of a frame of `nodes` nodes and `buffers` buffers.
+fn overhead(nodes: u64, buffers: u64) -> u64 {
+    88 * buffers + 16 * nodes + 512
+}
+
+#[test]
+fn each_layout_weighs_its_own_bits_and_counts_its_own_nodes_and_buffers() {
+    use arrow_array::{
+        FixedSizeListArray, ListArray, ListViewArray, NullArray, StructArray, UnionArray,
+    };
+    use arrow_buffer::OffsetBuffer;
+    use arrow_schema::{DataType, Field, UnionFields};
+    let item = Arc::new(Field::new("item", DataType::Int32, true));
+    let ints = || -> ArrayRef { Arc::new(Int32Array::from(vec![1, 2, 3])) };
+    // Three nulls: no bits, a node, no buffer.
+    assert_eq!(
+        whole(Arc::new(NullArray::new(3))),
+        ((3, 0, 0), overhead(1, 0), 1)
+    );
+    // A view of twenty bytes: sixteen bytes, a validity bit and its bytes; three buffers.
+    let views = StringViewArray::from(vec!["t".repeat(20)]);
+    let weighed = whole(Arc::new(views));
+    assert_eq!(weighed, ((1, 20, 128 + 1 + 160), overhead(1, 3), 2));
+    // Two lists of three integers between them: an offset and a bit each, and the integers.
+    let offsets = OffsetBuffer::from_lengths([1, 2]);
+    let lists = ListArray::new(Arc::clone(&item), offsets, ints(), None);
+    let weighed = whole(Arc::new(lists));
+    assert_eq!(weighed, ((2 + 3, 0, 2 * 33 + 3 * 33), overhead(2, 4), 2));
+    // One list view naming two of them: an offset, a size and a bit.
+    let (offsets, sizes) = (vec![1], vec![2]);
+    let lists = ListViewArray::new(
+        Arc::clone(&item),
+        offsets.into(),
+        sizes.into(),
+        ints(),
+        None,
+    );
+    let weighed = whole(Arc::new(lists));
+    assert_eq!(weighed, ((1 + 2 + 2, 0, 65 + 2 * 33), overhead(2, 5), 3));
+    // A fixed-size list and a struct: a validity bit a row, one buffer.
+    let lists = FixedSizeListArray::new(item, 3, ints(), None);
+    let weighed = whole(Arc::new(lists));
+    assert_eq!(weighed, ((1 + 3, 0, 1 + 3 * 33), overhead(2, 3), 2));
+    let field = Arc::new(Field::new("a", DataType::Int32, true));
+    let parent = StructArray::from(vec![(field, ints())]);
+    let weighed = whole(Arc::new(parent));
+    assert_eq!(weighed, ((3 + 3, 0, 3 + 3 * 33), overhead(2, 3), 2));
+    // A sparse union: a type id a row, one buffer.
+    let fields = [Field::new("a", DataType::Int32, true)];
+    let fields = UnionFields::try_new(vec![0], fields).unwrap();
+    let union = UnionArray::try_new(fields, vec![0, 0, 0].into(), None, vec![ints()]).unwrap();
+    let weighed = whole(Arc::new(union));
+    assert_eq!(weighed, ((3 + 3, 0, 3 * 8 + 3 * 33), overhead(2, 3), 2));
+    // Two runs of integers: each row, and for each run its end, a bit and its value; the ends
+    // are a node of two buffers, the column itself none.
+    let ends = Int32Array::from(vec![2, 5]);
+    let runs = RunArray::<Int32Type>::try_new(&ends, &Int32Array::from(vec![7, 8])).unwrap();
+    let weighed = whole(Arc::new(runs));
+    assert_eq!(
+        weighed,
+        ((5 + 2 + 2, 0, 2 * 33 + 2 * 33), overhead(3, 4), 5)
+    );
+}
+
+#[test]
+fn the_values_of_a_dictionary_drop_what_a_null_list_spans_only_where_they_are_rebuilt() {
+    use arrow_array::ListArray;
+    use arrow_buffer::{NullBuffer, OffsetBuffer};
+    use arrow_schema::Field;
+    // Two lists, the first null and spanning two items.
+    let lists = |items: ArrayRef| -> ArrayRef {
+        let field = Arc::new(Field::new("item", items.data_type().clone(), true));
+        let offsets = OffsetBuffer::from_lengths([2, 1]);
+        let nulls = NullBuffer::from(vec![false, true]);
+        Arc::new(ListArray::new(field, offsets, items, Some(nulls)))
+    };
+    let values = |items: ArrayRef| {
+        let keyed = DictionaryArray::try_new(Int8Array::from(vec![1]), lists(items)).unwrap();
+        let batch = batch_of(Arc::new(keyed));
+        let weights = Weigher::new(&batch).dictionaries();
+        weights
+            .iter()
+            .map(|weight| weight.values)
+            .collect::<Vec<_>>()
+    };
+    // Integers go as they are, the span with them; views are rebuilt, without it.
+    assert_eq!(values(Arc::new(Int32Array::from(vec![1, 2, 3]))), [2 + 3]);
+    assert_eq!(
+        values(Arc::new(StringViewArray::from(vec!["a", "b", "c"]))),
+        [2 + 1]
+    );
+}
+
+#[test]
+fn a_stretch_is_weighed_no_further_once_it_holds_more_values_than_asked() {
+    let views: ArrayRef = Arc::new(StringViewArray::from(vec!["v"; 10]));
+    let batch = batch_of(views);
+    let mut weigher = Weigher::within(&batch, 4);
+    weigher.begin();
+    // The view that takes the stretch beyond four values is the last weighed.
+    assert_eq!(weigher.weigh_rows(0..10).values, 5);
+}
+
+#[test]
+fn rows_weighed_since_a_mark_are_forgotten_and_those_before_it_kept() {
+    let ends = Int32Array::from(vec![2, 4]);
+    let runs = RunArray::<Int32Type>::try_new(&ends, &Int32Array::from(vec![7, 8])).unwrap();
+    let batch = batch_of(Arc::new(runs));
+    let mut weigher = Weigher::new(&batch);
+    weigher.begin();
+    assert_eq!(weigher.weigh(0).values, 3);
+    weigher.mark();
+    assert_eq!(weigher.weigh_rows(1..4).values, 3 + 2);
+    weigher.rewind();
+    // The first run was begun before the mark; the second is begun again.
+    assert_eq!(weigher.weigh(1).values, 1);
+    assert_eq!(weigher.weigh(2).values, 3);
+}

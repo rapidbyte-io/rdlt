@@ -606,3 +606,24 @@ fn a_schema_that_is_refused_ends_the_schema_before_it() {
         );
     }
 }
+
+#[test]
+fn a_refusal_names_the_part_a_message_lacks_or_does_not_need() {
+    use crate::error::Part;
+    let lacking = |part| Problem::Missing { part }.to_string();
+    assert_eq!(
+        lacking(Part::Node),
+        "the message lacks a field node its schema needs"
+    );
+    assert_eq!(
+        lacking(Part::Buffer),
+        "the message lacks a buffer its schema needs"
+    );
+    let unused = Problem::Unused {
+        part: Part::VariadicCount,
+    };
+    assert_eq!(
+        unused.to_string(),
+        "the message holds a count of data buffers its schema does not need"
+    );
+}

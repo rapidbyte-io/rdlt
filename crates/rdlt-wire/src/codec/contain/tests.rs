@@ -114,6 +114,8 @@ fn a_contained_panics_text_is_bounded_and_escaped() {
         other => panic!("{other}"),
     };
     assert_eq!(message(panicking("plain text ~!")), "plain text ~!");
+    // Quotes and backslashes are printable: they stay as they are.
+    assert_eq!(message(panicking(r#"it's "a\b""#)), r#"it's "a\b""#);
     let escaped = message(panicking("a\u{1b}[31m\nb\u{202e}"));
     assert_eq!(escaped, "a\\u{1b}[31m\\nb\\u{202e}");
     // A panic's payload may be a `&'static str` as well as a `String`.
