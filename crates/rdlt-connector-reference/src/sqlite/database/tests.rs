@@ -285,4 +285,11 @@ fn a_statement_sqlite_cannot_read_fails_without_its_text() {
         said.starts_with("running a statement: ") && !said.contains("secret_table"),
         "{said}"
     );
+    // Nor in any cause, which a host keeps as text.
+    let mut cause = std::error::Error::source(&error);
+    assert!(cause.is_some(), "the cause is kept");
+    while let Some(found) = cause {
+        assert!(!found.to_string().contains("secret_table"), "{found}");
+        cause = found.source();
+    }
 }

@@ -188,12 +188,8 @@ impl Bubblewrap {
             held,
             ..
         } = launched(&launcher, &confined)?;
-        let unavailable = |said: &dyn std::fmt::Display| unavailable(&path, said);
-        let program: OwnedFd = launcher
-            .file()
-            .try_clone()
-            .map_err(|error| unavailable(&error))?
-            .into();
+        let failed = |error| SandboxError::failed(&path, error);
+        let program: OwnedFd = launcher.file().try_clone().map_err(failed)?.into();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -201,14 +197,13 @@ impl Bubblewrap {
         let given = std::iter::once((program, PROGRAM_FD))
             .chain(given)
             .collect();
-        inheriting(&mut command, given, rdlt_adopt::Marking::AtOnce)
-            .map_err(|error| unavailable(&error))?;
-        let output = command.output().map_err(|error| unavailable(&error))?;
+        inheriting(&mut command, given, rdlt_adopt::Marking::AtOnce).map_err(failed)?;
+        let output = command.output().map_err(failed)?;
         drop(held);
         if output.status.success() {
             return Ok(Arc::new(launcher));
         }
-        Err(unavailable(&String::from_utf8_lossy(&output.stderr)))
+        Err(unavailable(&path, &String::from_utf8_lossy(&output.stderr)))
     }
 }
 
@@ -224,13 +219,13 @@ fn unavailable(path: &Path, said: &dyn std::fmt::Display) -> SandboxError {
 /// arguments read from a descriptor.
 #[cfg(target_os = "linux")]
 fn launched(launcher: &Binary, confined: &Confined<'_>) -> Result<Launcher, SandboxError> {
-    let unavailable = |error: std::io::Error| unavailable(launcher.path(), &error);
-    let arguments = arguments(&Bubblewrap::confinement(confined)).map_err(unavailable)?;
+    let failed = |error| SandboxError::failed(launcher.path(), error);
+    let arguments = arguments(&Bubblewrap::confinement(confined)).map_err(failed)?;
     // Executed from a descriptor above every one the launcher is given.
     let given = confined.binds.iter().map(|bind| bind.fd);
     let highest = given.chain([ARGS_FD]).max().unwrap_or(ARGS_FD);
     let (mut command, executed) =
-        super::process::executed_from(launcher.file(), highest).map_err(unavailable)?;
+        super::process::executed_from(launcher.file(), highest).map_err(failed)?;
     command
         .args(["--args", &ARGS_FD.to_string(), "--", PROGRAM])
         .args(confined.args)

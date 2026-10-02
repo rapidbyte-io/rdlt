@@ -278,3 +278,24 @@ fn the_launcher_runs_from_a_descriptor_above_every_one_it_is_given() {
         .expect("a descriptor");
     assert!(executed > GRANTS_FD + 5, "{executed}");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_step_the_system_refuses_is_kept_as_the_cause_not_as_text() {
+    let sandbox = Bubblewrap::new();
+    if let Err(unusable) = sandbox.usable() {
+        rdlt_testkit::process::without_sandbox(&unusable);
+        return;
+    }
+    // A value the launcher's file of arguments cannot hold.
+    let env = [(OsString::from("HELD"), OsString::from("a\0b"))];
+    let refused = sandbox
+        .launcher(&confined(&[], NetworkGrant::Denied, &env, &[]))
+        .expect_err("refused");
+    assert_eq!(refused.code(), "sandbox_failed");
+    let cause = std::error::Error::source(&refused).expect("a cause");
+    let os = cause
+        .downcast_ref::<crate::local::sandbox::OsError>()
+        .expect("the system's error, kept whole");
+    assert_eq!(os.io().kind(), std::io::ErrorKind::InvalidInput);
+}

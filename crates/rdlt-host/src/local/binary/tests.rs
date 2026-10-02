@@ -270,8 +270,10 @@ fn a_binary_by_path_is_refused_where_a_directory_above_it_or_on_its_link_is_anot
     std::fs::set_permissions(&shared, PermissionsExt::from_mode(0o777)).expect("its mode is set");
     std::os::unix::fs::symlink(shared.join("binary"), held.join("link")).expect("a link");
     let refused = Binary::at(&held.join("link"));
+    // Named as the file was reached, every link resolved, as macOS's `/var` is one.
+    let reached = std::fs::canonicalize(&shared).expect("it resolves");
     assert!(
-        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == shared),
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == reached),
         "{refused:?}"
     );
 }

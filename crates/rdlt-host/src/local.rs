@@ -26,7 +26,9 @@ pub use process::{Interrupts, LastWords, Lingering, StopsSpawned, Witness, spawn
 use process::{Launch, Process};
 pub(crate) use provide::refused;
 use provide::{binary_name, handshake_failed, spawn_failed};
-pub use sandbox::{Bind, Confined, Grants, Launcher, NetworkGrant, Sandbox, SandboxError, Stops};
+pub use sandbox::{
+    Bind, Confined, Grants, Launcher, NetworkGrant, OsError, Sandbox, SandboxError, Stops,
+};
 
 use crate::provider::{ConnectorRef, Digest, Honours, Isolation, ProviderError};
 use crate::remote::Options;

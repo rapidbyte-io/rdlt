@@ -207,8 +207,8 @@ pub enum SecretError {
 
 impl SecretError {
     /// The error's stable code: `config_invalid` for a document that cannot be held,
-    /// `secret_reference` for a malformed reference, `secret_unresolved` for one that did not
-    /// resolve.
+    /// `secret_reference` for a malformed reference, `secret_refused` for one the operator lets
+    /// no configuration reach, and `secret_unresolved` for one that did not resolve.
     pub fn code(&self) -> &'static str {
         match self {
             Self::NotJson | Self::TooLarge { .. } | Self::TooMany { .. } => "config_invalid",

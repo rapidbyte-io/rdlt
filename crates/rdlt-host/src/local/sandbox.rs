@@ -125,6 +125,15 @@ pub enum SandboxError {
         /// What the launcher said, shown.
         said: String,
     },
+    /// The operating system refused a step of running the sandbox's launcher.
+    #[error("the sandbox launcher at {} could not be run", path.display())]
+    Failed {
+        /// The launcher.
+        path: PathBuf,
+        /// What the operating system said.
+        #[source]
+        source: OsError,
+    },
     /// A path granted is not absolute, or is not there.
     #[error("the granted path {} is not an absolute path to something that exists", path.display())]
     Grant {
@@ -180,12 +189,21 @@ pub enum SandboxError {
 }
 
 impl SandboxError {
+    /// The launcher at `path` could not be run, as `error` says.
+    pub(crate) fn failed(path: &std::path::Path, error: std::io::Error) -> Self {
+        Self::Failed {
+            path: path.to_owned(),
+            source: OsError(std::sync::Arc::new(error)),
+        }
+    }
+
     /// The error's stable code.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Unsupported => "sandbox_unsupported",
             Self::Missing { .. } => "sandbox_missing",
             Self::Unavailable { .. } => "sandbox_unavailable",
+            Self::Failed { .. } => "sandbox_failed",
             Self::Grant { .. } => "sandbox_grant",
             Self::Outside { .. } => "grant_outside",
             Self::Guarded { .. } => "grant_root_guarded",
@@ -195,6 +213,38 @@ impl SandboxError {
             Self::Descriptors => "sandbox_descriptors",
             Self::Shared { .. } => "sandbox_launcher_shared",
         }
+    }
+}
+
+/// An error of the operating system's, kept whole as a cause and shared by every copy of the
+/// error that holds it; two are equal where they are of one kind and one error number.
+#[derive(Clone, Debug)]
+pub struct OsError(std::sync::Arc<std::io::Error>);
+
+impl OsError {
+    /// The error as the operating system gave it.
+    pub fn io(&self) -> &std::io::Error {
+        &self.0
+    }
+}
+
+impl PartialEq for OsError {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.kind() == other.0.kind() && self.0.raw_os_error() == other.0.raw_os_error()
+    }
+}
+
+impl Eq for OsError {}
+
+impl fmt::Display for OsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::error::Error for OsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
     }
 }
 
