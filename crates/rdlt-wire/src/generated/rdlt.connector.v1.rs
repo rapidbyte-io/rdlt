@@ -1941,8 +1941,9 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Read"));
             self.inner.streaming(req, path, codec).await
         }
-        /// Reports cursors a destination committed: each a checkpoint a read sent this host. A report
-        /// of any other position is refused as transient, with the code "position_unsent".
+        /// Reports cursors a destination committed: each a checkpoint a read sent this host, or the
+        /// cursor a read of its started from. A report of any other position is refused as transient,
+        /// with the code "position_unsent".
         pub async fn committed(
             &mut self,
             request: impl tonic::IntoRequest<super::CommittedRequest>,
@@ -2154,8 +2155,9 @@ pub mod connector_server {
             &self,
             request: tonic::Request<tonic::Streaming<super::ReadControl>>,
         ) -> std::result::Result<tonic::Response<Self::ReadStream>, tonic::Status>;
-        /// Reports cursors a destination committed: each a checkpoint a read sent this host. A report
-        /// of any other position is refused as transient, with the code "position_unsent".
+        /// Reports cursors a destination committed: each a checkpoint a read sent this host, or the
+        /// cursor a read of its started from. A report of any other position is refused as transient,
+        /// with the code "position_unsent".
         async fn committed(
             &self,
             request: tonic::Request<super::CommittedRequest>,

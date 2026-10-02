@@ -5,6 +5,7 @@ mod acknowledged;
 #[cfg(feature = "certify")]
 mod acknowledging;
 mod adapter;
+mod sent;
 #[cfg(test)]
 mod tests;
 
@@ -28,6 +29,7 @@ pub use acknowledged::{AcknowledgedReader, Acknowledging};
 #[cfg(feature = "certify")]
 pub use acknowledging::acknowledging_source_factory;
 pub use adapter::source_factory;
+pub use sent::{POSITION_UNSENT, Sent};
 
 /// A source connector, as its author writes it.
 ///

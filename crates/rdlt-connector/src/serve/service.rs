@@ -12,8 +12,8 @@ use tokio::sync::OnceCell;
 use tokio_stream::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 
-use super::acknowledgeable::{Noted, Read};
 use super::handshake::{Agreed, no_handshake, not_configured, unsupported};
+use super::noted::Noted;
 use super::probes::Probes;
 use super::sessions::{SessionSlot, Sessions, closed};
 use super::until::Until;
@@ -114,19 +114,6 @@ pub(super) fn invalid(invalid: &Invalid) -> Status {
         &ConnectorError::new(ConnectorErrorKind::Internal, invalid.to_string())
             .with_code("invalid_message"),
     )
-}
-
-/// The code of the error a report is refused with, of a committed position no read of this
-/// process sent the reporting host.
-const POSITION_UNSENT: &str = "position_unsent";
-
-/// The status of a report that a position is committed which no read sent the host.
-///
-/// It is transient: a connector started again remembers nothing it sent, and a host that reads
-/// again is sent checkpoints it can report.
-fn unsent() -> Status {
-    let message = "a position reported committed is no checkpoint a read sent this host";
-    status(&ConnectorError::new(ConnectorErrorKind::Transient, message).with_code(POSITION_UNSENT))
 }
 
 /// The stream a streaming call answers with.
@@ -241,7 +228,7 @@ impl Connector for Service {
         let host = self.host.get().copied().unwrap_or_default();
         let (frames, read) =
             read::serve(self.source()?, self.limits, host, request.into_inner()).await?;
-        // Each checkpoint the host is sent is one it may later report committed.
+        // Where the read starts, and each checkpoint it sends, the host may report committed.
         let served = Arc::clone(&self.served);
         let noted = Noted::new(frames, served, self.host_name.clone(), read);
         Ok(Response::new(Box::pin(noted)))
@@ -271,24 +258,13 @@ impl Connector for Service {
         request: Request<v1::CommittedRequest>,
     ) -> Result<Response<v1::CommittedResponse>, Status> {
         let request = request.into_inner();
-        let named = request.stream.ok_or(Invalid::Missing("stream"));
-        let named = named.map_err(|e| invalid(&e))?;
-        let read = |partition: &str| Read {
-            stream: (named.namespace.clone(), named.name.clone()),
-            partition: partition.to_owned(),
-        };
-        // A host is heard for what its reads were sent, and for nothing else of its choosing.
-        let sent = request.cursors.iter().all(|committed| {
-            committed.cursor.as_ref().is_none_or(|cursor| {
-                let read = read(&committed.partition);
-                let host = self.host_name.as_ref();
-                self.served.acknowledgeable.was_sent(host, &read, cursor)
-            })
-        });
-        if !sent {
-            return Err(unsent());
-        }
-        let stream = StreamName::try_from(named).map_err(|e| invalid(&e))?;
+        let stream = StreamName::try_from(
+            request
+                .stream
+                .ok_or(Invalid::Missing("stream"))
+                .map_err(|e| invalid(&e))?,
+        )
+        .map_err(|e| invalid(&e))?;
         let cursors = request
             .cursors
             .into_iter()
@@ -300,6 +276,12 @@ impl Connector for Service {
             })
             .collect::<Result<Vec<_>, Invalid>>()
             .map_err(|e| invalid(&e))?;
+        // A host is heard for what it was sent or read from, and nothing else of its choosing:
+        // a report of anything else is refused before the source hears of it.
+        let host = self.host_name.as_deref();
+        let sent = &self.served.sent;
+        sent.admit(host, &stream, &cursors)
+            .map_err(|error| status(&error))?;
         self.source()?
             .committed(&stream, &cursors)
             .await

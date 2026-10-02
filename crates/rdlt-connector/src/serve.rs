@@ -4,11 +4,11 @@
 //! and carries the configuration, and every later call works on the connector that handshake
 //! connected. A binary serves every role it has a factory for.
 
-mod acknowledgeable;
 mod args;
 mod binary;
 mod handshake;
 mod listen;
+mod noted;
 mod probes;
 #[cfg(feature = "certify")]
 mod published;
@@ -39,8 +39,8 @@ use crate::source::SourceFactory;
 pub struct Served {
     source: Option<Box<dyn SourceFactory>>,
     destination: Option<Box<dyn DestinationFactory>>,
-    /// The checkpoints sent to each host, on whichever connection.
-    acknowledgeable: acknowledgeable::Acknowledgeable,
+    /// What each host was sent or read from, on whichever connection.
+    sent: crate::source::Sent,
 }
 
 impl std::fmt::Debug for Served {

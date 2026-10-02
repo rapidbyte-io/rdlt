@@ -23,8 +23,9 @@ service Connector {
   rpc Plan(PlanRequest) returns (PlanResponse);
   // Reads a partition.
   rpc Read(stream ReadControl) returns (stream ReadFrame);
-  // Reports cursors a destination committed: each a checkpoint a read sent this host. A report
-  // of any other position is refused as transient, with the code "position_unsent".
+  // Reports cursors a destination committed: each a checkpoint a read sent this host, or the
+  // cursor a read of its started from. A report of any other position is refused as transient,
+  // with the code "position_unsent".
   rpc Committed(CommittedRequest) returns (CommittedResponse);
   // Opens a destination session.
   rpc Open(OpenRequest) returns (OpenResponse);
