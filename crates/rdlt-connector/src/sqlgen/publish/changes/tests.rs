@@ -1,5 +1,6 @@
 use super::super::super::tests::{
-    apply, columns, counting, create, database, digits, pipeline, planned, run_all, segments, table,
+    apply, columns, counting, create, database, digits, pipeline, planned, run_all, segments,
+    table, timed,
 };
 use rusqlite::Connection;
 
@@ -234,5 +235,111 @@ fn a_commit_without_a_truncate_reads_only_the_rows_of_its_keys() {
         // The hard delete removed its row and buried both its keys; the soft one marked its row.
         let expected = if hard { (499, 503) } else { (500, 501) };
         assert_eq!((rows, buried), expected, "hard: {hard}");
+    }
+}
+
+/// A database holding `orders` with `width` columns beside its key, sequence and deletion
+/// time, whose changes may flag columns unchanged and whose deletes are `hard` or soft.
+fn wide_orders(width: usize, hard: bool) -> (Connection, SqlPlanner<Sqlite>, Staged) {
+    let (connection, planner) = database();
+    let mut merge = key(if hard {
+        Deletion::Hard
+    } else {
+        Deletion::Soft {
+            at: "deleted_at".into(),
+        }
+    });
+    merge.changes.as_mut().unwrap().unchanged = Some("unchanged".into());
+    let orders = crate::destination::TableRef {
+        merge: Some(merge),
+        ..table("orders")
+    };
+    let names: Vec<String> = (0..width).map(|column| format!("c{column}")).collect();
+    let mut fields = vec![
+        ("id", LogicalType::Int64, false),
+        ("seq", LogicalType::Binary, false),
+        ("deleted_at", LogicalType::Int64, true),
+    ];
+    fields.extend(
+        names
+            .iter()
+            .map(|name| (name.as_str(), LogicalType::Int64, true)),
+    );
+    apply(&connection, &planner, &create(&orders, &fields)).unwrap();
+    let tables = [
+        "orders".to_owned(),
+        planner.staging_table("orders"),
+        planner.tombstone_table("orders"),
+    ]
+    .map(|name| columns(&connection, &planner, &name));
+    let ready = planner.change_tables_of(&orders, [&tables[0], &tables[1], &tables[2]]);
+    run_all(&connection, &ready.unwrap());
+    run_all(&connection, &planner.key_indexes_of(&orders));
+    let staged = Staged {
+        name: "orders".to_owned(),
+        generation: None,
+        merge: orders.merge,
+    };
+    (connection, planner, staged)
+}
+
+/// The steps and the time a commit of `ROWS` updates takes, each flagging every column of a
+/// table of `width` columns beside its key and sequence, in a table holding their rows.
+fn flagged_commit(width: usize, hard: bool) -> (u64, std::time::Duration) {
+    const ROWS: u32 = 300;
+    let (connection, planner, staged) = wide_orders(width, hard);
+    let staging = planner.staging_table("orders");
+    let names: Vec<String> = (0..width).map(|column| format!("c{column}")).collect();
+    let sevens = vec!["7"; width].join(", ");
+    let listed = names.join(", ");
+    // Every column past the key and the sequence flagged: one byte each, set.
+    let flags = format!("X'0000{}'", "01".repeat(width + 1));
+    let filled = format!(
+        "{count} INSERT INTO orders (id, seq, {listed}) SELECT i, {old}, {sevens} FROM _n; \
+         {count} INSERT INTO \"{staging}\" (_rdlt_pipeline, _rdlt_epoch, _rdlt_segment, id, seq, \
+         op, unchanged) SELECT 'mine', 1, 1, i, {new}, 1, {flags} FROM _n",
+        count = counting(ROWS),
+        old = digits("i"),
+        new = digits("1000000 + i"),
+    );
+    connection.execute_batch(&filled).unwrap();
+    let plan = committing(&connection, &planner, &staged, 1);
+    let cost = (planned(&connection, &plan), timed(&connection, &plan));
+    // The commit kept every flagged value and moved each row to its change's sequence.
+    run_all(&connection, &plan);
+    let kept: (i64, i64) = connection
+        .query_row(
+            &format!(
+                "SELECT count(*), sum(c{}) FROM orders WHERE seq > {}",
+                width - 1,
+                digits("1000000")
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        kept,
+        (i64::from(ROWS), 7 * i64::from(ROWS)),
+        "width {width}"
+    );
+    cost
+}
+
+#[test]
+fn flagged_updates_cost_their_rows_and_columns_not_the_columns_squared() {
+    for hard in [true, false] {
+        let (narrow_steps, narrow_time) = flagged_commit(60, hard);
+        let (wide_steps, wide_time) = flagged_commit(240, hard);
+        // Four times the columns: about four times the steps, and the time, of which reading a
+        // flag is part, with them.
+        assert!(
+            wide_steps < narrow_steps * 6,
+            "hard: {hard}: 60 columns took {narrow_steps} steps, 240 took {wide_steps}"
+        );
+        assert!(
+            wide_time < narrow_time * 10,
+            "hard: {hard}: 60 columns took {narrow_time:?}, 240 took {wide_time:?}"
+        );
     }
 }

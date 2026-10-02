@@ -60,6 +60,11 @@ impl SqlDialect for Sqlite {
         }
     }
 
+    fn byte_at(&self, bytes: &str, position: usize) -> String {
+        // SQLite finds a byte of a blob by its position, whatever the blob's length.
+        format!("SUBSTR({bytes}, {position}, 1)")
+    }
+
     fn folds(&self, name: &str) -> String {
         name.to_ascii_lowercase()
     }

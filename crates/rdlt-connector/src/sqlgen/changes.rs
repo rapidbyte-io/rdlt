@@ -11,10 +11,10 @@ mod tests;
 
 use std::sync::Arc;
 
-use arrow_array::builder::StringBuilder;
+use arrow_array::builder::BinaryBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int8Type;
-use arrow_array::{Array, ArrayRef, Int8Array, RecordBatch};
+use arrow_array::{Array, ArrayRef, BinaryArray, Int8Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
 use super::publish::keyless;
@@ -72,7 +72,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             add(&changes.op, &self.integer);
         }
         if let Some(unchanged) = changes.unchanged.as_deref().filter(|name| missing(name)) {
-            add(unchanged, &self.text);
+            add(unchanged, &self.blob);
         }
         if tombstones.is_empty() {
             let columns = key
@@ -156,8 +156,9 @@ fn changed(table: &TableRef) -> Option<(&MergeKey, &ChangeColumns)> {
 }
 
 /// `batch`, written for `table`, as its staging table holds it: where it merges a change stream,
-/// each row's unchanged flags, a bitmap over the batch's fields, become the text `,i,j,` of the
-/// ordinals of the `target` columns they name, or null for none.
+/// each row's unchanged flags, a bitmap over the batch's fields, become bytes over the `target`
+/// columns, the byte at a column's ordinal 1 where the row flags it, or null for none: what a
+/// commit reads a column's flag from at one position, whatever the table's width.
 ///
 /// Each refusal is a `Data` error under its code, raised before any row is staged: a row
 /// without an op a change stream has (`op_invalid`) or without a sequence (`sequence_missing`);
@@ -195,14 +196,32 @@ pub fn staged_changes(
         .iter()
         .map(|field| ordinal_of(field.name(), key, target))
         .collect();
-    let mut texts = StringBuilder::new();
-    for row in 0..batch.num_rows() {
+    let staged = flag_bytes(flags, &ordinals, &schema)?;
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    fields[index] = Field::new(schema.field(index).name(), DataType::Binary, true);
+    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+    columns[index] = Arc::new(staged);
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
+        .map_err(|error| ConnectorError::internal(format!("restaging unchanged flags: {error}")))
+}
+
+/// Each row's `flags`, a bitmap over the fields of `schema`, as bytes over the table's
+/// columns: the byte at a column's ordinal 1 where the row flags the field `ordinals` places
+/// there, null where it flags none; a flag on a field a row may not flag is refused.
+fn flag_bytes(
+    flags: &BinaryArray,
+    ordinals: &[std::result::Result<usize, Unflaggable>],
+    schema: &Schema,
+) -> Result<BinaryArray> {
+    let mut staged = BinaryBuilder::new();
+    let mut bytes: Vec<u8> = Vec::new();
+    for row in 0..flags.len() {
         let bitmap = if flags.is_null(row) {
             &[][..]
         } else {
             flags.value(row)
         };
-        let mut text = String::from(",");
+        bytes.clear();
         for (ordinal, position) in ordinals.iter().enumerate() {
             let flagged = bitmap
                 .get(ordinal / 8)
@@ -212,24 +231,21 @@ pub fn staged_changes(
             }
             match position {
                 Ok(position) => {
-                    text.push_str(&position.to_string());
-                    text.push(',');
+                    if bytes.len() <= *position {
+                        bytes.resize(position + 1, 0);
+                    }
+                    bytes[*position] = 1;
                 }
                 Err(why) => return Err(why.refused(schema.field(ordinal).name())),
             }
         }
-        if text.len() > 1 {
-            texts.append_value(text);
+        if bytes.is_empty() {
+            staged.append_null();
         } else {
-            texts.append_null();
+            staged.append_value(&bytes);
         }
     }
-    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
-    fields[index] = Field::new(schema.field(index).name(), DataType::Utf8, true);
-    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
-    columns[index] = Arc::new(texts.finish());
-    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)
-        .map_err(|error| ConnectorError::internal(format!("restaging unchanged flags: {error}")))
+    Ok(staged.finish())
 }
 
 /// The ops of `batch`'s rows, refused unless each row holds a change stream's op in the column

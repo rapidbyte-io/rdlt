@@ -37,6 +37,13 @@ impl<D: SqlDialect> SqlPlanner<D> {
             changed.on("_rdlt_g", "_rdlt_x"),
             changed.on("_rdlt_p", "_rdlt_x"),
         ));
+        if changed.flags() {
+            sql.push(&format!(
+                " LEFT JOIN _rdlt_set _rdlt_s ON {} LEFT JOIN _rdlt_vals _rdlt_n ON {}",
+                changed.on("_rdlt_s", "_rdlt_x"),
+                changed.on("_rdlt_n", "_rdlt_x"),
+            ));
+        }
         Ok(sql)
     }
 }
@@ -60,24 +67,29 @@ fn marking(changed: &Changed<'_>, at: &str, at_ordinal: usize) -> String {
          _rdlt_first AS (SELECT {keys}, MIN({seq}) AS {q} FROM _rdlt_upserts GROUP BY {keys}), \
          _rdlt_last AS (SELECT {keys}, MAX({seq}) AS {q} FROM _rdlt_upserts GROUP BY {keys}), \
          _rdlt_assigned AS (SELECT {keys}, MAX({seq}) AS {q} FROM _rdlt_upserts _rdlt_v WHERE \
-         NOT {flag} GROUP BY {keys}), \
+         NOT {flag} GROUP BY {keys}), {settings}\
          _rdlt_latest AS (SELECT MAX({seq}) AS {q} FROM _rdlt_truncates HAVING MAX({seq}) IS \
          NOT NULL), \
          _rdlt_keys AS (SELECT {keys} FROM _rdlt_admitted WHERE {op} IN (0, 1, 2) UNION SELECT \
          {kept_keys} FROM _rdlt_latest _rdlt_c CROSS JOIN {target} _rdlt_p WHERE \
          _rdlt_p.{seq} < _rdlt_c.{q}), \
          {truncated}, \
-         _rdlt_deletions AS (SELECT {marked_keys}, _rdlt_a.{seq}, _rdlt_a.{at} FROM _rdlt_keys \
+         _rdlt_deletions AS (SELECT {marked_keys}, _rdlt_a.{seq}, _rdlt_a.{at}, 1 AS {kind} FROM _rdlt_keys \
          _rdlt_k JOIN _rdlt_admitted _rdlt_a ON {on_ak} AND _rdlt_a.{op} = 2 WHERE EXISTS \
          (SELECT 1 FROM {target} _rdlt_p WHERE {on_pk}) OR EXISTS (SELECT 1 FROM _rdlt_first \
          _rdlt_f WHERE {on_fk} AND _rdlt_f.{q} < _rdlt_a.{seq}) UNION ALL SELECT \
-         {timed_keys}, _rdlt_t.{seq}, _rdlt_t.{at} FROM _rdlt_timed _rdlt_n JOIN \
+         {timed_keys}, _rdlt_t.{seq}, _rdlt_t.{at}, 0 FROM _rdlt_timed _rdlt_n JOIN \
          _rdlt_truncates _rdlt_t ON _rdlt_t.{seq} = _rdlt_n.{next} WHERE _rdlt_n.{kind} = 1), \
          _rdlt_seqs AS (SELECT {keys}, MAX({seq}) AS {q} FROM (SELECT {keys}, {seq} FROM \
          _rdlt_upserts UNION ALL SELECT {keys}, {seq} FROM _rdlt_deletions UNION ALL SELECT \
          {bound_keys}, _rdlt_c.{q} FROM _rdlt_latest _rdlt_c CROSS JOIN _rdlt_bounds _rdlt_b \
          WHERE _rdlt_b.{low} < _rdlt_c.{q}) _rdlt_e GROUP BY {keys}) SELECT ",
         flag = changed.flagged("_rdlt_v", at_ordinal),
+        settings = if changed.flags() {
+            format!("{}, ", changed.settings())
+        } else {
+            String::new()
+        },
         kept_keys = changed.keyed("_rdlt_p"),
         marked_keys = changed.keyed("_rdlt_k"),
         timed_keys = changed.keyed("_rdlt_n"),
@@ -142,32 +154,29 @@ fn truncated(changed: &Changed<'_>, at: &str) -> String {
 }
 
 /// The columns of each changed key's row, `_rdlt_x`: its row `_rdlt_p` where no insert or update
-/// applied, otherwise as its last upsert `_rdlt_u` sets each, or where that flags one unchanged,
-/// as its upserts before or its row left it; its deletion time as [`deleted_at`] says.
+/// applied, otherwise as its last upsert `_rdlt_u` sets each, or for a column rows may flag
+/// unchanged, as the last upsert not flagging it set it, `_rdlt_n`'s, or else as its row left it;
+/// its deletion time as [`deleted_at`] says.
 fn marked(changed: &Changed<'_>, at: &str) -> String {
     let columns: Vec<String> = changed
         .columns
         .iter()
-        .enumerate()
-        .map(|(ordinal, column)| {
+        .map(|column| {
             if *column == changed.seq {
                 return format!("_rdlt_x.{}", changed.q);
             }
             if column == at {
                 return deleted_at(changed, at);
             }
-            if changed.unchanged.is_none() {
+            if !changed.flaggable(column) {
                 return format!(
                     "CASE WHEN _rdlt_l.{q} IS NULL THEN _rdlt_p.{column} ELSE _rdlt_u.{column} END",
                     q = changed.q
                 );
             }
+            // No upsert of the key sets the column: its row keeps what it holds.
             format!(
-                "CASE WHEN _rdlt_l.{q} IS NULL THEN _rdlt_p.{column} WHEN {flag} THEN {chained} \
-                 ELSE _rdlt_u.{column} END",
-                q = changed.q,
-                flag = changed.flagged("_rdlt_u", ordinal),
-                chained = changed.chained(column, ordinal, "_rdlt_x", &changed.target),
+                "CASE WHEN _rdlt_s.{column} IS NULL THEN _rdlt_p.{column} ELSE _rdlt_n.{column} END"
             )
         })
         .collect();
@@ -176,17 +185,24 @@ fn marked(changed: &Changed<'_>, at: &str) -> String {
 
 /// The deletion time of each changed key's row, `_rdlt_x`: as its last upsert setting it,
 /// `_rdlt_g`, sets it, or else as its row holds it; where that is null, the time of the first
-/// deletion after them that has one.
+/// deletion after them that has one, a truncate's before a delete's of its own sequence, since
+/// the truncate applies first.
 fn deleted_at(changed: &Changed<'_>, at: &str) -> String {
-    let (seq, q) = (&changed.seq, &changed.q);
+    let (seq, q, kind) = (&changed.seq, &changed.q, &changed.pass.kind);
+    // The sequence of the first deletion past the last upsert setting the time that says when.
+    let first = format!(
+        "(SELECT MIN(_rdlt_f.{seq}) FROM _rdlt_deletions _rdlt_f WHERE {on_f} AND _rdlt_f.{at} \
+         IS NOT NULL AND (_rdlt_g.{q} IS NULL OR _rdlt_f.{seq} > _rdlt_g.{q}))",
+        on_f = changed.on("_rdlt_f", "_rdlt_x"),
+    );
     format!(
         "COALESCE(CASE WHEN _rdlt_g.{q} IS NULL THEN _rdlt_p.{at} ELSE (SELECT _rdlt_v.{at} FROM \
          _rdlt_upserts _rdlt_v WHERE {on_v} AND _rdlt_v.{seq} = _rdlt_g.{q}) END, (SELECT \
-         MIN(_rdlt_e.{at}) FROM _rdlt_deletions _rdlt_e WHERE {on_e} AND _rdlt_e.{seq} = (SELECT \
-         MIN(_rdlt_f.{seq}) FROM _rdlt_deletions _rdlt_f WHERE {on_f} AND _rdlt_f.{at} IS NOT NULL \
-         AND (_rdlt_g.{q} IS NULL OR _rdlt_f.{seq} > _rdlt_g.{q}))))",
+         MIN(_rdlt_e.{at}) FROM _rdlt_deletions _rdlt_e WHERE {on_e} AND _rdlt_e.{seq} = {first} \
+         AND _rdlt_e.{kind} = (SELECT MIN(_rdlt_h.{kind}) FROM _rdlt_deletions _rdlt_h WHERE \
+         {on_h} AND _rdlt_h.{seq} = {first} AND _rdlt_h.{at} IS NOT NULL)))",
         on_v = changed.on("_rdlt_v", "_rdlt_x"),
         on_e = changed.on("_rdlt_e", "_rdlt_x"),
-        on_f = changed.on("_rdlt_f", "_rdlt_x"),
+        on_h = changed.on("_rdlt_h", "_rdlt_x"),
     )
 }

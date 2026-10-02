@@ -154,6 +154,12 @@ pub trait SqlDialect: Send + Sync {
         name.to_owned()
     }
 
+    /// The expression of the byte at `position`, counted from 1, of `bytes`, an expression of
+    /// bytes: one byte, or none past their end, in standard SQL by default.
+    fn byte_at(&self, bytes: &str, position: usize) -> String {
+        format!("SUBSTRING({bytes} FROM {position} FOR 1)")
+    }
+
     /// Whether schema changes a transaction makes commit or roll back with it, as SQLite's and
     /// PostgreSQL's do.
     ///

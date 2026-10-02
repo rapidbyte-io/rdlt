@@ -26,6 +26,9 @@ const BURIED: i8 = 6;
 /// The bound a hard truncate raised, naming no key.
 const BOUND: i8 = 7;
 
+/// The alias a row stands under in [`Changed::flag_bytes`], until a statement names the row.
+const FLAGGING: &str = "_rdlt_flagging";
+
 /// The names one change table's commit shares across its statements, quoted.
 pub(super) struct Changed<'a> {
     of: &'a Of<'a>,
@@ -38,6 +41,9 @@ pub(super) struct Changed<'a> {
     seq: String,
     op: String,
     unchanged: Option<String>,
+    /// Where rows may flag columns unchanged, the byte of a row's flags at each column's ordinal,
+    /// as the dialect reads it, the row named [`FLAGGING`].
+    flag_bytes: Vec<String>,
     /// The alias of a computed sequence, and of a staged row's rank, which no column is named.
     q: String,
     rank: String,
@@ -278,6 +284,15 @@ impl<'a> Changed<'a> {
             seq: quote(&key.seq),
             op: quote(&changes.op),
             unchanged: changes.unchanged.as_deref().map(quote),
+            flag_bytes: match changes.unchanged.as_deref().map(quote) {
+                Some(unchanged) => (1..=columns.len())
+                    .map(|position| {
+                        let flags = format!("{FLAGGING}.{unchanged}");
+                        planner.dialect.byte_at(&flags, position)
+                    })
+                    .collect(),
+                None => Vec::new(),
+            },
             q: quote(&unused("_rdlt_q", columns)),
             rank: quote(&unused("_rdlt_rank", columns)),
             pass: Pass {
@@ -358,42 +373,70 @@ impl Changed<'_> {
         keys.join(", ")
     }
 
-    /// The condition that the row `alias` flags the column at `ordinal` unchanged.
+    /// The condition that the row `alias` flags the column at `ordinal` unchanged: the byte of
+    /// its flags at the ordinal is 1, read at its position, whatever the table's width.
     fn flagged(&self, alias: &str, ordinal: usize) -> String {
-        match &self.unchanged {
-            Some(unchanged) => format!("COALESCE({alias}.{unchanged}, '') LIKE '%,{ordinal},%'"),
-            None => "1 = 0".to_owned(),
+        match (&self.unchanged, self.flag_bytes.get(ordinal)) {
+            (Some(unchanged), Some(byte)) => format!(
+                "({alias}.{unchanged} IS NOT NULL AND {} = X'01')",
+                byte.replace(FLAGGING, alias)
+            ),
+            _ => "1 = 0".to_owned(),
         }
     }
 
-    /// The value of the column `column`, quoted, at `ordinal`, of the key `outer` names, as the
-    /// last of the key's upserts not flagging it unchanged sets it, or else as the row `kept`
-    /// holds it.
-    fn chained(&self, column: &str, ordinal: usize, outer: &str, kept: &str) -> String {
-        self.chained_past(column, ordinal, outer, (kept, ""))
+    /// Whether rows may flag any column unchanged: the table has one beside its key and its
+    /// sequence, and its stream carries flags.
+    fn flags(&self) -> bool {
+        self.columns.iter().any(|column| self.flaggable(column))
     }
 
-    /// As [`Changed::chained`], the row `kept` holds counting only where `condition`, on it as
-    /// `_rdlt_k`, holds.
-    fn chained_past(
-        &self,
-        column: &str,
-        ordinal: usize,
-        outer: &str,
-        (kept, condition): (&str, &str),
-    ) -> String {
+    /// Whether a row may flag `column` unchanged: every column but the key's and the sequence.
+    fn flaggable(&self, column: &str) -> bool {
+        self.unchanged.is_some()
+            && *column != self.seq
+            && !self.keys.iter().any(|key| key == column)
+    }
+
+    /// The common table expressions of what a key's upserts leave in each column a row may flag:
+    /// `_rdlt_set`, the sequence of its last upsert not flagging the column, under the column's
+    /// name, and `_rdlt_vals`, the value that upsert sets, under it too.
+    ///
+    /// Two passes over the upserts, each of every column at once, take the place of a search
+    /// through a key's upserts for each of its columns.
+    fn settings(&self) -> String {
         let seq = &self.seq;
+        let flaggable = || {
+            self.columns
+                .iter()
+                .enumerate()
+                .filter(|(_, column)| self.flaggable(column))
+        };
+        let set: Vec<String> = flaggable()
+            .map(|(ordinal, column)| {
+                let flag = self.flagged("_rdlt_v", ordinal);
+                format!("MAX(CASE WHEN NOT {flag} THEN _rdlt_v.{seq} END) AS {column}")
+            })
+            .collect();
+        let values: Vec<String> = flaggable()
+            .map(|(_, column)| {
+                format!(
+                    "MAX(CASE WHEN _rdlt_v.{seq} = _rdlt_s.{column} THEN _rdlt_v.{column} END) AS \
+                     {column}"
+                )
+            })
+            .collect();
         format!(
-            "CASE WHEN EXISTS (SELECT 1 FROM _rdlt_upserts _rdlt_v WHERE {on_v} AND NOT {flag_v}) \
-             THEN (SELECT _rdlt_v.{column} FROM _rdlt_upserts _rdlt_v WHERE {on_v} AND \
-             _rdlt_v.{seq} = (SELECT MAX(_rdlt_w.{seq}) FROM _rdlt_upserts _rdlt_w WHERE {on_w} \
-             AND NOT {flag_w})) ELSE (SELECT _rdlt_k.{column} FROM {kept} _rdlt_k WHERE {on_k}\
-             {condition}) END",
-            on_v = self.on("_rdlt_v", outer),
-            flag_v = self.flagged("_rdlt_v", ordinal),
-            on_w = self.on("_rdlt_w", outer),
-            flag_w = self.flagged("_rdlt_w", ordinal),
-            on_k = self.on("_rdlt_k", outer),
+            "_rdlt_set AS (SELECT {}, {} FROM _rdlt_upserts _rdlt_v GROUP BY {}), \
+             _rdlt_vals AS (SELECT {}, {} FROM _rdlt_upserts _rdlt_v JOIN _rdlt_set _rdlt_s ON {} \
+             GROUP BY {})",
+            self.keyed("_rdlt_v"),
+            set.join(", "),
+            self.keyed("_rdlt_v"),
+            self.keyed("_rdlt_v"),
+            values.join(", "),
+            self.on("_rdlt_s", "_rdlt_v"),
+            self.keyed("_rdlt_v"),
         )
     }
 }
