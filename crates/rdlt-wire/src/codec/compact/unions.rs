@@ -79,7 +79,7 @@ impl Narrower {
         let (buffer, offset) = (runs.run_ends(), runs.run_ends().offset());
         let (mut ends, mut values, mut total) = (Vec::<R::Native>::new(), Vec::new(), 0_usize);
         let mut last = None;
-        for (start, end) in ranges.iter().filter(|(start, end)| start < end) {
+        for (start, end) in ranges {
             let (mut at, mut run) = (*start, buffer.get_physical_index(*start));
             while at < *end {
                 let reach = buffer.values().get(run).ok_or_else(|| beyond("row", at))?;

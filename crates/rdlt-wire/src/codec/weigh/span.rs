@@ -124,8 +124,14 @@ impl Column {
         let mut at = start;
         while at < end && !state.over(weight) {
             let (run, reached) = reach(at);
-            let upto = reached.min(end).max(at + 1);
-            own(weight, wide(upto - at), 0);
+            // A run that does not reach past the row it is in is no run: nothing more is
+            // weighed of the column.
+            let rows = reached.min(end).saturating_sub(at);
+            if rows == 0 {
+                return;
+            }
+            let upto = at.saturating_add(rows);
+            own(weight, wide(rows), 0);
             // A run's end and value are in the frame once, with the first row of the piece in
             // the run.
             let last = state.runs.get_mut(*place);
