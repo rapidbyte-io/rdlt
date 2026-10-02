@@ -3,6 +3,7 @@
 
 use std::fs::File;
 use std::io;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::{Path, PathBuf};
 
@@ -142,6 +143,20 @@ impl Binary {
         let mut start = [0; 2];
         let read = self.file.read_at(&mut start, 0)?;
         Ok(read == 2 && start == *b"#!")
+    }
+
+    /// The interpreter a script names on its first line, where the file is a script.
+    pub(crate) fn interpreter(&self) -> io::Result<Option<PathBuf>> {
+        let mut start = [0; 256];
+        let read = self.file.read_at(&mut start, 0)?;
+        let Some(line) = start[..read].strip_prefix(b"#!") else {
+            return Ok(None);
+        };
+        let line = line.split(|byte| *byte == b'\n').next().unwrap_or_default();
+        let named = line
+            .split(u8::is_ascii_whitespace)
+            .find(|word| !word.is_empty());
+        Ok(named.map(|named| PathBuf::from(std::ffi::OsStr::from_bytes(named))))
     }
 
     /// The SHA-256 digest of the open file's bytes.

@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 
 use super::binary::{Binary, Unfit};
 use super::process::{PROGRAM_FD, SOCKET_FD, inheriting};
-use super::sandbox::{Confined, Grants, Launcher, NetworkGrant, Sandbox, SandboxError, Stops};
+use super::sandbox::{Confined, Launcher, NetworkGrant, Sandbox, SandboxError, Stops};
 
 #[cfg(test)]
 mod tests;
@@ -75,15 +75,15 @@ impl Bubblewrap {
         }
     }
 
-    /// The arguments that confine a program found at descriptor `program`, with `grants`.
-    fn confinement(confined: &Confined<'_>) -> Result<Vec<OsString>, SandboxError> {
+    /// The arguments that confine `confined`'s program, with what it is granted.
+    fn confinement(confined: &Confined<'_>) -> Vec<OsString> {
         let mut args: Vec<OsString> = Vec::new();
         let mut flag = |flag: &str, values: &[&std::ffi::OsStr]| {
             args.push(flag.into());
             args.extend(values.iter().map(|value| OsString::from(*value)));
         };
         flag("--unshare-all", &[]);
-        if confined.grants.network == NetworkGrant::Granted {
+        if confined.network == NetworkGrant::Granted {
             flag("--share-net", &[]);
         }
         // Its own user namespace, in which it may make none: each is a surface of the kernel.
@@ -114,13 +114,15 @@ impl Bubblewrap {
         flag("--proc", &["/proc".as_ref()]);
         flag("--dev", &["/dev".as_ref()]);
         flag("--tmpfs", &["/tmp".as_ref()]);
-        let grants = &confined.grants;
-        let granted = grants.read.iter().map(|path| ("--ro-bind", path));
-        for (bind, path) in granted.chain(grants.write.iter().map(|path| ("--bind", path))) {
-            if !path.is_absolute() || !path.exists() {
-                return Err(SandboxError::Grant { path: path.clone() });
-            }
-            flag(bind, &[path.as_ref(), path.as_ref()]);
+        // Bound from what was opened and checked: a link swapped since changes nothing.
+        for bind in confined.binds {
+            let fd = bind.fd.to_string();
+            let flag_of = if bind.write {
+                "--bind-fd"
+            } else {
+                "--ro-bind-fd"
+            };
+            flag(flag_of, &[fd.as_ref(), bind.at.as_os_str()]);
         }
         for (name, value) in confined.env {
             flag("--setenv", &[name, value]);
@@ -128,7 +130,7 @@ impl Bubblewrap {
         let program = confined.program.to_string();
         flag("--ro-bind-fd", &[program.as_ref(), PROGRAM.as_ref()]);
         flag("--chdir", &["/".as_ref()]);
-        Ok(args)
+        args
     }
 
     /// Whether the launcher makes a sandbox here: it is run once, confining itself, and what
@@ -167,7 +169,8 @@ impl Bubblewrap {
             args: &["--version".into()],
             env: &[],
             socket: SOCKET_FD,
-            grants: &Grants::default(),
+            binds: &[],
+            network: NetworkGrant::Denied,
         };
         let Launcher {
             mut command,
@@ -188,7 +191,8 @@ impl Bubblewrap {
         let given = std::iter::once((program, PROGRAM_FD))
             .chain(given)
             .collect();
-        inheriting(&mut command, given).map_err(|error| unavailable(&error))?;
+        inheriting(&mut command, given, rdlt_adopt::Marking::AtOnce)
+            .map_err(|error| unavailable(&error))?;
         let output = command.output().map_err(|error| unavailable(&error))?;
         drop(held);
         if output.status.success() {
@@ -211,9 +215,12 @@ fn unavailable(path: &Path, said: &dyn std::fmt::Display) -> SandboxError {
 #[cfg(target_os = "linux")]
 fn launched(launcher: &Binary, confined: &Confined<'_>) -> Result<Launcher, SandboxError> {
     let unavailable = |error: std::io::Error| unavailable(launcher.path(), &error);
-    let arguments = arguments(&Bubblewrap::confinement(confined)?).map_err(unavailable)?;
+    let arguments = arguments(&Bubblewrap::confinement(confined)).map_err(unavailable)?;
+    // Executed from a descriptor above every one the launcher is given.
+    let given = confined.binds.iter().map(|bind| bind.fd);
+    let highest = given.chain([ARGS_FD]).max().unwrap_or(ARGS_FD);
     let (mut command, executed) =
-        super::process::executed_from(launcher.file()).map_err(unavailable)?;
+        super::process::executed_from(launcher.file(), highest).map_err(unavailable)?;
     command
         .args(["--args", &ARGS_FD.to_string(), "--", PROGRAM])
         .args(confined.args)
@@ -260,18 +267,11 @@ fn arguments(arguments: &[OsString]) -> std::io::Result<OwnedFd> {
 
 impl Sandbox for Bubblewrap {
     fn launcher(&self, confined: &Confined<'_>) -> Result<Launcher, SandboxError> {
-        let launcher = self.opened()?;
-        // Whoever may write the launcher decides what confines every connector.
-        let real =
-            std::fs::canonicalize(launcher.path()).unwrap_or_else(|_| launcher.path().into());
-        for written in &confined.grants.write {
-            let resolved = std::fs::canonicalize(written).unwrap_or_else(|_| written.clone());
-            if real.starts_with(&resolved) {
-                return Err(SandboxError::Covers {
-                    path: written.clone(),
-                });
-            }
-        }
-        launched(&launcher, confined)
+        launched(&*self.opened()?, confined)
+    }
+
+    /// The launcher: whoever may write it decides what confines every connector.
+    fn programs(&self) -> Vec<PathBuf> {
+        vec![self.launcher.clone()]
     }
 }

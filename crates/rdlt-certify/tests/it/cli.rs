@@ -974,6 +974,16 @@ async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
         serde_json::from_slice(&granted.stdout).expect("the report is JSON");
     assert_ne!(report["verdict"], "failed", "{report}");
     assert!(directory.path().join("store.db").exists());
+    // Not where a secret directory it names lies: whoever writes there decides its secrets.
+    let guarded = [
+        &common[..],
+        &["--grant-write", store, "--secret-dir", store],
+    ]
+    .concat();
+    let guarded = certify_given(&guarded, &config, &[]).await;
+    assert_eq!(code(&guarded), Some(1));
+    let said = String::from_utf8_lossy(&guarded.stdout);
+    assert!(said.contains("cannot be sandboxed"), "{said}");
 }
 
 #[tokio::test]

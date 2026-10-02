@@ -1,7 +1,11 @@
-use std::os::fd::AsRawFd as _;
+use std::cell::RefCell;
+use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::process::{Command, Stdio};
 
-use super::{inheriting_below, mark_from};
+use super::{
+    Marking, ONE_BY_ONE_CAP, inheriting_only, mark_except, mark_range, marked_one_by_one,
+    marks_at_once,
+};
 
 /// The descriptors a shell started by `command` holds, as it lists them.
 fn held(command: &mut Command) -> Vec<i32> {
@@ -20,64 +24,139 @@ fn held(command: &mut Command) -> Vec<i32> {
 }
 
 /// A file opened without close-on-exec, as a library that knows nothing of the flag opens one,
-/// at a number above any a shell opens for itself.
-fn inheritable() -> std::os::fd::OwnedFd {
+/// at `at` or the first number above it that is free, above any a shell opens for itself.
+fn inheritable(at: RawFd) -> OwnedFd {
+    inheritable_within_limit(at).expect("it is copied high")
+}
+
+/// As [`inheritable`], where the process's limit lets a descriptor be numbered `at`.
+fn inheritable_within_limit(at: RawFd) -> Option<OwnedFd> {
     use nix::fcntl::{FcntlArg, FdFlag, fcntl};
     let file = std::fs::File::open("/dev/null").expect("it opens");
-    let high = fcntl(&file, FcntlArg::F_DUPFD(40)).expect("it is copied high");
+    let high = fcntl(&file, FcntlArg::F_DUPFD(at)).ok()?;
     #[expect(unsafe_code, reason = "the copy fcntl made is owned here alone")]
     // SAFETY: `high` was just returned by `F_DUPFD`, and nothing else owns it.
-    let high = unsafe { std::os::fd::FromRawFd::from_raw_fd(high) };
+    let high: OwnedFd = unsafe { std::os::fd::FromRawFd::from_raw_fd(high) };
     fcntl(&high, FcntlArg::F_SETFD(FdFlag::empty())).expect("the flag clears");
-    high
+    Some(high)
+}
+
+/// Whether `fd` is close-on-exec.
+fn close_on_exec(fd: &OwnedFd) -> bool {
+    let flags = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFD).expect("it is open");
+    flags & libc::FD_CLOEXEC != 0
+}
+
+/// Three inheritable files, numbered in order: one below a given one, the given one, and one
+/// above it.
+fn three() -> (OwnedFd, OwnedFd, OwnedFd) {
+    let below = inheritable(100);
+    let given = inheritable(200);
+    let above = inheritable(300);
+    assert!(below.as_raw_fd() < given.as_raw_fd() && given.as_raw_fd() < above.as_raw_fd());
+    (below, given, above)
 }
 
 #[test]
-fn a_child_inherits_no_descriptor_from_the_number_up() {
-    let open = inheritable();
-    let fd = open.as_raw_fd();
-    let mut plain = Command::new("/bin/sh");
+fn a_child_inherits_the_descriptors_it_is_given_and_none_below_or_above_them() {
+    let (below, given, above) = three();
+    let all = [below.as_raw_fd(), given.as_raw_fd(), above.as_raw_fd()];
+    let plain = held(&mut Command::new("/bin/sh"));
     assert!(
-        held(&mut plain).contains(&fd),
-        "the file is inherited without the hook"
+        all.iter().all(|fd| plain.contains(fd)),
+        "the files are inherited without the hook: {plain:?}"
     );
-    let mut marked = Command::new("/bin/sh");
-    inheriting_below(&mut marked, 3);
-    let kept = held(&mut marked);
-    assert!(!kept.contains(&fd), "{kept:?}");
-    // The parent's own descriptor is as it was: inheritable, and open.
-    let flags = nix::fcntl::fcntl(&open, nix::fcntl::FcntlArg::F_GETFD).expect("it is open");
-    assert_eq!(flags & libc::FD_CLOEXEC, 0);
+    for marking in [Marking::AtOnce, Marking::OrOneByOne] {
+        let mut marked = Command::new("/bin/sh");
+        inheriting_only(&mut marked, &[given.as_raw_fd(), 1], marking);
+        let kept = held(&mut marked);
+        assert!(kept.contains(&given.as_raw_fd()), "{marking:?}: {kept:?}");
+        assert!(!kept.contains(&below.as_raw_fd()), "{marking:?}: {kept:?}");
+        assert!(!kept.contains(&above.as_raw_fd()), "{marking:?}: {kept:?}");
+        // The standard streams are not marked.
+        assert!([0, 1, 2].iter().all(|fd| kept.contains(fd)), "{kept:?}");
+    }
+    // The parent's own descriptors are as they were: inheritable, and open.
+    assert!(!close_on_exec(&below) && !close_on_exec(&above));
 }
 
 #[test]
-fn a_descriptor_below_the_number_is_inherited_still() {
-    let open = inheritable();
-    let fd = open.as_raw_fd();
-    let mut marked = Command::new("/bin/sh");
-    inheriting_below(&mut marked, fd + 1);
-    assert!(held(&mut marked).contains(&fd));
-}
-
-#[test]
-fn marking_one_by_one_marks_what_marking_at_once_does() {
-    let open = inheritable();
-    let fd = open.as_raw_fd();
+fn marking_one_by_one_in_a_child_leaves_what_marking_at_once_does() {
+    let (below, given, above) = three();
+    let kept = [given.as_raw_fd()];
     let mut marked = Command::new("/bin/sh");
     #[expect(
         unsafe_code,
         reason = "the fallback runs in the child as the hook does"
     )]
-    // SAFETY: as `inheriting_below`'s: only async-signal-safe calls, no allocation.
+    // SAFETY: as `inheriting_only`'s: plain system calls, no lock and no allocation.
     unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut marked, || {
-            super::marked_one_by_one(3);
-            Ok(())
+        std::os::unix::process::CommandExt::pre_exec(&mut marked, move || {
+            mark_except(&kept, Marking::OrOneByOne, |_, _| false)
         });
     }
-    assert!(!held(&mut marked).contains(&fd));
-    // And in this process too, where it can be watched: then the flag is put back.
-    mark_from(fd);
-    let flags = nix::fcntl::fcntl(&open, nix::fcntl::FcntlArg::F_GETFD).expect("it is open");
-    assert_ne!(flags & libc::FD_CLOEXEC, 0);
+    let held = held(&mut marked);
+    assert!(held.contains(&given.as_raw_fd()), "{held:?}");
+    assert!(!held.contains(&below.as_raw_fd()), "{held:?}");
+    assert!(!held.contains(&above.as_raw_fd()), "{held:?}");
+}
+
+thread_local! {
+    /// The ranges a test's marking was asked for.
+    static ASKED: RefCell<Vec<(RawFd, RawFd)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Records each range it is asked to mark, and marks none.
+fn recorded(first: RawFd, last: RawFd) -> bool {
+    ASKED.with_borrow_mut(|asked| asked.push((first, last)));
+    true
+}
+
+#[test]
+fn every_descriptor_from_three_up_but_those_given_is_marked() {
+    let max = RawFd::MAX;
+    for (kept, ranges) in [
+        (vec![], vec![(3, max)]),
+        (vec![3], vec![(4, max)]),
+        (vec![3, 4, 5, 10], vec![(6, 9), (11, max)]),
+        (vec![7], vec![(3, 6), (8, max)]),
+        (vec![4, max], vec![(3, 3), (5, max - 1)]),
+    ] {
+        ASKED.with_borrow_mut(Vec::clear);
+        mark_except(&kept, Marking::AtOnce, recorded).expect("marked");
+        assert_eq!(ASKED.with_borrow(Clone::clone), ranges, "{kept:?}");
+    }
+}
+
+#[test]
+fn where_a_range_cannot_be_marked_at_once_the_spawn_fails_or_each_is_marked_as_asked() {
+    let open = inheritable(100);
+    let fd = open.as_raw_fd();
+    let refused = mark_range(fd, fd, Marking::AtOnce, |_, _| false);
+    assert!(refused.is_err());
+    assert!(!close_on_exec(&open), "nothing was marked");
+    mark_range(fd, fd, Marking::OrOneByOne, |_, _| false).expect("marked one by one");
+    assert!(close_on_exec(&open));
+    let refused = mark_except(&[], Marking::AtOnce, |_, _| false);
+    assert!(refused.is_err());
+}
+
+#[test]
+fn the_loop_marks_nothing_from_its_cap_up() {
+    let Some(beyond) = inheritable_within_limit(ONE_BY_ONE_CAP) else {
+        eprintln!("the soft limit is within the cap: no descriptor above it to leave");
+        return;
+    };
+    let at = beyond.as_raw_fd();
+    marked_one_by_one(at, at);
+    assert!(!close_on_exec(&beyond), "{at} is above the cap");
+    let within = inheritable(100);
+    marked_one_by_one(within.as_raw_fd(), within.as_raw_fd());
+    assert!(close_on_exec(&within));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn this_kernel_marks_a_range_at_once() {
+    assert!(marks_at_once());
 }

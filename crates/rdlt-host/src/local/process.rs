@@ -43,6 +43,10 @@ pub(crate) const SOCKET_FD: RawFd = 3;
 /// program at.
 pub(crate) const PROGRAM_FD: RawFd = 4;
 
+/// The descriptor a sandbox's launcher finds the first path its connector is granted at, the
+/// others following in turn: those between [`PROGRAM_FD`] and this are the launcher's own.
+pub(crate) const GRANTS_FD: RawFd = 10;
+
 /// How a connector's process is started.
 #[derive(Clone, Debug)]
 pub(crate) struct Launch {
@@ -60,8 +64,10 @@ pub(crate) struct Launch {
     pub(crate) kills: Option<Kills>,
     /// What is told its process id once it is spawned, when anything is.
     pub(crate) told: Option<Told>,
-    /// The sandbox it runs in and what it is granted there; none for a trusted binary.
+    /// The sandbox it runs in; none for a trusted binary.
     pub(crate) confinement: Option<Confinement>,
+    /// What its placement holds: what it is granted, and the programs it runs.
+    pub(crate) lease: Arc<Lease>,
 }
 
 /// What a host is told of each connector it spawns: its process id.
@@ -93,8 +99,6 @@ pub(crate) struct Process {
     tail: Arc<Tail>,
     /// What the connector was sent that nothing it says may show.
     redactions: Redactions,
-    /// What the connector was granted, held while it runs.
-    _lease: Option<Arc<Lease>>,
 }
 
 impl Drop for Process {
@@ -113,6 +117,8 @@ pub(crate) struct Steps {
     stdout: fn(std::process::ChildStdout) -> std::io::Result<ChildStdout>,
     stderr: fn(std::process::ChildStderr) -> std::io::Result<ChildStderr>,
     thread: group::Threaded,
+    /// Whether the kernel marks descriptors close-on-exec in one call.
+    marks_at_once: fn() -> bool,
 }
 
 impl Steps {
@@ -120,13 +126,14 @@ impl Steps {
         stdout: ChildStdout::from_std,
         stderr: ChildStderr::from_std,
         thread: |thread, owning| thread.spawn(owning),
+        marks_at_once: rdlt_adopt::marks_at_once,
     };
 }
 
 impl Process {
     /// Spawns `launch`'s binary serving the other end of `socket` at file descriptor 3, its
-    /// output scrubbed of `redactions`, taking `steps`: a connector that started and a step then fails is killed and reaped before the
-    /// failure is returned.
+    /// output scrubbed of `redactions`, taking `steps`: a connector that started and a step
+    /// then fails is killed and reaped before the failure is returned.
     fn spawn_by(
         launch: &Launch,
         socket: OwnedFd,
@@ -138,7 +145,7 @@ impl Process {
             command,
             stops,
             held,
-        } = command(launch, socket)?;
+        } = command(launch, socket, steps.marks_at_once)?;
         let (exit_sender, exit) = watch::channel(None);
         let killed = launch.kills.as_ref().map(Kills::next);
         let starting = group::Starting {
@@ -149,6 +156,7 @@ impl Process {
             },
             killed: killed.clone(),
             exit: exit_sender,
+            lease: Arc::clone(&launch.lease),
         };
         // Owned from here on by its thread: whatever fails next, the connector does not
         // outlive it.
@@ -174,10 +182,6 @@ impl Process {
             stderr_closed,
             tail,
             redactions,
-            _lease: launch
-                .confinement
-                .as_ref()
-                .map(|held| Arc::clone(&held.lease)),
         })
     }
 
