@@ -209,9 +209,14 @@ impl Error {
     }
 }
 
+/// Shows the context as connector text is shown: it may name a stream or table a connector
+/// chose.
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.context)
+        f.write_str(&rdlt_connector::text::shown(
+            &self.context,
+            MAX_ERROR_TEXT_BYTES,
+        ))
     }
 }
 
