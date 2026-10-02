@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use arrow_array::RecordBatch;
+use rdlt_connector::cost::Allocations;
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorError, Destination, DestinationSession,
     DestinationWriter, OpenContext, OpenedSession, Receipt, Result, SegmentId, TableChange,
@@ -71,7 +72,9 @@ impl Load {
     /// Charges `batch`; an error no load retries once it is beyond what the load takes.
     fn charge(&self, batch: &RecordBatch) -> Result<()> {
         let rows = spend(&self.rows, batch.num_rows());
-        let bytes = spend(&self.bytes, batch.get_array_memory_size());
+        // What the batch keeps alive, as the cost model counts it: each allocation once.
+        let held = Allocations::of(batch).bytes();
+        let bytes = spend(&self.bytes, usize::try_from(held).unwrap_or(usize::MAX));
         if rows && bytes {
             return Ok(());
         }

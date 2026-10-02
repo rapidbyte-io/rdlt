@@ -20,8 +20,8 @@ pub(crate) const PUBLISHED_ROWS: usize = 100_000;
 #[cfg(feature = "kill")]
 pub(crate) const LOADED_ROWS: usize = 100_000;
 
-/// Bytes a kill clause loads of a source, all the writes of a load together, as the batches
-/// written take them in memory.
+/// Bytes a kill clause loads of a source, all the writes of a load together: what each batch
+/// written keeps alive, as the cost model counts it, an allocation once a batch.
 #[cfg(feature = "kill")]
 pub(crate) const LOADED_BYTES: usize = 64 << 20;
 

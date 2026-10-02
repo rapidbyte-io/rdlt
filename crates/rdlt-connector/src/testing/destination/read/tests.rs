@@ -18,7 +18,7 @@ use arrow_array::{
 use arrow_buffer::ScalarBuffer;
 use arrow_schema::{DataType, Field, UnionFields};
 
-use super::{Published, Read, whole, widest};
+use super::{Published, Read, flat, whole};
 use crate::testing::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS};
 
 fn batch(column: ArrayRef) -> RecordBatch {
@@ -55,8 +55,8 @@ fn zero_width() -> ArrayRef {
     Arc::new(FixedSizeBinaryArray::try_from_sparse_iter_with_size(values.into_iter(), 0).unwrap())
 }
 
-/// Every kind of column certification writes, in every encoding, and its widest value's bytes.
-fn admitted() -> Vec<(ArrayRef, usize)> {
+/// Every kind of column certification writes, in every encoding.
+fn admitted() -> Vec<ArrayRef> {
     let views = {
         let mut views = StringViewBuilder::new();
         views.append_value("short");
@@ -71,46 +71,38 @@ fn admitted() -> Vec<(ArrayRef, usize)> {
     };
     let ints: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None, Some(3)]));
     let uuid = FixedSizeBinaryArray::try_from_iter([[7_u8; 16]].into_iter()).unwrap();
-    let mut columns: Vec<(ArrayRef, usize)> = vec![
-        (Arc::clone(&ints), 8),
-        (Arc::new(Int32Array::from(vec![1, 2])), 4),
-        (Arc::new(Float64Array::from(vec![1.5])), 8),
-        (Arc::new(BooleanArray::from(vec![Some(true), None])), 1),
-        (Arc::new(NullArray::new(3)), 1),
-        (
-            Arc::new(TimestampMicrosecondArray::from(vec![1]).with_timezone("UTC")),
-            8,
-        ),
-        (Arc::new(Date32Array::from(vec![1])), 4),
-        (Arc::new(Decimal128Array::from(vec![1])), 16),
-        (Arc::new(uuid), 16),
-        (texts(), 6),
-        (Arc::new(LargeStringArray::from(vec!["ab", "abcd"])), 4),
-        (Arc::new(BinaryArray::from_iter_values([b"abc"])), 3),
-        (Arc::new(LargeBinaryArray::from_iter_values([b"abcde"])), 5),
-        (Arc::clone(&views), 40),
-        (Arc::clone(&binary_views), 20),
-        (Arc::new(StringArray::from(Vec::<&str>::new())), 0),
-        // A slice is as wide as the values it holds, not those before it.
-        (texts().slice(0, 2), 3),
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::clone(&ints),
+        Arc::new(Int32Array::from(vec![1, 2])),
+        Arc::new(Float64Array::from(vec![1.5])),
+        Arc::new(BooleanArray::from(vec![Some(true), None])),
+        Arc::new(NullArray::new(3)),
+        Arc::new(TimestampMicrosecondArray::from(vec![1]).with_timezone("UTC")),
+        Arc::new(Date32Array::from(vec![1])),
+        Arc::new(Decimal128Array::from(vec![1])),
+        Arc::new(uuid),
+        texts(),
+        Arc::new(LargeStringArray::from(vec!["ab", "abcd"])),
+        Arc::new(BinaryArray::from_iter_values([b"abc"])),
+        Arc::new(LargeBinaryArray::from_iter_values([b"abcde"])),
+        Arc::clone(&views),
+        Arc::clone(&binary_views),
+        Arc::new(StringArray::from(Vec::<&str>::new())),
+        texts().slice(0, 2),
     ];
     for values in [texts(), Arc::clone(&ints), Arc::clone(&views)] {
-        let wide = widest(values.as_ref()).unwrap();
         columns.extend([
-            (dictionary::<Int8Type>(Arc::clone(&values), 3), wide),
-            (dictionary::<Int16Type>(Arc::clone(&values), 3), wide),
-            (dictionary::<Int32Type>(Arc::clone(&values), 3), wide),
-            (dictionary::<Int64Type>(Arc::clone(&values), 3), wide),
-            (dictionary::<UInt8Type>(Arc::clone(&values), 3), wide),
-            (dictionary::<UInt16Type>(Arc::clone(&values), 3), wide),
-            (dictionary::<UInt32Type>(Arc::clone(&values), 3), wide),
-            (dictionary::<UInt64Type>(Arc::clone(&values), 3), wide),
-        ]);
-        let first = widest(values.slice(0, 1).as_ref()).unwrap();
-        columns.extend([
-            (run::<Int16Type>(values.as_ref(), 3), first),
-            (run::<Int32Type>(values.as_ref(), 3), first),
-            (run::<Int64Type>(values.as_ref(), 3), first),
+            dictionary::<Int8Type>(Arc::clone(&values), 3),
+            dictionary::<Int16Type>(Arc::clone(&values), 3),
+            dictionary::<Int32Type>(Arc::clone(&values), 3),
+            dictionary::<Int64Type>(Arc::clone(&values), 3),
+            dictionary::<UInt8Type>(Arc::clone(&values), 3),
+            dictionary::<UInt16Type>(Arc::clone(&values), 3),
+            dictionary::<UInt32Type>(Arc::clone(&values), 3),
+            dictionary::<UInt64Type>(Arc::clone(&values), 3),
+            run::<Int16Type>(values.as_ref(), 3),
+            run::<Int32Type>(values.as_ref(), 3),
+            run::<Int64Type>(values.as_ref(), 3),
         ]);
     }
     columns
@@ -185,9 +177,9 @@ fn item() -> Arc<Field> {
 
 #[test]
 fn every_kind_of_column_certification_writes_is_admitted_in_every_encoding() {
-    for (column, wide) in admitted() {
+    for column in admitted() {
         let kind = column.data_type().clone();
-        assert_eq!(widest(column.as_ref()), Some(wide), "{kind}");
+        assert!(flat(column.as_ref()), "{kind}");
         let published = Published::admit(vec![batch(column)]);
         assert!(published.is_ok(), "{kind}: {published:?}");
     }
@@ -197,7 +189,7 @@ fn every_kind_of_column_certification_writes_is_admitted_in_every_encoding() {
 fn a_nested_column_or_one_of_no_width_is_refused_whatever_encodes_it() {
     for column in refused() {
         let kind = column.data_type().clone();
-        assert_eq!(widest(column.as_ref()), None, "{kind}");
+        assert!(!flat(column.as_ref()), "{kind}");
         assert!(Published::admit(vec![batch(column)]).is_err(), "{kind}");
     }
 }
@@ -262,16 +254,22 @@ fn a_read_back_is_admitted_up_to_what_its_rows_expand_to_whatever_encodes_them()
         }),
     ];
     for encoded in encodings {
-        let (within, beyond) = (encoded(side), encoded(side + 1));
+        // Each row takes its value and, at most, an offset, a key and a run beside it.
+        let (within, beyond) = (encoded(side - 64), encoded(side + 1));
         let kind = within.data_type().clone();
         assert!(Published::admit(vec![batch(within)]).is_ok(), "{kind}");
         assert!(Published::admit(vec![batch(beyond)]).is_err(), "{kind}");
     }
-    // The limit is of a read-back, all its batches and columns together.
-    let half = || batch(dictionary::<Int32Type>(Arc::clone(&long), side / 2));
+}
+
+#[test]
+fn a_read_back_is_admitted_up_to_what_all_its_batches_and_columns_expand_to() {
+    let side = PUBLISHED_BYTES.isqrt();
+    let long: ArrayRef = Arc::new(StringArray::from(vec!["x".repeat(side)]));
+    let half = || batch(dictionary::<Int32Type>(Arc::clone(&long), side / 2 - 32));
     assert!(Published::admit(vec![half(), half()]).is_ok());
-    let more = batch(Arc::new(BooleanArray::from(vec![true])));
-    assert!(Published::admit(vec![half(), half(), more]).is_err());
+    let more = || batch(dictionary::<Int32Type>(Arc::clone(&long), 66));
+    assert!(Published::admit(vec![half(), half(), more()]).is_err());
     let columns = [
         (
             "a",
@@ -283,7 +281,11 @@ fn a_read_back_is_admitted_up_to_what_its_rows_expand_to_whatever_encodes_them()
             dictionary::<Int32Type>(Arc::clone(&long), side / 2),
             true,
         ),
-        ("c", Arc::new(NullArray::new(side / 2)), true),
+        (
+            "c",
+            dictionary::<Int32Type>(Arc::clone(&long), side / 2),
+            true,
+        ),
     ];
     let wide = RecordBatch::try_from_iter_with_nullable(columns).unwrap();
     assert!(Published::admit(vec![wide]).is_err());
@@ -302,7 +304,7 @@ fn a_cast_holding_a_value_for_each_row_is_whole_and_no_other_is() {
 
 #[test]
 fn a_column_read_back_is_cast_to_what_was_written_a_value_for_each_row() {
-    for (column, _) in admitted() {
+    for column in admitted() {
         let kind = column.data_type().clone();
         let batch = batch(Arc::clone(&column));
         let read = Read(&batch);
