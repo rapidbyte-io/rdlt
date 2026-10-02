@@ -1,4 +1,4 @@
-# ADR 0039: A budget that charges what is held and what it becomes
+# ADR 0039: A budget that reserves what is held and is never passed
 
 Status: accepted, 2026-10-01.
 
@@ -24,7 +24,43 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
 ## Decision
 
-- **One cost model** (`rdlt_connector::cost`). A batch costs the larger of two measures.
+- **The budget is divided into shares, and no share is ever passed.** The engine reserves bytes
+  of its memory budget for everything it holds of what connectors send. A reservation is made
+  only where it fits its share; none is cut down to fit, none is made without asking, and none
+  grows.
+
+  | Share | Of the budget | At the default 256 MiB | Holds |
+  |---|---|---|---|
+  | cursors | 1/64 | 4 MiB | the cursors of seals waiting for a commit |
+  | log | 1/16 | 16 MiB | seal and commit frames from before they are encoded until they are appended |
+  | reads | 1/4 | 64 MiB | what reads keep beside their events: a decoder's schema and dictionaries |
+  | data | the rest, 43/64 | 172 MiB | pushes waiting to be lowered, and what lowering makes of them |
+
+  - Within the data, one request for lowering takes a quarter of the budget at most, and
+    pushes never take the last quarter: a request for lowering always fits once the pieces
+    before it are written.
+  - **A request that could never fit is refused, typed.** A push that keeps alive more than
+    pushes may take fails its read with `push_exceeds_budget`; one row that takes more to lower
+    than a request may fails its write with `row_exceeds_budget`; a cursor beyond the cursors'
+    share and what a read keeps beyond its part fail the read with `limit_exceeded`, naming
+    `cursor bytes` and `read kept bytes`; a seal's or commit's frame beyond the log's share
+    fails the commit with `log_frame_exceeds_budget`.
+  - **Control never waits behind data.** A checkpoint's cursor is reserved from the cursors'
+    share, which no push can use. A commit is due once the waiting cursors take half of it, and
+    as soon as a cursor waits for room in it.
+  - **A read keeps a bounded part.** Each read may keep the reads' share divided by the
+    partitions read at once, 4 MiB at the defaults, so all reads together never pass the share.
+    A read that would keep more fails at the frame that would pass it. Sixteen reads keeping
+    all they may leave pushes and checkpoints flowing, which tests hold on the ledger, through
+    the engine's admission and through a host's read of a served source.
+  - **No hold and wait.** A task waits on the budget only while it holds nothing that only
+    its own progress releases. A partition waits for lowering's bytes while it holds pushes,
+    and nothing waits for pushes while it holds anything; whoever holds what lowering reserved,
+    a piece on the compute pool, on its lane or in the log's writer, needs no budget to release
+    it. A partition lowers and hands to its lane whatever it reserved before it waits for more.
+  - Requests of one share are admitted in arrival order, lowering before pushes.
+  - The shares are limits of the engine, with the names above, in `limits.rs`.
+- **One cost model** (`rdlt_connector::cost`). A batch has two measures.
   - **Held**: the bytes of every allocation the batch reaches, validity, data, child and
     dictionary buffers alike, each counted once however many arrays or slices share it. A slice
     costs the buffer it was cut from; a frame's batch costs the allocation the decoder made for
@@ -41,12 +77,15 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - Every Arrow type has a cost: the match over types has no default.
   - A batch holds its schema too: each field, nested ones too, with its name, its metadata and
     its time zone, counted once for the batches that share it. A decoder returns the schema it
-    holds for an equal schema sent again, so the batches of a sender that sends its schema
-    before each keep one schema alive between them.
-- **A batch being lowered costs what its table stores it as.** A push is admitted before its
-  table is known, by what it holds and what its own types expand to. Once its plan is found the
-  cost model takes, for each column, the type of the table's column and whether the destination
-  stores it as text, and measures what lowering holds at once.
+    holds for a schema message the same, byte for byte, as the one that schema came from, so the
+    batches of a sender that sends its schema before each keep one schema alive between them.
+    Schemas that only compare equal are not shared: they may name their dictionaries by other
+    ids.
+- **A push is admitted for what it holds, and lowered for what it becomes.** A push of Arrow
+  batches reserves what it keeps alive when it is admitted, before its table is known. Once
+  its plan is found the cost model takes, for each column, the type of the table's column and
+  whether the destination stores it as text, and measures what lowering holds at once, which
+  each piece reserves before it is lowered.
   - A value costs itself decoded, itself converted where the column's type differs, and its
     text where the column is stored as text: a byte of an 8-bit integer is 33 in a column of
     256-bit decimals.
@@ -64,31 +103,44 @@ budget before it is held, or bounded by a limit with a typed refusal.
     as it is and as text, and the heap's peak is held to the charge.
 - **What is lowered at once is what was reserved.** A unit's plan is found first, and the unit
   is then cut by that cost, a piece at a time, on the compute pool.
-  - A piece is at most a sixteenth of the budget, or one row where a row takes more. One row
-    that takes more than the whole budget fails the write with `row_exceeds_budget`, naming
-    the budget, before it is lowered.
-  - Each piece reserves its cost before it is lowered. Pieces whose bytes were there at once
-    are lowered together, eight at most; once lowered a piece holds what it kept alive that
-    its unit did not, in place of what was reserved.
-  - A unit gives back what it was charged beyond its source once its pieces reserve their own.
-  - A normalized unit's tables are known only once it is split, so it is cut before, as it
-    arrives, and what lowering its parts takes is reserved before they are lowered.
-  - A chunk of JSON reserves twice its text before it is parsed, and what its batch costs is
-    charged in that place once it is built.
+  - A piece is at most a sixteenth of the budget, or one row where a row takes more, up to the
+    quarter a request may take. Where the load keeps a log a piece is half as large, and
+    reserves as much again for its frame there.
+  - Each piece reserves its cost before it is lowered. A partition waits for one piece's bytes
+    only while it holds no piece it has not handed to its lane; beside that piece it lowers as
+    many more as the budget has room for at once, eight at most. How many pieces are lowered
+    at once follows from what the budget admits.
+  - Once lowered a piece holds what it kept alive that its unit did not, in place of what was
+    reserved, and its frame what the frame takes. The unit's own reservation stays with its
+    last piece until that is written.
+  - **Normalized streams follow the same rule.** A unit's tables are known only once it is
+    split, so it is measured twice. It is first cut, as it arrives, into pieces whose split makes
+    no more than a piece: each row with its lineage, each item an array holds with its own, for
+    the two copies a split may hold. Each such piece then asks the budget once for all a
+    request may take, is split, and each of its parts is cut by its own table: its columns as
+    the table stores them, the nulls of the columns it lacks and the metadata lowering adds.
+    What the piece asked for beyond what its split made and an allowance for two of its parts'
+    pieces is given back. Its parts' pieces are lowered inside the allowance: the partition
+    waits for its own pieces to be written, never for the budget, while it holds them.
+  - A change stream's unit is judged and cut where it lies: it is split into its data and its
+    change columns, and loses the rows its stream ignores, only as each piece is lowered.
+  - A JSON push reserves three times its text when it is admitted: the text, and twice it for
+    the batches it is shredded into, which are paid for before they are built. Once shredded
+    the push holds what its batches keep alive, where that is less.
 - **No request waits on the budget for ever.**
   - Every wait ends at a deadline on the engine's clock, `memory_wait`, an hour by default,
     longer than any call of a destination may take by default. The attempt then fails with
-    `ErrorKind::Memory`, coded `memory_budget_wait_exceeded` and retryable, saying what held
-    the budget: the bytes in flight, those waiting for a commit and those reads keep.
+    `ErrorKind::Memory`, coded `memory_budget_wait_exceeded` and retryable, saying what the
+    request was for, how long it waited and what each share held.
+  - That kind and code are the engine's own. A read whose event waited until the deadline
+    fails as the budget's whatever error its source ends with, and no connector's error is
+    given the kind or keeps the code.
   - An admission may refuse an event (`Admission::admit` returns the refusal): the send fails
-    with it, and so does the read, in process and through a host.
+    with it, and so does the read, in process and through a host. It may refuse what a read
+    keeps too (`Admission::charge`).
   - A request nobody waits for any more leaves the queue at once.
-  - The ledger counts apart what a write releases, what a commit releases and what reads
-    keep. Work already begun asks ahead of work not begun, and waits only for bytes queued
-    for a write: what a unit being lowered holds is released by no other unit's waiting. A
-    row that alone takes more than a piece is reserved beyond the budget one at a time.
-  - A read's dictionaries are released before their replacement is charged, and however the
-    read ends: returned, failed, stopped or dropped.
+  - A read's schema and dictionaries are released before their replacement is charged, and
+    however the read ends: returned, failed, stopped or dropped.
 - **A measure bounded by the rows and by what they name once.** What rows expand to is measured
   without a vector of rows or values.
   - A stretch of fixed-width values, of strings or bytes by offsets, or of lists and structs of
@@ -129,8 +181,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     wire's `Cut` bounds a frame.
   - *How much text do these values render to?* `cost::text_bytes`, the same widths, for the
     engine's builders.
-  - *What is a push charged?* `Rendering::charge`: the larger of the two for a batch, its text
-    for JSON. The engine's admission and certification's source clauses both call it.
+  - *What is a push charged?* By the engine's admission, what it keeps alive, and three times
+    its text for JSON. By certification's source clauses, `Rendering::charge`: the larger of
+    what a batch keeps alive and what it expands to, for a holder that lowers nothing.
   - *Do a schema's columns and depth fit?* The emitter counts them on the Arrow schema; the wire
     counts them on the schema's message.
 - **The engine materializes only what rows name.** Before anything converts a column, its
@@ -145,12 +198,13 @@ budget before it is held, or bounded by a limit with a typed refusal.
   allocations it does not share with its input where those are fewer: a builder's spare capacity
   stays the overdraft ADR 0024 documents.
 - **Admission takes the event.** `Admission::admit` is given the event, and the engine costs it:
-  a push by the model, a checkpoint by its cursor's bytes.
+  a push by what it keeps alive, a checkpoint by its cursor's bytes.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
   allocations it keeps alive that the unit did not hold; the unit's permits hold its source
   until its last piece is flushed. The constant columns of a load count for none.
-- **A row that fits no budget is refused.** A row that alone expands beyond the whole budget
-  fails the read with `row_exceeds_budget`, on the wire and in process.
+- **A row that fits no request is refused.** A row that alone takes more to lower than a request
+  may take of the budget fails the write with `row_exceeds_budget`, naming the limit, before it
+  is lowered.
 - **In-process pushes meet the wire's limits** at the `Emitter`, each at the wire's default.
   - Rows, nesting depth and nested columns are checked for every batch a source pushes, the
     last two on the schema, without recursion, before anything walks the batch.
@@ -175,24 +229,47 @@ budget before it is held, or bounded by a limit with a typed refusal.
     partition, however many a source sends. A seal with rows starts a new epoch of its partition,
     and a waiting seal reaches the coordinator only through a message queued in its own epoch,
     so no commit records a position past rows still on their way.
-  - A commit is due once waiting cursors hold a quarter of the budget.
-  - The budget keeps bytes only a commit releases apart from bytes in flight: they wait for room,
-    but neither keep a push of the whole budget out nor press writers to flush.
+  - A commit is due once waiting cursors hold half the cursors' share, and once one waits for
+    room in it.
   - How far a read is behind, and that a stream's partitions changed, are each partition's
     newest state, with one message queued a partition. Signals heard together plan a stream
     once (ADR 0032).
   - A decoder's dictionaries are within one frame's bytes together, and the host charges them
-    while the decoder holds them.
+    and the decoder's schema, with the message it came from, to the read's part of what reads
+    keep while the decoder holds them.
   - A JSON push's records are found by a scan that keeps a span a chunk, not a range a record.
   - Row identity reads integers, temporal values and decimals where they lie.
   - A state record's value is base64 text wherever the record is JSON, and the log's seal and
-    commit frames are charged before they are encoded, for the cursors and state they record,
-    until they are appended (ADR 0029).
+    commit frames are reserved from the log's share before they are encoded, for the cursors
+    and state they record twice over, and hold what they take until they are appended
+    (ADR 0029).
   - A served write refuses more than four frames' bytes between two flushes, and the host's
     writer flushes before it would send more.
   - A column a batch holds nothing in is built as the destination stores it. Its nulls are part
     of what each row costs, so a piece is cut by them and reserves them before they are built:
-    rows times the table's width is bounded by the budget.
+    rows times the table's width is bounded by the budget, through a plan that normalizes too.
+- **The bound is tested as the system runs.** Every run of the engine's integration tests fails
+  where it reserved more than its budget. Loads that widen columns, fill wide tables and
+  normalize into several tables run with sixteen partitions on a compute pool of four threads,
+  which takes turns between pieces, one of them logged and replayed after a commit its
+  destination missed: each holds its heap's peak to the bound below. Schedules on a paused
+  clock hold the deadline, for every share that waits.
+
+## The bound
+
+A run never reserves more than its memory budget, and its heap stays within the budget, a fifth
+of it and 32 MiB, beside three things that are not reserved: the push each read's source holds
+before it is admitted, what a JSON push's records become beyond three times their text, and
+what replay stages.
+
+- The first is one push or one frame a partition, within the wire's limits.
+- The second is the shredder's to bound, by its limit on cells: a megabyte of records of one
+  key each, three hundred keys in turn, becomes 241 MB under a budget of 16 MiB, of which
+  10 MiB are reserved.
+- The fifth and the 32 MiB are measured, not derived: what the runtime, the channels and the
+  builders' spare capacity take. The loads above peak far below them: 5 MB of heap where 300 KB
+  pushed fill a table of two hundred 256-bit columns, 9 MB where sixteen million small integers
+  widen to 256 bits, and 22 MB with sixteen partitions doing so at once, under 16 MiB.
 
 This supersedes ADR 0024 where it charges memory at its decoded size.
 
@@ -201,29 +278,36 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
 - A push that keeps more alive than its rows take is charged for all of it, each push for
   itself: a source that pushes slices of one large buffer loads slower than one that pushes
   whole batches, and a slice of a buffer beyond 64 MiB is refused in process.
-- Nested data is charged its JSON text whether or not its table stores it natively, so less of
-  it is in flight at once.
+- Nested data is measured by its JSON text whether or not its table stores it natively, so it
+  is lowered in smaller pieces.
 - A unit whose every column is converted is charged for its source and what it was lowered to
   until its last piece is flushed.
-- A push larger than the budget still takes the whole budget and is worked through a piece at a
-  time. What it keeps alive is bounded by the frame, batch-bytes and dictionary limits, not by
-  the budget.
-- What lowering reserves is a sum, the value decoded, converted and rendered, where the admission
-  of a push charges the largest of them: a column stored as text is lowered in smaller pieces.
-- The budget may be exceeded by the pieces being lowered while nothing is queued for a write, one
-  for each partition at work, and by one row that takes more than a piece.
-- A normalized unit is not cut again by its tables' types: a part whose lowering takes more than
-  the budget reserves the whole budget and is lowered all the same.
-- A budget that only reads hold, as dictionaries of a frame's bytes across many partitions under
-  a small budget do, fails the attempt at the deadline, with what held it, where it hung.
+- A push that keeps alive more than pushes may take of the budget, 108 MiB of the default, is
+  refused; so is JSON text beyond a third of that. What a push keeps alive is bounded by the
+  frame, batch-bytes and dictionary limits besides.
+- What lowering reserves is a sum, the value decoded, converted and rendered: a column stored as
+  text is lowered in smaller pieces.
+- A budget is useful only where its shares hold what a load sends: a cursor needs a 64th of
+  it, a commit's frame a 16th, a read's schema and dictionaries a 64th at the default sixteen
+  partitions. The simulator and the crash tests run with a quarter of a mebibyte for that
+  reason, where they ran with a kilobyte.
+- A read through a host whose dictionaries take more than its part of the reads' share fails,
+  though the wire would carry them: at the defaults 4 MiB a read, where a frame may hold
+  64 MiB. More memory or fewer partitions raise the part.
+- A normalized piece holds a quarter of the budget from before its split until its parts are
+  cut, so a little over two normalize at once while pushes fill their share; and a unit of a
+  few rows takes three trips to the compute pool before its parts are lowered in one.
+- A waiting request of an hour is the last resort: nothing but a destination that stops
+  writing, or a commit that never lands, makes one wait.
 - A destination whose calls may take longer than an hour needs `memory_wait` raised with them.
-- `ErrorKind` gained `Memory`, and `Admission::admit` returns a `Result`.
-- A cut costs a trip to the compute pool a piece, and a normalized unit two more a unit.
+- `ErrorKind` gained `Memory`, and `Admission::admit` and `Admission::charge` return a
+  `Result`.
+- A cut costs a trip to the compute pool a piece.
 - The dictionary and staged limits follow the frame limit: one and four frames' bytes.
 - An array-form JSON push is scanned for its elements twice: once to chunk it, once as each
   chunk is parsed.
-- Checkpoints wait for room in the budget. A source whose cursors are megabytes commits more
-  often.
+- Checkpoints wait for room in the cursors' share. A source whose cursors are megabytes commits
+  more often, and one whose cursor is beyond the share cannot be loaded under that budget.
 - A batch decoded from a frame is charged for the dictionaries its keys name, which the host
   also charges while the decoder holds them: both hold them, and for as long as both do they
   are charged twice.
@@ -236,5 +320,5 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
   whose list views nest and name the same items is weighed to its end before it is refused.
 - Not bounded here: how much one push may expand to in total, which costs CPU and destination
   storage in proportion; the nulls of a nested column's fields the shredder builds, and what a
-  chunk of sparse JSON records becomes beyond twice its text, which the shredder's limit on
-  cells bounds; and what replay stages.
+  JSON push of sparse records becomes beyond three times its text, which the shredder's limit
+  on cells bounds; and what replay stages.
