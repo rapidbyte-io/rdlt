@@ -19,7 +19,7 @@ use rdlt_connector::{
 use rdlt_engine::{ErrorKind, RetryPolicy, RunOutcome, RunStatus};
 
 use crate::HEAP;
-use crate::support::destinations::{Gate, gated, null};
+use crate::support::destinations::{Gate, gated, null, stalling};
 use crate::support::making::{Step, Steps, making};
 use crate::support::{commit_every, engine, pipeline, stream};
 
@@ -343,6 +343,44 @@ async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_h
         elapsed >= WAIT && elapsed < WAIT + Duration::from_secs(30),
         "{elapsed:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_that_stops_writing_fails_the_attempt_at_the_deadline_within_the_budget() {
+    const WAIT: Duration = Duration::from_secs(120);
+    // No write returns, so nothing lowered is ever released: pieces queue on the lane, deep
+    // enough to take them, until the budget has no room for another, and the wait for room ends
+    // at the deadline, the stuck write with the attempt.
+    let steps: Steps = Arc::new(|step| {
+        let small = Int8Array::from(vec![1_i8; 1_000_000]);
+        (step < 64).then(|| Step::Batch(batch(Arc::new(small))))
+    });
+    let config = commit_every(1_000_000_000)
+        .memory(BUDGET)
+        .memory_wait(WAIT)
+        .retry(RetryPolicy::default().max_attempts(1))
+        .lanes(1)
+        .lane_window(10_000);
+    let started = tokio::time::Instant::now();
+    let outcome = engine(config)
+        .run(
+            pipeline("lowering_stalled", [stream("events")]),
+            making("lowering_stalled", steps).await,
+            stalling().await,
+        )
+        .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Memory, Some("memory_budget_wait_exceeded"))
+    );
+    assert!(error.is_retryable());
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= WAIT && elapsed < WAIT + Duration::from_secs(30),
+        "{elapsed:?}"
+    );
+    assert!(outcome.report.peak_memory <= BUDGET);
 }
 
 #[tokio::test(start_paused = true)]
