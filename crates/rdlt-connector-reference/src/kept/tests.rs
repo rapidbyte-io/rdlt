@@ -211,17 +211,25 @@ fn a_keeper_file_that_is_too_large_or_no_regular_file_is_refused_unread() {
 #[test]
 fn keepers_are_shared_by_name_and_by_nothing_else() {
     let registry: super::Registry<u64> = super::Registry::new();
-    let (named, again) = (registry.named(Some("group")), registry.named(Some("group")));
+    let (named, again) = (
+        registry.named(None, Some("group")),
+        registry.named(None, Some("group")),
+    );
     named.advance("orders", &partition("p0"), 9).unwrap();
     assert_eq!(again.position("orders", &partition("p0")), Some(9));
     // Another name's keeper, the default keeper included, holds none of it; and every source
     // naming none reaches the default keeper, as a broker's default group.
-    let (other, default) = (registry.named(Some("other")), registry.named(None));
+    let (other, default) = (
+        registry.named(None, Some("other")),
+        registry.named(None, None),
+    );
     assert_eq!(other.position("orders", &partition("p0")), None);
     assert_eq!(default.position("orders", &partition("p0")), None);
     default.advance("orders", &partition("p0"), 3).unwrap();
     assert_eq!(
-        registry.named(None).position("orders", &partition("p0")),
+        registry
+            .named(None, None)
+            .position("orders", &partition("p0")),
         Some(3)
     );
     assert_eq!(named.position("orders", &partition("p0")), Some(9));
@@ -441,20 +449,22 @@ fn every_path_to_one_keeper_file_names_one_keeper() {
     std::fs::create_dir(&dir).unwrap();
     std::os::unix::fs::symlink(&dir, base.path().join("linked")).unwrap();
     let registry: super::Registry<u64> = super::Registry::new();
-    let first = registry.at(&dir.join("slot.json")).unwrap();
+    let first = registry.at(None, &dir.join("slot.json")).unwrap();
     for spelled in [
         dir.join(".").join("slot.json"),
         dir.join("..").join("keepers").join("slot.json"),
         base.path().join("linked").join("slot.json"),
     ] {
-        let again = registry.at(&spelled).unwrap();
+        let again = registry.at(None, &spelled).unwrap();
         assert!(std::sync::Arc::ptr_eq(&first, &again), "{spelled:?}");
     }
     // Another file of the directory, and the same name in another directory, are other keepers.
-    let other = registry.at(&dir.join("other.json")).unwrap();
+    let other = registry.at(None, &dir.join("other.json")).unwrap();
     assert!(!std::sync::Arc::ptr_eq(&first, &other));
     let elsewhere = crate::scratch::tempdir().unwrap();
-    let apart = registry.at(&elsewhere.path().join("slot.json")).unwrap();
+    let apart = registry
+        .at(None, &elsewhere.path().join("slot.json"))
+        .unwrap();
     assert!(!std::sync::Arc::ptr_eq(&first, &apart));
 }
 
@@ -502,14 +512,14 @@ fn a_lock_a_link_stands_in_for_is_refused() {
 fn a_group_and_a_file_never_share_a_keeper_whatever_they_are_named() {
     let dir = crate::scratch::tempdir().unwrap();
     let registry: super::Registry<u64> = super::Registry::new();
-    let file = registry.at(&dir.path().join("slot.json")).unwrap();
+    let file = registry.at(None, &dir.path().join("slot.json")).unwrap();
     file.advance("orders", &partition("p0"), 7).unwrap();
     // A group named as a file's key was once spelled.
     let (device, inode) = crate::rooted::Dir::ambient(dir.path())
         .unwrap()
         .identity()
         .unwrap();
-    let group = registry.named(Some(&format!("file:{device}:{inode}:slot.json")));
+    let group = registry.named(None, Some(&format!("file:{device}:{inode}:slot.json")));
     assert_eq!(group.position("orders", &partition("p0")), None);
     assert!(!std::sync::Arc::ptr_eq(&file, &group));
 }
@@ -523,9 +533,167 @@ fn a_keeper_file_whose_name_is_no_text_is_refused() {
     let dir = crate::scratch::tempdir().unwrap();
     let registry: super::Registry<u64> = super::Registry::new();
     let named = dir.path().join(OsStr::from_bytes(b"slot\xff.json"));
-    let Err(error) = registry.at(&named) else {
+    let Err(error) = registry.at(None, &named) else {
         panic!("a name that is no text was taken");
     };
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn a_named_keeper_is_its_host_s_and_no_other_host_s() {
+    let registry: super::Registry<u64> = super::Registry::new();
+    let p0 = partition("p0");
+    let ours = registry.named(Some("a.example"), Some("group"));
+    ours.advance("orders", &p0, 9).unwrap();
+    // The same host and name reach the same keeper.
+    let again = registry.named(Some("a.example"), Some("group"));
+    assert!(std::sync::Arc::ptr_eq(&ours, &again));
+    // Another host's keeper of that name, the process's own host's, and each one's default
+    // keeper hold none of it.
+    let apart = [
+        registry.named(Some("b.example"), Some("group")),
+        registry.named(None, Some("group")),
+        registry.named(Some("a.example"), None),
+        registry.named(Some("b.example"), None),
+        registry.named(None, None),
+        registry.named(Some("a.example"), Some("a.example")),
+        registry.named(Some("group"), Some("a.example")),
+    ];
+    for (place, other) in apart.iter().enumerate() {
+        assert_eq!(other.position("orders", &p0), None, "{place}");
+        other.advance("orders", &p0, 1).unwrap();
+    }
+    for (place, other) in apart.iter().enumerate() {
+        for later in &apart[place + 1..] {
+            assert!(!std::sync::Arc::ptr_eq(other, later), "{place}");
+        }
+    }
+    assert_eq!(ours.position("orders", &p0), Some(9));
+    assert_eq!(registry.kept(), 8);
+}
+
+#[test]
+fn a_named_keeper_is_freed_with_the_last_source_that_holds_it() {
+    let registry: super::Registry<u64> = super::Registry::new();
+    let p0 = partition("p0");
+    let first = registry.named(Some("a.example"), Some("group"));
+    let second = registry.named(Some("a.example"), Some("group"));
+    let other = registry.named(Some("b.example"), Some("group"));
+    first.advance("orders", &p0, 9).unwrap();
+    other.advance("orders", &p0, 4).unwrap();
+    assert_eq!(registry.kept(), 2);
+    // One holder left: the keeper stays, with what it holds.
+    drop(first);
+    let third = registry.named(Some("a.example"), Some("group"));
+    assert_eq!(third.position("orders", &p0), Some(9));
+    assert_eq!(registry.kept(), 2);
+    // None left: the keeper goes, and the name is a new keeper's; another host's stays. The
+    // name itself is forgotten when a keeper is next asked for.
+    drop((second, third));
+    let again = registry.named(Some("b.example"), Some("group"));
+    assert_eq!(registry.kept(), 1);
+    assert_eq!(again.position("orders", &p0), Some(4));
+    let anew = registry.named(Some("a.example"), Some("group"));
+    assert_eq!(anew.position("orders", &p0), None);
+    assert_eq!(registry.kept(), 2);
+    drop((anew, other, again));
+    let own = registry.named(None, Some("group"));
+    assert_eq!(registry.kept(), 1);
+    // A keeper the process's own host names is kept for the process, between its sources.
+    own.advance("orders", &p0, 7).unwrap();
+    drop(own);
+    let default = registry.named(None, None);
+    assert_eq!(registry.kept(), 2);
+    drop(default);
+    let own = registry.named(None, Some("group"));
+    assert_eq!(own.position("orders", &p0), Some(7));
+    assert_eq!(registry.kept(), 2);
+}
+
+#[test]
+fn a_keeper_file_is_one_host_s_and_freed_with_the_last_source_that_holds_it() {
+    let dir = crate::scratch::tempdir().unwrap();
+    let path = dir.path().join("orders.slot");
+    let registry: super::Registry<u64> = super::Registry::new();
+    let p0 = partition("p0");
+    let ours = registry.at(Some("a.example"), &path).unwrap();
+    let again = registry.at(Some("a.example"), &path).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&ours, &again));
+    ours.advance("orders", &p0, 9).unwrap();
+    // The file is its keeper's alone: another host naming it, and the process's own, are
+    // refused for as long as it is held, and share nothing.
+    for host in [Some("b.example"), None] {
+        let Err(refused) = registry.at(host, &path) else {
+            panic!("{host:?} shares the file");
+        };
+        assert_eq!(refused.kind(), std::io::ErrorKind::ResourceBusy, "{host:?}");
+    }
+    assert_eq!(registry.kept(), 1);
+    drop(again);
+    assert!(registry.at(Some("b.example"), &path).is_err());
+    // Freed with its last holder, the file is the next keeper's, and holds what was kept.
+    drop(ours);
+    let next = registry.at(Some("b.example"), &path).unwrap();
+    assert_eq!(next.position("orders", &p0), Some(9));
+    assert_eq!(registry.kept(), 1);
+    // Asking for a file's keeper forgets the names of keepers that are gone, a named one's too.
+    let named = registry.named(Some("b.example"), Some("group"));
+    assert_eq!(registry.kept(), 2);
+    drop((next, named));
+    let _other = registry.at(None, &dir.path().join("other.slot")).unwrap();
+    assert_eq!(registry.kept(), 1);
+}
+
+#[test]
+fn a_keeper_says_when_it_was_opened_on_both_clocks() {
+    let before = (tokio::time::Instant::now(), std::time::SystemTime::now());
+    let kept: Kept<u64> = Kept::default();
+    let (at, wall) = kept.opened();
+    assert!(at >= before.0 && at <= tokio::time::Instant::now());
+    assert!(wall >= before.1 && wall <= std::time::SystemTime::now());
+    assert_eq!(kept.opened(), (at, wall));
+    let dir = crate::scratch::tempdir().unwrap();
+    let filed: Kept<u64> = Kept::keeping(&dir.path().join("orders.slot")).unwrap();
+    assert!(filed.opened().0 >= at && filed.opened().1 >= wall);
+}
+
+#[test]
+fn a_keeper_file_says_how_long_it_was_kept_before_each_process_that_opens_it() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let dir = crate::scratch::tempdir().unwrap();
+    let path = dir.path().join("orders.slot");
+    let lock = dir.path().join(".orders.slot.lock");
+    let millis =
+        |at: SystemTime| u64::try_from(at.duration_since(UNIX_EPOCH).unwrap().as_millis()).unwrap();
+    let made = || millis(std::fs::metadata(&lock).unwrap().modified().unwrap());
+    // A file first kept now was kept next to no time: since its lock was made.
+    let first: Kept<u64> = Kept::keeping(&path).unwrap();
+    let began = made();
+    let kept = Duration::from_millis(millis(first.opened().1) - began);
+    assert_eq!(first.kept_for(), Some(kept));
+    assert!(kept < Duration::from_secs(5), "{kept:?}");
+    // The moment survives the keeper's writes, which put its own file anew.
+    first.advance("orders", &partition("p0"), 9).unwrap();
+    first.advance("orders", &partition("p0"), 10).unwrap();
+    assert_eq!(made(), began);
+    drop(first);
+    std::thread::sleep(Duration::from_millis(30));
+    // The next process finds the file kept since then.
+    let next: Kept<u64> = Kept::keeping(&path).unwrap();
+    assert_eq!(made(), began);
+    let since = millis(next.opened().1) - began;
+    assert!(since >= 30, "{since}");
+    assert_eq!(next.kept_for(), Some(Duration::from_millis(since)));
+    assert_eq!(next.position("orders", &partition("p0")), Some(10));
+    drop(next);
+    // A moment the calendar puts after now, as a clock set back leaves, is no time kept.
+    let later = SystemTime::now() + Duration::from_secs(60);
+    let touched = std::fs::File::options().write(true).open(&lock).unwrap();
+    touched.set_modified(later).unwrap();
+    drop(touched);
+    let ahead: Kept<u64> = Kept::keeping(&path).unwrap();
+    assert_eq!(ahead.kept_for(), Some(Duration::ZERO));
+    // A keeper kept in no file begins with its process.
+    assert_eq!(Kept::<u64>::default().kept_for(), None);
 }

@@ -251,3 +251,23 @@ async fn a_host_is_heard_for_where_its_source_says_a_read_started_and_for_no_rea
     let report = client.committed(committed("kept", "idle", asked));
     report.await.expect("where an idle read started is heard");
 }
+
+#[tokio::test]
+async fn a_start_a_growing_log_has_yet_to_reach_is_tried_again_and_its_host_not_heard_for_it() {
+    // A log that grows and keeps its group nowhere cannot tell an offset an earlier process
+    // issued from one nobody did: it refuses neither for good, and vouches for neither.
+    let log = serde_json::json!({ "seed": 3, "group": "ahead_start", "streams": [
+        { "name": "orders", "partitions": 1, "messages": 40, "per_second": 1 },
+    ]});
+    let served = Served::new().with_source(acknowledging_source_factory::<LogSource>());
+    let mut client = configured(served, &log).await;
+    let forged = cursor(r#"{"next":1000000}"#);
+    let before = standing(&mut client, "orders", "p0").await;
+    let read = read_from(&mut client, "orders", "p0", Some(forged.clone())).await;
+    let refused = carried(&read.expect_err("the start is ahead of the log"));
+    assert_eq!(refused.kind(), ConnectorErrorKind::Transient, "{refused}");
+    assert_eq!(refused.code(), Some("cursor_ahead"), "{refused}");
+    let report = client.committed(committed("orders", "p0", forged));
+    unheard(report.await, "a start the log has yet to reach");
+    assert_eq!(standing(&mut client, "orders", "p0").await, before);
+}

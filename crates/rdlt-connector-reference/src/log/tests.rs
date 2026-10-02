@@ -11,11 +11,11 @@ use serde_json::{Value, json};
 use super::{LogSource, Logged, LoggedStream, MIN_WAIT, Offset, message};
 use crate::limits::{MAX_MESSAGE_ROWS, MAX_PARTITIONS, MAX_PER_SECOND};
 
-fn events() -> StreamName {
+pub(super) fn events() -> StreamName {
     StreamName::new("events").expect("a valid stream")
 }
 
-fn p(index: u32) -> PartitionId {
+pub(super) fn p(index: u32) -> PartitionId {
     PartitionId::parse(format!("p{index}")).expect("a valid partition")
 }
 
@@ -30,23 +30,23 @@ async fn connect(stream: &Value, group: &str) -> Box<dyn Source> {
         .expect("the source connects")
 }
 
-fn offset(next: u64) -> Cursor {
+pub(super) fn offset(next: u64) -> Cursor {
     Cursor::encode(1, &Offset { next }).expect("an offset encodes")
 }
 
 /// What a read sent: the offsets it pushed, its checkpoints, how far behind it said it was, and
 /// how often it asked for a new plan.
 #[derive(Debug, Default)]
-struct Sent {
-    offsets: Vec<u64>,
-    checkpoints: Vec<u64>,
+pub(super) struct Sent {
+    pub(super) offsets: Vec<u64>,
+    pub(super) checkpoints: Vec<u64>,
     behind: Vec<u64>,
     replans: usize,
 }
 
 /// A read of partition 0 from `cursor`, which follows the log until `stop_after` has passed where
 /// that is set, and how it ended.
-async fn read(
+pub(super) async fn read(
     source: &dyn Source,
     cursor: Option<Cursor>,
     stop_after: Option<Duration>,
@@ -352,7 +352,7 @@ async fn an_offset_of_a_partition_the_stream_never_has_is_not_committed() {
         assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{partition}");
     }
     // A commit naming a partition the stream never has kept none of its offsets.
-    let factory = source_factory::<LogSource>();
+    let factory = acknowledging_source_factory::<LogSource>();
     let (_, reader) = factory
         .connect_acknowledging(config(&stream, "members"), ConnectContext::new())
         .await
@@ -500,7 +500,8 @@ fn a_following_read_past_the_head_of_a_fast_log_waits_and_stops_when_asked() {
     for cursor in [u64::MAX, u64::MAX - 1, 100_000_000_000_000_000] {
         let ended = followed(MAX_PER_SECOND, cursor);
         let (ok, offsets) = ended.unwrap_or_else(|| panic!("the read from {cursor} never ended"));
-        assert!(ok, "{cursor}");
+        // Stopped before its start arrived, the read sent nothing and did not end cleanly.
+        assert!(!ok, "{cursor}");
         assert!(offsets.is_empty(), "{cursor}: {offsets:?}");
     }
 }
@@ -578,50 +579,4 @@ async fn a_group_s_name_is_any_but_the_empty_one() {
     ] {
         connect(&forgets, name).await;
     }
-}
-
-#[test]
-fn a_group_s_logs_begin_once_and_apart_from_those_of_a_group_named_as_its_file() {
-    let dir = crate::scratch::tempdir().expect("a temporary directory");
-    let path = dir.path().join("events.group");
-    let kept = super::GROUPS.at(&path).expect("the group's file");
-    let named = super::GROUPS.named(Some(&format!("file:{}", path.display())));
-    let began = super::origin(&kept);
-    std::thread::sleep(Duration::from_millis(2));
-    let later = super::origin(&named);
-    assert!(later > began, "the groups share when their logs began");
-    // Every source of a group, however it reaches the group, finds the same beginning.
-    let again = super::GROUPS.at(&dir.path().join(".").join("events.group"));
-    assert_eq!(super::origin(&again.expect("the same file")), began);
-    assert_eq!(super::origin(&named), later);
-}
-
-/// What a read of a log that does not follow pushes, in a runtime of its own whose clock is
-/// paused: the offsets of a source of `group` holding five messages and gaining ten a second.
-fn read_alone(group: &'static str) -> Vec<u64> {
-    let reading = std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .start_paused(true)
-            .build()
-            .expect("a runtime");
-        runtime.block_on(async {
-            let stream = json!({
-                "name": "events", "partitions": 1, "messages": 5, "per_second": 10,
-            });
-            let source = connect(&stream, group).await;
-            let (ended, sent) = read(source.as_ref(), None, None).await;
-            ended.expect("the read ends");
-            sent.offsets
-        })
-    });
-    reading.join().expect("the read's thread ends")
-}
-
-#[test]
-fn a_group_s_logs_grow_from_when_the_group_was_first_connected_not_another_s() {
-    assert_eq!(read_alone("grows_first"), [0, 1, 2, 3, 4]);
-    // Time passes for the process, in which another group's source was connected already.
-    std::thread::sleep(Duration::from_millis(350));
-    assert_eq!(read_alone("grows_second"), [0, 1, 2, 3, 4]);
 }

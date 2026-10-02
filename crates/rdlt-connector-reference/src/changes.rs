@@ -129,7 +129,7 @@ pub struct ChangesSource {
 impl SourceConnector for ChangesSource {
     type Config = ChangesConfig;
 
-    async fn connect(config: ChangesConfig, _context: &ConnectContext) -> Result<Self> {
+    async fn connect(config: ChangesConfig, context: &ConnectContext) -> Result<Self> {
         for stream in &config.streams {
             StreamName::new(&stream.name).config(format!("stream name {:?}", stream.name))?;
             stream.bounded()?;
@@ -148,8 +148,11 @@ impl SourceConnector for ChangesSource {
             seed: config.seed,
             streams: config.streams,
             slot: match &config.slot_path {
-                Some(path) => slot::at(path).config(format!("slot {}", path.display()))?,
-                None => slot::named(config.slot.as_deref()),
+                Some(path) => {
+                    let kept = slot::at(context.host(), path);
+                    kept.config(format!("slot {}", path.display()))?
+                }
+                None => slot::named(context.host(), config.slot.as_deref()),
             },
         })
     }
