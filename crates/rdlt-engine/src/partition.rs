@@ -161,9 +161,9 @@ pub(crate) async fn run(mut job: PartitionJob, context: PartitionContext) -> Res
         .flatten();
     match end {
         Some(state) => {
-            let seal = ingested
-                .open
-                .seal(job.index, state, None, CursorHold::default());
+            // A cursor the read ended at waits for its commit as a checkpoint's does.
+            let held = CursorHold::reserve(&context.budget, &context.cancel, &state).await;
+            let seal = ingested.open.seal(job.index, state, None, held?);
             context.report(Progress::Sealed(seal))?;
         }
         None => abandon(&ingested.open, &context).await?,

@@ -4,7 +4,11 @@ use std::fmt;
 
 use rdlt_connector::{PartitionState, Permit, SegmentId};
 
+use tokio_util::sync::CancellationToken;
+
+use crate::budget::{Denied, MemoryBudget};
 use crate::cost::Admitted;
+use crate::error::Error;
 
 /// What a partition tells the commit coordinator.
 #[derive(Debug, PartialEq)]
@@ -122,6 +126,36 @@ impl CursorHold {
     /// A hold of what `permit` holds, where the engine's admission issued it.
     pub(crate) fn new(permit: Option<Permit>) -> Self {
         Self(permit.and_then(Admitted::of))
+    }
+
+    /// A hold of the bytes of `state`'s cursor, reserved from `budget`'s cursors' share.
+    ///
+    /// It is for a seal the engine makes itself that records a cursor: no checkpoint admitted
+    /// it, and it waits for its commit as one would. The wait ends when `cancel` fires.
+    ///
+    /// # Errors
+    ///
+    /// A cancelled error once `cancel` fires, and the budget's refusal where the cursor is
+    /// beyond its share or the wait reaches the deadline.
+    pub(crate) async fn reserve(
+        budget: &MemoryBudget,
+        cancel: &CancellationToken,
+        state: &PartitionState,
+    ) -> Result<Self, Error> {
+        let PartitionState::Cursor(cursor) = state else {
+            return Ok(Self::default());
+        };
+        let bytes = u64::try_from(cursor.bytes().len()).unwrap_or(u64::MAX);
+        let reserved = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
+            reserved = budget.acquire_cursor(bytes) => reserved,
+        };
+        let reserved = reserved.map_err(|denied| match denied {
+            Denied::Exhausted(exhausted) => Error::memory(exhausted),
+            Denied::TooLarge(large) => Error::internal(large.to_string()),
+        })?;
+        Ok(Self(Some(Box::new(Admitted::new(bytes, reserved)))))
     }
 
     /// The bytes held.
