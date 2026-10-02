@@ -3,11 +3,14 @@
 
 use std::sync::Arc;
 
-use rdlt_connector::{ChildTable, ColumnPath, RootKey, SchemaVersion, TablePath, TableRef};
+use rdlt_connector::{
+    ChildTable, ColumnPath, RootKey, SchemaVersion, StreamName, TablePath, TableRef,
+};
 
 use super::super::model::Model;
 use super::Tables;
 use crate::error::Error;
+use crate::limits::CHILD_TABLES_EXCEEDED;
 use crate::policy::SchemaPolicy;
 
 /// What becomes of rows for a child table that may be new.
@@ -56,8 +59,12 @@ impl Tables {
             || Err(Error::internal("a child table's path is empty")),
             |column| Ok(ColumnPath::from(column.as_ref())),
         )?;
+        let recorded = self.committed.get(&table_path);
+        if recorded.is_none() {
+            self.admit_another(root, &parent.resolver.stream)?;
+        }
         let resolver = parent.resolver.child(root_key, owner)?;
-        let model = Model::from_state(self.committed.get(&table_path))?;
+        let model = Model::from_state(recorded)?;
         let table = TableRef {
             name: self.name(&table_path, &resolver.naming)?,
             path: table_path,
@@ -69,6 +76,26 @@ impl Tables {
         self.create_generation(index).await?;
         self.children.lock().insert(key, index);
         Ok(index)
+    }
+
+    /// Admits a child table state does not record below the table `root`, of `stream`, if the
+    /// table has fewer than its limit; recorded ones are added first, so they count.
+    fn admit_another(&self, root: usize, stream: &StreamName) -> Result<(), Error> {
+        let below = self
+            .children
+            .lock()
+            .range((root, Vec::new())..)
+            .take_while(|((parent, _), _)| *parent == root)
+            .count();
+        let limit = self.growth.child_tables().get();
+        if below < limit {
+            return Ok(());
+        }
+        Err(Error::schema(format!(
+            "stream {stream}: a child table more would pass the limit of {limit}"
+        ))
+        .with_code(CHILD_TABLES_EXCEEDED)
+        .with_stream(stream))
     }
 
     /// Records `paths`, the arrays below the table `root` that its stream's declared schema

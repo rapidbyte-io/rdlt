@@ -19,6 +19,7 @@ use super::model::Model;
 use super::resolve::{Change, Incoming, Resolution, Resolver, Route};
 use super::session::SharedSession;
 use super::{LoweringPlan, TableView};
+use crate::config::GrowthLimits;
 use crate::error::{Error, ErrorKind, Side};
 use crate::naming::Naming;
 use crate::normalize::Shape;
@@ -86,6 +87,8 @@ pub(crate) struct Tables {
     taken: Mutex<BTreeSet<String>>,
     /// Where the records of each table's change are reserved, if anywhere.
     charge: std::sync::OnceLock<records::Charge>,
+    /// What the tables may grow to.
+    growth: GrowthLimits,
 }
 
 /// What a commit records about the tables, and the model revisions it records.
@@ -109,7 +112,14 @@ impl Tables {
             committed: BTreeMap::new(),
             taken: Mutex::new(BTreeSet::new()),
             charge: std::sync::OnceLock::new(),
+            growth: GrowthLimits::default(),
         }
+    }
+
+    /// The same tables, each stream's table holding the child tables `limits` admit.
+    #[must_use]
+    pub(crate) fn growing(self, growth: GrowthLimits) -> Self {
+        Self { growth, ..self }
     }
 
     /// The same tables, over the tables `state` records.

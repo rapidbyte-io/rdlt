@@ -53,7 +53,9 @@ mod wal;
 mod watch;
 
 pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
-pub use config::{BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, RetryPolicy};
+pub use config::{
+    BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, GrowthLimits, RetryPolicy,
+};
 pub use env::{Env, Sleep, SystemEnv};
 pub use error::{Error, ErrorKind, ErrorReport};
 pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, Until, WriteMode};

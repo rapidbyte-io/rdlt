@@ -98,6 +98,9 @@ pub(crate) const TABLE_EXCEEDS_BUDGET: &str = "table_exceeds_budget";
 /// connector may send, its nested fields counted.
 pub(crate) const TABLE_COLUMNS_EXCEEDED: &str = "table_columns_exceeded";
 
+/// The code of the error for a child table beyond those a normalized stream may add.
+pub(crate) const CHILD_TABLES_EXCEEDED: &str = "child_tables_exceeded";
+
 /// The code of the error for a change to a table whose schema version is the last one counts.
 pub(crate) const SCHEMA_VERSION_EXHAUSTED: &str = "schema_version_exhausted";
 
