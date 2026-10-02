@@ -94,18 +94,29 @@ than the model ADR 0037 now sets:
   - The reference connectors' SQLite and files binaries serve the plain factories. The generator
     and memory binaries are built only with the crate's `test-connectors` feature.
   - The memory destination keeps its stores for each host apart.
-- **A host reports committed only what it was sent, and the engine reports only what moved.**
-  - A served source remembers, for each host, a keyed hash of each checkpoint its reads sent, of
-    its stream and partition, 2^18 at most. A report of any other position is refused as
-    transient, with the code `position_unsent`, and nothing of the report is told to the source.
-    The checkpoints are remembered for the process, not the connection, so a host that dials
-    again reports what it committed.
-  - The engine reports a position to a source only where a commit moved the partition from
-    where the destination held it. A partition whose read was sent nothing is sealed where it
-    started, and nothing is reported of it: an acknowledgement says what the source may forget,
-    and telling it again what it was told, or what another process sent, says nothing.
-  - A commit that publishes no row, moves no partition, begins or completes no phase and
-    records no table's change is no progress: it does not reset the count of failed attempts.
+- **A host reports committed what it was sent or reads from, and the engine reports every
+  partition a commit covers.**
+  - A served source remembers, for each host, a keyed hash of each checkpoint its reads sent and
+    of each cursor a read started from, of its stream and partition, 2^18 at most. A checkpoint
+    is the source's statement of a position; the cursor a read starts from is the host's, which
+    by asking to read from there has said everything before it is committed. A report of any
+    other position is refused as transient, with the code `position_unsent`, and nothing of the
+    report is told to the source. The positions are remembered for the process, not the
+    connection, so a host that dials again reports what it committed. One type holds the rule,
+    `rdlt_connector::Sent`, which a source that binds its reports in process uses too.
+  - The engine reports the committed position of every partition a commit covers, moved or
+    not. A partition whose read was sent nothing is sealed where it started, and reported
+    there: so a report that failed, or was lost with the process, is made again by the next
+    attempt, and the source's kept position reaches the committed one though the partition
+    never moves again. A source that refuses every report fails the run once no attempt is
+    left.
+  - A partition that ends done after its last checkpoint is told that checkpoint with the
+    commit that records it done. It has no position after that: a report of it that fails is
+    not made again, as a full read that completed is not read again by the next attempt.
+  - A commit that publishes no row and records nothing but partitions where they stood is no
+    progress: it does not reset the count of failed attempts. Positions are compared byte for
+    byte. A source whose every attempt moves a position still retries without end; a limit
+    on such resets is the control plane's to add.
 - **The pipeline id stays the key of ownership and state.** The host's identity does not scope
   it: state lives in the destination, and must be found from every placement and after a host's
   certificate changes. The hosts named to one connector are one trust domain. Two of them using
@@ -124,9 +135,11 @@ Rejected:
 - **`invalid_message` for a position no read sent.** A connector started again remembers nothing
   it sent, and an engine whose commit was in flight reports checkpoints of the process before.
   That is no fault of the engine's, and the refusal must be one it can retry.
-- **Reporting to a source every position a commit records.** An idle partition's position is
-  one some earlier process sent: a connector that hears only what it sent refuses it, on every
-  retry.
+- **Reporting to a source only the positions a commit moved.** A report that failed once was
+  then never made again while its partition stayed idle, and a source that refused every
+  report gave runs that succeeded.
+- **Hearing a host only for checkpoints.** An idle partition's position is one some earlier
+  process sent: a connector started again would refuse it on every retry.
 - **Scoping pipelines by the host's certificate name.** A renamed or replaced host would lose its
   pipelines' state, and what a destination stores would depend on how it was reached.
 - **Remembering sent checkpoints for a connection.** A dropped connection would refuse the report
@@ -155,12 +168,10 @@ Rejected:
 - A process that may open fewer than about 1,200 files serves fewer sessions, by
   `--max-sessions`, or does not listen.
 - A connector started again between a checkpoint and its report fails that attempt as
-  transient. The next attempt reads from the committed positions, and where it is sent nothing
-  new it reports nothing and completes.
-- **A source's kept position may trail the committed one**, after such a restart or any refused
-  report, until the partition next moves and that position is reported. A source that forgets
-  what it acknowledged serves nothing twice across the gap: the engine reads on from the
-  committed position, which is past what the source was last told.
+  transient. The next attempt reads on from the committed positions, which the new process
+  hears it for, and reports them.
+- A host that asks to read from a position it never committed can then report that position:
+  it is one of the hosts named to the connector, which may already read and write through it.
 - A session used after three newer ones were opened on its connection is gone, and answers
   `no_session`.
 - Certifying a connector over the wire needs a binary built for it, whose `main` names the

@@ -33,10 +33,9 @@ because the source keeps it outside the engine. ADR 0029 moved the clause and it
   of a database's change stream does, answers none before and after it is told.
 - **The wire.** The handshake feature `acknowledged` is accepted where the client offers it and the
   source is served by the factory that answers. A report that a position is committed is heard
-  only for a checkpoint a read sent the reporting host, and the engine reports a position only
-  where a commit moved its partition (ADR 0044). A source's kept position may therefore trail
-  the committed one, after a connector is started again or a report is refused, until the
-  partition next moves. `ReadAcknowledged(stream, partition)` answers the encoded cursor, or none, and
+  for a checkpoint a read sent the reporting host, and for the cursor a read of its started
+  from; the engine reports every partition a commit covers, moved or not, so a report that
+  failed is made again by the next attempt (ADR 0044).
   is refused as unsupported on a connection whose handshake did not accept the feature.
   `rdlt-certify` asks every question over one connection of its own, which never reads or
   commits, as a slot's position is read apart from the connection that moved it. What it answers
