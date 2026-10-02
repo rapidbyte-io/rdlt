@@ -182,6 +182,45 @@ impl ConnectorError {
         self
     }
 
+    /// This error as a host keeps one a connector raised, in process or over the wire: its
+    /// kind, wait and limit, with its code, its message and each of its causes passed through
+    /// `scrubbed` and then [shown](crate::text::shown) within their limits.
+    ///
+    /// At most [`MAX_ERROR_CAUSES`](crate::limits::MAX_ERROR_CAUSES) causes are kept, as text:
+    /// the errors they were are not.
+    #[must_use]
+    pub fn received(&self, scrubbed: &dyn Fn(String) -> String) -> Self {
+        use crate::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
+        let text = |raw: String| crate::text::shown(scrubbed(raw), MAX_ERROR_TEXT_BYTES);
+        let mut causes = Vec::new();
+        let mut cause = StdError::source(self);
+        while let Some(error) = cause {
+            if causes.len() == MAX_ERROR_CAUSES {
+                break;
+            }
+            causes.push(text(error.to_string()));
+            cause = error.source();
+        }
+        let source = causes
+            .into_iter()
+            .rev()
+            .fold(None, |source, text| Some(Box::new(Cause { text, source })));
+        let code = self.code.as_deref().map(|code| {
+            Arc::from(crate::text::shown(
+                scrubbed(code.to_owned()),
+                MAX_ERROR_CODE_BYTES,
+            ))
+        });
+        Self {
+            kind: self.kind,
+            message: text(self.message.clone()),
+            code,
+            retry_after: self.retry_after,
+            limit: self.limit,
+            source: source.map(|cause| cause as Box<dyn StdError + Send + Sync>),
+        }
+    }
+
     /// The failure's kind.
     pub fn kind(&self) -> ConnectorErrorKind {
         self.kind
@@ -209,6 +248,15 @@ impl ConnectorError {
             ConnectorErrorKind::Transient | ConnectorErrorKind::RateLimited
         )
     }
+}
+
+/// A cause of a connector's error, as the text a host keeps of it.
+#[derive(Debug, thiserror::Error)]
+#[error("{text}")]
+struct Cause {
+    text: String,
+    #[source]
+    source: Option<Box<Cause>>,
 }
 
 /// Classifies a foreign error at the call site, keeping it as the cause.

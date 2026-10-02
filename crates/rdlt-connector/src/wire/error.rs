@@ -85,6 +85,7 @@ impl TryFrom<v1::Error> for ConnectorError {
         if let Some(code) = error.code {
             decoded = decoded.with_code(code);
         }
-        Ok(decoded)
+        // Text a connector chose: shown and bounded where it is received.
+        Ok(decoded.received(&|text| text))
     }
 }

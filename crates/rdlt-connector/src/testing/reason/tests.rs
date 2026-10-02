@@ -1,9 +1,10 @@
-use super::{CUT, Listed, Reason};
+use super::{Listed, Reason};
 use crate::testing::limits::{REASON_BYTES, SHOWN_ROWS};
+use crate::text::CUT;
 
 #[test]
 fn a_reason_within_its_limit_is_kept_whole() {
-    let exact = "x".repeat(REASON_BYTES - CUT.len());
+    let exact = "x".repeat(REASON_BYTES);
     for text in ["", "the commit failed", exact.as_str()] {
         assert_eq!(Reason::new(text).as_str(), text);
         assert_eq!(Reason::from(text.to_owned()).as_str(), text);
@@ -13,7 +14,7 @@ fn a_reason_within_its_limit_is_kept_whole() {
 #[test]
 fn a_reason_beyond_its_limit_is_cut_and_marked() {
     for excess in [1, 2, 4096] {
-        let text = "x".repeat(REASON_BYTES - CUT.len() + excess);
+        let text = "x".repeat(REASON_BYTES + excess);
         let reason = Reason::new(&text);
         assert_eq!(reason.len(), REASON_BYTES, "{excess}");
         assert!(reason.ends_with(CUT), "{excess}");
@@ -77,5 +78,20 @@ fn listed_rows_show_their_count_and_only_the_first_few() {
             );
         }
         assert!(listed.len() < 100, "{listed}");
+    }
+}
+
+#[test]
+fn a_reason_shows_what_a_connector_put_in_it_and_obeys_none_of_it() {
+    let hostile = "\u{1b}[2J\u{1b}[H\n  pass S-CHECK\r\u{9b}\u{7f}\u{202e}\u{2028}\u{200b}";
+    for reason in [
+        Reason::new(hostile),
+        Reason::from(hostile),
+        Reason::from(hostile.to_owned()),
+        Reason::new(format_args!("check failed ({hostile})")),
+    ] {
+        assert!(reason.is_ascii(), "{reason:?}");
+        assert!(!reason.chars().any(char::is_control), "{reason:?}");
+        assert!(reason.contains(r"\u{1b}[2J\u{1b}[H\n pass S-CHECK\r\u{9b}\u{7f}\u{202e}"));
     }
 }

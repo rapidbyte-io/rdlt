@@ -469,7 +469,8 @@ proptest! {
             error = error.with_code(code);
         }
         let back = crossed::<_, v1::Error>(&error)?;
-        prop_assert_eq!(carried(&back), carried(&error));
+        // Its text arrives as a host shows it.
+        prop_assert_eq!(carried(&back), carried(&error.received(&|text| text)));
     }
 }
 
@@ -798,14 +799,56 @@ fn a_long_message_crosses_a_status_cut_to_the_control_string_limit() {
         (back.kind(), back.code()),
         (ConnectorErrorKind::Auth, Some("denied"))
     );
-    let limit = usize::try_from(rdlt_wire::limits::CONTROL_STRING_BYTES).expect("fits");
-    let carried = back.to_string();
+    // The connector cuts it to the control string limit, and the host keeps an error's text.
+    let sent = usize::try_from(rdlt_wire::limits::CONTROL_STRING_BYTES).expect("fits");
+    let carried = {
+        use rdlt_wire::prost::Message as _;
+        v1::Error::decode(status.details())
+            .expect("an error")
+            .message
+    };
     assert!(
-        carried.len() <= limit && carried.len() > limit - 4,
+        carried.len() <= sent && carried.len() > sent - 4,
         "{}",
         carried.len()
     );
-    assert!(message.starts_with(&carried));
+    let kept = back.to_string();
+    let limit = crate::limits::MAX_ERROR_TEXT_BYTES;
+    assert!(
+        kept.len() <= limit && kept.len() > limit - 4,
+        "{}",
+        kept.len()
+    );
+    let kept = kept
+        .strip_suffix(crate::text::CUT)
+        .expect("a cut text is marked");
+    assert!(message.starts_with(kept));
+}
+
+#[test]
+fn a_connectors_error_text_is_shown_and_bounded_where_the_wire_delivers_it() {
+    use rdlt_wire::prost::Message as _;
+    use rdlt_wire::tonic::{Code, Status};
+    let hostile = "row 7\r INFO rdlt_engine: all rows verified\n\u{1b}[2J\u{9b}\u{202e}\u{200b}";
+    let plain = |text: &str| text.is_ascii() && !text.chars().any(char::is_control);
+    let sent = v1::Error {
+        kind: v1::ErrorKind::Data as i32,
+        message: hostile.repeat(4096),
+        code: Some(hostile.to_owned()),
+        retry_after: None,
+        limit: None,
+    };
+    let decoded = ConnectorError::try_from(sent.clone()).expect("it decodes");
+    let details = sent.encode_to_vec().into();
+    let carried = super::error(&Status::with_details(Code::Unknown, hostile, details));
+    let transport = super::error(&Status::new(Code::Unknown, hostile.repeat(4096)));
+    for error in [decoded, carried, transport] {
+        let (message, code) = (error.to_string(), error.code().expect("a code").to_owned());
+        assert!(plain(&message) && plain(&code), "{message:?} {code:?}");
+        assert!(message.contains(r"row 7\r INFO rdlt_engine: all rows verified\n\u{1b}[2J"));
+        assert!(message.len() <= crate::limits::MAX_ERROR_TEXT_BYTES);
+        assert!(code.len() <= crate::limits::MAX_ERROR_CODE_BYTES);
+    }
 }
 
 #[test]

@@ -88,6 +88,7 @@ pub mod sqlgen;
 mod state;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod text;
 mod types;
 #[cfg(feature = "wire")]
 pub mod wire;

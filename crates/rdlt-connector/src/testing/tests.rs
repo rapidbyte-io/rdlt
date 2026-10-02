@@ -2027,3 +2027,29 @@ async fn s_ack_does_not_apply_to_a_source_that_tells_nothing_of_where_it_stands(
         "{report}"
     );
 }
+
+#[test]
+fn a_report_that_did_not_pass_panics_with_text_a_terminal_does_not_obey() {
+    let hostile = "db said: \u{1b}[2J\u{1b}[H\n  pass S-CHECK\n  pass S-RESUME\u{1b}]52;c;ZXZpbA==\u{7}\u{202e}";
+    let report = Report {
+        connector: hostile.to_owned(),
+        results: vec![ClauseResult {
+            clause: SOURCE_CLAUSES[0],
+            outcome: Outcome::Failed(hostile.into()),
+            note: Some(hostile.into()),
+        }],
+    };
+    let shown = report.to_string();
+    let obeyed = |text: &str| {
+        text.chars()
+            .any(|c| c != '\n' && (c.is_control() || !c.is_ascii()))
+    };
+    assert!(!obeyed(&shown), "{shown:?}");
+    // The connector, the clause and the verdict: the reason drew no line that reads as a pass.
+    assert_eq!(shown.lines().count(), 3, "{shown}");
+    for assert in [Report::assert_passed, Report::assert_none_failed] {
+        let panic = std::panic::catch_unwind(|| assert(&report)).expect_err("it did not pass");
+        let message = panic.downcast_ref::<String>().expect("a message");
+        assert_eq!(*message, shown);
+    }
+}
