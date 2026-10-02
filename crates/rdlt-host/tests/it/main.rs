@@ -10,6 +10,7 @@ mod descriptors;
 mod flow;
 mod frames;
 mod groups;
+mod guarded;
 mod identity;
 mod kills;
 mod limits;

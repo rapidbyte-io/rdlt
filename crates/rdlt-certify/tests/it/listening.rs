@@ -32,8 +32,10 @@ pub(crate) async fn listening(pki: &Pki) -> (Child, String) {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
+        .process_group(0)
         .spawn()
         .expect("the connector starts");
+    crate::guarded(&child);
     let stdout = child.stdout.take().expect("its output is piped");
     let line = BufReader::new(stdout)
         .lines()

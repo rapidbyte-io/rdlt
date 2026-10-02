@@ -54,8 +54,10 @@ pub(crate) async fn listening(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .kill_on_drop(true)
+        .process_group(0)
         .spawn()
         .expect("the connector starts");
+    crate::support::guarded(&connector);
     let stdout = connector.stdout.take().expect("its output is piped");
     let line = BufReader::new(stdout)
         .lines()

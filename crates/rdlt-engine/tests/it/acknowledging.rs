@@ -87,8 +87,10 @@ impl Listening {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
+            .process_group(0)
             .spawn()
             .expect("the connector starts");
+        crate::support::guarded(&child);
         let stdout = child.stdout.take().expect("its output is piped");
         let line = BufReader::new(stdout).lines().next_line().await;
         let line = line.expect("its output reads").expect("it announces");

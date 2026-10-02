@@ -97,10 +97,12 @@ fn run(config: &Path, failpoints: Option<&str>) -> (ExitStatus, Option<u64>) {
     if let Some(failpoints) = failpoints {
         command.env("FAILPOINTS", failpoints);
     }
-    let output = command
-        .stderr(std::process::Stdio::null())
-        .output()
-        .expect("the harness runs");
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    // In a group of its own, killed when this test's process ends however it ends.
+    let harness = rdlt_testkit::process::guarded(&mut command).expect("the harness starts");
+    let output = harness.wait_with_output().expect("the harness runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let commits = stdout
         .lines()
