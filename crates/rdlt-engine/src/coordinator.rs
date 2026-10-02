@@ -101,8 +101,8 @@ pub(crate) struct PartitionRun {
     answered: u64,
     /// Stops this partition alone.
     stop: CancellationToken,
-    /// Where the destination holds the partition: the cursor its read started from, then the
-    /// position of its last commit that landed.
+    /// Where the partition stood when its read started, then the position of its last commit
+    /// that landed: a commit that records it there again moves it nowhere.
     stands: Option<rdlt_connector::PartitionState>,
 }
 
@@ -381,8 +381,7 @@ impl Coordinator {
         if collected.segments.is_empty() && delta.is_empty() {
             return Ok(());
         }
-        let quiet = begun.is_empty() && completing.is_empty() && tables.revisions.is_empty();
-        let moved = self.moved(&collected, quiet);
+        let progressed = self.progresses(&collected, &delta);
         let streams = self.stream_reports(collected.streams, &completing);
         // The commit records its own receipt, so an attempt that loses the response can still be
         // credited with it once a later attempt reads it back.
@@ -412,7 +411,7 @@ impl Coordinator {
             // sealed it: the commit's frame, queued now, follows them all.
             log.commit(collected.sealed, begun, &meta).await?;
             crash_point!("engine.ack.early");
-            self.acknowledge(&moved.advanced, false).await?;
+            self.acknowledge(&collected.reported, false).await?;
         }
         // The commit completing a stream publishes it: a replace swaps its generation in.
         crash_point!("engine.complete.before", !completing.is_empty());
@@ -421,9 +420,9 @@ impl Coordinator {
         self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing);
         self.record_positions(&collected.positions);
-        self.landed(&collected.positions, moved.progressed);
+        self.landed(&collected.positions, progressed);
         crash_point!("engine.ack.before");
-        self.acknowledge(&moved.advanced, true).await?;
+        self.acknowledge(&collected.reported, true).await?;
         crash_point!("engine.ack.after");
         Ok(())
     }

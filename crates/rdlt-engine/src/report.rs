@@ -159,8 +159,8 @@ impl StreamReport {
 #[derive(Debug, Default)]
 pub(crate) struct AttemptLog {
     pub(crate) committed: Committed,
-    /// Whether a commit of the attempt moved the load on: published a row, moved a partition
-    /// from where it stood, began or completed a stream's phase, or recorded a table's change.
+    /// Whether a commit of the attempt moved the load on: published a row, or recorded anything
+    /// but a partition where it already stood.
     pub(crate) progressed: bool,
     pub(crate) end: Option<AttemptEnd>,
     /// The commit in flight, whose response has not arrived.

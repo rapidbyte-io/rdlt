@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 
 use rdlt_connector::{
-    GenerationId, PartitionState, SegmentSet, StateChange, StateEntry, StateKey, StreamName,
-    TablePath,
+    Cursor, GenerationId, PartitionState, SegmentSet, StateChange, StateEntry, StateKey,
+    StreamName, TablePath,
 };
 
 use super::{Coordinator, KEPT_COMPLETIONS};
@@ -18,6 +18,9 @@ use crate::wal::Sealed;
 pub(super) struct Collected {
     pub(super) segments: SegmentSet,
     pub(super) positions: BTreeMap<usize, PartitionState>,
+    /// Each partition's newest cursor among the seals, which its source is told is committed: a
+    /// partition that ends done after its last checkpoint is still told that checkpoint.
+    pub(super) reported: BTreeMap<usize, Cursor>,
     pub(super) streams: BTreeMap<usize, StreamReport>,
     /// Every seal, as the load's log records them before their commit: empty segments move
     /// their partitions too.
@@ -31,6 +34,7 @@ impl Coordinator {
         let mut collected = Collected {
             segments: SegmentSet::new(),
             positions: BTreeMap::new(),
+            reported: BTreeMap::new(),
             streams: BTreeMap::new(),
             sealed: Vec::new(),
         };
@@ -56,6 +60,9 @@ impl Coordinator {
                 let counts = collected.streams.entry(stream).or_default();
                 counts.deletes_ignored += seal.deletes_ignored;
                 counts.truncates_ignored += seal.truncates_ignored;
+            }
+            if let PartitionState::Cursor(cursor) = &seal.state {
+                collected.reported.insert(seal.partition, cursor.clone());
             }
             collected.positions.insert(seal.partition, seal.state);
         }
@@ -162,13 +169,7 @@ impl Coordinator {
             }
         }
         for (partition, state) in positions {
-            let partition = &self.parts.partitions[*partition];
-            let entry = StateEntry::Partition {
-                stream: self.parts.streams[partition.stream].name.clone(),
-                partition: partition.id.clone(),
-                state: state.clone(),
-            };
-            delta.push(StateChange::Put(entry.to_record()));
+            delta.push(self.position(*partition, state));
         }
         for index in completing {
             let stream = &self.parts.streams[*index];
@@ -188,6 +189,17 @@ impl Coordinator {
             delta.push(StateChange::Put(completed.to_record()));
         }
         delta
+    }
+
+    /// The state change recording that partition `partition` stands at `state`.
+    pub(super) fn position(&self, partition: usize, state: &PartitionState) -> StateChange {
+        let partition = &self.parts.partitions[partition];
+        let entry = StateEntry::Partition {
+            stream: self.parts.streams[partition.stream].name.clone(),
+            partition: partition.id.clone(),
+            state: state.clone(),
+        };
+        StateChange::Put(entry.to_record())
     }
 
     /// The generations a commit ending the cycles of `completing` swaps in.

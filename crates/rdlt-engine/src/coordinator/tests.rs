@@ -1154,3 +1154,79 @@ async fn a_source_that_cannot_read_again_hears_nothing_of_a_commit_its_log_faile
         "the destination saw nothing either"
     );
 }
+
+/// What a commit of one seal of `state`, with `rows` rows, of a partition that started at
+/// offset 5 tells the source, and whether it is progress; `schema` records a table's schema too.
+async fn committed_from_five(
+    state: PartitionState,
+    rows: u64,
+    schema: Option<TableSchema>,
+) -> (Vec<Cursor>, bool) {
+    let started = cursor(5);
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false).starting(Some(&started))],
+    );
+    setup.schema = schema;
+    let (task, harness) = setup.start().await;
+    harness.seal(0, 1, rows, state, None);
+    harness.end(0, false);
+    task.await.unwrap().unwrap();
+    assert_eq!(harness.commit_count(), 1);
+    let told = harness.acks.lock();
+    let told = told.iter().flat_map(|(_, cursors)| cursors);
+    let told = told.map(|(_, cursor)| cursor.clone()).collect();
+    (told, harness.log.lock().progressed)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_is_progress_unless_it_only_records_partitions_where_they_stood() {
+    let at = |next| PartitionState::Cursor(cursor(next));
+    // Sealed where it started, with no row: recorded again, told again, and no progress.
+    assert_eq!(
+        committed_from_five(at(5), 0, None).await,
+        (vec![cursor(5)], false)
+    );
+    // A row, a position that moved, a partition done, or a table's schema: each is progress.
+    assert_eq!(
+        committed_from_five(at(5), 1, None).await,
+        (vec![cursor(5)], true)
+    );
+    assert_eq!(
+        committed_from_five(at(6), 0, None).await,
+        (vec![cursor(6)], true)
+    );
+    assert_eq!(
+        committed_from_five(PartitionState::Done, 0, None).await,
+        (Vec::new(), true)
+    );
+    assert_eq!(
+        committed_from_five(at(5), 0, Some(schema())).await,
+        (vec![cursor(5)], true)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_done_after_its_last_checkpoint_is_still_told_that_checkpoint() {
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .start()
+    .await;
+    // Both seals fall in one commit: state records the partition done, and the source hears
+    // of the last position it sent.
+    harness.seal(0, 1, 0, PartitionState::Cursor(cursor(3)), None);
+    harness.seal(0, 2, 0, PartitionState::Done, None);
+    harness.end(0, false);
+    task.await.unwrap().unwrap();
+    let commits = harness.commits.lock();
+    assert_eq!(
+        without_receipt(&commits[0].state_delta),
+        [position("p0", PartitionState::Done)]
+    );
+    assert_eq!(
+        *harness.acks.lock(),
+        [(name(), vec![(PartitionId::parse("p0").unwrap(), cursor(3))])]
+    );
+}

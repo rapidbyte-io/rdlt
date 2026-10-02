@@ -1,8 +1,8 @@
-//! What the engine tells a source is committed: the positions a commit moved its partitions to,
-//! and nothing of a partition that stayed where it stood.
+//! What the engine tells a source is committed: the position of every partition a commit covers,
+//! moved or not, so a report that failed is made again by the next attempt.
 //!
-//! A served source hears a host only for what it sent that host, so a position another process
-//! sent, or none did, must not be reported.
+//! A served source hears a host for what it sent that host and for where the host reads from,
+//! so a partition that is sent nothing is still reported where its read started.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -22,7 +22,7 @@ use rdlt_testkit::tls::Pki;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
 
-use crate::support::script::{Script, ScriptStream};
+use crate::support::script::{Script, ScriptStream, reconnect};
 use crate::support::{
     commit_every, engine, logging_engine, memory, pipeline, published_json, retrying, stream,
 };
@@ -128,6 +128,16 @@ fn offsets(store: &str) -> Vec<u64> {
     offsets
 }
 
+/// The offset the log source's group file at `group` keeps for the partition of `events`:
+/// what the source was last told is committed, as it outlives the source's process.
+fn kept(group: &Path) -> Option<u64> {
+    let bytes = std::fs::read(group).ok()?;
+    let kept: Vec<(String, String, u64)> =
+        serde_json::from_slice(&bytes).expect("the group file lists its positions");
+    let events = kept.iter().find(|(stream, _, _)| stream == "events");
+    events.map(|(_, _, offset)| *offset)
+}
+
 fn incremental(name: &str) -> rdlt_engine::PipelinePlan {
     pipeline(name, [stream("events").read(ReadMode::Incremental)])
 }
@@ -138,7 +148,8 @@ async fn a_run_with_nothing_new_from_a_served_source_completes_in_one_attempt() 
         for listens in [false, true] {
             let name = format!("idle-{replayable}-{listens}");
             let base = tempfile::tempdir().expect("a temporary directory");
-            let config = log(50, replayable, &base.path().join("group"));
+            let group = base.path().join("group");
+            let config = log(50, replayable, &group);
             let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join("wal")));
             let engine = logging_engine(retrying(3), store);
             let listening = Listening::start().await;
@@ -154,7 +165,9 @@ async fn a_run_with_nothing_new_from_a_served_source_completes_in_one_attempt() 
                 .await;
             assert_eq!(first.report.status, RunStatus::Succeeded, "{name}");
             assert_eq!(first.report.rows, 50, "{name}");
-            // The source's next process sent no host anything: every later position is new to it.
+            assert_eq!(kept(&group), Some(50), "{name}");
+            // The source's next process sent no host anything. It hears the host for where it
+            // reads from, which is all an idle run reports.
             listening.restart().await;
             for _ in 0..2 {
                 let idle = engine
@@ -162,46 +175,101 @@ async fn a_run_with_nothing_new_from_a_served_source_completes_in_one_attempt() 
                     .await;
                 assert_eq!(idle.report.status, RunStatus::Succeeded, "{name}");
                 assert_eq!((idle.report.attempted, idle.report.rows), (1, 0), "{name}");
+                assert_eq!(kept(&group), Some(50), "{name}");
             }
             assert_eq!(offsets(&name), (0..50).collect::<Vec<_>>(), "{name}");
         }
     }
 }
 
+/// The acknowledgements `script` heard, each as its partition and position, sorted.
+fn heard(script: &Script) -> Vec<(String, u64)> {
+    let mut heard: Vec<(String, u64)> = script
+        .acks
+        .lock()
+        .iter()
+        .map(|(_, partition, next)| (partition.clone(), *next))
+        .collect();
+    heard.sort();
+    heard
+}
+
 #[tokio::test(start_paused = true)]
-async fn only_a_partition_a_commit_moved_is_reported_to_its_source() {
+async fn every_partition_a_commit_covers_is_reported_whether_it_moved_or_not() {
     let (script, source) = Script::new(vec![ScriptStream::new("events", 2, 10, 5)])
-        .connect("ack_moved")
+        .connect("ack_covered")
         .await;
     let run = || async {
-        let destination = memory("ack_moved").await;
-        let plan = incremental("ack-moved");
+        let destination = memory("ack_covered").await;
+        let plan = incremental("ack-covered");
         engine(commit_every(100))
             .run(plan, Arc::clone(&source), destination)
             .await
     };
     let first = run().await;
     assert_eq!(first.report.status, RunStatus::Succeeded);
-    let told = script.acks.lock().clone();
-    let partitions: Vec<&str> = told.iter().map(|(_, partition, _)| &**partition).collect();
-    assert_eq!(told.len(), 2, "{told:?}");
-    assert!(told.iter().all(|(_, _, next)| *next == 10), "{told:?}");
-    // One partition gains rows, the other none.
+    let told: Vec<u64> = heard(&script).into_iter().map(|(_, next)| next).collect();
+    assert_eq!(told, [10, 10]);
+    // One partition gains rows, the other none: both are reported, each where it stands.
+    script.acks.lock().clear();
     script.streams[0].rows[0].store(25, Ordering::SeqCst);
     let second = run().await;
     assert_eq!(second.report.status, RunStatus::Succeeded);
     assert_eq!((second.report.attempted, second.report.rows), (1, 15));
-    let after = script.acks.lock().clone();
-    assert_eq!(after.len(), 3, "{after:?}");
-    assert_eq!(
-        after[2],
-        ("events".to_owned(), partitions[0].to_owned(), 25)
-    );
-    // Nothing new anywhere: nothing is reported at all.
+    let mut positions: Vec<u64> = heard(&script).into_iter().map(|(_, next)| next).collect();
+    positions.sort_unstable();
+    assert_eq!(positions, [10, 25]);
+    // Nothing new anywhere: every partition is reported again, in one attempt.
+    script.acks.lock().clear();
     let third = run().await;
     assert_eq!(third.report.status, RunStatus::Succeeded);
     assert_eq!((third.report.attempted, third.report.rows), (1, 0));
-    assert_eq!(script.acks.lock().len(), 3);
+    let mut positions: Vec<u64> = heard(&script).into_iter().map(|(_, next)| next).collect();
+    positions.sort_unstable();
+    assert_eq!(positions, [10, 25]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_report_refused_in_one_attempt_is_made_again_by_the_next_though_nothing_moves() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    for replayable in [true, false] {
+        let name = format!("ack_again_{replayable}");
+        let mut events = ScriptStream::new("events", 1, 10, 5);
+        events.replayable = replayable;
+        let (script, source) = Script::new(vec![events]).connect(&name).await;
+        // The first report is refused, as one lost on its way is.
+        script.limited_acks.store(1, Ordering::SeqCst);
+        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join(&name)));
+        let engine = logging_engine(retrying(3).commit(commit_all()), store);
+        let plan = || incremental(&name.replace('_', "-"));
+        let first = engine
+            .run(plan(), Arc::clone(&source), memory(&name).await)
+            .await;
+        assert_eq!(first.report.status, RunStatus::Succeeded, "{name}");
+        assert_eq!(
+            (first.report.attempted, first.report.rows),
+            (2, 10),
+            "{name}"
+        );
+        // The second attempt read nothing, and still told the source where it stands.
+        assert_eq!(heard(&script), [("p0".to_owned(), 10)], "{name}");
+        assert_eq!(script.early_reads.load(Ordering::SeqCst), 0, "{name}");
+        // The partition never moves again, and the source keeps hearing the same position.
+        for _ in 0..2 {
+            script.acks.lock().clear();
+            let idle = engine
+                .run(plan(), reconnect(&name).await, memory(&name).await)
+                .await;
+            assert_eq!(idle.report.status, RunStatus::Succeeded, "{name}");
+            assert_eq!((idle.report.attempted, idle.report.rows), (1, 0), "{name}");
+            assert_eq!(heard(&script), [("p0".to_owned(), 10)], "{name}");
+        }
+    }
+}
+
+/// A commit policy that commits once, when every read has ended.
+fn commit_all() -> rdlt_engine::CommitPolicy {
+    rdlt_engine::CommitPolicy::new(None, Some(1000), None).expect("a row threshold is valid")
 }
 
 /// When a [`Hooked`] destination calls its hook.
@@ -373,8 +441,8 @@ async fn a_connector_started_again_before_it_hears_of_a_commit_costs_one_attempt
         // The attempt whose report the new process refused, then one that had nothing to report.
         assert_eq!(loaded.report.attempted, 2, "{name}");
         assert_eq!(offsets(&name), (0..50).collect::<Vec<_>>(), "{name}");
-        // The source was never told of the first fifty, and is told the next position reached:
-        // nothing is lost between, and nothing served again.
+        // The attempt that had nothing to read told the source where it stands all the same.
+        assert_eq!(kept(&group), Some(50), "{name}");
         let grown = listening.source(&log(80, replayable, &group)).await;
         let more = engine
             .run(incremental(&name), grown, memory(&name).await)
@@ -387,27 +455,37 @@ async fn a_connector_started_again_before_it_hears_of_a_commit_costs_one_attempt
             .run(incremental(&name), idle, memory(&name).await)
             .await;
         assert_eq!((last.report.attempted, last.report.rows), (1, 0), "{name}");
+        assert_eq!(kept(&group), Some(80), "{name}");
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_source_that_refuses_every_report_fails_one_attempt_and_the_load_still_completes() {
+async fn a_source_that_refuses_every_report_fails_the_run_once_no_attempt_is_left() {
     let (script, source) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
         .connect("ack_refused")
         .await;
     script.limited_acks.store(usize::MAX, Ordering::SeqCst);
-    let retry = rdlt_engine::RetryPolicy::default().max_attempts(3);
-    let outcome = engine(commit_every(100).retry(retry))
-        .run(
-            incremental("ack-refused"),
-            source,
-            memory("ack_refused").await,
-        )
-        .await;
-    // The rows landed, the report of them was refused, and the next attempt had none to make.
-    assert_eq!(outcome.report.status, RunStatus::Succeeded);
-    assert_eq!((outcome.report.attempted, outcome.report.rows), (2, 10));
+    let running = engine(retrying(3).commit(commit_all())).run(
+        incremental("ack-refused"),
+        source,
+        memory("ack_refused").await,
+    );
+    // Bounded on the paused clock: a run that retried without end would fail here at once.
+    let outcome = tokio::time::timeout(Duration::from_secs(600), running).await;
+    let outcome = outcome.expect("the run ends once no attempt is left");
+    // The rows landed in the first attempt. Each attempt reported their position and was
+    // refused; the two after it committed nothing new, so none reset the count of failures.
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    assert_eq!((outcome.report.attempted, outcome.report.rows), (3, 10));
     assert!(script.acks.lock().is_empty());
+    assert_eq!(script.limited_acks.load(Ordering::SeqCst), usize::MAX - 3);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(error.kind(), ErrorKind::Source);
+    assert!(error.is_retryable());
+    assert_eq!(
+        error.stream().map(ToString::to_string).as_deref(),
+        Some("events")
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -431,9 +509,11 @@ async fn attempts_that_commit_no_change_and_fail_end_the_run_once_none_is_left()
         Box::pin(async {})
     });
     let failing = hooked(memory("no_progress").await, At::Close, hook);
-    let outcome = engine(retrying(3))
-        .run(incremental("no-progress"), source, failing)
-        .await;
+    let running = engine(retrying(3)).run(incremental("no-progress"), source, failing);
+    // Bounded on the paused clock: three attempts wait well under a second between them, and a
+    // run that retried without end would fail here at once, not at the suite's own limit.
+    let outcome = tokio::time::timeout(Duration::from_secs(5), running).await;
+    let outcome = outcome.expect("the run ends once no attempt is left");
     assert_eq!(outcome.report.status, RunStatus::Failed);
     assert_eq!(outcome.report.attempted, 3);
     assert_eq!(closes.load(Ordering::SeqCst), 3);
