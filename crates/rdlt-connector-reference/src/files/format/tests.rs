@@ -1283,3 +1283,66 @@ fn an_arrow_file_s_first_message_starts_within_the_alignment_writers_use() {
 }
 
 mod keyed;
+
+#[test]
+fn a_published_line_of_more_than_one_record_is_refused_under_its_code() {
+    let (root, dir) = scratch();
+    let schema: SchemaRef = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    for (lines, code) in [
+        ("{\"id\":1}{\"id\":2}\n", Some("line_invalid")),
+        ("{\"id\":1} {\"id\":2}\n", Some("line_invalid")),
+        ("{\"id\":1}\n{\"id\":2},\n", Some("line_invalid")),
+        ("not json\n", None),
+        ("{\"id\":1\n", None),
+    ] {
+        std::fs::write(root.path().join("rows.jsonl"), lines).unwrap();
+        let refused = FileFormat::Jsonl
+            .read_held(&dir, "rows.jsonl", &schema)
+            .unwrap_err();
+        assert_eq!(refused.kind(), ConnectorErrorKind::Data, "{lines:?}");
+        assert_eq!(refused.code(), code, "{lines:?}: {refused}");
+    }
+}
+
+#[test]
+fn every_line_the_writer_writes_reads_back_as_the_columns_it_holds() {
+    use arrow_array::{ListArray, StringArray, StructArray};
+    let (_root, dir) = scratch();
+    // Names and values that hold what a record is written with.
+    let texts = ["a\"b", "}{", "\\", "[\u{e9}\u{1f600}]", "\n\t", ""];
+    let text: ArrayRef = Arc::new(StringArray::from(
+        texts
+            .iter()
+            .copied()
+            .map(Some)
+            .chain([None])
+            .collect::<Vec<_>>(),
+    ));
+    let rows = text.len();
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(
+        0..i64::try_from(rows).unwrap(),
+    ));
+    let inner = Arc::new(Field::new("in\"ner}", DataType::Utf8, true));
+    let nested: ArrayRef = Arc::new(StructArray::from(vec![(inner, Arc::clone(&text))]));
+    let items = ListArray::from_iter_primitive::<Int64Type, _, _>(
+        (0..rows).map(|row| (row % 2 == 0).then(|| vec![Some(1), None])),
+    );
+    let batch = RecordBatch::try_from_iter_with_nullable([
+        ("id", ids, false),
+        ("te\"xt\\", Arc::clone(&text), true),
+        ("{n}", nested, true),
+        ("[l]", Arc::new(items) as ArrayRef, true),
+    ])
+    .unwrap();
+    FileFormat::Jsonl
+        .write(&dir, "rows.jsonl", std::slice::from_ref(&batch))
+        .unwrap();
+    let schema = batch.schema();
+    let whole = FileFormat::Jsonl.read(&dir, "rows.jsonl", &schema).unwrap();
+    let held = FileFormat::Jsonl
+        .read_held(&dir, "rows.jsonl", &schema)
+        .unwrap();
+    let held = crate::merge::read_back(&schema, &held).unwrap();
+    assert_eq!(whole, [batch]);
+    assert_eq!(held, whole);
+}

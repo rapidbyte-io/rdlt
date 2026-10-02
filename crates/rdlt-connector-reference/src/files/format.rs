@@ -145,7 +145,7 @@ impl FileFormat {
         let file = dir.file(name).map_err(io::listed("opening", &path))?;
         let mut rows = held::Held::new(file, schema);
         let mut batches = Vec::new();
-        while let Some(batch) = rows.next().map_err(|error| decoded(&path, error))? {
+        while let Some(batch) = rows.next().map_err(|error| held(&path, error))? {
             batches.push(batch);
         }
         Ok(batches)
@@ -231,6 +231,18 @@ fn located(path: &std::path::Path, error: ConnectorError) -> ConnectorError {
         None => ConnectorError::new(error.kind(), message),
     };
     located.with_source(error)
+}
+
+/// An error reading published lines of the file at `path`: a line of more than one record is a
+/// data error coded `line_invalid`, anything else as [`decoded`] has it.
+fn held(path: &std::path::Path, error: ArrowError) -> ConnectorError {
+    match error {
+        ArrowError::ParseError(_) => {
+            let message = format!("reading {}: {error}", path.display());
+            ConnectorError::data(message).with_code(io::LINE_INVALID)
+        }
+        error => decoded(path, error),
+    }
 }
 
 /// An Arrow error reading the file at `path`: a line beyond its limit keeps the limit, anything

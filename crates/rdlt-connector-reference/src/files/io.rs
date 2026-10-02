@@ -26,6 +26,9 @@ pub(super) const NOT_PRIVATE: &str = "not_private";
 /// The code of an error for a tree nested deeper than any the connectors make.
 pub(super) const TOO_DEEP: &str = "tree_too_deep";
 
+/// The code of an error for a line of a published file that holds more than one record.
+pub(super) const LINE_INVALID: &str = "line_invalid";
+
 /// The code of an error for a link, a pipe, a device or a directory where a file belongs.
 pub(super) const NOT_A_REGULAR_FILE: &str = "not_a_regular_file";
 
