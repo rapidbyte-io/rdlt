@@ -42,7 +42,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 
 | Clause | Statement | Does not apply when |
 |---|---|---|
-| `P-HANDSHAKE` | the handshake answers the protocol's major version with the connector's spec and limits before any configuration, ignores features it does not know, and refuses another major version as unsupported; the configuration answers the same connector's spec | — |
+| `P-HANDSHAKE` | the handshake answers the protocol's major version with that version, the connector's spec and limits before any configuration, ignores features it does not know, and refuses another major version as unsupported; the configuration answers the same connector's spec | — |
 | `P-ORDER` | a call before the handshake or before the configuration, and a second handshake or configuration, are refused with typed errors | — |
 | `P-ROLE` | a role the connector does not serve is refused as unsupported | the connector serves both roles |
 | `P-LIMITS` | a configuration, a source's cursor or a destination's batch frame beyond the connector's limit is refused with `limit_exceeded` | the connector declares no limit this host can exceed |

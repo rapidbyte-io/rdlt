@@ -24,7 +24,8 @@ call, shares a destination between two pipelines, perturbs the scheduler by seed
 seed alike, runs on many threads nightly, and measures how much of the engine it reaches. The wire
 protocol for connectors that run out of process (`rdlt-wire`) defines its messages, carries Arrow
 batches in Arrow Flight's layout with each schema sent once, and refuses frames beyond its limits
-or malformed ones with a typed error; the contract's types convert to and from its messages under
+or malformed ones with a typed error, and every other message beyond the limit of what its call
+carries; the contract's types convert to and from its messages under
 `rdlt-connector`'s `wire` feature. A connector serves the protocol with `rdlt-connector`'s `serve`
 feature, one handshaken session per connection. The engine loads through it with `rdlt-host`'s
 `RemoteSource` and `RemoteDestination`: errors cross whole, reads and writes keep within credit,
@@ -64,7 +65,8 @@ a time, each piece reserving what its table stores it as before it is lowered, w
 the log, what commits record of tables and what reads keep have shares of the budget no push can
 use, and what a connector is told it may send fits them;
 JSON integers load exactly at any width, as decimals within 76 digits and as JSON text beyond; a
-merge key keeps matching its stored rows or refuses to change type; and an unbounded partition, as
+merge key keeps matching its stored rows or refuses to change type, and a table keeps the merge key
+and change time it was loaded by; and an unbounded partition, as
 a change stream's, resumes from its last checkpoint rather than ending.
 Floats arriving at a column of integers every one of which a float holds exactly land beside them
 as floats, not as JSON text.
