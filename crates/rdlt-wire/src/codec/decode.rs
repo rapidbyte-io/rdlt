@@ -36,13 +36,16 @@ impl Decoder {
         }
     }
 
-    /// The schema the frames that follow are in, from its IPC schema message; dictionaries
-    /// received before it are forgotten.
+    /// The schema the frames that follow are in, from its IPC schema message; the schema and
+    /// dictionaries received before it are forgotten, whether or not this one is admitted.
     ///
     /// # Errors
     ///
     /// A [`WireError`] when the message is too large, malformed, or its schema beyond the limits.
     pub fn schema(&mut self, ipc_schema: &Bytes) -> Result<SchemaRef, WireError> {
+        // A schema that is refused ends the one before it: no batch is read under either.
+        self.columns = None;
+        self.dictionaries.clear();
         self.limits.admit_schema(ipc_schema.len())?;
         let message = message(Frame::Schema, ipc_schema, self.limits.nesting_depth)?;
         let Some(fb) = message.header_as_schema() else {
@@ -52,7 +55,6 @@ impl Decoder {
         let schema = contained(Frame::Schema, || Ok(arrow_ipc::convert::fb_to_schema(fb)))?;
         let schema = Arc::new(schema);
         self.columns = Some(Columns::new(Arc::clone(&schema)));
-        self.dictionaries.clear();
         Ok(schema)
     }
 
