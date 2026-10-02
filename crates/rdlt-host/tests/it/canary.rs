@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::io::Write as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -225,7 +224,7 @@ fn no_secret_a_spawned_connector_says_back_is_in_its_errors_or_the_hosts_log() {
 fn no_secret_a_sandboxed_connector_says_back_is_in_its_errors_or_the_hosts_log() {
     let sandbox = rdlt_host::Bubblewrap::new();
     if let Err(unusable) = sandbox.usable() {
-        writeln!(std::io::stderr(), "skipped: {unusable}").ok();
+        rdlt_testkit::process::without_sandbox(&unusable);
         return;
     }
     let logged = Logged::default();

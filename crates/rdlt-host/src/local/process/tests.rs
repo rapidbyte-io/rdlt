@@ -7,6 +7,7 @@ use rdlt_connector::ConnectorId;
 
 use super::{Launch, Process, Steps};
 use crate::local::binary::Binary;
+use crate::secrets::Redactions;
 
 /// A script that serves nothing and ends only when it is made to.
 fn sleeper(directory: &std::path::Path) -> Launch {
@@ -54,7 +55,7 @@ async fn a_connector_whose_owning_fails_at_any_step_is_killed_reaped_and_forgott
         },
     ];
     for (step, steps) in failures.iter().enumerate() {
-        let spawned = Process::spawn_by(&launch, socket(), steps);
+        let spawned = Process::spawn_by(&launch, socket(), Redactions::new(), steps);
         assert!(spawned.is_err(), "step {step}");
         // This process has no child left: the connector was killed, and reaped.
         let child = waitpid(None, Some(WaitPidFlag::WNOHANG));
@@ -65,7 +66,8 @@ async fn a_connector_whose_owning_fails_at_any_step_is_killed_reaped_and_forgott
         assert_eq!(super::group::threads(), 0, "step {step}");
     }
     // With every step taken the connector is owned, and ends when it is dropped.
-    let process = Process::spawn_by(&launch, socket(), &Steps::TAKEN).expect("it starts");
+    let process =
+        Process::spawn_by(&launch, socket(), Redactions::new(), &Steps::TAKEN).expect("it starts");
     assert_eq!(super::spawned().len(), 1);
     drop(process);
     assert_eq!(super::group::threads(), 1);

@@ -137,8 +137,17 @@ fn a_binary_or_a_directory_another_user_may_write_is_refused() {
             matches!(&found, Err(Unfit::Shared { path, .. }) if *path == shared),
             "{mode:o}"
         );
-        // Named by its path, the binary is its operator's choice wherever it lies.
-        assert!(Binary::at(&shared.join("binary")).is_ok(), "{mode:o}");
+        // Named by its path, it is refused too, unless another user may only add entries to
+        // the directory, which is sticky, and may change none they do not own.
+        let at = Binary::at(&shared.join("binary"));
+        if mode & 0o1000 == 0 {
+            assert!(
+                matches!(&at, Err(Unfit::Shared { path, .. }) if *path == shared),
+                "{mode:o}"
+            );
+        } else {
+            assert!(at.is_ok(), "{mode:o}");
+        }
     }
     for mode in [0o755, 0o700, 0o500, 0o555, 0o711] {
         let path = private.join("fit");
@@ -226,4 +235,56 @@ fn a_script_is_told_from_a_binary_by_its_first_two_bytes() {
         let binary = Binary::at(&path).expect("it opens");
         assert_eq!(binary.is_script().expect("it reads"), script, "{bytes:?}");
     }
+}
+
+#[test]
+fn a_binary_by_path_is_refused_where_a_directory_above_it_or_on_its_link_is_another_users() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let outer = dir(root.path(), "outer");
+    let inner = dir(&outer, "inner");
+    file(&inner.join("binary"), b"x", 0o755);
+    assert!(Binary::at(&inner.join("binary")).is_ok());
+    // A directory two levels up that another user may write.
+    std::fs::set_permissions(&outer, PermissionsExt::from_mode(0o777)).expect("its mode is set");
+    let refused = Binary::at(&inner.join("binary"));
+    assert!(
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == outer),
+        "{refused:?}"
+    );
+    std::fs::set_permissions(&outer, PermissionsExt::from_mode(0o755)).expect("its mode is set");
+    // A link in a directory another user may write, to a binary in one they may not.
+    let open = dir(root.path(), "open");
+    std::os::unix::fs::symlink(inner.join("binary"), open.join("link")).expect("a link");
+    std::fs::set_permissions(&open, PermissionsExt::from_mode(0o777)).expect("its mode is set");
+    let refused = Binary::at(&open.join("link"));
+    assert!(
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == open),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_connector_directory_below_one_another_user_may_write_is_refused() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let outer = dir(root.path(), "outer");
+    let bin = dir(&outer, "bin");
+    file(&bin.join("rdlt-connector-x"), b"x", 0o755);
+    std::fs::set_permissions(&outer, PermissionsExt::from_mode(0o777)).expect("its mode is set");
+    let refused = Binary::named(std::slice::from_ref(&bin), "rdlt-connector-x");
+    assert!(
+        matches!(&refused, Err(Unfit::Shared { path, .. }) if *path == outer),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_file_renamed_over_or_removed_is_no_longer_linked() {
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let path = root.path().join("binary");
+    file(&path, b"x", 0o755);
+    let binary = Binary::at(&path).expect("it opens");
+    assert!(binary.linked().expect("it is asked"));
+    file(&root.path().join("other"), b"y", 0o755);
+    std::fs::rename(root.path().join("other"), &path).expect("it is renamed over");
+    assert!(!binary.linked().expect("it is asked"));
 }

@@ -5,6 +5,7 @@
 
 mod binary;
 mod bubblewrap;
+mod grants;
 pub(crate) mod process;
 mod sandbox;
 
@@ -47,7 +48,10 @@ use crate::wire::Wire;
 #[derive(Clone, Debug)]
 pub struct Local {
     sandbox: Option<Arc<dyn Sandbox>>,
-    grants: Grants,
+    /// Paths every connector may read.
+    shared_reads: Vec<PathBuf>,
+    /// What each connector running now was granted.
+    leases: grants::Leases,
     dirs: Vec<PathBuf>,
     grace: Duration,
     env_passthrough: Vec<String>,
@@ -61,7 +65,8 @@ impl Local {
     fn new(sandbox: Option<Arc<dyn Sandbox>>) -> Self {
         Self {
             sandbox,
-            grants: Grants::default(),
+            shared_reads: Vec::new(),
+            leases: grants::Leases::default(),
             dirs: Vec::new(),
             grace: Duration::from_secs(10),
             env_passthrough: Vec::new(),
@@ -72,8 +77,9 @@ impl Local {
         }
     }
 
-    /// Spawns each connector inside `sandbox`, with nothing of the host's but what is
-    /// [granted](Self::grant_read); stops them with a grace period of 10 s.
+    /// Spawns each connector inside `sandbox`, with nothing of the host's but what is granted
+    /// every connector ([`grant_read`](Self::grant_read)) and what its reference grants it;
+    /// stops them with a grace period of 10 s.
     pub fn sandboxed(sandbox: impl Sandbox + 'static) -> Self {
         Self::new(Some(Arc::new(sandbox)))
     }
@@ -92,24 +98,12 @@ impl Local {
         self
     }
 
-    /// Lets each sandboxed connector read `path`, an absolute path.
+    /// Lets every sandboxed connector read `path`, an absolute path, as a system directory is
+    /// read: what one pipeline's connector alone may read or write is granted on its
+    /// reference ([`ConnectorRef::grant_write`]).
     #[must_use]
     pub fn grant_read(mut self, path: impl Into<PathBuf>) -> Self {
-        self.grants.read.push(path.into());
-        self
-    }
-
-    /// Lets each sandboxed connector read and write `path`, an absolute path.
-    #[must_use]
-    pub fn grant_write(mut self, path: impl Into<PathBuf>) -> Self {
-        self.grants.write.push(path.into());
-        self
-    }
-
-    /// Lets each sandboxed connector reach the network.
-    #[must_use]
-    pub fn grant_network(mut self) -> Self {
-        self.grants.network = NetworkGrant::Granted;
+        self.shared_reads.push(path.into());
         self
     }
 
@@ -177,6 +171,7 @@ impl Local {
             path: true,
             endpoint: false,
             digest: cfg!(target_os = "linux"),
+            grants: true,
             isolation: match self.sandbox {
                 Some(_) => &[Isolation::Process, Isolation::Sandbox],
                 None => &[Isolation::Process],
@@ -211,6 +206,7 @@ impl Local {
     /// reference requires.
     async fn launch(&self, reference: &ConnectorRef) -> Result<Launch, ProviderError> {
         let binary = Arc::new(self.found(reference)?);
+        let found = Arc::clone(&binary);
         let digest = if cfg!(target_os = "linux") {
             let hashed = Arc::clone(&binary);
             let hashing = tokio::task::spawn_blocking(move || hashed.digest());
@@ -237,11 +233,34 @@ impl Local {
             grace: self.grace,
             kills: self.kills.clone(),
             told: self.told.clone(),
-            confinement: self
-                .sandbox
-                .clone()
-                .map(|sandbox| (sandbox, self.grants.clone())),
+            confinement: self.confinement(reference, &found)?,
         })
+    }
+
+    /// What confines the connector `reference` names, run from `binary`: the provider's
+    /// sandbox, what every connector may read and what the reference grants, held while the
+    /// connector runs; none for a trusted binary, which has the host's access.
+    fn confinement(
+        &self,
+        reference: &ConnectorRef,
+        binary: &Binary,
+    ) -> Result<Option<process::Confinement>, ProviderError> {
+        let Some(sandbox) = &self.sandbox else {
+            return Ok(None);
+        };
+        let refused = |source| ProviderError::Sandbox {
+            id: reference.id.clone(),
+            source,
+        };
+        let lease = self.leases.take(&reference.grants).map_err(refused)?;
+        grants::guarding(&lease, &[binary.path()], &self.dirs).map_err(refused)?;
+        let mut grants = reference.grants.clone();
+        grants.read.extend(self.shared_reads.iter().cloned());
+        Ok(Some(process::Confinement {
+            sandbox: Arc::clone(sandbox),
+            grants,
+            lease: Arc::new(lease),
+        }))
     }
 
     /// A raw connection to the connector `reference` names, before its handshake: its binary,
@@ -257,7 +276,7 @@ impl Local {
     /// made, and [`ProviderError::SpawnFailed`] when it cannot be spawned.
     pub async fn wire(&self, reference: &ConnectorRef) -> Result<Wire, ProviderError> {
         let launch = self.launch(reference).await?;
-        let launched = Process::launching(launch).await;
+        let launched = Process::launching(launch, crate::secrets::Redactions::new()).await;
         let (stream, process) = launched.map_err(|unspawned| {
             let (launch, unspawned) = *unspawned;
             refused(&launch, unspawned)
@@ -313,6 +332,7 @@ pub(crate) fn refused(launch: &Launch, unspawned: Unspawned) -> ProviderError {
             expected,
             found,
         },
+        Unspawned::Replaced => ProviderError::Replaced { id, path },
         Unspawned::Io(source) => ProviderError::SpawnFailed { id, path, source },
     }
 }

@@ -13,6 +13,7 @@ arrow-schema.workspace = true
 command-fds.workspace = true
 hyper-util = { workspace = true, features = ["tokio"] }
 rustix = { workspace = true, features = ["fs", "process"] }
+rdlt-adopt.workspace = true
 rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-wire = { workspace = true, features = ["tls"] }
 rustls.workspace = true

@@ -5,7 +5,7 @@
 //! Where bubblewrap makes no sandbox, as where unprivileged user namespaces are off, each of
 //! these says so and checks nothing.
 
-use rdlt_host::{Bubblewrap, Isolation, Local, Provider as _, ProviderError};
+use rdlt_host::{Bubblewrap, ConnectorRef, Isolation, Local, Provider as _, ProviderError};
 
 use crate::process::scripted;
 
@@ -48,7 +48,6 @@ async fn there_is_no_sandbox_here_so_an_untrusted_connector_is_refused() {
 
 #[cfg(target_os = "linux")]
 mod bubblewrap {
-    use std::io::Write as _;
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
@@ -71,7 +70,7 @@ mod bubblewrap {
         match local.wire(&scripted()).await {
             Ok(_) => Some(local),
             Err(ProviderError::Sandbox { source, .. }) => {
-                writeln!(std::io::stderr(), "skipped: {source}").ok();
+                rdlt_testkit::process::without_sandbox(&source);
                 None
             }
             Err(other) => panic!("the sandboxed connector did not spawn: {other}"),
@@ -182,11 +181,8 @@ mod bubblewrap {
         std::fs::create_dir(&read).expect("a directory");
         std::fs::create_dir(&write).expect("a directory");
         std::fs::write(read.join("given"), "given").expect("it writes");
-        let granting = local
-            .clone()
-            .grant_read(&read)
-            .grant_write(&write)
-            .grant_network();
+        let granting = local.clone().grant_read(&read);
+        let granted_ref = scripted().grant_write(&write).grant_network();
         let reaching = serde_json::json!({
             "readable": [read.join("given")],
             "writes": write.join("made"),
@@ -194,7 +190,7 @@ mod bubblewrap {
             "absent": [granted.path().join("other")],
         });
         let source = granting
-            .source(&scripted(), &reaching)
+            .source(&granted_ref, &reaching)
             .await
             .expect("it starts");
         source
@@ -202,6 +198,7 @@ mod bubblewrap {
             .check()
             .await
             .expect("it reaches what it was granted");
+        drop(source);
         assert_eq!(
             std::fs::read_to_string(write.join("made")).expect("made"),
             "written"
@@ -218,10 +215,19 @@ mod bubblewrap {
             .await
             .expect_err("a read grant lets nothing be written");
         assert!(!read.join("made").exists());
-        // A grant of a path that is not there refuses the spawn.
-        let absent = local.grant_read(granted.path().join("absent"));
-        let refused = absent
+        // A grant of a path that is not there refuses the spawn, the provider's or the
+        // reference's.
+        let absent = granted.path().join("absent");
+        let provider = local.clone().grant_read(&absent);
+        let refused = provider
             .source(&scripted(), &reaching)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(refused.code(), "sandbox_grant");
+        let reference = scripted().grant_write(&absent);
+        let refused = local
+            .source(&reference, &reaching)
             .await
             .err()
             .expect("refused");
@@ -284,8 +290,7 @@ mod bubblewrap {
             "only_its_descriptors": true,
         });
         let source = local
-            .grant_write(kept.path())
-            .source(&scripted(), &script)
+            .source(&scripted().grant_write(kept.path()), &script)
             .await
             .expect("the connector starts")
             .connector;
@@ -353,8 +358,12 @@ mod bubblewrap {
         let [leader] = spawned.as_slice() else {
             panic!("{spawned:?}");
         };
-        let name = std::fs::read_to_string(format!("/proc/{leader}/comm")).expect("it runs");
-        assert_eq!(name.trim(), "bwrap");
+        // Executed from its open file: what runs is bubblewrap's.
+        let exe = std::fs::read_link(format!("/proc/{leader}/exe")).expect("it runs");
+        assert_eq!(
+            exe,
+            std::fs::canonicalize("/usr/bin/bwrap").expect("it resolves")
+        );
         drop(source);
         // Asked to stop by the end of its input, the connector ends, and its sandbox with it.
         assert!(
@@ -473,5 +482,263 @@ mod bubblewrap {
         host.start_kill().expect("the host is killed");
         host.wait().await.expect("the host ends");
         assert!(marked_are(&marker, 0).await, "a sandbox outlived its host");
+    }
+
+    #[tokio::test]
+    async fn one_pipelines_connector_reaches_none_of_what_another_pipeline_was_granted() {
+        let Some(local) = sandboxed().await else {
+            return;
+        };
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let (a, b) = (data.path().join("a"), data.path().join("b"));
+        std::fs::create_dir(&a).expect("a directory");
+        std::fs::create_dir(&b).expect("a directory");
+        std::fs::write(b.join("table"), "b's rows").expect("it writes");
+        // Pipeline B's connector runs, granted its own directory.
+        let b_ref = scripted().grant_write(&b);
+        let b_source = local
+            .source(&b_ref, &serde_json::json!({}))
+            .await
+            .expect("b starts");
+        // Pipeline A's, through the same provider, is granted its own, and reaches none of b's.
+        let a_ref = scripted().grant_write(&a);
+        let reaching_b = serde_json::json!({
+            "writes": a.join("own"),
+            "absent": [b.clone(), b.join("table")],
+        });
+        let a_source = local.source(&a_ref, &reaching_b).await.expect("a starts");
+        a_source
+            .connector
+            .check()
+            .await
+            .expect("a sees only its own grant");
+        let writing_b = serde_json::json!({ "writes": b.join("table") });
+        let a_writer = local
+            .source(&scripted().grant_write(&a).share_grants(), &writing_b)
+            .await;
+        // A's own grant is held by A's connector: a second, unshared, is refused.
+        assert_eq!(a_writer.err().expect("refused").code(), "grant_overlap");
+        drop(a_source);
+        let a_writer = local
+            .source(&a_ref, &writing_b)
+            .await
+            .expect("a starts again");
+        a_writer
+            .connector
+            .check()
+            .await
+            .expect_err("b's file is not there for a");
+        assert_eq!(
+            std::fs::read_to_string(b.join("table")).expect("it reads"),
+            "b's rows"
+        );
+        // A grant holding b's, as one of the whole data directory, is refused while b runs.
+        let wide = scripted().grant_write(data.path());
+        let refused = local
+            .source(&wide, &serde_json::json!({}))
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(refused.code(), "grant_overlap");
+        drop(b_source);
+        drop(a_writer);
+        local
+            .source(&wide, &serde_json::json!({}))
+            .await
+            .expect("nothing else holds it");
+    }
+
+    #[tokio::test]
+    async fn grants_both_stated_to_be_shared_may_overlap() {
+        let Some(local) = sandboxed().await else {
+            return;
+        };
+        let data = tempfile::tempdir().expect("a temporary directory");
+        let shared = scripted().grant_write(data.path()).share_grants();
+        let config = serde_json::json!({});
+        let _one = local.source(&shared, &config).await.expect("one starts");
+        let _two = local
+            .source(&shared, &config)
+            .await
+            .expect("both are shared");
+        let unshared = scripted().grant_read(data.path());
+        let refused = local
+            .source(&unshared, &config)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(refused.code(), "grant_overlap");
+    }
+
+    #[tokio::test]
+    async fn each_sandboxed_connector_has_a_private_scratch_directory_of_its_own() {
+        let Some(local) = sandboxed().await else {
+            return;
+        };
+        let writing = serde_json::json!({ "writes": "/tmp/scratch" });
+        let first = local
+            .source(&scripted(), &writing)
+            .await
+            .expect("it starts");
+        first
+            .connector
+            .check()
+            .await
+            .expect("it writes its scratch");
+        let seeing = serde_json::json!({ "absent": ["/tmp/scratch"] });
+        let second = local.source(&scripted(), &seeing).await.expect("it starts");
+        second
+            .connector
+            .check()
+            .await
+            .expect("it sees none of another's scratch");
+        assert!(
+            !Path::new("/tmp/scratch").exists(),
+            "the host's /tmp was written"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_grant_that_holds_a_connectors_binary_or_directory_is_refused() {
+        let Some(local) = sandboxed().await else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let binary = dir.path().join("rdlt-connector-scripted");
+        std::fs::copy(example("scripted_connector"), &binary).expect("the binary copies");
+        let config = serde_json::json!({});
+        let holding = scripted().path(&binary).grant_write(dir.path());
+        let refused = local
+            .source(&holding, &config)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(refused.code(), "grant_covers");
+        let by_name =
+            ConnectorRef::new(rdlt_connector::ConnectorId::parse("test.scripted").unwrap())
+                .grant_write(dir.path());
+        let in_dir = local.clone().connector_dir(dir.path());
+        let refused = in_dir
+            .source(&by_name, &config)
+            .await
+            .err()
+            .expect("refused");
+        assert_eq!(refused.code(), "grant_covers");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_sandboxed_connector_whose_binary_was_replaced_is_refused_rather_than_spawned() {
+        let Some(local) = sandboxed().await else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let binary = dir.path().join("rdlt-connector-scripted");
+        std::fs::copy(example("scripted_connector"), &binary).expect("the binary copies");
+        let kills = Kills::new();
+        let source = local
+            .kills(&kills)
+            .source(&scripted().path(&binary), &serde_json::json!({}))
+            .await
+            .expect("the connector starts")
+            .connector;
+        kills.kill();
+        // Another file takes the name, as an upgrade by rename does.
+        let upgrade = dir.path().join("upgrade");
+        std::fs::copy(&binary, &upgrade).expect("the binary copies");
+        std::fs::rename(&upgrade, &binary).expect("the upgrade takes the name");
+        for _ in 0..100 {
+            let Err(error) = source.check().await else {
+                panic!("a replaced binary was spawned again");
+            };
+            if error.code() == Some("connector_changed") {
+                let replaced = std::error::Error::source(&error)
+                    .and_then(|source| source.downcast_ref::<ProviderError>())
+                    .map(ProviderError::code);
+                assert_eq!(replaced, Some("binary_replaced"), "{error}");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the replaced binary was never refused");
+    }
+
+    /// Process `root` and every process descended from it.
+    fn group(root: u32) -> Vec<u32> {
+        let mut parents = Vec::new();
+        for entry in std::fs::read_dir("/proc").expect("/proc lists").flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+            let rest = stat.rsplit_once(')').map_or("", |(_, rest)| rest);
+            let parent = rest
+                .split_whitespace()
+                .nth(1)
+                .and_then(|ppid| ppid.parse::<u32>().ok());
+            parents.extend(parent.map(|parent| (pid, parent)));
+        }
+        let mut found = vec![root];
+        let mut index = 0;
+        while let Some(pid) = found.get(index).copied() {
+            found.extend(
+                parents
+                    .iter()
+                    .filter(|(_, parent)| *parent == pid)
+                    .map(|(child, _)| *child),
+            );
+            index += 1;
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn a_secret_passed_to_a_sandboxed_connector_is_on_no_command_line_and_in_no_other_environment()
+     {
+        let Some(local) = sandboxed().await else {
+            return;
+        };
+        // An environment variable the host passes the connector, as a credential is passed.
+        let (name, value) = ("CARGO_PKG_DESCRIPTION", env!("CARGO_PKG_DESCRIPTION"));
+        let source = local
+            .env_passthrough(name)
+            .source(&scripted(), &serde_json::json!({ "env": { name: value } }))
+            .await
+            .expect("the connector starts")
+            .connector;
+        source.check().await.expect("the connector holds the value");
+        let spawned = rdlt_host::spawned();
+        let [leader] = spawned.as_slice() else {
+            panic!("{spawned:?}");
+        };
+        let chain = group(*leader);
+        assert!(
+            chain.len() >= 3,
+            "the launcher, its child and the connector: {chain:?}"
+        );
+        let mut connectors = 0;
+        for pid in chain {
+            let read =
+                |what: &str| std::fs::read(format!("/proc/{pid}/{what}")).unwrap_or_default();
+            let holds = |bytes: &[u8]| {
+                bytes
+                    .windows(value.len())
+                    .any(|window| window == value.as_bytes())
+            };
+            assert!(
+                !holds(&read("cmdline")),
+                "process {pid}'s command line holds it"
+            );
+            let name = String::from_utf8_lossy(&read("comm")).trim().to_owned();
+            if name == "rdlt-connector" {
+                connectors += 1;
+                continue;
+            }
+            assert!(!holds(&read("environ")), "process {pid} ({name}) holds it");
+        }
+        assert_eq!(connectors, 1);
     }
 }

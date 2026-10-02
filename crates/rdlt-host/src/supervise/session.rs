@@ -1,20 +1,18 @@
 //! A spawned destination's sessions and writers, whose transport errors carry the connector's
 //! last words as its source's and destination's own calls do.
 
-use std::sync::Arc;
-
 use arrow_array::RecordBatch;
 use rdlt_connector::{
     BoxFuture, CommitMeta, DestinationSession, DestinationWriter, Receipt, SegmentId, TableChange,
     TableRef, WriteStats,
 };
 
-use super::Supervisor;
+use super::Words;
 
 /// A session of a spawned destination.
 pub(crate) struct SupervisedSession {
     pub(crate) inner: Box<dyn DestinationSession>,
-    pub(crate) supervisor: Arc<Supervisor>,
+    pub(crate) words: Words,
 }
 
 impl DestinationSession for SupervisedSession {
@@ -24,7 +22,7 @@ impl DestinationSession for SupervisedSession {
     ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(async move {
             let result = self.inner.apply_schema(change).await;
-            self.supervisor.explain(result).await
+            self.words.explain(result).await
         })
     }
 
@@ -34,10 +32,10 @@ impl DestinationSession for SupervisedSession {
     ) -> BoxFuture<'a, rdlt_connector::Result<Box<dyn DestinationWriter>>> {
         Box::pin(async move {
             let result = self.inner.writer(table).await;
-            let inner = self.supervisor.explain(result).await?;
+            let inner = self.words.explain(result).await?;
             Ok(Box::new(SupervisedWriter {
                 inner,
-                supervisor: Arc::clone(&self.supervisor),
+                words: self.words.clone(),
             }) as Box<dyn DestinationWriter>)
         })
     }
@@ -48,15 +46,15 @@ impl DestinationSession for SupervisedSession {
     ) -> BoxFuture<'a, rdlt_connector::Result<Receipt>> {
         Box::pin(async move {
             let result = self.inner.commit(meta).await;
-            self.supervisor.explain(result).await
+            self.words.explain(result).await
         })
     }
 
     fn close(self: Box<Self>) -> BoxFuture<'static, rdlt_connector::Result<()>> {
-        let Self { inner, supervisor } = *self;
+        let Self { inner, words } = *self;
         Box::pin(async move {
             let result = inner.close().await;
-            supervisor.explain(result).await
+            words.explain(result).await
         })
     }
 }
@@ -64,7 +62,7 @@ impl DestinationSession for SupervisedSession {
 /// A writer of a spawned destination.
 struct SupervisedWriter {
     inner: Box<dyn DestinationWriter>,
-    supervisor: Arc<Supervisor>,
+    words: Words,
 }
 
 impl DestinationWriter for SupervisedWriter {
@@ -75,14 +73,14 @@ impl DestinationWriter for SupervisedWriter {
     ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
         Box::pin(async move {
             let result = self.inner.write(segment, batch).await;
-            self.supervisor.explain(result).await
+            self.words.explain(result).await
         })
     }
 
     fn flush(&mut self) -> BoxFuture<'_, rdlt_connector::Result<WriteStats>> {
         Box::pin(async move {
             let result = self.inner.flush().await;
-            self.supervisor.explain(result).await
+            self.words.explain(result).await
         })
     }
 }
