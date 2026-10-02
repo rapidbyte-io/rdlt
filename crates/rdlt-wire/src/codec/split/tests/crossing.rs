@@ -162,6 +162,11 @@ fn checked(name: &str, column: &ArrayRef) -> Vec<String> {
 
 /// Checks every part of every layout over the leaf named `leaf`, and of every layout over
 /// each of those, crosses as its rows and as it was weighed.
+///
+/// A list view or a union taken for a layout that goes as it is fails here by its rows or its
+/// values, and a view by the bytes of the longer column its leaf is a part of. A run-end column
+/// would not: Arrow's writer sends it as its rows, and only the list of layouts in
+/// `a_column_of_a_plain_layout_goes_as_it_is_and_every_other_is_rebuilt` keeps it rebuilt.
 fn every_part_crosses(leaf: &str) {
     let mut problems = Vec::new();
     let columns = nested::over(leaf);

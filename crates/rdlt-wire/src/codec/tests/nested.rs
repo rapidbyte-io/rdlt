@@ -60,6 +60,14 @@ fn texts() -> Vec<Option<String>> {
     (0..9).map(text).collect()
 }
 
+/// Five hundred texts as views, every fourth null: their bytes take far more than a frame's
+/// overhead, so a part of them sent with all of them is seen by its bytes.
+fn long_views() -> ArrayRef {
+    let text =
+        |at: usize| (at % 4 != 1).then(|| format!("a string long enough to leave its view, {at}"));
+    Arc::new(StringViewArray::from_iter((0..500).map(text)))
+}
+
 /// A leaf of each kind, some sliced from longer ones.
 fn leaves() -> Vec<Named> {
     let texts = texts();
@@ -91,10 +99,7 @@ fn leaves() -> Vec<Named> {
             "binview",
             Arc::new(BinaryViewArray::from(bytes.collect::<Vec<_>>())),
         ),
-        (
-            "view sliced",
-            Arc::new(StringViewArray::from(texts).slice(2, 6)),
-        ),
+        ("view sliced", long_views().slice(250, 6)),
     ];
     let named = leaves.into_iter();
     named.map(|(name, leaf)| (name.to_owned(), leaf)).collect()
