@@ -2289,22 +2289,6 @@ pub(super) fn planned(connection: &Connection, plan: &[Statement]) -> u64 {
     steps
 }
 
-/// How long `plan` takes on `connection`, the least of three runs, each rolled back so the next
-/// finds what the last did: for what a plan costs inside the calls a step makes.
-pub(super) fn timed(connection: &Connection, plan: &[Statement]) -> std::time::Duration {
-    (0..3)
-        .map(|_| {
-            connection.execute_batch("BEGIN").unwrap();
-            let started = std::time::Instant::now();
-            run_all(connection, plan);
-            let elapsed = started.elapsed();
-            connection.execute_batch("ROLLBACK").unwrap();
-            elapsed
-        })
-        .min()
-        .expect("three timings")
-}
-
 /// A sequence as `sqlgen`'s tests fill tables in SQL: sixteen digits, which order as numbers do.
 pub(super) fn digits(number: &str) -> String {
     format!("CAST(printf('%016d', {number}) AS BLOB)")

@@ -1,6 +1,5 @@
 use super::super::super::tests::{
-    apply, columns, counting, create, database, digits, pipeline, planned, run_all, segments,
-    table, timed,
+    apply, columns, counting, create, database, digits, pipeline, planned, run_all, segments, table,
 };
 use rusqlite::Connection;
 
@@ -283,28 +282,32 @@ fn wide_orders(width: usize, hard: bool) -> (Connection, SqlPlanner<Sqlite>, Sta
     (connection, planner, staged)
 }
 
-/// The steps and the time a commit of `ROWS` updates takes, each flagging every column of a
-/// table of `width` columns beside its key and sequence, in a table holding their rows.
-fn flagged_commit(width: usize, hard: bool) -> (u64, std::time::Duration) {
-    const ROWS: u32 = 300;
+/// The flags of a staged update that flags every column of `orders` past its key and its
+/// sequence, as a literal.
+fn every_column_flagged(width: usize) -> String {
+    format!("X'0000{}'", "01".repeat(width + 1))
+}
+
+/// The steps a commit of `rows` updates takes, each flagging every column of a table of `width`
+/// columns beside its key and sequence, in a table holding their rows.
+fn flagged_commit(rows: u32, width: usize, hard: bool) -> u64 {
     let (connection, planner, staged) = wide_orders(width, hard);
     let staging = planner.staging_table("orders");
     let names: Vec<String> = (0..width).map(|column| format!("c{column}")).collect();
     let sevens = vec!["7"; width].join(", ");
     let listed = names.join(", ");
-    // Every column past the key and the sequence flagged: one byte each, set.
-    let flags = format!("X'0000{}'", "01".repeat(width + 1));
+    let flags = every_column_flagged(width);
     let filled = format!(
         "{count} INSERT INTO orders (id, seq, {listed}) SELECT i, {old}, {sevens} FROM _n; \
          {count} INSERT INTO \"{staging}\" (_rdlt_pipeline, _rdlt_epoch, _rdlt_segment, id, seq, \
          op, unchanged) SELECT 'mine', 1, 1, i, {new}, 1, {flags} FROM _n",
-        count = counting(ROWS),
+        count = counting(rows),
         old = digits("i"),
         new = digits("1000000 + i"),
     );
     connection.execute_batch(&filled).unwrap();
     let plan = committing(&connection, &planner, &staged, 1);
-    let cost = (planned(&connection, &plan), timed(&connection, &plan));
+    let steps = planned(&connection, &plan);
     // The commit kept every flagged value and moved each row to its change's sequence.
     run_all(&connection, &plan);
     let kept: (i64, i64) = connection
@@ -320,26 +323,29 @@ fn flagged_commit(width: usize, hard: bool) -> (u64, std::time::Duration) {
         .unwrap();
     assert_eq!(
         kept,
-        (i64::from(ROWS), 7 * i64::from(ROWS)),
+        (i64::from(rows), 7 * i64::from(rows)),
         "width {width}"
     );
-    cost
+    steps
 }
 
 #[test]
 fn flagged_updates_cost_their_rows_and_columns_not_the_columns_squared() {
     for hard in [true, false] {
-        let (narrow_steps, narrow_time) = flagged_commit(60, hard);
-        let (wide_steps, wide_time) = flagged_commit(240, hard);
-        // Four times the columns: about four times the steps, and the time, of which reading a
-        // flag is part, with them.
+        let steps = |rows, width| flagged_commit(rows, width, hard);
+        // Four times the columns: fewer than four times the steps, since a row costs some apart
+        // from its columns. A plan whose rows each cost the square of the columns took eight
+        // times as many.
+        let (narrow, wide) = (steps(40, 30), steps(40, 120));
         assert!(
-            wide_steps < narrow_steps * 6,
-            "hard: {hard}: 60 columns took {narrow_steps} steps, 240 took {wide_steps}"
+            wide < narrow * 4,
+            "hard: {hard}: 30 columns took {narrow} steps, 120 took {wide}"
         );
+        // Four times the rows: about four times the steps.
+        let (few, many) = (steps(40, 60), steps(160, 60));
         assert!(
-            wide_time < narrow_time * 10,
-            "hard: {hard}: 60 columns took {narrow_time:?}, 240 took {wide_time:?}"
+            many < few * 5,
+            "hard: {hard}: 40 rows took {few} steps, 160 took {many}"
         );
     }
 }
