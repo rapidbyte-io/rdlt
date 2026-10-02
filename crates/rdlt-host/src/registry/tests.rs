@@ -345,3 +345,36 @@ fn a_connectors_own_word_for_its_version_is_shown_in_the_refusal_of_it() {
     assert_eq!(found, r"1.0\u{1b}[2J\u{202e}");
     assert!(crate::provider::accepts(&memory(), "anything at all").is_ok());
 }
+
+#[tokio::test]
+async fn a_linked_connector_s_configuration_beyond_its_limit_is_refused() {
+    use crate::secrets::SecretError;
+    let registry = Registry::trusted()
+        .trusted_source::<MemorySource>()
+        .trusted_destination::<MemoryDestination>();
+    let limit = usize::try_from(rdlt_connector::limits::MAX_CONFIG_BYTES).expect("a size");
+    assert_eq!(limit, crate::limits::CONFIG_BYTES);
+    // One string's JSON, its quotes and the object around it, of `bytes` in all.
+    let config = |bytes: usize| serde_json::json!({ "store": "x".repeat(bytes - 12) });
+    assert_eq!(config(limit + 1).to_string().len(), limit + 1);
+    let refused = Provider::destination(&registry, &memory(), &config(limit + 1))
+        .await
+        .err()
+        .expect("refused");
+    assert!(
+        matches!(
+            refused,
+            ProviderError::Secret {
+                source: SecretError::TooLarge { limit: found },
+                ..
+            } if found == limit
+        ),
+        "{refused}"
+    );
+    let placed = Provider::destination(&registry, &memory(), &config(limit)).await;
+    assert!(
+        placed.is_ok(),
+        "{:?}",
+        placed.err().map(|error| error.to_string())
+    );
+}
