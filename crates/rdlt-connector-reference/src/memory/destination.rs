@@ -12,7 +12,7 @@ use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
     CommitSeq, DeleteModes, Epoch, GenerationId, LoadId, PipelineId, SchemaChanges, SegmentId,
-    StateChange, StateRecord, TablePath, TypeKind,
+    SegmentSet, StateChange, StateRecord, TablePath, TypeKind,
 };
 
 use crate::merge::Merged;
@@ -122,8 +122,11 @@ impl Store {
         let plans = self.plans(pipeline, epoch, meta)?;
         let (mut rows, mut bytes) = (0, 0);
         for table in self.tables.values_mut() {
-            for segment in meta.segments.iter() {
-                table.staged.remove(&(pipeline.clone(), epoch, segment));
+            let published: Vec<_> = staged_in(table, pipeline, epoch, &meta.segments)
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in published {
+                table.staged.remove(&key);
             }
         }
         for (name, staged, merged) in plans {
@@ -167,11 +170,8 @@ impl Store {
     fn plans(&self, pipeline: &PipelineId, epoch: Epoch, meta: &CommitMeta) -> Result<Vec<Plan>> {
         let mut plans = Vec::new();
         for (name, table) in &self.tables {
-            let staged: Staged = meta
-                .segments
-                .iter()
-                .filter_map(|segment| table.staged.get(&(pipeline.clone(), epoch, segment)))
-                .flatten()
+            let staged: Staged = staged_in(table, pipeline, epoch, &meta.segments)
+                .flat_map(|(_, batches)| batches)
                 .cloned()
                 .collect();
             // A child table the commit lists follows its root's staged rows even where it staged
@@ -224,13 +224,30 @@ impl Store {
         let Some(table) = self.tables.get(name) else {
             return Vec::new();
         };
-        meta.segments
-            .iter()
-            .filter_map(|segment| table.staged.get(&(pipeline.clone(), epoch, segment)))
-            .flatten()
+        staged_in(table, pipeline, epoch, &meta.segments)
+            .flat_map(|(_, batches)| batches)
             .map(|(_, batch)| batch.clone())
             .collect()
     }
+}
+
+/// What `pipeline`'s session at `epoch` staged in `table` in `segments`, with its keys, in the
+/// order of its segments.
+///
+/// It walks what was staged, not the ids `segments` names: a range a host sends may name every
+/// id there is.
+fn staged_in<'a>(
+    table: &'a Table,
+    pipeline: &PipelineId,
+    epoch: Epoch,
+    segments: &'a SegmentSet,
+) -> impl Iterator<Item = (&'a (PipelineId, Epoch, SegmentId), &'a Staged)> {
+    let first = (pipeline.clone(), epoch, SegmentId(0));
+    let last = (pipeline.clone(), epoch, SegmentId(u64::MAX));
+    table
+        .staged
+        .range(first..=last)
+        .filter(|((_, _, segment), _)| segments.contains(*segment))
 }
 
 #[derive(Debug, Default)]

@@ -90,3 +90,17 @@ fn a_range_is_inclusive() {
     );
     assert!(set.contains(SegmentId(5)) && !set.contains(SegmentId(6)));
 }
+
+#[test]
+fn a_set_of_more_ids_than_a_count_holds_has_the_largest_length() {
+    let every = |first, last| SegmentRange {
+        first: SegmentId(first),
+        last: SegmentId(last),
+    };
+    let whole = SegmentSet::try_from(vec![every(0, u64::MAX)]).unwrap();
+    assert_eq!(whole.len(), u64::MAX);
+    let split = SegmentSet::try_from(vec![every(0, 10), every(12, u64::MAX)]).unwrap();
+    assert_eq!(split.len(), u64::MAX);
+    let one_short = SegmentSet::try_from(vec![every(1, u64::MAX)]).unwrap();
+    assert_eq!(one_short.len(), u64::MAX);
+}
