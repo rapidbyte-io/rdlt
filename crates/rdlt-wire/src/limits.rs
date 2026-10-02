@@ -32,6 +32,10 @@ pub const MIN_BATCH_ROWS: u64 = 1024;
 /// [`MIN_FRAME_BYTES`]: a hundred rows of a schema at the column limit.
 pub const MIN_BATCH_VALUES: u64 = 1024 * 1024;
 
+/// Bytes: the least a peer may limit the dictionaries one read or write holds at once to: a
+/// dictionary of some thousands of short values.
+pub const MIN_DICTIONARY_BYTES: u64 = 256 * 1024;
+
 /// Columns: bounds one schema's width, counting nested fields.
 pub const SCHEMA_COLUMNS: u64 = 10_000;
 
@@ -270,6 +274,11 @@ impl Limits {
             ("frame bytes", MIN_FRAME_BYTES, self.frame_bytes),
             ("batch rows", MIN_BATCH_ROWS, self.batch_rows),
             ("batch values", MIN_BATCH_VALUES, self.batch_values),
+            (
+                "dictionary bytes",
+                MIN_DICTIONARY_BYTES,
+                self.dictionary_bytes,
+            ),
         ];
         match floors
             .into_iter()
@@ -375,7 +384,8 @@ impl From<v1::Limits> for Limits {
             control_string_bytes: or(limits.control_string_bytes, defaults.control_string_bytes),
             batch_values: or(limits.batch_values, defaults.batch_values),
             schema_bytes: or(limits.schema_bytes, defaults.schema_bytes),
-            dictionary_bytes: or(limits.dictionary_bytes, defaults.dictionary_bytes),
+            // A limit of its own the peer sets as it is, none below the protocol's least.
+            dictionary_bytes: limits.dictionary_bytes,
         }
     }
 }

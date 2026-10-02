@@ -8,7 +8,9 @@ mod tests;
 use arrow_array::RecordBatch;
 
 use super::compact::Narrower;
+use super::decode::admit_dictionary;
 use super::measure::measured;
+use super::relocate::held_bytes;
 use super::weigh::{Weigher, Weight};
 use super::{Encoder, IpcFrame};
 use crate::error::{Frame, WireError};
@@ -76,15 +78,12 @@ impl Cut {
     /// dictionary's values: they go in a frame of their own and cannot be cut.
     fn dictionaries(&mut self) -> Result<(), Refusal> {
         let limits = self.limits;
-        let mut held = 0_u64;
         for weight in self.weigher.dictionaries() {
             Limits::admit("batch values", limits.batch_values, weight.values)?;
             Limits::admit("view bytes", limits.frame_bytes, weight.view_bytes)?;
             Limits::admit("frame bytes", limits.frame_bytes, weight.frame_bytes())?;
-            held = held.saturating_add(weight.frame_bytes());
         }
-        // The receiver holds them together until the next schema.
-        limits.admit_dictionaries(held)
+        Ok(())
     }
 
     /// What `rows` rows from `start` add to the piece being weighed.
@@ -229,7 +228,13 @@ impl Encoder {
     ) -> Result<Result<IpcFrame, Refusal>, WireError> {
         let (dictionaries, frame) = self.encoded(piece)?;
         for dictionary in dictionaries {
-            measured(self.columns.as_ref(), limits, &dictionary)?;
+            let measured = measured(self.columns.as_ref(), limits, &dictionary)?;
+            // What the receiver holds of it, beside every other it holds until the next schema.
+            if let Some(id) = measured.dictionary {
+                let bytes = held_bytes(&measured.walked);
+                admit_dictionary(limits, &self.held, id, bytes)?;
+                self.held.insert(id, bytes);
+            }
             frames.push(dictionary);
         }
         match measured(self.columns.as_ref(), limits, &frame) {

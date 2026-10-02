@@ -889,3 +889,104 @@ fn a_schema_naming_other_dictionary_ids_is_not_the_schema_held() {
     // The same message again is the schema held.
     assert!(Arc::ptr_eq(&again, &decoder.schema(&second).unwrap()));
 }
+
+/// The least dictionary limit at which a cut of `batch` is sent, found by halving.
+fn least_sent(batch: &RecordBatch) -> u64 {
+    let sends = |limit: u64| {
+        let limits = Limits {
+            dictionary_bytes: limit,
+            ..Limits::default()
+        };
+        let mut encoder = Encoder::default();
+        encoder.schema(&batch.schema()).unwrap();
+        let mut cut = super::Cut::new(batch.clone(), limits);
+        encoder.piece(&mut cut).is_ok()
+    };
+    let (mut low, mut high) = (0_u64, 1_u64 << 32);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if sends(middle) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    low
+}
+
+#[test]
+fn what_a_sender_admits_of_dictionaries_its_receiver_holds_exactly() {
+    for columns in [1_usize, 2, 3, 10, 100, 1_000] {
+        for bytes in [0_usize, 1, 7, 8, 9, 63, 64, 65, 1_000, 4_093, 100_000] {
+            if columns * bytes > 10_000_000 {
+                continue;
+            }
+            let batch = keyed(columns, bytes, "x");
+            let least = least_sent(&batch);
+            let limits = Limits {
+                dictionary_bytes: least,
+                ..Limits::default()
+            };
+            let mut encoder = Encoder::default();
+            let schema = encoder.schema(&batch.schema()).unwrap();
+            let mut cut = super::Cut::new(batch.clone(), limits);
+            let frames = encoder.piece(&mut cut).unwrap().unwrap();
+            let mut decoder = Decoder::new(limits);
+            decoder.schema(&schema).unwrap();
+            for frame in &frames {
+                decoder.frame(frame).unwrap_or_else(|error| {
+                    panic!("{columns} of {bytes} bytes, sent at {least}: {error}")
+                });
+            }
+            // The sender's least is exactly what the receiver holds: a byte less is refused.
+            assert_eq!(
+                decoder.dictionary_bytes(),
+                least,
+                "{columns} of {bytes} bytes"
+            );
+        }
+    }
+}
+
+/// A batch of two dictionary columns, `a` and `b`, each one value of the bytes given.
+fn two_keyed(a: usize, b: usize) -> RecordBatch {
+    let keyed = |bytes: usize| -> ArrayRef {
+        let values = Arc::new(StringArray::from(vec!["x".repeat(bytes)]));
+        Arc::new(DictionaryArray::<Int8Type>::try_new(vec![0].into(), values).unwrap())
+    };
+    RecordBatch::try_from_iter([("a", keyed(a)), ("b", keyed(b))]).unwrap()
+}
+
+#[test]
+fn a_sender_counts_the_dictionaries_its_receiver_holds_from_the_batches_before() {
+    let limits = Limits {
+        dictionary_bytes: 2 << 20,
+        ..Limits::default()
+    };
+    let big = 1_500_000;
+    let mut encoder = Encoder::default();
+    let schema = encoder.schema(&two_keyed(1, big).schema()).unwrap();
+    let mut decoder = Decoder::new(limits);
+    decoder.schema(&schema).unwrap();
+    // Each batch's dictionaries are within the limit; the second's `a` beside the first's `b`,
+    // which its receiver still holds, is not.
+    let mut first = super::Cut::new(two_keyed(1, big), limits);
+    for frame in encoder.piece(&mut first).unwrap().unwrap() {
+        decoder.frame(&frame).unwrap();
+    }
+    let mut second = super::Cut::new(two_keyed(big, 1), limits);
+    let refused = encoder.piece(&mut second).unwrap_err();
+    let WireError::Refused(refusal) = refused else {
+        panic!("{refused}");
+    };
+    assert_eq!(refusal.field, "dictionary bytes");
+    assert_eq!(refusal.limit, 2 << 20);
+    assert!(refusal.actual > 3_000_000, "{refusal:?}");
+    // A schema sent again clears what its receiver holds, and the batch is sent then.
+    let again = encoder.schema(&two_keyed(1, big).schema()).unwrap();
+    decoder.schema(&again).unwrap();
+    let mut second = super::Cut::new(two_keyed(big, 1), limits);
+    for frame in encoder.piece(&mut second).unwrap().unwrap() {
+        decoder.frame(&frame).unwrap();
+    }
+}

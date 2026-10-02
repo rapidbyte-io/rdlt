@@ -13,7 +13,7 @@ use bytes::Bytes;
 use super::IpcFrame;
 use super::contain::contained;
 use super::measure::{Columns, measured, message, unexpected};
-use super::relocate::relocated;
+use super::relocate::{held_bytes, relocated};
 use super::shape::Shape;
 use crate::error::{Frame, Problem, WireError};
 use crate::limits::Limits;
@@ -108,20 +108,16 @@ impl Decoder {
     pub fn shaped(&mut self, frame: &IpcFrame) -> Result<(Option<RecordBatch>, Shape), WireError> {
         let measured = measured(self.columns.as_ref(), &self.limits, frame)?;
         let malformed = |problem| WireError::malformed(measured.frame, problem);
-        let relocated = relocated(measured.batch, &measured.walked);
         let shape = Shape {
             values: measured.walked.values,
             view_bytes: measured.walked.view_bytes,
-            held_bytes: u64::try_from(relocated.body.capacity()).unwrap_or(u64::MAX),
+            held_bytes: held_bytes(&measured.walked),
         };
         if let Some(id) = measured.dictionary {
-            // Counted before Arrow builds it: a dictionary replaces any of its id.
-            let others = self
-                .dictionary_bytes()
-                .saturating_sub(self.held.get(&id).copied().unwrap_or(0));
-            self.limits
-                .admit_dictionaries(others.saturating_add(shape.held_bytes))?;
+            // Counted before anything is copied: a dictionary replaces any of its id.
+            admit_dictionary(&self.limits, &self.held, id, shape.held_bytes)?;
         }
+        let relocated = relocated(measured.batch, &measured.walked);
         let batch = relocated
             .batch()
             .ok_or_else(|| malformed(Problem::NotAMessage))?;
@@ -146,4 +142,27 @@ impl Decoder {
         }
         Ok((None, shape))
     }
+}
+
+/// Admits a dictionary of id `id` that takes `bytes` beside `held`, the dictionaries a receiver
+/// holds by id, which it replaces any of its id among: its sender and its receiver both count by
+/// this, so a dictionary one sends the other holds.
+///
+/// # Errors
+///
+/// A [`WireError::Refused`] where the dictionaries held together would pass
+/// [`Limits::held_dictionary_bytes`].
+pub(crate) fn admit_dictionary(
+    limits: &Limits,
+    held: &HashMap<i64, u64>,
+    id: i64,
+    bytes: u64,
+) -> Result<(), WireError> {
+    let others = held
+        .iter()
+        .filter(|(held, _)| **held != id)
+        .map(|(_, bytes)| *bytes)
+        .fold(0, u64::saturating_add);
+    limits.admit_dictionaries(others.saturating_add(bytes))?;
+    Ok(())
 }
