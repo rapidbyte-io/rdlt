@@ -19,6 +19,7 @@ fn reader() -> Reader {
         limits,
         epoch: None,
         schema: 0,
+        quiet: 0,
     }
 }
 
