@@ -371,3 +371,39 @@ fn a_table_name_escapes_every_reserved_prefix_it_meets_with_underscores() {
         .unwrap();
     assert_eq!(untrapped, "items");
 }
+
+proptest! {
+    #[test]
+    fn every_table_name_given_is_one_the_rules_admit(
+        rules in any_rules(),
+        prefixes in proptest::sample::subsequence(
+            vec!["pragma_", "_", "_p", "p", "sqlite_", "_pragma_"], 0..4),
+        segments in proptest::collection::vec("[pP]ragma|[aAbB_ ]{1,6}", 1..3),
+        taken in proptest::collection::btree_set("_{0,2}pragma|[ab_]{1,4}", 0..6),
+    ) {
+        let mut rules = rules;
+        rules.reserved_table_prefixes = prefixes.iter().map(|prefix| (*prefix).to_owned()).collect();
+        let naming = Naming::new(rules);
+        let path = TablePath::new(&segments).unwrap();
+        if let Ok(name) = naming.table(&path, &taken) {
+            prop_assert!(naming.admits_table(&name), "{} for {:?}", name, segments);
+            prop_assert!(!taken.contains(&name), "{} is taken", name);
+        }
+    }
+}
+
+#[test]
+fn a_name_whose_hash_falls_under_a_reserved_prefix_is_escaped_instead() {
+    let mut lower = rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 63);
+    lower.reserved_table_prefixes = BTreeSet::from(["pragma_".to_owned()]);
+    let naming = Naming::new(lower);
+    let taken = BTreeSet::from(["pragma".to_owned()]);
+    let path = TablePath::new(["Pragma"]).unwrap();
+    let name = naming.table(&path, &taken).unwrap();
+    assert_eq!(name, "_pragma");
+    assert_eq!(
+        naming.table(&path, &taken).unwrap(),
+        name,
+        "the same every time"
+    );
+}

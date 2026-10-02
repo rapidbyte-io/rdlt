@@ -81,11 +81,15 @@ impl Naming {
     /// Whether these rules could have given a table `name`: cleaned, within the length limit,
     /// and under no reserved prefix.
     pub(crate) fn admits_table(&self, name: &str) -> bool {
+        self.admits(name) && !self.reserved_prefix(name)
+    }
+
+    /// Whether `name` starts with a prefix the destination reserves for its own tables.
+    pub(crate) fn reserved_prefix(&self, name: &str) -> bool {
         let prefixes = &self.rules.prefixes;
-        self.admits(name)
-            && !prefixes
-                .iter()
-                .any(|prefix| name.starts_with(prefix.as_str()))
+        prefixes
+            .iter()
+            .any(|prefix| name.starts_with(prefix.as_str()))
     }
 
     /// Whether these rules could have given a column `name`: cleaned and within the length
@@ -129,10 +133,13 @@ impl Naming {
         Ok(())
     }
 
-    /// A free identifier for the table at `path`, never one of `taken`.
+    /// A free identifier for the table at `path`, never one of `taken`, and one the rules admit
+    /// as a table's (see [`Naming::admits_table`]).
     ///
     /// A name that starts with a prefix the destination reserves for its own tables is prefixed
-    /// with `_` until it no longer does.
+    /// with `_` until it no longer does, and a name with its hash appended is held to the
+    /// prefixes as well: one that falls under a prefix is passed over, then the name escaped once
+    /// more, so the result is the same for the same name and rules.
     pub(crate) fn table(
         &self,
         path: &TablePath,
@@ -157,9 +164,13 @@ impl Naming {
                     .all(|byte| *byte == b'_')
                     && cleaned.starts_with(&prefix[escaped..])
             };
-            if !prefixes.iter().any(starts) {
-                let candidate = format!("{}{cleaned}", "_".repeat(escapes));
-                return self.identifier(&candidate, &bytes, |name| taken.contains(name));
+            if prefixes.iter().any(starts) {
+                continue;
+            }
+            let candidate = format!("{}{cleaned}", "_".repeat(escapes));
+            let unusable = |name: &str| taken.contains(name) || self.reserved_prefix(name);
+            if let Ok(name) = self.identifier(&candidate, &bytes, unusable) {
+                return Ok(name);
             }
         }
         Err(Error::new(
