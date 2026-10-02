@@ -92,3 +92,109 @@ fn a_lost_retention_is_a_data_error_no_retry_finds() {
     assert_eq!(error.code(), Some(RETENTION_LOST));
     assert!(!error.is_retryable());
 }
+
+/// An error whose text is `text`, caused by `source`.
+#[derive(Debug, thiserror::Error)]
+#[error("{text}")]
+struct Driver {
+    text: String,
+    #[source]
+    source: Option<Box<Driver>>,
+}
+
+/// A chain of `depth` driver errors, each saying its depth and `said`.
+fn chain(depth: usize, said: &str) -> Option<Box<Driver>> {
+    (0..depth).rev().fold(None, |source, level| {
+        let text = format!("level {level}: {said}");
+        Some(Box::new(Driver { text, source }))
+    })
+}
+
+fn causes(error: &ConnectorError) -> Vec<String> {
+    let mut causes = Vec::new();
+    let mut cause = error.source();
+    while let Some(error) = cause {
+        causes.push(error.to_string());
+        cause = error.source();
+    }
+    causes
+}
+
+#[test]
+fn an_error_a_host_received_keeps_what_classifies_it() {
+    let limit = LimitExceeded {
+        name: "max_batch_rows",
+        limit: 1,
+        actual: 2,
+    };
+    let raised = ConnectorError::exceeds(limit);
+    let received = raised.received(&|text| text);
+    assert_eq!(received.kind(), ConnectorErrorKind::Data);
+    assert_eq!(received.code(), Some("limit_exceeded"));
+    assert_eq!(received.limit(), Some(limit));
+    assert_eq!(received.to_string(), raised.to_string());
+    let wait = Some(Duration::from_secs(7));
+    let received = ConnectorError::rate_limited("slow down", wait).received(&|text| text);
+    assert_eq!(received.retry_after(), wait);
+    assert!(received.is_retryable());
+    assert!(received.source().is_none());
+}
+
+#[test]
+fn an_error_a_host_received_shows_its_message_code_and_causes_and_obeys_none() {
+    let hostile = "\u{1b}[2J\r INFO forged\n\u{202e}\u{200b}\u{9b}";
+    let raised = ConnectorError::internal(hostile)
+        .with_code(hostile)
+        .with_source(*chain(3, hostile).expect("a chain"));
+    let received = raised.received(&|text| text);
+    let texts: Vec<String> = [received.to_string(), received.code().unwrap().to_owned()]
+        .into_iter()
+        .chain(causes(&received))
+        .collect();
+    assert_eq!(texts.len(), 5);
+    for text in texts {
+        assert!(
+            text.is_ascii() && !text.chars().any(char::is_control),
+            "{text:?}"
+        );
+        assert!(text.contains(r"\u{1b}[2J\r INFO forged"), "{text:?}");
+    }
+}
+
+#[test]
+fn an_error_a_host_received_is_bounded_in_text_and_in_causes() {
+    use crate::limits::{MAX_ERROR_CAUSES, MAX_ERROR_CODE_BYTES, MAX_ERROR_TEXT_BYTES};
+    let long = "x".repeat(MAX_ERROR_TEXT_BYTES * 4);
+    for depth in [0, 1, MAX_ERROR_CAUSES, MAX_ERROR_CAUSES + 1, 1000] {
+        let mut raised = ConnectorError::internal(&long).with_code(long.as_str());
+        if let Some(source) = chain(depth, &long) {
+            raised = raised.with_source(*source);
+        }
+        let received = raised.received(&|text| text);
+        assert_eq!(received.to_string().len(), MAX_ERROR_TEXT_BYTES);
+        assert_eq!(received.code().unwrap().len(), MAX_ERROR_CODE_BYTES);
+        let causes = causes(&received);
+        assert_eq!(causes.len(), depth.min(MAX_ERROR_CAUSES), "{depth}");
+        for (level, cause) in causes.iter().enumerate() {
+            assert_eq!(cause.len(), MAX_ERROR_TEXT_BYTES);
+            // Outermost first, as they were.
+            assert!(cause.starts_with(&format!("level {level}: ")), "{cause}");
+        }
+    }
+}
+
+#[test]
+fn what_a_host_scrubs_is_gone_from_the_message_the_code_and_every_cause_before_any_is_cut() {
+    use crate::limits::MAX_ERROR_TEXT_BYTES;
+    // The secret straddles the point where the text is cut.
+    let said = format!("{}hunter2", "x".repeat(MAX_ERROR_TEXT_BYTES - 3));
+    let raised = ConnectorError::config(&said)
+        .with_code("hunter2")
+        .with_source(*chain(2, &said).expect("a chain"));
+    let received = raised.received(&|text| text.replace("hunter2", "***"));
+    let texts = [received.to_string(), received.code().unwrap().to_owned()];
+    for text in texts.into_iter().chain(causes(&received)) {
+        assert!(!text.contains("hun"), "{text}");
+    }
+    assert_eq!(received.code(), Some("***"));
+}

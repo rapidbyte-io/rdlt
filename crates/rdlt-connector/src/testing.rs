@@ -249,7 +249,8 @@ impl Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "certification of {}", self.connector)?;
+        let connector = crate::text::shown(&self.connector, REASON_BYTES);
+        writeln!(f, "certification of {connector}")?;
         for result in &self.results {
             let id = result.clause.id;
             match &result.outcome {

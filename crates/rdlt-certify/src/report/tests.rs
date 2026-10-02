@@ -29,7 +29,7 @@ fn a_connectors_words_reach_the_terminal_as_text_and_on_their_own_line() {
         "{shown:?}"
     );
     assert!(
-        shown.contains(r"\u{1b}[2J\n  pass S-CHECK\r\u{202e}"),
+        shown.contains(r"\u{1b}[2J\n pass S-CHECK\r\u{202e}"),
         "{shown}"
     );
 }
@@ -134,5 +134,72 @@ fn a_clause_that_passed_says_what_it_passed_on_where_it_is_noted() {
     assert!(lines[2].starts_with("  pass S-CHECK (cut") && !lines[2].contains('\u{1b}'));
     let json = super::json(&report);
     assert_eq!(json["clauses"][0]["note"], serde_json::Value::Null);
-    assert_eq!(json["clauses"][1]["note"], "cut\u{1b}[2J");
+    assert_eq!(json["clauses"][1]["note"], r"cut\u{1b}[2J");
+}
+
+/// Text of every kind a reader or a terminal is deceived by: controls of both ranges, the
+/// delete, marks that reorder, separators of lines, characters of no width, tags, a variation
+/// selector, a filler, and a run of spaces as wide as a terminal.
+const HOSTILE: &str = "x)\u{9b}2J\u{7f}\u{1b}[2J\u{202e}\u{2028}\u{2029}\u{200b}\u{200d}\u{2060}\u{feff}\u{ad}\u{180e}\u{fff9}\u{e0041}\u{fe0f}\u{3164}\u{a0}\u{3000}                                                                                  pass S-RESUME";
+
+fn hostile_report() -> Report {
+    let result = |outcome, note: Option<&str>| ClauseResult {
+        clause: CLAUSE,
+        outcome,
+        note: note.map(Into::into),
+    };
+    Report {
+        connector: HOSTILE.to_owned(),
+        results: vec![
+            result(Outcome::Failed(HOSTILE.into()), None),
+            result(Outcome::Unobserved(HOSTILE.into()), None),
+            result(Outcome::Inapplicable(HOSTILE.into()), None),
+            result(Outcome::Passed, Some(HOSTILE)),
+        ],
+    }
+}
+
+/// Whether `text` holds nothing but printable ASCII in single spaces, and line ends.
+fn plain_text(text: &str) -> bool {
+    text.chars()
+        .all(|c| c == '\n' || c == ' ' || c.is_ascii_graphic())
+        && !text.contains("   ")
+}
+
+#[test]
+fn a_connectors_words_deceive_no_reader_of_the_plain_report_its_display_or_its_json() {
+    let report = hostile_report();
+    let shown = plain(&report);
+    assert!(plain_text(&shown), "{shown:?}");
+    // The connector, four clauses and the verdict: no reason drew a line of its own.
+    assert_eq!(shown.lines().count(), 6, "{shown}");
+    assert_eq!(report.to_string(), shown);
+    let json = super::json(&report).to_string();
+    assert!(plain_text(&json), "{json:?}");
+    // What the document says the connector said is what the plain report shows.
+    let back: serde_json::Value = serde_json::from_str(&json).expect("the report parses");
+    for clause in back["clauses"].as_array().expect("the clauses") {
+        let said = clause["reason"].as_str().or(clause["note"].as_str());
+        let said = said.expect("each clause has a reason or a note");
+        assert!(shown.contains(said), "{said}");
+        assert!(said.contains(r"\u{9b}2J\u{7f}\u{1b}[2J\u{202e}"), "{said}");
+    }
+}
+
+#[test]
+fn a_reason_longer_than_its_limit_is_cut_in_every_form_of_the_report() {
+    let long = "A".repeat(64 * 1024);
+    let report = Report {
+        connector: long.clone(),
+        results: vec![ClauseResult {
+            clause: CLAUSE,
+            outcome: Outcome::Failed(long.into()),
+            note: None,
+        }],
+    };
+    let limit = rdlt_connector::testing::REASON_BYTES;
+    for line in plain(&report).lines() {
+        assert!(line.len() <= limit + 128, "{}", line.len());
+    }
+    assert!(super::json(&report).to_string().len() <= 2 * limit + 512);
 }

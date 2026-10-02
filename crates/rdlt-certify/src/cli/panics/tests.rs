@@ -26,7 +26,7 @@ fn a_panic_is_printed_as_one_bounded_line_a_terminal_does_not_obey() {
     assert!(said.starts_with("panicked at "), "{said}");
     assert!(said.contains(file!()), "{said}");
     assert!(
-        said.ends_with(r"\u{1b}[2J\n  pass S-CHECK\r\u{202e}"),
+        said.ends_with(r"\u{1b}[2J\n pass S-CHECK\r\u{202e}"),
         "{said}"
     );
     assert!(!said.chars().any(char::is_control), "{said:?}");

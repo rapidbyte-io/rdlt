@@ -2038,6 +2038,7 @@ dependencies = [
  "rdlt-adopt",
  "rdlt-connector-macros",
  "rdlt-wire",
+ "regex",
  "rusqlite",
  "schemars",
  "serde",

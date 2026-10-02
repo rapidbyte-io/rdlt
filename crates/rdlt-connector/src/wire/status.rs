@@ -64,7 +64,9 @@ pub fn error(status: &Status) -> ConnectorError {
         status.code(),
         status.message()
     );
-    ConnectorError::new(kind, message).with_code(TRANSPORT)
+    ConnectorError::new(kind, message)
+        .with_code(TRANSPORT)
+        .received(&|text| text)
 }
 
 /// The code of an error for a frame the other end sent malformed.

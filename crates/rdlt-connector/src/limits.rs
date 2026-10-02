@@ -29,6 +29,15 @@ pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
 /// costs about forty bytes, so a host costs the connector some twenty megabytes at most.
 pub const MAX_ACKNOWLEDGEABLE: usize = 1 << 18;
 
+/// Bytes: bounds the message, and each cause, of a connector's error as a host keeps it.
+pub const MAX_ERROR_TEXT_BYTES: usize = 4096;
+
+/// Bytes: bounds the machine code of a connector's error as a host keeps it.
+pub const MAX_ERROR_CODE_BYTES: usize = 128;
+
+/// Causes: bounds the chain of causes of a connector's error a host keeps.
+pub const MAX_ERROR_CAUSES: usize = 8;
+
 /// Bytes: bounds one connector configuration document.
 ///
 /// Factories receive configuration already parsed, so the code that reads it as bytes checks this
