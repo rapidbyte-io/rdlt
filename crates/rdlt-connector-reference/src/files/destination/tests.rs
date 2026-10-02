@@ -401,3 +401,45 @@ fn a_reader_that_finds_a_listed_file_gone_reads_the_newer_manifest_or_reports_it
             .is_empty()
     );
 }
+
+#[test]
+fn a_listed_file_that_fails_for_another_reason_than_being_gone_is_never_read_past() {
+    use std::cell::Cell;
+    let root = crate::scratch::tempdir().unwrap();
+    let dir = Dir::ambient(root.path()).unwrap();
+    let staging = root.path().join("staging").join("1");
+    std::fs::create_dir_all(&staging).unwrap();
+    // What the first manifest lists is there and cannot be read as rows; a newer manifest
+    // lists a file that can. Only a file that is gone sends a reader to the newer manifest.
+    std::fs::write(staging.join("new.jsonl"), "{\"id\":2}\n").unwrap();
+    std::fs::write(staging.join("damaged.jsonl"), "not json\n").unwrap();
+    std::fs::create_dir(staging.join("directory.jsonl")).unwrap();
+    std::os::unix::fs::symlink(staging.join("new.jsonl"), staging.join("link.jsonl")).unwrap();
+    let schema = Arc::new(schema().to_arrow());
+    let cases = [
+        ("damaged.jsonl", None),
+        ("directory.jsonl", Some("not_a_regular_file")),
+        ("link.jsonl", Some("not_a_regular_file")),
+        ("../1/new.jsonl", Some("invalid_name")),
+    ];
+    for (name, code) in cases {
+        let reads = Cell::new(0);
+        let listed = listing(1, &format!("staging/1/{name}"));
+        let read = super::published_by(&dir, "rows", &schema, |_| {
+            reads.set(reads.get() + 1);
+            Ok(Some(if reads.get() == 1 {
+                listed.clone()
+            } else {
+                listing(2, "staging/1/new.jsonl")
+            }))
+        });
+        let error = read.expect_err(name);
+        assert_eq!(error.kind(), ConnectorErrorKind::Data, "{name}: {error}");
+        assert_eq!(error.code(), code, "{name}: {error}");
+        assert_eq!(
+            reads.get(),
+            1,
+            "{name}: the reader looked for a newer manifest"
+        );
+    }
+}
