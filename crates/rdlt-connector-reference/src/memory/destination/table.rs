@@ -9,7 +9,7 @@ use rdlt_connector::prelude::*;
 use rdlt_connector::{Deletion, Epoch, GenerationId, MergeKey, PipelineId, RootKey, SegmentId};
 
 use crate::columns::changed;
-use crate::merge::{Merged, failed, merge, merge_children};
+use crate::merge::{Merged, failed, merge_children_sparse, merge_sparse};
 
 #[derive(Debug, Default)]
 pub(super) struct Table {
@@ -123,6 +123,18 @@ impl Table {
             .map_err(|error| failed("staging rows", &error))
     }
 
+    /// The table's published rows as a reader is given them: a merge table's with every column
+    /// of the table, at the table's types, though it keeps each row under the columns the row
+    /// holds; any other table's as they were written.
+    pub(super) fn read(&self) -> Vec<RecordBatch> {
+        let Some(schema) = self.schema.as_ref().filter(|_| self.merge.is_some()) else {
+            return self.published.clone();
+        };
+        // A schema change is taken only where every held row converts to it, so this converts.
+        crate::merge::read_back(&Arc::new(schema.to_arrow()), &self.published)
+            .unwrap_or_else(|_| self.published.clone())
+    }
+
     /// The schema rows of the table merge under: its own, or else `staged`'s.
     fn merge_schema(&self, staged: &Staged) -> Result<SchemaRef> {
         match &self.schema {
@@ -138,7 +150,7 @@ impl Table {
     pub(super) fn merged(&self, staged: &Staged, key: &MergeKey) -> Result<Merged> {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
         let schema = self.merge_schema(staged)?;
-        merge(&schema, &self.published, &self.tombstones, &incoming, key)
+        merge_sparse(&schema, &self.published, &self.tombstones, &incoming, key)
             .map_err(|error| failed("merging rows", &error))
     }
 
@@ -152,7 +164,7 @@ impl Table {
     ) -> Result<Vec<RecordBatch>> {
         let incoming: Vec<RecordBatch> = staged.iter().map(|(_, batch)| batch.clone()).collect();
         let schema = self.merge_schema(staged)?;
-        merge_children(&schema, &self.published, &incoming, key, root, roots)
+        merge_children_sparse(&schema, &self.published, &incoming, key, root, roots)
             .map_err(|error| failed("merging child rows", &error))
     }
 }

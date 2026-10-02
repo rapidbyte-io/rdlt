@@ -3,44 +3,57 @@
 
 use std::collections::BTreeMap;
 
-use arrow_array::{Array, ArrayRef, RecordBatch};
-use arrow_row::RowConverter;
-use arrow_schema::{ArrowError, SchemaRef};
-use rdlt_connector::{ChangeOp, MergeKey};
-
-use super::super::aligned::{Nulls, interleaved};
-use super::super::{binary, key_columns};
 use arrow_array::cast::AsArray;
+use arrow_array::{ArrayRef, RecordBatch};
+use arrow_row::Rows;
+use arrow_schema::ArrowError;
+use rdlt_connector::ChangeOp;
 
-/// A row of a source batch: the published batch is source 0, incoming batch `i` source `i + 1`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct At {
-    pub(super) source: usize,
-    pub(super) row: usize,
-}
+use super::super::sparse::{At, Base, Pick, Sources, assemble};
 
-/// Where a merged row's cells come from, in the schema's order.
+/// Where a merged row's cells come from, in the schema's order, but for those set apart.
 enum Cells {
     /// Every cell is that of one source row: a row no change of the merge composed.
     Whole(At),
-    /// Each cell from its own source row, or null.
+    /// Each cell from its own source row, or null: a row an update flagging columns composed.
     Mixed(Vec<Option<At>>),
 }
 
-impl Cells {
-    fn cell(&self, column: usize) -> Option<At> {
-        match self {
-            Self::Whole(at) => Some(*at),
-            Self::Mixed(cells) => cells[column],
-        }
-    }
-}
-
-/// A merged row: its sequence, its cells, and how many of the table's truncates it has met.
+/// A merged row: its sequence, its cells, how many of the table's truncates it has met, and
+/// whether one of them, marking it, gave it its sequence.
 struct Merged {
     seq: Vec<u8>,
     cells: Cells,
+    /// The cells a deletion marking the row gave it in place of its own, by ascending column:
+    /// its sequence and its deletion time, which is all a marked row costs, whatever its width.
+    marks: Vec<(usize, Option<At>)>,
     met: usize,
+    /// A row a truncate marked carries the truncate's sequence, and a change of its key at that
+    /// sequence is not before the truncate: it applies.
+    truncated: bool,
+}
+
+impl Merged {
+    /// The row the cell at `column` comes from; none for a null.
+    fn cell(&self, column: usize) -> Option<At> {
+        if let Some((_, at)) = self.marks.iter().find(|(marked, _)| *marked == column) {
+            return *at;
+        }
+        match &self.cells {
+            Cells::Whole(at) => Some(*at),
+            Cells::Mixed(cells) => cells[column],
+        }
+    }
+
+    /// Gives the row the cell of `at` in `column`, in place of its own.
+    fn mark(&mut self, column: usize, at: At) {
+        if let Some(mark) = self.marks.iter_mut().find(|(marked, _)| *marked == column) {
+            mark.1 = Some(at);
+        } else {
+            self.marks.push((column, Some(at)));
+            self.marks.sort_by_key(|(marked, _)| *marked);
+        }
+    }
 }
 
 /// A truncate the changes applied: its sequence and its row.
@@ -49,12 +62,10 @@ struct Truncate {
     at: At,
 }
 
-/// Where a change stream's table keeps its sequence and deletion time, and how many columns it
-/// has.
+/// Where a change stream's table keeps its sequence and deletion time.
 pub(super) struct Columns {
     pub(super) seq: usize,
     pub(super) at: Option<usize>,
-    pub(super) count: usize,
 }
 
 /// What applying a change did to its key.
@@ -84,53 +95,45 @@ pub(super) struct Table<'a> {
     /// The positions in `truncates` of those that say when they deleted.
     timed: Vec<usize>,
     columns: Columns,
-    published: &'a RecordBatch,
-    aligned: &'a [RecordBatch],
+    sources: &'a Sources,
 }
 
 impl<'a> Table<'a> {
-    /// The table holding `published`, its rows keyed as `converter` encodes `key`, to which rows
-    /// of `aligned`, the incoming batches under the table's schema, apply.
+    /// The table holding the first `published` of `sources`, its rows keyed by `keys` and
+    /// sequenced by `seqs`, each source's, to which rows of the other sources apply.
     pub(super) fn load(
-        published: &'a RecordBatch,
-        aligned: &'a [RecordBatch],
-        converter: &RowConverter,
-        key: &MergeKey,
+        sources: &'a Sources,
+        published: usize,
+        (keys, seqs): (&[Rows], &[ArrayRef]),
         columns: Columns,
-    ) -> Result<Self, ArrowError> {
+    ) -> Self {
         let mut table = Self {
-            rows: Vec::with_capacity(published.num_rows()),
+            rows: Vec::new(),
             by_key: BTreeMap::new(),
             truncates: Vec::new(),
             timed: Vec::new(),
             columns,
-            published,
-            aligned,
+            sources,
         };
-        let keys = converter.convert_columns(&key_columns(published, key)?)?;
-        let seqs = binary(published, &key.seq)?;
-        let seqs = seqs.as_binary::<i32>();
-        for row in 0..published.num_rows() {
-            let merged = Merged {
-                seq: seqs.value(row).to_vec(),
-                cells: Cells::Whole(At { source: 0, row }),
-                met: 0,
-            };
-            table.put(keys.row(row).as_ref().to_vec(), merged);
+        for source in 0..published {
+            let seqs = seqs[source].as_binary::<i32>();
+            for row in 0..sources.rows(source) {
+                let merged = Merged {
+                    seq: seqs.value(row).to_vec(),
+                    cells: Cells::Whole(At { source, row }),
+                    marks: Vec::new(),
+                    met: 0,
+                    truncated: false,
+                };
+                table.put(keys[source].row(row).as_ref().to_vec(), merged);
+            }
         }
-        Ok(table)
-    }
-
-    fn column(&self, source: usize, column: usize) -> &ArrayRef {
-        match source {
-            0 => self.published.column(column),
-            incoming => self.aligned[incoming - 1].column(column),
-        }
+        table
     }
 
     /// Whether `cell` of `column` is null.
     fn is_null(&self, cell: Option<At>, column: usize) -> bool {
-        cell.is_none_or(|at| self.column(at.source, column).is_null(at.row))
+        cell.is_none_or(|at| self.sources.is_null(at, column))
     }
 
     fn put(&mut self, key: Vec<u8>, merged: Merged) {
@@ -172,22 +175,14 @@ impl<'a> Table<'a> {
     /// removes it, or where deletes are soft marks it deleted then, and the last leaves it its
     /// sequence.
     fn meet(&mut self, index: usize) {
+        let (met, Some(last)) = (self.truncates.len(), self.truncates.last()) else {
+            return;
+        };
         let Some(merged) = self.rows[index].as_ref() else {
             return;
         };
         let pending = &self.truncates[merged.met..];
         let first = merged.met + pending.partition_point(|truncate| truncate.seq <= merged.seq);
-        let (met, Some(last)) = (self.truncates.len(), self.truncates.last()) else {
-            return;
-        };
-        if first == met {
-            self.rows[index].as_mut().expect("the row was found").met = met;
-            return;
-        }
-        let Some(at) = self.columns.at else {
-            self.rows[index] = None;
-            return;
-        };
         // The row keeps when it was deleted; else the first truncate that says when does.
         let timed = self.timed.partition_point(|position| *position < first);
         let deleted_by = self
@@ -195,15 +190,30 @@ impl<'a> Table<'a> {
             .get(timed)
             .map_or(last.at, |position| self.truncates[*position].at);
         let (seq, by) = (last.seq.clone(), last.at);
-        let undeleted = self.is_null(merged.cells.cell(at), at);
-        let merged = self.rows[index].as_mut().expect("the row was found");
-        let cells = mixed(&mut merged.cells, self.columns.count);
-        cells[self.columns.seq] = Some(by);
+        let undeleted = self
+            .columns
+            .at
+            .is_some_and(|at| self.is_null(merged.cell(at), at));
+        let (seq_column, at_column) = (self.columns.seq, self.columns.at);
+        let slot = &mut self.rows[index];
+        let Some(merged) = slot.as_mut() else {
+            return;
+        };
+        if first == met {
+            merged.met = met;
+            return;
+        }
+        let Some(at) = at_column else {
+            *slot = None;
+            return;
+        };
+        merged.mark(seq_column, by);
         if undeleted {
-            cells[at] = Some(deleted_by);
+            merged.mark(at, deleted_by);
         }
         merged.seq = seq;
         merged.met = met;
+        merged.truncated = true;
     }
 
     /// Applies `change` to the row with `key`, when it is sequenced past it: an insert or
@@ -219,31 +229,16 @@ impl<'a> Table<'a> {
             self.meet(index);
         }
         let current = index.and_then(|index| self.rows[index].as_ref());
-        if current.is_some_and(|current| current.seq >= change.seq) {
+        let behind = |current: &Merged| match current.seq.cmp(&change.seq) {
+            std::cmp::Ordering::Less => false,
+            std::cmp::Ordering::Equal => !current.truncated,
+            std::cmp::Ordering::Greater => true,
+        };
+        if current.is_some_and(behind) {
             return Applied::Nothing;
         }
-        let met = self.truncates.len();
         if change.op == ChangeOp::Delete {
-            return match (self.columns.at, index.filter(|_| current.is_some())) {
-                (None, _) => {
-                    if let Some(index) = self.by_key.remove(&key) {
-                        self.rows[index] = None;
-                    }
-                    Applied::Removed
-                }
-                (Some(at), Some(index)) => {
-                    let undeleted = self.is_null(current.and_then(|row| row.cells.cell(at)), at);
-                    let kept = self.rows[index].as_mut().expect("the row is current");
-                    let cells = mixed(&mut kept.cells, self.columns.count);
-                    cells[self.columns.seq] = Some(change.at);
-                    if undeleted {
-                        cells[at] = Some(change.at);
-                    }
-                    kept.seq = change.seq;
-                    Applied::Nothing
-                }
-                (Some(_), None) => Applied::Nothing,
-            };
+            return self.delete(&key, index, &change);
         }
         let cells = match unchanged {
             None => Cells::Whole(change.at),
@@ -253,7 +248,7 @@ impl<'a> Table<'a> {
                     .enumerate()
                     .map(|(column, kept)| match (kept, current) {
                         (false, _) => Some(change.at),
-                        (true, Some(current)) => current.cells.cell(column),
+                        (true, Some(current)) => current.cell(column),
                         (true, None) => None,
                     })
                     .collect(),
@@ -262,55 +257,54 @@ impl<'a> Table<'a> {
         let merged = Merged {
             seq: change.seq,
             cells,
-            met,
+            marks: Vec::new(),
+            met: self.truncates.len(),
+            truncated: false,
         };
         self.put(key, merged);
         Applied::Held
     }
 
-    /// The rows the table holds once every row has met every truncate, as one batch of `schema`,
-    /// each cell taken from where it comes from.
-    pub(super) fn assemble(
-        mut self,
-        schema: &SchemaRef,
-        nulls: &mut Nulls,
-    ) -> Result<RecordBatch, ArrowError> {
+    /// Applies the delete `change` to the row at `index`, its key's, where there is one: it is
+    /// removed, or where deletes are soft marked deleted then, unless it was already.
+    fn delete(&mut self, key: &[u8], index: Option<usize>, change: &Change) -> Applied {
+        let Some(at) = self.columns.at else {
+            if let Some(index) = self.by_key.remove(key) {
+                self.rows[index] = None;
+            }
+            return Applied::Removed;
+        };
+        let seq_column = self.columns.seq;
+        let Some(index) = index else {
+            return Applied::Nothing;
+        };
+        let undeleted = self.rows[index]
+            .as_ref()
+            .is_some_and(|row| self.is_null(row.cell(at), at));
+        if let Some(kept) = self.rows[index].as_mut() {
+            kept.mark(seq_column, change.at);
+            if undeleted {
+                kept.mark(at, change.at);
+            }
+            kept.seq.clone_from(&change.seq);
+            kept.truncated = false;
+        }
+        Applied::Nothing
+    }
+
+    /// The rows the table holds once every row has met every truncate, as batches of the
+    /// columns they hold, each cell taken from where it comes from.
+    pub(super) fn assemble(mut self) -> Result<Vec<RecordBatch>, ArrowError> {
         for index in 0..self.rows.len() {
             self.meet(index);
         }
-        let rows: Vec<&Merged> = self.rows.iter().flatten().collect();
-        let absent = self.aligned.len() + 1;
-        let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
-        for (column, field) in schema.fields().iter().enumerate() {
-            let null = nulls.of(field.data_type(), 1);
-            let mut sources: Vec<&dyn Array> = vec![self.published.column(column).as_ref()];
-            sources.extend(
-                self.aligned
-                    .iter()
-                    .map(|batch| batch.column(column).as_ref()),
-            );
-            sources.push(null.as_ref());
-            let indices: Vec<(usize, usize)> = rows
-                .iter()
-                .map(|merged| match merged.cells.cell(column) {
-                    Some(at) => (at.source, at.row),
-                    None => (absent, 0),
-                })
-                .collect();
-            columns.push(interleaved(&sources, &indices, field.data_type(), nulls)?);
-        }
-        let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(rows.len()));
-        RecordBatch::try_new_with_options(std::sync::Arc::clone(schema), columns, &options)
-    }
-}
-
-/// `cells` as cells each of its own source, which a row a delete or a truncate marks needs.
-fn mixed(cells: &mut Cells, count: usize) -> &mut Vec<Option<At>> {
-    if let Cells::Whole(at) = *cells {
-        *cells = Cells::Mixed(vec![Some(at); count]);
-    }
-    match cells {
-        Cells::Mixed(cells) => cells,
-        Cells::Whole(_) => unreachable!("the cells were made mixed above"),
+        let picks = self.rows.iter().flatten().map(|merged| Pick {
+            base: match &merged.cells {
+                Cells::Whole(at) => Base::Row(*at),
+                Cells::Mixed(cells) => Base::Cells(cells),
+            },
+            over: &merged.marks,
+        });
+        assemble(self.sources, picks)
     }
 }

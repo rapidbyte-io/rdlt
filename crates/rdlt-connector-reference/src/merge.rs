@@ -1,10 +1,10 @@
 //! Merging published rows by key, as the memory and files destinations publish a merge table.
 
-mod aligned;
 mod changes;
 mod history;
 mod refused;
 mod retype;
+mod sparse;
 #[cfg(test)]
 mod tests;
 mod tombstones;
@@ -19,12 +19,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch};
-use arrow_row::{RowConverter, SortField};
+use arrow_array::{ArrayRef, RecordBatch};
+use arrow_row::{RowConverter, Rows, SortField};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use rdlt_connector::{ChangeColumns, ConnectorError, MergeKey, RootKey, TableRef};
 
-use aligned::{Nulls, concat, filtered, taken};
+use crate::limits::MAX_ABSENT_CELLS;
+use sparse::{At, Base, Nulls, Pick, Sources, assemble};
 
 /// Refuses a writer of `table` where it is a replace generation of a history table, which merges
 /// into its table only.
@@ -61,9 +62,12 @@ pub(crate) fn written_schema(stored: &SchemaRef, changes: &ChangeColumns) -> Sch
 /// sequence order as its op says; otherwise an incoming row replaces the published row with its
 /// key, and among incoming rows of one key the greatest sequence wins.
 ///
+/// The rows are given back as batches of the columns they hold, as [`sparse`] has them: a
+/// column a row never had costs the row nothing, here or in what a destination keeps of them.
+///
 /// A key `schema` cannot be merged by, one of no column or naming a column it lacks, is an error,
 /// and so is a value a column's type no longer holds: nothing merges then.
-pub(crate) fn merge(
+pub(crate) fn merge_sparse(
     schema: &SchemaRef,
     published: &[RecordBatch],
     buried: &[RecordBatch],
@@ -94,6 +98,54 @@ pub(crate) fn merge(
     Ok(Merged { rows, tombstones })
 }
 
+/// As [`merge_sparse`], the rows given back as batches of every column of the table: for a
+/// destination whose files hold every column of every row.
+///
+/// Such a destination pays for the cells its rows never had: the rows of each batch times the
+/// columns it does not hold. More than [`MAX_ABSENT_CELLS`] of them is a `Data` error coded
+/// `merge_too_wide`, raised before any is made.
+pub(crate) fn merge(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    buried: &[RecordBatch],
+    incoming: &[RecordBatch],
+    key: &MergeKey,
+) -> Result<Merged, ArrowError> {
+    let merged = merge_sparse(schema, published, buried, incoming, key)?;
+    let stored = match &key.changes {
+        Some(changes) => changes::stored(schema, changes),
+        None => Arc::clone(schema),
+    };
+    Ok(Merged {
+        rows: every_column(&stored, &merged.rows)?,
+        tombstones: merged.tombstones,
+    })
+}
+
+/// `rows`, batches of the columns they hold, as batches of every column of `schema`, where that
+/// makes no more absent cells than a destination may be charged.
+fn every_column(schema: &SchemaRef, rows: &[RecordBatch]) -> Result<Vec<RecordBatch>, ArrowError> {
+    let absent = sparse::absent(schema, rows);
+    if absent > MAX_ABSENT_CELLS {
+        let message = format!(
+            "the table's rows would hold {absent} cells of columns they never had, over the \
+             limit of {MAX_ABSENT_CELLS}"
+        );
+        return Err(refused::refused(refused::MERGE_TOO_WIDE, message));
+    }
+    sparse::every_column(schema, rows, &mut Nulls::default())
+}
+
+/// `rows`, batches of the columns they hold, as a reader is given them: batches of every column
+/// of `schema`, a column a batch does not hold being nulls its rows share with every other such
+/// column, which costs a reader a reference a column, whatever the rows.
+pub(crate) fn read_back(
+    schema: &SchemaRef,
+    rows: &[RecordBatch],
+) -> Result<Vec<RecordBatch>, ArrowError> {
+    sparse::every_column(schema, rows, &mut Nulls::default())
+}
+
 /// A merge table's rows once merged, and for a change stream's, the tombstones of the rows it
 /// removed outright.
 #[derive(Debug)]
@@ -110,6 +162,67 @@ fn held(batches: impl IntoIterator<Item = RecordBatch>) -> Vec<RecordBatch> {
         .collect()
 }
 
+/// The sources of a merge under `schema`: `published`, then `incoming`, each batch a source;
+/// returns them with how many are published.
+fn sources(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    incoming: &[RecordBatch],
+) -> Result<(Sources, usize), ArrowError> {
+    let mut sources = Sources::new(schema);
+    for batch in published.iter().chain(incoming) {
+        sources.add(batch)?;
+    }
+    Ok((sources, published.len()))
+}
+
+/// The keys of every row of each source, as `converter` encodes `key`'s columns.
+fn source_keys(
+    sources: &Sources,
+    converter: &RowConverter,
+    key: &MergeKey,
+    nulls: &mut Nulls,
+) -> Result<Vec<Rows>, ArrowError> {
+    let columns = key
+        .columns
+        .iter()
+        .map(|column| sources.schema().index_of(column))
+        .collect::<Result<Vec<usize>, _>>()?;
+    (0..sources.len())
+        .map(|source| {
+            let values: Vec<ArrayRef> = columns
+                .iter()
+                .map(|column| sources.dense(source, *column, nulls))
+                .collect();
+            converter.convert_columns(&values)
+        })
+        .collect()
+}
+
+/// The sequence of every row of each source, as the bytes it compares by.
+fn source_seqs(
+    sources: &Sources,
+    key: &MergeKey,
+    nulls: &mut Nulls,
+) -> Result<Vec<ArrayRef>, ArrowError> {
+    source_bytes(sources, &key.seq, nulls)
+}
+
+/// The column `name` of each source as the bytes an id or a sequence compares by.
+fn source_bytes(
+    sources: &Sources,
+    name: &str,
+    nulls: &mut Nulls,
+) -> Result<Vec<ArrayRef>, ArrowError> {
+    let column = sources
+        .schema()
+        .index_of(name)
+        .map_err(|_| unkeyed(format!("the table has no column {name}")))?;
+    (0..sources.len())
+        .map(|source| retype::compared(&sources.dense(source, column, nulls)))
+        .collect()
+}
+
 /// The published rows once `incoming` upserts into `published` by `key`, the greatest sequence
 /// winning among incoming rows of one key.
 fn upsert(
@@ -120,36 +233,41 @@ fn upsert(
 ) -> Result<Vec<RecordBatch>, ArrowError> {
     let converter = converter(schema, key)?;
     let mut nulls = Nulls::default();
-    let incoming = concat(incoming, schema, &mut nulls)?;
-    let incoming_keys = converter.convert_columns(&key_columns(&incoming, key)?)?;
-    let seq = binary(&incoming, &key.seq)?;
-    let seq = seq.as_binary::<i32>();
-    let mut winners: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
-    for row in 0..incoming.num_rows() {
-        let row_key = incoming_keys.row(row).as_ref().to_vec();
+    let (sources, held) = sources(schema, published, incoming)?;
+    let keys = source_keys(&sources, &converter, key, &mut nulls)?;
+    let seqs = source_seqs(&sources, key, &mut nulls)?;
+    let seq = |at: At| seqs[at.source].as_binary::<i32>().value(at.row);
+    let rows_in = |range: std::ops::Range<usize>| -> Vec<At> {
+        range
+            .flat_map(|source| (0..sources.rows(source)).map(move |row| At { source, row }))
+            .collect()
+    };
+    let mut winners: BTreeMap<Vec<u8>, At> = BTreeMap::new();
+    for at in rows_in(held..sources.len()) {
+        let row_key = keys[at.source].row(at.row).as_ref().to_vec();
         match winners.get(&row_key) {
-            Some(&best) if seq.value(best) >= seq.value(row) => {}
+            Some(best) if seq(*best) >= seq(at) => {}
             _ => {
-                winners.insert(row_key, row);
+                winners.insert(row_key, at);
             }
         }
     }
-    let mut rows: Vec<usize> = winners.values().copied().collect();
-    rows.sort_unstable();
-    let incoming = taken(&incoming, &rows, &mut nulls)?;
-    let published = concat(published, schema, &mut nulls)?;
-    let published_keys = converter.convert_columns(&key_columns(&published, key)?)?;
-    let kept: BooleanArray = (0..published.num_rows())
-        .map(|row| Some(!winners.contains_key(published_keys.row(row).as_ref())))
-        .collect();
-    let published = filtered(&published, &kept, &mut nulls)?;
-    Ok(held([published, incoming]))
+    let kept = rows_in(0..held)
+        .into_iter()
+        .filter(|at| !winners.contains_key(keys[at.source].row(at.row).as_ref()));
+    let mut won: Vec<At> = winners.values().copied().collect();
+    won.sort_unstable();
+    let picks = kept.chain(won).map(|at| Pick {
+        base: Base::Row(at),
+        over: &[],
+    });
+    assemble(&sources, picks)
 }
 
 /// The published rows of a child table once the roots `roots` publish replace their children:
 /// published rows of those roots go, and of `incoming`, the rows of each root's winning row, by
 /// root id and sequence, are added.
-pub(crate) fn merge_children(
+pub(crate) fn merge_children_sparse(
     schema: &SchemaRef,
     published: &[RecordBatch],
     incoming: &[RecordBatch],
@@ -169,21 +287,48 @@ pub(crate) fn merge_children(
         }
     }
     let mut nulls = Nulls::default();
-    let published = concat(published, schema, &mut nulls)?;
-    let owners = binary(&published, column)?;
-    let owners = owners.as_binary::<i32>();
-    let kept: BooleanArray = (0..published.num_rows())
-        .map(|row| Some(!winners.contains_key(owners.value(row))))
-        .collect();
-    let published = filtered(&published, &kept, &mut nulls)?;
-    let incoming = concat(incoming, schema, &mut nulls)?;
-    let (owners, seqs) = (binary(&incoming, column)?, binary(&incoming, &key.seq)?);
-    let (owners, seqs) = (owners.as_binary::<i32>(), seqs.as_binary::<i32>());
-    let winning: BooleanArray = (0..incoming.num_rows())
-        .map(|row| Some(winners.get(owners.value(row)).map(Vec::as_slice) == Some(seqs.value(row))))
-        .collect();
-    let incoming = filtered(&incoming, &winning, &mut nulls)?;
-    Ok(held([published, incoming]))
+    let (sources, held) = sources(schema, published, incoming)?;
+    let owners = source_bytes(&sources, column, &mut nulls)?;
+    let seqs = source_seqs(&sources, key, &mut nulls)?;
+    let mut picked = Vec::new();
+    for source in 0..sources.len() {
+        let (owners, seqs) = (
+            owners[source].as_binary::<i32>(),
+            seqs[source].as_binary::<i32>(),
+        );
+        for row in 0..sources.rows(source) {
+            let winner = winners.get(owners.value(row)).map(Vec::as_slice);
+            // A published row stays unless its root is published again; an incoming row is
+            // added where it is of its root's winning row.
+            let stays = if source < held {
+                winner.is_none()
+            } else {
+                winner == Some(seqs.value(row))
+            };
+            if stays {
+                picked.push(At { source, row });
+            }
+        }
+    }
+    let picks = picked.into_iter().map(|at| Pick {
+        base: Base::Row(at),
+        over: &[],
+    });
+    assemble(&sources, picks)
+}
+
+/// As [`merge_children_sparse`], the rows given back as batches of every column of the table,
+/// charged as [`merge`] charges them.
+pub(crate) fn merge_children(
+    schema: &SchemaRef,
+    published: &[RecordBatch],
+    incoming: &[RecordBatch],
+    key: &MergeKey,
+    root: &RootKey,
+    roots: &[RecordBatch],
+) -> Result<Vec<RecordBatch>, ArrowError> {
+    let rows = merge_children_sparse(schema, published, incoming, key, root, roots)?;
+    every_column(schema, &rows)
 }
 
 /// `batch`'s column `name` as `Binary`, which an id or a sequence is.

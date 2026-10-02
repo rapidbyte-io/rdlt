@@ -53,11 +53,7 @@ pub struct MemoryDestination {
 pub fn published(store: &str, table: &str) -> Vec<RecordBatch> {
     let store = named(None, store);
     let store = store.lock();
-    store
-        .tables
-        .get(table)
-        .map(|table| table.published.clone())
-        .unwrap_or_default()
+    store.tables.get(table).map(Table::read).unwrap_or_default()
 }
 
 /// The tables of `store`, by name.
@@ -452,11 +448,10 @@ impl TableWriter for MemoryWriter {
 #[cfg(feature = "certify")]
 impl ReadBack for MemoryDestination {
     async fn published(&self, table: &TableRef, rows: PublishedRows) -> Result<()> {
-        // The batches are shared with the store, not copied; the lock is not held while sending.
+        // A reader is given every column; the lock is not held while sending.
         let published = {
             let store = self.store.lock();
-            let table = store.tables.get(&*table.name);
-            table.map(|table| table.published.clone())
+            store.tables.get(&*table.name).map(Table::read)
         };
         for batch in published.unwrap_or_default() {
             rows.send(batch).await?;

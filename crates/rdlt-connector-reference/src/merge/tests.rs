@@ -8,6 +8,7 @@ use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
 
 mod costs;
 mod refusals;
+mod widths;
 
 use super::changes::stored;
 use super::{Merged, merge, tombstone_schema, written_schema};
@@ -402,6 +403,35 @@ fn a_change_replayed_after_a_hard_truncate_never_brings_its_row_back() {
     let raised = apply(&replayed, &[&[truncate(7, 100)]], Deletion::Hard);
     assert_eq!(rows(&raised), []);
     assert_eq!(tombstones(&raised), [(None, 7)]);
+}
+
+#[test]
+fn of_several_bounds_stored_the_greatest_is_the_table_s() {
+    // Tombstones as two commits' truncates would leave them were both kept, the greater first.
+    let bounds = RecordBatch::try_from_iter([
+        (
+            "id",
+            Arc::new(Int64Array::from(vec![None::<i64>, None])) as ArrayRef,
+        ),
+        (
+            "seq",
+            Arc::new(BinaryArray::from_iter_values([sequence(7), sequence(3)])) as ArrayRef,
+        ),
+    ])
+    .expect("a valid batch");
+    let stored = Merged {
+        rows: Vec::new(),
+        tombstones: vec![bounds],
+    };
+    let merged = apply(
+        &stored,
+        &[&[row(1, "a", 5), row(2, "b", 7), delete(3, 6, 100)]],
+        Deletion::Hard,
+    );
+    // Only the change at the greater bound's own sequence lands, and no delete before it buries.
+    assert_eq!(rows(&merged), [(2, Some("b".into()), 7, None)]);
+    let raised = apply(&merged, &[&[truncate(8, 100)]], Deletion::Hard);
+    assert_eq!(tombstones(&raised), [(None, 8)]);
 }
 
 #[test]

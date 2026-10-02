@@ -9,35 +9,19 @@ use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
-use arrow_row::{RowConverter, Rows};
+use arrow_row::Rows;
 use arrow_schema::{ArrowError, DataType, SchemaRef};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey};
 
-use super::aligned::{Nulls, aligned, concat, interleaved};
-use super::changes::{nullable, stored};
+use super::changes::stored;
 use super::retype::retyped;
+use super::sparse::{self, At, Base, Nulls, Pick, Sources};
 use super::tombstones::{self, Tombstones};
 use super::written::ops;
-use super::{binary, converter, held, key_columns};
+use super::{converter, source_bytes, source_keys, source_seqs, sources};
 
-/// A row a version's values come from.
-#[derive(Clone, Copy, Debug)]
-enum Row {
-    /// The published row at this index.
-    Published(usize),
-    /// Row `.1` of incoming batch `.0`.
-    Incoming(usize, usize),
-}
-
-impl Row {
-    /// Where the row sits among the sources: the published batch, then each incoming batch.
-    fn slot(self) -> (usize, usize) {
-        match self {
-            Self::Published(row) => (0, row),
-            Self::Incoming(batch, row) => (batch + 1, row),
-        }
-    }
-}
+/// A row a version's values come from, of the merge's sources.
+type Row = At;
 
 /// One version of a key, by the rows its values come from.
 #[derive(Clone, Copy, Debug)]
@@ -51,48 +35,52 @@ struct Version {
     /// it takes; none while it is open.
     until: Option<Row>,
     current: bool,
+    /// Whether the merge opened or closed it: a version it left is its published row whole.
+    touched: bool,
 }
 
-/// A key's newest version's row, which guards a change stream's key, its current version, and
-/// how many of the table's truncates it has met.
+/// A key's newest version's row, which guards a change stream's key, its current version, how
+/// many of the table's truncates it has met, and whether one of them opened its newest version.
 #[derive(Debug)]
 struct Key {
     newest: Row,
     current: Option<usize>,
     met: usize,
+    /// A version a truncate opened carries the truncate's sequence, and a change of its key at
+    /// that sequence is not before the truncate: it applies.
+    truncated: bool,
 }
 
-/// The sequences, hashes and deletion times of the published batch and each incoming one.
-struct Sources {
+/// The sequences, hashes and deletion times of each of the merge's sources.
+struct Guards {
     seqs: Vec<ArrayRef>,
     hashes: Vec<ArrayRef>,
     /// Where deletes are soft, the deletion times.
     at: Option<Vec<ArrayRef>>,
 }
 
-impl Sources {
+impl Guards {
     fn seq(&self, row: Row) -> &[u8] {
-        let (batch, row) = row.slot();
-        self.seqs[batch].as_binary::<i32>().value(row)
+        self.seqs[row.source].as_binary::<i32>().value(row.row)
     }
 
     fn hash(&self, row: Row) -> Option<&[u8]> {
-        let (batch, row) = row.slot();
-        let hashes = self.hashes[batch].as_binary::<i32>();
-        hashes.is_valid(row).then(|| hashes.value(row))
+        let hashes = self.hashes[row.source].as_binary::<i32>();
+        hashes.is_valid(row.row).then(|| hashes.value(row.row))
     }
 
     /// Whether `row` deleted what it holds.
     fn deleted(&self, row: Row) -> bool {
-        let (batch, row) = row.slot();
-        self.at.as_ref().is_some_and(|at| at[batch].is_valid(row))
+        self.at
+            .as_ref()
+            .is_some_and(|at| at[row.source].is_valid(row.row))
     }
 }
 
 /// A history table's versions, and the rows they come from.
 struct Versions {
     list: Vec<Version>,
-    sources: Sources,
+    sources: Guards,
 }
 
 impl Versions {
@@ -101,6 +89,7 @@ impl Versions {
         let version = &mut self.list[index];
         version.until = Some(by);
         version.current = false;
+        version.touched = true;
     }
 
     /// Publishes a current version of `data` that `opened` published as `key`'s.
@@ -111,6 +100,7 @@ impl Versions {
             opened,
             until: None,
             current: true,
+            touched: true,
         });
         // A change stream opens a version only past its key's newest; a plain table never asks.
         key.newest = opened;
@@ -168,62 +158,68 @@ fn meet(versions: &mut Versions, truncates: &[Row], state: &mut Key) {
     let first = pending.partition_point(|by| sources.seq(*by) <= opened);
     if let Some(by) = pending.get(first) {
         versions.remove(state, *by);
+        state.truncated = true;
     }
 }
 
 impl History {
-    /// The versions `published` holds, keyed as `converter` encodes `key`.
+    /// The versions the first `published` of `sources` hold, keyed by `keys`, each source's.
     fn load(
-        published: &RecordBatch,
-        converter: &RowConverter,
-        (key, history): (&MergeKey, &HistoryColumns),
-        sources: Sources,
+        sources: &Sources,
+        published: usize,
+        keys: &[Rows],
+        (history, guards): (&HistoryColumns, Guards),
+        nulls: &mut Nulls,
     ) -> Result<Self, ArrowError> {
-        let keys = converter.convert_columns(&key_columns(published, key)?)?;
-        let flags = published
-            .column_by_name(&history.is_current)
-            .ok_or_else(|| ArrowError::SchemaError(format!("no column {}", history.is_current)))?;
-        let flags = retyped(flags, &DataType::Boolean)?;
-        let flags = flags.as_boolean();
+        let is_current = sources.schema().index_of(&history.is_current)?;
         let mut loaded = Self {
             versions: Versions {
-                list: Vec::with_capacity(published.num_rows()),
-                sources,
+                list: Vec::new(),
+                sources: guards,
             },
             keys: BTreeMap::new(),
             truncates: Vec::new(),
         };
-        for row in 0..published.num_rows() {
-            let at = Row::Published(row);
-            let current = flags.is_valid(row) && flags.value(row);
-            let index = loaded.versions.list.len();
-            loaded.versions.list.push(Version {
-                data: at,
-                opened: at,
-                until: Some(at),
-                current,
-            });
-            let sources = &loaded.versions.sources;
-            let key = keys.row(row);
-            if let Some(state) = loaded.keys.get_mut(key.as_ref()) {
-                state.newest = [state.newest, at]
-                    .into_iter()
-                    .max_by_key(|row| sources.seq(*row))
-                    .unwrap_or(at);
-                if current {
-                    state.current = Some(index);
-                }
-            } else {
-                let current = current.then_some(index);
-                let state = Key {
-                    newest: at,
-                    current,
-                    met: 0,
-                };
-                loaded.keys.insert(key.as_ref().to_vec(), state);
+        for (source, keys) in keys.iter().enumerate().take(published) {
+            let flags = sources.dense(source, is_current, nulls);
+            let flags = retyped(&flags, &DataType::Boolean)?;
+            let flags = flags.as_boolean();
+            for row in 0..sources.rows(source) {
+                let at = At { source, row };
+                let current = flags.is_valid(row) && flags.value(row);
+                loaded.hold(keys.row(row).as_ref(), at, current);
             }
         }
         Ok(loaded)
+    }
+
+    /// Adds the published version at `at`, of `key`, which is its key's current one or not.
+    fn hold(&mut self, key: &[u8], at: Row, current: bool) {
+        let index = self.versions.list.len();
+        self.versions.list.push(Version {
+            data: at,
+            opened: at,
+            until: Some(at),
+            current,
+            touched: false,
+        });
+        let sources = &self.versions.sources;
+        if let Some(state) = self.keys.get_mut(key) {
+            if sources.seq(at) > sources.seq(state.newest) {
+                state.newest = at;
+            }
+            if current {
+                state.current = Some(index);
+            }
+        } else {
+            let state = Key {
+                newest: at,
+                current: current.then_some(index),
+                met: 0,
+                truncated: false,
+            };
+            self.keys.insert(key.to_vec(), state);
+        }
     }
 
     /// Whether a change of `key` at `by` is sequenced past the key's newest version, once the key
@@ -234,18 +230,24 @@ impl History {
         };
         meet(&mut self.versions, &self.truncates, state);
         let sources = &self.versions.sources;
-        sources.seq(state.newest) < sources.seq(by)
+        match sources.seq(state.newest).cmp(sources.seq(by)) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Equal => state.truncated,
+            std::cmp::Ordering::Greater => false,
+        }
     }
 
     fn upsert(&mut self, key: &[u8], by: Row) {
         if let Some(state) = self.keys.get_mut(key) {
             meet(&mut self.versions, &self.truncates, state);
             self.versions.upsert(state, by);
+            state.truncated = false;
         } else {
             let mut state = Key {
                 newest: by,
                 current: None,
                 met: self.truncates.len(),
+                truncated: false,
             };
             self.versions.upsert(&mut state, by);
             self.keys.insert(key.to_vec(), state);
@@ -256,6 +258,7 @@ impl History {
         if let Some(state) = self.keys.get_mut(key) {
             meet(&mut self.versions, &self.truncates, state);
             self.versions.remove(state, by);
+            state.truncated = false;
         }
     }
 
@@ -276,8 +279,7 @@ impl History {
 
 /// One incoming row, and what it does.
 struct Change {
-    batch: usize,
-    row: usize,
+    at: Row,
     op: ChangeOp,
 }
 
@@ -297,34 +299,20 @@ pub(crate) fn merge_history(
         .map_or_else(|| Arc::clone(schema), |changes| stored(schema, changes));
     let converter = converter(&schema, key)?;
     let mut nulls = Nulls::default();
-    let published = concat(published, &schema, &mut nulls)?;
-    let nullable = nullable(&schema);
-    let aligned = incoming
-        .iter()
-        .map(|batch| aligned(batch, &nullable, &mut nulls))
-        .collect::<Result<Vec<_>, _>>()?;
-    let keys = aligned
-        .iter()
-        .map(|batch| converter.convert_columns(&key_columns(batch, key)?))
-        .collect::<Result<Vec<Rows>, _>>()?;
-    let sources = sources(&published, &aligned, (key, history))?;
-    let mut table = History::load(&published, &converter, (key, history), sources)?;
+    let (mut sources, held) = sources(&schema, published, incoming)?;
+    let keys = source_keys(&sources, &converter, key, &mut nulls)?;
+    let guards = guards(&sources, (key, history), &mut nulls)?;
+    let mut table = History::load(&sources, held, &keys, (history, guards), &mut nulls)?;
     let tombstone_schema = tombstones::schema(&schema, key)?;
     let buried = if key.changes.is_some() { buried } else { &[] };
     let mut tombstones = Tombstones::load(buried, &tombstone_schema, &converter, key)?;
-    for change in changes(incoming, key, &table.versions.sources)? {
+    for change in changes(incoming, held, key, &table.versions.sources)? {
         apply(&mut table, &mut tombstones, &keys, &change, key);
     }
     let versions = table.finish();
-    let merged = assemble(
-        &schema,
-        [std::slice::from_ref(&published), &aligned],
-        &versions,
-        (key, history),
-        &mut nulls,
-    )?;
-    let buried = tombstones.assemble(&tombstone_schema, &aligned, key)?;
-    Ok((held([merged]), buried))
+    let buried = tombstones.assemble(&tombstone_schema, &sources, key, &mut nulls)?;
+    let merged = assemble(&mut sources, held, &versions, (key, history))?;
+    Ok((merged, buried))
 }
 
 /// Applies `change` to `table` and `tombstones`, where it is sequenced past its key's newest
@@ -336,7 +324,7 @@ fn apply(
     change: &Change,
     key: &MergeKey,
 ) {
-    let by = Row::Incoming(change.batch, change.row);
+    let by = change.at;
     let seq = table.versions.sources.seq(by).to_vec();
     let hard = table.versions.sources.at.is_none();
     if change.op == ChangeOp::Truncate {
@@ -348,7 +336,7 @@ fn apply(
         }
         return;
     }
-    let row_key = keys[change.batch].row(change.row);
+    let row_key = keys[by.source].row(by.row);
     let row_key = row_key.as_ref();
     let guarded = key.changes.is_some();
     if guarded && !(tombstones.admits(Some(row_key), &seq) && table.past(row_key, by)) {
@@ -357,10 +345,12 @@ fn apply(
     if change.op == ChangeOp::Delete {
         table.delete(row_key, by);
         if hard {
-            tombstones.bury(row_key.to_vec(), seq, change.batch, change.row);
+            tombstones.bury(row_key.to_vec(), seq, by);
         }
     } else {
         table.upsert(row_key, by);
+        // A version sequenced past the key's tombstone holds the key now.
+        tombstones.lift(row_key);
     }
 }
 
@@ -372,39 +362,34 @@ fn deleted_at(key: &MergeKey) -> Option<&str> {
     }
 }
 
-/// The sequences, hashes and, where deletes are soft, deletion times of `published` and
-/// `aligned`.
-fn sources(
-    published: &RecordBatch,
-    aligned: &[RecordBatch],
+/// The sequences, hashes and, where deletes are soft, deletion times of each of `sources`.
+fn guards(
+    sources: &Sources,
     (key, history): (&MergeKey, &HistoryColumns),
-) -> Result<Sources, ArrowError> {
-    let batches = || std::iter::once(published).chain(aligned);
-    let column = |batch: &RecordBatch, name: &str| {
-        batch
-            .column_by_name(name)
-            .cloned()
-            .ok_or_else(|| ArrowError::SchemaError(format!("no column {name}")))
+    nulls: &mut Nulls,
+) -> Result<Guards, ArrowError> {
+    let times = match deleted_at(key) {
+        Some(at) => {
+            let column = sources.schema().index_of(at)?;
+            let times = (0..sources.len()).map(|source| sources.dense(source, column, nulls));
+            Some(times.collect())
+        }
+        None => None,
     };
-    Ok(Sources {
-        seqs: batches()
-            .map(|batch| binary(batch, &key.seq))
-            .collect::<Result<_, _>>()?,
-        hashes: batches()
-            .map(|batch| binary(batch, &history.row_hash))
-            .collect::<Result<_, _>>()?,
-        at: deleted_at(key)
-            .map(|at| batches().map(|batch| column(batch, at)).collect())
-            .transpose()?,
+    Ok(Guards {
+        seqs: source_seqs(sources, key, nulls)?,
+        hashes: source_bytes(sources, &history.row_hash, nulls)?,
+        at: times,
     })
 }
 
-/// Every row of `incoming`, in sequence order, with its op: a change stream's names it, and
-/// every other row is an upsert.
+/// Every row of `incoming`, the sources from `first` on, in sequence order, with its op: a
+/// change stream's names it, and every other row is an upsert.
 fn changes(
     incoming: &[RecordBatch],
+    first: usize,
     key: &MergeKey,
-    sources: &Sources,
+    sources: &Guards,
 ) -> Result<Vec<Change>, ArrowError> {
     let mut rows = Vec::new();
     for (index, batch) in incoming.iter().enumerate() {
@@ -412,69 +397,87 @@ fn changes(
             Some(changes) => ops(batch, changes)?,
             None => vec![ChangeOp::Update; batch.num_rows()],
         };
+        let source = first + index;
         rows.extend(ops.into_iter().enumerate().map(|(row, op)| Change {
-            batch: index,
-            row,
+            at: At { source, row },
             op,
         }));
     }
-    // A stable sort keeps rows of one sequence in the order they were written.
+    // A truncate closes what is sequenced before it, and a key's change at its own sequence
+    // is not before it: the truncate applies first, wherever it was written. A stable sort
+    // keeps the other rows of one sequence in the order they were written.
     rows.sort_by(|left, right| {
-        let seq = |change: &Change| sources.seq(Row::Incoming(change.batch, change.row));
-        seq(left).cmp(seq(right))
+        let placed = |change: &Change| (sources.seq(change.at), change.op != ChangeOp::Truncate);
+        placed(left).cmp(&placed(right))
     });
     Ok(rows)
 }
 
-/// The versions as one batch of `schema`: each column from the rows its versions' values come
-/// from, of the published batch and the incoming ones, `valid_to` from the rows that closed them
-/// and `is_current` from their flags.
+/// The versions as batches of the columns they hold: a version the merge left is its published
+/// row whole; of another, each column comes from the rows its values come from, `valid_to` from
+/// the row that closed it and `is_current` from its flag.
 fn assemble(
-    schema: &SchemaRef,
-    [published, aligned]: [&[RecordBatch]; 2],
+    sources: &mut Sources,
+    published: usize,
     versions: &Versions,
     (key, history): (&MergeKey, &HistoryColumns),
-    nulls: &mut Nulls,
-) -> Result<RecordBatch, ArrowError> {
-    let list = &versions.list;
-    let opened = [Some(&*key.seq), Some(&*history.valid_from), deleted_at(key)];
-    let from = schema.index_of(&history.valid_from)?;
-    let batches = || published.iter().chain(aligned);
-    let absent = published.len() + aligned.len();
-    let mut columns: Vec<ArrayRef> = Vec::with_capacity(schema.fields().len());
-    for (column, field) in schema.fields().iter().enumerate() {
-        let name = field.name().as_str();
-        if name == &*history.is_current {
-            let flags: BooleanArray = list.iter().map(|version| Some(version.current)).collect();
-            columns.push(Arc::new(flags));
-            continue;
-        }
-        let null = nulls.of(field.data_type(), 1);
-        let mut values: Vec<ArrayRef> = batches()
-            .map(|batch| Arc::clone(batch.column(column)))
-            .collect();
-        let rows: Vec<Option<Row>> = if name == &*history.valid_to {
-            // A version ends where the row that closed it begins; a published one where it did.
-            for (value, batch) in values.iter_mut().zip(batches()).skip(published.len()) {
-                *value = retyped(batch.column(from), field.data_type())?;
-            }
-            list.iter().map(|version| version.until).collect()
-        } else if opened.contains(&Some(name)) {
-            list.iter().map(|version| Some(version.opened)).collect()
-        } else {
-            list.iter().map(|version| Some(version.data)).collect()
-        };
-        let mut sources: Vec<&dyn Array> = values.iter().map(AsRef::as_ref).collect();
-        sources.push(null.as_ref());
-        let indices: Vec<(usize, usize)> = rows
-            .into_iter()
-            .map(|row| row.map_or((absent, 0), Row::slot))
-            .collect();
-        columns.push(interleaved(&sources, &indices, field.data_type(), nulls)?);
+) -> Result<Vec<RecordBatch>, ArrowError> {
+    let schema = Arc::clone(sources.schema());
+    let column = |name: &str| schema.index_of(name);
+    let (from, to) = (column(&history.valid_from)?, column(&history.valid_to)?);
+    let current = column(&history.is_current)?;
+    let mut opened = vec![column(&key.seq)?, from];
+    if let Some(at) = deleted_at(key) {
+        opened.push(column(at)?);
     }
-    RecordBatch::try_new_with_options(
-        Arc::clone(schema),
-        columns,
-        &arrow_array::RecordBatchOptions::new().with_row_count(Some(list.len())),
-    )
+    // A version ends where the row that closed it begins: each incoming source's `valid_from`
+    // stands as a source of `valid_to`, and a source of two rows holds the two flags.
+    let mut closing: BTreeMap<usize, usize> = BTreeMap::new();
+    for source in published..sources.len() {
+        if let Some(begins) = sources.column(source, from) {
+            let ends = retyped(begins, schema.field(to).data_type())?;
+            let rows = sources.rows(source);
+            closing.insert(source, sources.add_held(rows, vec![(to, ends)]));
+        }
+    }
+    let flags: ArrayRef = Arc::new(BooleanArray::from(vec![false, true]));
+    let flag = sources.add_held(2, vec![(current, flags)]);
+    let over: Vec<Vec<(usize, Option<At>)>> = versions
+        .list
+        .iter()
+        .map(|version| {
+            if !version.touched {
+                return Vec::new();
+            }
+            // A published row closed it and it keeps that row's own end, or an incoming row did
+            // and it ends where that begins; open, it has no end.
+            let until = version
+                .until
+                .and_then(|until| match closing.get(&until.source) {
+                    Some(shadow) => Some(At {
+                        source: *shadow,
+                        row: until.row,
+                    }),
+                    None if until.source < published => Some(until),
+                    None => None,
+                });
+            let mut over: Vec<(usize, Option<At>)> = opened
+                .iter()
+                .map(|column| (*column, Some(version.opened)))
+                .collect();
+            over.push((to, until));
+            let flagged = At {
+                source: flag,
+                row: usize::from(version.current),
+            };
+            over.push((current, Some(flagged)));
+            over.sort_by_key(|(column, _)| *column);
+            over
+        })
+        .collect();
+    let picks = versions.list.iter().zip(&over).map(|(version, over)| Pick {
+        base: Base::Row(version.data),
+        over,
+    });
+    sparse::assemble(sources, picks)
 }

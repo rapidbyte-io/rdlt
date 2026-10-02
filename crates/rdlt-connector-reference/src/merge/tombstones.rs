@@ -19,17 +19,17 @@ use arrow_row::RowConverter;
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use rdlt_connector::MergeKey;
 
-use super::aligned::{Nulls, concat};
 use super::key_columns;
 use super::retype::{compared, retyped};
+use super::sparse::{At, Nulls, Sources};
 
 /// Where a tombstone's key values come from.
 #[derive(Clone, Copy, Debug)]
 enum KeyCell {
     /// Row of the stored tombstones.
     Stored(usize),
-    /// Row `.1` of incoming batch `.0`.
-    Incoming(usize, usize),
+    /// A row of the merge's sources.
+    Incoming(At),
 }
 
 /// One removed key: the sequence that removed it, and where its key values come from.
@@ -66,6 +66,30 @@ pub(crate) fn schema(schema: &SchemaRef, key: &MergeKey) -> Result<SchemaRef, Ar
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// The stored tombstones `batches` as one batch of `schema`, the tombstone schema: its few
+/// columns found by name and converted to its types.
+fn stored_under(batches: &[RecordBatch], schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
+    let mut under = batches
+        .iter()
+        .map(|batch| {
+            let columns = schema
+                .fields()
+                .iter()
+                .map(|field| match batch.column_by_name(field.name()) {
+                    Some(column) => retyped(column, field.data_type()),
+                    None => Ok(new_null_array(field.data_type(), batch.num_rows())),
+                })
+                .collect::<Result<Vec<ArrayRef>, _>>()?;
+            RecordBatch::try_new(Arc::clone(schema), columns)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if under.len() == 1 {
+        // One batch is itself: nothing of it is copied.
+        return Ok(under.swap_remove(0));
+    }
+    arrow_select::concat::concat_batches(schema, &under)
+}
+
 impl Tombstones {
     /// The tombstones `stored`, as `schema`, the tombstone schema, keyed as `converter` encodes
     /// keys.
@@ -75,7 +99,7 @@ impl Tombstones {
         converter: &RowConverter,
         key: &MergeKey,
     ) -> Result<Self, ArrowError> {
-        let stored = concat(stored, schema, &mut Nulls::default())?;
+        let stored = stored_under(stored, schema)?;
         let columns = key_columns(&stored, key)?;
         let keys = converter.convert_columns(&columns)?;
         let seqs = compared(stored.column(key.columns.len()))?;
@@ -111,10 +135,10 @@ impl Tombstones {
         !bounded && !buried
     }
 
-    /// Records that `key`, whose values are row `row` of incoming batch `batch`, was removed at
-    /// `seq`.
-    pub(crate) fn bury(&mut self, key: Vec<u8>, seq: Vec<u8>, batch: usize, row: usize) {
-        let key_cell = KeyCell::Incoming(batch, row);
+    /// Records that `key`, whose values the row `at` of the merge's sources holds, was removed
+    /// at `seq`.
+    pub(crate) fn bury(&mut self, key: Vec<u8>, seq: Vec<u8>, at: At) {
+        let key_cell = KeyCell::Incoming(at);
         self.by_key.insert(key, Stone { seq, key: key_cell });
         self.changed = true;
     }
@@ -135,13 +159,14 @@ impl Tombstones {
     }
 
     /// The tombstones as batches of `schema`, the tombstone schema, their key values taken from
-    /// the stored tombstones or `aligned`, the incoming batches aligned to the table; the stored
-    /// batch itself where the changes left them as they were.
+    /// the stored tombstones or `sources`, the merge's; the stored batch itself where the changes
+    /// left them as they were.
     pub(crate) fn assemble(
         &self,
         schema: &SchemaRef,
-        aligned: &[RecordBatch],
+        sources: &Sources,
         key: &MergeKey,
+        nulls: &mut Nulls,
     ) -> Result<Vec<RecordBatch>, ArrowError> {
         if !self.changed {
             return Ok(super::held([self.stored.clone()]));
@@ -153,29 +178,27 @@ impl Tombstones {
         for (index, column) in key.columns.iter().enumerate() {
             let field = schema.field(index);
             let null = new_null_array(field.data_type(), 1);
-            let stored = self.stored.column(index);
-            let incoming: Vec<ArrayRef> = aligned
-                .iter()
-                .map(|batch| {
-                    let values = batch.column_by_name(column).ok_or_else(|| {
-                        ArrowError::SchemaError(format!("no key column {column}"))
-                    })?;
-                    retyped(values, field.data_type())
-                })
-                .collect::<Result<_, _>>()?;
-            let mut sources: Vec<&dyn Array> = vec![stored.as_ref()];
-            sources.extend(incoming.iter().map(AsRef::as_ref));
-            sources.push(null.as_ref());
-            let nulls = sources.len() - 1;
-            let mut indices: Vec<(usize, usize)> = stones
-                .iter()
-                .map(|stone| match stone.key {
+            let place = sources.schema().index_of(column)?;
+            // The stored tombstones first, then each source the stones' keys come from, once.
+            let mut values: Vec<ArrayRef> = vec![Arc::clone(self.stored.column(index))];
+            let mut places: BTreeMap<usize, usize> = BTreeMap::new();
+            let mut indices: Vec<(usize, usize)> = Vec::with_capacity(stones.len() + bound);
+            for stone in &stones {
+                indices.push(match stone.key {
                     KeyCell::Stored(row) => (0, row),
-                    KeyCell::Incoming(batch, row) => (batch + 1, row),
-                })
-                .collect();
-            indices.extend(std::iter::repeat_n((nulls, 0), bound));
-            columns.push(arrow_select::interleave::interleave(&sources, &indices)?);
+                    KeyCell::Incoming(at) => {
+                        let place = *places.entry(at.source).or_insert_with(|| {
+                            values.push(sources.dense(at.source, place, nulls));
+                            values.len() - 1
+                        });
+                        (place, at.row)
+                    }
+                });
+            }
+            values.push(null);
+            indices.extend(std::iter::repeat_n((values.len() - 1, 0), bound));
+            let values: Vec<&dyn Array> = values.iter().map(AsRef::as_ref).collect();
+            columns.push(arrow_select::interleave::interleave(&values, &indices)?);
         }
         let seqs: BinaryArray = stones
             .iter()
