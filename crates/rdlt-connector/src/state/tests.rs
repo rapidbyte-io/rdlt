@@ -303,6 +303,23 @@ fn a_key_a_state_error_names_is_shown_bounded() {
 }
 
 #[test]
+fn a_sequences_record_without_its_key_is_refused_naming_the_field() {
+    // As written before a table recorded the key it is merged by: there is no reading it
+    // otherwise, as no state written so is kept.
+    let earlier = StateRecord {
+        key: StateKey::Sequences(TablePath::new(["orders"]).unwrap()).encode(),
+        value: Bytes::from_static(
+            br#"{"v":1,"entry":{"sequences":{"table":["orders"],"sequences":"engine"}}}"#,
+        ),
+    };
+    let refused = StateEntry::from_record(&earlier).unwrap_err();
+    let StateError::MalformedValue { reason, .. } = &refused else {
+        panic!("{refused}");
+    };
+    assert!(reason.contains("missing field `key`"), "{reason}");
+}
+
+#[test]
 fn applying_changes_puts_and_deletes_entries() {
     let mut state = PipelineState::default();
     let put = StateEntry::Partition {
