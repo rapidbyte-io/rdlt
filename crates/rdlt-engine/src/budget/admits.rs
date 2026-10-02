@@ -5,6 +5,7 @@
 mod tests;
 
 use rdlt_wire::Limits;
+use rdlt_wire::limits::Class;
 
 use super::Shares;
 use crate::cost::JSON_CHARGE;
@@ -26,6 +27,12 @@ use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 ///   where its columns, nested fields too, are no more than the share over what a column's
 ///   record takes with names of up to a hundred and fifty bytes; and no more than a schema's
 ///   message may carry of columns with short names.
+/// - A frame is charged, before it is decoded, what its scan counts decoding it holds, at most
+///   twice its bytes and the fields around them, to what pushes may take: a frame within half a
+///   request beside a row's nulls is within half of that too.
+/// - Every other answer is charged what decoding it holds to the share of answers being
+///   decoded: a catalog, state and any other control message are at most what the share holds
+///   of one decoded, as [`Class::decoded_per_byte`] says for each.
 /// - JSON text is admitted for itself and for the batches it becomes.
 /// - Every read may hold a cursor waiting for a commit and a barrier's answer beside it, and the
 ///   commit a barrier calls is due once waiting cursors take half their share: half the share,
@@ -45,9 +52,13 @@ pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
         .min(schema_bytes / FIELD_MESSAGE)
         .min(defaults.schema_columns);
     let row = (shares.request / LOGGED).saturating_sub(row_overhead(columns));
+    let decoded = |class: Class| shares.control / per_byte(class);
     Limits {
         schema_columns: columns,
         frame_bytes: shares.intake.saturating_sub(kept).min(row),
+        catalog_bytes: decoded(Class::Catalog),
+        state_bytes: decoded(Class::State),
+        control_message_bytes: decoded(Class::Control),
         json_push_bytes: shares.intake / JSON_CHARGE,
         // A quarter of the log's share, which a commit recording each cursor twice holds, is
         // the cursors' share itself: the partitions' bound is the lesser.
@@ -57,6 +68,11 @@ pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
         ..defaults
     }
     .lesser(&defaults)
+}
+
+/// Bytes a message of `class` holds decoded for each byte it takes on the wire.
+fn per_byte(class: Class) -> u64 {
+    u64::try_from(class.decoded_per_byte()).unwrap_or(u64::MAX)
 }
 
 /// Bytes: what a column of a short name takes in the schema message that carries it: a schema
