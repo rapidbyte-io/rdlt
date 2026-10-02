@@ -290,7 +290,9 @@ impl Handshaken {
     ) -> Result<Arc<Connection>, ConnectorError> {
         let request = v1::ConfigureRequest { config_json };
         let deadline = self.options.deadlines.connect;
-        let mut client = self.client.control.clone();
+        // The configuration's answer carries a destination's identifier rules, which at their
+        // limits outgrow any other control message: it is decoded as the handshake's is.
+        let mut client = self.client.handshake.clone();
         let configured = tokio::select! {
             biased;
             () = self.lost.cancelled() => return Err(lost_error()),

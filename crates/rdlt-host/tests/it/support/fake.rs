@@ -52,6 +52,8 @@ pub(crate) enum Fault {
     Chatters(u64),
     /// Its reads send this many log lines, and nothing else.
     Logs(u64),
+    /// It is a destination whose configuration answers with identifier rules at their limits.
+    WideRules,
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -125,7 +127,10 @@ fn ids() -> Bytes {
 
 impl Fake {
     fn destination(&self) -> bool {
-        matches!(self.0, Fault::Trickles(..) | Fault::Keys(_))
+        matches!(
+            self.0,
+            Fault::Trickles(..) | Fault::Keys(_) | Fault::WideRules
+        )
     }
 
     /// The frames a read sends, as the fault says.
@@ -220,8 +225,25 @@ impl Connector for Fake {
         } else {
             "test.fake"
         };
+        let mut configured = spec(id, self.destination());
+        if let (Fault::WideRules, Some(capabilities)) =
+            (self.0, configured.destination_capabilities.as_mut())
+        {
+            use rdlt_connector::limits::{
+                MAX_RESERVED_BYTES, MAX_RESERVED_PREFIXES, MAX_RESERVED_WORDS,
+            };
+            // Each word or prefix as long as one may be.
+            let word = |index: usize| {
+                let mark = format!("w{index}_");
+                let fill = "x".repeat(MAX_RESERVED_BYTES - mark.len());
+                mark + &fill
+            };
+            let rules = capabilities.identifiers.as_mut().expect("identifier rules");
+            rules.reserved = (0..MAX_RESERVED_WORDS).map(word).collect();
+            rules.reserved_table_prefixes = (0..MAX_RESERVED_PREFIXES).map(word).collect();
+        }
         Ok(Response::new(v1::ConfigureResponse {
-            spec: Some(spec(id, self.destination())),
+            spec: Some(configured),
         }))
     }
 
