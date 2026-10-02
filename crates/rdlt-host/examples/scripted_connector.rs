@@ -345,7 +345,19 @@ fn exit_on_sigterm() {
     ready.recv().ok();
 }
 
+/// The argument that has the connector print its environment, one `NAME=value` a line, and
+/// exit: what it holds when started with none, beyond what was given it, is its own doing.
+const OWN_ENV: &str = "--own-env";
+
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some(OWN_ENV) {
+        use std::io::Write as _;
+        let mut stdout = std::io::stdout().lock();
+        for (name, value) in std::env::vars() {
+            writeln!(stdout, "{name}={value}").ok();
+        }
+        return ExitCode::SUCCESS;
+    }
     STARTED_WITH.set(open_descriptors()).ok();
     let served = rdlt_connector::serve::<Scripted>();
     if LINGER.get().is_some() {
