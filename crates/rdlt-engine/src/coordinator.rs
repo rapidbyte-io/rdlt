@@ -273,7 +273,6 @@ impl Coordinator {
                 }
                 progress = self.parts.progress.recv() => {
                     self.observe(progress.ok_or_else(cancelled)?);
-                    self.cursors_may_free = true;
                     self.replan_signalled().await?;
                     if self.due() {
                         timer = self.commit_now().await?;
@@ -333,6 +332,8 @@ impl Coordinator {
     }
 
     fn observe(&mut self, progress: Progress) {
+        // Whatever arrives, wherever it is heard, may be a seal a commit frees cursors with.
+        self.cursors_may_free = true;
         match progress {
             Progress::Started { partition } => self.parts.partitions[partition].started = true,
             Progress::Written { rows, bytes } => {
