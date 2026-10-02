@@ -1,12 +1,13 @@
 //! The command line: which connector, how to reach it and with what configuration, and how to
 //! print what it met.
 
+mod configured;
 mod panics;
 mod session;
 #[cfg(test)]
 mod tests;
 
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -50,9 +51,16 @@ struct Args {
     role: Option<Role>,
     /// A file holding the connector's configuration, as JSON, or `-` to read it from standard
     /// input; an empty object without it; a text value may refer to a secret as `${env:NAME}`
-    /// or `${file:/absolute/path}`, which no report then shows.
+    /// or `${file:/absolute/path}`, where `--secret-env` and `--secret-dir` allow it, and no
+    /// report then shows the secret.
     #[arg(long, value_name = "PATH")]
     config_file: Option<PathBuf>,
+    /// An environment variable the configuration may refer to as `${env:NAME}`.
+    #[arg(long, value_name = "NAME")]
+    secret_env: Vec<String>,
+    /// A private directory the configuration may refer to files beneath as `${file:...}`.
+    #[arg(long, value_name = "DIR")]
+    secret_dir: Vec<PathBuf>,
     /// Runs the connector's binary with your own access to files, the network and other
     /// processes, in no sandbox: for a binary you trust as you trust this command.
     #[arg(long, conflicts_with_all = ["grant_read", "grant_write", "grant_network"])]
@@ -162,7 +170,7 @@ pub(crate) fn redactions() -> &'static Redactions {
 }
 
 fn run(args: &Args) -> Result<u8, Ended> {
-    let config = config(args)?;
+    let config = configured::config(args)?;
     let target = target(args)?;
     let target = match args.kill_seed {
         Some(seed) => target.kill_seed(seed),
@@ -331,53 +339,6 @@ fn ran(report: &Report) -> bool {
         .any(|result| !matches!(result.outcome, Outcome::Inapplicable(_)))
 }
 
-/// Bytes read of a configuration at most, one beyond what a configuration may hold.
-const CONFIG_READ: u64 = rdlt_host::limits::CONFIG_BYTES as u64 + 1;
-
-/// The configuration the command line names, from its file or from standard input, with each
-/// secret it refers to resolved, and kept from everything printed from here on.
-///
-/// It is never taken from the command line itself, which other users of the machine can read.
-fn config(args: &Args) -> Result<serde_json::Value, Ended> {
-    let Some(path) = &args.config_file else {
-        return Ok(serde_json::json!({}));
-    };
-    let (read, source) = if path.as_os_str() == "-" {
-        let mut text = String::new();
-        let read = std::io::stdin()
-            .lock()
-            .take(CONFIG_READ)
-            .read_to_string(&mut text);
-        (read.map(|_| text), "standard input".to_owned())
-    } else {
-        let opened = std::fs::File::open(path);
-        let read = opened.and_then(|file| {
-            let mut text = String::new();
-            file.take(CONFIG_READ)
-                .read_to_string(&mut text)
-                .map(|_| text)
-        });
-        (read, path.display().to_string())
-    };
-    let text = read.map_err(|error| Ended(IO, format!("reading {source} failed: {error}")))?;
-    // What is wrong with it is said without quoting it.
-    let unusable = |error: rdlt_host::SecretError| {
-        let cause = std::error::Error::source(&error);
-        let cause = cause.map(|cause| format!(": {cause}")).unwrap_or_default();
-        let message = format!("the configuration in {source} cannot be used: {error}{cause}");
-        Ended(USAGE, message)
-    };
-    let held = rdlt_host::Config::parse(text).map_err(&unusable)?;
-    let resolving = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .map_err(|error| Ended(IO, format!("starting the runtime failed: {error}")))?;
-    let secrets = rdlt_host::Secrets::new();
-    let resolved = resolving
-        .block_on(held.resolved(&secrets, redactions()))
-        .map_err(&unusable)?;
-    serde_json::from_str(&resolved).map_err(|_| unusable(rdlt_host::SecretError::NotJson))
-}
-
 /// The connector the command line names, and how to reach it.
 fn target(args: &Args) -> Result<Target, Ended> {
     let named = args.target.as_deref().unwrap_or_default();
@@ -433,12 +394,31 @@ fn target(args: &Args) -> Result<Target, Ended> {
     }
     Ok(Target::spawned(
         local(args)?,
-        ConnectorRef::new(id).path(path),
+        granted(args, ConnectorRef::new(id).path(path)),
     ))
 }
 
-/// What spawns the connector's binary: inside a sandbox, with what the command line grants
-/// it, unless the command line states the binary is trusted.
+/// `reference` with what the command line grants its connector, shared among its spawns: a
+/// certification spawns its connector many times, at once too.
+fn granted(args: &Args, reference: ConnectorRef) -> ConnectorRef {
+    let reference = args
+        .grant_read
+        .iter()
+        .fold(reference, ConnectorRef::grant_read);
+    let reference = args
+        .grant_write
+        .iter()
+        .fold(reference, ConnectorRef::grant_write);
+    let reference = if args.grant_network {
+        reference.grant_network()
+    } else {
+        reference
+    };
+    reference.share_grants()
+}
+
+/// What spawns the connector's binary: inside a sandbox, unless the command line states the
+/// binary is trusted.
 fn local(args: &Args) -> Result<Local, Ended> {
     let local = if args.trusted {
         Local::trusting_binaries()
@@ -448,14 +428,7 @@ fn local(args: &Args) -> Result<Local, Ended> {
             let message = format!("{error}; --trusted runs a binary you trust in no sandbox");
             Ended(IO, message)
         })?;
-        let local = Local::sandboxed(sandbox);
-        let local = args.grant_read.iter().fold(local, Local::grant_read);
-        let local = args.grant_write.iter().fold(local, Local::grant_write);
-        if args.grant_network {
-            local.grant_network()
-        } else {
-            local
-        }
+        Local::sandboxed(sandbox)
     };
     Ok(args.env.iter().fold(local, Local::env_passthrough))
 }

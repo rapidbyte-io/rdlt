@@ -11,7 +11,9 @@ Arguments:
 
 Options:
       --role <ROLE>             Certify this role alone; by default, every role the connector serves [possible values: source, destination]
-      --config-file <PATH>      A file holding the connector's configuration, as JSON, or `-` to read it from standard input; an empty object without it; a text value may refer to a secret as `${env:NAME}` or `${file:/absolute/path}`, which no report then shows
+      --config-file <PATH>      A file holding the connector's configuration, as JSON, or `-` to read it from standard input; an empty object without it; a text value may refer to a secret as `${env:NAME}` or `${file:/absolute/path}`, where `--secret-env` and `--secret-dir` allow it, and no report then shows the secret
+      --secret-env <NAME>       An environment variable the configuration may refer to as `${env:NAME}`
+      --secret-dir <DIR>        A private directory the configuration may refer to files beneath as `${file:...}`
       --trusted                 Runs the connector's binary with your own access to files, the network and other processes, in no sandbox: for a binary you trust as you trust this command
       --grant-read <PATH>       A path the sandboxed connector may read
       --grant-write <PATH>      A path the sandboxed connector may read and write
