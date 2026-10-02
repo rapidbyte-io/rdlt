@@ -119,20 +119,16 @@ fn a_name_that_is_no_file_s_is_refused() {
 }
 
 #[test]
-fn a_database_s_directory_is_its_user_s_alone_to_write() {
+fn a_database_s_directory_is_a_root_held_as_the_files_connectors_hold_theirs() {
     let outer = tempfile::tempdir().expect("a temporary directory");
     let directory = outer.path().join("data");
     std::fs::create_dir(&directory).expect("a directory");
     let path = directory.join("orders.db");
-    for shared in [0o777, 0o775, 0o757, 0o1777, 0o720, 0o702] {
-        mode(&directory, shared);
-        assert_eq!(refusal(connect(&path)), config("not_private"), "{shared:o}");
-        assert!(!path.exists(), "{shared:o}");
-    }
-    for private in [0o700, 0o755, 0o750] {
-        mode(&directory, private);
-        drop(connect(&path).unwrap_or_else(|error| panic!("{private:o}: {error}")));
-    }
+    mode(&directory, 0o777);
+    assert_eq!(refusal(connect(&path)), config("not_private"));
+    assert!(!path.exists());
+    mode(&directory, 0o755);
+    drop(connect(&path).expect("a directory only its user writes holds a database"));
     // A directory that is none, and one that is missing.
     let file = outer.path().join("file");
     std::fs::write(&file, b"").expect("a file");

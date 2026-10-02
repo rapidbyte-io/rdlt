@@ -13,11 +13,16 @@
 #[cfg(test)]
 mod tests;
 
+use std::ffi::OsString;
+use std::io;
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 
-use rdlt_connector::{ConnectorError, Result};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
+
+use crate::files::io::failed;
+use crate::rooted::{self, Dir, Refusal};
 
 /// What follows a database's name in the names of the files SQLite keeps beside it, the
 /// database itself first: its write-ahead log, that log's index, and its rollback journal.
@@ -34,20 +39,43 @@ const URI_PREFIX: &[u8] = b"file:";
 /// `database_path_invalid`.
 pub(super) fn located(path: &Path, create: bool) -> Result<Option<PathBuf>> {
     let path = named(path)?;
-    private(&path)?;
-    match std::fs::symlink_metadata(&path) {
-        Ok(_) => Ok(Some(path)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => Ok(None),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            let created = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path);
-            created.map_err(unusable(&path))?;
-            Ok(Some(path))
+    let placed = || -> io::Result<bool> {
+        let (dir, name) = private(&path)?;
+        match (dir.kind(&name)?, create) {
+            (Some(_), _) => Ok(true),
+            (None, false) => Ok(false),
+            (None, true) => dir.create(&name).map(|_| true),
         }
-        Err(error) => Err(unusable(&path)(error)),
+    };
+    match placed() {
+        Ok(true) => Ok(Some(path)),
+        Ok(false) => Ok(None),
+        // A directory that is not there is the configuration's to name, not a wait's to bring.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let message = format!("opening the database {}: {error}", path.display());
+            Err(ConnectorError::config(message).with_source(error))
+        }
+        Err(error) => Err(refused(&path, error)),
+    }
+}
+
+/// The error of a database's place that is refused: a configuration error under the code the
+/// files connectors give the same refusal, since the path is the operator's to name.
+fn refused(path: &Path, error: io::Error) -> ConnectorError {
+    // A file where the path names the database's directory is answered by the platform.
+    let error = match error.kind() {
+        io::ErrorKind::NotADirectory => Refusal::NotDirectory.into(),
+        _ => error,
+    };
+    let refused = failed("opening the database", path)(error);
+    match (refused.kind(), refused.code()) {
+        (ConnectorErrorKind::Data, Some(code)) => {
+            let code = code.to_owned();
+            ConnectorError::config(refused.to_string())
+                .with_code(code)
+                .with_source(refused)
+        }
+        _ => refused,
     }
 }
 
@@ -79,61 +107,34 @@ pub(super) fn named(path: &Path) -> Result<PathBuf> {
     Ok(absolute)
 }
 
-/// Refuses the database at `path` where its place is not its user's alone.
+/// The directory of the database at `path`, open, and the database's name in it, where the
+/// place is its user's alone.
 ///
-/// The directory is asked once open, not by its name: it belongs to the user the process runs
-/// as, and neither its group nor others may write it, so no one else creates, replaces or links
-/// a name in it. The database and each file SQLite keeps beside it, where they exist, are
-/// regular files of that user's that no one else reaches, and no links.
-fn private(path: &Path) -> Result<()> {
-    let user = rustix::process::geteuid().as_raw();
+/// The directory is a root as the files connectors hold theirs: its user's, and writable by no
+/// other, so no one else creates, replaces or links a name in it. The database and each file
+/// SQLite keeps beside it, where they exist, are regular files of that user's, no links, and
+/// within no one else's reach: SQLite adopts a log that is already there as it is, and whoever
+/// reads the log's index can hold every writer out.
+fn private(path: &Path) -> io::Result<(Dir, OsString)> {
     let directory = path.parent().unwrap_or(Path::new("/"));
-    let held = std::fs::File::open(directory).map_err(unusable(directory))?;
-    let found = held.metadata().map_err(unusable(directory))?;
-    if !found.is_dir() {
-        let message = format!("{} is no directory", directory.display());
-        return Err(ConnectorError::config(message).with_code("not_a_directory"));
-    }
-    if found.uid() != user || found.mode() & 0o022 != 0 {
-        return Err(shared(directory, &found));
-    }
+    let name = path.file_name().unwrap_or_default().to_owned();
+    let dir = Dir::ambient(directory)?;
     for suffix in SIDE_FILES {
-        let mut name = path.as_os_str().to_owned();
-        name.push(suffix);
-        let file = Path::new(&name);
-        let found = match std::fs::symlink_metadata(file) {
-            Ok(found) => found,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(unusable(file)(error)),
-        };
-        if !found.is_file() {
-            let message = format!("{} is no regular file", file.display());
-            return Err(ConnectorError::config(message).with_code("not_a_regular_file"));
+        let mut side = name.clone();
+        side.push(suffix);
+        if dir.kind(&side)?.is_none() {
+            continue;
         }
-        if found.uid() != user || found.mode() & 0o077 != 0 {
-            return Err(shared(file, &found));
+        let file = dir.file(&side)?;
+        rooted::private(&file)?;
+        let found = file.metadata()?;
+        if found.mode() & 0o077 != 0 {
+            let reached = Refusal::Shared {
+                owner: found.uid(),
+                mode: found.mode() & 0o7777,
+            };
+            return Err(reached.into());
         }
     }
-    Ok(())
-}
-
-/// The error of `path`, which `found` describes, being another user's or within others' reach.
-fn shared(path: &Path, found: &std::fs::Metadata) -> ConnectorError {
-    let message = format!(
-        "{} belongs to user {} with mode {:o}: a database, the files beside it and its directory \
-         are its user's alone",
-        path.display(),
-        found.uid(),
-        found.mode() & 0o7777
-    );
-    ConnectorError::config(message).with_code("not_private")
-}
-
-/// The error of a database at `path` the system does not let the connector reach.
-fn unusable(path: &Path) -> impl Fn(std::io::Error) -> ConnectorError {
-    let path = path.to_owned();
-    move |error| {
-        let message = format!("opening the database {}: {error}", path.display());
-        ConnectorError::config(message).with_source(error)
-    }
+    Ok((dir, name))
 }
