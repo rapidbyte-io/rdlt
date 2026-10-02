@@ -51,7 +51,18 @@ fn a_keeper_without_a_path_writes_nothing() {
 fn a_keeper_whose_file_cannot_be_read_is_refused_rather_than_found_empty() {
     // A directory where the file should be reads as no file of positions.
     let dir = crate::scratch::tempdir().unwrap();
-    assert!(Kept::<u64>::keeping(dir.path()).is_err());
+    let path = dir.path().join("slot.json");
+    std::fs::create_dir(&path).unwrap();
+    let refused = Kept::<u64>::keeping(&path).unwrap_err();
+    assert_eq!(
+        crate::rooted::refusal(&refused),
+        Some(crate::rooted::Refusal::NotRegular)
+    );
+    // So does a file that holds no positions.
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::write(&path, b"{").unwrap();
+    let refused = Kept::<u64>::keeping(&path).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidData);
 }
 
 #[test]
@@ -123,10 +134,16 @@ fn a_link_at_a_temporary_name_or_at_the_keeper_is_never_written_through() {
     let victim = elsewhere.path().join("authorized_keys");
     std::fs::write(&victim, b"precious").unwrap();
     let path = dir.path().join("slot.json");
-    std::os::unix::fs::symlink(&victim, dir.path().join("slot.json.writing")).unwrap();
+    // A link under a name a temporary of the keeper's could have: it is neither written
+    // through nor followed when the keeper removes what a crash left.
+    let planted = dir
+        .path()
+        .join(".slot.json.tmp-00000000000000000000000000000001");
+    std::os::unix::fs::symlink(&victim, &planted).unwrap();
     let kept: Kept<u64> = Kept::keeping(&path).unwrap();
     kept.advance("orders", &partition("p0"), 7).unwrap();
     assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+    assert!(std::fs::symlink_metadata(&planted).unwrap().is_symlink());
     assert!(std::fs::symlink_metadata(&path).unwrap().is_file());
     // A link where the keeper's own file belongs is refused, read or written.
     let linked = dir.path().join("linked.json");
