@@ -475,13 +475,15 @@ async fn a_source_that_refuses_every_report_fails_the_run_once_no_attempt_is_lef
         // Bounded on the paused clock: a run that retried without end would fail here at once.
         let outcome = tokio::time::timeout(Duration::from_secs(600), running).await;
         let outcome = outcome.expect("the run ends once no attempt is left");
-        // The rows were read by the first attempt. Each attempt reported their position and
-        // was refused; the two after it read nothing new, so none reset the count of failures.
+        // Every attempt reported the rows' position and was refused, and none that landed
+        // nothing reset the count of failures. A source that forgets is told before the rows
+        // land: the second attempt landed them from the log, so one more was made.
+        let attempts = if replayable { 3 } else { 4 };
         assert_eq!(outcome.report.status, RunStatus::Failed, "{name}");
-        assert_eq!(outcome.report.attempted, 3, "{name}");
+        assert_eq!(outcome.report.attempted, attempts, "{name}");
         assert!(script.acks.lock().is_empty(), "{name}");
-        let left = script.limited_acks.load(Ordering::SeqCst);
-        assert_eq!(left, usize::MAX - 3, "{name}");
+        let refused = usize::MAX - script.limited_acks.load(Ordering::SeqCst);
+        assert_eq!(refused as u64, attempts, "{name}");
         let error = outcome.error.expect("the run failed");
         assert_eq!(error.kind(), ErrorKind::Source, "{name}");
         assert!(error.is_retryable(), "{name}");
@@ -542,6 +544,26 @@ async fn a_source_that_refuses_every_report_is_told_by_each_attempt_until_its_pa
     assert_eq!(outcome.report.rows, 15);
     assert!(script.acks.lock().is_empty());
     assert_eq!(script.limited_acks.load(Ordering::SeqCst), usize::MAX - 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn rows_an_attempt_lands_from_the_log_an_earlier_one_left_are_progress() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let mut events = ScriptStream::new("events", 1, 15, 5);
+    events.replayable = false;
+    let (script, source) = Script::new(vec![events]).connect("ack_replayed").await;
+    // The first two reports are refused, each before its commit lands: the attempt after
+    // lands it from the log, and reads on.
+    script.limited_acks.store(2, Ordering::SeqCst);
+    let each = rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("a valid policy");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path().join("ack_replayed")));
+    let engine = logging_engine(retrying(2).commit(each), store);
+    let plan = incremental("ack-replayed");
+    let outcome = engine.run(plan, source, memory("ack_replayed").await).await;
+    // Two failed attempts are as many as the run allows, were the rows the second landed not
+    // counted: it lands the first's, so the third is made.
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!((outcome.report.attempted, outcome.report.rows), (3, 15));
 }
 
 #[tokio::test(start_paused = true)]

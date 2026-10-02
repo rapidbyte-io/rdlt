@@ -160,7 +160,7 @@ impl StreamReport {
 pub(crate) struct AttemptLog {
     pub(crate) committed: Committed,
     /// Whether a commit of the attempt moved the load on: published a row, or recorded anything
-    /// but a partition where it already stood.
+    /// but a partition where it already stood; or the attempt landed rows an earlier one logged.
     pub(crate) progressed: bool,
     pub(crate) end: Option<AttemptEnd>,
     /// The commit in flight, whose response has not arrived.
