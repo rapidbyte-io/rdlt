@@ -93,7 +93,7 @@ proptest! {
 }
 
 #[test]
-fn a_run_is_weighed_with_the_first_row_of_its_piece_and_expanded_for_every_row() {
+fn a_run_is_weighed_with_the_first_row_of_its_piece() {
     // Runs of two, one and two rows, of texts of 20, 30 and 40 bytes.
     let texts = ["a".repeat(20), "b".repeat(30), "c".repeat(40)];
     let values = StringViewArray::from_iter_values(texts.iter());
@@ -107,9 +107,6 @@ fn a_run_is_weighed_with_the_first_row_of_its_piece_and_expanded_for_every_row()
     assert_eq!(values, [3, 1, 3, 3, 1]);
     let named: Vec<_> = rows.iter().map(|row| row.view_bytes).collect();
     assert_eq!(named, [20, 0, 30, 40, 0]);
-    // A view of 16 bytes, its bytes and a validity bit, for every row.
-    let expanded: Vec<_> = rows.iter().map(Weight::expanded_bytes).collect();
-    assert_eq!(expanded, [37, 37, 47, 57, 57]);
     // A piece begun in the middle of a run holds that run.
     weigher.begin();
     assert_eq!(weigher.weigh(4).values, 3);
@@ -118,7 +115,7 @@ fn a_run_is_weighed_with_the_first_row_of_its_piece_and_expanded_for_every_row()
 }
 
 #[test]
-fn a_dictionary_key_is_weighed_in_its_frame_and_its_value_expanded() {
+fn a_dictionary_key_is_weighed_in_its_frame_and_its_values_in_one_of_their_own() {
     let tags = StringArray::from(vec!["a tag of eighteen", "b"]);
     let keys = Int8Array::from(vec![Some(0), None, Some(1), Some(0)]);
     let batch = batch_of(Arc::new(
@@ -126,15 +123,16 @@ fn a_dictionary_key_is_weighed_in_its_frame_and_its_value_expanded() {
     ));
     let mut weigher = Weigher::new(&batch);
     weigher.begin();
+    // A key of a byte and a validity bit, null or not.
     let rows: Vec<_> = (0..4).map(|row| weigher.weigh(row)).collect();
-    // A key of a byte and a validity bit in the frame; the value's offset, bytes and validity
-    // bit once the key is replaced by it, and nothing for a key that is null.
     assert!(
         rows.iter()
             .all(|row| (row.values, row.frame_bits) == (1, 9))
     );
-    let expanded: Vec<_> = rows.iter().map(|row| row.expanded_bits).collect();
-    assert_eq!(expanded, [33 + 8 * 17, 0, 33 + 8, 33 + 8 * 17]);
+    // Two values: an offset and a validity bit each, and eighteen bytes.
+    let values = weigher.dictionaries();
+    let values: Vec<_> = values.iter().map(|w| (w.values, w.frame_bits)).collect();
+    assert_eq!(values, [(2, 2 * 33 + 8 * 18)]);
 }
 
 #[test]

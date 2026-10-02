@@ -6,7 +6,7 @@ use arrow_array::{Array, GenericListArray, GenericListViewArray, OffsetSizeTrait
 use arrow_buffer::{ArrowNativeType as _, NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, UnionFields, UnionMode};
 
-use super::column::{Column, Counts, Expanded, Named};
+use super::column::{Column, Counts, Named};
 use crate::codec::compact::plain;
 
 /// Bits: a validity bit, which Arrow's writer sends for every value of a column that has one.
@@ -169,29 +169,22 @@ pub(super) fn runs<R: RunEndIndexType>(
         reach: Box::new(reach),
         place,
         values: Box::new(Column::of(runs.values().as_ref(), rebuilt, counts)),
-        expanded: Expanded::default(),
     }
 }
 
 pub(super) fn keyed<K: ArrowDictionaryKeyType>(array: &dyn Array, counts: &mut Counts) -> Column {
-    let keyed = array.as_dictionary::<K>();
-    let keys = keyed.keys().clone();
-    let key = move |row: usize| {
-        (row < keys.len() && keys.is_valid(row)).then(|| keys.value(row).as_usize())
-    };
     // A dictionary's values are in a frame of their own: none of their nodes or buffers is in
     // the batch's.
     let mut apart = Counts {
         runs: counts.runs,
         ..Counts::default()
     };
-    let values = keyed.values();
-    let values = Column::of(values.as_ref(), !plain(values.data_type()), &mut apart);
+    let values = array.as_dictionary::<K>().values();
+    let column = Column::of(values.as_ref(), !plain(values.data_type()), &mut apart);
     counts.runs = apart.runs;
     Column::Keyed {
         bits: 8 * wide(size_of::<K::Native>()) + VALID,
-        key: Box::new(key),
-        values: Box::new(values),
-        expanded: Expanded::default(),
+        length: values.len(),
+        values: Box::new(column),
     }
 }

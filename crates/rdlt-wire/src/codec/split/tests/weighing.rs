@@ -53,26 +53,14 @@ fn plain_columns_are_weighed_by_arithmetic_however_many_rows_they_hold() {
 }
 
 #[test]
-fn a_value_many_keys_name_is_weighed_once() {
-    // Fifty thousand keys naming one list of twenty thousand texts.
-    let keys = Int32Array::from(vec![0; 50_000]);
-    let keyed = DictionaryArray::try_new(keys, texts(20_000)).unwrap();
-    let batch = batch_of(Arc::new(keyed));
-    let (pieces, visits) = weighing(&batch, Limits::default());
-    assert_eq!(pieces, 1);
-    // Each key once in a stretch that fits, and the value's texts once.
-    assert!(visits <= 50_000 + 20_000 + 100, "{visits}");
-}
-
-#[test]
 fn a_run_of_many_rows_is_weighed_once() {
     let values = texts(30_000);
     let runs = RunArray::<Int32Type>::try_new(&Int32Array::from(vec![30_000]), &values).unwrap();
     let batch = batch_of(Arc::new(runs));
     let (pieces, visits) = weighing(&batch, Limits::default());
     assert_eq!(pieces, 1);
-    // The run's value in the frame, once more for what it takes expanded, and each stretch.
-    assert!(visits <= 2 * 30_000 + 100, "{visits}");
+    // The run's value once, with the first row in it, and each stretch.
+    assert!(visits <= 30_000 + 100, "{visits}");
 }
 
 #[test]
@@ -131,4 +119,99 @@ fn a_row_beyond_a_frame_is_refused_from_its_weight_before_it_is_narrowed_or_enco
             batch.schema()
         );
     }
+}
+
+/// Kibibytes: the most memory this process has held, where the system tells.
+fn peak() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmHWM:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Kibibytes: how far `run` raised the most memory this process has held.
+fn raised<T>(run: impl FnOnce() -> T) -> (T, u64) {
+    let before = peak();
+    let out = run();
+    let grown = peak()
+        .zip(before)
+        .map_or(0, |(after, before)| after - before);
+    (out, grown)
+}
+
+/// A dictionary column of one row whose key is `key`, over `values`.
+fn one_key(key: i32, values: ArrayRef) -> RecordBatch {
+    let keyed = DictionaryArray::try_new(Int32Array::from(vec![key]), values).unwrap();
+    batch_of(Arc::new(keyed))
+}
+
+#[test]
+fn a_key_is_weighed_without_holding_anything_for_the_values_before_it() {
+    // One row naming the last of thirty-two million nulls, which hold no bytes.
+    let values: ArrayRef = Arc::new(arrow_array::NullArray::new(32_000_000));
+    let batch = one_key(31_999_999, values);
+    let (weight, grown) = raised(|| {
+        let mut weigher = crate::codec::weigh::Weigher::new(&batch);
+        weigher.begin();
+        weigher.weigh(0)
+    });
+    assert_eq!((weight.values, weight.frame_bytes()), (1, 5));
+    assert!(grown < 16 << 10, "weighing one key held {grown} KiB");
+}
+
+#[test]
+fn keys_are_weighed_by_arithmetic_whatever_the_value_they_name_holds() {
+    // Two thousand keys naming one list of twenty thousand dictionary keys.
+    let flags: ArrayRef = Arc::new(arrow_array::Int8Array::from(vec![1, 2]));
+    let inner = arrow_array::Int8Array::from(vec![0; 20_000]);
+    let inner: ArrayRef = Arc::new(DictionaryArray::try_new(inner, flags).unwrap());
+    let field = Arc::new(Field::new("item", inner.data_type().clone(), true));
+    let offsets = OffsetBuffer::from_lengths([20_000]);
+    let values: ArrayRef = Arc::new(ListArray::new(field, offsets, inner, None));
+    let keyed = DictionaryArray::try_new(Int32Array::from(vec![0; 2_000]), values).unwrap();
+    let batch = batch_of(Arc::new(keyed));
+    let mut weigher = crate::codec::weigh::Weigher::new(&batch);
+    weigher.begin();
+    let weight = weigher.weigh_rows(0..2_000);
+    assert_eq!((weight.values, weight.frame_bits), (2_000, 2_000 * 33));
+    assert!(weigher.visits() <= 4, "{}", weigher.visits());
+}
+
+/// Checks a one-row batch of the dictionary `values` is refused by a sender at a peer's least
+/// limits, naming `field`, before anything is rebuilt or encoded and holding little beside it.
+fn refused_from_the_weight_of_its_dictionary(values: ArrayRef, field: &str) {
+    let batch = one_key(0, values);
+    let mut sender = crate::codec::Encoder::default();
+    sender.schema(&batch.schema()).unwrap();
+    let mut cutting = crate::codec::Cut::new(batch.clone(), least());
+    let (refused, grown) = raised(|| sender.piece(&mut cutting).unwrap_err());
+    let WireError::Refused(refusal) = &refused else {
+        panic!("{}: {refused}", batch.schema());
+    };
+    assert_eq!(refusal.field, field, "{refusal:?}");
+    assert_eq!((cutting.probe.compactions, sender.encodes), (0, 0));
+    assert!(grown < 16 << 10, "refusing the batch held {grown} KiB");
+    assert!(cutting.is_done());
+    assert_eq!(sender.piece(&mut cutting).unwrap(), None);
+}
+
+#[test]
+fn a_dictionary_beyond_a_frame_is_refused_from_its_weight_before_it_is_rebuilt_or_encoded() {
+    // Six hundred views of one text of a mebibyte: a mebibyte held, six hundred named.
+    let text = "t".repeat(1 << 20);
+    let one = StringViewArray::from_iter_values([text.as_str()]);
+    let (views, buffers, _) = one.into_parts();
+    let shared = vec![views[0]; 600];
+    let views: ArrayRef = Arc::new(StringViewArray::new(shared.into(), buffers, None));
+    refused_from_the_weight_of_its_dictionary(views, "view bytes");
+    // Three hundred list views each naming the same mebibyte of items.
+    let items = Arc::new(arrow_array::Int8Array::from(vec![7; 1 << 20]));
+    let field = Arc::new(Field::new("item", DataType::Int8, true));
+    let (offsets, sizes) = (vec![0_i64; 300], vec![1_i64 << 20; 300]);
+    let lists =
+        arrow_array::LargeListViewArray::new(field, offsets.into(), sizes.into(), items, None);
+    refused_from_the_weight_of_its_dictionary(Arc::new(lists), "batch values");
+    // Two hundred thousand texts no key but one names: eight megabytes as they are.
+    let texts = (0..200_000).map(|at| format!("a value no key names, number {at:08}"));
+    let texts = arrow_array::StringArray::from_iter_values(texts);
+    refused_from_the_weight_of_its_dictionary(Arc::new(texts), "frame bytes");
 }

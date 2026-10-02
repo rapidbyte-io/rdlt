@@ -72,6 +72,18 @@ impl Cut {
         self.weigher.overhead()
     }
 
+    /// Refuses a batch one of whose dictionaries is beyond a limit, from the weight of the
+    /// dictionary's values: they go in a frame of their own and cannot be cut.
+    fn dictionaries(&mut self) -> Result<(), Refusal> {
+        let limits = self.limits;
+        for weight in self.weigher.dictionaries() {
+            Limits::admit("batch values", limits.batch_values, weight.values)?;
+            Limits::admit("view bytes", limits.frame_bytes, weight.view_bytes)?;
+            Limits::admit("frame bytes", limits.frame_bytes, weight.frame_bytes())?;
+        }
+        Ok(())
+    }
+
     /// What `rows` rows from `start` add to the piece being weighed.
     fn weighed(&mut self, start: usize, rows: usize) -> Weight {
         #[cfg(test)]
@@ -175,6 +187,10 @@ impl Encoder {
 
     fn framed(&mut self, cut: &mut Cut) -> Result<Vec<IpcFrame>, WireError> {
         let mut frames = Vec::new();
+        if cut.sent == 0 {
+            // Before anything is rebuilt or encoded: a dictionary's values are rebuilt whole.
+            cut.dictionaries()?;
+        }
         // A batch of no rows is one frame of none.
         let (mut rows, _) = match cut.batch.num_rows() {
             0 => (0, Weight::default()),
