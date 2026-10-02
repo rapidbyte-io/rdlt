@@ -165,8 +165,8 @@ log.
     `Weigher::dictionaries` each dictionary's values. A weight is what a frame holds: values,
     view bytes and frame bytes. What rows take once their dictionary keys and runs are replaced
     by the values they name is no measure of the wire's: it belongs to whoever charges memory.
-  - Certification's read-back queues every piece of the table it already holds whole; the
-    minimums below bound that to about twice the table.
+  - Certification's read-back reads a table a batch at a time and cuts each as a read does: the
+    next piece is cut once the host has taken the last.
 - **What the engine writes is plain.** Lowering stores every column as the Arrow type of its
   logical type: fixed-width values, `Utf8`, `Binary`, structs and lists, with list views cast to
   lists, views to offsets, and dictionaries and run-end encodings decoded. Its two constant

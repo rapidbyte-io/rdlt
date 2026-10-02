@@ -123,11 +123,13 @@ async fn a_read_back_the_handshake_did_not_accept_is_refused_as_unsupported() {
 const ROWS: usize = 8192;
 
 /// A memory destination that reads back `batches` batches, however many its host takes, counting
-/// those sent; where `fails`, the read-back fails once they are.
+/// those sent; where `fails`, the read-back fails once they are; where `blobs`, each batch is
+/// one row of five mebibytes.
 struct Large {
     inner: Box<dyn DestinationFactory>,
     batches: usize,
     fails: bool,
+    blobs: bool,
     sent: Arc<AtomicUsize>,
     ended: Arc<AtomicUsize>,
 }
@@ -138,15 +140,23 @@ impl Large {
             inner: destination_factory::<MemoryDestination>(),
             batches,
             fails,
+            blobs: false,
             sent: Arc::new(AtomicUsize::new(0)),
             ended: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Reading back batches of one row of five mebibytes each.
+    fn of_blobs(mut self) -> Self {
+        self.blobs = true;
+        self
     }
 }
 
 struct LargeReader {
     batches: usize,
     fails: bool,
+    blobs: bool,
     sent: Arc<AtomicUsize>,
     ended: Arc<AtomicUsize>,
 }
@@ -158,8 +168,14 @@ impl PublishedReader for LargeReader {
         rows: PublishedRows,
     ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(async move {
-            let ids = Arc::new(Int64Array::from(vec![7; ROWS]));
-            let batch = RecordBatch::try_from_iter([("id", ids as _)]).expect("a valid batch");
+            let batch = if self.blobs {
+                let blob = arrow_array::StringArray::from(vec!["b".repeat(5 << 20)]);
+                RecordBatch::try_from_iter([("blob", Arc::new(blob) as _)])
+            } else {
+                let ids = Arc::new(Int64Array::from(vec![7; ROWS]));
+                RecordBatch::try_from_iter([("id", ids as _)])
+            };
+            let batch = batch.expect("a valid batch");
             for _ in 0..self.batches {
                 if let Err(left) = rows.send(batch.clone()).await {
                     self.ended.fetch_add(1, Ordering::SeqCst);
@@ -203,6 +219,7 @@ impl DestinationFactory for Large {
             let reader = LargeReader {
                 batches: self.batches,
                 fails: self.fails,
+                blobs: self.blobs,
                 sent: Arc::clone(&self.sent),
                 ended: Arc::clone(&self.ended),
             };
@@ -322,11 +339,13 @@ async fn a_read_back_that_fails_ends_with_its_error_after_the_rows_it_read() {
 }
 
 #[tokio::test]
-async fn a_batch_read_back_beyond_its_hosts_frames_ends_the_read_back_as_exceeding_them() {
-    let factory = Large::new(100_000, false);
+async fn a_row_read_back_beyond_its_hosts_frames_ends_the_read_back_as_exceeding_them() {
+    // A batch beyond the host's frames is cut to them; a row of five mebibytes fits no frame
+    // of the four a host may ask for at least.
+    let factory = Large::new(100_000, false).of_blobs();
     let (sent, ended) = (Arc::clone(&factory.sent), Arc::clone(&factory.ended));
     let small = v1::Limits {
-        frame_bytes: 1024,
+        frame_bytes: rdlt_wire::limits::MIN_FRAME_BYTES,
         ..v1::Limits::from(rdlt_wire::Limits::default())
     };
     let mut frames = reading_back_within(factory, Some(small)).await;
@@ -334,7 +353,7 @@ async fn a_batch_read_back_beyond_its_hosts_frames_ends_the_read_back_as_exceedi
         match frames.message().await {
             Ok(Some(frame)) => assert!(
                 matches!(frame.frame, Some(v1::read_frame::Frame::Schema(_))),
-                "a batch beyond the host's frames was sent"
+                "a row beyond the host's frames was sent"
             ),
             Ok(None) => panic!("the read-back ended without its error"),
             Err(status) => break carried(&status),
