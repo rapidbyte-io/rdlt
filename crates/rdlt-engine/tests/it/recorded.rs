@@ -158,3 +158,23 @@ async fn streams_whose_names_fold_alike_load_again_under_reserved_prefixes() {
         .expect("the reset commits");
     assert_eq!(reset.dropped.len(), 2, "{:?}", reset.dropped);
 }
+
+#[tokio::test(start_paused = true)]
+async fn state_written_before_tables_kept_their_key_is_refused_as_invalid() {
+    let earlier: Restate = |records| {
+        for record in records.iter_mut() {
+            if let Ok(StateEntry::Sequences { table, .. }) = StateEntry::from_record(record) {
+                let table: Vec<String> = table.segments().map(str::to_owned).collect();
+                let value = serde_json::json!({
+                    "v": 1,
+                    "entry": { "sequences": { "table": table, "sequences": "engine" } },
+                });
+                record.value = value.to_string().into();
+            }
+        }
+    };
+    let outcome = loaded_again("earlier", "state_earlier", earlier).await;
+    refused(&outcome);
+    let error = outcome.error.expect("the run fails");
+    assert!(error.to_string().contains("missing field `key`"), "{error}");
+}
