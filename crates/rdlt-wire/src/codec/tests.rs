@@ -890,58 +890,59 @@ fn a_schema_naming_other_dictionary_ids_is_not_the_schema_held() {
     assert!(Arc::ptr_eq(&again, &decoder.schema(&second).unwrap()));
 }
 
-/// The least dictionary limit at which a cut of `batch` is sent, found by halving.
-fn least_sent(batch: &RecordBatch) -> u64 {
-    let sends = |limit: u64| {
-        let limits = Limits {
-            dictionary_bytes: limit,
-            ..Limits::default()
-        };
-        let mut encoder = Encoder::default();
-        encoder.schema(&batch.schema()).unwrap();
-        let mut cut = super::Cut::new(batch.clone(), limits);
-        encoder.piece(&mut cut).is_ok()
+/// Whether a sender limited to `limit` bytes of dictionaries sends `batch`, after its schema,
+/// as its first piece: its frames where it does.
+fn sent_within(batch: &RecordBatch, limit: u64) -> Option<(Bytes, Vec<IpcFrame>)> {
+    let limits = Limits {
+        dictionary_bytes: limit,
+        ..Limits::default()
     };
-    let (mut low, mut high) = (0_u64, 1_u64 << 32);
-    while low < high {
-        let middle = low + (high - low) / 2;
-        if sends(middle) {
-            high = middle;
-        } else {
-            low = middle + 1;
-        }
-    }
-    low
+    let mut encoder = Encoder::default();
+    let schema = encoder.schema(&batch.schema()).unwrap();
+    let mut cut = super::Cut::new(batch.clone(), limits);
+    let frames = encoder.piece(&mut cut).ok()?.unwrap();
+    Some((schema, frames))
 }
 
 #[test]
 fn what_a_sender_admits_of_dictionaries_its_receiver_holds_exactly() {
-    for columns in [1_usize, 2, 3, 10, 100, 1_000] {
+    // Sixty-five shapes: one to three hundred columns, of values empty to a hundred kilobytes.
+    for columns in [1_usize, 2, 3, 10, 100, 300] {
         for bytes in [0_usize, 1, 7, 8, 9, 63, 64, 65, 1_000, 4_093, 100_000] {
             if columns * bytes > 10_000_000 {
                 continue;
             }
             let batch = keyed(columns, bytes, "x");
-            let least = least_sent(&batch);
+            // What a receiver holds once it has decoded the batch's dictionaries.
+            let (schema, frames) = sent_within(&batch, u64::MAX).unwrap();
+            let mut measuring = Decoder::new(Limits::default());
+            measuring.schema(&schema).unwrap();
+            for frame in &frames {
+                measuring.frame(frame).unwrap();
+            }
+            let held = measuring.dictionary_bytes();
+            // The sender sends it within exactly that, and not a byte less.
+            let (schema, frames) = sent_within(&batch, held)
+                .unwrap_or_else(|| panic!("{columns} of {bytes} bytes refused at {held}"));
+            assert!(
+                held == 0 || sent_within(&batch, held - 1).is_none(),
+                "{columns} of {bytes} bytes sent below {held}"
+            );
+            // A receiver limited to it takes every frame sent.
             let limits = Limits {
-                dictionary_bytes: least,
+                dictionary_bytes: held,
                 ..Limits::default()
             };
-            let mut encoder = Encoder::default();
-            let schema = encoder.schema(&batch.schema()).unwrap();
-            let mut cut = super::Cut::new(batch.clone(), limits);
-            let frames = encoder.piece(&mut cut).unwrap().unwrap();
             let mut decoder = Decoder::new(limits);
             decoder.schema(&schema).unwrap();
             for frame in &frames {
                 decoder.frame(frame).unwrap_or_else(|error| {
-                    panic!("{columns} of {bytes} bytes, sent at {least}: {error}")
+                    panic!("{columns} of {bytes} bytes, sent at {held}: {error}")
                 });
             }
-            // The sender's least is exactly what the receiver holds: a byte less is refused.
             assert_eq!(
                 decoder.dictionary_bytes(),
-                least,
+                held,
                 "{columns} of {bytes} bytes"
             );
         }
