@@ -31,7 +31,7 @@ pub(super) fn admitted(
     let stored = stored.map(|schema| Arc::new(schema.to_arrow()));
     for (_, batch) in buffered {
         merge::admitted(batch, stored.as_ref(), key)
-            .map_err(|error| merge::failed("staging rows", &error))?;
+            .map_err(|error| merge::failed("staging rows", error))?;
     }
     Ok(())
 }
@@ -115,7 +115,7 @@ pub(super) fn fits(
     }
     if let Some(key) = &change.table().merge {
         // A tombstone holds its key under the table's types and its sequence as it compares.
-        let reading = |error| merge::failed("reading tombstones", &error);
+        let reading = |error| merge::failed("reading tombstones", error);
         let buried = merge::tombstone_schema(&held, key).map_err(reading)?;
         let kept = merge::tombstone_schema(&taken, key).map_err(reading)?;
         for file in &table.tombstones {

@@ -92,7 +92,7 @@ pub(super) fn merged_rows(
     }
     let held = published.iter().map(RecordBatch::num_rows).sum();
     let doing = format!("merging table {name}");
-    let merging = |error: arrow_schema::ArrowError| crate::merge::failed(&doing, &error);
+    let merging = |error: arrow_schema::ArrowError| crate::merge::failed(&doing, error);
     let incoming = read(&mut files.iter().map(|staged| &staged.file), &staged)?;
     let merged = if let Some((root, root_files)) = root {
         let root_schema = tables::read(&location.rdlt, &root.table)?.ok_or_else(|| {

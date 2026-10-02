@@ -217,12 +217,35 @@ fn a_refusal_is_a_data_error_under_its_code_and_any_other_failure_the_merge_s_ow
         ..row(1, "a", 1)
     }]);
     let refused = admitted(&batch, None, &key(Deletion::Hard)).expect_err("a flag on the key");
-    let error = failed("merging rows", &refused);
+    let error = failed("merging rows", refused);
     assert_eq!(error.kind(), rdlt_connector::ConnectorErrorKind::Data);
     assert_eq!(error.code(), Some("flag_on_key"));
     let own = ArrowError::ComputeError("an index out of bounds".to_owned());
     assert_eq!(code(&own), None);
-    let error = failed("merging rows", &own);
+    let error = failed("merging rows", own);
     assert_eq!(error.kind(), rdlt_connector::ConnectorErrorKind::Internal);
     assert_eq!(error.code(), None);
+    // Each keeps what was refused, or what failed, as its cause.
+    for (error, said) in [
+        (
+            failed(
+                "merging rows",
+                admitted(&batch, None, &key(Deletion::Hard)).unwrap_err(),
+            ),
+            "flags id",
+        ),
+        (
+            failed(
+                "merging rows",
+                ArrowError::ComputeError("out of bounds".to_owned()),
+            ),
+            "out of",
+        ),
+    ] {
+        let cause = std::error::Error::source(&error).expect("a cause");
+        let arrow = cause
+            .downcast_ref::<ArrowError>()
+            .expect("the merge's error");
+        assert!(arrow.to_string().contains(said), "{arrow}");
+    }
 }
