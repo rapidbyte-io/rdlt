@@ -23,6 +23,8 @@ use crate::limits::Limits;
 pub struct Decoder {
     limits: Limits,
     columns: Option<Columns>,
+    /// The schema message `columns` came from.
+    message: Option<Bytes>,
     dictionaries: HashMap<i64, ArrayRef>,
     /// The bytes of the allocation each dictionary held was decoded into, by its id.
     held: HashMap<i64, u64>,
@@ -34,6 +36,7 @@ impl Decoder {
         Self {
             limits,
             columns: None,
+            message: None,
             dictionaries: HashMap::new(),
             held: HashMap::new(),
         }
@@ -48,35 +51,38 @@ impl Decoder {
     /// The schema the frames that follow are in, from its IPC schema message.
     ///
     /// The schema and dictionaries received before it are forgotten, whether or not this one is
-    /// admitted. A schema equal to the one it replaces is returned as that same schema, so
-    /// batches decoded either side of it share it.
+    /// admitted. A message the same, byte for byte, as the message the decoder's schema came
+    /// from is returned as that same schema, so batches decoded either side of it share it.
+    /// Schemas that compare equal are not enough: they may name their dictionaries by other ids.
     ///
     /// # Errors
     ///
     /// A [`WireError`] when the message is too large, malformed, or its schema beyond the limits.
     pub fn schema(&mut self, ipc_schema: &Bytes) -> Result<SchemaRef, WireError> {
         // A refused schema ends the schema before it too: no batch is read under either.
-        let before = self.columns.take();
+        let before = self.columns.take().zip(self.message.take());
         self.dictionaries.clear();
         self.held.clear();
         self.limits.admit_schema(ipc_schema.len())?;
+        // The message held again is the schema held: the batches of a sender that sends its
+        // schema again keep a single schema alive between them, not a schema each.
+        if let Some((columns, message)) = before
+            && message == ipc_schema
+        {
+            let schema = Arc::clone(columns.schema());
+            (self.columns, self.message) = (Some(columns), Some(message));
+            return Ok(schema);
+        }
         let message = message(Frame::Schema, ipc_schema, self.limits.nesting_depth)?;
         let Some(fb) = message.header_as_schema() else {
             return Err(unexpected(Frame::Schema, &message));
         };
         super::schema::admit(fb, &self.limits)?;
         let schema = contained(Frame::Schema, || Ok(arrow_ipc::convert::fb_to_schema(fb)))?;
-        // An equal schema is returned as the schema held: the batches of a sender that sends
-        // its schema again keep a single schema alive between them, not a schema each.
-        if let Some(before) = before
-            && **before.schema() == schema
-        {
-            let held = Arc::clone(before.schema());
-            self.columns = Some(before);
-            return Ok(held);
-        }
         let schema = Arc::new(schema);
         self.columns = Some(Columns::new(Arc::clone(&schema)));
+        // Copied, so the decoder keeps the message's bytes alive and no buffer they lie in.
+        self.message = Some(Bytes::copy_from_slice(ipc_schema));
         Ok(schema)
     }
 
