@@ -188,9 +188,9 @@ fn shapes(column: &ArrayRef) -> Vec<(&'static str, Vec<ArrayRef>)> {
     ]
 }
 
-/// A digest of the ids of the rows of each of `columns`, each a batch of one column; a column
-/// that has no ids says so.
-pub(super) fn digest(columns: &[ArrayRef]) -> String {
+/// A digest of the ids of the rows of each of `columns`, each a batch of one column; nothing
+/// where a column has no ids.
+pub(super) fn digest(columns: &[ArrayRef]) -> Option<u64> {
     // FNV-1a over each id's length and bytes, a null id as a length no id has.
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     let mut fold = |bytes: &[u8]| {
@@ -200,10 +200,7 @@ pub(super) fn digest(columns: &[ArrayRef]) -> String {
     };
     for column in columns {
         let batch = RecordBatch::try_from_iter([("c", Arc::clone(column))]).expect("a batch");
-        let ids: BinaryArray = match root_ids(&batch, &[]) {
-            Ok(ids) => ids,
-            Err(_) => return "refused".to_owned(),
-        };
+        let ids: BinaryArray = root_ids(&batch, &[]).ok()?;
         for row in 0..ids.len() {
             if ids.is_null(row) {
                 fold(&u64::MAX.to_le_bytes());
@@ -214,7 +211,7 @@ pub(super) fn digest(columns: &[ArrayRef]) -> String {
             }
         }
     }
-    format!("{hash:016x}")
+    Some(hash)
 }
 
 /// Every column an id is recorded for, by its name, with its shapes.
@@ -237,7 +234,7 @@ fn every_type_and_encoding_has_the_id_it_was_recorded_with() {
             let (label, digest) = recorded.next().expect("an id was recorded for each shape");
             // The labels are the types' names as they were when recorded; the order decides.
             assert!(label.ends_with(shape), "{label} is not {name} {shape}");
-            assert_eq!(self::digest(&columns), *digest, "{name} {shape}");
+            assert_eq!(self::digest(&columns), Some(*digest), "{name} {shape}");
         }
     }
     assert!(recorded.next().is_none(), "every recorded id is compared");
