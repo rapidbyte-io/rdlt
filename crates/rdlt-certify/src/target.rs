@@ -283,6 +283,9 @@ impl Target {
             endpoint: from.and_then(|reference| reference.endpoint.clone()),
             digest: from.and_then(|reference| reference.digest),
             isolation: from.and_then(|reference| reference.isolation),
+            grants: from
+                .map(|reference| reference.grants.clone())
+                .unwrap_or_default(),
         };
         let options = Options {
             read_window: KILL_WINDOW,

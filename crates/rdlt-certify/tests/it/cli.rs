@@ -832,7 +832,11 @@ async fn a_configuration_that_is_no_json_document_is_refused_without_being_quote
 
 /// A canary no output may hold, and the reports of a destination certified with it, as text
 /// and as JSON: the SQLite destination is told a path it cannot open, and says so.
-async fn reports_with_a_secret(config: &str, env: &[(&str, &str)]) -> Vec<String> {
+async fn reports_with_a_secret(
+    config: &str,
+    env: &[(&str, &str)],
+    allowed: &[&str],
+) -> Vec<String> {
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
     let mut reports = Vec::new();
@@ -847,6 +851,7 @@ async fn reports_with_a_secret(config: &str, env: &[(&str, &str)]) -> Vec<String
             "--output",
             output,
         ];
+        let args = [&args[..], allowed].concat();
         let certified = certify_given(&args, config, env).await;
         assert_eq!(code(&certified), Some(1), "{output}");
         let stdout = String::from_utf8_lossy(&certified.stdout).into_owned();
@@ -865,11 +870,13 @@ async fn a_secret_the_configuration_refers_to_is_in_no_report_however_the_connec
     std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o600))
         .expect("the secret is private");
     let by_file = format!("${{file:{}}}", file.display());
+    let dir = directory.path().to_str().expect("a UTF-8 path");
+    let allowed = ["--secret-env", "RDLT_TEST_CANARY", "--secret-dir", dir];
     for reference in ["${env:RDLT_TEST_CANARY}", by_file.as_str()] {
         // A path that holds the secret, which the connector quotes back in each failure.
         let config = serde_json::json!({ "path": format!("/nonexistent/{reference}/store.db") });
         let env = [("RDLT_TEST_CANARY", canary)];
-        for report in reports_with_a_secret(&config.to_string(), &env).await {
+        for report in reports_with_a_secret(&config.to_string(), &env, &allowed).await {
             assert!(
                 report.contains("/nonexistent/***/store.db"),
                 "{reference}: {report}"
@@ -882,7 +889,7 @@ async fn a_secret_the_configuration_refers_to_is_in_no_report_however_the_connec
     }
     // The same path written out is no secret, and is said: the scrub is of what is referred to.
     let literal = serde_json::json!({ "path": format!("/nonexistent/{canary}/store.db") });
-    for report in reports_with_a_secret(&literal.to_string(), &[]).await {
+    for report in reports_with_a_secret(&literal.to_string(), &[], &[]).await {
         assert!(report.contains(canary), "{report}");
     }
 }
@@ -920,10 +927,12 @@ async fn a_binary_is_certified_inside_a_sandbox_unless_it_is_said_to_be_trusted(
     ];
     let output = certify_given(&args, config, &[]).await;
     let said = String::from_utf8_lossy(&output.stderr);
-    if rdlt_host::Bubblewrap::new().usable().is_ok() {
+    let usable = rdlt_host::Bubblewrap::new().usable();
+    if usable.is_ok() {
         // The generator needs nothing of its host: it keeps every clause in a sandbox.
         assert_eq!(code(&output), Some(0), "{said}");
     } else {
+        rdlt_testkit::process::without_sandbox(&usable.expect_err("none is made"));
         // No sandbox here: nothing is run, and the way to run a trusted binary is said.
         assert_eq!(code(&output), Some(74), "{said}");
         assert!(
@@ -936,13 +945,8 @@ async fn a_binary_is_certified_inside_a_sandbox_unless_it_is_said_to_be_trusted(
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
-    if rdlt_host::Bubblewrap::new().usable().is_err() {
-        use std::io::Write as _;
-        writeln!(
-            std::io::stderr(),
-            "skipped: bubblewrap makes no sandbox here"
-        )
-        .ok();
+    if let Err(unusable) = rdlt_host::Bubblewrap::new().usable() {
+        rdlt_testkit::process::without_sandbox(&unusable);
         return;
     }
     let binary = example("serve_reference");
@@ -970,4 +974,31 @@ async fn a_sandboxed_destination_writes_only_where_it_is_granted() {
         serde_json::from_slice(&granted.stdout).expect("the report is JSON");
     assert_ne!(report["verdict"], "failed", "{report}");
     assert!(directory.path().join("store.db").exists());
+}
+
+#[tokio::test]
+async fn a_reference_to_a_secret_the_command_line_does_not_allow_is_refused_unread() {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let file = directory.path().join("secret");
+    std::fs::write(&file, "hunter2-file").expect("the secret writes");
+    std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .expect("the secret is private");
+    let env = [("RDLT_TEST_CANARY", "hunter2-env")];
+    for reference in [
+        "${env:RDLT_TEST_CANARY}".to_owned(),
+        format!("${{file:{}}}", file.display()),
+    ] {
+        let config = serde_json::json!({ "path": reference }).to_string();
+        let args = [binary, "--trusted", "--config-file", "-"];
+        let output = certify_given(&args, &config, &env).await;
+        assert_eq!(code(&output), Some(64), "{reference}");
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(said.contains("config field path"), "{said}");
+        assert!(
+            !said.contains("hunter2") && !said.contains("RDLT_TEST") && !said.contains("secret"),
+            "{said}"
+        );
+    }
 }
