@@ -1,14 +1,19 @@
 //! The sandbox rdlt ships for Linux: bubblewrap, which needs no privilege.
 
+#[cfg(any(target_os = "linux", test))]
 use std::ffi::OsString;
-use std::os::fd::{OwnedFd, RawFd};
+use std::os::fd::OwnedFd;
+#[cfg(target_os = "linux")]
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 
 use super::binary::{Binary, Unfit};
 use super::process::{PROGRAM_FD, SOCKET_FD, inheriting};
-use super::sandbox::{Confined, Launcher, NetworkGrant, Sandbox, SandboxError, Stops};
+#[cfg(target_os = "linux")]
+use super::sandbox::Stops;
+use super::sandbox::{Confined, Launcher, NetworkGrant, Sandbox, SandboxError};
 
 #[cfg(test)]
 mod tests;
@@ -17,14 +22,17 @@ mod tests;
 const WELL_KNOWN: &str = "/usr/bin/bwrap";
 
 /// Where the connector's program is inside its sandbox.
+#[cfg(any(target_os = "linux", test))]
 const PROGRAM: &str = "/rdlt-connector";
 
 /// The directories of the host a dynamically linked program needs to start, each given read
 /// only where it exists, or as the link it is.
+#[cfg(any(target_os = "linux", test))]
 const SYSTEM: [&str; 6] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/lib32"];
 
 /// The files of the host a dynamically linked program needs to start, each given read only
 /// where it exists.
+#[cfg(any(target_os = "linux", test))]
 const SYSTEM_FILES: [&str; 1] = ["/etc/ld.so.cache"];
 
 /// Bytes: bounds what is kept of what the launcher said when it could not make a sandbox.
@@ -32,6 +40,7 @@ const SAID_BYTES: usize = 512;
 
 /// The descriptor the launcher reads its arguments from: none is on its command line, which
 /// every user of the machine may read.
+#[cfg(target_os = "linux")]
 const ARGS_FD: RawFd = 5;
 
 /// Confines a connector with bubblewrap.
@@ -76,6 +85,7 @@ impl Bubblewrap {
     }
 
     /// The arguments that confine `confined`'s program, with what it is granted.
+    #[cfg(any(target_os = "linux", test))]
     fn confinement(confined: &Confined<'_>) -> Vec<OsString> {
         let mut args: Vec<OsString> = Vec::new();
         let mut flag = |flag: &str, values: &[&std::ffi::OsStr]| {

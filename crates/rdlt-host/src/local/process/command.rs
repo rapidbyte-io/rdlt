@@ -166,6 +166,10 @@ fn trusted(
 /// The command that executes `binary` by its path: this platform executes no open file, so
 /// its digest is neither checked nor reported.
 #[cfg(not(target_os = "linux"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "it answers as the Linux spawn does, which can fail"
+)]
 fn trusted(
     binary: &Binary,
     _given: &mut Vec<(OwnedFd, RawFd)>,
@@ -174,6 +178,7 @@ fn trusted(
 }
 
 /// The lowest descriptor a command is executed from.
+#[cfg(target_os = "linux")]
 const EXECUTED_FD: RawFd = 8;
 
 /// The command that executes the open `file` through `/proc/self/fd`, and the descriptor it

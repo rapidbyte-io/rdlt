@@ -98,7 +98,7 @@ fn opening(stop: Arc<AtomicBool>) -> std::thread::JoinHandle<u64> {
         let mut opened = 0;
         while !stop.load(Ordering::Relaxed) {
             let flags = rustix::fs::OFlags::RDONLY;
-            if let Ok(file) = rustix::fs::open("/etc/hostname", flags, rustix::fs::Mode::empty()) {
+            if let Ok(file) = rustix::fs::open("/dev/null", flags, rustix::fs::Mode::empty()) {
                 opened += 1;
                 std::thread::sleep(std::time::Duration::from_micros(200));
                 drop(file);
