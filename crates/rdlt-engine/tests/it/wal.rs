@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rdlt_connector::{PipelineId, ReadMode};
 use rdlt_engine::{ErrorKind, LocalWal, RunOutcome, RunStatus, WalStore};
 
-use crate::support::destinations::{Step, failing};
+use crate::support::destinations::{Step, counting, failing};
 use crate::support::logs::Counted;
 use crate::support::script::{Script, ScriptStream, id};
 use crate::support::{
@@ -162,6 +162,32 @@ async fn a_commit_the_destination_missed_lands_from_the_log_before_the_source_is
     );
     let pipeline = PipelineId::parse("wal-replayed").expect("a valid pipeline");
     assert_eq!(store.loads(&pipeline).await.expect("loads list"), []);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_replay_whose_commit_fails_closes_the_session_it_opened() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let source = forgetful("wal_closed").await;
+    let plan = pipeline("wal-closed", [stream("events").read(ReadMode::Incremental)]);
+    let run = |destination| {
+        logging_engine(retrying(1), Arc::clone(&store)).run(
+            plan.clone(),
+            Arc::clone(&source),
+            destination,
+        )
+    };
+    let logged = run(failing(memory("wal_closed").await, Step::Commit)).await;
+    assert_eq!(logged.report.status, RunStatus::Failed);
+    let (destination, sessions) = counting(failing(memory("wal_closed").await, Step::Commit));
+    let replayed = run(destination).await;
+    assert_eq!(replayed.report.status, RunStatus::Failed);
+    let error = replayed.error.expect("the replay fails");
+    assert_eq!(error.kind(), ErrorKind::Destination);
+    let opened = sessions.opened.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(opened, 1, "the replay's session, and no attempt's");
+    let closed = sessions.closed.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(closed, opened);
 }
 
 #[tokio::test(start_paused = true)]
