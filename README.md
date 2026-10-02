@@ -61,7 +61,8 @@ under the seq guard, with deletes hard, soft or ignored; a truncate, which names
 marks deleted every row sequenced before it. A change log appends every change instead.
 The memory budget is never passed: a push reserves what it keeps alive and is lowered a piece at
 a time, each piece reserving what its table stores it as before it is lowered, while checkpoints,
-the log and what reads keep have shares of the budget no push can use;
+the log, what commits record of tables and what reads keep have shares of the budget no push can
+use, and what a connector is told it may send fits them;
 JSON integers load exactly at any width, as decimals within 76 digits and as JSON text beyond; a
 merge key keeps matching its stored rows or refuses to change type; and an unbounded partition, as
 a change stream's, resumes from its last checkpoint rather than ending.
