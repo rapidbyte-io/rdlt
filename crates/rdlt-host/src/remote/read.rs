@@ -184,9 +184,7 @@ impl Kept {
     fn charge(&mut self, sink: &PartitionSink, bytes: u64) -> rdlt_connector::Result<()> {
         if bytes != self.bytes {
             (self.held, self.bytes) = (None, 0);
-            if bytes > 0 {
-                self.held = sink.reserve(bytes)?;
-            }
+            self.held = sink.reserve(bytes)?;
             self.bytes = bytes;
         }
         Ok(())

@@ -173,11 +173,12 @@ impl RemoteWriter {
             };
             for frame in frames {
                 // The connector refuses more than it may stage between two flushes, so a frame
-                // that would pass that is sent after a flush of what is staged.
+                // that would pass that is sent after a flush of what is staged; a frame alone,
+                // within the connector's frame limit, never passes it.
                 let bytes = frame.header.len().saturating_add(frame.body.len());
                 let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
                 let staged = self.staged.saturating_add(bytes);
-                if self.staged > 0 && self.connection.peer.admit_staged(staged).is_err() {
+                if self.connection.peer.admit_staged(staged).is_err() {
                     let flushed = self.flush_staged().await;
                     let stats = flushed.inspect_err(|_| self.schema = None)?;
                     self.flushed.rows = self.flushed.rows.saturating_add(stats.rows);
