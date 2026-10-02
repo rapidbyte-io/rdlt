@@ -555,28 +555,44 @@ async fn a_partition_the_stream_never_has_is_not_read() {
 }
 
 #[tokio::test]
-async fn a_group_s_name_is_neither_empty_nor_a_file_keeper_s() {
+async fn a_group_s_name_is_any_but_the_empty_one() {
     let forgets = json!({ "name": "events", "partitions": 1, "messages": 8, "replayable": false });
     let serves_again = json!({ "name": "events", "partitions": 1, "messages": 8 });
     for stream in [&forgets, &serves_again] {
-        for name in [
-            "",
-            "file:",
-            "file:/var/lib/events.group",
-            "file:1:2:events.group",
-        ] {
-            let refused = source_factory::<LogSource>()
-                .connect(config(stream, name), ConnectContext::new())
-                .await
-                .err()
-                .unwrap_or_else(|| panic!("{name:?} is refused"));
-            assert_eq!(refused.kind(), ConnectorErrorKind::Config, "{name:?}");
-            assert_eq!(refused.code(), Some("keeper_name_invalid"), "{name:?}");
-        }
+        let refused = source_factory::<LogSource>()
+            .connect(config(stream, ""), ConnectContext::new())
+            .await
+            .err()
+            .expect("the empty name is refused");
+        assert_eq!(refused.kind(), ConnectorErrorKind::Config);
+        assert_eq!(refused.code(), Some("keeper_name_invalid"));
     }
-    for name in ["f", "File:x", "files", " ", "group/of:many"] {
+    // A name is a group's whatever it looks like: a group kept in a file is known by its file.
+    for name in [
+        "f",
+        "file:",
+        "file:/var/lib/events.group",
+        " ",
+        "group/of:many",
+    ] {
         connect(&forgets, name).await;
     }
+}
+
+#[test]
+fn a_group_s_logs_begin_once_and_apart_from_those_of_a_group_named_as_its_file() {
+    let dir = crate::scratch::tempdir().expect("a temporary directory");
+    let path = dir.path().join("events.group");
+    let kept = super::GROUPS.at(&path).expect("the group's file");
+    let named = super::GROUPS.named(Some(&format!("file:{}", path.display())));
+    let began = super::origin(&kept);
+    std::thread::sleep(Duration::from_millis(2));
+    let later = super::origin(&named);
+    assert!(later > began, "the groups share when their logs began");
+    // Every source of a group, however it reaches the group, finds the same beginning.
+    let again = super::GROUPS.at(&dir.path().join(".").join("events.group"));
+    assert_eq!(super::origin(&again.expect("the same file")), began);
+    assert_eq!(super::origin(&named), later);
 }
 
 /// What a read of a log that does not follow pushes, in a runtime of its own whose clock is
