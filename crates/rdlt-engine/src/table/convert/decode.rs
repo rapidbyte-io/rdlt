@@ -29,14 +29,8 @@ pub(super) fn decoded(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
         DataType::List(field) => listed::<i32>(array, field),
         DataType::LargeList(field) => listed::<i64>(array, field),
         // A list view's items are named a row at a time, so they are taken into a list.
-        DataType::ListView(field) => decoded(&arrow_cast::cast(
-            array,
-            &DataType::List(Arc::clone(field)),
-        )?),
-        DataType::LargeListView(field) => decoded(&arrow_cast::cast(
-            array,
-            &DataType::LargeList(Arc::clone(field)),
-        )?),
+        DataType::ListView(field) => viewed::<i32>(array, field),
+        DataType::LargeListView(field) => viewed::<i64>(array, field),
         DataType::FixedSizeList(field, size) => fixed(array, field, *size),
         DataType::Map(field, sorted) => mapped(array, field, *sorted),
         DataType::Struct(fields) => {
@@ -66,6 +60,46 @@ pub(super) fn decoded(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
         }
         _ => Ok(Arc::clone(array)),
     }
+}
+
+/// The lists the rows of `array`, a list view of `field`, name: each row's items taken in order
+/// into a list, a null row's none.
+///
+/// Only the items named are looked at, however long the view's child is: what is held beside
+/// the list is a place for each item named.
+fn viewed<O: OffsetSizeTrait>(array: &ArrayRef, field: &FieldRef) -> Result<ArrayRef, ArrowError> {
+    let views = array.as_list_view::<O>();
+    let beyond =
+        || ArrowError::ComputeError("a list view names more items than a list holds".into());
+    let named = |row: usize| {
+        let (first, size) = (
+            views.offsets()[row].as_usize(),
+            views.sizes()[row].as_usize(),
+        );
+        if views.is_null(row) {
+            first..first
+        } else {
+            first..first.saturating_add(size)
+        }
+    };
+    let total = (0..views.len())
+        .map(|row| named(row).len())
+        .fold(0, usize::saturating_add);
+    let mut places = Vec::with_capacity(total);
+    let mut offsets = Vec::with_capacity(views.len() + 1);
+    offsets.push(O::zero());
+    for row in 0..views.len() {
+        places.extend(named(row).map(|item| item as u64));
+        offsets.push(O::from_usize(places.len()).ok_or_else(beyond)?);
+    }
+    let items = take(views.values().as_ref(), &UInt64Array::from(places), CHECKED)?;
+    let items = decoded(&items)?;
+    Ok(Arc::new(GenericListArray::<O>::try_new(
+        retyped(field, &items),
+        OffsetBuffer::new(offsets.into()),
+        items,
+        views.nulls().cloned(),
+    )?))
 }
 
 /// Takes with its indices checked: a key naming no value is an error, not a panic.
