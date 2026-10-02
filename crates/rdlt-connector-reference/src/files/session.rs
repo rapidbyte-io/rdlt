@@ -23,6 +23,7 @@ use super::{destination, io, tables};
 use crate::blocking::blocking;
 use crate::columns::changed;
 use crate::rooted::Dir;
+use fitted::TABLE_CHANGED;
 
 /// Where a session writes: the destination's directories, the format, and who it is.
 #[derive(Clone, Debug)]
@@ -88,20 +89,17 @@ impl Session for FilesSession {
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
         let (location, table) = (self.location.clone(), change.table().clone());
-        let change = change.clone();
+        let (change, shared) = (change.clone(), Arc::clone(&self.shared));
         blocking(move || {
-            let (rdlt, name) = (&location.rdlt, &change.table().name);
-            // Claimed and changed under one lock, so no release lands between them.
-            tables::locked(rdlt, name, location.lock_wait, || {
-                claim(&location, name)?;
-                tables::update(rdlt, name, |current| {
-                    let next = changed(current, &change)?;
-                    if let Some(current) = current.filter(|current| **current != next) {
-                        fitted::fits(&location, &change, current, &next)?;
-                    }
-                    Ok((current != Some(&next)).then_some(next))
-                })
-            })
+            // A table that changes while its rows are checked is checked again.
+            let mut tries = CHECKS;
+            loop {
+                tries -= 1;
+                match changed_under_lock(&location, &shared, &change) {
+                    Err(error) if error.code() == Some(TABLE_CHANGED) && tries > 0 => {}
+                    done => return done,
+                }
+            }
         })
         .await?;
         self.learn(&table);
@@ -142,6 +140,32 @@ impl Session for FilesSession {
     async fn close(self) -> Result<()> {
         Ok(())
     }
+}
+
+/// How often a change of a column's type checks its table's rows before it gives up on a table
+/// that keeps changing.
+const CHECKS: u32 = 3;
+
+/// Applies `change` to its table's catalog: its rows are checked against it first, outside the
+/// table's lock, and the change is taken under the lock where the table is still as checked.
+fn changed_under_lock(
+    location: &Location,
+    shared: &Mutex<Shared>,
+    change: &TableChange,
+) -> Result<()> {
+    let (rdlt, name) = (&location.rdlt, &change.table().name);
+    let checked = fitted::fits(location, shared, change)?;
+    // Claimed and changed under one lock, so no release lands between them.
+    tables::locked(rdlt, name, location.lock_wait, || {
+        claim(location, name)?;
+        tables::update(rdlt, name, |current| {
+            let next = changed(current, change)?;
+            if let Some(current) = current {
+                checked.stands(location, shared, (name, current, &next))?;
+            }
+            Ok((current != Some(&next)).then_some(next))
+        })
+    })
 }
 
 /// Claims the table `name` for `location`'s pipeline where no pipeline owns it; another
