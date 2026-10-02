@@ -364,3 +364,29 @@ pub(crate) async fn takes_a_normalized_stream_through_one_writer_open(target: Ta
         );
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_merge_key_stored_as_json_on_a_normalized_stream_is_refused_before_any_row_lands() {
+    // Ids that mix kinds make the key a column of JSON, whose values `1` and `1.0` merge apart
+    // at the root while their children follow one root id.
+    let store = "json_key";
+    let first = [
+        r#"{"id":1,"items":[{"sku":"victim1"},{"sku":"victim2"}]}"#,
+        r#"{"id":"x","items":[{"sku":"sx"}]}"#,
+    ]
+    .join("\n");
+    let source = batches(store, vec![BatchStream::json("events", &[&first])]).await;
+    let outcome = engine(commit_every(1))
+        .run(
+            pipeline(store, vec![merged("events")]),
+            source,
+            crate::support::memory(store).await,
+        )
+        .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (rdlt_engine::ErrorKind::Schema, Some("merge_key_json"))
+    );
+    assert_eq!(crate::support::published_rows(store, "events"), 0);
+}

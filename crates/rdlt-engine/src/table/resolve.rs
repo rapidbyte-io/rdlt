@@ -257,9 +257,21 @@ impl Resolver {
             }
             let hint = self.settings.stream.hinted(&column.path);
             let logical = hint.unwrap_or(column.logical).clone();
+            self.identifies(column, &logical)?;
             draft.add(key, logical, !column.is_key, !column.rounding)
         };
         self.place(draft, column, original)
+    }
+
+    /// Refuses a merge key column of `logical`, JSON, for a normalized stream's table: its rows
+    /// merge by the key as stored, where JSON's `1` and `1.0` differ, while their child rows
+    /// follow the root id the key's values give, where they are one value.
+    fn identifies(&self, column: &Arriving<'_>, logical: &LogicalType) -> Result<(), Error> {
+        if column.is_key && self.meta.id.is_some() && *logical == LogicalType::Json {
+            let detail = "a merge key stored as JSON cannot identify a normalized stream's rows";
+            return Err(self.refused(column, "merge_key_json", detail));
+        }
+        Ok(())
     }
 
     /// Where a column the table lacks goes instead of a new column of its own, if anywhere.
