@@ -27,8 +27,8 @@ pub(crate) struct Config {
     pub(crate) destination: Place,
     /// Rows a commit takes.
     pub(crate) commit_rows: u64,
-    /// The most bytes of batches the run holds at once, where it holds fewer than the engine's
-    /// default: a source reading more waits for commits, its read in flight across them.
+    /// The run's memory budget, where it is less than the engine's default: a source reading
+    /// more than its share of it waits for commits, its read in flight across them.
     #[serde(default)]
     pub(crate) memory: Option<u64>,
     /// The events a partition holds before its source waits, where fewer than the engine's

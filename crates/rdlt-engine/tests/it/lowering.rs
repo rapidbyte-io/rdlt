@@ -19,7 +19,7 @@ use rdlt_connector::{
 use rdlt_engine::{ErrorKind, RetryPolicy, RunOutcome, RunStatus};
 
 use crate::HEAP;
-use crate::support::destinations::null;
+use crate::support::destinations::{Gate, gated, null};
 use crate::support::making::{Step, Steps, making};
 use crate::support::{commit_every, engine, pipeline, stream};
 
@@ -96,10 +96,11 @@ async fn control_characters_into_a_column_of_json_load_within_the_budget() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn rows_each_of_most_of_the_budget_are_lowered_one_at_a_time() {
-    // Sixty-four keys of one string of twelve mebibytes: each row is a piece of its own.
+async fn rows_each_of_most_of_what_a_request_may_take_are_lowered_one_at_a_time() {
+    // Sixty-four keys of one string of three mebibytes, where a request for lowering may take
+    // four: each row is a piece of its own, and together they are twelve times the budget.
     let steps: Steps = Arc::new(|step| {
-        let long = "x".repeat(12 << 20);
+        let long = "x".repeat(3 << 20);
         let keyed = DictionaryArray::<Int32Type>::try_new(
             Int32Array::from(vec![0; 64]),
             Arc::new(StringArray::from(vec![long.as_str()])),
@@ -110,11 +111,11 @@ async fn rows_each_of_most_of_the_budget_are_lowered_one_at_a_time() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_row_that_takes_more_than_the_budget_to_lower_fails_the_run_and_is_never_lowered() {
-    // One string of twenty mebibytes, more than the budget of sixteen.
+async fn a_row_that_takes_more_than_a_request_may_to_lower_fails_the_run_and_is_never_lowered() {
+    // One string of five mebibytes, more than the four a request for lowering may take.
     let steps: Steps = Arc::new(|step| {
         (step < 1).then(|| {
-            let long = "x".repeat(20 << 20);
+            let long = "x".repeat(5 << 20);
             let keyed = DictionaryArray::<Int32Type>::try_new(
                 Int32Array::from(vec![0; 4]),
                 Arc::new(StringArray::from(vec![long.as_str()])),
@@ -128,9 +129,10 @@ async fn a_row_that_takes_more_than_the_budget_to_lower_fails_the_run_and_is_nev
         (error.kind(), error.code()),
         (ErrorKind::Source, Some("row_exceeds_budget"))
     );
-    assert!(error.to_string().contains("16777216"), "{error}");
+    assert!(error.to_string().contains("4194304"), "{error}");
     // The source's own string and the batch's: nothing was lowered beside them.
-    assert!(peak < (2 * 20 + 4) << 20, "the heap held {peak} bytes");
+    assert!(peak < (2 * 5 + 2) << 20, "the heap held {peak} bytes");
+    assert!(outcome.report.peak_memory < 6 << 20);
 }
 
 #[tokio::test(start_paused = true)]
@@ -229,51 +231,117 @@ impl Source for Keeping {
         sink: PartitionSink,
     ) -> BoxFuture<'_, rdlt_connector::Result<()>> {
         Box::pin(async move {
-            let _kept = sink.reserve(self.bytes);
+            let _kept = sink.reserve(self.bytes)?;
             self.source.read(request, sink).await
         })
     }
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_budget_only_reads_hold_fails_the_attempt_with_what_held_it() {
-    const WAIT: Duration = Duration::from_secs(120);
-    // The read keeps the whole budget, then sends a row and a checkpoint: the checkpoint's
-    // cursor finds no room, and nothing in flight or waiting for a commit could make any.
-    let steps: Steps = Arc::new(|step| match step {
+/// A row and a checkpoint.
+fn row_and_checkpoint() -> Steps {
+    Arc::new(|step| match step {
         0 => Some(Step::Batch(batch(Arc::new(Int64Array::from(vec![1_i64]))))),
         1 => Some(Step::Checkpoint(64)),
         _ => None,
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_keeping_more_than_its_part_of_the_budget_fails_at_once_naming_the_limit() {
+    // Reads may keep a quarter of the budget between the sixteen read at once by default.
+    const SHARE: u64 = BUDGET / 4 / 16;
+    let keeping = |name: &'static str, bytes: u64| async move {
+        let source = Arc::new(Keeping {
+            source: making(name, row_and_checkpoint()).await,
+            bytes,
+        });
+        let config = commit_every(1_000_000_000)
+            .memory(BUDGET)
+            .retry(RetryPolicy::default().max_attempts(1))
+            .lanes(1);
+        let started = tokio::time::Instant::now();
+        let outcome = engine(config)
+            .run(pipeline(name, [stream("events")]), source, null().await)
+            .await;
+        (outcome, started.elapsed())
+    };
+    let (within, _) = keeping("lowering_kept", SHARE).await;
+    assert_eq!(
+        within.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        within.error
+    );
+    assert_eq!(within.report.rows, 1);
+    assert!(within.report.peak_memory >= SHARE);
+    let (beyond, elapsed) = keeping("lowering_kept_beyond", SHARE + 1).await;
+    let error = beyond.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Source, Some("limit_exceeded"))
+    );
+    assert!(!error.is_retryable());
+    let said = format!("{:?}", error.report());
+    assert!(
+        said.contains("read kept bytes is 262145, over the limit of 262144"),
+        "{said}"
+    );
+    assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn cursors_no_commit_releases_fail_the_attempt_at_the_deadline_with_what_held_the_budget() {
+    const WAIT: Duration = Duration::from_secs(120);
+    // The destination never answers the first commit, while the source checkpoints on: cursors
+    // of a quarter of what cursors may take wait for a commit until the fifth finds no room.
+    let gate = Gate::closed();
+    let steps: Steps = Arc::new(|step| match step {
+        step if step < 12 && step.is_multiple_of(2) => {
+            Some(Step::Batch(batch(Arc::new(Int64Array::from(vec![1_i64])))))
+        }
+        step if step < 12 => Some(Step::Checkpoint(64 << 10)),
+        _ => None,
     });
-    let source = Arc::new(Keeping {
-        source: making("lowering_kept", steps).await,
-        bytes: BUDGET,
-    });
-    let config = commit_every(1_000_000_000)
+    let config = commit_every(1)
         .memory(BUDGET)
         .memory_wait(WAIT)
         .retry(RetryPolicy::default().max_attempts(1))
         .lanes(1);
     let started = tokio::time::Instant::now();
+    // The commit lands once the attempt has failed, which waits for it.
+    let late = Arc::clone(&gate);
+    let opened = tokio::spawn(async move {
+        tokio::time::sleep(WAIT + Duration::from_secs(10)).await;
+        late.open();
+    });
     let outcome = engine(config)
         .run(
-            pipeline("lowering_kept", [stream("events")]),
-            source,
-            null().await,
+            pipeline("lowering_cursors", [stream("events")]),
+            making("lowering_cursors", steps).await,
+            gated(null().await, Arc::clone(&gate)),
         )
         .await;
+    opened.await.expect("the gate opens");
     let error = outcome.error.expect("the run fails");
     assert_eq!(
         (error.kind(), error.code()),
         (ErrorKind::Memory, Some("memory_budget_wait_exceeded"))
     );
     assert!(error.is_retryable());
+    assert_eq!(
+        error.stream().map(ToString::to_string),
+        Some("events".to_owned())
+    );
     let said = format!("{:?}", error.report());
-    assert!(said.contains("16777216 are kept by reads"), "{said}");
+    assert!(said.contains("for a cursor waited 120s"), "{said}");
     assert!(
-        started.elapsed() < WAIT + Duration::from_secs(30),
-        "{:?}",
-        started.elapsed()
+        said.contains("cursors waiting for a commit 262144"),
+        "{said}"
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= WAIT && elapsed < WAIT + Duration::from_secs(30),
+        "{elapsed:?}"
     );
 }
 

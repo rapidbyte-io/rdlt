@@ -59,14 +59,15 @@ impl Scenario {
     /// Writes the harness configuration into `dir` with its source and destination spawned in
     /// processes of their own, and the keys of `extra`, a kill or a pause; its path.
     ///
-    /// The run holds a kilobyte of batches at once, and an event a partition, and its source
-    /// reads within a credit of less than a batch: the source waits for commits, its reads in
-    /// flight across them, whatever its connection could buffer.
+    /// The run has a memory budget of a quarter of a mebibyte, about the least whose shares
+    /// hold a scenario's schemas, cursors and commit frames, and an event a partition, and its
+    /// source reads within a credit of less than a batch: the source waits for commits, its reads
+    /// in flight across them, whatever its connection could buffer.
     pub(crate) fn write_spawned(&self, dir: &Path, extra: &Value) -> PathBuf {
         let mut config = self.configured(dir);
         config["source"]["spawned"] = json!(true);
         config["destination"]["spawned"] = json!(true);
-        config["memory"] = json!(1024);
+        config["memory"] = json!(256 << 10);
         config["partition_buffer"] = json!(1);
         for (key, value) in extra.as_object().expect("extra keys") {
             match key.as_str() {

@@ -81,7 +81,28 @@ fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
     let env = InlineEnv(system, Inline(Arc::clone(&jobs)), None);
-    (TestEngine(Engine::new(config, Arc::new(env))), jobs)
+    (TestEngine::new(config, Arc::new(env)), jobs)
+}
+
+/// An engine on the system environment with `config` and a pool of `threads` compute threads,
+/// for tests on a runtime of several threads whose clock is not paused.
+pub(crate) fn pooled_engine(config: EngineConfigBuilder, threads: usize) -> TestEngine {
+    let threads = NonZeroUsize::new(threads).expect("a pool has threads");
+    let pool = RayonPool::new(threads).expect("the pool starts");
+    let config = config.build().expect("the test configuration is valid");
+    TestEngine::new(config, Arc::new(SystemEnv::new(pool)))
+}
+
+/// An engine as [`pooled_engine`] makes it, keeping write-ahead logs in `store`.
+pub(crate) fn pooled_logging_engine(
+    config: EngineConfigBuilder,
+    threads: usize,
+    store: Arc<dyn WalStore>,
+) -> TestEngine {
+    let threads = NonZeroUsize::new(threads).expect("a pool has threads");
+    let pool = RayonPool::new(threads).expect("the pool starts");
+    let config = config.build().expect("the test configuration is valid");
+    TestEngine::new(config, Arc::new(SystemEnv::new(pool).with_wal(store)))
 }
 
 /// An engine as [`engine`] makes it, whose clock moves a millisecond on every reading, so no two
@@ -92,7 +113,7 @@ pub(crate) fn ticking_engine(config: EngineConfigBuilder) -> TestEngine {
     let jobs = Arc::new(AtomicUsize::new(0));
     let ticks = Some(Arc::new(AtomicU64::new(0)));
     let env = InlineEnv(SystemEnv::new(pool), Inline(jobs), ticks);
-    TestEngine(Engine::new(config, Arc::new(env)))
+    TestEngine::new(config, Arc::new(env))
 }
 
 /// The system's clock and randomness, with compute jobs run on the calling thread: the paused
@@ -145,11 +166,18 @@ impl ComputePool for Inline {
 /// longest wait any test needs is a 90-second rate limit.
 const LIMIT: Duration = Duration::from_secs(600);
 
-/// An engine whose runs fail the test instead of hanging it.
-pub(crate) struct TestEngine(Engine);
+/// An engine whose runs fail the test instead of hanging it, or where one reserved more than
+/// its memory budget.
+pub(crate) struct TestEngine(Engine, u64);
 
 impl TestEngine {
-    /// Starts a run that panics if it has not ended within [`LIMIT`].
+    fn new(config: EngineConfig, env: Arc<dyn Env>) -> Self {
+        let budget = config.memory().get();
+        Self(Engine::new(config, env), budget)
+    }
+
+    /// Starts a run that panics if it has not ended within [`LIMIT`], or if it ever reserved
+    /// more than its budget.
     pub(crate) fn run(
         &self,
         plan: PipelinePlan,
@@ -158,10 +186,14 @@ impl TestEngine {
     ) -> Guarded {
         let handle = self.0.run(plan, source, destination);
         let control = handle.control();
+        let budget = self.1;
         let future = async move {
-            tokio::time::timeout(LIMIT, handle)
+            let outcome = tokio::time::timeout(LIMIT, handle)
                 .await
-                .expect("the run ends within the test's limit")
+                .expect("the run ends within the test's limit");
+            let peak = outcome.report.peak_memory;
+            assert!(peak <= budget, "{peak} bytes were reserved of {budget}");
+            outcome
         };
         Guarded {
             control,

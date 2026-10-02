@@ -251,8 +251,9 @@ async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
 #[tokio::test(start_paused = true)]
 async fn checkpoints_with_large_cursors_load_within_the_budget() {
     const BUDGET: u64 = 16 << 20;
-    // Three hundred megabytes of cursors and not one row, under a policy that commits by rows.
-    let steps = Arc::new(|step: usize| (step < 300).then_some(Step::Checkpoint(1 << 20)));
+    // Three hundred megabytes of cursors, each half of what cursors may take of the budget, and
+    // not one row, under a policy that commits by rows.
+    let steps = Arc::new(|step: usize| (step < 2_400).then_some(Step::Checkpoint(128 << 10)));
     let source = making("budget_cursors", steps).await;
     let config = commit_every(1_000_000).memory(BUDGET).lanes(1);
     HEAP.reset_peak_usage();
@@ -277,16 +278,16 @@ async fn checkpoints_with_large_cursors_load_within_the_budget() {
 #[tokio::test(start_paused = true)]
 async fn rows_sealed_under_large_cursors_load_within_the_budget() {
     const BUDGET: u64 = 16 << 20;
-    // A row then a megabyte of cursor, two hundred times: every seal has a row, so none
-    // replaces the seal before it.
+    // A row then a cursor of half what cursors may take of the budget, eight hundred times, a
+    // hundred megabytes of them: every seal has a row, so none replaces the seal before it.
     let steps = Arc::new(|step: usize| {
-        if step >= 400 {
+        if step >= 1_600 {
             return None;
         }
         Some(if step.is_multiple_of(2) {
             Step::Batch(batch(Arc::new(Int8Array::from(vec![1]))))
         } else {
-            Step::Checkpoint(1 << 20)
+            Step::Checkpoint(128 << 10)
         })
     });
     let source = making("budget_sealed", steps).await;
@@ -303,7 +304,7 @@ async fn rows_sealed_under_large_cursors_load_within_the_budget() {
         "{:?}",
         outcome.error
     );
-    assert_eq!(outcome.report.rows, 200);
+    assert_eq!(outcome.report.rows, 800);
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
 }
 
@@ -373,8 +374,9 @@ async fn signals_sent_while_a_commit_is_in_flight_do_not_pile_up() {
 #[tokio::test(start_paused = true)]
 async fn a_push_of_very_many_small_records_loads_within_the_budget() {
     const BUDGET: u64 = 16 << 20;
-    const RECORDS: usize = 2_000_000;
-    // Two million records of nine bytes each: a range a record would take twice the push.
+    const RECORDS: usize = 250_000;
+    // A quarter of a million records of eight bytes each, as much text as pushes may take of
+    // the budget once it is charged for what it becomes: a range a record would take twice it.
     let steps = Arc::new(|step: usize| {
         (step < 1).then(|| Step::Json("{\"a\":1}\n".repeat(RECORDS).into()))
     });
@@ -396,7 +398,7 @@ async fn a_push_of_very_many_small_records_loads_within_the_budget() {
         "{:?}",
         outcome.error
     );
-    assert_eq!(outcome.report.rows, 2_000_000);
+    assert_eq!(outcome.report.rows, 250_000);
     assert!(peak <= bound(BUDGET), "peak {peak} bytes");
 }
 
