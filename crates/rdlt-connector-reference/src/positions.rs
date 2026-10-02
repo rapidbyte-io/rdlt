@@ -1,34 +1,25 @@
 //! Where a source that keeps its positions in a file may keep them.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use rdlt_connector::ConnectorError;
 
-/// Checks that `path` names a keeper's file: from the root, each directory on its way by its
-/// name, and a file whose name ends in `.` and `extension`.
+/// Checks that `path` names a keeper's file: one whose name ends in `.` and `extension`.
 ///
-/// A path so written names its file one way, so two sources naming one file share its keeper,
-/// and a keeper replaces no file but one named as a keeper's.
+/// A keeper replaces its file whole, so it is given no file but one named as a keeper's: a path
+/// to anything else, a key or another connector's file, is refused before it is opened. Which
+/// file a path leads to is the keeper's to tell: two paths to one file are one keeper.
 pub(crate) fn keeper_path(path: &Path, extension: &str) -> Result<(), ConnectorError> {
-    let refused = |why: &str| {
-        let message = format!("{} cannot keep positions: {why}", path.display());
-        Err(ConnectorError::config(message).with_code("keeper_path_invalid"))
-    };
-    if !path.is_absolute() {
-        return refused("the path does not start at the root");
+    let named = path.file_stem().is_some_and(|stem| !stem.is_empty())
+        && path.extension().and_then(|found| found.to_str()) == Some(extension);
+    if named {
+        return Ok(());
     }
-    let named = path
-        .components()
-        .all(|part| !matches!(part, Component::CurDir | Component::ParentDir));
-    // What `components` passes over, a doubled or closing separator or a `.` on the way, is
-    // found by writing the path again from its components.
-    if !named || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str() {
-        return refused("the path names a directory other than by its name");
-    }
-    if path.extension().and_then(|found| found.to_str()) != Some(extension) {
-        return refused(&format!("the file's name does not end in .{extension}"));
-    }
-    Ok(())
+    let message = format!(
+        "{} cannot keep positions: the file's name does not end in .{extension}",
+        path.display()
+    );
+    Err(ConnectorError::config(message).with_code("keeper_path_invalid"))
 }
 
 /// The error of a stream that forgets what it acknowledged in a source naming no keeper, a

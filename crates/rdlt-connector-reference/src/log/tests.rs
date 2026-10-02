@@ -362,30 +362,31 @@ async fn an_offset_of_a_partition_the_stream_never_has_is_not_committed() {
 }
 
 #[tokio::test]
-async fn a_group_is_kept_only_in_a_file_named_whole_and_as_a_group_s() {
-    let dir = tempfile::tempdir().expect("a temporary directory");
+async fn a_group_is_kept_only_in_a_file_named_as_a_group_s() {
+    let dir = crate::scratch::tempdir().expect("a temporary directory");
     let inside = |name: &str| dir.path().join(name);
     let stream = json!({ "name": "events", "partitions": 1, "messages": 8 });
+    let factory = source_factory::<LogSource>();
+    let kept_at = |path: std::path::PathBuf| {
+        let mut kept = config(&stream, "unused");
+        kept["group_path"] = json!(path);
+        factory.connect(kept, ConnectContext::new())
+    };
     let paths = [
-        std::path::PathBuf::from("events.group"),
-        std::path::PathBuf::from("./events.group"),
-        inside("nested/../events.group"),
-        inside("./events.group"),
         inside("events.slot"),
         inside("events"),
         inside("server.key"),
         inside(".group"),
     ];
     for path in paths {
-        let mut kept = config(&stream, "unused");
-        kept["group_path"] = json!(path);
-        let refused = source_factory::<LogSource>()
-            .connect(kept, ConnectContext::new())
-            .await
-            .err()
-            .unwrap_or_else(|| panic!("{} is refused", path.display()));
+        let refused = kept_at(path.clone()).await.err();
+        let refused = refused.unwrap_or_else(|| panic!("{} is refused", path.display()));
         assert_eq!(refused.kind(), ConnectorErrorKind::Config);
         assert_eq!(refused.code(), Some("keeper_path_invalid"), "{refused}");
+    }
+    // However the path is written, the file it leads to is the group's.
+    for path in [inside("events.group"), inside("./events.group")] {
+        kept_at(path).await.expect("the group's file");
     }
 }
 
