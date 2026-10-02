@@ -103,6 +103,8 @@ pub struct EngineConfig {
     partition_buffer: NonZeroUsize,
     barrier_wait: Duration,
     memory_wait: Duration,
+    connector_wait: Duration,
+    stop_wait: Duration,
     batch: BatchPolicy,
     /// The commit policy set, where one is; each run resolves an unset one for what it reads.
     commit: Option<CommitPolicy>,
@@ -123,6 +125,8 @@ impl EngineConfig {
             partition_buffer: None,
             barrier_wait: None,
             memory_wait: None,
+            connector_wait: None,
+            stop_wait: None,
             batch: None,
             commit: None,
             replan: None,
@@ -164,6 +168,21 @@ impl EngineConfig {
     /// How long a request waits for room in the memory budget before the attempt fails.
     pub fn memory_wait(&self) -> Duration {
         self.memory_wait
+    }
+
+    /// How long one call into a connector other than a read may take before it fails as
+    /// transient.
+    ///
+    /// The calls are a check, a discovery, a plan, an acknowledgement, an open, a schema change,
+    /// a writer's opening, a write, a flush, a commit and a close.
+    pub fn connector_wait(&self) -> Duration {
+        self.connector_wait
+    }
+
+    /// How long a read asked to stop may take to end; one that takes longer is dropped, as if
+    /// it had ended where it stood.
+    pub fn stop_wait(&self) -> Duration {
+        self.stop_wait
     }
 
     /// How pushes are coalesced and JSON is shredded.
@@ -208,6 +227,8 @@ impl Default for EngineConfig {
             partition_buffer: NonZeroUsize::new(16).unwrap_or(NonZeroUsize::MIN),
             barrier_wait: Duration::from_secs(5),
             memory_wait: crate::limits::BUDGET_WAIT,
+            connector_wait: Duration::from_mins(30),
+            stop_wait: Duration::from_secs(60),
             batch: BatchPolicy::default(),
             commit: None,
             replan: Duration::from_secs(60),
@@ -227,6 +248,8 @@ pub struct EngineConfigBuilder {
     partition_buffer: Option<usize>,
     barrier_wait: Option<Duration>,
     memory_wait: Option<Duration>,
+    connector_wait: Option<Duration>,
+    stop_wait: Option<Duration>,
     batch: Option<BatchPolicy>,
     commit: Option<CommitPolicy>,
     replan: Option<Duration>,
@@ -282,6 +305,21 @@ impl EngineConfigBuilder {
     #[must_use]
     pub fn memory_wait(mut self, wait: Duration) -> Self {
         self.memory_wait = Some(wait);
+        self
+    }
+
+    /// How long one call into a connector, other than a read, may take (default 30 min); more
+    /// than zero.
+    #[must_use]
+    pub fn connector_wait(mut self, wait: Duration) -> Self {
+        self.connector_wait = Some(wait);
+        self
+    }
+
+    /// How long a read asked to stop may take to end (default 60 s); more than zero.
+    #[must_use]
+    pub fn stop_wait(mut self, wait: Duration) -> Self {
+        self.stop_wait = Some(wait);
         self
     }
 
@@ -350,6 +388,10 @@ impl EngineConfigBuilder {
                 Some(Duration::ZERO) => return Err(invalid("memory_wait")),
                 wait => wait.unwrap_or(defaults.memory_wait),
             },
+            connector_wait: positive(self.connector_wait, defaults.connector_wait)
+                .ok_or_else(|| invalid("connector_wait"))?,
+            stop_wait: positive(self.stop_wait, defaults.stop_wait)
+                .ok_or_else(|| invalid("stop_wait"))?,
             batch: self.batch.unwrap_or(defaults.batch),
             commit: self.commit,
             replan: match self.replan {
@@ -362,6 +404,11 @@ impl EngineConfigBuilder {
         config.admit_memory()?;
         Ok(config)
     }
+}
+
+/// `value`, or `default` when unset; `None` when `value` is zero.
+fn positive(value: Option<Duration>, default: Duration) -> Option<Duration> {
+    Some(value.unwrap_or(default)).filter(|wait| !wait.is_zero())
 }
 
 /// `value` as a non-zero number, or `default` when unset; `None` when `value` is zero.

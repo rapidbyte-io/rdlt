@@ -709,3 +709,56 @@ async fn partitions_waiting_for_their_turn_to_read_cost_little() {
     let each = held / PARTITIONS;
     assert!(each <= 2048, "{each} bytes a waiting partition");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_write_that_never_returns_fails_at_its_wait() {
+    const WAIT: Duration = Duration::from_secs(120);
+    let (_, source) = Script::new(vec![ScriptStream::new("events", 2, 400, 5)])
+        .connect("stalled_writes")
+        .await;
+    let destination = failing(memory("stalled_writes").await, Step::StallWrites);
+    let config = commit_every(1_000)
+        .lanes(1)
+        .lane_window(1)
+        .connector_wait(WAIT)
+        .retry(RetryPolicy::default().max_attempts(1));
+    let plan = pipeline("stalled-writes", [stream("events")]);
+    let started = tokio::time::Instant::now();
+    let outcome = engine(config).run(plan, source, destination).await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run failed");
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Destination, Some("deadline_exceeded"), true)
+    );
+    let elapsed = started.elapsed();
+    assert!(elapsed >= WAIT && elapsed < WAIT * 2, "{elapsed:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_that_ignores_its_stop_is_dropped_at_the_stop_wait() {
+    const WAIT: Duration = Duration::from_secs(30);
+    let mut hanging = ScriptStream::new("events", 2, 20, 5);
+    hanging.hang = Hang::Partition(1);
+    let (_, source) = Script::new(vec![hanging]).connect("stop_ignored").await;
+    let plan = pipeline("stop-ignored", [stream("events")]);
+    let run =
+        engine(commit_every(10).stop_wait(WAIT)).run(plan, source, memory("stop_ignored").await);
+    let control = run.control();
+    let stopping = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        control.stop(StopMode::AfterCommit);
+        tokio::time::Instant::now()
+    };
+    let (outcome, asked) = tokio::join!(run, stopping);
+    // The stop committed what the reading partition sealed, and the hanging read was dropped.
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Stopped,
+        "{:?}",
+        outcome.error
+    );
+    let waited = asked.elapsed();
+    assert!(waited >= WAIT && waited < WAIT * 2, "{waited:?}");
+    assert_eq!(published_rows("stop_ignored", "events"), 20);
+}

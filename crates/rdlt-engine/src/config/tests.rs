@@ -243,3 +243,25 @@ fn a_following_run_plans_again_every_minute_unless_told_otherwise_and_never_ever
         "a zero interval would plan without end"
     );
 }
+
+#[test]
+fn a_connector_call_and_a_stopped_read_wait_their_defaults_or_more_than_zero() {
+    let defaults = EngineConfig::default();
+    assert_eq!(defaults.connector_wait(), Duration::from_mins(30));
+    assert_eq!(defaults.stop_wait(), Duration::from_secs(60));
+    let set = EngineConfig::builder()
+        .connector_wait(Duration::from_secs(3))
+        .stop_wait(Duration::from_secs(4))
+        .build()
+        .unwrap();
+    assert_eq!(
+        (set.connector_wait(), set.stop_wait()),
+        (Duration::from_secs(3), Duration::from_secs(4))
+    );
+    for zero in [
+        EngineConfig::builder().connector_wait(Duration::ZERO),
+        EngineConfig::builder().stop_wait(Duration::ZERO),
+    ] {
+        assert_eq!(zero.build().unwrap_err().code(), Some("config_invalid"));
+    }
+}

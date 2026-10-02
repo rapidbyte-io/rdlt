@@ -108,6 +108,8 @@ pub(crate) struct PartitionContext {
     pub(crate) env: Arc<dyn Env>,
     /// How pushes are coalesced and JSON is shredded.
     pub(crate) batch: BatchPolicy,
+    /// How long a read asked to stop may take to end.
+    pub(crate) stop_wait: std::time::Duration,
     /// The load's write-ahead log, where it keeps one.
     pub(crate) wal: Option<LoadLog>,
 }
@@ -250,13 +252,19 @@ async fn read_and_ingest(
     )
     .following(job.follow);
     // An ingest failure ends the read rather than waiting for a source that may not emit again
-    // for a long time. A read failure lets ingest drain what the source already sent.
+    // for a long time. A read failure lets ingest drain what the source already sent. A read
+    // asked to stop that has not ended within the stop wait is dropped, which ends its feed.
     let ingest_failed = CancellationToken::new();
+    let overdue = async {
+        job.stop.cancelled().await;
+        context.env.sleep(context.stop_wait).await;
+    };
     let read = async {
         tokio::select! {
             biased;
             () = ingest_failed.cancelled() => Ok(()),
             read = context.source.read(request, sink) => read,
+            () = overdue => Ok(()),
         }
     };
     let ingest = async {

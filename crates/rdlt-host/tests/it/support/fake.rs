@@ -35,6 +35,9 @@ pub(crate) enum Fault {
     /// and have nothing to read: each answers a barrier its controls ask for before its first
     /// credit, and ends at that credit.
     Unstarted,
+    /// It is a destination whose writes it answers, every interval, with a credit of the bytes
+    /// given, and never with a flush's stats.
+    Trickles(std::time::Duration, u64),
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -58,15 +61,26 @@ pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
     host
 }
 
-/// The fake's spec, as `id`.
-fn spec(id: &str) -> v1::ConnectorSpec {
+/// The fake's spec, as `id`, a destination where `destination`.
+fn spec(id: &str, destination: bool) -> v1::ConnectorSpec {
+    let capabilities = rdlt_connector::Capabilities::minimal();
     v1::ConnectorSpec {
         id: id.to_owned(),
         version: "0.0.0".to_owned(),
-        roles: vec![v1::Role::Source as i32],
+        roles: vec![if destination {
+            v1::Role::Destination
+        } else {
+            v1::Role::Source
+        } as i32],
         config_schema_json: "{}".to_owned(),
-        source_capabilities: Some(v1::SourceCapabilities {}),
-        destination_capabilities: None,
+        source_capabilities: (!destination).then_some(v1::SourceCapabilities {}),
+        destination_capabilities: destination.then(|| v1::Capabilities::from(&capabilities)),
+    }
+}
+
+impl Fake {
+    fn destination(&self) -> bool {
+        matches!(self.0, Fault::Trickles(..))
     }
 }
 
@@ -77,7 +91,7 @@ impl Connector for Fake {
         _: Request<v1::HandshakeRequest>,
     ) -> Result<Response<v1::HandshakeResponse>, Status> {
         Ok(Response::new(v1::HandshakeResponse {
-            spec: Some(spec("test.fake")),
+            spec: Some(spec("test.fake", self.destination())),
             accepted_features: Vec::new(),
             limits: matches!(self.0, Fault::NoDictionaryLimit).then(|| v1::Limits {
                 dictionary_bytes: 0,
@@ -96,7 +110,7 @@ impl Connector for Fake {
             "test.fake"
         };
         Ok(Response::new(v1::ConfigureResponse {
-            spec: Some(spec(id)),
+            spec: Some(spec(id, self.destination())),
         }))
     }
 
@@ -209,7 +223,14 @@ impl Connector for Fake {
         &self,
         _: Request<v1::OpenRequest>,
     ) -> Result<Response<v1::OpenResponse>, Status> {
-        Err(Status::unimplemented("open"))
+        if !self.destination() {
+            return Err(Status::unimplemented("open"));
+        }
+        Ok(Response::new(v1::OpenResponse {
+            session: 1,
+            epoch: 1,
+            state: Vec::new(),
+        }))
     }
 
     async fn apply_schema(
@@ -223,9 +244,29 @@ impl Connector for Fake {
 
     async fn write(
         &self,
-        _: Request<Streaming<v1::WriteFrame>>,
+        request: Request<Streaming<v1::WriteFrame>>,
     ) -> Result<Response<Self::WriteStream>, Status> {
-        Err(Status::unimplemented("write"))
+        let Fault::Trickles(every, bytes) = self.0 else {
+            return Err(Status::unimplemented("write"));
+        };
+        // The frames are taken and dropped, so the transport's windows never fill.
+        let mut frames = request.into_inner();
+        tokio::spawn(async move { while let Some(Ok(_)) = frames.next().await {} });
+        let (acks, sent) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let credit = v1::WriteAck {
+                    ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
+                };
+                if acks.send(Ok(credit)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Response::new(Box::pin(
+            tokio_stream::wrappers::ReceiverStream::new(sent),
+        )))
     }
 
     async fn commit(&self, _: Request<v1::CommitRequest>) -> Result<Response<v1::Receipt>, Status> {

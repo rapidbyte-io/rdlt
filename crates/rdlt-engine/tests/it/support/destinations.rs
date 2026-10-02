@@ -217,6 +217,8 @@ pub(crate) enum Step {
     SkewReceipts,
     /// Every commit lands, and its receipt counts as many rows as a total holds.
     InflateReceipts,
+    /// Every write and flush waits for ever.
+    StallWrites,
 }
 
 /// `inner`, failing with a transient error at `step`, or panicking there.
@@ -294,6 +296,9 @@ impl DestinationSession for FailingSession {
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
         if self.step == Step::Writer {
             return Box::pin(async { Err(injected()) });
+        }
+        if self.step == Step::StallWrites {
+            return Box::pin(async { Ok(Box::new(Stalled) as Box<dyn DestinationWriter>) });
         }
         self.inner.writer(table)
     }
@@ -414,5 +419,18 @@ impl DestinationSession for GatedSession {
 
     fn close(self: Box<Self>) -> BoxFuture<'static, Result<()>> {
         self.inner.close()
+    }
+}
+
+/// A writer whose writes and flushes never return.
+struct Stalled;
+
+impl DestinationWriter for Stalled {
+    fn write(&mut self, _segment: SegmentId, _batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
+        Box::pin(std::future::pending())
+    }
+
+    fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
+        Box::pin(std::future::pending())
     }
 }
