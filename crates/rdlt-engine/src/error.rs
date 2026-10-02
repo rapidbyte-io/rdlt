@@ -136,6 +136,13 @@ impl Error {
         }
     }
 
+    /// Keeps `source` as the error's cause.
+    #[must_use]
+    pub(crate) fn with_source(mut self, source: impl StdError + Send + Sync + 'static) -> Self {
+        self.source = Some(Box::new(source));
+        self
+    }
+
     /// Attaches a stable machine code.
     #[must_use]
     pub(crate) fn with_code(mut self, code: &str) -> Self {
