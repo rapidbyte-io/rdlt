@@ -30,7 +30,7 @@ pub use provider::{ConnectorRef, Digest, Isolation, Placed, Placement, Provider,
 pub use rdlt_wire::tls::Identity;
 pub use registry::Registry;
 pub use remote::{
-    CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Handshaken, Options,
+    CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Handshaken, MAX_FREE_FRAMES, Options,
     RemoteDestination, RemoteSource,
 };
 pub use secrets::{

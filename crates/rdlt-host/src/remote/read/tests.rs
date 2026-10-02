@@ -20,6 +20,7 @@ fn reader() -> Reader {
         epoch: None,
         schema: 0,
         quiet: 0,
+        free: 0,
     }
 }
 

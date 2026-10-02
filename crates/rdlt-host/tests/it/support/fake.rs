@@ -48,6 +48,10 @@ pub(crate) enum Fault {
     Keys(fn() -> String),
     /// Its reads send this many schemas, each of the next epoch, and nothing else.
     Schemas(u64),
+    /// Its reads send this many schemas, each of the next epoch and followed by a log line.
+    Chatters(u64),
+    /// Its reads send this many log lines, and nothing else.
+    Logs(u64),
 }
 
 /// A connector that breaks the protocol as its fault says.
@@ -99,6 +103,14 @@ fn spec(id: &str, destination: bool) -> v1::ConnectorSpec {
     }
 }
 
+/// A frame of a log line.
+fn logged() -> v1::read_frame::Frame {
+    v1::read_frame::Frame::Log(v1::LogFrame {
+        level: v1::LogLevel::Info as i32,
+        message: "chatter".to_owned(),
+    })
+}
+
 /// The IPC schema of one column of ids.
 fn ids() -> Bytes {
     let arrow = arrow_schema::Schema::new(vec![arrow_schema::Field::new(
@@ -114,6 +126,66 @@ fn ids() -> Bytes {
 impl Fake {
     fn destination(&self) -> bool {
         matches!(self.0, Fault::Trickles(..) | Fault::Keys(_))
+    }
+
+    /// The frames a read sends, as the fault says.
+    fn read_frames(&self) -> Vec<Result<v1::ReadFrame, Status>> {
+        let schema = |ipc_schema| v1::ReadFrame {
+            frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
+                schema_epoch: 1,
+                ipc_schema,
+            })),
+        };
+        if matches!(self.0, Fault::AnswersAhead) {
+            let checkpoint = v1::CheckpointFrame {
+                cursor: Some(v1::Cursor {
+                    version: 1,
+                    bytes: Bytes::from_static(b"c"),
+                }),
+                barrier: Some(u64::MAX),
+            };
+            vec![Ok(v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Checkpoint(checkpoint)),
+            })]
+        } else if matches!(self.0, Fault::StaleEpoch) {
+            vec![Ok(schema(ids())), Ok(schema(ids()))]
+        } else if let Fault::Schemas(count) | Fault::Chatters(count) = self.0 {
+            let chatty = matches!(self.0, Fault::Chatters(_));
+            (1..=count)
+                .flat_map(|epoch| {
+                    let schema = v1::read_frame::Frame::Schema(v1::SchemaFrame {
+                        schema_epoch: epoch,
+                        ipc_schema: ids(),
+                    });
+                    std::iter::once(schema).chain(chatty.then(logged))
+                })
+                .map(|frame| Ok(v1::ReadFrame { frame: Some(frame) }))
+                .collect()
+        } else if let Fault::Logs(count) = self.0 {
+            (0..count)
+                .map(|_| {
+                    Ok(v1::ReadFrame {
+                        frame: Some(logged()),
+                    })
+                })
+                .collect()
+        } else if let Fault::Sends(frames) = self.0 {
+            let (ipc, frames) = frames();
+            let batches = frames.into_iter().map(|frame| v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Batch(v1::BatchFrame {
+                    schema_epoch: 1,
+                    kind: v1::BatchKind::Arrow as i32,
+                    data_header: frame.header,
+                    data_body: frame.body,
+                })),
+            });
+            std::iter::once(schema(ipc))
+                .chain(batches)
+                .map(Ok)
+                .collect()
+        } else {
+            vec![Ok(schema(Bytes::from_static(b"not an IPC message")))]
+        }
     }
 }
 
@@ -197,53 +269,7 @@ impl Connector for Fake {
         if matches!(self.0, Fault::Unstarted) {
             return Ok(Response::new(Box::pin(answering(request.into_inner()))));
         }
-        let schema = |ipc_schema| v1::ReadFrame {
-            frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
-                schema_epoch: 1,
-                ipc_schema,
-            })),
-        };
-        let sent = if matches!(self.0, Fault::AnswersAhead) {
-            let checkpoint = v1::CheckpointFrame {
-                cursor: Some(v1::Cursor {
-                    version: 1,
-                    bytes: Bytes::from_static(b"c"),
-                }),
-                barrier: Some(u64::MAX),
-            };
-            vec![Ok(v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Checkpoint(checkpoint)),
-            })]
-        } else if matches!(self.0, Fault::StaleEpoch) {
-            vec![Ok(schema(ids())), Ok(schema(ids()))]
-        } else if let Fault::Schemas(count) = self.0 {
-            (1..=count)
-                .map(|epoch| {
-                    Ok(v1::ReadFrame {
-                        frame: Some(v1::read_frame::Frame::Schema(v1::SchemaFrame {
-                            schema_epoch: epoch,
-                            ipc_schema: ids(),
-                        })),
-                    })
-                })
-                .collect()
-        } else if let Fault::Sends(frames) = self.0 {
-            let (ipc, frames) = frames();
-            let batches = frames.into_iter().map(|frame| v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Batch(v1::BatchFrame {
-                    schema_epoch: 1,
-                    kind: v1::BatchKind::Arrow as i32,
-                    data_header: frame.header,
-                    data_body: frame.body,
-                })),
-            });
-            std::iter::once(schema(ipc))
-                .chain(batches)
-                .map(Ok)
-                .collect()
-        } else {
-            vec![Ok(schema(Bytes::from_static(b"not an IPC message")))]
-        };
+        let sent = self.read_frames();
         let frames = tokio_stream::iter(sent)
             .chain(tokio_stream::pending::<Result<v1::ReadFrame, Status>>());
         Ok(Response::new(Box::pin(frames)))
