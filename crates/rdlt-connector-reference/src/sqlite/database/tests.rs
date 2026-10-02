@@ -271,3 +271,18 @@ fn a_trigger_a_view_or_a_foreign_key_planted_in_the_file_does_nothing() {
         assert!(!set(off), "{off:?}");
     }
 }
+
+#[test]
+fn a_statement_sqlite_cannot_read_fails_without_its_text() {
+    let connection = rusqlite::Connection::open_in_memory().expect("a database");
+    let statement = r#"CREATE INDEX "_rdlt_key__secret_table" ON "secret_table" ()"#;
+    let refused = connection.execute(statement, []).expect_err("no statement");
+    assert!(refused.to_string().contains("secret_table"));
+    let error = failed("running a statement")(refused);
+    assert_eq!(error.kind(), ConnectorErrorKind::Internal);
+    let said = error.to_string();
+    assert!(
+        said.starts_with("running a statement: ") && !said.contains("secret_table"),
+        "{said}"
+    );
+}
