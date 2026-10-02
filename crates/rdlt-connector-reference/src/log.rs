@@ -102,12 +102,15 @@ fn ten() -> u64 {
 ///
 /// Sources of one group read the same logs, so they share when those began; a group's logs do
 /// not grow by the time that passed before the group was connected, which is another group's.
-static ORIGINS: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
+static ORIGINS: Mutex<BTreeMap<usize, Instant>> = Mutex::new(BTreeMap::new());
 
-/// When the logs of the group known as `group` began: now, where no source of it was connected
-/// before.
-fn origin(group: String) -> Instant {
-    *ORIGINS.lock().entry(group).or_insert_with(Instant::now)
+/// When the logs of `group` began: now, where no source of it was connected before.
+///
+/// A group is kept for as long as the process runs, so where it is kept names it: two sources
+/// share a beginning exactly where they share a group, whatever either calls it.
+fn origin(group: &Arc<Kept<u64>>) -> Instant {
+    let known = Arc::as_ptr(group).addr();
+    *ORIGINS.lock().entry(known).or_insert_with(Instant::now)
 }
 
 /// The most partitions `stream` ever has: its first and the ones it gains.
@@ -181,21 +184,17 @@ impl SourceConnector for LogSource {
         {
             return Err(unnamed(&forgets.name, "group"));
         }
-        // A group kept in a file and one named alike are told apart as their keepers are.
-        let known = match (&config.group_path, &config.group) {
-            (Some(path), _) => format!("file:{}", path.display()),
-            (None, name) => name.clone().unwrap_or_default(),
+        let group = match &config.group_path {
+            Some(path) => GROUPS
+                .at(path)
+                .config(format!("group {}", path.display()))?,
+            None => GROUPS.named(config.group.as_deref()),
         };
         Ok(Self {
             seed: config.seed,
             streams: config.streams,
-            origin: origin(known),
-            group: match &config.group_path {
-                Some(path) => GROUPS
-                    .at(path)
-                    .config(format!("group {}", path.display()))?,
-                None => GROUPS.named(config.group.as_deref()),
-            },
+            origin: origin(&group),
+            group,
         })
     }
 
