@@ -625,9 +625,10 @@ async fn column_names_are_stable_across_runs_and_batches() {
     assert_eq!(last[assigned[2]], json!(4));
 }
 
-/// A source of one stream planned as `partitions` partitions, whose reads wait until they are
-/// stopped, counting how many started.
+/// A source of `streams`, each planned as `partitions` partitions, whose reads wait until they
+/// are stopped, counting how many started.
 struct Waiting {
+    streams: &'static [&'static str],
     partitions: usize,
     started: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -641,9 +642,11 @@ impl rdlt_connector::Source for Waiting {
         &self,
     ) -> rdlt_connector::BoxFuture<'_, rdlt_connector::Result<rdlt_connector::Catalog>> {
         Box::pin(async {
-            let spec = rdlt_connector::StreamSpec::new(StreamName::new("events").expect("a name"))
-                .with_partitioning(rdlt_connector::Partitioning::Planned);
-            Ok(rdlt_connector::Catalog::new(vec![spec]).expect("a catalog"))
+            let specs = self.streams.iter().map(|name| {
+                rdlt_connector::StreamSpec::new(StreamName::new(*name).expect("a name"))
+                    .with_partitioning(rdlt_connector::Partitioning::Planned)
+            });
+            Ok(rdlt_connector::Catalog::new(specs.collect()).expect("a catalog"))
         })
     }
 
@@ -691,6 +694,7 @@ async fn partitions_waiting_for_their_turn_to_read_cost_little() {
     const PARTITIONS: usize = rdlt_connector::limits::MAX_PLAN_PARTITIONS;
     let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let source = Arc::new(Waiting {
+        streams: &["events"],
         partitions: PARTITIONS,
         started: Arc::clone(&started),
     });
@@ -849,4 +853,27 @@ async fn a_read_ends_stopped_only_where_the_engine_stopped_it() {
         "{:?}",
         outcome.error
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_attempt_reads_no_more_partitions_at_once_than_a_plan_may_name() {
+    const HALF: usize = rdlt_connector::limits::MAX_PLAN_PARTITIONS / 2;
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let source = Arc::new(Waiting {
+        streams: &["events", "others"],
+        partitions: HALF + 1,
+        started: Arc::clone(&started),
+    });
+    let plan = pipeline("too_many", [stream("events"), stream("others")]);
+    let outcome = engine(commit_every(10))
+        .run(plan, source, memory("too_many").await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the attempt is refused");
+    assert_eq!(
+        (error.kind(), error.code(), error.is_retryable()),
+        (ErrorKind::Source, Some("plan_invalid"), false),
+        "{error}"
+    );
+    assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

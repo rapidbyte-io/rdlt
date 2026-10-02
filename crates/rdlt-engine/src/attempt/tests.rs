@@ -86,3 +86,11 @@ mod keys {
         assert_eq!(error.code(), Some("plan_column_nested"));
     }
 }
+
+#[test]
+fn an_attempt_reads_as_many_partitions_at_once_as_a_plan_may_name_and_no_more() {
+    use rdlt_connector::limits::MAX_PLAN_PARTITIONS;
+    assert!(super::within_partition_limit(MAX_PLAN_PARTITIONS).is_ok());
+    let refused = super::within_partition_limit(MAX_PLAN_PARTITIONS + 1).unwrap_err();
+    assert_eq!(refused.code(), Some("plan_invalid"));
+}

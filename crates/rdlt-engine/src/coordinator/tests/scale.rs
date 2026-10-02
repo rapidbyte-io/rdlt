@@ -16,11 +16,12 @@ use crate::coordinator::{Coordinator, Phases, Template};
 use crate::partition::{ChangeMode, Progress};
 use crate::plan::{DeleteMode, OnTruncate, WriteMode};
 
-/// Partitions: enough that work comparing each with every other takes minutes.
-const MANY: usize = 50_000;
+/// Partitions: as many as an attempt may read at once, enough that work comparing each with
+/// every other takes seconds.
+const MANY: usize = rdlt_connector::limits::MAX_PLAN_PARTITIONS;
 
 /// Work on `MANY` partitions done in time linear in them takes well under this.
-const LINEAR: Duration = Duration::from_secs(5);
+const LINEAR: Duration = Duration::from_secs(2);
 
 /// A source whose next plan names the partitions `plans` holds next.
 struct Planning {

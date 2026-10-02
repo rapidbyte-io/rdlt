@@ -217,6 +217,7 @@ impl Coordinator {
         partition: Partition,
         cursor: Option<Cursor>,
     ) -> Result<(), Error> {
+        crate::attempt::within_partition_limit(self.unended.saturating_add(1))?;
         let id = partition.id().clone();
         let stop = self.parts.stop_reads.child_token();
         let tracked = PartitionRun::new(stream, id.clone(), template.on_demand, stop.clone())
