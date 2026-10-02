@@ -330,9 +330,9 @@ given:
   engine can route such a column elsewhere.
 - A connector that flags its key column is refused at every destination, since the engine
   carries the flag through.
-- Each consumer group's logs begin when the group is first connected in a process, where every
-  log of a process began together before.
 - Cost tests of a SQL plan count the steps SQLite's virtual machine takes, many operations
-  against one, and depend on no clock. Those of the reference merge and of staging, which is
-  code and no statement, compare the least of three timings of many operations with one, so
-  they hold on a loaded machine.
+  against one, and depend on no clock. The reference merge's tests of truncates count the
+  comparisons its search makes, through the one function that makes them. Those of flags in
+  the reference merge and in staging, which have nothing to count, compare the least of three
+  timings of many operations with one. Each is sized to tell a linear cost from a product in
+  under a second.
