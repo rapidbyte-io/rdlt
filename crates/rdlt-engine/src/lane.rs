@@ -5,6 +5,7 @@ mod tests;
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -130,31 +131,36 @@ impl Lane {
                 () = cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
                 // Pressure comes before more writes, so the bytes it waits for are freed first.
                 () = pressed, if !self.held.is_empty() => {
-                    self.flush_written().await?;
+                    until_cancelled(&cancel, self.flush_written()).await?;
                     continue;
                 }
                 message = self.receiver.recv() => message,
             };
             match message {
                 Some(Message::Write(write)) => {
-                    self.written.insert((write.table, write.version));
-                    let writer = self.writer(write.table, write.version).await?;
-                    writer
-                        .write(write.segment, write.batch)
-                        .await
-                        .map_err(|error| {
-                            Error::connector(Side::Destination, "writing a batch", error)
-                        })?;
-                    self.held.push(write.reservation);
+                    // A write that never returns ends with the attempt, whatever ended it.
+                    until_cancelled(&cancel, self.stage(write)).await?;
                 }
                 Some(Message::Flush(reply)) => {
-                    self.flush_written().await?;
+                    until_cancelled(&cancel, self.flush_written()).await?;
                     // The coordinator may have stopped waiting; the flush happened either way.
                     reply.send(()).ok();
                 }
                 None => return Ok(()),
             }
         }
+    }
+
+    /// Stages `write` with its table's writer, which then holds what the write held.
+    async fn stage(&mut self, write: Write) -> Result<(), Error> {
+        self.written.insert((write.table, write.version));
+        let writer = self.writer(write.table, write.version).await?;
+        writer
+            .write(write.segment, write.batch)
+            .await
+            .map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
+        self.held.push(write.reservation);
+        Ok(())
     }
 
     /// Flushes every writer written since the last flush, then releases what their writes held.
@@ -212,4 +218,17 @@ fn fnv(mut hash: u64, bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash
+}
+
+/// Runs `work` until it ends or `cancel` fires: a call into a destination that never returns
+/// keeps no attempt from ending, and what it held goes with it.
+async fn until_cancelled(
+    cancel: &CancellationToken,
+    work: impl Future<Output = Result<(), Error>>,
+) -> Result<(), Error> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(Error::cancelled("the attempt was cancelled")),
+        done = work => done,
+    }
 }

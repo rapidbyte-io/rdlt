@@ -1,5 +1,6 @@
 //! Destinations for tests: one that discards what it stages, one that hides a capability, one
-//! that fails at a chosen step, and one whose commits wait until a test lets them go.
+//! that fails at a chosen step, one whose commits wait until a test lets them go, and one whose
+//! writes never return.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,11 +23,15 @@ struct NullConfig {
     /// Whether writers keep what they stage until they flush, as SQL and file writers do.
     #[serde(default)]
     buffers: bool,
+    /// Whether no write ever returns.
+    #[serde(default)]
+    stalls: bool,
 }
 
 /// Counts what it stages, slowly, and publishes nothing, so tests can measure the engine alone.
 struct Null {
     buffers: bool,
+    stalls: bool,
 }
 
 /// A destination that discards every batch.
@@ -37,6 +42,11 @@ pub(crate) async fn null() -> Arc<dyn Destination> {
 /// A destination whose writers keep every batch until they flush, then discard it.
 pub(crate) async fn buffering() -> Arc<dyn Destination> {
     null_with(json!({ "buffers": true })).await
+}
+
+/// A destination none of whose writes ever returns.
+pub(crate) async fn stalling() -> Arc<dyn Destination> {
+    null_with(json!({ "stalls": true })).await
 }
 
 async fn null_with(config: serde_json::Value) -> Arc<dyn Destination> {
@@ -60,6 +70,7 @@ impl DestinationConnector for Null {
     async fn connect(config: NullConfig, _context: &ConnectContext) -> Result<Self> {
         Ok(Self {
             buffers: config.buffers,
+            stalls: config.stalls,
         })
     }
 
@@ -72,6 +83,7 @@ impl DestinationConnector for Null {
             session: NullSession {
                 staged: Arc::default(),
                 buffers: self.buffers,
+                stalls: self.stalls,
             },
             epoch: rdlt_connector::Epoch(1),
             state: Vec::new(),
@@ -82,6 +94,7 @@ impl DestinationConnector for Null {
 struct NullSession {
     staged: Arc<parking_lot::Mutex<BTreeMap<SegmentId, u64>>>,
     buffers: bool,
+    stalls: bool,
 }
 
 impl Session for NullSession {
@@ -95,6 +108,7 @@ impl Session for NullSession {
         Ok(NullWriter {
             staged: Arc::clone(&self.staged),
             buffered: self.buffers.then(Vec::new),
+            stalls: self.stalls,
         })
     }
 
@@ -127,10 +141,14 @@ struct NullWriter {
     staged: Arc<parking_lot::Mutex<BTreeMap<SegmentId, u64>>>,
     /// What the writer keeps until it flushes, when it buffers.
     buffered: Option<Vec<RecordBatch>>,
+    stalls: bool,
 }
 
 impl TableWriter for NullWriter {
     async fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> Result<()> {
+        if self.stalls {
+            std::future::pending::<()>().await;
+        }
         // A slow writer, so batches would pile up in memory if nothing held the source back.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         *self.staged.lock().entry(segment).or_default() += batch.num_rows() as u64;
