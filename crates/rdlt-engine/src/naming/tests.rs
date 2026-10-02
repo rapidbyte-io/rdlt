@@ -73,6 +73,17 @@ fn identifiers_follow_the_destination_rules() {
 }
 
 #[test]
+fn any_character_rules_keep_none_that_hides_or_reorders_text() {
+    let naming = Naming::new(rules(IdentifierCase::Preserve, IdentifierChars::Any, 63));
+    let assigned = assign(
+        &naming,
+        &[source(&["is_admin\u{200b}"]), source(&["é\u{202e}x"])],
+    );
+    assert_eq!(assigned[&source(&["is_admin\u{200b}"])], "is_admin_");
+    assert_eq!(assigned[&source(&["é\u{202e}x"])], "é_x");
+}
+
+#[test]
 fn a_taken_identifier_gets_a_hash_of_its_source_path() {
     let assigned = assign(&lower(), &[source(&["a"]), source(&["A"])]);
     assert_eq!(

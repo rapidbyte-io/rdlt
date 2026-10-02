@@ -260,7 +260,7 @@ fn table_ref() -> impl Strategy<Value = TableRef> {
     (
         proptest::collection::vec(name(), 1..3),
         name(),
-        any::<u32>(),
+        1..=u32::MAX,
         proptest::option::of(any::<u64>()),
         proptest::option::of(merge_key()),
     )

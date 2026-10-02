@@ -79,6 +79,28 @@ fn text_ids_reject_what_their_alphabets_exclude() {
 }
 
 #[test]
+fn identifiers_refuse_characters_that_hide_or_reorder_what_is_around_them() {
+    for hidden in [
+        '\u{202e}',
+        '\u{200b}',
+        '\u{feff}',
+        '\u{2028}',
+        '\u{e0041}',
+        '\u{a0}',
+    ] {
+        let name = format!("orders{hidden}");
+        let refused = IdError::InvalidChar {
+            kind: "stream name",
+            character: hidden,
+        };
+        assert_eq!(StreamName::new(&name).unwrap_err(), refused, "{hidden:?}");
+        assert!(PartitionId::parse(&name).is_err(), "{hidden:?}");
+        assert!(TablePath::new([name.as_str()]).is_err(), "{hidden:?}");
+    }
+    assert!(StreamName::new("zamówienia ze sklepu").is_ok());
+}
+
+#[test]
 fn ids_deserialize_only_when_valid() {
     let valid: PipelineId = serde_json::from_str("\"orders\"").unwrap();
     assert_eq!(valid.as_str(), "orders");
@@ -156,6 +178,13 @@ fn counters_advance_by_one_and_never_past_their_largest() {
     assert_eq!(Epoch(4).next(), Some(Epoch(5)));
 }
 
+/// A table path segment: any text a reader is shown as it is.
+fn segment() -> impl Strategy<Value = String> {
+    "[\\p{L}\\p{N}\\p{P}\\p{S} ]{1,20}".prop_filter("shown as it is", |segment| {
+        !segment.chars().any(crate::text::deceives)
+    })
+}
+
 proptest! {
     #[test]
     fn parsed_ids_round_trip_through_json(text in "[A-Za-z0-9._-]{1,128}") {
@@ -165,7 +194,7 @@ proptest! {
     }
 
     #[test]
-    fn table_paths_round_trip_through_json(segments in proptest::collection::vec("[^\\p{Cc}]{1,20}", 1..5)) {
+    fn table_paths_round_trip_through_json(segments in proptest::collection::vec(segment(), 1..5)) {
         let path = TablePath::new(&segments).unwrap();
         let json = serde_json::to_string(&path).unwrap();
         prop_assert_eq!(serde_json::from_str::<TablePath>(&json).unwrap(), path);

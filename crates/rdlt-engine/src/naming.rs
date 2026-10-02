@@ -220,7 +220,7 @@ impl Naming {
             .chars()
             .map(|c| match self.rules.rules.chars {
                 IdentifierChars::AsciiWord if c.is_ascii_alphanumeric() || c == '_' => c,
-                IdentifierChars::Any if !c.is_control() => c,
+                IdentifierChars::Any if !rdlt_connector::text::deceives(c) => c,
                 _ => '_',
             })
             .collect();
