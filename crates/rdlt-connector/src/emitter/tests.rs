@@ -317,3 +317,30 @@ async fn stopped_resolves_once_the_engine_asks_the_read_to_stop_or_goes() {
         .await
         .expect("the engine went");
 }
+
+#[tokio::test]
+async fn a_schema_whose_message_passes_the_schema_limit_is_refused_and_one_within_it_is_sent() {
+    let batch = ids(vec![1, 2]);
+    let message = u64::try_from(rdlt_wire::schema_message_bytes(&batch.schema())).unwrap();
+    assert!(message > 100, "{message}");
+    for (limit, sent) in [(message - 1, false), (message, true), (message + 1, true)] {
+        let (sink, feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+        let limits = rdlt_wire::Limits {
+            schema_bytes: limit,
+            ..rdlt_wire::Limits::default()
+        };
+        let mut out = Emitter::<u64>::new(sink.within(limits), 7, false);
+        let pushed = out.batch(batch.clone()).await;
+        if sent {
+            pushed.unwrap();
+            assert_eq!(drain(out, feed).await.len(), 1);
+        } else {
+            let refused = pushed.unwrap_err().limit().unwrap();
+            assert_eq!(
+                (refused.name, refused.limit, refused.actual),
+                ("schema bytes", limit, message)
+            );
+            assert!(drain(out, feed).await.is_empty());
+        }
+    }
+}
