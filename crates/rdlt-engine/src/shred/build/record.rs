@@ -9,6 +9,7 @@ use arrow_buffer::NullBufferBuilder;
 use arrow_schema::Fields;
 
 use super::{Column, count, rows_of};
+use crate::limits::QUOTED_BYTES;
 use crate::shred::ShredError;
 use crate::shred::meter::{Columns, Meter, Over};
 use crate::shred::observe::Shape;
@@ -116,7 +117,8 @@ impl Record {
     /// wrote is a repeated key.
     pub(crate) fn field(&mut self, position: usize) -> Result<&mut Column, ShredError> {
         if self.written[position] == self.rows {
-            return Err(ShredError::DuplicateKey(self.names[position].to_string()));
+            let key = rdlt_connector::text::shown(&self.names[position], QUOTED_BYTES);
+            return Err(ShredError::DuplicateKey(key));
         }
         self.written[position] = self.rows;
         Ok(&mut self.columns[position])

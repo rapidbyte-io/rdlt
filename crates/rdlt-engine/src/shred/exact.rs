@@ -8,6 +8,7 @@ use sonic_rs::{JsonContainerTrait, JsonType, JsonValueTrait, Value};
 
 use super::ShredError;
 use super::visit::{Context, DECIMAL_LIMIT};
+use crate::limits::QUOTED_BYTES;
 
 /// Parses the record `bytes` into `seed`, its numbers exact.
 pub(super) fn visit<S>(bytes: &[u8], seed: S, context: &Context) -> Result<(), sonic_rs::Error>
@@ -90,8 +91,9 @@ fn number<'de, V: Visitor<'de>>(
     if text.contains(['.', 'e', 'E']) || text == "-0" {
         let float: f64 = text.parse().map_err(de::Error::custom)?;
         if !float.is_finite() {
+            let shown = rdlt_connector::text::shown(&text, QUOTED_BYTES);
             let refused =
-                ShredError::Invalid(format!("the number {text} is beyond a float's range"));
+                ShredError::Invalid(format!("the number {shown} is beyond a float's range"));
             return Err(context.fail(refused));
         }
         // A column of JSON renders the number as it was written.

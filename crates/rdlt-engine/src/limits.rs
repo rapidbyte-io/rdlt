@@ -131,3 +131,7 @@ pub(crate) const LOG_FRAME_EXCEEDS_BUDGET: &str = "log_frame_exceeds_budget";
 /// more than their text; past this, the pushes fail with `limit_exceeded` before anything is
 /// built.
 pub(crate) const MAX_CELLS: u64 = 1 << 25;
+
+/// Bytes: the most of a record's content an error quotes, a key or a number, shown as text a
+/// connector sent is.
+pub(crate) const QUOTED_BYTES: usize = 128;

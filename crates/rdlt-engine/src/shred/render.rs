@@ -11,6 +11,7 @@ use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
 use super::visit::{Context, nest};
+use crate::limits::QUOTED_BYTES;
 
 /// One value rendered onto `text`; an object repeating a key fails.
 pub(crate) struct Render<'a> {
@@ -116,6 +117,7 @@ impl<'de> Visitor<'de> for Render<'_> {
             self.text.push('{');
             while let Some(key) = map.next_key::<String>()? {
                 if keys.contains(&key) {
+                    let key = rdlt_connector::text::shown(&key, QUOTED_BYTES);
                     return Err(self.context.fail(ShredError::DuplicateKey(key)));
                 }
                 if !keys.is_empty() {
