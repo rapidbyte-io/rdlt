@@ -1,0 +1,126 @@
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::Semaphore;
+
+use super::{Bounded, Passed, bounds, fed, message, poll};
+use crate::bounded::{Charge, Charged, Charging};
+use crate::limits::Class;
+
+/// Charges each message's bytes once one of its permits is given, recording each charge and
+/// whether the charge before it was still held when it was asked for.
+struct Gate {
+    permits: Arc<Semaphore>,
+    asked: Mutex<Vec<(Class, usize, bool)>>,
+    charged: Charged,
+    refuse: bool,
+}
+
+impl Gate {
+    /// A gate with no permits, refusing every charge where `refuse`.
+    fn new(refuse: bool) -> Arc<Self> {
+        Arc::new(Self {
+            permits: Arc::new(Semaphore::new(0)),
+            asked: Mutex::default(),
+            charged: Charged::default(),
+            refuse,
+        })
+    }
+}
+
+impl Charge for Gate {
+    fn charge(&self, class: Class, bytes: usize) -> Charging {
+        let held_before = self.charged.holds();
+        self.asked.lock().unwrap().push((class, bytes, held_before));
+        let (permits, refuse) = (Arc::clone(&self.permits), self.refuse);
+        Box::pin(async move {
+            if refuse {
+                return Err(tonic::Status::resource_exhausted("no room"));
+            }
+            let permit = permits.acquire_owned().await.unwrap();
+            Ok(Box::new(permit) as crate::bounded::Held)
+        })
+    }
+}
+
+#[test]
+fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_decoded() {
+    let gate = Gate::new(false);
+    let (first, second) = (message(&[0x0a, 0x00]), message(&[0x0a, 0x00, 0x0a, 0x00]));
+    let (feed, body) = fed();
+    feed.send(http_body::Frame::data(
+        [first.clone(), second.clone()].concat().into(),
+    ))
+    .unwrap();
+    let charged = gate.charged.clone();
+    let mut body = Bounded::new(body, bounds(1024, 1 << 20), None)
+        .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>), charged.clone());
+    assert_eq!(
+        poll(&mut body),
+        Passed::Waits,
+        "not passed on before it is charged"
+    );
+    gate.permits.add_permits(1);
+    assert_eq!(poll(&mut body), Passed::Data(first));
+    assert!(
+        charged.holds(),
+        "the charge is held while the message is decoded"
+    );
+    gate.permits.add_permits(1);
+    assert_eq!(poll(&mut body), Passed::Data(second));
+    let one = size_of::<crate::v1::Catalog>() + 4 * size_of::<crate::v1::StreamSpec>();
+    let asked = gate.asked.lock().unwrap().clone();
+    assert_eq!(
+        asked,
+        [
+            (Class::Catalog, one, false),
+            (
+                Class::Catalog,
+                one + 4 * size_of::<crate::v1::StreamSpec>(),
+                false
+            )
+        ],
+        "each at its scan's count, the one before released first"
+    );
+    charged.release();
+    assert!(!charged.holds());
+    gate.permits.add_permits(1);
+    drop(feed);
+    assert_eq!(poll(&mut body), Passed::End);
+    drop(body);
+    assert_eq!(
+        gate.permits.available_permits(),
+        3,
+        "every charge is given back"
+    );
+}
+
+#[test]
+fn an_answer_s_charge_is_given_back_as_it_ends() {
+    let gate = Gate::new(false);
+    gate.permits.add_permits(1);
+    let (feed, body) = fed();
+    feed.send(http_body::Frame::data(message(&[0x0a, 0x00]).into()))
+        .unwrap();
+    let mut body = Bounded::new(body, bounds(1024, 1 << 20), None).charged(
+        Some(Arc::clone(&gate) as Arc<dyn Charge>),
+        gate.charged.clone(),
+    );
+    assert!(matches!(poll(&mut body), Passed::Data(_)));
+    assert_eq!(gate.permits.available_permits(), 0);
+    drop(body);
+    assert_eq!(gate.permits.available_permits(), 1);
+}
+
+#[test]
+fn a_message_whose_charge_is_refused_fails_the_call() {
+    let gate = Gate::new(true);
+    let (feed, body) = fed();
+    feed.send(http_body::Frame::data(message(&[0x0a, 0x00]).into()))
+        .unwrap();
+    let mut body = Bounded::new(body, bounds(1024, 1 << 20), None)
+        .charged(Some(gate as Arc<dyn Charge>), Charged::default());
+    assert_eq!(
+        poll(&mut body),
+        Passed::Failed(tonic::Code::ResourceExhausted)
+    );
+}

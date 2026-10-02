@@ -12,7 +12,11 @@
 //! so HTTP/2's flow control holds its sender, until a message that has room is passed on: each
 //! message with room is read to its end, so room always comes back, and every sender is held
 //! rather than refused.
+//!
+//! Where the body is [charged](charging), a message is passed on once what its scan counts is
+//! charged, and the charge is held until it is decoded.
 
+mod charge;
 #[cfg(test)]
 mod tests;
 
@@ -26,6 +30,8 @@ use http_body::{Body, Frame, SizeHint};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use tonic::Status;
 
+pub use self::charge::{Charge, Charged, Charging, Held, charging, current};
+use crate::limits::Class;
 use crate::scan::{Form, decoded};
 
 /// Bytes: a message's prefix, a flag and its length.
@@ -34,6 +40,8 @@ const PREFIX: usize = 5;
 /// What a call's messages are held to.
 #[derive(Clone, Copy, Debug)]
 pub struct Bounds {
+    /// What each message is.
+    pub class: Class,
     /// The form of each message.
     pub form: Option<&'static Form>,
     /// The most bytes a message may take on the wire.
@@ -44,12 +52,9 @@ pub struct Bounds {
 
 impl Bounds {
     /// The bounds of a message of `class` and `form`, within `limits`.
-    pub fn of(
-        limits: &crate::Limits,
-        class: crate::limits::Class,
-        form: Option<&'static Form>,
-    ) -> Self {
+    pub fn of(limits: &crate::Limits, class: Class, form: Option<&'static Form>) -> Self {
         Self {
+            class,
             form,
             wire: limits.decoding(class),
             decoded: limits.decoded(class),
@@ -105,6 +110,12 @@ pub struct Bounded {
     /// Trailers that ended the body, passed on once every message before them has been.
     trailers: Option<tonic::codegen::http::HeaderMap>,
     done: bool,
+    /// Whoever each message is charged to before it is passed on, where anyone is.
+    charge: Option<Arc<dyn Charge>>,
+    /// The charge of the message passed on last.
+    charged: Charged,
+    /// A message whole, waiting for its charge.
+    charging: Option<(Charging, Bytes)>,
 }
 
 impl Bounded {
@@ -119,7 +130,18 @@ impl Bounded {
             room: Room::Free,
             trailers: None,
             done: false,
+            charge: None,
+            charged: Charged::default(),
+            charging: None,
         }
+    }
+
+    /// The body, each message charged to `charge` before it is passed on, its charge held in
+    /// `charged`, where a charge is given.
+    #[must_use]
+    pub fn charged(mut self, charge: Option<Arc<dyn Charge>>, charged: Charged) -> Self {
+        (self.charge, self.charged) = (charge, charged);
+        self
     }
 
     /// The length the arriving message's prefix declares, where it has arrived, within the wire
@@ -161,25 +183,56 @@ impl Bounded {
         Poll::Ready(Ok(()))
     }
 
-    /// The arriving message of `length`, taken whole, checked against what it decodes to.
-    fn whole(&mut self, length: usize) -> Result<Bytes, Status> {
+    /// The arriving message of `length`, taken whole, checked against what it decodes to: the
+    /// message, and what its scan counts it holds decoded, its length where it has no form.
+    fn whole(&mut self, length: usize) -> Result<(Bytes, usize), Status> {
         let rest = self.arriving.split_off(PREFIX + length);
         let message = Bytes::from(std::mem::replace(&mut self.arriving, rest));
         // Its room is given back as it is passed on.
         self.room = Room::Free;
-        let form = self.bounds.form;
-        if let Some(form) = form {
-            let bound = self.bounds.decoded;
-            let held = decoded(form, &message[PREFIX..], bound).map_err(|unscanned| {
-                Status::invalid_argument(format!("a message of {length} bytes: {unscanned}"))
-            })?;
-            if held > bound {
-                return Err(Status::out_of_range(format!(
-                    "a message of {length} bytes would hold over {bound} bytes decoded, too large"
-                )));
-            }
+        let Some(form) = self.bounds.form else {
+            return Ok((message, length));
+        };
+        let bound = self.bounds.decoded;
+        let held = decoded(form, &message[PREFIX..], bound).map_err(|unscanned| {
+            Status::invalid_argument(format!("a message of {length} bytes: {unscanned}"))
+        })?;
+        if held > bound {
+            return Err(Status::out_of_range(format!(
+                "a message of {length} bytes would hold over {bound} bytes decoded, too large"
+            )));
         }
-        Ok(message)
+        Ok((message, held))
+    }
+
+    /// Passes on `message`, which holds `held` bytes decoded, once they are charged.
+    fn charge(&mut self, message: Bytes, held: usize) -> Option<Bytes> {
+        let Some(charge) = &self.charge else {
+            return Some(message);
+        };
+        // The message before has been decoded: its charge goes before this one's is taken.
+        self.charged.release();
+        self.charging = Some((charge.charge(self.bounds.class, held), message));
+        None
+    }
+
+    /// The message waiting for its charge, once charged.
+    fn charged_message(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Bytes, Status>>> {
+        let Some((charging, _)) = &mut self.charging else {
+            return Poll::Ready(None);
+        };
+        let held = std::task::ready!(charging.as_mut().poll(context));
+        let message = self.charging.take().map(|(_, message)| message);
+        Poll::Ready(match held {
+            Ok(held) => {
+                self.charged.hold(Some(held));
+                message.map(Ok)
+            }
+            Err(status) => Some(Err(status)),
+        })
     }
 
     /// Holds `data` as arriving: room doubles, and goes to the arriving message's end once
@@ -204,13 +257,20 @@ impl Bounded {
     /// The next frame of the body, or what ends it.
     fn next(&mut self, context: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
         loop {
+            if let Some(charged) = std::task::ready!(self.charged_message(context)) {
+                return Poll::Ready(Some(charged.map(Frame::data)));
+            }
             if let Some(length) = self.declared()? {
                 if self.roomed(length, context)?.is_pending() {
                     // No room: nothing more is read, and flow control holds the sender.
                     return Poll::Pending;
                 }
                 if self.arriving.len() >= PREFIX + length {
-                    return Poll::Ready(Some(self.whole(length).map(Frame::data)));
+                    let (message, held) = self.whole(length)?;
+                    if let Some(message) = self.charge(message, held) {
+                        return Poll::Ready(Some(Ok(Frame::data(message))));
+                    }
+                    continue;
                 }
             }
             if self.done {
@@ -246,6 +306,13 @@ impl std::fmt::Debug for Bounded {
             .field("bounds", &self.bounds)
             .field("arriving", &self.arriving.len())
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for Bounded {
+    fn drop(&mut self) {
+        // The answer ends: whatever it passed on last has been decoded.
+        self.charged.release();
     }
 }
 

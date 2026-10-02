@@ -1,3 +1,5 @@
+mod charged;
+
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -51,6 +53,7 @@ fn message(payload: &[u8]) -> Vec<u8> {
 
 fn bounds(wire: usize, decoded: usize) -> Bounds {
     Bounds {
+        class: crate::limits::Class::Catalog,
         form: response("Discover"),
         wire,
         decoded,
