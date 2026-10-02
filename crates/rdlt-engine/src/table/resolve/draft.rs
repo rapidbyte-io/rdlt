@@ -8,6 +8,7 @@ use rdlt_connector::{ColumnKey, ColumnPath, Field, LogicalType, TypeKind};
 use super::super::model::Model;
 use super::{Arriving, Change, Resolution, Route};
 use crate::error::Error;
+use crate::limits::SCHEMA_VERSION_EXHAUSTED;
 use crate::naming::Naming;
 
 /// A resolution in progress: the model, the columns it adds and the changes decided so far.
@@ -156,10 +157,10 @@ impl Draft {
             self.model.columns.push(Field::new(name, logical, nullable));
         }
         if !self.changes.is_empty() {
-            self.model.version += 1;
+            self.model.version = advanced(self.model.version)?;
         }
         if !self.changes.is_empty() || self.rounded {
-            self.model.revision += 1;
+            self.model.revision = advanced(self.model.revision)?;
         }
         Ok(Resolution {
             changes: self.changes,
@@ -167,4 +168,19 @@ impl Draft {
             model: self.model,
         })
     }
+}
+
+/// `count`, a table's schema version or its changes this attempt, advanced by one.
+///
+/// # Errors
+///
+/// A `Schema` error coded `schema_version_exhausted` past `u32::MAX`: a table that changed so
+/// often is reset to change again.
+pub(super) fn advanced(count: u32) -> Result<u32, Error> {
+    count.checked_add(1).ok_or_else(|| {
+        Error::schema(format!(
+            "the table's schema changed {count} times, the most its version counts"
+        ))
+        .with_code(SCHEMA_VERSION_EXHAUSTED)
+    })
 }

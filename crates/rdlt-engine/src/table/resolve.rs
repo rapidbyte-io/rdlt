@@ -203,12 +203,16 @@ impl Resolver {
             };
             routes.push(self.route(&mut draft, &column, model.created())?);
         }
-        let mut resolution = draft.finish(routes, &self.naming, &self.meta.all())?;
+        let stream = |error: Error| error.with_stream(&self.stream);
+        let mut resolution = draft
+            .finish(routes, &self.naming, &self.meta.all())
+            .map_err(stream)?;
         // A normalized stream's table holds its rows' lineage even where they hold no other value,
         // so its first batch creates it.
         if self.meta.id.is_some() && !resolution.model.created() {
             resolution.model.version = 1;
-            resolution.model.revision += 1;
+            resolution.model.revision =
+                draft::advanced(resolution.model.revision).map_err(stream)?;
         }
         Ok(resolution)
     }

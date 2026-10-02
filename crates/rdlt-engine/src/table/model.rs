@@ -39,6 +39,14 @@ impl Model {
                 ..Self::default()
             });
         };
+        // Version 0 is a table not created, which records no schema.
+        if *version == 0 {
+            return Err(Error::new(
+                ErrorKind::Destination,
+                "state records a table's schema at version 0",
+            )
+            .with_code("state_invalid"));
+        }
         let columns: Vec<Field> = schema.fields().iter().cloned().collect();
         if let Some(orphan) = columns
             .iter()
