@@ -81,9 +81,9 @@ given:
 - **No statement carries text the database or the host chose.**
   - A column type copied from the catalog is written only where it is one the dialect itself
     declares (`SqlDialect::declares`), as the dialect renders it.
-  - A merge key is checked against the table where its writer opens: at least one column, and
-    every column, the sequence, the deletion time and the history columns the table's
-    (`merge_key_invalid`). The reference merge refuses the same, where it panicked.
+  - A merge key is checked against the table where its writer opens: it names at least one
+    column, and every column it names, its sequence, its deletion time and its history columns
+    are columns of the table (`merge_key_invalid`). The reference merge refuses the same, where it panicked.
   - SQLite reads its columns from `sqlite_schema` joined to the table's own columns, never from
     a table-valued function a stream's name could select.
 - **SQLite is opened hardened, private and by file name.**
