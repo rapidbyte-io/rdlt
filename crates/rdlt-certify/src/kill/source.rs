@@ -85,7 +85,7 @@ async fn placed(
     config: &serde_json::Value,
     kills: &Kills,
 ) -> Result<Arc<dyn Source>, Violation> {
-    let (provider, reference) = target.provider(id, kills);
+    let (provider, reference) = target.provider(id, kills, &super::limits()?);
     let placed = provider.source(&reference, config).await.map_err(|error| {
         format!(
             "the source could not be placed: {}",

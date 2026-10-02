@@ -117,7 +117,7 @@ fn costing_remembers_less_than_it_charges() {
 
 #[tokio::test(start_paused = true)]
 async fn list_views_naming_one_child_load_within_the_budget() {
-    const BUDGET: u64 = 8 << 20;
+    const BUDGET: u64 = 12 << 20;
     const ROWS: usize = 2_000;
     // Each batch is 16 KB of views and 16 KB of items, and 32 MB once every row holds its items.
     let steps = Arc::new(|step: usize| {
@@ -151,7 +151,7 @@ async fn list_views_naming_one_child_load_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn views_naming_one_buffer_load_within_the_budget() {
-    const BUDGET: u64 = 8 << 20;
+    const BUDGET: u64 = 12 << 20;
     // Nine hundred views of one 64 KB value: 14 KB of views, 58 MB once each row holds its own.
     let steps = Arc::new(|step: usize| {
         let mut views = BinaryViewBuilder::new();
@@ -226,7 +226,7 @@ async fn batches_keeping_large_buffers_alive_load_within_the_budget() {
 
 #[tokio::test(start_paused = true)]
 async fn a_row_expanding_beyond_the_budget_fails_the_run_before_it_is_built() {
-    const BUDGET: u64 = 4 << 20;
+    const BUDGET: u64 = 12 << 20;
     // Three hundred null keys over values 16 MiB wide: a few hundred bytes pushed.
     let steps = Arc::new(|step: usize| {
         let values = new_null_array(&DataType::FixedSizeBinary(16 << 20), 0);

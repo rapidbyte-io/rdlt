@@ -80,7 +80,8 @@ impl Engine {
             destination,
             budget: MemoryBudget::new(self.config.memory().get())
                 .within(Arc::clone(&self.env), self.config.memory_wait())
-                .read_by(self.config.partitions().get()),
+                .read_by(self.config.partitions().get())
+                .limited(self.config.limits()),
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
         };
@@ -326,5 +327,6 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
     report.status = status;
     report.elapsed = context.env.instant().saturating_duration_since(started);
     report.peak_memory = context.budget.peak();
+    (report.memory_waits, report.cursor_waits) = context.budget.waits();
     RunOutcome { report, error }
 }

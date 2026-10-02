@@ -60,9 +60,8 @@ impl Charging {
     /// An admission charging `budget` for the events of one of the reads that share what its
     /// reads may keep.
     pub(crate) fn new(budget: MemoryBudget) -> Self {
-        let partitions = u64::try_from(budget.readers()).unwrap_or(u64::MAX).max(1);
         Self {
-            read_share: budget.shares().reads / partitions,
+            read_share: crate::budget::kept(budget.shares(), budget.readers()),
             budget,
             kept: Arc::new(AtomicU64::new(0)),
             exhausted: Mutex::new(None),
@@ -139,6 +138,10 @@ impl Admission for Charging {
         })
     }
 
+    fn limits(&self) -> rdlt_wire::Limits {
+        self.budget.limits()
+    }
+
     fn charge(&self, bytes: u64) -> rdlt_connector::Result<Permit> {
         // What a read keeps beside its events no write releases: it has a part of a share of its
         // own, and a read that would keep more is refused where it would.
@@ -190,7 +193,7 @@ pub(crate) struct Admitted {
 }
 
 impl Admitted {
-    fn new(bytes: u64, reservation: Reservation) -> Self {
+    pub(crate) fn new(bytes: u64, reservation: Reservation) -> Self {
         Self { bytes, reservation }
     }
 

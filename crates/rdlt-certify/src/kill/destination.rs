@@ -52,7 +52,7 @@ async fn loaded(
     seed: u64,
 ) -> Result<Loaded, Violation> {
     let kills = Kills::new();
-    let (provider, reference) = target.provider(id, &kills);
+    let (provider, reference) = target.provider(id, &kills, &super::limits()?);
     let placed = provider
         .destination(&reference, config)
         .await

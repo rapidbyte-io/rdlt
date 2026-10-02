@@ -157,6 +157,8 @@ pub(super) struct Ledger {
     pub(super) pressed: watch::Sender<bool>,
     /// Whether a cursor waits for the cursors a commit releases.
     pub(super) cursor_waits: watch::Sender<bool>,
+    /// How many requests for pushes or lowering waited, and how many cursors.
+    pub(super) waited: (u64, u64),
 }
 
 /// The classes that wait, in the order their waiters are admitted: cursors and the log's frames
@@ -179,6 +181,7 @@ impl Ledger {
             pressing: 0,
             pressed: watch::Sender::new(false),
             cursor_waits: watch::Sender::new(false),
+            waited: (0, 0),
         }
     }
 
@@ -271,6 +274,11 @@ impl Ledger {
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         self.queue(class)?.push_back(Waiter { id, bytes, sender });
+        match class {
+            Class::Cursor => self.waited.1 = self.waited.1.saturating_add(1),
+            Class::Intake | Class::Work => self.waited.0 = self.waited.0.saturating_add(1),
+            Class::Log | Class::Read => {}
+        }
         self.press();
         Some((id, receiver))
     }

@@ -22,7 +22,7 @@ use super::writer::{Command, WalWriter};
 use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::compute::{ComputePool, run_all};
 use crate::error::Error;
-use crate::limits::LOG_FRAME_EXCEEDS_BUDGET;
+use crate::limits::{LOG_FRAME_EXCEEDS_BUDGET, RECORDED};
 use crate::table::TableView;
 
 /// A table as a load's log tells its versions apart: its index in the attempt, its schema version
@@ -198,7 +198,7 @@ impl LoadLog {
             rdlt_connector::StateChange::Delete(key) => count(key.len()),
         });
         let state = state.fold(0_u64, |bytes, record| {
-            bytes.saturating_add(ENCODED.saturating_mul(record))
+            bytes.saturating_add(RECORDED.saturating_mul(record))
         });
         let held = reserved(budget, state).await?;
         let mut frames = Vec::new();
@@ -252,14 +252,10 @@ impl LoadLog {
     }
 }
 
-/// Bytes a frame takes for each byte of a cursor or state value it records: the value is base64
-/// text in its record, and the record base64 text in the frame.
-const ENCODED: u64 = 2;
-
 /// Bytes: about what `state` takes in a frame that records it.
 fn recorded(state: &PartitionState) -> u64 {
     match state {
-        PartitionState::Cursor(cursor) => ENCODED.saturating_mul(count(cursor.bytes().len())),
+        PartitionState::Cursor(cursor) => RECORDED.saturating_mul(count(cursor.bytes().len())),
         PartitionState::Done => 0,
     }
 }

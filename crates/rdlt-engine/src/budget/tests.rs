@@ -305,6 +305,7 @@ async fn a_cursor_that_waits_calls_for_a_commit_and_presses_no_one() {
     assert!(!due(&budget).await, "no cursor waits");
     let waiting = budget.acquire_cursor(60);
     tokio::pin!(waiting);
+    assert_eq!(budget.waits(), (0, 0));
     tokio::select! {
         biased;
         _ = &mut waiting => panic!("two cursors of 60 pass a share of 100"),
@@ -314,6 +315,7 @@ async fn a_cursor_that_waits_calls_for_a_commit_and_presses_no_one() {
     drop(held);
     assert_eq!(waiting.await.unwrap().bytes(), 60);
     assert!(!due(&budget).await, "the cursor was admitted");
+    assert_eq!(budget.waits(), (0, 1));
 }
 
 #[tokio::test(start_paused = true)]
@@ -371,6 +373,7 @@ async fn pressure_is_felt_while_a_request_waits_and_eases_once_it_is_admitted() 
     drop(held);
     let admitted = waiting.await.unwrap();
     assert!(!felt(&budget).await, "the request was admitted");
+    assert_eq!(budget.waits(), (1, 0));
     // A request for lowering presses as a push does.
     let work = (
         budget.acquire_working(1_600).await.unwrap(),
