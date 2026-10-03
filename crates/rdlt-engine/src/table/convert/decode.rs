@@ -144,13 +144,15 @@ fn keyed(array: &ArrayRef, values: &DataType) -> Result<ArrayRef, ArrowError> {
 }
 
 /// Whether a value of `data_type`, taken through a null key, takes a run-end encoding from the
-/// place the key's bytes name: one of its own, or one in a struct's or a union's members.
+/// place the key's bytes name: one of its own, or one in a struct's or a union's members, or in
+/// a fixed-size list's items, of which a null row takes its size through null indices.
 ///
-/// Taken through a null key, a list takes none of its items and a dictionary none of its values,
-/// whatever they hold.
+/// Taken through a null key, a list of offsets takes none of its items and a dictionary none of
+/// its values, whatever they hold.
 fn holds_runs(data_type: &DataType) -> bool {
     match data_type {
         DataType::RunEndEncoded(..) => true,
+        DataType::FixedSizeList(item, _) => holds_runs(item.data_type()),
         DataType::Struct(fields) => fields.iter().any(|field| holds_runs(field.data_type())),
         DataType::Union(fields, _) => fields
             .iter()

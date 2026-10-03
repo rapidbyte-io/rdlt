@@ -634,3 +634,65 @@ fn what_admitted_an_event_shows_the_bytes_it_was_charged() {
     let admitted = Admitted::new(5, budget.try_acquire_working(5).unwrap());
     assert_eq!(format!("{admitted:?}"), "Admitted(5)");
 }
+
+/// Fixed cases the drawing once found, checked on every run as the drawn ones are.
+mod found {
+    use rdlt_connector::{Field, LogicalType, TypeKind};
+    use rdlt_testkit::drawn::{Encoding, Scalar, Shape};
+    use serde_json::json;
+
+    use super::{batch, consumed, keyed, runs};
+
+    /// A fixed-size list of two run-end encoded JSON values: a list's value of null, of
+    /// numbers, of objects and of arrays, behind keys of every type, and as runs.
+    #[test]
+    fn a_fixed_size_list_of_run_end_encoded_json_is_charged_what_it_makes() {
+        let item = Field::new("item", LogicalType::Json, true);
+        let shape = Shape {
+            logical: LogicalType::List(Box::new(item)),
+            encoding: Encoding::FixedSize(2),
+            children: vec![Shape {
+                logical: LogicalType::Json,
+                encoding: Encoding::RunEnd,
+                children: Vec::new(),
+            }],
+        };
+        let rows = [
+            vec![
+                Scalar::Json(json!({ "a": { "a": 10_000_000 } })),
+                Scalar::Null,
+            ],
+            vec![
+                Scalar::Json(json!(22_397_714_964_492_u64)),
+                Scalar::Json(json!({})),
+            ],
+            vec![
+                Scalar::Json(json!([1.043_625_629_666_956_7e101])),
+                Scalar::Json(json!([null])),
+            ],
+            vec![
+                Scalar::Json(json!({})),
+                Scalar::Json(json!({ "c": [-2_990_549_259_602_293_186_i64] })),
+            ],
+        ];
+        let drawn = (
+            vec![("c".to_owned(), shape)],
+            rows.into_iter()
+                .map(|row| vec![Scalar::List(row)])
+                .collect(),
+        );
+        let batch = batch(&drawn);
+        let field = batch.schema().field(0).clone();
+        let column = batch.column(0);
+        for native in [vec![TypeKind::Float32, TypeKind::Struct], Vec::new()] {
+            consumed(&field, column, &native);
+            for encoded in keyed(column).into_iter().chain(runs(column)) {
+                let field = field.clone().with_data_type(encoded.data_type().clone());
+                consumed(&field, &encoded, &native);
+                for row in 0..encoded.len() {
+                    consumed(&field, &encoded.slice(row, 1), &native);
+                }
+            }
+        }
+    }
+}
