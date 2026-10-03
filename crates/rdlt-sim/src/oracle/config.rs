@@ -58,12 +58,17 @@ pub(super) fn endless(workload: &Workload) -> usize {
         .sum()
 }
 
-/// How hard the source of the world `seed` makes presses on the budget of an engine of `config`,
-/// drawn apart from the world, so every other draw of the seed is as it was.
-pub(super) fn pressed(seed: Seed, config: &EngineConfig) -> Pressure {
+/// How hard the source of the world `seed`, of `workload`, presses on the budget of an engine of
+/// `config`, drawn apart from the world, so every other draw of the seed is as it was.
+pub(super) fn pressed(seed: Seed, config: &EngineConfig, workload: &Workload) -> Pressure {
     let mut rng = SplitMix64::new(seed.value().rotate_left(17));
     let cursors = config.memory().get() / 64;
-    Pressure::draw(&mut rng, &config.limits(), cursors)
+    let partitions = workload
+        .streams
+        .iter()
+        .map(|stream| stream.partitions.len());
+    let partitions = u64::try_from(partitions.sum::<usize>()).unwrap_or(u64::MAX);
+    Pressure::draw(&mut rng, &config.limits(), cursors, partitions)
 }
 
 fn to_usize(value: u64) -> usize {

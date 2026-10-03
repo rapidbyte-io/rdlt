@@ -78,11 +78,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     let streaming = world.workload.features.streaming;
     let config = config(&mut rng, streaming, endless(&world.workload));
     let (limits, budget) = (config.limits(), config.memory().get());
-    // Over the network a batch crosses as its rows and no more, and cursors as large as may be
-    // pass, together, the state an open's answer may carry (ADR 0042): no pressing there.
-    if net.is_none() {
-        world.press(pressed(seed, &config));
-    }
+    world.press(pressed(seed, &config, &world.workload));
     let engine = Engine::new(config, env);
     let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
     let mut simulation = Simulation {

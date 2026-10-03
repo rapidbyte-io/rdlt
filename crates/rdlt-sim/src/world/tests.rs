@@ -89,3 +89,25 @@ fn a_fault_is_transient_rate_limited_permanent_or_a_panic() {
         BTreeSet::from(["panic", "permanent", "rate limited", "transient"])
     );
 }
+
+#[test]
+fn every_partition_s_cursor_together_stays_within_a_quarter_of_the_state_an_open_answers() {
+    let limits = rdlt_wire::Limits {
+        state_bytes: 1 << 20,
+        ..rdlt_wire::Limits::default()
+    };
+    for partitions in [1_u64, 4, 64, 1_000] {
+        let most = (0..300)
+            .map(|seed| {
+                super::Pressure::draw(&mut SplitMix64::new(seed), &limits, 4 << 20, partitions).pad
+            })
+            .max()
+            .unwrap();
+        let together = u64::try_from(most).unwrap() * partitions;
+        assert!(together > 0, "{partitions} partitions press their cursors");
+        assert!(
+            together <= limits.state_bytes / 4,
+            "{partitions}: {together}"
+        );
+    }
+}
