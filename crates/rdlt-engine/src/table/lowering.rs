@@ -42,6 +42,8 @@ pub(crate) use keys::{key_values, with_columns};
 use merge::{positions, sequence};
 pub(crate) use prepared::Prepared;
 use split::{Fitted, Splits};
+#[cfg(test)]
+pub(crate) use unheld::{Check, nulled_at, refused};
 
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
@@ -182,7 +184,7 @@ impl LoweringPlan {
         let fitted = self.splits.fit(batch, true)?;
         let split = both(
             self.splits.kept(&fitted, batch.num_rows()),
-            self.held(batch)?,
+            self.held(batch)?.0,
         );
         Ok(kept_by(batch, &self.routes, split))
     }
@@ -209,8 +211,10 @@ impl LoweringPlan {
         let failed = |error: arrow_schema::ArrowError| {
             Error::internal(format!("stream {stream}: preparing a batch: {error}"))
         };
-        let (batch, kept, discarded_rows, fitted) = self.kept_rows(batch).map_err(failed)?;
-        let (batch, nulled) = self.nulled(batch).map_err(failed)?;
+        let (batch, kept, discarded_rows, fitted, mut converted) =
+            self.kept_rows(batch).map_err(failed)?;
+        let (batch, nulled, left) = self.nulled(batch).map_err(failed)?;
+        converted.extend(left);
         let changes = match (changes, &kept) {
             (Some(changes), Some(kept)) => Some(changes.filter(kept).map_err(failed)?),
             (changes, _) => changes.cloned(),
@@ -224,9 +228,12 @@ impl LoweringPlan {
             });
         }
         let discarded_values = self.discarded_values(&batch, &fitted) + nulled;
+        let checked = batch.clone();
         let batch = keyed(stream, view, batch, &self.sources, changes.as_ref())?;
+        // A key column changed in a zero holds no longer what it converted to.
+        converted.retain(|(index, _)| Arc::ptr_eq(checked.column(*index), batch.column(*index)));
         let rows = batch.num_rows();
-        let (mut columns, held) = self.model_columns(&batch, &fitted)?;
+        let (mut columns, held) = self.model_columns(&batch, &fitted, &converted)?;
         columns.extend(self.constants(stamp, rows).map_err(failed)?);
         if view.meta.seq.is_some() {
             let seq = match &changes {
@@ -287,21 +294,20 @@ impl LoweringPlan {
 
     /// The rows of `batch` the schema policy keeps, which those are where it drops some, how many
     /// it drops, and which values of its columns of JSON their own columns hold, of those kept.
-    fn kept_rows(
-        &self,
-        batch: &RecordBatch,
-    ) -> Result<(RecordBatch, Option<BooleanArray>, u64, Fitted), arrow_schema::ArrowError> {
+    fn kept_rows(&self, batch: &RecordBatch) -> Result<Kept, arrow_schema::ArrowError> {
         let fitted = self.splits.fit(batch, false)?;
-        let split = both(
-            self.splits.kept(&fitted, batch.num_rows()),
-            self.held(batch)?,
-        );
+        let (held, mut converted) = self.held(batch)?;
+        let split = both(self.splits.kept(&fitted, batch.num_rows()), held);
         let (batch, kept, discarded_rows) = discard_rows(batch, &self.routes, split)?;
         let fitted = match &kept {
-            Some(kept) => fitted.filtered(kept)?,
+            Some(kept) => {
+                // Rows went, so what the columns converted to holds rows the batch does not.
+                converted.clear();
+                fitted.filtered(kept)?
+            }
             None => fitted,
         };
-        Ok((batch, kept, discarded_rows, fitted))
+        Ok((batch, kept, discarded_rows, fitted, converted))
     }
 
     /// The error for a value of a column of JSON that `column` holds in part that cannot be read,
@@ -439,6 +445,17 @@ fn kept_rows(
         None => Ok(Arc::clone(array)),
     }
 }
+
+/// The rows of a batch a schema policy keeps, which those are where it drops some, how many it
+/// drops, which values of its columns of JSON their own columns hold, and the columns the
+/// policies decide, converted.
+type Kept = (
+    RecordBatch,
+    Option<BooleanArray>,
+    u64,
+    Fitted,
+    unheld::Converted,
+);
 
 /// `array` of `logical` as the destination stores it: as it is, or as its text, which for
 /// nested values and JSON is JSON (spec §8.7).

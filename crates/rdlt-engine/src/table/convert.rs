@@ -28,12 +28,20 @@ use encoders::Extensions;
 /// The Arrow field metadata key naming an extension type.
 const EXTENSION_NAME: &str = "ARROW:extension:name";
 
+#[cfg(test)]
+thread_local! {
+    /// How many whole columns this thread converted, which tests read.
+    pub(crate) static CONVERSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `array`, holding values of `from`, as `to`, which holds every value of `from`.
 pub(crate) fn convert(
     array: &ArrayRef,
     from: &LogicalType,
     to: &LogicalType,
 ) -> Result<ArrayRef, ArrowError> {
+    #[cfg(test)]
+    CONVERSIONS.with(|conversions| conversions.set(conversions.get() + 1));
     let array = &decoded(array)?;
     precise(array)?;
     if from == to {

@@ -662,3 +662,61 @@ fn reads_within_its_charge(tenth: usize, half: usize, as_text: bool) {
         beyond.join("\n")
     );
 }
+
+/// Columns holding a value of their type no column of `to` holds, the first of each pair, beside
+/// values it does: far dates, decimals beyond their precision, and seconds no nanosecond holds.
+fn unholdable() -> Vec<(ArrayRef, LogicalType, LogicalType)> {
+    use arrow_array::{Date64Array, Decimal128Array, TimestampSecondArray};
+    let rows =
+        |far: i64, near: i64| (0..ROWS).map(move |row| if row % 7 == 0 { far } else { near });
+    let dates: ArrayRef = Arc::new(Date64Array::from_iter_values(rows(i64::MAX, 86_400_000)));
+    let decimals = Decimal128Array::from_iter_values(
+        (0..ROWS).map(|row| if row % 7 == 0 { 100_000 } else { 1 }),
+    );
+    let decimals: ArrayRef = Arc::new(decimals.with_precision_and_scale(5, 2).unwrap());
+    let seconds: ArrayRef = Arc::new(TimestampSecondArray::from_iter_values(rows(i64::MAX, 7)));
+    let decimal = LogicalType::Decimal(DecimalType::new(5, 2).unwrap());
+    vec![
+        (dates, LogicalType::Date, LogicalType::Date),
+        (decimals, decimal.clone(), decimal),
+        (
+            seconds,
+            LogicalType::Timestamp(TimeUnit::Second, None),
+            LogicalType::Timestamp(TimeUnit::Nanosecond, None),
+        ),
+    ]
+}
+
+/// Finding the values a column cannot hold row by row, and nulling them, holds marks of a bit a
+/// row and shares the column's values: the column's charge covers it, in every encoding.
+#[test]
+fn a_column_discarded_value_by_value_allocates_no_more_than_its_charge() {
+    use crate::table::{Check, nulled_at, refused};
+    let mut measured = 0;
+    for (column, from, to) in unholdable() {
+        for encoded in encodings(&column) {
+            let batch = RecordBatch::try_from_iter([("c", Arc::clone(&encoded))]).unwrap();
+            let stored = Stored {
+                column: to.clone(),
+                text: false,
+                read: false,
+            };
+            let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+            let charge = measure.expanded(0..encoded.len());
+            let (lowered, peak) = peak(|| {
+                let Check::Refused(rows) = refused(&encoded, &from, &to)? else {
+                    panic!("{} holds a value its column cannot", encoded.data_type());
+                };
+                convert(&nulled_at(&encoded, &rows)?, &from, &to)
+            });
+            lowered.unwrap();
+            measured += 1;
+            let kind = encoded.data_type();
+            assert!(
+                peak <= charge + SLACK,
+                "{kind}: charged {charge}, allocated {peak}"
+            );
+        }
+    }
+    assert!(measured >= 3, "{measured}");
+}
