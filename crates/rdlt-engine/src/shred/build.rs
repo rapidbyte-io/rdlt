@@ -382,13 +382,13 @@ impl Room {
 }
 
 /// Writes `bytes` of text into a builder with `room`: past what it was charged for, the builder
-/// grows as it would, to twice what it held or to what the text needs, and is charged for all it
-/// then holds, which beside the copy it grew from is what it takes while it grows.
+/// grows as it would, to twice what it held or to what the text needs, and is charged for what
+/// it grows by; the copy it grows from is a builder's spare capacity while it grows.
 fn write_text(room: &mut Room, bytes: usize, meter: &Meter) -> Result<(), Over> {
     let needed = room.written.saturating_add(bytes);
     if needed > room.capacity {
         let grown = needed.max(room.capacity.saturating_mul(2));
-        meter.charge(count(grown))?;
+        meter.charge(count(grown - room.capacity))?;
         room.capacity = grown;
     }
     room.written = needed;
