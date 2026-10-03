@@ -68,13 +68,13 @@ sim seed="" seeds="1000" from="0":
 
 # Run a count of seeds from a first seed as shards side by side, one a core by default; each
 # shard's output is in `target/sim-shards/<shard>.log`, and a failing shard names its seed there
-sim-shards seeds="100000" shards=`nproc 2>/dev/null || sysctl -n hw.ncpu` from="0":
+sim-shards $seeds="100000" $shards=`nproc 2>/dev/null || sysctl -n hw.ncpu` $from="0":
     #!/usr/bin/env bash
     set -euo pipefail
-    seeds="{{ seeds }}" shards="{{ shards }}" from="{{ from }}"
-    [[ $seeds =~ ^[1-9][0-9]*$ ]] || { echo "seeds must be a positive integer" >&2; exit 2; }
-    [[ $shards =~ ^[1-9][0-9]*$ ]] || { echo "shards must be a positive integer" >&2; exit 2; }
-    [[ $from =~ ^(0|[1-9][0-9]*)$ ]] || { echo "from must be a seed" >&2; exit 2; }
+    # A count, a number of shards and a first seed, each small enough that no sum below overflows.
+    [[ $seeds =~ ^[1-9][0-9]{0,11}$ ]] || { echo "seeds must be an integer from 1 to 999999999999" >&2; exit 2; }
+    [[ $shards =~ ^[1-9][0-9]{0,3}$ ]] || { echo "shards must be an integer from 1 to 9999" >&2; exit 2; }
+    [[ $from =~ ^(0|[1-9][0-9]{0,11})$ ]] || { echo "from must be a seed from 0 to 999999999999" >&2; exit 2; }
     cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --no-run
     rm -rf target/sim-shards && mkdir -p target/sim-shards
     per=$(( (seeds + shards - 1) / shards ))
