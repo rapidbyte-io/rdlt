@@ -239,24 +239,42 @@ pub(crate) fn logical_fields(model: &Model, meta: &MetaNames) -> Vec<Field> {
 }
 
 /// The columns a table has in the destination: [`logical_fields`], each lowered as the
-/// destination stores it, the model's under their columns' `nested` settings.
+/// destination stores it, the model's under their columns' `nested` settings, and a history
+/// table's validity as [`validity`] stores it.
 pub(crate) fn physical_fields(
     logical: &[Field],
     nested: &[Nested],
-    capabilities: &Capabilities,
+    (meta, capabilities): (&MetaNames, &Capabilities),
 ) -> Vec<Field> {
+    let valid = |name: &str| {
+        meta.history
+            .as_ref()
+            .is_some_and(|history| name == &*history.valid_from || name == &*history.valid_to)
+    };
     logical
         .iter()
         .enumerate()
         .map(|(index, field)| {
             let nested = nested.get(index).copied().unwrap_or(Nested::Native);
-            Field::new(
-                field.name(),
-                lower(field.logical_type(), nested, capabilities),
-                field.is_nullable(),
-            )
+            let stored = if valid(field.name()) {
+                validity(capabilities)
+            } else {
+                lower(field.logical_type(), nested, capabilities)
+            };
+            Field::new(field.name(), stored, field.is_nullable())
         })
         .collect()
+}
+
+/// How a destination stores when a history table's versions begin and end: as timestamps, or
+/// where it stores none, as the microseconds since the epoch they are, which order as the
+/// instants do, as no text of them does.
+pub(crate) fn validity(capabilities: &Capabilities) -> LogicalType {
+    if capabilities.types.contains(&TypeKind::Timestamp) {
+        loaded_at_type()
+    } else {
+        LogicalType::Int64
+    }
 }
 
 /// The Arrow schema of prepared batches of a table whose columns are `fields`, of the types

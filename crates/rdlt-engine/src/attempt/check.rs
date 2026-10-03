@@ -1,6 +1,6 @@
 //! Checking a planned stream against the source's catalog and the destination's capabilities.
 
-use rdlt_connector::{Catalog, Field, LogicalType, ReadMode, StreamSpec};
+use rdlt_connector::{Catalog, Field, LogicalType, ReadMode, StreamSpec, TypeKind};
 
 use super::RunContext;
 use crate::error::Error;
@@ -56,6 +56,15 @@ pub(super) fn check_stream<'a>(
         && let Some(detail) = change_time_invalid(spec)
     {
         return Err(refuse("change_time_invalid", &detail));
+    }
+    let types = &context.destination.capabilities().types;
+    if plan.keeps_history()
+        && !types.contains(&TypeKind::Timestamp)
+        && !types.contains(&TypeKind::Int64)
+    {
+        let detail = "the destination stores neither timestamps nor 64-bit integers, one of which \
+                      holds when a history table's versions begin and end";
+        return Err(refuse("history_validity_unsupported", detail));
     }
     if let Some((code, detail)) = unmergeable(context, plan) {
         return Err(refuse(code, &detail));
