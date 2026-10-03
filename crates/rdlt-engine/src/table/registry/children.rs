@@ -101,12 +101,58 @@ impl Tables {
         .with_stream(stream))
     }
 
-    /// Records `paths`, the arrays below the table `root` that its stream's declared schema
-    /// holds: their rows change no schema.
-    pub(crate) fn declare_children(&self, root: usize, paths: Vec<Vec<Arc<str>>>) {
+    /// Records of `paths`, the arrays below the table `root` that its stream's declared schema
+    /// holds, those whose rows change no schema: all while the table is not yet created, and
+    /// after that those state records a child table for.
+    ///
+    /// Once the table exists, a declared array new to it is a change to the stream's schema,
+    /// which the policy of the array's column decides as it decides an undeclared one: a stream
+    /// that evolves declares it, one that discards drops its rows as they arrive.
+    ///
+    /// # Errors
+    ///
+    /// A new declared array of a stream whose schema is frozen is `schema_frozen`, a Schema
+    /// error, before anything is read.
+    pub(crate) fn declare_children(
+        &self,
+        root: usize,
+        paths: Vec<Vec<Arc<str>>>,
+    ) -> Result<(), Error> {
+        let view = self.view(root);
+        let resolver = self.resolver(root);
+        let mut declared = Vec::with_capacity(paths.len());
+        for path in paths {
+            let segments = view
+                .table
+                .path
+                .segments()
+                .chain(path.iter().map(AsRef::as_ref));
+            let recorded =
+                TablePath::new(segments).is_ok_and(|child| self.committed.contains_key(&child));
+            let column = path.first().map_or_else(
+                || ColumnPath::from(""),
+                |column| ColumnPath::from(column.as_ref()),
+            );
+            match resolver.settings.column(&column).policy {
+                _ if !view.model.created() || recorded => declared.push(path),
+                SchemaPolicy::Evolve => declared.push(path),
+                SchemaPolicy::Freeze => {
+                    let stream = &resolver.stream;
+                    return Err(Error::schema(format!(
+                        "stream {stream}: array {}: the declared schema gained an array, which \
+                         would add a child table to a frozen schema",
+                        path.join(".")
+                    ))
+                    .with_code("schema_frozen")
+                    .with_stream(stream));
+                }
+                SchemaPolicy::DiscardRow | SchemaPolicy::DiscardValue => {}
+            }
+        }
         self.declared
             .lock()
-            .extend(paths.into_iter().map(|path| (root, path)));
+            .extend(declared.into_iter().map(|path| (root, path)));
+        Ok(())
     }
 
     /// What becomes of rows for the child table at `path` below `root`, which may be new.

@@ -914,3 +914,60 @@ async fn an_array_under_a_key_no_table_can_be_named_after_follows_the_streams_po
         assert_eq!(error.code(), Some("schema_frozen"), "{document}");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_declared_schema_gaining_an_array_follows_the_policy_once_its_table_exists() {
+    let list = |item: LogicalType| LogicalType::List(Box::new(RdltField::new("item", item, true)));
+    let plan = |policy| {
+        stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(policy),
+        )
+    };
+    let declared = |items: bool| {
+        let mut fields = vec![RdltField::new("id", LogicalType::Int64, false)];
+        if items {
+            fields.push(RdltField::new("items", list(LogicalType::Int64), true));
+        }
+        TableSchema::new(fields).unwrap()
+    };
+    for (store, policy) in [
+        ("declared_frozen", SchemaPolicy::Freeze),
+        ("declared_discarded", SchemaPolicy::DiscardValue),
+        ("declared_evolving", SchemaPolicy::Evolve),
+    ] {
+        let first = BatchStream::json("events", &[r#"{"id":1}"#]).declared(declared(false));
+        succeeded(&load(store, vec![first], vec![plan(policy)]).await);
+        let second =
+            BatchStream::json("events", &[r#"{"id":2,"items":[7,8]}"#]).declared(declared(true));
+        let outcome = load(store, vec![second], vec![plan(policy)]).await;
+        let child = schema(store, "events__items").is_some();
+        match policy {
+            SchemaPolicy::Freeze => {
+                let error = outcome.error.expect("a frozen stream gains no table");
+                assert_eq!(
+                    (error.kind(), error.code()),
+                    (ErrorKind::Schema, Some("schema_frozen"))
+                );
+                assert!(!child);
+            }
+            SchemaPolicy::DiscardValue => {
+                succeeded(&outcome);
+                assert!(!child);
+                assert_eq!(outcome.report.streams["events"].discarded_values, 2);
+            }
+            _ => {
+                succeeded(&outcome);
+                assert!(child);
+            }
+        }
+    }
+    // A table the declared array had from the start keeps its child table under any policy.
+    let store = "declared_from_the_start";
+    let first = BatchStream::json("events", &[r#"{"id":1,"items":[1]}"#]).declared(declared(true));
+    succeeded(&load(store, vec![first], vec![plan(SchemaPolicy::Freeze)]).await);
+    let second = BatchStream::json("events", &[r#"{"id":2,"items":[2]}"#]).declared(declared(true));
+    succeeded(&load(store, vec![second], vec![plan(SchemaPolicy::Freeze)]).await);
+    assert_eq!(published_json(store, "events__items").len(), 2);
+}
