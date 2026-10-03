@@ -538,11 +538,45 @@ async fn a_chunk_is_published_only_from_the_file_its_writer_staged() {
     let part = std::fs::read_dir(&load_dir)
         .expect("lists")
         .map(|entry| entry.expect("an entry").path())
-        .find(|path| path.extension().is_some_and(|extension| extension == "part"))
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "part")
+        })
         .expect("a staged file");
     std::fs::remove_file(&part).expect("removes");
     std::fs::write(&part, b"theirs").expect("writes");
     set_mode(&part, 0o600);
     staged.publish().await.expect_err("not the file staged");
     assert_eq!(wal.chunks(&orders, load).await.expect("lists"), []);
+}
+
+#[tokio::test]
+async fn a_directory_above_the_base_swapped_once_it_was_passed_is_refused_all_the_same() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let shared = base.path().join("shared");
+    std::fs::create_dir_all(shared.join("wal")).expect("creates");
+    set_mode(&shared.join("wal"), 0o700);
+    set_mode(&shared, 0o777);
+    // Once the base is opened under a directory others may write, that directory is swapped for
+    // a private one before the path is looked at again.
+    let moved = base.path().join("moved");
+    *super::dir::OPENED.lock() = Some(Box::new({
+        let (shared, moved) = (shared.clone(), moved.clone());
+        move |_: &Path| {
+            std::fs::rename(&shared, &moved).expect("moves");
+            std::fs::create_dir_all(shared.join("wal")).expect("creates");
+            set_mode(&shared.join("wal"), 0o700);
+            set_mode(&shared, 0o700);
+        }
+    }));
+    let wal = LocalWal::new(shared.join("wal"));
+    let listed = wal.loads(&pipeline("orders")).await;
+    *super::dir::OPENED.lock() = None;
+    for dir in [&shared, &moved] {
+        if dir.exists() {
+            set_mode(dir, 0o700);
+        }
+    }
+    let refused = listed.expect_err("the directory the base was opened under is refused");
+    assert!(not_private(&refused), "{refused}");
 }
