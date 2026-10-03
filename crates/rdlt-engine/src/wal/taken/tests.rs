@@ -175,3 +175,17 @@ fn chunk(number: u64) -> Chunk {
         number,
     }
 }
+
+#[tokio::test]
+async fn a_fence_the_disk_has_no_room_for_leaves_nothing_staged() {
+    let store = MemoryWal {
+        disk: std::sync::Arc::new(super::super::memory::Disk::of(0)),
+        ..MemoryWal::default()
+    };
+    store.open(&pipeline(), load());
+    let refused = take(&store, &pipeline(), load(), 1 << 20)
+        .await
+        .expect_err("no room for a fence");
+    assert_eq!(refused.code(), Some("wal_storage_full"), "{refused}");
+    assert_eq!(store.disk.stagings(), 0, "the fence's staging is gone");
+}

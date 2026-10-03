@@ -53,6 +53,12 @@ impl Disk {
         }
     }
 
+    /// How many stagings it holds, empty ones included.
+    #[cfg(test)]
+    pub(crate) fn stagings(&self) -> usize {
+        self.staged.lock().len()
+    }
+
     /// Bytes its stagings hold.
     #[cfg(test)]
     pub(crate) fn staged(&self) -> usize {
