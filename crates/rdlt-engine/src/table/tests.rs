@@ -1520,6 +1520,22 @@ fn json_whose_integers_an_integer_column_reads_ends_its_exactness() {
 }
 
 #[test]
+fn json_an_integer_column_created_for_it_reads_leaves_it_not_exact() {
+    // A hint makes the column of JSON a column of integers as the table is created: its integers
+    // are read only as the plan lowers them.
+    let stream = plan().hint("amount", LogicalType::Int64);
+    let resolver = resolver(capabilities(), stream, &[]);
+    let created = resolver
+        .resolve(&Model::default(), &schema(&[("amount", LogicalType::Json)]))
+        .unwrap();
+    assert_eq!(
+        columns(&created.model)[0],
+        ("amount".to_owned(), LogicalType::Int64)
+    );
+    assert!(created.model.exact.is_empty(), "{:?}", created.model.exact);
+}
+
+#[test]
 fn a_column_created_from_integers_a_float_would_round_is_not_exact() {
     let resolver = resolver(int_to_float(true), plan(), &[]);
     let model = resolver

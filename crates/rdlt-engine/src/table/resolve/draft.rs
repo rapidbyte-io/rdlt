@@ -64,12 +64,16 @@ impl Draft {
         }
     }
 
-    /// Notes that the table's column at `column` now holds an integer a float would round.
-    ///
-    /// A column this resolution adds takes its exactness when added.
+    /// Notes that the table's column at `column` now holds an integer a float would round,
+    /// whether the table has it or this resolution adds it.
     pub(super) fn round(&mut self, column: usize) {
         if let Some(field) = self.model.columns.get(column) {
             self.rounded |= self.model.exact.remove(field.name());
+        } else if let Some((key, ..)) = column
+            .checked_sub(self.model.columns.len())
+            .and_then(|added| self.adds.get(added))
+        {
+            self.exact_adds.remove(key);
         }
     }
 
