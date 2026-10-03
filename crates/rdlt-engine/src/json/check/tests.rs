@@ -667,3 +667,30 @@ fn what_checking_holds_is_charged_exactly_in_runs_of_every_end_type_and_lists_of
     );
     assert_eq!(super::held(&alone(Arc::new(reversed))), 2 * 16 + 16);
 }
+
+#[test]
+fn json_in_a_dictionary_of_structs_is_checked_and_charged_where_its_keys_name_it() {
+    let fields = Fields::from(vec![json(Field::new("j", DataType::Utf8, true))]);
+    let rows: ArrayRef = Arc::new(StructArray::new(
+        fields,
+        vec![texts(&[Some("1"), Some("x")])],
+        None,
+    ));
+    let keyed = |keys: Vec<i32>| -> RecordBatch {
+        let keys = PrimitiveArray::<Int32Type>::from(keys);
+        alone(Arc::new(
+            DictionaryArray::try_new(keys, Arc::clone(&rows)).unwrap(),
+        ))
+    };
+    // Only the first value named: a bit for each of the two values.
+    let first = keyed(vec![0, 0]);
+    assert_eq!(check_batch(&first).map_err(|not| not.error), Ok(()));
+    assert_eq!(super::held(&first), 1);
+    assert!(matches!(
+        check_batch(&keyed(vec![0, 1])),
+        Err(NotJson {
+            error: JsonError::Invalid(_),
+            ..
+        })
+    ));
+}

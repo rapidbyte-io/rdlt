@@ -1560,6 +1560,34 @@ fn rows_whose_json_its_own_column_does_not_hold_are_dropped_and_the_column_is_st
 }
 
 #[test]
+fn a_column_of_nulls_arriving_at_a_typed_column_is_charged_as_the_nulls_it_fills() {
+    use arrow_array::NullArray;
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let model = created(
+        &resolver,
+        &[("id", LogicalType::Int64), ("amount", LogicalType::Int64)],
+    );
+    let batch = batch(vec![
+        ("id", Arc::new(Int64Array::from(vec![1, 2])) as _),
+        ("amount", Arc::new(NullArray::new(2)) as _),
+    ]);
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let resolution = resolver.resolve(&model, &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
+    let id = rdlt_connector::cost::Stored {
+        column: LogicalType::Int64,
+        text: false,
+        read: false,
+    };
+    assert_eq!(lowering.stored(), [Some(id), None]);
+    assert_eq!(
+        lowering.null_fill(2),
+        rdlt_connector::cost::nulls(&DataType::Int64, 2)
+    );
+}
+
+#[test]
 fn json_an_integer_column_created_for_it_reads_leaves_it_not_exact() {
     // A hint makes the column of JSON a column of integers as the table is created: its integers
     // are read only as the plan lowers them.

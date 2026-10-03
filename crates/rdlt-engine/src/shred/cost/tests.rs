@@ -187,10 +187,19 @@ fn fitting_a_struct_reckons_the_fields_it_lacks() {
 }
 
 #[test]
-fn a_list_of_text_holds_text() {
+fn a_list_or_an_object_of_text_holds_text() {
     let mut shape = Shape::default();
     shape.push("l".into(), Observed::Array(Box::new(Observed::Text), 1));
     assert!(holds_text(&shape));
+    let mut object = Shape::default();
+    object.push("t".into(), Observed::Json);
+    let mut shape = Shape::default();
+    shape.push("o".into(), Observed::Object(object));
+    assert!(holds_text(&shape));
+    let mut numbers = Shape::default();
+    numbers.push("i".into(), Observed::Int { exact: true });
+    numbers.push("o".into(), Observed::Object(Shape::default()));
+    assert!(!holds_text(&numbers));
 }
 
 #[test]

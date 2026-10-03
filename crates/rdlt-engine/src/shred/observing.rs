@@ -68,6 +68,7 @@ impl<'de> Visitor<'de> for Record<'_> {
         Err(self.context.fail(ShredError::NotObject))
     }
 
+    /// An integer beyond 38 digits, which the exact parse visits as its digits.
     fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<(), E> {
         Err(self.context.fail(ShredError::NotObject))
     }
