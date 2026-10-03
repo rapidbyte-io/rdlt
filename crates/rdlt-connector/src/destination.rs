@@ -213,7 +213,8 @@ pub struct RootKey {
 /// widened it along another branch of the lattice. A `Create` or `AddColumn` declaring a column
 /// at a type the table's column does not hold, or a widen to a join the destination cannot
 /// store, fails with a `Data` error coded `schema_conflict` and changes nothing; the engine
-/// answers a conflicting new column by choosing another identifier.
+/// answers a refused widen by leaving the column as it is and routing what it cannot hold to a
+/// variant column, and a conflicting new column by choosing another identifier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TableChange {
     /// Create the table; on a table that exists, add the columns it lacks as nullable.

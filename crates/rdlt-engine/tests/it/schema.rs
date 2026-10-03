@@ -8,7 +8,7 @@ use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray, St
 use arrow_schema::{DataType, Field as ArrowField};
 use rdlt_connector::{Field, IdentifierCase, LogicalType, TableSchema, TypeKind};
 use rdlt_connector_reference::schema;
-use rdlt_engine::{ErrorKind, OnUnsupported, RunStatus, SchemaPolicy, SchemaSettings};
+use rdlt_engine::{ErrorKind, OnUnsupported, RunOutcome, RunStatus, SchemaPolicy, SchemaSettings};
 use serde_json::json;
 
 use crate::support::batches::{BatchStream, batches};
@@ -370,4 +370,72 @@ async fn a_read_whose_rows_after_its_last_checkpoint_are_all_discarded_counts_th
         .unwrap_or_default();
     assert_eq!((report.rows, report.discarded_rows), (0, 2));
     assert_eq!(published_json(name, "events"), vec![json!({"id": 1})]);
+}
+
+/// Loads into `name` a batch of `id` and `until`, each with one value, under `settings`.
+async fn until(name: &str, id: i64, until: ArrayRef, settings: SchemaSettings) -> RunOutcome {
+    let pushed = vec![batch(vec![("id", ints(&[id])), ("until", until)])];
+    let source = batches(name, vec![BatchStream::new("events", pushed)]).await;
+    engine(commit_every(1))
+        .run(
+            pipeline(name, [stream("events").schema(settings)]),
+            source,
+            memory(name).await,
+        )
+        .await
+}
+
+/// Loads a column `until` of seconds holding the last day of the year 9999, then in another run
+/// one of nanoseconds: the destination refuses to widen the column, since nanoseconds do not
+/// reach the value it holds.
+async fn beyond_nanoseconds(name: &str, settings: SchemaSettings) -> RunOutcome {
+    use arrow_array::{TimestampNanosecondArray, TimestampSecondArray};
+    let seconds: ArrayRef = Arc::new(TimestampSecondArray::from(vec![253_402_214_400]));
+    let first = until(name, 1, seconds, settings).await;
+    assert_eq!(
+        first.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        first.error
+    );
+    let nanoseconds: ArrayRef = Arc::new(TimestampNanosecondArray::from(vec![5]));
+    until(name, 2, nanoseconds, settings).await
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_widen_the_destination_refuses_routes_the_values_to_a_variant() {
+    let name = "widen_refused";
+    let outcome = beyond_nanoseconds(name, SchemaSettings::new()).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let held = columns(name, "events");
+    assert_eq!(held.len(), 3, "{held:?}");
+    assert_eq!(
+        held[1],
+        (
+            "until".to_owned(),
+            LogicalType::Timestamp(rdlt_connector::TimeUnit::Second, None)
+        )
+    );
+    assert_eq!(
+        held[2].1,
+        LogicalType::Timestamp(rdlt_connector::TimeUnit::Nanosecond, None)
+    );
+    assert_eq!(published_json(name, "events").len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_widen_the_destination_refuses_where_no_variant_may_take_it_is_refused_typed() {
+    let refuse = SchemaSettings::new().on_unsupported(OnUnsupported::Refuse);
+    let outcome = beyond_nanoseconds("widen_refused_typed", refuse).await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Schema, Some("schema_change_unsupported"))
+    );
+    assert!(!error.is_retryable());
 }
