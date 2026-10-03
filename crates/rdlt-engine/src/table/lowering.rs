@@ -33,6 +33,7 @@ use crate::normalize::Lineage;
 pub(crate) use changes::{ChangeRows, data_ordinals};
 use constants::Constants;
 use kept::{discard_rows, kept_by};
+pub(crate) use merge::check_key_values;
 use merge::{check_key, positions, sequence};
 pub(crate) use prepared::Prepared;
 use split::{Fitted, Splits};

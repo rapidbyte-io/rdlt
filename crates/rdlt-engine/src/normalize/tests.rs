@@ -453,6 +453,16 @@ proptest! {
         chunk_bytes in 16_usize..400,
     ) {
         let key: Vec<&str> = if keyed { vec!["id"] } else { Vec::new() };
+        // A keyed stream's rows each hold a key: one lacking it is refused before it normalizes.
+        let mut records = records;
+        if keyed {
+            for (index, record) in records.iter_mut().enumerate() {
+                let held = record.get("id").is_some_and(|id| !id.is_null());
+                if !held {
+                    record["id"] = Json::from(index % 4);
+                }
+            }
+        }
         let whole: Vec<&str> = if whole_meta { vec!["meta"] } else { Vec::new() };
         let shape = Shape {
             max_depth,

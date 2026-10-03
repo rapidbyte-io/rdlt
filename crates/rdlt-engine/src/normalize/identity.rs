@@ -49,7 +49,10 @@ use canonical::{Since, Stored, decimal_scale, temporal_tag};
 /// The ids of `batch`'s rows as roots: of the `key` columns' values in order, or of the whole row
 /// where there is no key.
 ///
-/// A key column the batch lacks encodes as null.
+/// # Errors
+///
+/// A key column the batch lacks, which a stream's keys are checked for before, and a value of a
+/// column of JSON identity cannot read.
 pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryArray, ArrowError> {
     hashes(Domain::Root, batch, key)
 }
@@ -78,16 +81,14 @@ fn hashes(
     key: &[Arc<str>],
 ) -> Result<BinaryArray, ArrowError> {
     let schema = batch.schema();
-    let encoders: Vec<Option<Encoder>> = if key.is_empty() {
+    let encoders: Vec<Encoder> = if key.is_empty() {
         let fields = schema.fields().iter().zip(batch.columns());
-        vec![Some(Encoder::object(None, fields)?)]
+        vec![Encoder::object(None, fields)?]
     } else {
         key.iter()
             .map(|column| {
-                let Ok(index) = schema.index_of(column) else {
-                    return Ok(None);
-                };
-                Encoder::new(schema.field(index), batch.column(index)).map(Some)
+                let index = schema.index_of(column)?;
+                Encoder::new(schema.field(index), batch.column(index))
             })
             .collect::<Result<_, _>>()?
     };
@@ -96,10 +97,7 @@ fn hashes(
         .map(|index| {
             row.clear();
             for encoder in &encoders {
-                match encoder {
-                    Some(encoder) => encoder.write(index, &mut row)?,
-                    None => row.push(NULL),
-                }
+                encoder.write(index, &mut row)?;
             }
             Ok(hash(domain, &row))
         })

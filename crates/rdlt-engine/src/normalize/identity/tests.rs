@@ -187,12 +187,11 @@ fn arrays_maps_and_other_types_encode_by_their_values() {
 }
 
 #[test]
-fn a_key_the_batch_lacks_encodes_as_null() {
+fn a_key_the_batch_lacks_identifies_no_row() {
     let batch =
         RecordBatch::try_from_iter([("other", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
             .unwrap();
-    let ids = root_ids(&batch, &[Arc::from("k")]).unwrap();
-    assert_eq!(ids.value(0), hashed(&[b"n".to_vec()])[0].as_slice());
+    assert!(root_ids(&batch, &[Arc::from("k")]).is_err());
 }
 
 #[test]

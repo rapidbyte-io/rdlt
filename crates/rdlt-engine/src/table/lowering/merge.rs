@@ -5,14 +5,16 @@ use std::sync::Arc;
 
 use arrow_array::builder::BinaryBuilder;
 use arrow_array::cast::AsArray;
-use arrow_array::types::UInt32Type;
-use arrow_array::{ArrayRef, BooleanArray, RecordBatch, UInt32Array};
+use arrow_array::types::{Float16Type, Float32Type, Float64Type, UInt32Type};
+use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, UInt32Array};
 use arrow_row::{RowConverter, SortField};
+use arrow_schema::DataType;
 use rdlt_connector::{LogicalType, StreamName};
 
 use super::{ChangeRows, Source, Stamp, lower_array};
 use crate::error::Error;
 use crate::table::TableView;
+use crate::table::convert::decoded;
 
 /// The positions of the rows `kept` keeps.
 pub(super) fn positions(kept: &BooleanArray) -> ArrayRef {
@@ -22,7 +24,8 @@ pub(super) fn positions(kept: &BooleanArray) -> ArrayRef {
     ))
 }
 
-/// Refuses a merge batch that lacks a key column or holds a null key.
+/// Refuses a merge batch that lacks a key column, holds a null or NaN key, or whose changes flag
+/// a key column unchanged: no row could be matched by such a key.
 pub(super) fn check_key(
     stream: &StreamName,
     view: &TableView,
@@ -46,6 +49,7 @@ pub(super) fn check_key(
             "the table has no column for part of the merge key".to_owned(),
         );
     }
+    let flagged = changes.map(ChangeRows::flagged).unwrap_or_default();
     for column in &view.key {
         let name = view.model.columns[*column].name();
         match &sources[*column] {
@@ -55,23 +59,127 @@ pub(super) fn check_key(
                     format!("a batch has no key column {name}"),
                 );
             }
-            Source::Incoming(index, _) if nulls(batch.column(*index), &keyed) => {
-                return refuse("merge_key_null", format!("key column {name} holds a null"));
+            Source::Incoming(index, _) => {
+                check_key_values(stream, name, batch.column(*index), &keyed)?;
+                if flagged.contains(index) {
+                    let detail = format!("a change flags key column {name} unchanged");
+                    return refuse("merge_key_unchanged", detail);
+                }
             }
-            Source::Incoming(..) | Source::Read(_) | Source::Rest(_) => {}
+            Source::Read(_) | Source::Rest(_) => {}
         }
     }
     Ok(())
 }
 
+/// Refuses `stream`'s key column `name`, `column`, where a row `keyed` says names a key holds a
+/// null or a NaN, at any depth and in any encoding: `merge_key_null` or `merge_key_nan`, Schema
+/// errors.
+pub(crate) fn check_key_values(
+    stream: &StreamName,
+    name: &str,
+    column: &ArrayRef,
+    keyed: &dyn Fn(usize) -> bool,
+) -> Result<(), Error> {
+    let refuse = |code: &str, what: &str| {
+        Err(
+            Error::schema(format!("stream {stream}: key column {name} holds {what}"))
+                .with_code(code)
+                .with_stream(stream),
+        )
+    };
+    if nulls(column, keyed) {
+        return refuse("merge_key_null", "a null");
+    }
+    let decoded = decoded(column).map_err(|error| {
+        Error::internal(format!(
+            "stream {stream}: reading key column {name}: {error}"
+        ))
+    })?;
+    if nans(decoded.as_ref())
+        .iter()
+        .enumerate()
+        .any(|(row, nan)| *nan && keyed(row))
+    {
+        return refuse("merge_key_nan", "a NaN, which equals no value");
+    }
+    Ok(())
+}
+
 /// Whether `column` holds a null in a row `keyed` says names a key.
-fn nulls(column: &ArrayRef, keyed: &impl Fn(usize) -> bool) -> bool {
+fn nulls(column: &ArrayRef, keyed: &dyn Fn(usize) -> bool) -> bool {
     if column.logical_null_count() == 0 {
         return false;
     }
     let nulls = column.logical_nulls();
     (0..column.len())
         .any(|row| keyed(row) && nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)))
+}
+
+/// Which rows of `array`, holding only what its rows name, hold a NaN at any depth.
+fn nans(array: &dyn Array) -> Vec<bool> {
+    let valid = |row: usize| array.is_valid(row);
+    let floats =
+        |nan: &dyn Fn(usize) -> bool| (0..array.len()).map(|row| valid(row) && nan(row)).collect();
+    match array.data_type() {
+        DataType::Float16 => floats(&|row| array.as_primitive::<Float16Type>().value(row).is_nan()),
+        DataType::Float32 => floats(&|row| array.as_primitive::<Float32Type>().value(row).is_nan()),
+        DataType::Float64 => floats(&|row| array.as_primitive::<Float64Type>().value(row).is_nan()),
+        DataType::Struct(_) => {
+            let mut rows = vec![false; array.len()];
+            for column in array.as_struct().columns() {
+                for (row, nan) in nans(column.as_ref()).into_iter().enumerate() {
+                    rows[row] |= nan && valid(row);
+                }
+            }
+            rows
+        }
+        DataType::List(_) => items(
+            array,
+            array.as_list::<i32>().offsets(),
+            array.as_list::<i32>().values(),
+        ),
+        DataType::LargeList(_) => items(
+            array,
+            array.as_list::<i64>().offsets(),
+            array.as_list::<i64>().values(),
+        ),
+        DataType::Map(..) => {
+            let map = array.as_map();
+            let entries: ArrayRef = Arc::new(map.entries().clone());
+            items(array, map.offsets(), &entries)
+        }
+        DataType::FixedSizeList(_, size) => {
+            let list = array.as_fixed_size_list();
+            let size = usize::try_from(*size).unwrap_or(0);
+            let held = nans(list.values().as_ref());
+            (0..array.len())
+                .map(|row| valid(row) && held.iter().skip(row * size).take(size).any(|nan| *nan))
+                .collect()
+        }
+        _ => vec![false; array.len()],
+    }
+}
+
+/// Which rows of `array`, a list whose items are `values` and whose rows `offsets` bound, hold
+/// an item holding a NaN.
+fn items<O: arrow_array::OffsetSizeTrait>(
+    array: &dyn Array,
+    offsets: &arrow_buffer::OffsetBuffer<O>,
+    values: &ArrayRef,
+) -> Vec<bool> {
+    let held = nans(values.as_ref());
+    offsets
+        .windows(2)
+        .enumerate()
+        .map(|(row, bounds)| {
+            let (start, end) = (bounds[0].as_usize(), bounds[1].as_usize());
+            array.is_valid(row)
+                && held
+                    .get(start..end)
+                    .is_some_and(|items| items.contains(&true))
+        })
+        .collect()
 }
 
 /// Each row's sequence in a merge table: its segment, then its position among the segment's rows,

@@ -25,6 +25,7 @@ mod growth;
 mod history;
 mod horizon;
 mod json;
+mod keys;
 mod ledger;
 mod lowering;
 mod merge;
