@@ -69,8 +69,9 @@ pub const CONTROL_STRING_BYTES: u64 = 64 * 1024;
 /// Bytes: bounds one catalog, a discovery's answer.
 pub const CATALOG_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Bytes: bounds one message that carries state or a stream's positions: an open's answer, a
-/// plan and its request, a commit's request and a report of committed positions.
+/// Bytes: bounds what one message that carries state or a stream's positions holds decoded, as
+/// its scan counts it, and so its bytes on the wire too: an open's answer, a plan and its
+/// request, a commit's request and a report of committed positions.
 pub const STATE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Bytes: bounds any other control message.
@@ -84,9 +85,10 @@ pub const HANDSHAKE_BYTES: u64 = 4 * 1024 * 1024;
 /// Bytes a message of a catalog, a schema change or any other control message may hold once
 /// decoded, for each byte it takes on the wire.
 ///
-/// A schema's columns, each a few bytes on the wire, hold tens decoded. A message of state may
-/// hold 8 for each byte, a handshake, a configuration and a read's start 4, and a frame of a read
-/// or a write 2: its data is held at its length.
+/// A schema's columns, each a few bytes on the wire, hold tens decoded. A handshake, a
+/// configuration and a read's start may hold 4 for each byte, and a frame of a read or a write 2:
+/// its data is held at its length. State is bounded on what it holds decoded, so its bound on
+/// the wire is the same.
 pub const DECODED_PER_BYTE: usize = 16;
 
 /// Bytes: what a message holds beside the field a limit bounds.
@@ -176,7 +178,8 @@ pub struct Limits {
     pub dictionary_bytes: u64,
     /// Bytes in one catalog.
     pub catalog_bytes: u64,
-    /// Bytes in one message that carries state or a stream's positions.
+    /// Bytes one message that carries state or a stream's positions holds decoded, as its
+    /// [scan](crate::scan) counts it, and so may take on the wire.
     pub state_bytes: u64,
     /// Bytes in any other control message.
     pub control_message_bytes: u64,
@@ -213,7 +216,7 @@ impl Class {
         match self {
             Self::Data => 2,
             Self::Handshake | Self::Config | Self::Cursor => 4,
-            Self::State => 8,
+            Self::State => 1,
             Self::Control | Self::Catalog | Self::Schema => DECODED_PER_BYTE,
         }
     }

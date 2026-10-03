@@ -44,10 +44,12 @@ async fn peaked<T>(call: impl Future<Output = T>) -> (T, usize) {
     (ended, HEAP.peak_usage().saturating_sub(before))
 }
 
-/// Asserts that `refused` failed as too large, holding no more than `class` may hold decoded.
+/// Asserts that `refused` failed as too large, holding no more than a message of `class` takes
+/// on the wire and may hold decoded together.
 fn within(refused: &str, peak: usize, class: Class) {
     assert!(refused.contains("too large"), "{refused}");
-    let bound = Limits::default().decoded(class);
+    let limits = Limits::default();
+    let bound = limits.decoding(class) + limits.decoded(class);
     assert!(peak <= bound, "held {peak} bytes, beyond {bound}");
 }
 

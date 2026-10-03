@@ -87,6 +87,10 @@ pub(crate) const MEMORY_BELOW_MINIMUM: &str = "memory_below_minimum";
 /// for: each holds a slot as long as the run, and one slot must stay for every other read.
 pub(crate) const PARTITIONS_TOO_FEW: &str = "partitions_too_few";
 
+/// The code of the error for a commit after which the pipeline's state would hold more decoded
+/// than an open's answer may: the pipeline could not open it again.
+pub(crate) const STATE_EXCEEDS_BUDGET: &str = "state_exceeds_budget";
+
 /// The code of the error for a table whose records take more than the tables' share.
 pub(crate) const TABLE_EXCEEDS_BUDGET: &str = "table_exceeds_budget";
 

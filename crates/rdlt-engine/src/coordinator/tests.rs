@@ -6,6 +6,7 @@
 mod lag;
 mod scale;
 mod seals;
+mod state;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -232,8 +233,7 @@ impl Setup {
 
     /// The coordinator, not yet running, and the handles a test drives it through.
     async fn coordinator(self) -> (Coordinator, Harness) {
-        let commits = Commits::default();
-        let acks = Acks::default();
+        let (commits, acks) = (Commits::default(), Acks::default());
         let closed = Arc::new(AtomicBool::new(false));
         let (progress, progress_feed) = mpsc::unbounded_channel();
         let (barrier_sender, barrier) = watch::channel(0);
@@ -286,6 +286,7 @@ impl Setup {
             launcher: Box::new(|_| Err(Error::internal("the tests start no phases"))),
             wal,
             positions: crate::wal::Positions::default(),
+            state: crate::coordinator::HeldState::default(),
             follow: false,
             replan: Duration::from_secs(60),
         });

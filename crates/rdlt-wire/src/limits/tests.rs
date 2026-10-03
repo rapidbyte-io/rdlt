@@ -358,7 +358,7 @@ fn each_class_of_message_may_hold_so_many_times_its_bytes_once_decoded() {
         (Class::Handshake, 4),
         (Class::Config, 4),
         (Class::Cursor, 4),
-        (Class::State, 8),
+        (Class::State, 1),
         (Class::Control, 16),
         (Class::Catalog, 16),
         (Class::Schema, 16),
@@ -367,7 +367,8 @@ fn each_class_of_message_may_hold_so_many_times_its_bytes_once_decoded() {
     for (class, expected) in expected {
         assert_eq!(times(class), expected, "{class:?}");
     }
-    assert_eq!(limits.decoded(Class::State), 128 << 20);
+    // State is bounded on what it holds decoded: its bound is its limit.
+    assert_eq!(limits.decoded(Class::State), 16 << 20);
     assert_eq!(limits.decoded(Class::Catalog), 64 << 20);
 }
 
