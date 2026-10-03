@@ -23,6 +23,10 @@ pub struct Checked {
 /// holds bytes that long.
 const MEMORY_DEADLINE: &str = "memory_budget_wait_exceeded";
 
+/// The code of a commit refused for leaving more state than an open may answer: the workload's
+/// cursors are sized so its state stays well within it.
+const STATE_BOUND: &str = "state_exceeds_budget";
+
 impl super::Simulation {
     /// Checks that none of the runs `reports` tell of reserved more than the budget, and counts
     /// their waits on it.
@@ -51,6 +55,16 @@ pub(super) fn explained(failures: &[Failure], prediction: &Prediction, seed: See
             "seed {seed}: phase {phase}: a run without faults ended on the memory budget's \
              deadline: {}",
             waited.text
+        );
+    }
+    if let Some(over) = failures
+        .iter()
+        .find(|failure| failure.text.contains(STATE_BOUND))
+    {
+        panic!(
+            "seed {seed}: phase {phase}: the workload's cursors left more state than an open may \
+             answer, which their sizes must not: {}",
+            over.text
         );
     }
     if let Some(failure) = unexplained(failures, prediction) {
