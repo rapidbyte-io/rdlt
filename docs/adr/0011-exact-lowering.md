@@ -71,6 +71,10 @@ and M3d deferred.
   before they did, so the time moves forward by the gap, as PostgreSQL and `java.time` move it.
   Beyond the years a named zone's offsets are known for, the value is refused; fixed offsets hold
   everywhere.
+  - Amended 2026-10-04 (ADR 0046): superseded. A date in a timestamp column of any zone is its
+    midnight in UTC, and a wall-clock time widened into a zoned column keeps its count from the
+    epoch: a zone shows an instant and never moves it, so a widening changes no value, row id or
+    history hash.
 - **Normalizing does not depend on encodings.** A property test normalizes every drawn batch as
   drawn and with every encoding plain, and requires the same parts, ids, lineage and values; its
   dates stay within a `Date32`'s days, as a far `Date64` has no other encoding. It

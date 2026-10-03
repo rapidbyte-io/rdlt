@@ -17,6 +17,11 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   such as `_rdlt_seq` while the stream appended; when the stream later merged or normalized, the
   engine named its own column the same, one column served for two, and creating a generation
   panicked.
+- A date widened into a zoned timestamp column became its midnight in the column's zone, while
+  identity and history hashes read it as its midnight in UTC, and each reference destination
+  placed it with arithmetic of its own: a widened key left its old child rows, and an unchanged
+  value opened a history version. A key of `-0.0` shared its row id with `0.0`, which
+  destinations comparing bit for bit kept as another row.
 - Arrow's temporal formatter panicked on a zoned instant whose local time chrono cannot hold,
   and wrote a Time64 of 2^32 seconds or more as an ordinary time of day. Dates held as Date64
   were divided toward zero where they became timestamps and floored where they became text; a
@@ -61,7 +66,15 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   renders a zoned instant only where chrono holds the instant and its time in the zone at an
   offset of whole minutes, and times of day never: the engine renders the rest exactly, in UTC.
   A Date64 is the day it is within everywhere, a struct's and a list's included, and one a
-  Date32 cannot hold is refused. A change time becomes microseconds by a checked conversion of
+  Date32 cannot hold is refused.
+- **Every temporal widening goes through one conversion, `rdlt_connector::instants`.** It says
+  what each temporal value denotes, and widens keeping each value the instant, time of day or
+  duration it was: a date is its midnight in UTC in a timestamp column of any zone, as a change
+  time is, and a timestamp's count from the epoch never moves under a zone, a zoned instant
+  never becoming a wall-clock time. The engine's conversions, identity, change times, the
+  reference destinations and the test oracle all use it, and the zone arithmetic each kept is
+  gone. A property test holds every widening the type lattice makes, every temporal type, unit
+  and zone and every numeric and decimal pair, to the same value, row id and history hash. A change time becomes microseconds by a checked conversion of
   the engine's own: a date's midnight, and an instant between two microseconds the earlier. A
   decimal beyond its declared precision is no value of its type and is refused.
 - **A value its column cannot hold follows the column's schema policy, row by row.** The
@@ -70,8 +83,11 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   typed error as before (`value_unrepresentable`, `change_time_invalid`, `change_time_null`);
   DiscardRow drops the row, its child rows with it in a normalized stream; DiscardValue nulls
   the value, and a version whose change time it nulls begins when its batch arrived. Each is
-  counted. A value is found refused by converting its row alone, once its batch's conversion
-  failed, in a column whose policy discards.
+  counted, a value refused on two counts once. A value is found refused by converting its row
+  alone, once its batch's conversion failed, in a column whose policy discards; a column whose
+  every value converts is converted once, and lowered as the check converted it. What a null
+  row of a struct or a list holds beneath it is no value: decoding nulls or drops it before
+  anything converts, checks or counts it.
 - **A version never ends before it begins.** A history destination begins a version when its
   change says, or at the latest instant its key's versions already hold where that is later: the
   latest start or end of the key's versions in the table, and of the versions the commit opened
@@ -89,7 +105,10 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   history and a normalized stream's identity key alike, refuses before any destination sees
   the rows a key column the batch lacks (`merge_key_missing`), a null (`merge_key_null`) and a
   NaN at any depth and in any encoding (`merge_key_nan`), and a change flagging a key column
-  unchanged (`merge_key_unchanged`). Identity has no encoding for a missing key.
+  unchanged (`merge_key_unchanged`). Identity has no encoding for a missing key. Keys compare as
+  floating-point numbers do: a negative zero in a key column, at any depth and in any encoding,
+  becomes the zero it equals before rows are identified, compacted or seen by a destination,
+  the only value a key column is changed in.
 - **A declared array is taken as given only while its table is created**, or where state records
   its table; after that a new one is a change its column's policy decides: a frozen stream
   refuses it when planned (`schema_frozen`), one that discards drops its rows.
@@ -101,7 +120,9 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   upper-case mappings and no further fold. A destination whose identifiers compare alike more
   widely declares narrower characters, and `D-NAMES` writes pairs of names the declared rules
   keep apart though they compare alike by ASCII case, case folding, normalization or
-  compatibility, and requires both back. SQLite already refuses a name holding an ASCII
+  compatibility, and requires both back: every character Unicode's case mappings or case
+  folding change beside what they make of it, gathered into names by the equalities that make
+  them alike, so a destination comparing by any one of them meets a pair alike. SQLite already refuses a name holding an ASCII
   upper-case letter and resolves every name without case before use (ADR 0049), so its owner
   and clash checks compare names as SQLite does.
 
@@ -117,4 +138,8 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
 - A discard policy discards values out of range as it discards type changes; a stream that
   relied on such a value failing must use Evolve or Freeze.
 - Per-row discards convert a failing batch's rows one at a time, which costs time in proportion
-  to the batch on that path only.
+  to the batch on that path only; measured, they hold no more than the column's charge.
+- A change time far in the future is taken: effective-dated changes are legitimate, and a
+  forged one only freezes the timeline of the key its own source writes, whose values that
+  source decides anyway. Later versions of such a key begin at that time, spanning none, until
+  it passes.

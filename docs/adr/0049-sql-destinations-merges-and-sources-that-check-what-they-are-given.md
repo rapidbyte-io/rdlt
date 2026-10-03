@@ -153,6 +153,8 @@ given:
   the wider type cannot hold fails, and a pair outside the list is refused, a struct losing a
   field among them. An id or a sequence a destination keeps as text compares as the bytes of
   the text. A `Date64` that is no whole day is the day it falls in, as the engine reads it.
+  - Amended 2026-10-04 (ADR 0046): temporal values widen through `rdlt_connector::instants`, as
+    the engine's do: a date is its midnight in UTC, and a zone never moves an instant.
 - **A schema change the held rows do not fit is refused where it is applied.** The memory
   destination converts what a table holds, its rows, generations and tombstones, before a
   column takes a type, and refuses the change as `schema_conflict`: the table stays at the
