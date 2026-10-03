@@ -513,3 +513,66 @@ async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow()
         .collect();
     assert_eq!(indexes.last(), Some(&(200, SchemaVersion(1))));
 }
+
+#[tokio::test]
+async fn a_version_stays_described_while_any_view_of_it_lives() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
+        .await
+        .expect("the log starts");
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let described = Arc::clone(&log.tables);
+    let written = async {
+        // Two views of one version, as a resolution that only rounds a column makes: the first
+        // describes it, the second finds it described.
+        let first = at(&orders, 1);
+        let second = at(&orders, 1);
+        logged(&log, &budget, 0, &first, SegmentId(1), &ids(0))
+            .await
+            .expect("the batch is logged");
+        logged(&log, &budget, 0, &second, SegmentId(2), &ids(0))
+            .await
+            .expect("the batch is logged");
+        drop(first);
+        log.commit(&budget, Vec::new(), Vec::new(), &meta(&[1, 2]), 0)
+            .await
+            .expect("the commit is durable");
+        // The second view lives: its version keeps its index, and a batch of it in flight finds
+        // its schema in the chunk after the commit.
+        let left: Vec<u32> = described
+            .lock()
+            .await
+            .indexes
+            .values()
+            .map(|(index, _)| *index)
+            .collect();
+        assert_eq!(left, [0]);
+        logged(&log, &budget, 0, &second, SegmentId(3), &ids(0))
+            .await
+            .expect("the batch is logged");
+        // A view is noted once, however many of its batches are logged.
+        let views: Vec<usize> = described
+            .lock()
+            .await
+            .indexes
+            .values()
+            .map(|(_, views)| views.len())
+            .collect();
+        assert_eq!(views, [2]);
+        log.commit(&budget, Vec::new(), Vec::new(), &meta(&[3]), 0)
+            .await
+            .expect("the commit is durable");
+        drop(second);
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+    let schemas = frames(&store)
+        .into_iter()
+        .filter(|frame| matches!(frame, Frame::Schema(_)))
+        .count();
+    // Once in each chunk that holds its batches, under one index.
+    assert_eq!(schemas, 2);
+}
