@@ -8,10 +8,12 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{AtFlags, CWD, FileType, Mode, OFlags};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+
+mod base;
 
 /// Why something of a local log was refused, carried by the [`io::Error`] that refused it.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -86,42 +88,6 @@ pub(super) struct Dir {
 }
 
 impl Dir {
-    /// The base at `path`, resolved as the embedder wrote it, created where missing with the
-    /// missing directories above it, each private and durable in its parent; it must belong to
-    /// this user and be writable by no other.
-    pub(super) fn base(path: &Path) -> io::Result<Self> {
-        let missing: Vec<&Path> = path
-            .ancestors()
-            .take_while(|ancestor| !ancestor.as_os_str().is_empty() && !ancestor.exists())
-            .collect();
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(path)?;
-        for created in missing.iter().rev() {
-            // A relative directory of one component has the empty path as its parent.
-            let parent = created
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
-            Self::resolved(parent)?.sync()?;
-        }
-        let base = Self::resolved(path)?;
-        let metadata = base.file.metadata()?;
-        owned(metadata.uid(), metadata.mode(), BASE, &base.path)?;
-        above(path)?;
-        Ok(base)
-    }
-
-    fn resolved(path: &Path) -> io::Result<Self> {
-        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOCTTY;
-        let fd = rustix::fs::openat(CWD, path, flags, Mode::empty())?;
-        Ok(Self {
-            file: File::from(fd),
-            path: path.to_owned(),
-        })
-    }
-
     /// Checks the base, held open, again: it must still be linked where it was reached, which
     /// a base removed is not, refused as [`io::ErrorKind::NotFound`], and still be this user's
     /// and writable by no other.
@@ -310,6 +276,9 @@ impl Dir {
     }
 }
 
+#[cfg(test)]
+pub(super) use base::OPENED;
+
 /// The directories synced, in order, for tests to see which names were made durable.
 #[cfg(test)]
 pub(super) static SYNCED: parking_lot::Mutex<Vec<PathBuf>> = parking_lot::Mutex::new(Vec::new());
@@ -329,34 +298,6 @@ pub(super) fn owned(owner: u32, mode: u32, reach: u32, path: &Path) -> io::Resul
         why,
     }
     .into())
-}
-
-/// Checks every directory above the base at `path`, as written and as resolved: each must belong
-/// to this user or to root, and none but its owner may write it unless it is sticky, so no other
-/// user can move the base, or a link on the way to it, or put another in its place.
-fn above(path: &Path) -> io::Result<()> {
-    let (written, resolved) = (std::path::absolute(path)?, std::fs::canonicalize(path)?);
-    let me = rustix::process::geteuid().as_raw();
-    let ancestors = written
-        .ancestors()
-        .skip(1)
-        .chain(resolved.ancestors().skip(1));
-    for ancestor in ancestors {
-        let metadata = std::fs::metadata(ancestor)?;
-        let why = if metadata.uid() != me && metadata.uid() != 0 {
-            "another user owns a directory above it"
-        } else if metadata.mode() & BASE != 0 && metadata.mode() & STICKY == 0 {
-            "others may write a directory above it"
-        } else {
-            continue;
-        };
-        return Err(Refusal::NotPrivate {
-            path: ancestor.to_owned(),
-            why,
-        }
-        .into());
-    }
-    Ok(())
 }
 
 /// `removed`, a name gone counted as removed.
