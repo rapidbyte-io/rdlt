@@ -1,8 +1,9 @@
 //! What a pipeline's tables and state may grow to, across pushes and runs.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 
 use crate::error::Error;
+use crate::limits::LOG_BYTES;
 
 /// Limits on what a pipeline's tables and state grow to across pushes and runs, each refused,
 /// typed, where it would be passed.
@@ -14,6 +15,7 @@ use crate::error::Error;
 pub struct GrowthLimits {
     child_tables: NonZeroUsize,
     writers: NonZeroUsize,
+    log_bytes: NonZeroU64,
 }
 
 impl GrowthLimits {
@@ -31,7 +33,32 @@ impl GrowthLimits {
         Ok(Self {
             child_tables: NonZeroUsize::new(child_tables).ok_or_else(|| invalid("child_tables"))?,
             writers: NonZeroUsize::new(writers).ok_or_else(|| invalid("writers"))?,
+            log_bytes: Self::default().log_bytes,
         })
+    }
+
+    /// These limits, a load's write-ahead log holding at most `bytes` on disk; never zero.
+    ///
+    /// # Errors
+    ///
+    /// `growth_limits_invalid` for zero bytes.
+    pub fn with_log_bytes(mut self, bytes: u64) -> Result<Self, Error> {
+        self.log_bytes = NonZeroU64::new(bytes).ok_or_else(|| {
+            Error::config("growth limits: log_bytes must be more than zero")
+                .with_code("growth_limits_invalid")
+        })?;
+        Ok(self)
+    }
+
+    /// Bytes: the most a load's write-ahead log holds on disk, its chunks published and the chunk
+    /// it stages together.
+    ///
+    /// Only a commit lets a chunk go, so a source that does not checkpoint grows its load's log
+    /// by what it sends. Once the log holds half of this, a commit is due, and again at each
+    /// eighth more; a batch whose frame would take the log past it fails its write with
+    /// `log_bytes_exceeded`, before the source is told anything of it.
+    pub fn log_bytes(&self) -> NonZeroU64 {
+        self.log_bytes
     }
 
     /// Tables: the most child tables a normalized stream adds below its table, those state
@@ -51,11 +78,12 @@ impl GrowthLimits {
 }
 
 impl Default for GrowthLimits {
-    /// 1024 child tables a stream, and 128 writers an attempt.
+    /// 1024 child tables a stream, 128 writers an attempt, and 4 GiB of a load's log.
     fn default() -> Self {
         Self {
             child_tables: NonZeroUsize::new(1024).unwrap_or(NonZeroUsize::MIN),
             writers: NonZeroUsize::new(128).unwrap_or(NonZeroUsize::MIN),
+            log_bytes: NonZeroU64::new(LOG_BYTES).unwrap_or(NonZeroU64::MIN),
         }
     }
 }

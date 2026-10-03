@@ -6,6 +6,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -24,7 +25,7 @@ use super::writer::{Command, WalWriter};
 use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::compute::{ComputePool, run_all};
 use crate::error::Error;
-use crate::limits::{LOG_FRAME_EXCEEDS_BUDGET, RECORDED};
+use crate::limits::{LOG_BYTES_EXCEEDED, LOG_FRAME_EXCEEDS_BUDGET, RECORDED};
 use crate::table::TableView;
 
 /// A table as a load's log tells its versions apart: its index in the attempt, its schema version
@@ -57,6 +58,16 @@ pub(crate) struct LoadLog {
     batches: Arc<AtomicU64>,
     /// The batch frames and rows logged of each segment not yet sealed or abandoned.
     counts: Arc<parking_lot::Mutex<BTreeMap<SegmentId, Counted>>>,
+    /// What the log may hold on disk, and what makes a commit due.
+    disk: Arc<Disk>,
+}
+
+/// What a load's log may hold on disk, and when it makes a commit due.
+struct Disk {
+    /// Bytes: what the log may hold.
+    limit: u64,
+    /// Bytes: what the log holds when a commit is due next.
+    due: AtomicU64,
 }
 
 /// The batch frames and the rows logged of a segment.
@@ -76,23 +87,51 @@ struct Described {
 }
 
 impl LoadLog {
-    /// The log of `owner`'s load in `store`, and the task writing it, for the attempt's scope to
-    /// run until every clone is dropped or the log is closed.
+    /// The log of `owner`'s load in `store`, holding at most `limit` bytes on disk, and the task
+    /// writing it, for the attempt's scope to run until every clone is dropped or the log is
+    /// closed.
     pub(crate) fn start(
         store: Arc<dyn WalStore>,
         owner: Owner,
+        limit: NonZeroU64,
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
     ) {
         let (writer, task) = WalWriter::start(store, owner);
+        let disk = Disk {
+            limit: limit.get(),
+            due: AtomicU64::new(limit.get() / 2),
+        };
         let log = Self {
             writer,
             tables: Arc::default(),
             batches: Arc::default(),
             counts: Arc::default(),
+            disk: Arc::new(disk),
         };
         (log, task)
+    }
+
+    /// Whether the log holds enough on disk that a commit is due: half of what it may hold, and
+    /// an eighth more after each commit made while it was due.
+    pub(crate) fn due(&self) -> bool {
+        self.held() >= self.disk.due.load(Ordering::Relaxed)
+    }
+
+    /// Notes a commit was made: the next is due once the log holds an eighth more than now, or
+    /// half of what it may.
+    pub(crate) fn passed(&self) {
+        let next = self
+            .held()
+            .saturating_add(self.disk.limit / 8)
+            .max(self.disk.limit / 2);
+        self.disk.due.store(next, Ordering::Relaxed);
+    }
+
+    /// Bytes: what the log holds on disk.
+    pub(crate) fn held(&self) -> u64 {
+        self.writer.shared().held.load(Ordering::Relaxed)
     }
 
     /// Logs `batch` of `segment`, lowered for `view` of the attempt's table `table`, encoded on
@@ -107,6 +146,8 @@ impl LoadLog {
         segment: SegmentId,
         batch: &RecordBatch,
     ) -> Result<(), Error> {
+        // A failed write fails the batches after it at once, not only the next commit.
+        self.writer.shared().failure()?;
         let index = self.describe(budget, table, view).await?;
         {
             let mut counts = self.counts.lock();
@@ -129,6 +170,7 @@ impl LoadLog {
         if let Some(reserved) = held.downcast_mut::<Reservation>() {
             reserved.shrink(count(frame.len()));
         }
+        self.admit(count(frame.len()))?;
         self.writer
             .send(Command::Batch {
                 segment,
@@ -238,6 +280,26 @@ impl LoadLog {
         answer
             .await
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
+    }
+
+    /// Counts `bytes` of a batch frame on disk, where the log may hold them.
+    ///
+    /// # Errors
+    ///
+    /// `log_bytes_exceeded` where the log would hold more than it may.
+    fn admit(&self, bytes: u64) -> Result<(), Error> {
+        let held = &self.writer.shared().held;
+        let before = held.fetch_add(bytes, Ordering::Relaxed);
+        if before.saturating_add(bytes) <= self.disk.limit {
+            return Ok(());
+        }
+        held.fetch_sub(bytes, Ordering::Relaxed);
+        Err(Error::wal(format!(
+            "the load's write-ahead log would hold more than {} bytes: its sources sent that \
+             much without a checkpoint a commit could take",
+            self.disk.limit
+        ))
+        .with_code(LOG_BYTES_EXCEEDED))
     }
 
     /// Logs `seal` with the batch frames and rows logged of its segment; `budget` holds the
