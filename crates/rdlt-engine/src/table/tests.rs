@@ -1560,6 +1560,44 @@ fn rows_whose_json_its_own_column_does_not_hold_are_dropped_and_the_column_is_st
 }
 
 #[test]
+fn a_row_is_kept_only_where_neither_a_new_column_nor_a_split_column_drops_it() {
+    use super::resolve::Rest;
+    use arrow_array::BooleanArray;
+    use arrow_schema::Schema;
+    let stream = plan().schema(SchemaSettings::new().policy(SchemaPolicy::DiscardRow));
+    let resolver = resolver(capabilities(), stream, &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Int64)]);
+    let incoming = schema(&[("amount", LogicalType::Json), ("extra", LogicalType::Utf8)]);
+    let resolution = resolver.resolve(&model, &incoming).unwrap();
+    assert_eq!(
+        resolution.routes,
+        [
+            Route::Split {
+                own: 0,
+                rest: Rest::DiscardRows
+            },
+            Route::DiscardRows
+        ]
+    );
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
+    let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
+    let schema = Schema::new(vec![
+        ArrowField::new("amount", DataType::Utf8, true).with_metadata(extension.into()),
+        ArrowField::new("extra", DataType::Utf8, true),
+    ]);
+    // The second row's amount is no integer; the third holds a new column's value.
+    let amounts = StringArray::from(vec![Some("1"), Some("\"x\""), Some("2"), Some("3")]);
+    let extras = StringArray::from(vec![None, None, Some("e"), None]);
+    let batch =
+        RecordBatch::try_new(Arc::new(schema), vec![Arc::new(amounts), Arc::new(extras)]).unwrap();
+    assert_eq!(
+        lowering.kept(&batch).unwrap(),
+        Some(BooleanArray::from(vec![true, false, false, true]))
+    );
+}
+
+#[test]
 fn a_column_of_nulls_arriving_at_a_typed_column_is_charged_as_the_nulls_it_fills() {
     use arrow_array::NullArray;
     let resolver = resolver(capabilities(), plan(), &[]);
