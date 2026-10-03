@@ -47,8 +47,19 @@ fn stray(error: &std::io::Error) -> bool {
     matches!(refusal(error), Some(Refusal::Stray { .. }))
 }
 
+/// Opens `load`'s log of `pipeline` in `wal` where it was not opened yet.
+async fn opened(wal: &LocalWal, pipeline: &PipelineId, load: LoadId) {
+    match wal.open_log(pipeline, load).await {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+            panic!("the log opens: {error}")
+        }
+        _ => {}
+    }
+}
+
 /// Stages `bytes` as `chunk` of `pipeline`'s log in `wal` and publishes it.
 async fn published(wal: &LocalWal, pipeline: &PipelineId, chunk: Chunk, bytes: &'static [u8]) {
+    opened(wal, pipeline, chunk.load).await;
     let mut staged = wal.stage(pipeline, chunk).await.expect("stages");
     staged
         .append(Bytes::from_static(bytes))
@@ -187,7 +198,11 @@ async fn files_and_directories_a_log_creates_are_its_owner_s_alone() {
         .expect("lists")
         .map(|entry| entry.expect("an entry").path())
         .collect();
-    assert_eq!(files.len(), 2, "a chunk and a staged one");
+    assert_eq!(
+        files.len(),
+        3,
+        "the mark of an open log, a chunk and a staged one"
+    );
     for file in files {
         assert_eq!(mode(&file), 0o600, "{}", file.display());
     }
@@ -338,6 +353,7 @@ async fn a_load_that_only_staged_is_listed_so_replay_removes_it() {
     let wal = LocalWal::new(base.path());
     let orders = pipeline("orders");
     let load = chunk(3, 0).load;
+    opened(&wal, &orders, load).await;
     let mut staged = wal.stage(&orders, chunk(3, 0)).await.expect("stages");
     staged
         .append(Bytes::from_static(b"x"))
@@ -371,6 +387,7 @@ async fn a_chunk_s_name_is_durable_once_published_and_its_deletion_once_deleted(
     let load_dir = wal
         .pipeline_dir(&orders)
         .join(names::load(chunk(1, 0).load));
+    opened(&wal, &orders, chunk(1, 0).load).await;
     let mut staged = wal.stage(&orders, chunk(1, 0)).await.expect("stages");
     staged
         .append(Bytes::from_static(b"frame"))
@@ -391,7 +408,7 @@ async fn a_chunk_s_name_is_durable_once_published_and_its_deletion_once_deleted(
         synced_under(base.path(), from),
         std::slice::from_ref(&load_dir)
     );
-    // A log's chunks go by number, each durably before the next, then its directory.
+    // A log is closed durably first, then its files go, then its directory.
     let from = SYNCED.lock().len();
     wal.remove_log(&orders, chunk(1, 0).load)
         .await

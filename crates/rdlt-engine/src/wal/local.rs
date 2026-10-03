@@ -88,12 +88,42 @@ impl Place {
         }
     }
 
-    /// `load`'s directory, created where missing with the pipeline's.
-    fn load_created(&self, load: LoadId) -> io::Result<Dir> {
-        Dir::base(&self.base)?
-            .dir_created(&self.pipeline)?
-            .dir_created(&names::load(load))
+    /// `load`'s directory, where its log is open: refused as [`io::ErrorKind::NotFound`]
+    /// otherwise.
+    fn open_load(&self, load: LoadId) -> io::Result<Dir> {
+        let name = names::load(load);
+        match self.load(load)? {
+            Some(dir) if is_open(&dir)? => Ok(dir),
+            _ => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("the log of load {name} is not open"),
+            )),
+        }
     }
+}
+
+/// Whether the log whose directory is `dir` is open.
+fn is_open(dir: &Dir) -> io::Result<bool> {
+    match dir.status(OsStr::new(names::OPEN))? {
+        Some(status) if status.kind == Kind::File => {
+            dir.private(OsStr::new(names::OPEN), &status)?;
+            Ok(true)
+        }
+        Some(_) => Err(dir.refused(names::OPEN, "it is not a regular file")),
+        None => Ok(false),
+    }
+}
+
+/// Opens `load`'s log in `place`: its directory created, durable in the pipeline's, then the
+/// file that marks it open, durable in it; a directory of the load already there, whatever it
+/// holds, is refused with [`io::ErrorKind::AlreadyExists`].
+fn open_log(place: &Place, load: LoadId) -> io::Result<()> {
+    let pipeline = Dir::base(&place.base)?.dir_created(&place.pipeline)?;
+    let name = names::load(load);
+    let dir = pipeline.dir_new(&name)?;
+    pipeline.sync()?;
+    drop(dir.create(names::OPEN)?);
+    dir.sync()
 }
 
 /// Runs `work` on tokio's blocking pool.
@@ -131,25 +161,55 @@ impl StagedChunk for Staged {
         blocking(move || file.lock().write_all(&bytes))
     }
 
-    /// Makes the staged file durable, links it in under the chunk's name where that is free,
-    /// lets the staged name go, and makes the directory durable.
+    /// Makes the staged file durable, links it in under the chunk's name where that is free, and
+    /// makes the directory durable, keeping the chunk only where the log is open still.
+    ///
+    /// A chunk linked in as the log is removed is unlinked again, refused as
+    /// [`io::ErrorKind::NotFound`]. The staged name goes whatever happens.
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
         blocking(move || {
-            self.file.lock().sync_all()?;
-            let dir = self
-                .place
-                .load(self.chunk.load)?
-                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, self.part.clone()))?;
-            dir.link(&self.part, &names::chunk(self.chunk.number))?;
-            dir.remove_file(OsStr::new(&self.part))?;
-            dir.sync()
+            let dir = self.place.load(self.chunk.load)?;
+            let published = dir
+                .as_ref()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+                .and_then(|dir| self.linked(dir));
+            if let Some(dir) = &dir {
+                dir.remove_file(OsStr::new(&self.part))?;
+                if published.is_ok() {
+                    dir.sync()?;
+                }
+            }
+            published
         })
+    }
+}
+
+impl Staged {
+    /// Links the staged file into `dir` under the chunk's name, as [`Staged::publish`] says.
+    fn linked(&self, dir: &Dir) -> io::Result<()> {
+        self.file.lock().sync_all()?;
+        let name = names::chunk(self.chunk.number);
+        dir.link(&self.part, &name)
+            .map_err(|error| match error.raw_os_error() {
+                Some(code) if code == rustix::io::Errno::NOENT.raw_os_error() => {
+                    io::Error::new(io::ErrorKind::NotFound, "the log was removed")
+                }
+                _ => error,
+            })?;
+        if !is_open(dir)? {
+            dir.remove_file(OsStr::new(&name))?;
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the log was removed",
+            ));
+        }
+        Ok(())
     }
 }
 
 /// Stages chunk `chunk` in `place`, in a file of a name no other staging takes.
 fn staged(place: Place, chunk: Chunk) -> io::Result<Staged> {
-    let dir = place.load_created(chunk.load)?;
+    let dir = place.open_load(chunk.load)?;
     for _ in 0..STAGING_TRIES {
         let token = u64::from(std::process::id()) << 32
             | u64::from(STAGINGS.fetch_add(1, Ordering::Relaxed));
@@ -173,21 +233,26 @@ fn staged(place: Place, chunk: Chunk) -> io::Result<Staged> {
     ))
 }
 
-/// The loads of `place` that have a directory, their logs' chunks staged or published.
-fn loads(place: &Place) -> io::Result<Vec<LoadId>> {
-    let Some(dir) = place.pipeline()? else {
+/// The loads of `place` whose logs are open where `open`, removed and left behind otherwise.
+fn loads(place: &Place, open: bool) -> io::Result<Vec<LoadId>> {
+    let Some(pipeline) = place.pipeline()? else {
         return Ok(Vec::new());
     };
     let mut loads = Vec::new();
-    for name in dir.names()? {
-        let Some(status) = dir.status(&name)? else {
+    for name in pipeline.names()? {
+        let Some(status) = pipeline.status(&name)? else {
             continue;
         };
-        let load = names::parse_load(&name).ok_or_else(|| stray(&dir, &name))?;
+        let load = names::parse_load(&name).ok_or_else(|| stray(&pipeline, &name))?;
         if status.kind != Kind::Dir {
-            return Err(dir.refused(&name, "it is not a directory"));
+            return Err(pipeline.refused(&name, "it is not a directory"));
         }
-        loads.push(load);
+        let Some(dir) = pipeline.dir(&names::load(load))? else {
+            continue;
+        };
+        if is_open(&dir)? == open {
+            loads.push(load);
+        }
     }
     Ok(loads)
 }
@@ -204,6 +269,9 @@ fn listed(dir: &Dir) -> io::Result<Listed> {
         let Some(status) = dir.status(&name)? else {
             continue;
         };
+        if name == names::OPEN {
+            continue;
+        }
         let number = names::parse_chunk(&name);
         if number.is_none() && !names::is_part(&name) {
             return Err(stray(dir, &name));
@@ -238,8 +306,9 @@ fn read(place: &Place, chunk: Chunk, offset: u64, len: u64) -> io::Result<Bytes>
     Ok(Bytes::from(bytes))
 }
 
-/// Deletes `load`'s log in `place`, durably: its staged files, then its chunks by number, each
-/// deletion durable before the next, then its directory.
+/// Removes `load`'s log in `place`, durably: the file that marks it open first, then its staged
+/// files and chunks, then its directory; a directory a staging still fills is left, removed, for
+/// a later removal.
 fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
     let Some(pipeline) = place.pipeline()? else {
         return Ok(());
@@ -249,14 +318,21 @@ fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
         return Ok(());
     };
     let (chunks, parts) = listed(&dir)?;
+    dir.remove_file(OsStr::new(names::OPEN))?;
+    dir.sync()?;
     for part in parts {
         dir.remove_file(&part)?;
     }
     for (number, _) in chunks {
         dir.remove_file(OsStr::new(&names::chunk(number)))?;
-        dir.sync()?;
     }
-    pipeline.remove_dir(&name)?;
+    dir.sync()?;
+    match pipeline.remove_dir(&name) {
+        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::NOTEMPTY.raw_os_error()) => {
+            return Ok(());
+        }
+        removed => removed?,
+    }
     pipeline.sync()
 }
 
@@ -279,6 +355,15 @@ fn remove(place: &Place, chunk: Chunk) -> io::Result<()> {
 }
 
 impl WalStore for LocalWal {
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        let place = self.place(pipeline);
+        blocking(move || open_log(&place, load))
+    }
+
     fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -293,7 +378,12 @@ impl WalStore for LocalWal {
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
         let place = self.place(pipeline);
-        blocking(move || loads(&place))
+        blocking(move || loads(&place, true))
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        let place = self.place(pipeline);
+        blocking(move || loads(&place, false))
     }
 
     fn chunks<'a>(

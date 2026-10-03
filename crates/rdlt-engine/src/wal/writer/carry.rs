@@ -110,6 +110,6 @@ impl Log {
         self.store
             .read(&self.owner.pipeline, chunk, span.offset, span.len)
             .await
-            .map_err(Error::from_wal)
+            .map_err(|error| self.lost(error))
     }
 }

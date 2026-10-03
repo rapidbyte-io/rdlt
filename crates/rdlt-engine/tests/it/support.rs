@@ -3,9 +3,11 @@
 pub(crate) mod batches;
 pub(crate) mod destinations;
 pub(crate) mod faults;
+pub(crate) mod hooked;
 pub(crate) mod listening;
 pub(crate) mod logs;
 pub(crate) mod making;
+pub(crate) mod memory_wal;
 pub(crate) mod script;
 pub(crate) mod targets;
 

@@ -147,6 +147,16 @@ impl Dir {
         Ok(Some(dir))
     }
 
+    /// The directory `name`, created private, which the caller makes durable here.
+    ///
+    /// One that exists is refused with [`io::ErrorKind::AlreadyExists`].
+    pub(super) fn dir_new(&self, name: &str) -> io::Result<Self> {
+        rustix::fs::mkdirat(&self.file, name, Mode::RWXU)?;
+        self.dir(name)?.ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, self.at(name).display().to_string())
+        })
+    }
+
     /// The directory `name`, created where missing, private and durable in this one.
     pub(super) fn dir_created(&self, name: &str) -> io::Result<Self> {
         match rustix::fs::mkdirat(&self.file, name, Mode::RWXU) {

@@ -42,6 +42,7 @@ mod signals;
 mod split;
 mod stored;
 mod support;
+mod takeover;
 mod told;
 mod unbounded;
 mod wal;

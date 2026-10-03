@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::budget::Exhausted;
 use crate::limits::{
-    BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_STORAGE_FULL, WAL_STRAY,
+    BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_RUNNING, WAL_STORAGE_FULL, WAL_STRAY,
 };
 use crate::scope::ScopeError;
 
@@ -156,6 +156,17 @@ impl Error {
             format!("the write-ahead log of load {load} was taken over by a replay"),
         )
         .with_code(WAL_FENCED)
+    }
+
+    /// The error for a replay that could not fence `load`'s log, which its load kept publishing
+    /// chunks to: another attempt of the pipeline runs, and this one waits for it, retryably.
+    pub(crate) fn wal_running(load: rdlt_connector::LoadId) -> Self {
+        let mut running = Self::wal(format!(
+            "load {load} of the pipeline is still writing its write-ahead log"
+        ))
+        .with_code(WAL_RUNNING);
+        running.retryable = true;
+        running
     }
 
     /// Classifies a connector's `error` from `side`, keeping it as the cause.

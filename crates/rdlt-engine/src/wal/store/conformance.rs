@@ -20,13 +20,22 @@ fn chunk(load: u128, number: u64) -> Chunk {
     }
 }
 
-/// Stages `bytes` as `chunk` of `pipeline`'s log and publishes it.
+/// Opens `load`'s log of `pipeline` where it was not opened yet.
+async fn opened(store: &dyn WalStore, pipeline: &PipelineId, load: LoadId) {
+    match store.open_log(pipeline, load).await {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => panic!("opens: {error}"),
+        _ => {}
+    }
+}
+
+/// Stages `bytes` as `chunk` of `pipeline`'s log, opening it where it is not, and publishes it.
 async fn published(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     chunk: Chunk,
     bytes: &'static [u8],
 ) -> io::Result<()> {
+    opened(store, pipeline, chunk.load).await;
     let mut staged = store.stage(pipeline, chunk).await?;
     for part in bytes.chunks(3) {
         staged.append(Bytes::from_static(part)).await?;
@@ -36,6 +45,8 @@ async fn published(
 
 /// Runs every check of the contract on `store`, which must hold nothing yet.
 pub(crate) async fn conforms(store: &dyn WalStore) {
+    a_chunk_is_staged_only_in_a_log_opened_once(store).await;
+    no_chunk_is_published_once_its_log_is_removed(store).await;
     a_staged_chunk_is_seen_by_no_reader_until_published(store).await;
     a_published_chunk_is_whole_read_by_range_and_never_replaced(store).await;
     the_first_of_two_chunks_of_one_name_published_is_kept(store).await;
@@ -44,9 +55,60 @@ pub(crate) async fn conforms(store: &dyn WalStore) {
     removing_a_log_removes_it_whole_and_nothing_else(store).await;
 }
 
+async fn a_chunk_is_staged_only_in_a_log_opened_once(store: &dyn WalStore) {
+    let orders = pipeline("opened");
+    let at = chunk(1, 0);
+    let refused = store
+        .stage(&orders, at)
+        .await
+        .err()
+        .expect("no log is open");
+    assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
+    store.open_log(&orders, at.load).await.expect("opens");
+    assert_eq!(store.loads(&orders).await.expect("lists"), [at.load]);
+    assert_eq!(store.chunks(&orders, at.load).await.expect("lists"), []);
+    let again = store
+        .open_log(&orders, at.load)
+        .await
+        .expect_err("opened once");
+    assert_eq!(again.kind(), io::ErrorKind::AlreadyExists, "{again}");
+    published(store, &orders, at, b"chunk")
+        .await
+        .expect("publishes");
+    store.remove_log(&orders, at.load).await.expect("removes");
+    let refused = store
+        .stage(&orders, chunk(1, 1))
+        .await
+        .err()
+        .expect("removed");
+    assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
+}
+
+async fn no_chunk_is_published_once_its_log_is_removed(store: &dyn WalStore) {
+    let orders = pipeline("fenced");
+    let load = chunk(1, 0).load;
+    published(store, &orders, chunk(1, 0), b"first")
+        .await
+        .expect("publishes");
+    // A writer stalls with a chunk staged while its log is taken over and removed.
+    let mut stalled = store.stage(&orders, chunk(1, 1)).await.expect("stages");
+    stalled
+        .append(Bytes::from_static(b"late"))
+        .await
+        .expect("appends");
+    store.remove_log(&orders, load).await.expect("removes");
+    let refused = stalled.publish().await.expect_err("the log is gone");
+    assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
+    assert_eq!(store.loads(&orders).await.expect("lists"), []);
+    assert_eq!(store.leftovers(&orders).await.expect("lists"), []);
+    assert_eq!(store.chunks(&orders, load).await.expect("lists"), []);
+    assert!(store.read(&orders, chunk(1, 1), 0, 4).await.is_err());
+}
+
 async fn a_staged_chunk_is_seen_by_no_reader_until_published(store: &dyn WalStore) {
     let orders = pipeline("staged");
     let at = chunk(1, 0);
+    opened(store, &orders, at.load).await;
     let mut staged = store.stage(&orders, at).await.expect("stages");
     staged
         .append(Bytes::from_static(b"frames"))
@@ -88,6 +150,7 @@ async fn a_published_chunk_is_whole_read_by_range_and_never_replaced(store: &dyn
 async fn the_first_of_two_chunks_of_one_name_published_is_kept(store: &dyn WalStore) {
     let orders = pipeline("raced");
     let at = chunk(1, 4);
+    opened(store, &orders, at.load).await;
     let mut writer = store.stage(&orders, at).await.expect("stages");
     let mut fence = store.stage(&orders, at).await.expect("stages");
     writer

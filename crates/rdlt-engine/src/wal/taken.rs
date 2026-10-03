@@ -1,5 +1,9 @@
 //! Taking a log over for replay: a fence published as the log's next chunk, which its load, if
-//! it still runs, then finds taken when it publishes, so it adds nothing to what is replayed.
+//! it still runs, then finds taken when it publishes, so it adds nothing to what is replayed; once
+//! the log is removed, the load finds it gone.
+
+#[cfg(test)]
+mod tests;
 
 use std::io;
 
@@ -16,20 +20,21 @@ use crate::wal::{Chunk, WalStore};
 /// leaves the log to a later replay: a load still running publishes one a commit.
 const TRIES: usize = 8;
 
-/// What a replay may do with a log.
+/// What a replay may do with a log, once it is fenced.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum Taken {
-    /// The log needs nothing: its load closed it, or a replay released it.
+pub(crate) enum Taken {
+    /// The log needs nothing: its load closed it, a replay released it, or it holds no chunk;
+    /// it is removed.
     Finished,
     /// The replay fenced the log with chunk `number`, and replays it.
     Fenced { number: u64 },
-    /// Its load kept publishing: it runs, and the log is left to a later replay.
+    /// Its load kept publishing, so the log is not fenced: the load runs.
     Running,
 }
 
 /// Takes `load`'s log of `pipeline` in `store` over, its chunks read for frames of at most
 /// `frame_bytes`.
-pub(super) async fn take(
+pub(crate) async fn take(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,
@@ -37,8 +42,9 @@ pub(super) async fn take(
 ) -> Result<Taken, Error> {
     for _ in 0..TRIES {
         let tail = scan::tail(store, pipeline, load, frame_bytes).await?;
+        // A log that needs nothing is fenced all the same: its load may still publish a commit
+        // after its last chunk, which a removal that went first would drop.
         let (number, end) = match tail {
-            Some(tail) if tail.needed().is_empty() => return Ok(Taken::Finished),
             Some(tail) => {
                 let end = End {
                     live: tail.needed(),
@@ -48,9 +54,10 @@ pub(super) async fn take(
             }
             None => (0, End::default()),
         };
+        let finished = end.live.is_empty();
         if fence(store, pipeline, Chunk { load, number }, end).await? {
             crash_point!("engine.replay.fenced");
-            return Ok(if number == 0 {
+            return Ok(if finished {
                 Taken::Finished
             } else {
                 Taken::Fenced { number }
@@ -62,7 +69,7 @@ pub(super) async fn take(
 
 /// Releases `load`'s log, which the replay fenced with chunk `number`: a fence after it needing
 /// nothing; whether the replay was the last to take the log, and may delete it.
-pub(super) async fn release(
+pub(crate) async fn release(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,

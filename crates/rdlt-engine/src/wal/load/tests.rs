@@ -59,6 +59,7 @@ fn start(
     LoadLog,
     impl Future<Output = Result<(), crate::Error>> + Send + 'static,
 ) {
+    store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = Arc::clone(store) as Arc<dyn WalStore>;
     let owner = Owner {
         pipeline: pipeline(),
@@ -586,6 +587,7 @@ async fn a_version_stays_described_while_any_view_of_it_lives() {
 #[tokio::test]
 async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
     let store = Arc::new(MemoryWal::default());
+    store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
     let owner = Owner {
         pipeline: pipeline(),
@@ -621,6 +623,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
 #[tokio::test]
 async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_after() {
     let store = Arc::new(MemoryWal::default());
+    store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
     let owner = Owner {
         pipeline: pipeline(),

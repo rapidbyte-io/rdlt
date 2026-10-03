@@ -18,10 +18,14 @@ use crate::rng::SplitMix64;
 /// Published chunks by pipeline and chunk.
 type Chunks = Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>;
 
+/// Each log ever opened, by pipeline and load, and whether it is open still.
+type Logs = Arc<Mutex<BTreeMap<(PipelineId, LoadId), bool>>>;
+
 /// Logs in memory, by pipeline and chunk.
 #[derive(Debug, Default)]
 pub struct SimWal {
     chunks: Chunks,
+    logs: Logs,
     /// How many times each pipeline's worker crashed: a chunk staged before a crash is lost.
     crashes: Arc<Mutex<BTreeMap<PipelineId, u64>>>,
     /// Where stagings, publishes and deletions fail now and then, the draws deciding when.
@@ -34,6 +38,7 @@ const FAULTS: u64 = 10;
 /// A chunk a [`SimWal`] stages: its bytes, until it is published, and the crash it follows.
 struct Staged {
     chunks: Chunks,
+    logs: Logs,
     crashes: Arc<Mutex<BTreeMap<PipelineId, u64>>>,
     faults: Arc<Mutex<Option<SplitMix64>>>,
     key: (PipelineId, Chunk),
@@ -52,6 +57,10 @@ impl StagedChunk for Staged {
             let crashed = self.crashes.lock().get(&self.key.0).copied();
             if crashed.unwrap_or(0) != self.crashed {
                 return Err(io::Error::other("the worker that staged the chunk crashed"));
+            }
+            let log = (self.key.0.clone(), self.key.1.load);
+            if self.logs.lock().get(&log) != Some(&true) {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
             }
             let mut chunks = self.chunks.lock();
             if chunks.contains_key(&self.key) {
@@ -92,7 +101,7 @@ impl SimWal {
     /// Whether it holds any log: a load's that has not closed it with every receipt, or one no
     /// replay has taken yet.
     pub(crate) fn holds_logs(&self) -> bool {
-        !self.chunks.lock().is_empty()
+        !self.chunks.lock().is_empty() || self.logs.lock().values().any(|open| *open)
     }
 }
 
@@ -101,6 +110,22 @@ fn ready<T: Send + 'static>(value: T) -> BoxFuture<'static, io::Result<T>> {
 }
 
 impl WalStore for SimWal {
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        let opened = fault(&self.faults).and_then(|()| {
+            let mut logs = self.logs.lock();
+            if logs.contains_key(&(pipeline.clone(), load)) {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            logs.insert((pipeline.clone(), load), true);
+            Ok(())
+        });
+        Box::pin(async move { opened })
+    }
+
     fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -109,9 +134,13 @@ impl WalStore for SimWal {
         if let Err(error) = fault(&self.faults) {
             return Box::pin(async { Err(error) });
         }
+        if self.logs.lock().get(&(pipeline.clone(), chunk.load)) != Some(&true) {
+            return Box::pin(async { Err(io::Error::from(io::ErrorKind::NotFound)) });
+        }
         let crashed = self.crashes.lock().get(pipeline).copied().unwrap_or(0);
         let staged = Staged {
             chunks: Arc::clone(&self.chunks),
+            logs: Arc::clone(&self.logs),
             crashes: Arc::clone(&self.crashes),
             faults: Arc::clone(&self.faults),
             key: (pipeline.clone(), chunk),
@@ -122,14 +151,28 @@ impl WalStore for SimWal {
     }
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
-        let loads: BTreeSet<LoadId> = self
+        let loads = self
+            .logs
+            .lock()
+            .iter()
+            .filter(|((owner, _), open)| owner == pipeline && **open)
+            .map(|((_, load), _)| *load)
+            .collect();
+        ready(loads)
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        let logs = self.logs.lock();
+        let leftovers: BTreeSet<LoadId> = self
             .chunks
             .lock()
             .keys()
-            .filter(|(owner, _)| owner == pipeline)
+            .filter(|(owner, chunk)| {
+                owner == pipeline && logs.get(&(pipeline.clone(), chunk.load)) != Some(&true)
+            })
             .map(|(_, chunk)| chunk.load)
             .collect();
-        ready(loads.into_iter().collect())
+        ready(leftovers.into_iter().collect())
     }
 
     fn chunks<'a>(
@@ -179,14 +222,17 @@ impl WalStore for SimWal {
         ready(())
     }
 
-    /// Deletes the log's chunks one at a time, by number, yielding between them, so a crash may
-    /// land part way and leave the highest.
+    /// Closes the log, then deletes its chunks one at a time, yielding between them, so a crash
+    /// may land part way and leave some behind.
     fn remove_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>> {
         Box::pin(async move {
+            if let Some(open) = self.logs.lock().get_mut(&(pipeline.clone(), load)) {
+                *open = false;
+            }
             let numbers: Vec<Chunk> = self
                 .chunks
                 .lock()

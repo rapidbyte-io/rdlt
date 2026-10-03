@@ -20,7 +20,8 @@ use serde_json::json;
 use crate::changes::{changes, orders, rows};
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, failing, limited};
-use crate::support::script::{Script, ScriptStream, id};
+use crate::support::hooked::{At, Hook, hooked};
+use crate::support::script::{Script, ScriptStream, id, reconnect};
 use crate::support::targets::Target;
 use crate::support::{
     commit_every, each, engine, every_id, generator, logging_engine, memory, pipeline,
@@ -441,6 +442,65 @@ async fn a_stream_whose_acknowledged_rows_wait_in_a_log_is_not_reset_until_they_
         )
         .await
         .expect("nothing waits in a log");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reset_fences_the_log_of_a_load_still_running_before_it_reads_it() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let mut events = ScriptStream::new("events", 1, 30, 5);
+    events.replayable = false;
+    let (_, source) = Script::new(vec![events]).connect("reset_racing").await;
+    let plan = pipeline(
+        "reset-racing",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let refused = Arc::new(parking_lot::Mutex::new(None));
+    let hook: Hook = {
+        let (wal, refused) = (Arc::clone(&wal), Arc::clone(&refused));
+        Arc::new(move || {
+            let (wal, refused) = (Arc::clone(&wal), Arc::clone(&refused));
+            Box::pin(async move {
+                let reset = logging_engine(commit_every(16), wal)
+                    .reset(
+                        "reset-racing",
+                        &["events"],
+                        ResetScope::Positions,
+                        generator(&[("other", 1, 1, 1)]).await,
+                        memory("reset_racing").await,
+                    )
+                    .await;
+                *refused.lock() = reset
+                    .err()
+                    .and_then(|error| error.code().map(str::to_owned));
+            })
+        })
+    };
+    // The load's first commit lands; while it is answered, the stream is reset.
+    let destination = hooked(memory("reset_racing").await, At::Landed, hook);
+    let running = logging_engine(commit_every(10), Arc::clone(&wal))
+        .run(plan.clone(), Arc::clone(&source), destination)
+        .await;
+    assert_eq!(refused.lock().as_deref(), Some("reset_unreplayable"));
+    // The reset read the log only once it was fenced: the load logs nothing more after it.
+    let error = running.error.expect("the load is fenced");
+    assert_eq!(error.code(), Some("wal_fenced"), "{error}");
+    // A run lands what the log holds, and the rest, once each.
+    let landed = logging_engine(commit_every(10), Arc::clone(&wal))
+        .run(
+            plan,
+            reconnect("reset_racing").await,
+            memory("reset_racing").await,
+        )
+        .await;
+    assert_eq!(
+        landed.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        landed.error
+    );
+    let every: Vec<i64> = (0..30).map(|offset| id(0, offset)).collect();
+    assert_eq!(published_ids("reset_racing", "events"), every);
 }
 
 #[tokio::test]

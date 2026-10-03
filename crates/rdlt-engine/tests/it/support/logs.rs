@@ -54,6 +54,14 @@ impl Counted {
 }
 
 impl WalStore for Counted {
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.local.open_log(pipeline, load)
+    }
+
     fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -71,6 +79,10 @@ impl WalStore for Counted {
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
         self.local.loads(pipeline)
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.local.leftovers(pipeline)
     }
 
     fn chunks<'a>(
@@ -140,6 +152,14 @@ impl StagedChunk for Full {
 }
 
 impl WalStore for Filling {
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.local.open_log(pipeline, load)
+    }
+
     fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -157,6 +177,10 @@ impl WalStore for Filling {
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
         self.local.loads(pipeline)
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.local.leftovers(pipeline)
     }
 
     fn chunks<'a>(

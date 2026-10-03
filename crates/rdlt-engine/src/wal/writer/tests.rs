@@ -1,5 +1,6 @@
 mod abandoned;
 mod carried;
+mod taken;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -229,6 +230,7 @@ where
     F: FnOnce(Driving) -> Fut,
     Fut: Future<Output = ()>,
 {
+    store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = store;
     let (writer, task) = WalWriter::start(wal, owner());
     let driving = Driving {
@@ -399,6 +401,8 @@ async fn a_load_that_logged_nothing_closes_leaving_nothing() {
     .await
     .expect("the writer ends");
     assert!(chunks(&store).is_empty());
+    // The log its load opened is gone too, so no replay is left to take it.
+    assert_eq!(store.loads(&pipeline()).await.expect("lists"), []);
 }
 
 #[tokio::test]

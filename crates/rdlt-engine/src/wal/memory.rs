@@ -17,6 +17,8 @@ use super::store::{Chunk, StagedChunk, WalStore};
 #[derive(Debug, Default)]
 pub(crate) struct MemoryWal {
     pub(crate) chunks: Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>,
+    /// Each log ever opened, and whether it is still open.
+    pub(crate) logs: Logs,
     pub(crate) failing: Arc<Mutex<bool>>,
     /// Whether every call is interrupted, as a transient failure a retry may not meet.
     pub(crate) interrupted: Arc<Mutex<bool>>,
@@ -27,6 +29,9 @@ pub(crate) struct MemoryWal {
     /// Whether each append waits a few turns of the scheduler first, as a slow disk does.
     pub(crate) slow: bool,
 }
+
+/// Each log ever opened, by pipeline and load, and whether it is open still.
+pub(crate) type Logs = Arc<Mutex<BTreeMap<(PipelineId, LoadId), bool>>>;
 
 /// What makes a [`MemoryWal`]'s calls fail, shared with the chunks it stages.
 #[derive(Clone, Debug)]
@@ -50,6 +55,7 @@ impl Faults {
 /// A chunk a [`MemoryWal`] stages: its bytes, until it is published.
 struct Staged {
     chunks: Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>,
+    logs: Logs,
     key: (PipelineId, Chunk),
     bytes: Vec<u8>,
     faults: Faults,
@@ -77,6 +83,10 @@ impl StagedChunk for Staged {
             if *self.unpublishable.lock() {
                 return Err(io::Error::other("the disk failed to flush"));
             }
+            let open = self.logs.lock().get(&(self.key.0.clone(), self.key.1.load)) == Some(&true);
+            if !open {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
             let mut chunks = self.chunks.lock();
             if chunks.contains_key(&self.key) {
                 return Err(io::Error::from(io::ErrorKind::AlreadyExists));
@@ -100,6 +110,15 @@ impl MemoryWal {
 
     fn check(&self) -> io::Result<()> {
         self.faults().check()
+    }
+
+    /// Opens `load`'s log of `pipeline` where it was never opened, as a load does when it starts.
+    #[cfg(test)]
+    pub(crate) fn open(&self, pipeline: &PipelineId, load: LoadId) {
+        self.logs
+            .lock()
+            .entry((pipeline.clone(), load))
+            .or_insert(true);
     }
 
     /// The frames of every chunk published, in order, deleted ones included.
@@ -129,36 +148,69 @@ fn ready<T: Send + 'static>(value: io::Result<T>) -> BoxFuture<'static, io::Resu
 }
 
 impl WalStore for MemoryWal {
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        let opened = self.check().and_then(|()| {
+            let mut logs = self.logs.lock();
+            if logs.contains_key(&(pipeline.clone(), load)) {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            logs.insert((pipeline.clone(), load), true);
+            Ok(())
+        });
+        ready(opened)
+    }
+
     fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
         chunk: Chunk,
     ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
-        let staged = self.check().map(|()| {
-            Box::new(Staged {
+        let open = self.logs.lock().get(&(pipeline.clone(), chunk.load)) == Some(&true);
+        let staged = self.check().and_then(|()| {
+            if !open {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
+            Ok(Box::new(Staged {
                 chunks: Arc::clone(&self.chunks),
+                logs: Arc::clone(&self.logs),
                 key: (pipeline.clone(), chunk),
                 bytes: Vec::new(),
                 faults: self.faults(),
                 unpublishable: Arc::clone(&self.unpublishable),
                 published: Arc::clone(&self.published),
                 slow: self.slow,
-            }) as Box<dyn StagedChunk>
+            }) as Box<dyn StagedChunk>)
         });
         ready(staged)
     }
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
         let loads = self.check().map(|()| {
-            let mut loads: Vec<LoadId> = self
-                .stored(pipeline)
+            self.logs
+                .lock()
                 .iter()
-                .map(|(chunk, _)| chunk.load)
-                .collect();
-            loads.dedup();
-            loads
+                .filter(|((owner, _), open)| owner == pipeline && **open)
+                .map(|((_, load), _)| *load)
+                .collect()
         });
         ready(loads)
+    }
+
+    /// Every removal here is whole, so none leaves anything behind.
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        let logs = self.logs.lock();
+        let mut leftovers: Vec<LoadId> = self
+            .stored(pipeline)
+            .iter()
+            .map(|(chunk, _)| chunk.load)
+            .filter(|load| logs.get(&(pipeline.clone(), *load)) != Some(&true))
+            .collect();
+        leftovers.dedup();
+        ready(self.check().map(|()| leftovers))
     }
 
     fn chunks<'a>(
@@ -220,6 +272,9 @@ impl WalStore for MemoryWal {
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>> {
         let removed = self.check().map(|()| {
+            if let Some(open) = self.logs.lock().get_mut(&(pipeline.clone(), load)) {
+                *open = false;
+            }
             self.chunks
                 .lock()
                 .retain(|(owner, chunk), _| owner != pipeline || chunk.load != load);

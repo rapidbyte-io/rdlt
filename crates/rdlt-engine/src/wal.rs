@@ -9,6 +9,7 @@ pub(crate) mod memory;
 mod positions;
 pub(crate) mod scan;
 mod store;
+pub(crate) mod taken;
 mod writer;
 
 #[cfg(test)]

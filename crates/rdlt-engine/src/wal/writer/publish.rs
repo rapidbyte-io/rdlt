@@ -35,13 +35,7 @@ impl Log {
             .take()
             .ok_or_else(|| Error::internal("a chunk was published that was never staged"))?;
         crash_point!("engine.wal.sync.before");
-        staged.publish().await.map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                Error::wal_fenced(self.owner.load)
-            } else {
-                Error::from_wal(error)
-            }
-        })?;
+        staged.publish().await.map_err(|error| self.lost(error))?;
         crash_point!("engine.wal.sync.after");
         self.chunk += 1;
         self.forget(&live).await
@@ -99,13 +93,13 @@ impl Log {
     /// for a receipt.
     pub(super) async fn close(&mut self) -> Result<(), Error> {
         self.failure()?;
-        if self.written.is_empty() {
-            return Ok(());
+        // A log of no chunk holds nothing to close: it goes as it is.
+        if !self.written.is_empty() {
+            self.append(Frame::Closed.encode()?).await?;
+            crash_point!("engine.wal.close.before");
+            self.publish().await?;
+            crash_point!("engine.wal.close.after");
         }
-        self.append(Frame::Closed.encode()?).await?;
-        crash_point!("engine.wal.close.before");
-        self.publish().await?;
-        crash_point!("engine.wal.close.after");
         if !self.pending.is_empty() {
             return Ok(());
         }
