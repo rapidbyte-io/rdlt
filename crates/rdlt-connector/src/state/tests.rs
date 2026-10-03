@@ -273,7 +273,8 @@ fn keys_in_a_non_canonical_form_are_malformed() {
         state: cursor(5),
     };
     let canonical = entry.to_record();
-    let rewritten = r#"{"partition":[{"name":"s"},"p"]}"#;
+    // The stream's members in another order.
+    let rewritten = r#"{"partition":[{"name":"s","namespace":null},"p"]}"#;
     assert_eq!(
         serde_json::from_str::<StateKey>(rewritten).unwrap(),
         entry.key()
@@ -745,5 +746,17 @@ fn a_state_record_of_the_previous_format_is_refused() {
                 version: 1
             })
         );
+    }
+}
+
+#[test]
+fn a_state_record_lacking_any_member_it_writes_is_refused() {
+    let mut state = sample_state();
+    if let Some(table) = state.tables.values_mut().next() {
+        table.sequences = Some(Sequences::Engine);
+    }
+    for record in state.to_records() {
+        let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
+        crate::required::every_member_required::<super::VersionedEntry>(&value);
     }
 }

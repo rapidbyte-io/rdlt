@@ -239,3 +239,13 @@ fn a_load_id_reads_back_from_its_written_form_and_nothing_else() {
         );
     }
 }
+
+#[test]
+fn a_stream_name_lacking_any_member_it_writes_is_refused() {
+    for name in [
+        StreamName::new("orders").unwrap(),
+        StreamName::with_namespace("public", "orders").unwrap(),
+    ] {
+        crate::required::every_member_required::<StreamName>(&serde_json::to_value(&name).unwrap());
+    }
+}

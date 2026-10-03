@@ -54,6 +54,7 @@ pub(crate) struct Header {
     pub(crate) version: u16,
     pub(crate) pipeline: PipelineId,
     pub(crate) load: LoadId,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) opened: Option<(LoadId, CommitSeq)>,
 }
 
@@ -106,6 +107,7 @@ pub(crate) struct Seal {
     pub(crate) replayable: bool,
     /// The phase of the stream the segment belongs to.
     pub(crate) phase: u16,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) from: Option<PartitionState>,
     pub(crate) state: PartitionState,
 }

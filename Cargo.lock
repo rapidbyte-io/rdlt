@@ -2220,6 +2220,7 @@ dependencies = [
  "proptest",
  "rcgen",
  "rdlt-connector",
+ "serde",
  "serde_json",
  "tempfile",
 ]

@@ -160,6 +160,7 @@ pub struct StreamName {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawStreamName {
+    #[serde(deserialize_with = "Option::deserialize")]
     namespace: Option<String>,
     name: String,
 }

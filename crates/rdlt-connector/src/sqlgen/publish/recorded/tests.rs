@@ -78,3 +78,23 @@ fn a_merge_key_recorded_in_another_form_is_refused() {
         assert_eq!(error.kind(), ConnectorErrorKind::Internal, "{other}");
     }
 }
+
+#[test]
+fn a_recorded_merge_key_lacking_any_member_it_writes_is_refused() {
+    for root in roots() {
+        for changes in changes() {
+            for history in histories() {
+                let key = MergeKey {
+                    columns: vec!["id".into()],
+                    seq: "seq".into(),
+                    root: root.clone(),
+                    changes: changes.clone(),
+                    history: history.clone(),
+                };
+                let recorded: serde_json::Value =
+                    serde_json::from_str(&encode_merge_key(&key)).unwrap();
+                crate::required::every_member_required::<super::RecordedKey>(&recorded);
+            }
+        }
+    }
+}
