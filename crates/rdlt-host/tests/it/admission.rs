@@ -1128,6 +1128,11 @@ async fn a_stopping_connector_closes_a_connection_still_busy_at_its_drain_wait()
     settle(Duration::from_secs(1)).await;
     connector.stop.cancel();
     let started = tokio::time::Instant::now();
+    // It lets go of its address at once, while its connection drains: a connector started again
+    // listens beside it.
+    settle(Duration::from_secs(1)).await;
+    assert!(connector.connections.is_closed(), "the address is still held");
+    assert!(!connector.listening.is_finished(), "the connection drains");
     tokio::time::timeout(Duration::from_secs(3600), connector.listening)
         .await
         .expect("the connector stops")
