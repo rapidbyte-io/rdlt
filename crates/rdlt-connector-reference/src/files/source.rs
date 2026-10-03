@@ -294,8 +294,8 @@ impl ReadStream<FilesSource> for FileStream {
                     read += records;
                     out.json(json).await?;
                 }
-                Pushed::Arrow(batch) => {
-                    read += 1;
+                Pushed::Arrow(batch, batches) => {
+                    read += batches;
                     out.batch(batch).await?;
                 }
             }
@@ -338,7 +338,9 @@ fn beyond(path: &Path, read: u64) -> ConnectorError {
 enum Pushed {
     /// Lines of JSON, and how many records they hold.
     Json(Bytes, u64),
-    Arrow(arrow_array::RecordBatch),
+    /// A batch that holds rows, and how many batches of the file it takes the read past: the
+    /// batch and the empty ones before it, which push nothing.
+    Arrow(arrow_array::RecordBatch, u64),
 }
 
 /// The pushes of one file, from a position on.
@@ -397,7 +399,16 @@ impl Pushes {
     fn next(&mut self) -> Result<Option<Pushed>> {
         match self {
             Self::Jsonl(lines) => lines.next(),
-            Self::Arrow(reader) => Ok(reader.next()?.map(Pushed::Arrow)),
+            Self::Arrow(reader) => {
+                let mut batches = 0;
+                while let Some(batch) = reader.next()? {
+                    batches += 1;
+                    if batch.num_rows() > 0 {
+                        return Ok(Some(Pushed::Arrow(batch, batches)));
+                    }
+                }
+                Ok(None)
+            }
         }
     }
 }

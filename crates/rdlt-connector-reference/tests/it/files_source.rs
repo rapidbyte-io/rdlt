@@ -363,12 +363,17 @@ async fn a_json_lines_push_holds_at_most_the_bytes_one_push_may() {
 
 /// Writes an Arrow file of `batches` batches of three ids each at `path`.
 fn arrow_file(path: &Path, batches: usize) {
+    arrow_file_of(path, &vec![3; batches]);
+}
+
+/// Writes an Arrow file at `path` whose batches hold `rows` ids each, in order.
+fn arrow_file_of(path: &Path, rows: &[i64]) {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let file = std::fs::File::create(path).expect("the fixture is made");
     let mut writer =
         arrow_ipc::writer::FileWriter::try_new(file, &schema).expect("the fixture is made");
-    for _ in 0..batches {
-        let column = Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef;
+    for &rows in rows {
+        let column = Arc::new(Int64Array::from_iter_values(1..=rows)) as ArrayRef;
         let batch =
             RecordBatch::try_new(Arc::clone(&schema), vec![column]).expect("the fixture is made");
         writer.write(&batch).expect("the fixture is made");
@@ -486,6 +491,50 @@ async fn an_arrow_read_resumes_after_the_batches_read() {
         let (events, ended) = read(source.as_ref(), "orders", Some(cursor)).await;
         ended.expect("the file reads again");
         assert_eq!(batches(&events), 2 - after);
+    }
+}
+
+#[tokio::test]
+async fn an_arrow_file_s_empty_batches_neither_end_its_partition_early_nor_keep_it_open() {
+    let root = crate::fixtures::tempdir().unwrap();
+    arrow_file_of(&root.path().join("orders.arrow"), &[0, 3, 0, 0, 2, 0]);
+    let source = connect(root.path()).await;
+    let rows = |events: &[SourceEvent]| -> Vec<usize> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                SourceEvent::Push(Push::Arrow(batch)) => Some(batch.num_rows()),
+                _ => None,
+            })
+            .collect()
+    };
+    let (events, ended) = read(source.as_ref(), "orders", None).await;
+    ended.expect("the file reads");
+    assert_eq!(rows(&events), [3, 2]);
+    // The last push is the file's last with rows: no checkpoint follows it, so the partition
+    // ends done.
+    let bounded = cursors(&events);
+    assert_eq!(
+        bounded.len(),
+        1,
+        "a checkpoint follows each push but the last"
+    );
+    let (events, ended) = read(source.as_ref(), "orders", Some(bounded[0].clone())).await;
+    ended.expect("the file reads again");
+    assert_eq!(rows(&events), [2]);
+    assert!(
+        cursors(&events).is_empty(),
+        "the rest of the file ends done"
+    );
+    let (events, ended) = read_following(source.as_ref(), "orders", None).await;
+    ended.expect("the file reads");
+    assert_eq!(rows(&events), [3, 2]);
+    let following = cursors(&events);
+    assert_eq!(following.len(), 2, "a following read checkpoints each push");
+    for (cursor, rest) in following.into_iter().zip([vec![2], vec![]]) {
+        let (events, ended) = read(source.as_ref(), "orders", Some(cursor)).await;
+        ended.expect("the file reads again");
+        assert_eq!(rows(&events), rest);
     }
 }
 
