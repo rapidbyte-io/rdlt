@@ -192,7 +192,10 @@ async fn a_segment_open_for_long_holds_back_no_commit_a_replay_never_repeats() {
         }
         log.batch(50, 0).await;
         log.commit(5, &[50]).await.expect("durable");
-        assert!(numbers(&store).contains(&0), "the open segment keeps chunk 0");
+        assert!(
+            numbers(&store).contains(&0),
+            "the open segment keeps chunk 0"
+        );
         // Every receipt before commit 5 is in a published chunk: only commit 5 may be repeated.
         let oldest = *log.writer.shared().oldest.lock();
         assert_eq!(oldest.map(rdlt_connector::CommitSeq::get), Some(5));
