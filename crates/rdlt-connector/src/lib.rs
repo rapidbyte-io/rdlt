@@ -77,6 +77,8 @@ mod factory;
 mod id;
 pub mod limits;
 mod meta;
+#[cfg(test)]
+mod required;
 mod schema;
 mod secret;
 #[cfg(feature = "serve")]

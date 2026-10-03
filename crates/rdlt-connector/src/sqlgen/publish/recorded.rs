@@ -14,8 +14,11 @@ const FORMAT: u16 = 1;
 struct RecordedKey {
     format: Format,
     columns: Vec<String>,
+    #[serde(deserialize_with = "Option::deserialize")]
     root: Option<RecordedRoot>,
+    #[serde(deserialize_with = "Option::deserialize")]
     changes: Option<ChangeColumns>,
+    #[serde(deserialize_with = "Option::deserialize")]
     history: Option<HistoryColumns>,
 }
 

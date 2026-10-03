@@ -477,3 +477,47 @@ fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
         }
     }
 }
+
+#[test]
+fn a_frame_lacking_any_member_it_writes_is_refused() {
+    use rdlt_testkit::required::every_member_required;
+    let mut frames = metadata();
+    // Each member that may hold nothing, holding nothing.
+    frames.push(Frame::Header(Header {
+        version: VERSION,
+        pipeline: PipelineId::parse("orders").expect("a valid pipeline"),
+        load: load(),
+        opened: None,
+    }));
+    frames.push(Frame::Seal(Seal {
+        segment: SegmentId(5),
+        stream: StreamName::with_namespace("public", "orders").expect("a valid stream"),
+        partition: PartitionId::parse("p1").expect("a valid partition"),
+        replayable: false,
+        phase: 0,
+        from: None,
+        state: PartitionState::Done,
+    }));
+    for frame in frames {
+        let value = match &frame {
+            Frame::Header(header) => serde_json::to_value(header),
+            Frame::Seal(seal) => serde_json::to_value(seal),
+            Frame::Begun(begun) => serde_json::to_value(begun),
+            Frame::Schema(table) => serde_json::to_value(&table.table),
+            _ => continue,
+        }
+        .expect("the frame serializes");
+        match frame {
+            Frame::Header(_) => every_member_required::<Header>(&value),
+            Frame::Seal(_) => every_member_required::<Seal>(&value),
+            Frame::Begun(_) => every_member_required::<BegunPhase>(&value),
+            _ => every_member_required::<TableRef>(&value),
+        }
+    }
+    let head = super::BatchHeader {
+        segment: SegmentId(1),
+        table: 0,
+        ordinal: 3,
+    };
+    every_member_required::<super::BatchHeader>(&serde_json::to_value(head).expect("serializes"));
+}

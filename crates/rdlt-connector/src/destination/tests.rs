@@ -286,3 +286,55 @@ fn a_destinations_factory_debugs_as_its_role_and_id() {
         "Destination(ConnectorId(\"io.test.recorder\"))"
     );
 }
+
+#[test]
+fn a_table_ref_lacking_any_member_it_writes_is_refused() {
+    use super::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey};
+    use crate::id::GenerationId;
+    use crate::required::every_member_required;
+    let history = HistoryColumns {
+        valid_from: "from".into(),
+        valid_to: "to".into(),
+        is_current: "current".into(),
+        row_hash: "hash".into(),
+    };
+    let full = TableRef {
+        path: TablePath::new(["orders", "items"]).unwrap(),
+        name: "orders__items".into(),
+        version: SchemaVersion(3),
+        generation: Some(GenerationId(2)),
+        merge: Some(MergeKey {
+            columns: vec!["id".into()],
+            seq: "seq".into(),
+            root: Some(RootKey {
+                table: "orders".into(),
+                id: "id".into(),
+                seq: "root_seq".into(),
+            }),
+            changes: Some(ChangeColumns {
+                op: "op".into(),
+                unchanged: Some("unchanged".into()),
+                deletion: Deletion::Soft { at: "at".into() },
+            }),
+            history: Some(history),
+        }),
+    };
+    let mut bare = full.clone();
+    bare.generation = None;
+    if let Some(key) = bare.merge.as_mut() {
+        key.root = None;
+        key.changes = Some(ChangeColumns {
+            op: "op".into(),
+            unchanged: None,
+            deletion: Deletion::Hard,
+        });
+        key.history = None;
+    }
+    let unkeyed = TableRef {
+        merge: None,
+        ..bare.clone()
+    };
+    for table in [full, bare, unkeyed] {
+        every_member_required::<TableRef>(&serde_json::to_value(&table).unwrap());
+    }
+}

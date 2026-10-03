@@ -63,8 +63,10 @@ pub struct TableRef {
     pub version: SchemaVersion,
     /// The replace generation writes fill, hidden from readers until a commit finishes it; `None`
     /// writes the table itself.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub generation: Option<GenerationId>,
     /// For a merge table, how published rows are matched; `None` appends every row.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub merge: Option<MergeKey>,
 }
 
@@ -82,12 +84,15 @@ pub struct MergeKey {
     /// compared bytewise.
     pub seq: Arc<str>,
     /// For a child table of a merge table, the root table whose merges replace its rows.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub root: Option<RootKey>,
     /// For a change stream's table, the columns that say what each row does; `None` for a table
     /// whose rows are all upserts ordered within their commit.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub changes: Option<ChangeColumns>,
     /// For a history table, the columns recording each version's life; `None` for a table that
     /// keeps one row per key.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub history: Option<HistoryColumns>,
 }
 
@@ -154,6 +159,7 @@ pub struct ChangeColumns {
     /// The column flagging an update's unchanged columns, where rows may flag some: a nullable
     /// `Binary` bitmap over the written batch's field ordinals, bit `i` (bit `i % 8` of byte
     /// `i / 8`) set when field `i` keeps its published value.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub unchanged: Option<Arc<str>>,
     /// How deletes and truncates remove rows.
     pub deletion: Deletion,
