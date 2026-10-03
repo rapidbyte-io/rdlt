@@ -228,6 +228,15 @@ impl Dir {
         owned(metadata.uid(), metadata.mode(), PRIVATE, &self.at(name))
     }
 
+    /// Whether the entry `name`, a link never followed, is the open `file`.
+    pub(super) fn same_file(&self, name: &str, file: &File) -> io::Result<bool> {
+        let Some(linked) = self.open(name)? else {
+            return Ok(false);
+        };
+        let (linked, staged) = (linked.metadata()?, file.metadata()?);
+        Ok(linked.dev() == staged.dev() && linked.ino() == staged.ino())
+    }
+
     /// What `name` is, where it exists, asked of the directory and never of a descriptor of the
     /// entry: closing any descriptor of a file releases the locks the process holds on it.
     pub(super) fn status(&self, name: &OsStr) -> io::Result<Option<Status>> {

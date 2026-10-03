@@ -238,6 +238,15 @@ impl Staged {
                 }
                 _ => error,
             })?;
+        // The name linked is the staged file's only where no other took its name meanwhile, as
+        // a process of another process namespace may once the staging was deleted.
+        if !dir.same_file(&name, &self.file.lock())? {
+            dir.remove_file(OsStr::new(&name))?;
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the staged file was deleted",
+            ));
+        }
         if !is_open(dir)? {
             dir.remove_file(OsStr::new(&name))?;
             return Err(io::Error::new(

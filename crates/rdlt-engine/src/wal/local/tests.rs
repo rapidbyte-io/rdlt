@@ -519,3 +519,30 @@ async fn a_base_under_a_directory_others_may_write_is_refused_unless_it_is_stick
     assert!(not_private(&wal.loads(&orders).await.expect_err("refused")));
     set_mode(&shared, 0o700);
 }
+
+#[tokio::test]
+async fn a_chunk_is_published_only_from_the_file_its_writer_staged() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let load = chunk(1, 0).load;
+    opened(&wal, &orders, load).await;
+    let mut staged = wal.stage(&orders, chunk(1, 0)).await.expect("stages");
+    staged
+        .append(Bytes::from_static(b"mine"))
+        .await
+        .expect("appends");
+    // Another process takes the staged file's name once it is gone, as one of another process
+    // namespace may.
+    let load_dir = wal.pipeline_dir(&orders).join(names::load(load));
+    let part = std::fs::read_dir(&load_dir)
+        .expect("lists")
+        .map(|entry| entry.expect("an entry").path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "part"))
+        .expect("a staged file");
+    std::fs::remove_file(&part).expect("removes");
+    std::fs::write(&part, b"theirs").expect("writes");
+    set_mode(&part, 0o600);
+    staged.publish().await.expect_err("not the file staged");
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), []);
+}
