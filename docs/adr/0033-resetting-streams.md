@@ -41,7 +41,9 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
     may still wait in a crashed load's log, and a racing run would move past it for good.
     Amended 2026-10-03 (ADR 0045): a stream whose source no longer lists it, or now calls it one
     it reads again, is refused as well while a log holds rows of it that its source was told
-    were committed and no commit received; a run of the pipeline lands them first.
+    were committed and no commit received; a run of the pipeline lands them first. This
+    refusal comes after the reset's session opens, which fences any load still running, and
+    after each log is fenced, so no load logs rows once the reset read them.
   - A destination that does not declare `drop_tables` refuses a `Tables` reset as
     `drop_unsupported`, and a reset naming no streams is refused as `no_streams`.
   - These refusals, and `reset_unreplayable`, come before the destination opens, fencing nothing.

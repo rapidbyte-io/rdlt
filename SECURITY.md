@@ -287,22 +287,33 @@ in forms its readers read back (ADR 0041):
 A load's log holds rows its source may have been told were committed, and replay applies it with
 the engine's authority, so it is bound, private and checked (ADR 0045):
 
-- The local store reaches everything beneath its base one name at a time, never through a link.
-  The base must be the engine's user's and writable by no other; every directory and file below
-  it must be the user's alone, of the kind expected, on the base's file system, checked at every
-  open (`wal_not_private`). A name the store never writes is refused, never read (`wal_stray`).
-  Each pipeline's directory is its own, also where a file system folds case.
+- The local store reaches its base once, from the root, one directory at a time, each opened
+  without following a link and checked on that descriptor: the user's or root's, and writable by
+  no other unless sticky; a link is read only out of a directory that passed. It then keeps the
+  base open, and refuses one removed rather than make it again. The base must be the engine's
+  user's and writable by no other; every directory and file below it must be the user's alone,
+  of the kind expected, on the base's file system, checked on the descriptor used
+  (`wal_not_private`). A name the store never writes is refused, never read (`wal_stray`); one
+  beginning with a dot, which NFS and file browsers make, is passed over. Each pipeline's
+  directory is its own, also where a file system folds case.
 - A chunk is published whole, never appended to, so any damage, a chunk of another format, a
-  chunk missing, or a chunk naming another pipeline or load is refused (`wal_unreadable`,
-  `wal_foreign`) rather than read in part. Frames are bounded before they are read, and batches
-  decoded within the memory budget's limits.
+  chunk missing, or a chunk naming another pipeline, load or destination is refused
+  (`wal_unreadable`, `wal_foreign`) rather than read in part. Frames are bounded before they are
+  read, a batch frame read 64 KiB at a time, and batches decoded within the memory budget's
+  limits.
 - A logged commit applies only whole and only as the engine writes one: older than the
   replaying session, its seals, batches and rows all there, recording no reset, no receipt but
-  its own and no position its seals did not set, dropping no table.
-- What replay stages is reserved from the memory budget (`replay_exceeds_budget`). A load's log
-  holds at most `GrowthLimits::log_bytes` on disk, 4 GiB by default (`log_bytes_exceeded`), and
-  a full disk is retried (`wal_storage_full`).
-- A replay fences a running load by publishing its log's next chunk, so the two never both write.
+  its own, no position its seals did not set and no load but its own as the destination's
+  first, dropping no table. A replay that fails keeps the log for the next attempt.
+- What replay reads and decodes is reserved from the memory budget before it is held
+  (`replay_exceeds_budget`). A load's log holds at most `GrowthLimits::log_bytes` on disk, 4 GiB
+  by default (`log_bytes_exceeded`). A full disk is retried (`wal_storage_full`): a failed write
+  gives back what it staged, and a replay deletes what a crashed load staged before it writes a
+  fence of a few hundred bytes.
+- A load opens its log before it reads any other. A replay or a reset fences a running load by
+  publishing its log's next chunk, and its load can publish nothing once the log is removed, so
+  the two never both write; a load that keeps publishing fails the other attempt
+  (`wal_running`).
 
 A log is not signed: whoever can write as the engine's user holds its authority already. A log
 that cannot be read stops its pipeline's runs until an operator removes it, since setting it
