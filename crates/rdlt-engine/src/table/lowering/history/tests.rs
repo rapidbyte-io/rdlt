@@ -291,3 +291,20 @@ fn a_change_time_a_microsecond_cannot_hold_is_refused_never_wrapped() {
         );
     }
 }
+
+#[test]
+fn a_version_received_before_the_epoch_begins_at_its_microsecond_and_one_beyond_is_refused() {
+    let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
+    let begun = |received| {
+        let [from, ..] = history_columns(&stream(), &data, None, received, &|_| false)?;
+        Ok::<_, crate::Error>(from.as_primitive::<TimestampMicrosecondType>().value(0))
+    };
+    let before = |nanos| UNIX_EPOCH - Duration::from_nanos(nanos);
+    assert_eq!(begun(before(1_500)).unwrap(), -2);
+    assert_eq!(begun(before(3_000_000_000)).unwrap(), -3_000_000);
+    assert_eq!(begun(UNIX_EPOCH + Duration::from_nanos(2_500)).unwrap(), 2);
+    let beyond = UNIX_EPOCH
+        .checked_add(Duration::from_micros(u64::MAX))
+        .unwrap();
+    assert_eq!(begun(beyond).unwrap_err().kind(), ErrorKind::Internal);
+}

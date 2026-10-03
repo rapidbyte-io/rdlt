@@ -110,10 +110,16 @@ pub(crate) fn pooled_logging_engine(
 /// An engine as [`engine`] makes it, whose clock moves a millisecond on every reading, so no two
 /// readings of it are alike.
 pub(crate) fn ticking_engine(config: EngineConfigBuilder) -> TestEngine {
+    stepping_engine(config, 1)
+}
+
+/// An engine as [`engine`] makes it, whose clock moves `step` milliseconds more on every
+/// reading: back, where `step` is negative.
+pub(crate) fn stepping_engine(config: EngineConfigBuilder, step: i64) -> TestEngine {
     let pool = RayonPool::new(NonZeroUsize::MIN).expect("a one-thread pool starts");
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
-    let ticks = Some(Arc::new(AtomicU64::new(0)));
+    let ticks = Some((Arc::new(AtomicU64::new(0)), step));
     let env = InlineEnv(SystemEnv::new(pool), Inline(jobs), ticks);
     TestEngine::new(config, Arc::new(env))
 }
@@ -121,16 +127,21 @@ pub(crate) fn ticking_engine(config: EngineConfigBuilder) -> TestEngine {
 /// The system's clock and randomness, with compute jobs run on the calling thread: the paused
 /// test runtime would otherwise advance its clock while a job runs on another thread.
 ///
-/// With ticks, the clock moves a millisecond more on each reading.
-struct InlineEnv(SystemEnv, Inline, Option<Arc<AtomicU64>>);
+/// With ticks, the clock moves its step of milliseconds more on each reading.
+struct InlineEnv(SystemEnv, Inline, Option<(Arc<AtomicU64>, i64)>);
 
 impl Env for InlineEnv {
     fn now(&self) -> std::time::SystemTime {
-        let ticked = self
-            .2
-            .as_ref()
-            .map_or(0, |ticks| ticks.fetch_add(1, Ordering::SeqCst));
-        self.0.now() + Duration::from_millis(ticked)
+        let Some((ticks, step)) = &self.2 else {
+            return self.0.now();
+        };
+        let ticked = i64::try_from(ticks.fetch_add(1, Ordering::SeqCst)).expect("few readings");
+        let moved = Duration::from_millis(ticked.saturating_mul(*step).unsigned_abs());
+        if *step < 0 {
+            self.0.now() - moved
+        } else {
+            self.0.now() + moved
+        }
     }
 
     fn instant(&self) -> std::time::Instant {
