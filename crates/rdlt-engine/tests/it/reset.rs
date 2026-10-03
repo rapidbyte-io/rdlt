@@ -387,6 +387,62 @@ async fn a_log_whose_epochs_were_forged_past_a_reset_is_refused_not_replayed() {
     assert_eq!(published_ids("reset_forged", "events"), expected);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stream_whose_acknowledged_rows_wait_in_a_log_is_not_reset_until_they_land() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let mut events = ScriptStream::new("events", 2, 20, 5);
+    events.replayable = false;
+    let (script, source) = Script::new(vec![events]).connect("reset_waiting").await;
+    let plan = pipeline(
+        "reset-waiting",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let run = |destination| {
+        logging_engine(retrying(1), Arc::clone(&wal)).run(
+            plan.clone(),
+            Arc::clone(&source),
+            destination,
+        )
+    };
+    let logged = run(failing(memory("reset_waiting").await, Step::Commit)).await;
+    assert_eq!(logged.report.status, RunStatus::Failed);
+    assert!(
+        !script.acks.lock().is_empty(),
+        "the source forgot what it was told of"
+    );
+    // The source no longer lists the stream, or calls it one it reads again: the log decides.
+    let refused = logging_engine(commit_every(16), Arc::clone(&wal))
+        .reset(
+            "reset-waiting",
+            &["events"],
+            ResetScope::Positions,
+            generator(&[("other", 1, 1, 1)]).await,
+            memory("reset_waiting").await,
+        )
+        .await
+        .expect_err("the log holds rows nothing else does");
+    assert_eq!(refused.code(), Some("reset_unreplayable"));
+    // A run lands them from the log, after which the stream may be reset.
+    let landed = run(memory("reset_waiting").await).await;
+    assert_eq!(
+        landed.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        landed.error
+    );
+    logging_engine(commit_every(16), Arc::clone(&wal))
+        .reset(
+            "reset-waiting",
+            &["events"],
+            ResetScope::Positions,
+            generator(&[("other", 1, 1, 1)]).await,
+            memory("reset_waiting").await,
+        )
+        .await
+        .expect("nothing waits in a log");
+}
+
 #[tokio::test]
 async fn a_stream_whose_source_cannot_read_again_is_not_reset() {
     let mut events = ScriptStream::new("events", 1, 10, 5);

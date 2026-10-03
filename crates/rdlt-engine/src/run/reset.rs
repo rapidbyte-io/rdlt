@@ -98,6 +98,7 @@ impl Engine {
             .with_code("drop_unsupported"));
         }
         readable_again(source.as_ref(), streams).await?;
+        self.logged_unreplayable(pipeline, streams).await?;
         let naming = Naming::checked(&destination.capabilities().identifiers)?;
         let load_id = self.env.load_id();
         let context = OpenContext {
@@ -168,6 +169,42 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// Refuses `streams` of `pipeline` a log holds rows of that their source was told were
+    /// committed and that never landed, as `reset_unreplayable`: the reset would discard the only
+    /// copy of them, whatever the source says of the stream now.
+    ///
+    /// A run of the pipeline replays the log, landing them, after which the reset may go ahead.
+    async fn logged_unreplayable(
+        &self,
+        pipeline: &PipelineId,
+        streams: &[StreamName],
+    ) -> Result<(), Error> {
+        let Some(store) = self.env.wal() else {
+            return Ok(());
+        };
+        let frame_bytes = crate::wal::frame::limits(self.config.memory().get()).frame_bytes;
+        for load in store.loads(pipeline).await.map_err(Error::from_wal)? {
+            let scanned =
+                crate::wal::scan::scan(store.as_ref(), pipeline, load, frame_bytes).await?;
+            let unlanded = scanned
+                .pending()
+                .flat_map(|logged| &logged.seals)
+                .find(|seal| !seal.replayable && streams.contains(&seal.stream));
+            if let Some(seal) = unlanded {
+                let stream = &seal.stream;
+                return Err(Error::config(format!(
+                    "stream {stream}: the log of load {load} holds rows its source was told \
+                     were committed and that never landed; a run of the pipeline lands them"
+                ))
+                .with_code("reset_unreplayable")
+                .with_stream(stream));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Refuses `streams` whose source cannot read again what it acknowledged, as
 /// `reset_unreplayable`: read from its beginning, it would wait for rows it no longer holds.
 ///
@@ -227,17 +264,8 @@ fn cleared(
     // drop would reach the other table.
     let shared = crate::table::shared(&state);
     for stream in streams {
+        recorded(&state, stream)?;
         let family = family(&state, stream);
-        let recorded = state.streams.contains_key(stream)
-            || state.resets.contains_key(stream)
-            || !family.is_empty();
-        if !recorded {
-            return Err(Error::config(format!(
-                "stream {stream}: the pipeline recorded nothing of it"
-            ))
-            .with_code("stream_not_found")
-            .with_stream(stream));
-        }
         cleared.state_delta.extend(positions(&state, stream));
         if scope == ResetScope::Tables {
             for path in family {
@@ -272,6 +300,35 @@ fn cleared(
     Ok(cleared)
 }
 
+/// Checks `state` records `stream` under its own name, and no other stream displayed as it is:
+/// a stream's tables are named by its displayed name, so a reset of one stream must not reach
+/// another's.
+///
+/// # Errors
+///
+/// `stream_not_found` for a stream state records nothing of; `stream_ambiguous` for one another
+/// recorded stream displays as.
+fn recorded(state: &PipelineState, stream: &StreamName) -> Result<(), Error> {
+    let mut known = state.streams.keys().chain(state.resets.keys());
+    if !known.clone().any(|known| known == stream) {
+        return Err(Error::config(format!(
+            "stream {stream}: the pipeline recorded nothing of it"
+        ))
+        .with_code("stream_not_found")
+        .with_stream(stream));
+    }
+    let displayed = stream.to_string();
+    if known.any(|known| known != stream && known.to_string() == displayed) {
+        return Err(Error::config(format!(
+            "stream {stream}: another stream the pipeline recorded is displayed as it is, and \
+             their tables cannot be told apart"
+        ))
+        .with_code("stream_ambiguous")
+        .with_stream(stream));
+    }
+    Ok(())
+}
+
 /// The changes deleting where `stream`'s reads stand in `state`.
 fn positions(state: &PipelineState, stream: &StreamName) -> Vec<StateChange> {
     let partitions = state
@@ -302,3 +359,6 @@ fn family(state: &PipelineState, stream: &StreamName) -> Vec<TablePath> {
         .cloned()
         .collect()
 }
+
+#[cfg(test)]
+mod tests;
