@@ -241,6 +241,8 @@ given:
   are gone, so a destination that forgot receipts by a rule of its own would refuse a replay
   the engine may make, or apply a commit twice. Which loads and commits can still be repeated
   is the engine's knowledge: a horizon it declares is left to the work on the write-ahead log.
+  Amended 2026-10-03 (ADR 0045): each commit declares that horizon, and a SQL destination and the
+  memory destination forget the receipts before it within the commit.
 - **Tombstones are kept** by the rules of ADR 0027 and no other. A delete of a key the table
   never held leaves one too: its insert may be sent again alone. What a merge no longer does is
   pay for each tombstone it leaves as it was. A history table's upsert lifts its key's
@@ -306,7 +308,9 @@ given:
 - Dialects with identifiers under 63 bytes are unsupported.
 - A stream holding a float that is no number, or negative zero, does not load into SQLite.
 - `_rdlt_receipts` grows by a row a commit, and a change table's tombstones by a row a key
-  hard-deleted, until the engine declares what it may still repeat.
+  hard-deleted, until the engine declares what it may still repeat. Amended 2026-10-03
+  (ADR 0045): receipts are forgotten before the horizon each commit declares; tombstones are
+  not, as no commit horizon shows one unneeded.
 - A growing log whose group is kept nowhere accepts a start past its head and fails the read
   to be tried again until the head is there: a host that wants a forged start refused keeps
   the group in a file. A group file's beginning is the calendar's: a clock set back between

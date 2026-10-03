@@ -28,7 +28,10 @@ its data from the source again, so an object store backend is not built.
   log could tell apart (`StreamSpec::with_replayable` says so).
 - **Store.** `WalStore` keeps each load's log as numbered chunks, and `LocalWal` keeps them in a
   local directory: `<base>/<sanitized pipeline>-<hash8>/<load>/<chunk:08>.wal`, directories created
-  0700 and refused where another user owns them. The embedder chooses the base.
+  0700 and refused where another user owns them. The embedder chooses the base. Amended
+  2026-10-03 (ADR 0045): a chunk is staged and published whole where its name is free, as an
+  object store would; the pipeline's directory is `p.<id>` or `x.<base32 of the id>`, and every
+  directory and file beneath the base must be the user's alone, checked at every open.
 - **Frames** are spec §15.6's, `[kind u8][len u32 LE][crc32c u32 LE][payload]`: metadata as JSON,
   a batch as a JSON header then its Arrow data in the wire's framing (`rdlt_wire::codec`), whose
   decoder checks each message against its body and contains Arrow's panics. A raw Arrow reader
@@ -50,7 +53,9 @@ its data from the source again, so an object store backend is not built.
   schema frames its batches name, so it reads alone. Amended 2026-10-03 (ADR 0041): segments still
   open are carried out of chunks whose other segments settled, and a version's schema frame is
   forgotten once no batch of it can come. After a failed append or sync every later
-  command fails: what the chunk holds is unknown.
+  command fails: what the chunk holds is unknown. Amended 2026-10-03 (ADR 0045): what was logged
+  since the previous commit, the commit's frame and an `End` naming the chunks still needed are
+  published as one chunk at the commit, and a receipt is recorded in the next chunk's `End`.
 - **Order.** A batch's frame is queued before its partition can seal its segment, and a commit's
   frame is queued after the seals it takes; the channel keeps their order, so a commit's frame
   follows every batch of its segments. A test runs a whole load on a slow disk and checks it.
@@ -61,7 +66,8 @@ its data from the source again, so an object store backend is not built.
   exists and holds it while writing, then whoever replays it once that load is gone.
   `LocalWal` locks a file beside the load's directory (`std::fs::File::try_lock`, which a process's
   death releases). The lock is advisory, and unreliable on network filesystems: the directory is a
-  local one.
+  local one. Amended 2026-10-03 (ADR 0045): claims are gone; a replay fences a log by publishing
+  its next chunk, which a load still running then finds taken.
 - **Replay.** Before each attempt opens, in a session of its own, every log the attempt can claim
   is read (one frame in memory at a time, each chunk up to its first torn frame), and each commit
   without a receipt is committed again under its original `(load_id, commit_seq)`:
@@ -93,11 +99,15 @@ its data from the source again, so an object store backend is not built.
 - **Damage.** Only a log's last chunk can end torn: every other ends with a commit's frame, made
   durable, so a chunk before the last that ends early or garbled makes the log unreadable rather
   than losing the commits past the damage. A load that claimed its log and failed before its first
-  frame leaves only the claim's mark, which replay lists and removes.
+  frame leaves only the claim's mark, which replay lists and removes. Amended 2026-10-03
+  (ADR 0045): no chunk is ever torn, being published whole, so any damage, and any chunk the
+  highest one names that is missing, makes the log unreadable; a logged commit is replayed only
+  whole and only as the engine writes one, and what replay stages is charged to the budget.
 
 ## Deviations from spec §15.6
 
-- **No object store backend** (owner's ruling above).
+- **No object store backend** (owner's ruling above). Amended 2026-10-03 (ADR 0045): the store
+  is shaped so that one could implement it.
 - **Acknowledged after the commit frame, not the seal frame.** Seals are logged with their commit,
   in one durable write, so a seal frame is never durable alone; sealed segments in no commit frame
   are never replayed. Their source was never acknowledged, so it serves them again.

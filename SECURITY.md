@@ -282,6 +282,32 @@ in forms its readers read back (ADR 0041):
   forgets superseded schema frames, and an open segment keeps at most as much of the log as it
   holds itself.
 
+## The write-ahead log
+
+A load's log holds rows its source may have been told were committed, and replay applies it with
+the engine's authority, so it is bound, private and checked (ADR 0045):
+
+- The local store reaches everything beneath its base one name at a time, never through a link.
+  The base must be the engine's user's and writable by no other; every directory and file below
+  it must be the user's alone, of the kind expected, on the base's file system, checked at every
+  open (`wal_not_private`). A name the store never writes is refused, never read (`wal_stray`).
+  Each pipeline's directory is its own, also where a file system folds case.
+- A chunk is published whole, never appended to, so any damage, a chunk of another format, a
+  chunk missing, or a chunk naming another pipeline or load is refused (`wal_unreadable`,
+  `wal_foreign`) rather than read in part. Frames are bounded before they are read, and batches
+  decoded within the memory budget's limits.
+- A logged commit applies only whole and only as the engine writes one: older than the
+  replaying session, its seals, batches and rows all there, recording no reset, no receipt but
+  its own and no position its seals did not set, dropping no table.
+- What replay stages is reserved from the memory budget (`replay_exceeds_budget`). A load's log
+  holds at most `GrowthLimits::log_bytes` on disk, 4 GiB by default (`log_bytes_exceeded`), and
+  a full disk is retried (`wal_storage_full`).
+- A replay fences a running load by publishing its log's next chunk, so the two never both write.
+
+A log is not signed: whoever can write as the engine's user holds its authority already. A log
+that cannot be read stops its pipeline's runs until an operator removes it, since setting it
+aside would drop rows its source was told were committed.
+
 ## Building rdlt
 
 rdlt turns a panic, of the Arrow library on a corrupt frame or of a connector's task, into a

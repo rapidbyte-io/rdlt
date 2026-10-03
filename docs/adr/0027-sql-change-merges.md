@@ -41,7 +41,9 @@ the spec's `D-MERGE` names the seq guard, which the clause never exercised.
     that is the cost of hard deletes, and a hard truncate prunes them. Amended 2026-10-01: no
     rule prunes them by age or count, and a delete of a key the table never held leaves one too
     (ADR 0049). A table replaced whole, by a
-    generation, forgets them.
+    generation, forgets them. Amended 2026-10-03 (ADR 0045): the horizon a commit declares for
+    receipts prunes no tombstone, since a source sends a change before a delete again whenever
+    it resumes past it, not only a replay.
   - Changes the snapshot holds are never sent again: a source resumes past its position, so
     tombstones start with the changes, not the snapshot.
 - **SQL change merges** (`sqlgen`, and the SQLite destination through it).
