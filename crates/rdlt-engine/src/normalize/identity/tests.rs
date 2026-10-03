@@ -268,7 +268,7 @@ fn values_are_read_where_they_lie_not_from_a_wider_copy() {
         let field = arrow_schema::Field::new("k", data_type.clone(), true);
         let (super::Encoder::Integer(held, values)
         | super::Encoder::Decimal(held, values, _)
-        | super::Encoder::Temporal(_, held, values, _)) =
+        | super::Encoder::Temporal(_, held, values)) =
             super::Encoder::new(&field, &column).unwrap()
         else {
             panic!("{data_type} is encoded through a copy");

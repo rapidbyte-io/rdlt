@@ -1,7 +1,15 @@
 mod rendered;
 
+use std::sync::Arc;
+
+use arrow_schema::{ArrowError, DataType};
+
+use arrow_array::cast::AsArray;
 use arrow_array::types::Date32Type;
-use arrow_array::{Date32Array, StructArray};
+use arrow_array::{
+    ArrayRef, Date32Array, StructArray, Time32MillisecondArray, TimestampMillisecondArray,
+    TimestampSecondArray,
+};
 
 use super::text::{clock, date, duration};
 use super::*;
@@ -38,91 +46,58 @@ fn durations_render_as_arrow_renders_them() {
 
 fn timestamps(array: &ArrayRef) -> Vec<Option<i64>> {
     (0..array.len())
-        .map(|row| {
-            (!array.is_null(row)).then(|| raw_timestamp(array.as_ref(), row, unit_of(array)))
-        })
+        .map(|row| (!array.is_null(row)).then(|| raw(array.as_ref(), row)))
         .collect()
 }
 
-fn unit_of(array: &ArrayRef) -> TimeUnit {
-    match array.data_type() {
-        DataType::Timestamp(unit, _) => *unit,
-        other => panic!("{other} is not a timestamp"),
+/// `array`, of `from`, widened to `to` as the engine converts it.
+fn converted(
+    array: &ArrayRef,
+    from: &rdlt_connector::LogicalType,
+    to: &rdlt_connector::LogicalType,
+) -> Result<ArrayRef, ArrowError> {
+    crate::table::convert::convert(array, from, to)
+}
+
+#[test]
+fn a_date_is_its_midnight_in_utc_in_a_timestamp_column_of_any_zone() {
+    use rdlt_connector::{LogicalType, TimeUnit as Unit};
+    let dates: ArrayRef = Arc::new(Date32Array::from(vec![Some(0), Some(-1), None]));
+    for zone in [
+        None,
+        Some("+05:30"),
+        Some("America/Sao_Paulo"),
+        Some("Asia/Tehran"),
+    ] {
+        let to = LogicalType::Timestamp(Unit::Millisecond, zone.map(Arc::from));
+        let placed = converted(&dates, &LogicalType::Date, &to).unwrap();
+        assert_eq!(
+            timestamps(&placed),
+            [Some(0), Some(-86_400_000), None],
+            "{zone:?}"
+        );
+        assert_eq!(placed.data_type(), &to.to_arrow());
     }
-}
-
-fn dates(days: Vec<Option<i32>>) -> ArrayRef {
-    Arc::new(Date32Array::from(days))
-}
-
-#[test]
-fn dates_become_their_midnight_in_a_fixed_zone() {
-    let zone: Arc<str> = Arc::from("+05:30");
-    let placed = midnights(
-        &dates(vec![Some(0), Some(1), None]),
-        TimeUnit::Millisecond,
-        Some(&zone),
-    )
-    .unwrap();
-    assert_eq!(
-        timestamps(&placed),
-        [Some(-19_800_000), Some(66_600_000), None]
-    );
-    let utc = midnights(&dates(vec![Some(-1)]), TimeUnit::Second, None).unwrap();
-    assert_eq!(timestamps(&utc), [Some(-86_400)]);
-    assert_eq!(
-        placed.data_type(),
-        &DataType::Timestamp(TimeUnit::Millisecond, Some(zone))
-    );
-}
-
-#[test]
-fn a_midnight_a_named_zone_skips_or_repeats_is_placed_by_the_offset_in_force_or_the_earlier() {
-    let skipped: Arc<str> = Arc::from("America/Sao_Paulo");
-    let placed = midnights(&dates(vec![Some(17_839)]), TimeUnit::Second, Some(&skipped)).unwrap();
-    assert_eq!(
-        timestamps(&placed),
-        [Some(1_541_300_400)],
-        "03:00 UTC, at -03:00"
-    );
-    let repeated: Arc<str> = Arc::from("America/Havana");
-    let placed = midnights(
-        &dates(vec![Some(18_203)]),
-        TimeUnit::Second,
-        Some(&repeated),
-    )
-    .unwrap();
-    assert_eq!(
-        timestamps(&placed),
-        [Some(1_572_753_600)],
-        "the earlier midnight, at -04:00"
-    );
-}
-
-#[test]
-fn a_date_beyond_its_units_range_is_refused_and_a_named_zone_beyond_its_years_too() {
-    assert!(midnights(&dates(vec![Some(200_000)]), TimeUnit::Nanosecond, None).is_err());
-    let named: Arc<str> = Arc::from("Asia/Kolkata");
-    assert!(midnights(&dates(vec![Some(i32::MAX)]), TimeUnit::Second, Some(&named)).is_err());
-    let fixed: Arc<str> = Arc::from("-03:30");
-    let far = midnights(&dates(vec![Some(i32::MAX)]), TimeUnit::Second, Some(&fixed)).unwrap();
-    assert_eq!(
-        timestamps(&far),
-        [Some(i64::from(i32::MAX) * 86_400 + 12_600)]
-    );
-}
-
-#[test]
-fn wall_clock_times_become_the_instants_they_name_in_a_zone() {
-    let naive: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![Some(1_000), None]));
-    let zone: Arc<str> = Arc::from("+05:00");
-    let placed = localized(&naive, TimeUnit::Second, &zone).unwrap();
-    assert_eq!(timestamps(&placed), [Some(1 - 18_000), None]);
-    let huge: ArrayRef = Arc::new(TimestampSecondArray::from(vec![i64::MAX / 2]));
+    let far: ArrayRef = Arc::new(Date32Array::from(vec![200_000]));
+    let nanos = LogicalType::Timestamp(Unit::Nanosecond, None);
     assert!(
-        localized(&huge, TimeUnit::Nanosecond, &zone).is_err(),
+        converted(&far, &LogicalType::Date, &nanos).is_err(),
         "no unit wraps"
     );
+}
+
+#[test]
+fn a_wall_clock_time_widened_into_a_zone_keeps_its_count_from_the_epoch() {
+    use rdlt_connector::{LogicalType, TimeUnit as Unit};
+    let naive: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![Some(1_000), None]));
+    let from = LogicalType::Timestamp(Unit::Millisecond, None);
+    let to = LogicalType::Timestamp(Unit::Microsecond, Some(Arc::from("UTC")));
+    let placed = converted(&naive, &from, &to).unwrap();
+    assert_eq!(timestamps(&placed), [Some(1_000_000), None]);
+    let huge: ArrayRef = Arc::new(TimestampSecondArray::from(vec![i64::MAX / 2]));
+    let from = LogicalType::Timestamp(Unit::Second, None);
+    let to = LogicalType::Timestamp(Unit::Nanosecond, Some(Arc::from("UTC")));
+    assert!(converted(&huge, &from, &to).is_err(), "no unit wraps");
 }
 
 #[test]
@@ -168,19 +143,6 @@ fn times_outside_a_day_render_as_signed_clocks() {
 }
 
 #[test]
-fn a_time_a_zone_east_of_utc_skips_moves_forward_by_the_gap() {
-    // Berlin skipped from 02:00 to 03:00 on 2024-03-31: 02:30 is 03:30 at +02:00, 01:30 UTC.
-    let naive: ArrayRef = Arc::new(TimestampSecondArray::from(vec![1_711_852_200]));
-    let berlin: Arc<str> = Arc::from("Europe/Berlin");
-    let placed = localized(&naive, TimeUnit::Second, &berlin).unwrap();
-    assert_eq!(timestamps(&placed), [Some(1_711_848_600)]);
-    // Tehran skipped midnight on 2020-03-21: it is 01:00 at +04:30, 20:30 UTC the day before.
-    let tehran: Arc<str> = Arc::from("Asia/Tehran");
-    let placed = midnights(&dates(vec![Some(18_342)]), TimeUnit::Second, Some(&tehran)).unwrap();
-    assert_eq!(timestamps(&placed), [Some(1_584_736_200)]);
-}
-
-#[test]
 fn an_instant_beyond_the_years_arrow_renders_at_midnight_shows_an_unsigned_clock() {
     let midnight: ArrayRef = Arc::new(TimestampSecondArray::from(vec![1_000_000_000 * 86_400]));
     let rendered = text(&midnight).unwrap();
@@ -198,11 +160,6 @@ fn a_date64_holding_part_of_a_day_is_the_day_it_is_within_everywhere() {
     let within = [-1_i64, -2, 0, -1, 0];
     let date64: ArrayRef = Arc::new(arrow_array::Date64Array::from(millis.clone()));
     let seconds: Vec<i64> = within.iter().map(|days| days * 86_400).collect();
-    let placed = midnights(&date64, TimeUnit::Second, None).unwrap();
-    assert_eq!(
-        timestamps(&placed),
-        seconds.iter().copied().map(Some).collect::<Vec<_>>()
-    );
     let convert = crate::table::convert::convert;
     let as_timestamp = convert(
         &date64,

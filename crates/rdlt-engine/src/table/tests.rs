@@ -21,6 +21,7 @@ mod decimals;
 mod keys;
 mod limits;
 mod unwidened;
+mod widenings;
 
 use super::TableView;
 use super::convert::{convert, json};
@@ -1258,15 +1259,15 @@ fn floats_are_written_to_json_as_the_shortest_text_of_the_double_they_are() {
 }
 
 #[test]
-fn a_wall_clock_time_a_named_zone_skips_becomes_the_instant_of_the_offset_in_force() {
+fn a_wall_clock_time_keeps_its_count_from_the_epoch_whatever_zone_shows_it() {
     use arrow_array::TimestampSecondArray;
     use rdlt_connector::TimeUnit as Unit;
-    // 2018-11-04 00:00 never happened in São Paulo: clocks went from 23:59:59 to 01:00 at -03:00.
+    // 2018-11-04 00:00 never happened in São Paulo; the zone shows the instant, never moves it.
     let naive: ArrayRef = Arc::new(TimestampSecondArray::from(vec![Some(1_541_289_600), None]));
     let zoned = LogicalType::Timestamp(Unit::Second, Some(Arc::from("America/Sao_Paulo")));
     let placed = convert(&naive, &LogicalType::Timestamp(Unit::Second, None), &zoned).unwrap();
     let placed = placed.as_primitive::<arrow_array::types::TimestampSecondType>();
-    assert_eq!(placed.value(0), 1_541_300_400);
+    assert_eq!(placed.value(0), 1_541_289_600);
     assert!(placed.is_null(1));
 }
 

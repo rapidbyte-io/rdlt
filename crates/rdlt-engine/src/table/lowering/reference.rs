@@ -6,7 +6,7 @@
 //! a [`Canon`]; the differential reads every stored cell back to one and compares.
 
 use rdlt_connector::{ColumnKey, ColumnPath, LogicalType};
-use rdlt_testkit::canon::{Canon, canonical_into, holds};
+use rdlt_testkit::canon::{Canon, canonical, holds};
 use rdlt_testkit::drawn::Scalar;
 
 use crate::policy::SchemaPolicy;
@@ -79,12 +79,11 @@ pub(super) fn lower(
             row.iter().zip(&targets).zip(columns).zip(&splits)
         {
             if let Some((own, (scalar, from))) = held(value, split) {
-                let to = view.model.columns[own].logical_type();
-                cells[own] = canonical_into(&scalar, &from, to);
+                cells[own] = canonical(&scalar, &from);
             } else if let Some(column) = target {
                 let to = view.model.columns[*column].logical_type();
                 expected.refused |= !holds(value, logical, to);
-                cells[*column] = canonical_into(value, logical, to);
+                cells[*column] = canonical(value, logical);
             }
         }
         expected.rows.push(cells);

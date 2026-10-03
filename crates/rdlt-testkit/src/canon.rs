@@ -2,7 +2,6 @@
 //! engine makes is exact, so a stored cell must mean exactly the value the source sent.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 
 use rdlt_connector::{Capabilities, LogicalType, TimeUnit};
 use serde_json::Value;
@@ -93,54 +92,11 @@ pub fn canonical(value: &Scalar, logical: &LogicalType) -> Canon {
     }
 }
 
-/// What `value`, of `from`, means once converted to `to`: what it means, but a date in a column of
-/// zoned timestamps is midnight in the column's zone.
-pub fn canonical_into(value: &Scalar, from: &LogicalType, to: &LogicalType) -> Canon {
-    use LogicalType as T;
-    match (value, from, to) {
-        (Scalar::Date(days), T::Date, T::Timestamp(_, Some(zone))) => {
-            let local = i128::from(*days) * DAY;
-            Canon::Instant(local - offset(zone, local).unwrap_or(0))
-        }
-        (Scalar::Temporal(value), T::Timestamp(unit, None), T::Timestamp(_, Some(zone))) => {
-            let local = i128::from(*value) * nanos(*unit);
-            Canon::Instant(local - offset(zone, local).unwrap_or(0))
-        }
-        (Scalar::Struct(fields), T::Struct(from_fields), T::Struct(to_fields)) => Canon::Object(
-            fields
-                .iter()
-                .filter_map(|(name, inner)| {
-                    let from = from_fields.iter().find(|field| field.name() == name)?;
-                    let to = to_fields.iter().find(|field| field.name() == name)?;
-                    let inner = canonical_into(inner, from.logical_type(), to.logical_type());
-                    (inner != Canon::Null).then(|| (name.clone(), inner))
-                })
-                .collect(),
-        ),
-        (Scalar::List(items), T::List(from_item), T::List(to_item)) => Canon::List(
-            items
-                .iter()
-                .map(|inner| {
-                    canonical_into(inner, from_item.logical_type(), to_item.logical_type())
-                })
-                .collect(),
-        ),
-        _ => canonical(value, from),
-    }
-}
-
-/// Whether `to` holds `value`, of `from`: a time converted to a finer unit, or placed in a zone,
-/// may leave the integer that stores it (a `Date32`'s days, a `Time32`'s `i32`, an `i64`), and a
-/// named zone's offsets are known only for the years `chrono` holds.
+/// Whether `to` holds `value`, of `from`: a time converted to a finer unit may leave the integer
+/// that stores it (a `Date32`'s days, a `Time32`'s `i32`, an `i64`), while a zone never moves it.
 pub fn holds(value: &Scalar, from: &LogicalType, to: &LogicalType) -> bool {
     use LogicalType as T;
     let within = |nanos: i128, unit: TimeUnit| i64::try_from(nanos / self::nanos(unit)).is_ok();
-    let placed = |local: i128, unit: TimeUnit, zone: &Option<Arc<str>>| {
-        within(local, unit)
-            && zone.as_deref().is_none_or(|zone| {
-                offset(zone, local).is_some_and(|offset| within(local - offset, unit))
-            })
-    };
     match (value, from, to) {
         (Scalar::Date(days), _, T::Date) => i32::try_from(*days).is_ok(),
         (Scalar::Temporal(value), T::Time(from), T::Time(to)) => {
@@ -150,13 +106,7 @@ pub fn holds(value: &Scalar, from: &LogicalType, to: &LogicalType) -> bool {
                 _ => i64::try_from(value).is_ok(),
             }
         }
-        (Scalar::Date(days), _, T::Timestamp(unit, zone)) => {
-            placed(i128::from(*days) * DAY, *unit, zone)
-        }
-        (Scalar::Temporal(value), T::Timestamp(from, None), T::Timestamp(to, zone @ Some(_))) => {
-            let local = i128::from(*value) * nanos(*from);
-            within(local, *to) && placed(local, *to, zone)
-        }
+        (Scalar::Date(days), _, T::Timestamp(unit, _)) => within(i128::from(*days) * DAY, *unit),
         (
             Scalar::Temporal(value),
             T::Time(from) | T::Timestamp(from, _) | T::Duration(from),
@@ -177,59 +127,6 @@ pub fn holds(value: &Scalar, from: &LogicalType, to: &LogicalType) -> bool {
             .all(|item| holds(item, from_item.logical_type(), to_item.logical_type())),
         _ => true,
     }
-}
-
-/// Nanoseconds `zone` is ahead of UTC at the wall-clock time `local`: a fixed offset, or a named
-/// zone's where its clocks show `local` (the earlier where they show it twice, and where they
-/// skip it the offset before they did, so the time moves forward by the gap); `None` beyond the
-/// years a named zone's offsets are known for.
-pub fn offset(zone: &str, local: i128) -> Option<i128> {
-    use chrono::{LocalResult, Offset as _, TimeZone as _};
-    const SECOND: i128 = 1_000_000_000;
-    if zone == "UTC" {
-        return Some(0);
-    }
-    let sign = match zone.as_bytes().first() {
-        Some(b'+') => Some(1),
-        Some(b'-') => Some(-1),
-        _ => None,
-    };
-    if let Some(sign) = sign {
-        let (hours, minutes) = zone[1..].split_once(':').expect("a fixed offset");
-        let minutes =
-            hours.parse::<i128>().expect("hours") * 60 + minutes.parse::<i128>().expect("minutes");
-        return Some(sign * minutes * 60 * SECOND);
-    }
-    let tz: arrow_array::timezone::Tz = zone.parse().expect("a known zone");
-    let seconds = i64::try_from(local.div_euclid(SECOND)).ok()?;
-    let nanos = u32::try_from(local.rem_euclid(SECOND)).expect("a fraction");
-    let local = chrono::DateTime::from_timestamp(seconds, nanos)?.naive_utc();
-    let offset = match tz.offset_from_local_datetime(&local) {
-        LocalResult::Single(offset) | LocalResult::Ambiguous(offset, _) => {
-            offset.fix().local_minus_utc()
-        }
-        LocalResult::None => {
-            // The shift lies within a day of `local` read as UTC: find its second by bisection.
-            let at = |seconds: i64| {
-                let utc = chrono::DateTime::from_timestamp(seconds, 0).expect("in range");
-                tz.offset_from_utc_datetime(&utc.naive_utc())
-                    .fix()
-                    .local_minus_utc()
-            };
-            let (mut before, mut after) = (seconds - 86_400, seconds + 86_400);
-            let shifted = at(after);
-            while after - before > 1 {
-                let middle = before + (after - before) / 2;
-                if at(middle) == shifted {
-                    after = middle;
-                } else {
-                    before = middle;
-                }
-            }
-            at(before)
-        }
-    };
-    Some(i128::from(offset) * SECOND)
 }
 
 /// What a JSON value means.

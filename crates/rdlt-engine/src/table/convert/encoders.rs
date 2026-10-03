@@ -35,7 +35,7 @@ impl EncoderFactory for Extensions {
             // arrow-json also writes some finite ones with more digits than they need.
             (_, DataType::Float32 | DataType::Float64) => Box::new(Floats(array)),
             // arrow-json renders temporal values it cannot hold as nothing or `<invalid>`.
-            (_, data_type) if temporal::is_temporal(data_type) => {
+            (_, data_type) if rdlt_connector::instants::is_temporal(data_type) => {
                 Box::new(TemporalText(temporal::Renderer::new(array)?, String::new()))
             }
             // arrow-json encodes a list's items with the list's field, losing the items'

@@ -230,3 +230,71 @@ async fn a_negative_zero_key_is_the_key_zero_for_every_destination_and_keyed_mod
     })
     .await;
 }
+
+/// A row keyed by `id`, holding `items`.
+fn items_keyed_by(id: ArrayRef, items: &[i64]) -> RecordBatch {
+    let list: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(Field::new("item", DataType::Int64, true)),
+        OffsetBuffer::from_lengths([items.len()]),
+        Arc::new(Int64Array::from(items.to_vec())),
+        None,
+    ));
+    RecordBatch::try_from_iter([("id", id), ("items", list)]).expect("a batch")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_date_key_widened_to_a_zoned_timestamp_keeps_its_root_and_only_its_latest_children() {
+    each(Target::IN_PROCESS, |target| async move {
+        let store = "widened_date_key";
+        let date: ArrayRef = Arc::new(arrow_array::Date32Array::from(vec![18_262]));
+        // The same instant, midnight in UTC, as New York shows it.
+        let zoned: ArrayRef = Arc::new(
+            arrow_array::TimestampSecondArray::from(vec![1_577_836_800])
+                .with_timezone("America/New_York"),
+        );
+        let mut refused = false;
+        for rows in [items_keyed_by(date, &[1, 2]), items_keyed_by(zoned, &[3])] {
+            let source = batches(store, vec![BatchStream::new("events", vec![rows])]).await;
+            let plan = stream("events")
+                .write(WriteMode::Merge)
+                .key(["id"])
+                .schema(SchemaSettings::new().nested(Nested::normalize()));
+            let outcome = engine(commit_every(10))
+                .run(
+                    pipeline(store, [plan]),
+                    source,
+                    target.destination(store).await,
+                )
+                .await;
+            // A destination that cannot widen a key in place refuses the change.
+            if outcome.error.as_ref().and_then(rdlt_engine::Error::code)
+                == Some("merge_key_changed")
+            {
+                refused = true;
+                break;
+            }
+            assert_eq!(
+                outcome.report.status,
+                RunStatus::Succeeded,
+                "{target:?}: {:?}",
+                outcome.error
+            );
+        }
+        if refused {
+            return;
+        }
+        let roots: usize = target
+            .published(store, "events")
+            .iter()
+            .map(RecordBatch::num_rows)
+            .sum();
+        let items = target.published(store, "events__items");
+        let mut values: Vec<i64> = column_of(&items, "value", &DataType::Int64)
+            .iter()
+            .flat_map(|values| values.as_primitive::<Int64Type>().values().to_vec())
+            .collect();
+        values.sort_unstable();
+        assert_eq!((roots, values), (1, vec![3]), "{target:?}");
+    })
+    .await;
+}

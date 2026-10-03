@@ -19,7 +19,7 @@ impl Sent {
     /// What the value means once held by a column of `column`.
     pub(in crate::oracle) fn meaning(&self, column: &LogicalType) -> Canon {
         match self {
-            Self::Typed(value, source) => canon::canonical_into(value, source, column),
+            Self::Typed(value, source) => canon::canonical(value, source),
             Self::Json(text) => decode::json_as(text, column),
         }
     }

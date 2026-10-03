@@ -49,7 +49,8 @@ pub enum LogicalType {
     Date,
     /// Time of day.
     Time(TimeUnit),
-    /// Instant, with an optional time zone; no zone means a wall-clock timestamp.
+    /// Instant, counted from the epoch in UTC, with the time zone that shows it, if any; a date
+    /// it holds is its midnight in UTC (see [`crate::instants`]).
     Timestamp(TimeUnit, Option<Arc<str>>),
     /// Elapsed time.
     Duration(TimeUnit),
