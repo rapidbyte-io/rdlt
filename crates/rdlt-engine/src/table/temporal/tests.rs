@@ -1,3 +1,5 @@
+mod rendered;
+
 use super::text::{clock, date, duration};
 use super::*;
 

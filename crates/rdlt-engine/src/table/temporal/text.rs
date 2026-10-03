@@ -1,5 +1,10 @@
 //! Temporal values, numbers and booleans as text: as Arrow renders them wherever it can, and
 //! exactly, in UTC, where it cannot.
+//!
+//! Arrow is asked to render only what it holds: a zoned instant whose time in its zone `chrono`
+//! holds, at an offset of whole minutes. Beyond that its formatter panics or writes a time of
+//! another day, so times of day and durations, which it truncates past 2^32 seconds, are always
+//! rendered here.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -9,7 +14,8 @@ use arrow_array::timezone::Tz;
 use arrow_array::{Array, ArrayRef};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, TimeUnit};
-use chrono::{Offset as _, TimeZone as _};
+use chrono::NaiveDateTime;
+use chrono::{Offset as _, TimeDelta, TimeZone as _};
 
 use super::{DAY, NANOS_PER_SECOND, fixed_offset, naive, nanos, raw};
 
@@ -36,9 +42,12 @@ pub(crate) fn text(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
 pub(crate) struct Renderer<'a> {
     array: &'a dyn Array,
     formatter: ArrayFormatter<'a>,
-    /// For a named zone's timestamps, whether the zone's offset at an instant is whole minutes,
-    /// which is all the text of an offset holds; other instants are rendered in UTC.
-    whole_minutes: Option<Box<dyn Fn(i64) -> bool + 'a>>,
+    /// For a zoned timestamp, whether Arrow renders an instant in the zone.
+    ///
+    /// It does where `chrono` holds the instant and its time there, and the zone's offset then is
+    /// whole minutes, which is all the text of an offset holds; other instants are rendered in
+    /// UTC.
+    zoned: Option<Box<dyn Fn(i64) -> bool + 'a>>,
 }
 
 impl<'a> Renderer<'a> {
@@ -47,35 +56,34 @@ impl<'a> Renderer<'a> {
         // Arrow renders a `Date64` as a date and time; it is a date, as a `Date32` is.
         let options = FormatOptions::default().with_datetime_format(Some("%Y-%m-%d"));
         let formatter = ArrayFormatter::try_new(array, &options)?;
-        let whole_minutes = match array.data_type() {
-            DataType::Timestamp(unit, Some(zone)) if fixed_offset(zone).is_none() => {
-                let (unit, tz): (TimeUnit, Tz) = (*unit, zone.parse()?);
-                let whole = move |value: i64| {
-                    naive(value, unit).is_none_or(|utc| {
-                        tz.offset_from_utc_datetime(&utc).fix().local_minus_utc() % 60 == 0
-                    })
-                };
-                Some(Box::new(whole) as Box<dyn Fn(i64) -> bool + 'a>)
-            }
+        let zoned = match array.data_type() {
+            DataType::Timestamp(unit, Some(zone)) => Some(rendered_in(*unit, zone)?),
             _ => None,
         };
         Ok(Self {
             array,
             formatter,
-            whole_minutes,
+            zoned,
         })
     }
 
     /// Appends the text of the value at `row`, which is not null, to `out`.
     pub(crate) fn write(&self, row: usize, out: &mut String) {
-        if let DataType::Duration(unit) = self.array.data_type() {
-            out.push_str(&duration(nanos(raw(self.array, row), *unit)));
-            return;
+        match self.array.data_type() {
+            DataType::Duration(unit) => {
+                out.push_str(&duration(nanos(raw(self.array, row), *unit)));
+                return;
+            }
+            DataType::Time32(unit) | DataType::Time64(unit) => {
+                out.push_str(&clock(nanos(raw(self.array, row), *unit)));
+                return;
+            }
+            _ => {}
         }
         if self
-            .whole_minutes
+            .zoned
             .as_ref()
-            .is_some_and(|whole| !whole(raw(self.array, row)))
+            .is_some_and(|renders| !renders(raw(self.array, row)))
         {
             out.push_str(&self.beyond(row));
             return;
@@ -93,7 +101,6 @@ impl<'a> Renderer<'a> {
         match self.array.data_type() {
             DataType::Date32 => date(i128::from(value)),
             DataType::Date64 => date(i128::from(value).div_euclid(86_400_000)),
-            DataType::Time32(unit) | DataType::Time64(unit) => clock(nanos(value, *unit)),
             DataType::Timestamp(unit, zone) => {
                 let instant = nanos(value, *unit);
                 let day = instant.div_euclid(DAY);
@@ -103,6 +110,35 @@ impl<'a> Renderer<'a> {
             other => unreachable!("{other} is not temporal"),
         }
     }
+}
+
+/// Whether Arrow renders a timestamp of `unit` in `zone`: `chrono` holds the instant and its time
+/// in the zone, and the zone's offset then is whole minutes.
+fn rendered_in<'a>(
+    unit: TimeUnit,
+    zone: &str,
+) -> Result<Box<dyn Fn(i64) -> bool + 'a>, ArrowError> {
+    let offset = offset_in(zone)?;
+    Ok(Box::new(move |value: i64| {
+        naive(value, unit).is_some_and(|utc| {
+            let offset = offset(&utc);
+            offset % 60 == 0 && utc.checked_add_signed(TimeDelta::seconds(offset)).is_some()
+        })
+    }))
+}
+
+/// The seconds a zone is ahead of UTC at a UTC time.
+type Offset = Box<dyn Fn(&NaiveDateTime) -> i64>;
+
+/// The seconds `zone` is ahead of UTC at a UTC time.
+fn offset_in(zone: &str) -> Result<Offset, ArrowError> {
+    if let Some(seconds) = fixed_offset(zone) {
+        return Ok(Box::new(move |_| seconds));
+    }
+    let tz: Tz = zone.parse()?;
+    Ok(Box::new(move |utc| {
+        i64::from(tz.offset_from_utc_datetime(utc).fix().local_minus_utc())
+    }))
 }
 
 /// `nanos` as an ISO 8601 duration of seconds, as Arrow renders it: `PT1.5S`, `-PT0.5S`.
