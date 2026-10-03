@@ -23,7 +23,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
 use crate::config::EngineConfig;
-use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun, launcher};
+use crate::coordinator::{
+    Coordinator, CoordinatorParts, HeldState, PartitionRun, StreamRun, launcher,
+};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
@@ -74,6 +76,8 @@ struct Opened {
     session: Arc<SharedSession>,
     epoch: Epoch,
     state: PipelineState,
+    /// What the state the open answered holds decoded.
+    held: HeldState,
 }
 
 /// Runs one attempt under `load_id`, recording its commits in `log` as they land.
@@ -176,6 +180,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         context.destination.open(&open).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
+    let held = HeldState::of(&state);
     let state = match PipelineState::from_records(&state) {
         Ok(state) => state,
         Err(error) => {
@@ -191,6 +196,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         session: SharedSession::new(session),
         epoch,
         state,
+        held,
     })
 }
 
@@ -225,7 +231,6 @@ async fn launch(
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<(), Error> {
     let mut scope = TaskScope::new(&CancellationToken::new());
-    let cancel = scope.token().clone();
     let lanes = start_lanes(context, &tables, &mut scope);
     let wal = start_log(context, load_id, &opened.state, &planned, &mut scope).await?;
     let ((progress, progress_feed), (barrier, barrier_feed)) =
@@ -241,7 +246,7 @@ async fn launch(
         latest: Arc::clone(&latest),
         barrier: barrier_feed,
         stop: stop_reads.clone(),
-        cancel: cancel.clone(),
+        cancel: scope.token().clone(),
         slots: Slots::new(context.config.partitions()),
         segments: Arc::new(AtomicU64::new(1)),
         buffer: context.config.partition_buffer(),
@@ -272,11 +277,12 @@ async fn launch(
         barrier,
         stop_reads,
         stop: context.stop.clone(),
-        cancel,
+        cancel: scope.token().clone(),
         log,
         launcher,
         wal,
         positions: Positions::of(&opened.state),
+        state: opened.held,
         follow: context.plan.until().follows(),
         replan: context.config.replan(),
     });

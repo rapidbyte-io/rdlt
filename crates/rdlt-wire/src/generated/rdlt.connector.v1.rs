@@ -1651,8 +1651,9 @@ pub struct Limits {
     /// Bytes in one catalog: a discovery's answer.
     #[prost(uint64, tag = "12")]
     pub catalog_bytes: u64,
-    /// Bytes in one message that carries state or a stream's positions: an open's answer, a plan
-    /// and its request, a commit's request and a report of committed positions.
+    /// Bytes one message that carries state or a stream's positions holds decoded, as the scan of
+    /// its encoding counts it, and so may take on the wire: an open's answer, a plan and its
+    /// request, a commit's request and a report of committed positions.
     #[prost(uint64, tag = "13")]
     pub state_bytes: u64,
     /// Bytes in any other control message.

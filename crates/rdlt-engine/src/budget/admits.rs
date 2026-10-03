@@ -32,7 +32,8 @@ use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 ///   request beside a row's nulls is within half of that too.
 /// - Every other answer is charged what decoding it holds to the share of answers being
 ///   decoded: a catalog, state and any other control message are at most what the share holds
-///   of one decoded, as [`Class::decoded_per_byte`] says for each.
+///   of one decoded, as [`Class::decoded_per_byte`] says for each. State is bounded on what it
+///   holds decoded, so it may take the whole share, and the engine commits no more of it.
 /// - JSON text is admitted for itself and for the batches it becomes.
 /// - Every read may hold a cursor waiting for a commit and a barrier's answer beside it, and the
 ///   commit a barrier calls is due once waiting cursors take half their share: half the share,

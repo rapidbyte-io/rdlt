@@ -28,9 +28,9 @@ fn the_default_budget_admits_these_limits() {
             // 8,192 that 8 MiB of tables' records holds at a kilobyte a column.
             schema_columns: 7_489,
             // What the 16 MiB of answers being decoded holds of one decoded: a catalog at
-            // sixteen times its bytes, state at eight, any other control message the protocol's.
+            // sixteen times its bytes; state, bounded decoded, the protocol's, as is any other
+            // control message.
             catalog_bytes: MIB,
-            state_bytes: 2 * MIB,
             ..Limits::default()
         }
     );
@@ -60,7 +60,7 @@ fn the_least_memory_admits_these_limits() {
             limits.state_bytes,
             limits.control_message_bytes
         ),
-        (132_076, 264_152, 132_076)
+        (132_076, 2_113_223, 132_076)
     );
 }
 
