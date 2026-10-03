@@ -101,6 +101,10 @@ async fn shredded(
     let compute = context.env.compute();
     let chunk_bytes = context.batch.chunk_bytes().get();
     let limits = ShredLimits::new(context.budget.limits().schema_columns);
+    // What observing may hold beyond what the pushes were admitted for, until what building
+    // takes is known and reserved.
+    let too_large = |large: TooLarge| beyond_a_request(job, &large);
+    let observing = reserving(job, context, limits.beyond_bytes(), too_large).await?;
     let observed = shred::observe(compute, &pushes, chunk_bytes, limits)
         .await
         .map_err(failed)?;
@@ -111,6 +115,7 @@ async fn shredded(
             Some(reserving(job, context, excess, too_large).await?)
         }
     };
+    drop(observing);
     let batches = observed.build(compute).await.map_err(failed)?;
     drop(pushes);
     let held = held::shredded(permits, beyond, &batches);

@@ -70,13 +70,17 @@ impl ShredLimits {
         }
     }
 
-    /// Bytes observing a flush's chunks may hold beyond their allowances: one chunk's shape of
-    /// every column the records may hold, each an object.
+    /// Bytes observing a flush's chunks may hold beyond their allowances, which a caller
+    /// reserves before it observes them: one chunk's shape of every column the records may hold,
+    /// each an object.
+    pub(crate) fn beyond_bytes(self) -> u64 {
+        self.columns
+            .saturating_mul(meter::KEY.saturating_add(meter::OBJECT_SHAPE))
+    }
+
+    /// The room observing a flush's chunks has beyond their allowances.
     fn beyond(self) -> Arc<Beyond> {
-        Beyond::new(
-            self.columns
-                .saturating_mul(meter::KEY.saturating_add(meter::OBJECT_SHAPE)),
-        )
+        Beyond::new(self.beyond_bytes())
     }
 }
 
