@@ -34,25 +34,35 @@ with the semantics the local store has, though no object-store backend is built.
 
 ### The store is shaped as an object store is
 
-- `WalStore` stages a chunk, appends to the staged chunk, and publishes it whole where no chunk
-  of its name exists, which is its durability point; publishing over an existing name fails with
-  `AlreadyExists` and leaves that chunk as it was. It lists a pipeline's loads and a load's
-  chunks, reads a chunk by range, deletes a chunk, and deletes a load's log in ascending chunk
-  order, so a crash part way leaves its highest chunks. Nothing is appended to a published chunk,
-  renamed over another, or locked, and nothing relies on a directory's order or on an operation
-  over several objects.
-- `LocalWal` stages a chunk as a file named `{chunk:08}.{token:016x}.part` in the load's
-  directory, created exclusive and 0600; publishing syncs it, links it to `{chunk:08}.wal` with
-  `linkat`, which fails where that name exists, unlinks the staged name and syncs the directory.
-  Each deletion syncs the directory it removed from.
+- A load opens its log before anything else of its attempt, replay included, by creating an
+  object where none of its name exists (`open_log`); the log is open until its removal begins,
+  and never again. `WalStore` stages a chunk of an open log, appends to it, and publishes it
+  whole where no chunk of its name exists and the log is still open, which is its durability
+  point: a name taken is refused with `AlreadyExists`, a log removed with `NotFound`, and a
+  chunk published as its log is removed is never listed. A staging can be discarded, and a
+  log's stagings deleted by anyone (`remove_staged`), which needs no room. It lists a pipeline's
+  open logs, the leftovers of removals a crash interrupted, a load's chunks; reads a chunk by
+  range; deletes a chunk; and removes a log, closing it first, then deleting what it holds.
+  Nothing is appended to a published chunk, renamed over another, or locked, and nothing relies
+  on a directory's order or on an operation over several objects.
+- `LocalWal` marks a load's log open with a file `open` in the load's directory, removed, and
+  made durable, first when the log is removed. It stages a chunk as a file
+  `{chunk:08}.{token:016x}.part`, created exclusive and 0600; publishing syncs it, links it to
+  `{chunk:08}.wal` with `linkat`, which fails where that name exists, checks the name is the file
+  it staged (device and inode) and the log still open, unlinking it again otherwise, unlinks the
+  staged name and syncs the directory. Each deletion syncs the directory it removed from.
 - One durable write per commit: what was logged since the previous commit, the commit's frame
   and an `End` frame go into the chunk published at that commit.
-- Claims are gone. A replay takes a log over by publishing a fence chunk at the number after its
-  highest, which a load still running then finds taken when it publishes: it fails as
-  `wal_fenced` before it answers its commit. A replay that finds the next number taken eight
-  times leaves the log to a later replay, its load still running. A log that its load closed,
-  or that a replay released, ends in a chunk that needs nothing, and is deleted by whoever
-  finds it.
+- Claims are gone. A replay takes a log over by deleting what its load staged, then publishing
+  a fence chunk at the number after its highest, a log that needs nothing included: a load still
+  running then finds that name taken while the log is open, and the log gone once the replay
+  removes it, and fails as `wal_fenced` before it answers its commit, whatever was removed. A
+  replay that finds the next number taken eight times fails its attempt as `wal_running`,
+  retryably, rather than open a session that fences a load whose log takes rows on. Because a
+  load opens its log before it lists the others, of two attempts starting at once at least one
+  lists, and fences, the other's log.
+- A load that logs nothing removes the log it opened, and so does an attempt that fails having
+  published nothing. Leftovers of a removal are removed before anything else of a replay.
 - A conformance suite, generic over `WalStore`, holds the memory and local stores to this
   contract, and the simulation's store loses what was staged and not published at a crash.
 
@@ -60,38 +70,54 @@ with the semantics the local store has, though no object-store backend is built.
 
 - The engine cannot depend on the files connector's `rooted` (ADR 0047), so the local store
   implements its rules over open directory descriptors (`rustix`): every name is reached with
-  `openat` and `O_NOFOLLOW | O_CLOEXEC | O_NOCTTY`, one component at a time beneath the base,
-  which is opened as the embedder wrote it and created 0700 where missing.
-- The base must belong to the process's user and be writable by no other (`0o022` clear);
-  everything beneath it must be the user's alone (`0o077` clear), of the kind expected, and on
-  the base's file system. This is checked at every open, listing and read, not at creation
-  only, and refused as `wal_not_private`.
+  `openat` and `O_NOFOLLOW | O_CLOEXEC | O_NOCTTY` from the descriptor of the directory it is in,
+  and every owner, mode and kind check is made on the descriptor then used.
+- The base is reached once, the first time the store is used, from the root one directory at a
+  time, each opened without following a link from the directory checked before it and checked
+  on its own descriptor: it must belong to the user or to root and be writable by no other
+  unless it is sticky. A link is read only out of a directory that passed and its target walked
+  the same way, at most forty links; a missing directory is created there, 0700, and made
+  durable. The directories the base lies in are then walked up from it by descriptor and
+  checked the same way. The base must belong to the user and be writable by no other (`0o022`
+  clear). The store keeps the base open: each call checks it is still linked and still the
+  user's alone, and a base removed is refused, never made again.
+- Everything beneath the base must be the user's alone (`0o077` clear), of the kind expected,
+  and on the base's file system, checked at every open, listing and read, and refused as
+  `wal_not_private`.
 - A pipeline's directory is `p.<id>` for an id with no upper-case letter, and `x.<base32 of the
   id>` otherwise: injective, and distinct where a file system folds case.
 - A listing refuses, as `wal_stray`, every name the store never writes in a directory it keeps
-  logs in: a stray file is never read, and no chunk is listed twice.
+  logs in: a stray file is never read, and no chunk is listed twice. A name that begins with a
+  dot, which the store never writes, as NFS and file browsers make, is passed over, never read,
+  and removed with the log where the system lets it.
 
-### Log format 3: every chunk says whose it is, and the highest says what is needed
+### Log format 4: every chunk says whose it is, and the highest says what is needed
 
 - Every chunk begins with a 14-byte preamble, `rdltwal\0`, the format as a u16, and a CRC32C of
   both, so a chunk of another format is refused rather than read as torn. A frame's checksum
   covers its kind and length as well as its payload.
-- A writer's chunk holds a header naming its pipeline, load, number, session epoch and what the
-  load opened on, then schemas, batches, seals and phases, then a commit or a close, then an
-  `End` naming the chunks still needed and the commits received in them. A fence chunk holds a
-  `Fence` naming its pipeline, load and number, then an `End`. A receipt is no longer a frame of
-  its own: it is durable in the next chunk's `End`.
+- A writer's chunk holds a header naming its pipeline, load, number, session epoch, what the
+  load opened on and the destination it is written for, then schemas, batches, seals and
+  phases, then a commit or a close, then an `End` naming the chunks still needed and the commits
+  received in them. A fence chunk holds a `Fence` naming its pipeline, load and number, then an
+  `End`. A receipt is no longer a frame of its own: it is durable in the next chunk's `End`.
 - A chunk is published whole, so no visible chunk is ever torn and any damage is refused as
   `wal_unreadable`. A scan reads the highest chunk, then exactly the chunks its `End` names, any
   of them missing refused; chunks a crash left between a publish and its deletions are not read.
-  A header naming another pipeline or load is refused as `wal_foreign`; a chunk number, epoch or
-  opened commit that disagrees, a chunk not ending in one `End` after its commit or close, and a
-  frame announcing more than a frame may hold, before it is read, as `wal_unreadable`.
+  A header naming another pipeline or load is refused as `wal_foreign`; a chunk number, epoch,
+  opened commit or destination that disagrees, a chunk not ending in one `End` after its commit
+  or close, and a frame announcing more than a frame may hold, before it is read, as
+  `wal_unreadable`.
 - A frame may hold at most what one request for lowering may take of the memory budget, a
-  quarter of it, and batch frames decode within that same limit for rows, lengths and nodes.
+  quarter of it, and batch frames decode within that same limit for rows, lengths and nodes. A
+  scan reads a batch frame 64 KiB at a time, summing its checksum, and keeps only its header.
 
-### A logged commit applies only whole, and only as the engine writes one
+### A log replays only into its destination, only whole, and only as the engine writes one
 
+- A destination's state records the first load whose commit reached the pipeline there
+  (`StateEntry::Origin`), which that commit records; a log's header names it, or the load itself
+  where no load had committed there when it opened. Replay refuses, as `wal_foreign`, a log that
+  names another, and a logged commit that records any load but its own as the first.
 - A seal records how many batch frames and rows its segment logged; a commit frame records how
   many seals and phases it takes. A pending commit missing a seal, a segment of it without one, a
   seal whose frames or rows are missing or doubled, and a commit that drops tables, which the
@@ -99,33 +125,44 @@ with the semantics the local store has, though no object-store backend is built.
 - Replay refuses a commit whose session is not older than the replaying one, whose state records
   a reset, any receipt but its own, or a partition position no seal of it or phase it begins set.
   A replayed commit never drops a table, and names child tables only where it stages rows again.
+- A replay that fails, wherever it fails, keeps every chunk of the log it read: nothing is
+  released or removed before every pending commit is committed again, and what it learned of
+  the destination is dropped with it.
 
 ### Replay is charged
 
-Replay reserves each frame's bytes before it reads the frame, and what the decoded batch holds
-before the frame goes, keeps that charged until the writer it went to flushes, and flushes every
-writer once the budget has no room for the next batch, as a lane does. A batch beyond what one
-request for lowering may take, logged under more memory than replays it, is refused as
+Replay reserves each frame's bytes before it reads the frame, and before it decodes the frame's
+batch what the decoder will allocate for its buffers, which the wire's decoder measures without
+making it (`Decoder::held`); what else the batch holds is reserved once it is decoded. What a
+batch holds stays charged until the writer it went to flushes, and every writer flushes once the
+budget has no room for the next batch, as a lane does. A batch beyond what one request for
+lowering may take, logged under more memory than replays it, is refused as
 `replay_exceeds_budget`.
 
 ### Disk is bounded, and a full disk is retried
 
 - `GrowthLimits::log_bytes`, 4 GiB by default, is what a load's log may hold on disk, the staged
   chunk included. At half of it a commit is due, and again at each eighth more; a batch whose
-  frame would pass it fails its write as `log_bytes_exceeded` before its source hears of it.
-- A failed write fails every batch after it at once. A full disk or quota is `wal_storage_full`
-  and retryable: the next attempt's replay deletes the failed load's log, writing nothing first.
+  frame would pass it fails its write as `log_bytes_exceeded` before its source hears of it, and
+  a carry of an open segment's frames that would pass it is left undone, the old chunks kept.
+- A failed write fails every batch after it at once and discards what its chunk staged. A full
+  disk or quota is `wal_storage_full` and retryable: the next attempt's replay deletes what a
+  crashed load staged, which needs no room, before it writes; it needs room for its fences
+  alone, a few hundred bytes a log.
 
 ### Receipts have a horizon the engine declares
 
 - `CommitMeta::horizon`, wire field 9, is the oldest commit any replay may still repeat:
   commits order by their load's id, then their sequence, and a destination may forget the
   receipt of every commit before the horizon, of whichever load. With none, it forgets nothing.
-- Each commit declares the earliest of: the oldest commit its own load's log still holds, or the
-  commit itself where it holds none; and the first commit of every other load of the pipeline
-  whose log the store lists. A load whose log the listing misses opened its session after this
-  attempt's, so this commit fails as fenced and lets no receipt go. A replayed commit and a reset
-  declare no horizon.
+- Each commit declares the earliest of: the oldest commit of its own load a replay of its log
+  may repeat, one waiting for its receipt or whose receipt no published chunk records yet, or
+  the commit itself where there is none; and the first commit of every other load of the
+  pipeline whose log is open. An open log of another load exists only while that load runs, or
+  until the next attempt's replay takes it, so the horizon moves on as loads end; a segment kept
+  open for long holds back no commit whose receipt is recorded. A load whose log the listing
+  misses opened its session after this attempt's, so this commit fails as fenced and lets no
+  receipt go. A replayed commit and a reset declare no horizon.
 - The memory, files and SQLite destinations, the simulation's destination and certification's
   vault forget the receipts before it within the commit that declares it. The files
   destination's rule of sixteen loads is gone. `D-IDEMPOTENT` re-commits a commit that a later
@@ -135,9 +172,11 @@ request for lowering may take, logged under more memory than replays it, is refu
 
 - A stream is recorded only by state keyed by itself. A stream whose displayed name another
   recorded stream shares is refused as `stream_ambiguous`: their tables cannot be told apart.
-- A reset reads the pipeline's logs first, and refuses as `reset_unreplayable` a stream whose
-  source cannot read again with rows in a log that no commit has received: a run of the pipeline
-  lands them, after which the reset goes ahead.
+- A reset opens its session, which fences every load opened before it, then takes every log of
+  the pipeline over as a replay does, so no load logs rows after it reads them, and refuses as
+  `reset_unreplayable` a stream whose source cannot read again with rows in a log that no commit
+  has received, or as `wal_running` while a load keeps publishing: a run of the pipeline lands
+  the rows, after which the reset goes ahead.
 
 ### The kill matrix draws only what a run reaches
 
@@ -158,8 +197,7 @@ draw is then taken again among the reads and commits that run told, so every dra
   rows. The log's privacy and durability are what this ruling rests on.
 - **Tombstones are not pruned by the horizon.** A tombstone guards a key against a change
   sequenced before its delete, which a source sends again whenever it resumes past it, not only
-  a replay: no commit horizon shows one unneeded. ADR 0027's
-  acceptance stands.
+  a replay: no commit horizon shows one unneeded. ADR 0027's acceptance stands.
 - **No owed report.** A report owed for a partition recorded done is not kept, in state or in
   memory. No later attempt reads such a partition, and a served source accepts a report only of
   a position its connection sent or started a read from (ADR 0044): a connector process started
@@ -171,12 +209,26 @@ draw is then taken again among the reads and commits that run told, so every dra
   refused honest logs; a batch the destination cannot take fails its write as a live one does.
 - **An `End` frame is not charged.** It names chunk numbers and commit sequences, and a scan
   reads it within the frame limit like any other frame.
+- **A seal moved past by a newer load is still left to it.** Replay keeps ADR 0029's rule: a
+  seal of a stream that cannot read again applies only where its partition stands where the seal
+  started. A fenced load can no longer publish once fenced, and every attempt replays the logs it
+  lists before it reads, so a commit its source was told of is replayed before any newer load of
+  the pipeline reads, unless the newer load could not fence its log, in which case it fails as
+  `wal_running` instead of reading.
+- **Two destinations that no commit of the pipeline ever reached cannot be told apart.** A log
+  whose load opened on a destination with no origin names itself, and so may be replayed into
+  another destination no commit reached either; once any commit lands, the destination is named.
+- **A staged file's name is told apart by process id and a counter.** Two processes of different
+  process namespaces may take one name once a staging was deleted; a publish compares the file it
+  linked with the file it holds, by device and inode, and refuses another's.
 
 ## Consequences
 
-- A log's format changed: a log written before this is refused as `wal_unreadable`, and an
-  operator removes it after landing its rows by other means. rdlt is not released, so no
+- A log's format changed, to 4: a log written before this is refused as `wal_unreadable`, and
+  an operator removes it after landing its rows by other means. rdlt is not released, so no
   migration is kept.
+- Every attempt of an engine that keeps logs opens one, and removes it where it logs nothing:
+  two durable directory changes more an attempt.
 - A replay of a log whose load still runs is fenced and its load fails, rather than both
   writing.
 - Each commit lists the pipeline's logs once more, to declare its horizon.
