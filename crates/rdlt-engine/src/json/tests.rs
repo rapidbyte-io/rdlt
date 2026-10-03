@@ -310,3 +310,31 @@ fn exact(written: &str) -> (bool, String, i64) {
     }
     (negative, digits, place)
 }
+
+#[test]
+fn an_exponent_is_within_the_limit_by_its_digits_beside_its_leading_zeros() {
+    use super::{exponent_within, may_hold_long_exponent};
+    let digits = "9".repeat(EXPONENT_DIGITS);
+    for (written, within) in [
+        (format!("1e{digits}"), true),
+        (format!("1e-{digits}"), true),
+        (format!("1.5E+000{digits}"), true),
+        (format!("1e1{digits}"), false),
+        (format!("0e-1{digits}"), false),
+        ("12.5".to_owned(), true),
+    ] {
+        assert_eq!(exponent_within(&written), within, "{written}");
+        assert_eq!(
+            may_hold_long_exponent(written.as_bytes()),
+            !within,
+            "{written}"
+        );
+    }
+    // Text that only reads like one, a letter before its exponent, is no number.
+    assert!(!may_hold_long_exponent(
+        format!("\"xe1{digits}\"").as_bytes()
+    ));
+    assert!(may_hold_long_exponent(
+        format!("\"x1e1{digits}\"").as_bytes()
+    ));
+}

@@ -3,7 +3,7 @@
 
 use std::io::Write as _;
 
-use super::JsonError;
+use super::{EXPONENT_DIGITS, JsonError};
 
 /// Bytes: the longest a number's canonical text is written in plain notation; a longer one is
 /// written in scientific notation.
@@ -89,6 +89,36 @@ pub(crate) fn write_number(written: &str, out: &mut Vec<u8>) -> Result<(), JsonE
         .checked_add(shifted(last - first)?)
         .ok_or(JsonError::Exponent)?;
     write!(out, "e{power}").map_err(|_| JsonError::Exponent)
+}
+
+/// Whether the exponent of `written`, a JSON number, has no more than [`EXPONENT_DIGITS`]
+/// digits beside its leading zeros: whether its value has a canonical text.
+pub(crate) fn exponent_within(written: &str) -> bool {
+    let Some(at) = written.find(['e', 'E']) else {
+        return true;
+    };
+    let exponent = written[at + 1..].trim_start_matches(['+', '-']);
+    exponent.trim_start_matches('0').len() <= EXPONENT_DIGITS
+}
+
+/// Whether `bytes`, JSON text, may hold a number whose exponent has more than
+/// [`EXPONENT_DIGITS`] digits beside its leading zeros: a digit, an `e` and such digits, which
+/// a string may hold too.
+pub(crate) fn may_hold_long_exponent(bytes: &[u8]) -> bool {
+    memchr::memchr2_iter(b'e', b'E', bytes).any(|at| {
+        let after_digit = at > 0 && bytes[at - 1].is_ascii_digit();
+        let rest = &bytes[at + 1..];
+        let rest = rest
+            .strip_prefix(b"+")
+            .or_else(|| rest.strip_prefix(b"-"))
+            .unwrap_or(rest);
+        let zeros = rest.iter().take_while(|byte| **byte == b'0').count();
+        let digits = rest[zeros..]
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        after_digit && digits > EXPONENT_DIGITS
+    })
 }
 
 /// The canonical text of the float `value`: of the shortest text that reads back as it, a tie

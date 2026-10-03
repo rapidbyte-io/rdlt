@@ -417,9 +417,8 @@ const PATH_SHOWN: usize = 256;
 
 /// `parts`, one batch once concatenated, normalized as `shape`.
 fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Vec<Part>, Error> {
-    let failed = |error: ArrowError| {
-        Error::internal(format!("stream {stream}: normalizing a batch: {error}"))
-    };
+    let failed =
+        |error: ArrowError| normalize::identity::unread(stream, "normalizing a batch", &error);
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
     normalize::normalize(&batch, shape).map_err(failed)
 }

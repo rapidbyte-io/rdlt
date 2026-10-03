@@ -76,6 +76,32 @@ pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryAr
     Ok(BinaryArray::from_iter_values(ids))
 }
 
+/// The refusal behind `error`, where identity could not read a value of a column of JSON.
+pub(crate) fn json_refusal(error: &ArrowError) -> Option<&JsonError> {
+    match error {
+        ArrowError::ExternalError(source) => source.downcast_ref::<JsonError>(),
+        _ => None,
+    }
+}
+
+/// The error for a batch of `stream` identity could not read, while `doing` something: typed
+/// where a value of a column of JSON was refused.
+pub(crate) fn unread(
+    stream: &rdlt_connector::StreamName,
+    doing: &str,
+    error: &ArrowError,
+) -> crate::Error {
+    match json_refusal(error) {
+        Some(refused) => crate::Error::new(
+            crate::ErrorKind::Source,
+            format!("stream {stream}: {doing}: a value of a column of JSON: {refused}"),
+        )
+        .with_code(refused.code())
+        .with_stream(stream),
+        None => crate::Error::internal(format!("stream {stream}: {doing}: {error}")),
+    }
+}
+
 /// The ids of child rows: of each row's parent's id and its index in the parent's array.
 pub(crate) fn child_ids(parents: &BinaryArray, idx: &Int64Array) -> BinaryArray {
     let mut bytes = Vec::with_capacity(24);
@@ -285,9 +311,8 @@ impl Encoder {
                 let nanos = (values.value(index) * unit).to_string();
                 length(out, nanos.as_bytes());
             }
-            Self::Json(values) => json(values.value(index), out).map_err(|error| {
-                ArrowError::ParseError(format!("a value of a column of JSON: {error}"))
-            })?,
+            Self::Json(values) => json(values.value(index), out)
+                .map_err(|error| ArrowError::ExternalError(Box::new(error)))?,
             Self::Object(_, fields) => {
                 out.push(OBJECT);
                 for (name, field) in fields {

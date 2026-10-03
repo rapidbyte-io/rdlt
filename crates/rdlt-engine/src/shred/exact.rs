@@ -89,6 +89,10 @@ fn number<'de, V: Visitor<'de>>(
         .unwrap_or_default();
     // The fast parse reads `-0` as a float, and refuses floats beyond the finite ones.
     if text.contains(['.', 'e', 'E']) || text == "-0" {
+        if !crate::json::exponent_within(&text) {
+            let shown = rdlt_connector::text::shown(&text, QUOTED_BYTES);
+            return Err(context.fail(ShredError::Exponent(shown)));
+        }
         let float: f64 = text.parse().map_err(de::Error::custom)?;
         if !float.is_finite() {
             let shown = rdlt_connector::text::shown(&text, QUOTED_BYTES);

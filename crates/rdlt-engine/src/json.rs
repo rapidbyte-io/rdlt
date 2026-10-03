@@ -16,7 +16,9 @@ use rdlt_connector::limits::MAX_NESTING_DEPTH;
 pub(crate) use check::{NotJson, check_batch, held as held_by_check, holds_json};
 #[cfg(test)]
 pub(crate) use number::{canonical_float, canonical_float32, canonical_number};
-pub(crate) use number::{write_float, write_float32, write_number};
+pub(crate) use number::{
+    exponent_within, may_hold_long_exponent, write_float, write_float32, write_number,
+};
 
 /// Digits: the most a JSON number's exponent may have, beside its leading zeros, so its value's
 /// place is a 64-bit integer whatever its digits are.

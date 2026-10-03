@@ -70,6 +70,13 @@ pub(crate) enum ShredError {
     /// The records would shred into more cells than the limit.
     #[error("the records would shred into {0} cells, over the limit of {MAX_CELLS}")]
     TooManyCells(u64),
+    /// A number's exponent, shown cut to a limit, has more digits than its value's canonical
+    /// text holds.
+    #[error(
+        "the number {0} has an exponent of more than {digits} digits",
+        digits = crate::json::EXPONENT_DIGITS
+    )]
+    Exponent(String),
     /// A list holds more items than a column can.
     #[error("a list column holds more items than one batch can")]
     TooLarge,
@@ -84,9 +91,11 @@ impl ShredError {
         match self {
             Self::Invalid(_) => "json_invalid",
             Self::NotObject => "json_not_object",
-            Self::TooDeep | Self::TooManyColumns(..) | Self::TooManyCells(_) | Self::TooLarge => {
-                "limit_exceeded"
-            }
+            Self::TooDeep
+            | Self::Exponent(_)
+            | Self::TooManyColumns(..)
+            | Self::TooManyCells(_)
+            | Self::TooLarge => "limit_exceeded",
             Self::DuplicateKey(_) => "json_duplicate_key",
             Self::Internal(_) => "shred_internal",
         }
@@ -288,7 +297,13 @@ fn each(
     mut record: impl FnMut(&[u8]) -> Result<(), sonic_rs::Error>,
 ) -> Result<Appended, ShredError> {
     for (index, bytes) in chunk.records().enumerate() {
-        if let Err(error) = record(bytes) {
+        let parsed = record(bytes);
+        // The fast parse reads a float of a vast negative exponent as zero, as it reads `0.0`:
+        // a record where it read a zero and that may hold such a number is parsed exactly.
+        if context.zeroed() && !exact && crate::json::may_hold_long_exponent(bytes) {
+            context.reparse();
+        }
+        if let Err(error) = parsed {
             if let Some(fault) = context.fault() {
                 return Err(fault);
             }

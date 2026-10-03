@@ -380,3 +380,27 @@ fn json_text_that_is_not_json_is_refused_not_hashed_as_a_string() {
     let ids = root_ids(&nulls, &[Arc::from("k")]).unwrap();
     assert_eq!(ids.value(0), ids.value(1), "a JSON null hashes as a null");
 }
+
+#[test]
+fn json_identity_cannot_read_is_refused_typed_for_the_stream() {
+    let stream = rdlt_connector::StreamName::new("events").unwrap();
+    for (text, code) in [
+        ("1e-1234567890123456789", "limit_exceeded"),
+        ("{", "json_invalid"),
+    ] {
+        let field = arrow_schema::Field::new("k", DataType::Utf8, true)
+            .with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into());
+        let column: ArrayRef = Arc::new(StringArray::from(vec![text]));
+        let batch = RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![field])),
+            vec![column],
+        )
+        .unwrap();
+        let error = root_ids(&batch, &[]).unwrap_err();
+        let error = super::unread(&stream, "hashing", &error);
+        assert_eq!(
+            (error.kind(), error.code()),
+            (crate::ErrorKind::Source, Some(code))
+        );
+    }
+}
