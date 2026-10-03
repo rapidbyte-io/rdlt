@@ -203,3 +203,37 @@ async fn a_segment_open_for_long_holds_back_no_commit_a_replay_never_repeats() {
     .await
     .expect("the writer ends");
 }
+
+#[tokio::test]
+async fn a_carry_that_would_take_the_log_past_what_it_may_hold_is_left_undone() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Four settled batches and one open: carrying would copy the open one.
+        log.batch(1000, 0).await;
+        for segment in 10..14 {
+            log.batch(segment, 0).await;
+        }
+        log.commit(1, &[10, 11, 12, 13]).await.expect("durable");
+        // The log may hold no more than it holds now.
+        let shared = Arc::clone(log.writer.shared());
+        let held = shared.held.load(std::sync::atomic::Ordering::Relaxed);
+        shared
+            .limit
+            .store(held, std::sync::atomic::Ordering::Relaxed);
+        log.committed(1).await;
+        log.commit(2, &[]).await.expect("durable");
+        assert!(
+            numbers(&observed).contains(&0),
+            "chunk 0 was not carried out of"
+        );
+    })
+    .await
+    .expect("the writer ends");
+    let open = batches(&store)
+        .into_iter()
+        .filter(|(segment, _)| *segment == 1000)
+        .count();
+    assert_eq!(open, 1, "the open batch was never copied");
+}

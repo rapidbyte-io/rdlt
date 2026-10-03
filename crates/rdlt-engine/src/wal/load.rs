@@ -99,6 +99,7 @@ impl LoadLog {
         impl Future<Output = Result<(), Error>> + Send + 'static,
     ) {
         let (writer, task) = WalWriter::start(store, owner);
+        writer.shared().limit.store(limit.get(), Ordering::Relaxed);
         let disk = Disk {
             limit: limit.get(),
             due: AtomicU64::new(limit.get() / 2),
