@@ -163,3 +163,51 @@ async fn a_table_changed_by_every_push_loads_through_a_served_destination() {
     );
     assert_eq!(target.ids(&store, "events"), (0..250).collect::<Vec<i64>>());
 }
+
+#[tokio::test]
+async fn a_logged_commit_of_a_table_changed_by_every_push_replays_through_a_served_destination() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use rdlt_engine::{LocalWal, RetryPolicy, WalStore};
+
+    use crate::support::destinations::{Step, failing};
+    use crate::support::logging_engine;
+    use crate::support::targets::Target;
+    // The first commit fails, so the next attempt stages each of the commit's schema versions
+    // again from the log: a writer per version kept open would wait for a call it never gets,
+    // until its deadline.
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let target = Target::SpawnedJsonl;
+    let store = target.name("growth_replayed");
+    let pushes: Vec<String> = (0..250)
+        .map(|push| json!({ "id": push, format!("k{push}"): 1 }).to_string())
+        .collect();
+    let pushes: Vec<&str> = pushes.iter().map(String::as_str).collect();
+    let source = batches(&store, vec![BatchStream::json("events", &pushes)]).await;
+    let mut options = rdlt_host::Options::default();
+    options.deadlines.apply_schema = Duration::from_secs(15);
+    options.deadlines.write_ack = Duration::from_secs(15);
+    let served = target
+        .placed_by(&store, crate::support::local().options(options))
+        .await;
+    let retry = RetryPolicy::default()
+        .max_attempts(2)
+        .initial(Duration::from_millis(10));
+    let outcome = logging_engine(commit_every(1_000_000).retry(retry), wal)
+        .run(
+            pipeline(&store, [stream("events")]).with_wal(true),
+            source,
+            failing(served, Step::CommitOnce),
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.attempts.len(), 2);
+    assert_eq!(target.ids(&store, "events"), (0..250).collect::<Vec<i64>>());
+}

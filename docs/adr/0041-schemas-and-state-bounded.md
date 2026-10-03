@@ -79,10 +79,12 @@ one run to the next, broke both:
 - **Writers retire.** A lane flushes and closes a table's writers of older versions when it writes
   a newer one, and holds at most its share of `writers` open, one at least, closing the one
   written longest ago; a batch of an older version reopens that version's writer. An attempt runs
-  no more lanes than writers. A served connection carries at most 200 calls, and every open
-  writer is one.
-- **The log keeps a version's schema frame while a batch of it may come.** The log notes the view
-  each table version was described for. Before each commit the versions whose views are gone,
+  no more lanes than writers. Replay stages a logged commit's batches in their logged order by
+  the same rule, holding at most `writers` open: a commit holds every version its attempt
+  described. A served connection carries at most 200 calls, and every open writer is one.
+- **The log keeps a version's schema frame while a batch of it may come.** The log notes every
+  view a table version's batches were logged for: a resolution that only rounds a column makes a
+  new view of the same version. Before each commit the versions all of whose views are gone,
   every batch of which was logged before, are retired: the writer forgets their frames and the
   log their indexes. A batch of such a version is described again, under an index never used.
 - **An open segment is carried out of settled chunks.** When a receipt leaves old chunks holding

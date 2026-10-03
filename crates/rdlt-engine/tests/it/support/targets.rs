@@ -96,6 +96,15 @@ impl Target {
 
     /// A connection to `store` in this destination.
     pub(crate) async fn destination(self, store: &str) -> Arc<dyn Destination> {
+        self.placed_by(store, crate::support::local()).await
+    }
+
+    /// A connection to `store` in this destination, spawned by `local` where it is served.
+    pub(crate) async fn placed_by(
+        self,
+        store: &str,
+        local: rdlt_host::Local,
+    ) -> Arc<dyn Destination> {
         let config = self.config(store);
         if let Some((id, example)) = self.served_by()
             && Self::REMOTE.contains(&self)
@@ -105,7 +114,7 @@ impl Target {
         if let Some((id, example)) = self.served_by() {
             let id = ConnectorId::parse(id).expect("a valid id");
             let reference = ConnectorRef::new(id).path(crate::support::example(example));
-            let placed = crate::support::local()
+            let placed = local
                 .destination(&reference, &config)
                 .await
                 .expect("the destination starts");
