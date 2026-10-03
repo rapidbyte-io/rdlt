@@ -602,3 +602,42 @@ async fn retention_resets_that_seal_no_rows_spend_the_retry_budget() {
         u64::from(attempts)
     );
 }
+
+#[tokio::test]
+async fn rows_a_reset_abandons_are_removed_from_staging_by_the_next_commit() {
+    // Each poll of the partition reads its new messages, then fails as retention lost and is
+    // reset: the rows it read before failing are staged in a segment no checkpoint seals.
+    let logged = json!({
+        "name": "events", "partitions": 1, "messages": 2, "per_second": 20, "bounded": true,
+    });
+    let source = Arc::new(Reshaped {
+        inner: log("abandoning", &logged).await,
+        shape: Shape::Dropping,
+    });
+    let events = stream_plan().on_retention_loss(RetentionLoss::Reset);
+    let plan = pipeline("abandoning", [events]).with_until(Until::For(Duration::from_secs(2)));
+    // Each push is written at once, so the failed reads' rows are staged.
+    let batch = BatchPolicy::new(1 << 20, 1, Duration::from_millis(10), 64 << 10)
+        .expect("a valid batch policy");
+    let every = CommitPolicy::new(Some(Duration::from_millis(100)), None, None)
+        .expect("an interval is valid");
+    let config = config()
+        .replan(Duration::from_millis(200))
+        .commit(every)
+        .batch(batch);
+    let outcome = engine(config)
+        .run(plan, source, memory("abandoning").await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let resets = outcome.report.streams["events"].retention_resets;
+    assert!(resets > 3, "{resets} resets");
+    // What the resets abandoned before the last commit is gone; at most what the reads since
+    // abandoned is staged still, for the next commit or the next open to remove.
+    let staged = rdlt_connector_reference::staged("abandoning", "events");
+    assert!(staged <= 8, "{staged} rows staged after {resets} resets");
+}

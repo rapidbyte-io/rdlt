@@ -260,6 +260,7 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
                 commit_seq: CommitSeq::FIRST,
                 epoch: first.epoch,
                 segments,
+                abandoned: SegmentSet::new(),
                 state_delta: Vec::new(),
                 finish_generations: Vec::new(),
                 child_tables: Vec::new(),

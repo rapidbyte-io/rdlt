@@ -130,6 +130,7 @@ async fn writers_index_what_a_commit_finds_by_key_and_the_commit_changes_no_sche
         commit_seq: CommitSeq::FIRST,
         epoch: opened.epoch,
         segments: [SegmentId(1)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: vec![ChildTable {

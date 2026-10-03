@@ -211,6 +211,7 @@ async fn a_transition_a_newer_load_committed_past_lands_from_the_log() {
         commit_seq: CommitSeq::FIRST,
         epoch: newer.epoch,
         segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
         state_delta: vec![StateChange::Put(StateEntry::Receipt(receipt).to_record())],
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

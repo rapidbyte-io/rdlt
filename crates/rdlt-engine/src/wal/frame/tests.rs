@@ -40,6 +40,7 @@ fn commit_meta() -> CommitMeta {
         commit_seq: CommitSeq::FIRST.next(),
         epoch: Epoch(3),
         segments: [SegmentId(1), SegmentId(4)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: vec![StateChange::Put(StateRecord {
             key: "k".to_owned(),
             value: Bytes::from_static(b"\x00\xffvalue"),
@@ -493,6 +494,7 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
         commit_seq: CommitSeq::FIRST,
         epoch: Epoch(1),
         segments: rdlt_connector::SegmentSet::new(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: vec![StateChange::Put(entry.to_record())],
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

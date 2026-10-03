@@ -615,6 +615,7 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
         commit_seq: CommitSeq::FIRST,
         epoch: opened.epoch,
         segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

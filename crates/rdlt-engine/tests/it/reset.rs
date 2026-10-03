@@ -742,6 +742,7 @@ async fn a_reset_of_no_streams_is_refused_before_it_fences_anything() {
         commit_seq: rdlt_connector::CommitSeq::FIRST,
         epoch: running.epoch,
         segments: rdlt_connector::SegmentSet::new(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

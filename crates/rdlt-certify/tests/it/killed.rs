@@ -174,6 +174,7 @@ impl DestinationSession for DeferringSession {
                 let rest = CommitMeta {
                     commit_seq: last.commit_seq.next(),
                     segments: held,
+                    abandoned: SegmentSet::new(),
                     state_delta: Vec::new(),
                     finish_generations: Vec::new(),
                     ..last

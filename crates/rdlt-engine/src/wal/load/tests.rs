@@ -35,6 +35,7 @@ fn meta(segments: &[u64]) -> CommitMeta {
         commit_seq: CommitSeq::FIRST,
         epoch: Epoch(1),
         segments: segments.iter().copied().map(SegmentId).collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

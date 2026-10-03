@@ -678,6 +678,8 @@ struct VaultConfig {
     history_truncate_spares_commit: bool,
     /// Stores versions without their hash.
     history_drops_hash: bool,
+    /// Keeps what a session staged in a segment its commit abandons.
+    keep_abandoned: bool,
     /// Begins versions when their changes say, however late.
     history_trusts_times: bool,
     /// Swaps in only the first generation a commit finishes.
@@ -1332,6 +1334,11 @@ impl Session for VaultSession {
             return Err(error);
         }
         let rows = self.publish(&mut store, meta);
+        if !self.config.keep_abandoned {
+            store.staged.retain(|(pipeline, segment), _| {
+                *pipeline != self.pipeline || !meta.abandoned.contains(*segment)
+            });
+        }
         self.drop_tables(&mut store, meta);
         if !self.config.forget_state {
             self.apply_state(&mut store, meta);
@@ -1806,12 +1813,13 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("forget_state", &["D-STATE"]),
     ("ignore_deletes", &["D-STATE"]),
     ("keep_staging", &["D-DISCARD"]),
+    ("keep_abandoned", &["D-DISCARD"]),
     ("no_fence", &["D-FENCE"]),
     ("wrong_fence_kind", &["D-FENCE"]),
     ("forget_receipts", &["D-IDEMPOTENT"]),
     ("forget_at_horizon", &["D-IDEMPOTENT"]),
     ("forget_others", &["D-IDEMPOTENT"]),
-    ("publish_all", &["D-COMMIT"]),
+    ("publish_all", &["D-COMMIT", "D-DISCARD"]),
     (
         "blank_names",
         &[
@@ -1833,7 +1841,13 @@ const BROKEN: &[(&str, &[&str])] = &[
     ),
     (
         "publish_other",
-        &["D-COMMIT", "D-REPLACE", "D-MERGE", "D-CHILDREN"],
+        &[
+            "D-COMMIT",
+            "D-DISCARD",
+            "D-REPLACE",
+            "D-MERGE",
+            "D-CHILDREN",
+        ],
     ),
     ("local_state", &["D-STATE"]),
     ("stale_writes", &["D-DISCARD"]),

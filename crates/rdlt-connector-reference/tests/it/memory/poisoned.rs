@@ -101,6 +101,7 @@ async fn commit(destination: &dyn Destination, load: u128, batch: Option<RecordB
         commit_seq: CommitSeq::FIRST,
         epoch: opened.epoch,
         segments: [SegmentId(1)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

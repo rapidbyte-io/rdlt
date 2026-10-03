@@ -315,6 +315,27 @@ impl<D: SqlDialect> SqlPlanner<D> {
         Ok(())
     }
 
+    /// The statement removing what `pipeline` staged at `epoch` in `table`, the generation of it
+    /// `staged` names, in `segments`, segments the load abandoned, which nothing publishes.
+    ///
+    /// # Errors
+    ///
+    /// `table` is the witness of another table than `staged`'s.
+    pub fn abandon(
+        &self,
+        table: &Owned<'_>,
+        staged: &Staged,
+        (pipeline, epoch): (&PipelineId, Epoch),
+        segments: &SegmentSet,
+    ) -> Result<Statement> {
+        table.names(&staged.name)?;
+        let staging = self.quote(&self.staging_table(&staged.name));
+        let mut sql = self.sql();
+        sql.push(&format!("DELETE FROM {staging} WHERE "));
+        self.rows_of(&mut sql, staged, pipeline, epoch, segments);
+        Ok(sql.finish())
+    }
+
     /// The statement forgetting what `pipeline` staged at `epoch` in `segments`, once published.
     pub fn forget(&self, pipeline: &PipelineId, epoch: Epoch, segments: &SegmentSet) -> Statement {
         let mut sql = self.sql();

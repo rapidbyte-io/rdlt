@@ -100,6 +100,7 @@ async fn switch<C: DestinationConnector>(config: serde_json::Value) {
             commit_seq: seq,
             epoch: opened.epoch,
             segments: [SegmentId(segment)].into_iter().collect::<SegmentSet>(),
+            abandoned: SegmentSet::new(),
             state_delta: Vec::new(),
             finish_generations: Vec::new(),
             child_tables: Vec::new(),

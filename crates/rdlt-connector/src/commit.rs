@@ -103,6 +103,24 @@ impl SegmentSet {
     pub fn ranges(&self) -> &[SegmentRange] {
         &self.ranges
     }
+
+    /// Whether the set and `other` hold an id in common.
+    pub fn overlaps(&self, other: &Self) -> bool {
+        let (mut mine, mut theirs) = (
+            self.ranges.iter().peekable(),
+            other.ranges.iter().peekable(),
+        );
+        while let (Some(left), Some(right)) = (mine.peek(), theirs.peek()) {
+            if left.last < right.first {
+                mine.next();
+            } else if right.last < left.first {
+                theirs.next();
+            } else {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl FromIterator<SegmentId> for SegmentSet {
@@ -149,6 +167,11 @@ pub struct CommitMeta {
     pub epoch: Epoch,
     /// The sealed segments to publish.
     pub segments: SegmentSet,
+    /// Segments of the load the engine abandoned since its last commit, never sealed.
+    ///
+    /// The commit removes what the session staged in them, which nothing publishes. None of them
+    /// is among `segments`.
+    pub abandoned: SegmentSet,
     /// State records to write in the same atomic step.
     pub state_delta: Vec<StateChange>,
     /// Replace generations to swap in with this commit.

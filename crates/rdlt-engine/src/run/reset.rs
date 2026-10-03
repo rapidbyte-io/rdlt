@@ -165,6 +165,7 @@ impl Engine {
             commit_seq: CommitSeq::FIRST,
             epoch,
             segments: SegmentSet::new(),
+            abandoned: SegmentSet::new(),
             state_delta,
             finish_generations: Vec::new(),
             child_tables: Vec::new(),

@@ -144,6 +144,7 @@ impl Opened {
             commit_seq: self.seq,
             epoch: self.session.epoch,
             segments: segments.iter().copied().map(SegmentId).collect(),
+            abandoned: rdlt_connector::SegmentSet::new(),
             state_delta: Vec::new(),
             finish_generations: Vec::new(),
             child_tables: Vec::new(),

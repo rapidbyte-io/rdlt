@@ -143,6 +143,7 @@ impl Driving {
             self.seal(*id).await;
         }
         let meta = CommitMeta {
+            abandoned: SegmentSet::new(),
             load_id: load(),
             commit_seq: seq(number),
             epoch: Epoch(1),

@@ -158,6 +158,7 @@ fn a_commit_of_empty_child_tables_or_changes_is_counted_as_it_decodes() {
     let changes = v1::CommitRequest {
         session: 1,
         meta: Some(v1::CommitMeta {
+            abandoned: Vec::new(),
             state_delta: vec![v1::StateChange::default(); ENTRIES],
             ..v1::CommitMeta::default()
         }),

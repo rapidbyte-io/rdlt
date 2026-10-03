@@ -129,6 +129,7 @@ fn meta(opened: &OpenedSession, seq: CommitSeq, segment: u64, items: &TableRef) 
         commit_seq: seq,
         epoch: opened.epoch,
         segments: [SegmentId(segment)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: vec![ChildTable {

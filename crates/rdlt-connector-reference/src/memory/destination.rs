@@ -129,6 +129,10 @@ impl Store {
             for key in published {
                 table.staged.remove(&key);
             }
+            // What the session staged in a segment the load abandoned is never published.
+            table.staged.retain(|(staged, at, segment), _| {
+                staged != pipeline || *at != epoch || !meta.abandoned.contains(*segment)
+            });
         }
         for (name, staged, merged) in plans {
             let table = self.tables.entry(name).or_default();

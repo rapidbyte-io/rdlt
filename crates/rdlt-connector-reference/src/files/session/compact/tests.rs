@@ -81,6 +81,7 @@ fn meta(location: &Location, seq: CommitSeq) -> CommitMeta {
         commit_seq: seq,
         epoch: location.epoch,
         segments: SegmentSet::default(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

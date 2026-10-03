@@ -322,6 +322,7 @@ async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
         commit_seq: CommitSeq::FIRST,
         epoch: opened.epoch,
         segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

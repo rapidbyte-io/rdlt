@@ -44,6 +44,7 @@ fn crossing() -> Logged {
             commit_seq: CommitSeq::FIRST.next(),
             epoch: Epoch(4),
             segments: segments(&[7]),
+            abandoned: rdlt_connector::SegmentSet::new(),
             state_delta,
             finish_generations: Vec::new(),
             child_tables: Vec::new(),

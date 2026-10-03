@@ -4,6 +4,7 @@ mod changes;
 mod checks;
 mod children;
 mod clauses;
+mod discard;
 mod dropped;
 mod encoding;
 mod evolving;
@@ -394,42 +395,6 @@ impl Bench<'_> {
         }
         Ok(())
     }
-
-    /// Neither an abandoned session's staging nor a fenced worker's late write reaches the
-    /// latest session's commit.
-    async fn earlier_staging_is_discarded(&self) -> Result<(), Violation> {
-        let abandoned = self.staged(self.destination, 1, &[2]).await?;
-        drop(abandoned);
-        let mut stale = self.open(self.destination, 2).await?;
-        let mut stale_writer = self.writer(&mut stale.session).await?;
-        let mut latest = self.open(self.peer, 3).await?;
-        // A fenced worker may still be running; whether its write fails or is ignored is the
-        // destination's choice, but it must never be published.
-        // Other ids than the latest session's, so the stale rows are told from them.
-        drop(stale_writer.write(SegmentId(1), rows(STALE)).await);
-        drop(stale_writer.flush().await);
-        let mut writer = self.writer(&mut latest.session).await?;
-        writer
-            .write(SegmentId(1), rows(1))
-            .await
-            .map_err(|error| Violation::from(format!("write: {error}")))?;
-        writer
-            .flush()
-            .await
-            .map_err(|error| Violation::from(format!("flush: {error}")))?;
-        commit(
-            &mut latest.session,
-            &meta(self.load_id(3), latest.epoch, &[1], Vec::new()),
-        )
-        .await?;
-        // Committing the abandoned session's segment may fail or succeed, but publishes nothing.
-        let orphan = CommitMeta {
-            commit_seq: CommitSeq::FIRST.next(),
-            ..meta(self.load_id(3), latest.epoch, &[2], Vec::new())
-        };
-        drop(bounded("commit", latest.session.commit(&orphan)).await?);
-        expect_rows(&self.published_rows().await?, &[1])
-    }
 }
 
 /// The first commit of `load`, opened at `epoch`.
@@ -443,6 +408,7 @@ fn meta(load: LoadId, epoch: Epoch, segments: &[u64], state_delta: Vec<StateChan
             .copied()
             .map(SegmentId)
             .collect::<SegmentSet>(),
+        abandoned: SegmentSet::new(),
         state_delta,
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

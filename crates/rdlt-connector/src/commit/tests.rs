@@ -104,3 +104,13 @@ fn a_set_of_more_ids_than_a_count_holds_has_the_largest_length() {
     let one_short = SegmentSet::try_from(vec![every(1, u64::MAX)]).unwrap();
     assert_eq!(one_short.len(), u64::MAX);
 }
+
+proptest! {
+    #[test]
+    fn segment_sets_overlap_where_they_share_an_id(left in segment_ids(), right in segment_ids()) {
+        let (left_set, right_set) = (ids(&left), ids(&right));
+        let shared = left.iter().any(|id| right.contains(id));
+        prop_assert_eq!(left_set.overlaps(&right_set), shared);
+        prop_assert_eq!(right_set.overlaps(&left_set), shared);
+    }
+}
