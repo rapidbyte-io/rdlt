@@ -23,9 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
 use crate::config::EngineConfig;
-use crate::coordinator::{
-    Coordinator, CoordinatorParts, HeldState, PartitionRun, StreamRun, launcher,
-};
+use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun, launcher};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
@@ -77,8 +75,6 @@ struct Opened {
     session: Arc<SharedSession>,
     epoch: Epoch,
     state: PipelineState,
-    /// What the state the open answered holds decoded.
-    held: HeldState,
     /// What the state's records take as an open's answer carries them.
     stored: Stored,
 }
@@ -186,7 +182,6 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
     let stored = Stored::of(&state, StateLimits::of(&context.config));
-    let held = HeldState::of(&state);
     let state = match PipelineState::from_records(&state) {
         Ok(state) => state,
         Err(error) => {
@@ -202,7 +197,6 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         session: SharedSession::new(session),
         epoch,
         state,
-        held,
         stored,
     })
 }
@@ -289,7 +283,6 @@ async fn launch(
         launcher,
         wal,
         positions: Positions::of(&opened.state),
-        state: opened.held,
         stored: opened.stored,
         follow: context.plan.until().follows(),
         replan: context.config.replan(),

@@ -1,19 +1,19 @@
-//! The state a destination stores for a pipeline, as the messages that carry it measure it: each
-//! record's bytes, and the limit a commit keeps them, and its own request, within.
+//! The state a destination stores for a pipeline, as the messages that carry it hold it decoded:
+//! each record's bytes, and the limit a commit keeps them, and its own request, within.
 
 #[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
 
-use rdlt_connector::wire::{commit_bytes, record_bytes};
+use rdlt_connector::wire::{answer_bytes, commit_bytes, record_bytes};
 use rdlt_connector::{CommitMeta, StateChange, StateKey, StateRecord, StreamName};
 
 use crate::config::EngineConfig;
 use crate::error::Error;
-use crate::limits::{CHILD_TABLES_EXCEEDED, STATE_BYTES_EXCEEDED, STATE_ENVELOPE};
+use crate::limits::{CHILD_TABLES_EXCEEDED, STATE_BYTES_EXCEEDED};
 
-/// The bytes each stored record takes in an open's answer, and their sum.
+/// The bytes each stored record adds to an open's answer decoded, and what the answer holds.
 #[derive(Debug)]
 pub(crate) struct Stored {
     records: BTreeMap<String, u64>,
@@ -21,8 +21,8 @@ pub(crate) struct Stored {
     limits: StateLimits,
 }
 
-/// Bytes: what the stored state may take as an open's answer carries it, and what a commit's
-/// request may take.
+/// Bytes: what the stored state may hold decoded in an open's answer, and what a commit's
+/// request may hold.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct StateLimits {
     pub(crate) stored: u64,
@@ -30,12 +30,12 @@ pub(crate) struct StateLimits {
 }
 
 impl StateLimits {
-    /// The limits `config` holds state to.
+    /// The limits `config` holds state to: both the state limit it advertises.
     pub(crate) fn of(config: &EngineConfig) -> Self {
-        let message = config.growth().state_bytes().get();
+        let limit = config.state_limit();
         Self {
-            stored: config.state_limit(),
-            request: message.saturating_sub(STATE_ENVELOPE),
+            stored: limit,
+            request: limit,
         }
     }
 }
@@ -47,7 +47,10 @@ impl Stored {
             .iter()
             .map(|record| (record.key.clone(), record_bytes(record)))
             .collect();
-        let total = records.values().copied().fold(0, u64::saturating_add);
+        let total = records
+            .values()
+            .copied()
+            .fold(answer_bytes(&[]), u64::saturating_add);
         Self {
             records,
             total,
@@ -55,7 +58,7 @@ impl Stored {
         }
     }
 
-    /// Bytes: what the stored records take in an open's answer.
+    /// Bytes: what an open's answer carrying the stored records holds decoded.
     #[cfg(test)]
     pub(crate) fn total(&self) -> u64 {
         self.total

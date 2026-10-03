@@ -137,6 +137,7 @@ pub enum StateEntry {
         key: Vec<ColumnPath>,
         /// The column a history table's versions begin at; none where they begin as their rows
         /// arrive, and for a table that keeps no history.
+        #[serde(deserialize_with = "Option::deserialize")]
         change_time: Option<ColumnPath>,
     },
     /// The last commit's receipt.

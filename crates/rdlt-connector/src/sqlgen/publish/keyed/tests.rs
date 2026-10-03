@@ -158,7 +158,8 @@ fn a_merge_key_of_no_column_or_of_columns_the_table_lacks_is_refused() {
 fn a_recorded_merge_key_of_no_column_is_refused_rather_than_indexed() {
     // A staged segment's record names the key it was written by; one edited to name no column
     // decodes, and its commit is refused before any statement indexes the key's first column.
-    let key = crate::sqlgen::merge_key("[]", "seq").unwrap();
+    let recorded = r#"{"format":1,"columns":[],"root":null,"changes":null,"history":null}"#;
+    let key = crate::sqlgen::merge_key(recorded, "seq").unwrap();
     assert!(key.columns.is_empty());
     invalid(published(&key, &HELD), "a recorded key of no column");
 }

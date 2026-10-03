@@ -264,8 +264,8 @@ in forms its readers read back (ADR 0041):
   (`table_columns_exceeded`), a stream's child tables to `GrowthLimits` and the stored state
   limit (`child_tables_exceeded`), and a schema version to what it counts
   (`schema_version_exhausted`).
-- Stored state is held to what an open's answer can carry and a 16th of the budget, and a
-  commit's request to a message carrying state: a commit beyond either is refused before it is
+- Stored state, as an open's answer carrying it holds it decoded, and a commit's request are
+  held to the advertised state limit: a commit beyond either is refused before it is
   logged or acknowledged (`state_bytes_exceeded`), unless state was past the limit already and
   the commit does not grow it. A plan never forgets a partition's
   position; a commit that would pass the limit deletes the done markers of partitions no plan

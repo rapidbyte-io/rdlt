@@ -92,7 +92,8 @@ still taken largely on trust:
   - An open's answer is the engine's own committed state echoed back, so the engine keeps it
     within the bound: a commit after which the state would hold more decoded than the state
     limit, as the scan of an open's answer carrying it counts it, is refused before it is logged
-    or sent, with `state_exceeds_budget`. A pipeline can always open what it committed.
+    or sent, with `state_bytes_exceeded`. A pipeline can always open what it committed. Amended
+    2026-10-03 (ADR 0041): this check and the stored state's are one, measured decoded.
   - A charge waits as any request of the budget does, in turn, and fails its call at the
     budget's deadline; one larger than its share fails it at once. No charge is held while
     another is waited for, and none while its holder waits for anything but the answer's bytes.
@@ -170,7 +171,7 @@ still taken largely on trust:
   sends.
 - A host's decoded bounds are what one message may hold before it is decoded, and a run charges
   what each holds to its budget. A run whose commit would leave more state than the state limit
-  fails with `state_exceeds_budget` until the memory is raised or its state shrinks; nothing of
+  fails with `state_bytes_exceeded` until the memory is raised or its state shrinks; nothing of
   that commit lands. The handshake, a configuration's answer and calls made outside a run are
   not charged.
 - An engine reading one partition at once needs 53.7 MB rather than 33.8 MB, and pushes may take

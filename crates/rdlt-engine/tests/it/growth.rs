@@ -110,8 +110,7 @@ async fn a_stream_adding_child_tables_past_the_default_limit_is_refused() {
 #[tokio::test(start_paused = true)]
 async fn child_tables_recorded_by_earlier_runs_count_toward_the_limit() {
     let store = "growth_recorded_children";
-    let limited =
-        || commit_every(1000).growth(GrowthLimits::new(3, 128, 16 << 20).expect("a valid limit"));
+    let limited = || commit_every(1000).growth(GrowthLimits::new(3, 128).expect("a valid limit"));
     let runs = [
         json!({ "id": 1, "a0": [1], "a1": [2] }),
         json!({ "id": 2, "b0": [3] }),

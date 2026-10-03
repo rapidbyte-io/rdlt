@@ -7,15 +7,13 @@ use std::sync::{Arc, LazyLock};
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use parking_lot::Mutex;
-use rdlt_connector::wire::record_bytes;
+use rdlt_connector::wire::answer_bytes;
 use rdlt_connector::{
     ConnectContext, Destination, Emitter, OpenContext, Partition, PartitionId, PipelineId,
     PipelineState, ReadMode, ReadStream, Result, SourceConnector, StreamName, StreamSpec,
     StreamState, Streams, source_factory,
 };
-use rdlt_engine::{
-    EngineConfig, EngineConfigBuilder, ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatus,
-};
+use rdlt_engine::{EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, RunOutcome, RunStatus};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -160,21 +158,26 @@ fn ids(count: usize) -> Vec<String> {
     (0..count).map(|index| format!("p{index}")).collect()
 }
 
-/// Bytes: what the memory destination `name` stores of pipeline `name`'s state takes in an
-/// open's answer.
+/// Bytes: what an open's answer carrying the state the memory destination `name` stores of
+/// pipeline `name` holds decoded.
 async fn carried(name: &str) -> u64 {
     let context = OpenContext {
         pipeline: PipelineId::parse(name).expect("a valid pipeline"),
         load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
     };
     let opened = memory(name).await.open(&context).await.expect("it opens");
-    opened.state.iter().map(record_bytes).sum()
+    answer_bytes(&opened.state)
+}
+
+/// Bytes: the state limit an engine of `memory` advertises.
+fn state_limit(memory: u64) -> u64 {
+    let config = EngineConfig::builder().memory(memory).build();
+    config.expect("a valid config").state_limit()
 }
 
 /// The state `destination` holds for pipeline `name`.
 ///
-/// What it holds must be what one message may carry: an open's answer within the default limit,
-/// beside its session's handle and epoch.
+/// What it holds must be what one message may carry: an open's answer within the default limit.
 async fn stored(destination: &dyn Destination, name: &str) -> PipelineState {
     let context = OpenContext {
         pipeline: PipelineId::parse(name).expect("a valid pipeline"),
@@ -184,9 +187,9 @@ async fn stored(destination: &dyn Destination, name: &str) -> PipelineState {
         .open(&context)
         .await
         .expect("the destination opens");
-    let carried: u64 = opened.state.iter().map(record_bytes).sum();
-    let limit = EngineConfig::default().growth().state_bytes().get();
-    assert!(carried + 22 <= limit, "{carried} bytes of state");
+    let carried = answer_bytes(&opened.state);
+    let limit = EngineConfig::default().state_limit();
+    assert!(carried <= limit, "{carried} bytes of state");
     PipelineState::from_records(&opened.state).expect("the state reads")
 }
 
@@ -313,11 +316,10 @@ async fn long_column_names_cannot_make_state_unopenable() {
 }
 
 #[test]
-fn the_default_state_limit_is_what_a_message_carrying_state_may_take() {
-    assert_eq!(
-        EngineConfig::default().growth().state_bytes().get(),
-        16 << 20
-    );
+fn the_default_state_limit_is_the_state_an_open_may_answer_that_the_engine_advertises() {
+    let config = EngineConfig::default();
+    assert_eq!(config.state_limit(), config.limits().state_bytes);
+    assert!(config.state_limit() <= rdlt_wire::Limits::default().state_bytes);
 }
 
 /// Loads `name`'s stream with its plans naming `partitions`, which must succeed; the ids of the
@@ -385,8 +387,9 @@ async fn state_at_the_least_memory_stops_at_its_share_of_the_budget_and_still_op
         .await;
     refused(&outcome);
     let carried = carried(name).await;
-    assert!(carried <= least / 16, "{carried} bytes of state");
-    assert!(carried > least / 32, "{carried} bytes of state");
+    let limit = state_limit(least);
+    assert!(carried <= limit, "{carried} bytes of state");
+    assert!(carried > limit / 2, "{carried} bytes of state");
 }
 
 #[tokio::test(start_paused = true)]
@@ -413,7 +416,7 @@ async fn state_past_a_lowered_limit_keeps_loading_while_it_shrinks() {
         .await;
     refused(&outcome);
     let grown = carried(name).await;
-    assert!(grown > least / 16, "{grown} bytes of state");
+    assert!(grown > state_limit(least), "{grown} bytes of state");
     let state = stored(memory(name).await.as_ref(), name).await;
     let recorded = &state.streams[&StreamName::new("events").expect("a name")].partitions;
     // Under the least memory, each partition's commit replaces its cursor with a smaller one.
@@ -619,12 +622,15 @@ fn churn(root: &std::path::Path, names: &[String]) {
 async fn churning_files_keep_state_bounded_at_the_least_memory() {
     let name = "stored-files";
     let base = tempfile::tempdir().expect("a temporary directory");
-    // The least memory, its state held to 32 KiB beyond what a message holds besides.
-    let growth = GrowthLimits::new(1024, 128, (256 + 32) << 10).expect("valid limits");
+    // The least memory, its state held to 32 KiB.
+    let limits = rdlt_wire::Limits {
+        state_bytes: 32 << 10,
+        ..rdlt_wire::Limits::default()
+    };
     let config = || {
         commit_every(10)
             .memory(EngineConfig::least_memory(16))
-            .growth(growth)
+            .limits(limits)
     };
     let limit = config().build().expect("valid").state_limit();
     // The files source reads in full: each run reads the files it lists in a cycle of its own,

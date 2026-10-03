@@ -10,7 +10,6 @@ mod barrier;
 mod commit;
 mod delta;
 mod due;
-mod held;
 mod phases;
 mod pressure;
 mod replan;
@@ -45,7 +44,6 @@ use crate::stored::Stored;
 use crate::table::Tables;
 use crate::wal::{LoadLog, Positions};
 use crate::watch;
-pub(crate) use held::HeldState;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher, plan_of};
 use waiting::WaitingSeals;
 
@@ -184,8 +182,6 @@ pub(crate) struct CoordinatorParts {
     pub(crate) wal: Option<LoadLog>,
     /// The partitions' positions as the destination holds them, through the commits that landed.
     pub(crate) positions: Positions,
-    /// What the committed state holds decoded, through the commits that landed.
-    pub(crate) state: HeldState,
     /// What the destination's stored state takes, through the commits that landed.
     pub(crate) stored: Stored,
     /// Whether the run follows its source: it reads until stopped, and plans its streams again

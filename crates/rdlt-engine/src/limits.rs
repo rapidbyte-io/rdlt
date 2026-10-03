@@ -87,10 +87,6 @@ pub(crate) const MEMORY_BELOW_MINIMUM: &str = "memory_below_minimum";
 /// for: each holds a slot as long as the run, and one slot must stay for every other read.
 pub(crate) const PARTITIONS_TOO_FEW: &str = "partitions_too_few";
 
-/// The code of the error for a commit after which the pipeline's state would hold more decoded
-/// than an open's answer may: the pipeline could not open it again.
-pub(crate) const STATE_EXCEEDS_BUDGET: &str = "state_exceeds_budget";
-
 /// The code of the error for a table whose records take more than the tables' share.
 pub(crate) const TABLE_EXCEEDS_BUDGET: &str = "table_exceeds_budget";
 
@@ -101,18 +97,9 @@ pub(crate) const TABLE_COLUMNS_EXCEEDED: &str = "table_columns_exceeded";
 /// The code of the error for a child table beyond those a normalized stream may add.
 pub(crate) const CHILD_TABLES_EXCEEDED: &str = "child_tables_exceeded";
 
-/// The pipeline's stored state, as an open's answer carries it: at most a 16th of the budget, the
-/// share the state an attempt opens on is held within, about 2 MiB of the least budget.
-pub(crate) const STATE_SHARE: u64 = 16;
-
 /// Bytes: what the records of a child table of a few columns take in state, its schema and
 /// names, as the child tables a stream may have are derived from the stored state limit.
 pub(crate) const TABLE_RECORDS: u64 = 4 << 10;
-
-/// Bytes: what a message carrying a pipeline's state holds beside the records or positions it
-/// carries, at most: a session's handle and epoch, or a stream's namespace and name, each within
-/// the protocol's limit on a control string.
-pub(crate) const STATE_ENVELOPE: u64 = 256 << 10;
 
 /// The code of the error for a commit that would leave more state, or send a larger request,
 /// than a message carrying state may take.

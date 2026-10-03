@@ -1,21 +1,48 @@
 use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
-use rdlt_connector::wire::{commit_bytes, record_bytes};
+use proptest::prelude::*;
+use rdlt_connector::wire::{answer_bytes, commit_bytes, record_bytes};
 use rdlt_connector::{
     CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateKey, StateRecord,
 };
 
 use super::{StateLimits, Stored};
-use crate::config::{EngineConfig, GrowthLimits};
+use crate::config::EngineConfig;
 use crate::error::ErrorKind;
 
 /// Bytes: what the tests' state, and requests, may take.
 const ROOM: u64 = 768 << 10;
 
-/// Limits of `stored` bytes of state and `request` bytes of a commit's request.
+/// Limits of `stored` bytes of records beside what an empty open's answer holds, saturating, and
+/// `request` bytes of a commit's request.
 fn limits(stored: u64, request: u64) -> StateLimits {
-    StateLimits { stored, request }
+    StateLimits {
+        stored: stored.saturating_add(answer_bytes(&[])),
+        request,
+    }
+}
+
+/// The most bytes of a value for which `measure` is within `room`.
+fn largest(room: u64, measure: impl Fn(usize) -> u64) -> usize {
+    let (mut fits, mut passes) = (0, usize::try_from(room).unwrap());
+    assert!(measure(passes) > room);
+    while passes - fits > 1 {
+        let middle = fits + (passes - fits) / 2;
+        if measure(middle) <= room {
+            fits = middle;
+        } else {
+            passes = middle;
+        }
+    }
+    fits
+}
+
+impl Stored {
+    /// Bytes: what the stored records add to an empty open's answer.
+    fn held(&self) -> u64 {
+        self.total() - answer_bytes(&[])
+    }
 }
 
 fn record(key: &str, bytes: usize) -> StateRecord {
@@ -49,11 +76,8 @@ fn meta(delta: Vec<StateChange>) -> CommitMeta {
 fn stored_state_is_what_its_records_take_in_an_open_s_answer() {
     let records = [record("a", 10), record("b", 300)];
     let stored = Stored::of(&records, limits(ROOM, ROOM));
-    assert_eq!(
-        stored.total(),
-        records.iter().map(record_bytes).sum::<u64>()
-    );
-    assert_eq!(Stored::of(&[], limits(ROOM, ROOM)).total(), 0);
+    assert_eq!(stored.held(), records.iter().map(record_bytes).sum::<u64>());
+    assert_eq!(Stored::of(&[], limits(ROOM, ROOM)).held(), 0);
 }
 
 #[test]
@@ -63,11 +87,9 @@ fn a_commit_is_admitted_while_it_fits_and_refused_a_byte_past() {
     // Replacing `a` with a record whose commit's request takes all the room, and a byte more:
     // the request carries the record and the commit's numbers beside.
     let replacing = |bytes| meta(vec![StateChange::Put(record("a", bytes))]);
-    let mut bytes = usize::try_from(room).unwrap() - 128;
-    while commit_bytes(&replacing(bytes)) < room {
-        bytes += 1;
-    }
-    assert_eq!(commit_bytes(&replacing(bytes)), room);
+    let bytes = largest(room, |bytes| commit_bytes(&replacing(bytes)));
+    assert!(commit_bytes(&replacing(bytes)) <= room);
+    assert!(commit_bytes(&replacing(bytes + 1)) > room);
     assert!(record_bytes(&record("a", bytes)) < room);
     stored.admit_all(&replacing(bytes)).unwrap();
     let error = stored.admit_all(&replacing(bytes + 1)).unwrap_err();
@@ -80,12 +102,9 @@ fn a_commit_is_admitted_while_it_fits_and_refused_a_byte_past() {
 fn a_commit_whose_state_passes_the_limit_is_refused_though_its_request_fits() {
     // What is stored already takes most of the room: a small record more passes it.
     let room = ROOM;
-    let mut bytes = usize::try_from(room).unwrap() - 128;
-    while record_bytes(&record("a", bytes)) < room {
-        bytes += 1;
-    }
+    let bytes = largest(room, |bytes| record_bytes(&record("a", bytes)));
     let full = Stored::of(&[record("a", bytes)], limits(ROOM, u64::MAX));
-    assert_eq!(full.total(), room);
+    assert!(full.held() <= room && room - full.held() < record_bytes(&record("b", 0)));
     full.admit_all(&meta(vec![StateChange::Delete("b".to_owned())]))
         .unwrap();
     let error = full
@@ -163,12 +182,12 @@ fn landed_changes_replace_and_remove_what_is_stored() {
     ];
     stored.apply(&delta);
     let expected = record_bytes(&record("a", 500)) + record_bytes(&record("c", 30));
-    assert_eq!(stored.total(), expected);
+    assert_eq!(stored.held(), expected);
     // A later change sees what landed: `b` is gone, so deleting it frees nothing more.
     stored.apply(&[StateChange::Delete("b".to_owned())]);
-    assert_eq!(stored.total(), expected);
+    assert_eq!(stored.held(), expected);
     stored.apply(&[StateChange::Delete("a".to_owned())]);
-    assert_eq!(stored.total(), record_bytes(&record("c", 30)));
+    assert_eq!(stored.held(), record_bytes(&record("c", 30)));
 }
 
 #[test]
@@ -181,38 +200,47 @@ fn a_key_changed_twice_in_one_commit_counts_its_last_change() {
     stored.admit_all(&twice).unwrap();
     let mut landed = Stored::of(&[], limits(ROOM, ROOM));
     landed.apply(&twice.state_delta);
-    assert_eq!(landed.total(), 0);
+    assert_eq!(landed.held(), 0);
 }
 
 #[test]
-fn stored_state_is_held_to_its_share_of_the_memory_and_requests_to_a_message() {
+fn stored_state_and_requests_are_held_to_the_state_limit_the_engine_advertises() {
     let config = |memory: u64| EngineConfig::builder().memory(memory).build().unwrap();
-    let least = EngineConfig::least_memory(16);
-    let held = StateLimits::of(&config(least));
-    assert_eq!(held.stored, least / 16);
-    assert_eq!(held.request, (16 << 20) - (256 << 10));
-    // A large budget is held to what a message carrying state may take.
-    let large = StateLimits::of(&config(4 << 30));
-    assert_eq!(large.stored, (16 << 20) - (256 << 10));
-    let growth = GrowthLimits::new(1024, 128, 512 << 20).unwrap();
-    let raised = EngineConfig::builder()
-        .memory(4 << 30)
-        .growth(growth)
+    for memory in [EngineConfig::least_memory(16), 64 << 20, 4 << 30] {
+        let config = config(memory);
+        let advertised = config.limits().state_bytes;
+        assert_eq!(config.state_limit(), advertised);
+        let held = StateLimits::of(&config);
+        assert_eq!((held.stored, held.request), (advertised, advertised));
+        // A stream's child tables are as many as the state holds tables of a few columns.
+        let tables = usize::try_from(advertised / 4096).unwrap();
+        assert_eq!(config.child_table_limit(), tables.clamp(1, 1024));
+    }
+    // An operator's lower state limit holds both.
+    let operated = EngineConfig::builder()
+        .limits(rdlt_wire::Limits {
+            state_bytes: 64 << 10,
+            ..rdlt_wire::Limits::default()
+        })
         .build()
         .unwrap();
-    assert_eq!(StateLimits::of(&raised).stored, (4 << 30) / 16);
-    // A stream's child tables are as many as the state holds tables of a few columns.
-    assert_eq!(
-        config(least).child_table_limit(),
-        usize::try_from(least / 16 / 4096).unwrap()
-    );
-    assert_eq!(config(256 << 20).child_table_limit(), 1024);
+    assert_eq!(StateLimits::of(&operated).stored, 64 << 10);
+    assert_eq!(operated.child_table_limit(), 16);
+}
+
+#[test]
+fn an_empty_state_holds_the_answer_alone_and_a_record_its_bytes_and_more() {
+    let empty = Stored::of(&[], limits(ROOM, ROOM));
+    assert_eq!(empty.total(), answer_bytes(&[]));
+    let one = empty.after(&[StateChange::Put(record("key", 1000))]);
+    assert!(one >= empty.total() + 1000 + 3, "{one}");
 }
 
 #[test]
 fn state_past_the_limit_only_with_new_child_tables_is_refused_for_them() {
     let stream = rdlt_connector::StreamName::new("orders").unwrap();
-    let full = Stored::of(&[record("a", 600)], limits(1000, ROOM));
+    let room = record_bytes(&record("a", 600)) + record_bytes(&record("b", 100)) + 10;
+    let full = Stored::of(&[record("a", 600)], limits(room, ROOM));
     let born = [(stream.clone(), "child".to_owned())];
     let error = full
         .admit(
@@ -246,19 +274,19 @@ fn state_past_the_limit_only_with_new_child_tables_is_refused_for_them() {
 #[test]
 fn a_commit_past_the_limit_is_relieved_by_the_fewest_records_deleted_in_order() {
     let records = [record("a", 300), record("b", 300), record("c", 300)];
-    let stored = Stored::of(&records, limits(1200, ROOM));
-    let total = stored.total();
     let bytes = |key: &str| record_bytes(&record(key, 300));
+    let small = record_bytes(&record("d", 10));
+    let room = 3 * bytes("a") + small;
+    let stored = Stored::of(&records, limits(room, ROOM));
+    let limit = room + answer_bytes(&[]);
     // A commit that fits needs nothing deleted.
     let fits = meta(vec![StateChange::Put(record("d", 10))]);
     assert_eq!(stored.relief(&fits, &["a", "b", "c"]), Some(0));
     // One that passes the limit by a byte more than one record takes needs two.
-    let past = 1200 - total + bytes("a") + 1;
-    let grown = meta(vec![StateChange::Put(StateRecord {
-        key: "d".to_owned(),
-        value: Bytes::from(vec![7; usize::try_from(past).unwrap()]),
-    })]);
-    let over = stored.after(&grown.state_delta) - 1200;
+    let one = bytes("a");
+    let past = largest(small + one, |value| record_bytes(&record("d", value))) + 1;
+    let grown = meta(vec![StateChange::Put(record("d", past))]);
+    let over = stored.after(&grown.state_delta) - limit;
     assert!(
         over > bytes("a") && over <= bytes("a") + bytes("b"),
         "{over}"
@@ -274,4 +302,47 @@ fn a_commit_past_the_limit_is_relieved_by_the_fewest_records_deleted_in_order() 
             .push(StateChange::Delete(key.to_owned()));
     }
     stored.admit_all(&relieved).unwrap();
+}
+
+fn change() -> impl Strategy<Value = StateChange> {
+    let key = prop::sample::select(vec!["a", "b", "c", "", "partition/p0"]);
+    prop_oneof![
+        (key.clone(), 0..40_usize).prop_map(|(key, bytes)| StateChange::Put(record(key, bytes))),
+        key.prop_map(|key| StateChange::Delete(key.to_owned())),
+    ]
+}
+
+/// `records` with `delta` committed, by key.
+fn committed(records: &[StateRecord], delta: &[StateChange]) -> Vec<StateRecord> {
+    let mut state: std::collections::BTreeMap<String, StateRecord> = records
+        .iter()
+        .map(|record| (record.key.clone(), record.clone()))
+        .collect();
+    for change in delta {
+        match change {
+            StateChange::Put(record) => {
+                state.insert(record.key.clone(), record.clone());
+            }
+            StateChange::Delete(key) => {
+                state.remove(key);
+            }
+        }
+    }
+    state.into_values().collect()
+}
+
+proptest! {
+    #[test]
+    fn what_is_stored_is_what_an_open_s_answer_carrying_it_holds_decoded(
+        first in prop::collection::vec(change(), 0..8),
+        then in prop::collection::vec(change(), 0..8),
+    ) {
+        let records = committed(&[], &first);
+        let mut stored = Stored::of(&records, limits(ROOM, ROOM));
+        prop_assert_eq!(stored.total(), answer_bytes(&records));
+        let after = committed(&records, &then);
+        prop_assert_eq!(stored.after(&then), answer_bytes(&after));
+        stored.apply(&then);
+        prop_assert_eq!(stored.total(), answer_bytes(&after));
+    }
 }

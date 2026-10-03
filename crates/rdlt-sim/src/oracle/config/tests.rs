@@ -18,6 +18,5 @@ fn some_worlds_hold_few_writers_open_and_the_rest_the_default() {
     for growth in drawn {
         assert!(growth.writers() <= defaults.writers());
         assert_eq!(growth.child_tables(), defaults.child_tables());
-        assert_eq!(growth.state_bytes(), defaults.state_bytes());
     }
 }

@@ -64,12 +64,7 @@ pub(super) fn growth(seed: Seed) -> GrowthLimits {
         return defaults;
     }
     let writers = to_usize(1 + rng.below(3));
-    GrowthLimits::new(
-        defaults.child_tables().get(),
-        writers,
-        defaults.state_bytes().get(),
-    )
-    .expect("the drawn limits are valid")
+    GrowthLimits::new(defaults.child_tables().get(), writers).expect("the drawn limits are valid")
 }
 
 /// How many partitions of `workload`'s streams never end.
