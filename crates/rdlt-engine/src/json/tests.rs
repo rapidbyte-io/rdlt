@@ -227,37 +227,52 @@ fn a_canonical_text_is_plain_to_its_length_limit_and_scientific_past_it() {
     );
 }
 
-/// JSON-ish text: values of every kind, nested a little, with whitespace and stray bytes.
+/// JSON-ish text: values of every kind nested eight deep, numbers of 25 digits and exponents of
+/// three, every whitespace byte and the bytes JSON refuses as whitespace, strings of escapes,
+/// surrogate pairs and lone halves, raw control characters and text beyond ASCII, and stray
+/// bytes.
 fn jsonish() -> impl Strategy<Value = String> {
+    let space = "[ \\t\\n\\r\\x0b\\x0c]{0,2}";
     let leaf = prop_oneof![
         Just("null".to_owned()),
         Just("true".to_owned()),
+        Just("false".to_owned()),
         Just("fa".to_owned()),
-        "-?[0-9]{1,4}(\\.[0-9]{0,3})?([eE][+-]?[0-9]{0,2})?",
-        "\"([a-z \\\\\"/]|\\\\[nturbf\"\\\\/x]|\\\\u[0-9a-fA-F]{2,4})*\"?",
+        Just("-0".to_owned()),
+        "-?0?[0-9]{1,25}(\\.[0-9]{0,25})?([eE][+-]?[0-9]{0,3})?",
+        "\"([a-zé😀\\x00-\\x1f\\x7f \\\\\"/]|\\\\[nturbf\"\\\\/x0]|\\\\u[dD][89abAB][0-9a-fA-F]{2}(\\\\u[dD][c-fC-F][0-9a-fA-F]{2})?|\\\\u[dD][c-fC-F][0-9a-fA-F]{2}|\\\\u[0-9a-fA-F]{2,4})*\"?",
     ];
-    leaf.prop_recursive(4, 32, 4, |inner| {
+    let leaf =
+        (space, leaf, space).prop_map(|(before, leaf, after)| format!("{before}{leaf}{after}"));
+    leaf.prop_recursive(8, 64, 5, move |inner| {
         prop_oneof![
-            prop::collection::vec(inner.clone(), 0..4)
+            prop::collection::vec(inner.clone(), 0..5)
                 .prop_map(|items| format!("[{}]", items.join(","))),
-            prop::collection::vec(("\"[a-c]{0,2}\"", inner), 0..4).prop_map(|members| {
-                let members: Vec<String> = members
-                    .into_iter()
-                    .map(|(key, value)| format!("{key}:{value}"))
-                    .collect();
-                format!("{{{}}}", members.join(","))
-            }),
-            ("[ ,:\\]\\}\\[\\{]{0,2}", Just(String::new())).prop_map(|(stray, _)| stray),
+            prop::collection::vec(("[ \\t\\n]?\"[a-c\\\\]{0,2}\"[ \\t\\n]?", inner), 0..4)
+                .prop_map(|members| {
+                    let members: Vec<String> = members
+                        .into_iter()
+                        .map(|(key, value)| format!("{key}:{value}"))
+                        .collect();
+                    format!("{{{}}}", members.join(","))
+                }),
+            ("[ ,:\\]\\}\\[\\{\\t\\n]{0,2}", Just(String::new())).prop_map(|(stray, _)| stray),
         ]
     })
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(4096)))]
+
     #[test]
     fn text_is_json_exactly_where_serde_json_reads_it(text in jsonish()) {
-        let ours = check(&text).is_ok();
-        let theirs = serde_json::from_str::<serde_json::Value>(&text).is_ok();
-        prop_assert_eq!(ours, theirs, "{}", text);
+        let ours = check(&text);
+        let theirs = serde_json::from_str::<serde_json::Value>(&text);
+        // serde_json refuses a number beyond a float's range, which JSON holds.
+        if let Err(error) = &theirs {
+            prop_assume!(!error.to_string().contains("out of range"));
+        }
+        prop_assert_eq!(ours.is_ok(), theirs.is_ok(), "{:?}: {:?}", text, ours);
     }
 
     #[test]
@@ -337,4 +352,20 @@ fn an_exponent_is_within_the_limit_by_its_digits_beside_its_leading_zeros() {
     assert!(may_hold_long_exponent(
         format!("\"x1e1{digits}\"").as_bytes()
     ));
+}
+
+#[test]
+fn objects_and_arrays_nested_to_the_limit_are_read_as_serde_json_reads_them() {
+    // Sixty-four levels, objects and arrays in turn, with whitespace between their tokens.
+    let open: String = (0..64)
+        .map(|level| if level % 2 == 0 { "[ " } else { "{\"k\":\t" })
+        .collect();
+    let close: String = (0..64)
+        .rev()
+        .map(|level| if level % 2 == 0 { "]" } else { "\n}" })
+        .collect();
+    let text = format!("{open}1{close}");
+    assert!(serde_json::from_str::<serde_json::Value>(&text).is_ok());
+    assert_eq!(check(&text), Ok(()));
+    assert_eq!(check(&format!("[{text}]")), Err(JsonError::TooDeep));
 }
