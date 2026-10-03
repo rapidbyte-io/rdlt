@@ -48,8 +48,8 @@ one run to the next, broke both:
   versions, and the merge key a SQL destination's staged segment records, carry a format, 1,
   checked on read. What an earlier build wrote is refused, as `state_invalid`,
   `wal_unreadable`, `manifest_invalid`, `catalog_invalid` or an internal error for a staged
-  key; nothing is published, so nothing earlier needs reading. A stream or table name a later build refuses
-  (ADR 0042) therefore never reaches the engine from state written before it.
+  key; nothing is published, so nothing earlier needs reading. A stream or table name a later
+  build refuses (ADR 0042) therefore never reaches the engine from state written before it.
 - **A table is never wider than a schema.** A change that would make a table's columns, every
   nested field counted, more than the schema columns `EngineConfig::limits` derives from the
   memory budget (ADR 0039; 7,489 at the defaults) is refused as `table_columns_exceeded` before
@@ -175,12 +175,14 @@ Rejected:
   limit: its oldest done markers go as new ones need room, the latest named in the report and
   the rest counted. A source says a partition is finished by ending its read with data after its
   last checkpoint; the engine never infers it from a cursor. The reference files, memory and
-  generator sources end a read that does not follow so, answering a barrier pending before the
-  last push ahead of it; a following read keeps its cursor. They read in full, so each cycle also clears the one
-  before. The change source's snapshot partitions say they are done in their own cursors, and
-  their entries go with their phase; the log's partitions never end. One whose partitions keep
-  being created and end at a cursor in an incremental stream keeps every cursor and stops at
-  `state_bytes_exceeded` until its stream is reset. Certification does not check that finished
+  generator sources end a read that does not follow so; the files and generator sources, which
+  checkpoint on demand, answer a barrier pending before the last push ahead of it, and the memory
+  source, which checkpoints only where it chooses, is never sent one. A following read keeps its
+  cursor. They read in full, so each cycle also clears the one before. The change source's
+  snapshot partitions say they are done in their own cursors, and their entries go with their
+  phase; the log's partitions never end. One whose partitions keep being created and end at a
+  cursor in an incremental stream keeps every cursor and stops at `state_bytes_exceeded` until
+  its stream is reset. Certification does not check that finished
   partitions end done: a read that ends at a checkpoint is also how a polled table is read.
 - `LocalWal` makes a chunk's removal durable with a sync of the load's directory.
 - The simulation holds one to three writers open in a quarter of its worlds, drawn apart from
