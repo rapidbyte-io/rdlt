@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub struct MemorySourceConfig {
     /// Each stream's rows, by stream name.
     pub streams: BTreeMap<String, Vec<serde_json::Value>>,
-    /// Rows per push; a checkpoint follows each push.
+    /// Rows per push; a checkpoint follows each push but a stream's last.
     #[serde(default = "default_page_size")]
     pub page_size: usize,
 }
@@ -25,7 +25,8 @@ fn default_page_size() -> usize {
     100
 }
 
-/// Reads the rows in its configuration as JSON, one checkpointed page at a time.
+/// Reads the rows in its configuration as JSON, one checkpointed page at a time; a read that
+/// does not follow sends no checkpoint after the last page, so it ends its partition done.
 #[derive(Debug)]
 pub struct MemorySource {
     streams: BTreeMap<String, Arc<Vec<serde_json::Value>>>,
@@ -99,7 +100,10 @@ impl ReadStream<MemorySource> for Rows {
             let end = next.saturating_add(source.page_size).min(rows.len());
             out.rows(&rows[next..end]).await?;
             next = end;
-            out.checkpoint(&Offset { next }).await?;
+            // A read that does not follow ends the stream's partition done at its last page.
+            if next < rows.len() || out.follows() {
+                out.checkpoint(&Offset { next }).await?;
+            }
         }
         Ok(())
     }

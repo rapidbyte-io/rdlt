@@ -123,6 +123,17 @@ pub trait ReadStream<S: SourceConnector>: Send + Sync + 'static {
     /// stream that starts elsewhere than `cursor`, from a position it keeps itself, sends a
     /// checkpoint of where it starts before anything else: the host is then heard for that
     /// position, and not for `cursor`.
+    ///
+    /// A read that finishes its partition says so: it ends with data pushed after its last
+    /// checkpoint, and the engine records the partition done, with no cursor, and reads it no
+    /// more. A read that ends at a checkpoint leaves its partition at that cursor, to be read
+    /// from there again by the next plan that names it, as a table polled for new rows is. In a
+    /// stream read incrementally, ending finished partitions at a checkpoint keeps a cursor for
+    /// every partition the source ever planned, which grows stored state until commits are
+    /// refused as `state_bytes_exceeded`; a full read's next cycle clears its partitions. A read the engine asks to follow ([`Emitter::follows`]) and a
+    /// partition that never ends ([`Partition::unbounded`]) keep their cursors. An on-demand
+    /// stream answers a barrier pending before its last push with a checkpoint before that
+    /// push.
     fn read(
         &self,
         source: &S,

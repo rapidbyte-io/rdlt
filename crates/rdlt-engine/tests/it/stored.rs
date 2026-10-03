@@ -13,7 +13,9 @@ use rdlt_connector::{
     PipelineState, ReadMode, ReadStream, Result, SourceConnector, StreamName, StreamSpec,
     StreamState, Streams, source_factory,
 };
-use rdlt_engine::{EngineConfig, EngineConfigBuilder, ErrorKind, LocalWal, RunOutcome, RunStatus};
+use rdlt_engine::{
+    EngineConfig, EngineConfigBuilder, ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatus,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -586,4 +588,117 @@ async fn churning_done_partitions_keep_state_bounded_and_loading_at_the_least_me
     assert!(recorded.contains_key(&kept));
     assert!(cursors.iter().all(|id| recorded.contains_key(id)));
     assert!(forgotten.iter().all(|id| !recorded.contains_key(id)));
+}
+
+/// The files source over `root`.
+async fn files(root: &std::path::Path) -> Arc<dyn rdlt_connector::Source> {
+    let connected = source_factory::<rdlt_connector_reference::FilesSource>()
+        .connect(json!({ "root": root }), ConnectContext::new())
+        .await
+        .expect("the files source connects");
+    Arc::from(connected)
+}
+
+/// Replaces the files of stream `events` under `root` with `names`, a record each.
+fn churn(root: &std::path::Path, names: &[String]) {
+    let dir = root.join("events");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("the old files go");
+    }
+    std::fs::create_dir(&dir).expect("the stream's directory");
+    for (id, name) in (0_u64..).zip(names) {
+        std::fs::write(
+            dir.join(format!("{name}.jsonl")),
+            format!("{{\"id\":{id}}}\n"),
+        )
+        .expect("a file");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn churning_files_keep_state_bounded_at_the_least_memory() {
+    let name = "stored-files";
+    let base = tempfile::tempdir().expect("a temporary directory");
+    // The least memory, its state held to 32 KiB beyond what a message holds besides.
+    let growth = GrowthLimits::new(1024, 128, (256 + 32) << 10).expect("valid limits");
+    let config = || {
+        commit_every(10)
+            .memory(EngineConfig::least_memory(16))
+            .growth(growth)
+    };
+    let limit = config().build().expect("valid").state_limit();
+    // The files source reads in full: each run reads the files it lists in a cycle of its own,
+    // whose first commit deletes the entries of the cycle before.
+    for round in 0..12 {
+        let names: Vec<String> = (0..40)
+            .map(|index| format!("r{round:02}f{index:02}"))
+            .collect();
+        churn(base.path(), &names);
+        let rows = crate::support::published_rows(name, "events");
+        let outcome = engine(config())
+            .run(
+                pipeline(name, [stream("events")]),
+                files(base.path()).await,
+                memory(name).await,
+            )
+            .await;
+        assert_eq!(succeeded(&outcome), Vec::<String>::new(), "round {round}");
+        assert_eq!(
+            crate::support::published_rows(name, "events"),
+            rows + 40,
+            "round {round}"
+        );
+        assert!(carried(name).await <= limit, "round {round}");
+        // Each file read to its end is done, its partition's entry no cursor.
+        let recorded = positions(name).await;
+        let read: Vec<String> = names.iter().map(|file| format!("{file}.jsonl")).collect();
+        assert_eq!(
+            recorded.keys().cloned().collect::<Vec<_>>(),
+            read,
+            "round {round}"
+        );
+        assert!(
+            recorded
+                .values()
+                .all(|position| *position == rdlt_connector::PartitionState::Done)
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn each_full_read_of_the_files_reads_every_file_from_its_start() {
+    let name = "stored-appended";
+    let base = tempfile::tempdir().expect("a temporary directory");
+    churn(base.path(), &["first".to_owned()]);
+    let load = || async {
+        engine(commit_every(10))
+            .run(
+                pipeline(name, [stream("events")]),
+                files(base.path()).await,
+                memory(name).await,
+            )
+            .await
+    };
+    succeeded(&load().await);
+    assert_eq!(crate::support::published_rows(name, "events"), 1);
+    // A cycle of its own reads the first file again, what was appended to it with it, and the
+    // new one; a file is a partition, done once read to its end within its cycle.
+    let first = base.path().join("events").join("first.jsonl");
+    let mut appended = std::fs::read_to_string(&first).expect("the file reads");
+    appended.push_str("{\"id\":7}\n");
+    std::fs::write(&first, appended).expect("the line is appended");
+    std::fs::write(
+        base.path().join("events").join("second.jsonl"),
+        "{\"id\":8}\n",
+    )
+    .expect("a new file");
+    succeeded(&load().await);
+    assert_eq!(crate::support::published_rows(name, "events"), 4);
+    let recorded = positions(name).await;
+    assert_eq!(recorded.len(), 2);
+    assert!(
+        recorded
+            .values()
+            .all(|position| *position == rdlt_connector::PartitionState::Done)
+    );
 }

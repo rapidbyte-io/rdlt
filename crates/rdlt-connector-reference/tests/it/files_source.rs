@@ -51,6 +51,25 @@ async fn read(
     stream: &str,
     cursor: Option<Cursor>,
 ) -> (Vec<SourceEvent>, Result<(), ConnectorError>) {
+    read_as(source, stream, cursor, false).await
+}
+
+/// Reads the first partition of `stream` from `cursor` as a following run does.
+async fn read_following(
+    source: &dyn Source,
+    stream: &str,
+    cursor: Option<Cursor>,
+) -> (Vec<SourceEvent>, Result<(), ConnectorError>) {
+    read_as(source, stream, cursor, true).await
+}
+
+/// Reads the first partition of `stream` from `cursor`, following where `follow` says.
+async fn read_as(
+    source: &dyn Source,
+    stream: &str,
+    cursor: Option<Cursor>,
+    follow: bool,
+) -> (Vec<SourceEvent>, Result<(), ConnectorError>) {
     let stream = StreamName::new(stream).expect("a valid name");
     let partitions = source
         .plan(&stream, &StreamState::default())
@@ -58,7 +77,7 @@ async fn read(
         .expect("the stream plans")
         .partitions;
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(64).expect("not zero"));
-    let request = ReadRequest::new(stream, partitions[0].clone(), cursor);
+    let request = ReadRequest::new(stream, partitions[0].clone(), cursor).following(follow);
     let reading = source.read(request, sink);
     let collecting = async {
         let mut events = Vec::new();
@@ -309,8 +328,17 @@ async fn a_json_lines_read_pushes_bounded_records_and_resumes_after_them() {
         "{\"id\":5}\n",
     ];
     assert_eq!(pushed(&events), all);
+    // A read that does not follow ends the file done: no checkpoint follows its last push.
+    assert_eq!(
+        cursors(&events).len(),
+        2,
+        "a checkpoint follows each push but the last"
+    );
+    let (events, ended) = read_following(source.as_ref(), "ids", None).await;
+    ended.expect("the file reads");
+    assert_eq!(pushed(&events), all);
     let cursors = cursors(&events);
-    assert_eq!(cursors.len(), 3, "a checkpoint follows each push");
+    assert_eq!(cursors.len(), 3, "a following read checkpoints each push");
     for (after, cursor) in cursors.into_iter().enumerate() {
         let (events, ended) = read(source.as_ref(), "ids", Some(cursor)).await;
         ended.expect("the file reads again");
@@ -552,12 +580,13 @@ async fn a_cursor_beyond_what_its_file_now_holds_is_refused() {
         .await
         .unwrap();
     for (stream, shorter) in [("ids", "{\"id\":9}\n{\"id\":8}\n"), ("orders", "")] {
-        let (events, ended) = read(source.as_ref(), stream, None).await;
+        let (events, ended) = read_following(source.as_ref(), stream, None).await;
         ended.expect("the file reads");
         let cursors = cursors(&events);
         assert_eq!(cursors.len(), 3, "{stream}");
         // A cursor at the file's end reads nothing more, and is no error.
-        let (events, ended) = read(source.as_ref(), stream, cursors.last().cloned()).await;
+        let (events, ended) =
+            read_following(source.as_ref(), stream, cursors.last().cloned()).await;
         ended.expect("the file is read to its end");
         assert!(events.is_empty(), "{stream}");
         // The file is cut, or replaced by a shorter one: the cursor stands beyond it.
@@ -566,16 +595,19 @@ async fn a_cursor_beyond_what_its_file_now_holds_is_refused() {
         } else {
             arrow_file(&root.path().join("orders.arrow"), 2);
         }
-        let (events, ended) = read(source.as_ref(), stream, cursors.last().cloned()).await;
+        let (events, ended) =
+            read_following(source.as_ref(), stream, cursors.last().cloned()).await;
         assert!(events.is_empty(), "{stream}");
         let error = ended.expect_err("the cursor is beyond the file");
         assert_eq!(error.kind(), ConnectorErrorKind::Data, "{stream}");
         assert_eq!(error.code(), Some("cursor_beyond_file"), "{stream}");
         // A cursor the shorter file still holds reads on from there.
-        let (events, ended) = read(source.as_ref(), stream, Some(cursors[1].clone())).await;
+        let (events, ended) =
+            read_following(source.as_ref(), stream, Some(cursors[1].clone())).await;
         ended.expect("the cursor fits");
         assert!(events.is_empty(), "{stream}");
-        let (events, ended) = read(source.as_ref(), stream, Some(cursors[0].clone())).await;
+        let (events, ended) =
+            read_following(source.as_ref(), stream, Some(cursors[0].clone())).await;
         ended.expect("the cursor fits");
         assert_eq!(events.len(), 2, "{stream}: a push and its checkpoint");
     }

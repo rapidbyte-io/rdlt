@@ -54,13 +54,24 @@ async fn read(
     partition: &str,
     next: u64,
 ) -> (Result<(), ConnectorError>, Vec<u64>, Vec<Option<u64>>) {
+    read_as(source, partition, next, false).await
+}
+
+/// Reads `partition` from `next`, following where `follow` says, as [`read`] does.
+async fn read_as(
+    source: &dyn Source,
+    partition: &str,
+    next: u64,
+    follow: bool,
+) -> (Result<(), ConnectorError>, Vec<u64>, Vec<Option<u64>>) {
     let (sink, mut feed) = partition_channel(NonZeroUsize::new(16).unwrap());
     let cursor = Cursor::encode(1, &NextRow { next: Some(next) }).unwrap();
     let request = ReadRequest::new(
         StreamName::new("rows").unwrap(),
         Partition::new(PartitionId::parse(partition).unwrap()),
         Some(cursor),
-    );
+    )
+    .following(follow);
     let collect = async {
         let (mut ids, mut resumes) = (Vec::new(), Vec::new());
         // A read that never ends is cut off here.
@@ -126,10 +137,15 @@ async fn a_read_ends_at_the_last_row_a_number_holds() {
     let stream = json!({ "name": "rows", "rows": u64::MAX, "partitions": 2, "batch_rows": 1 });
     let source = connect(stream).await.unwrap();
     let last = u64::MAX - 1;
+    // A read that does not follow ends the partition done: no checkpoint follows its last row.
     let (ended, ids, resumes) = read(source.as_ref(), "0", last).await;
     ended.expect("the read ends");
     assert_eq!(ids, [last]);
-    // Where it resumes, no row is left.
+    assert!(resumes.is_empty());
+    let (ended, ids, resumes) = read_as(source.as_ref(), "0", last, true).await;
+    ended.expect("the read ends");
+    assert_eq!(ids, [last]);
+    // Where a following read resumes, no row is left.
     let resume = resumes.last().copied().flatten().expect("a checkpoint");
     let (ended, ids, _) = read(source.as_ref(), "0", resume).await;
     ended.expect("the resumed read ends");
