@@ -311,6 +311,7 @@ fn lowered(
     let stored = Stored {
         column: to.clone(),
         text: as_text,
+        read: false,
     };
     let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
     let charge = measure.expanded(0..column.len());
@@ -555,6 +556,76 @@ fn splits_and_lowers_within_what_is_reserved(tenth: usize) {
     assert!(
         beyond.is_empty(),
         "{} of {splits} splits and {lowerings} lowerings allocated beyond what was reserved:\n{}",
+        beyond.len(),
+        beyond.join("\n")
+    );
+}
+
+/// Columns of JSON text whose values mix kinds: integers, floats, strings, objects and lists;
+/// those holding every kind in every text type and encoding.
+fn mixed_json() -> Vec<ArrayRef> {
+    let values = [
+        "1",
+        "-9007199254740993",
+        "0.5",
+        "\"text with \\\"escapes\\\" \\u0001\"",
+        "true",
+        r#"{"a":1,"s":"x","z":[1,2]}"#,
+        r#"{"d0":1,"d1":2}"#,
+        "[1,2,3,4,5,6,7,8]",
+        r#"[{"d0":1},{},{},{}]"#,
+        "123456789012345678901234567890123456789",
+        "null",
+    ];
+    let column = |rows: Vec<&str>| -> ArrayRef { Arc::new(StringArray::from(rows)) };
+    let cycled: Vec<&str> = values.iter().copied().cycle().take(ROWS).collect();
+    let typed: [ArrayRef; 3] = [
+        column(cycled.clone()),
+        Arc::new(LargeStringArray::from(cycled.clone())),
+        Arc::new(StringViewArray::from(cycled)),
+    ];
+    let each = values.iter().map(|value| column(vec![*value; ROWS]));
+    typed.iter().flat_map(encodings).chain(each).collect()
+}
+
+#[test]
+fn reading_a_column_of_json_into_any_type_its_own_column_has_allocates_no_more_than_its_charge() {
+    let (mut readings, mut beyond) = (0, Vec::new());
+    for column in mixed_json() {
+        let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
+        let field =
+            ArrowField::new("c", column.data_type().clone(), true).with_metadata(extension.into());
+        let batch = RecordBatch::try_new(
+            Arc::new(arrow_schema::Schema::new(vec![field])),
+            vec![Arc::clone(&column)],
+        )
+        .unwrap();
+        for to in joined().into_iter().filter(|to| *to != LogicalType::Json) {
+            for as_text in [false, true] {
+                let stored = Stored {
+                    column: to.clone(),
+                    text: as_text,
+                    read: true,
+                };
+                let mut measure =
+                    Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+                let charge = measure.expanded(0..column.len());
+                let (made, peak) = peak(|| crate::table::split_lowered(&column, &to, as_text));
+                made.unwrap();
+                readings += 1;
+                if peak > charge + SLACK {
+                    beyond.push(format!(
+                        "{} into {to:?}, as text {as_text}: charged {charge}, allocated {peak}",
+                        column.data_type()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(readings > 100, "{readings} readings were measured");
+    assert!(
+        beyond.is_empty(),
+        "{} beyond their charge:\n{}",
         beyond.len(),
         beyond.join("\n")
     );

@@ -251,14 +251,30 @@ async fn plan_parts(
         incoming.rounding = rounding;
         let plan = context.tables.plan(table, incoming).await?;
         if plan.drops_rows() {
-            let (batch, rows) = (pruned.part.batch.clone(), Arc::clone(&plan));
-            if let Some(kept) = on_pool(context, move || rows.kept(&batch)).await {
-                dropped.unkept(&pruned, &kept);
-            }
+            unkept(job, context, &plan, &pruned, &mut dropped).await?;
         }
         planned.push((table, pruned.part, plan));
     }
     Ok((planned, discarded))
+}
+
+/// Records as dropped the rows of `pruned` that `plan`'s schema policy drops.
+async fn unkept(
+    job: &PartitionJob,
+    context: &PartitionContext,
+    plan: &Arc<LoweringPlan>,
+    pruned: &Pruned,
+    dropped: &mut Dropped,
+) -> Result<(), Error> {
+    let (batch, rows) = (pruned.part.batch.clone(), Arc::clone(plan));
+    let kept = on_pool(context, move || rows.kept(&batch)).await;
+    let kept = kept.map_err(|error| {
+        Error::internal(format!("stream {}: reading kept rows: {error}", job.stream))
+    })?;
+    if let Some(kept) = kept {
+        dropped.unkept(pruned, &kept);
+    }
+    Ok(())
 }
 
 /// Each of `parts`, parents first, with its fate, and the rows holding new arrays whose rows the

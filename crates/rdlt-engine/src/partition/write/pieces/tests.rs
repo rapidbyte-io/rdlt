@@ -236,6 +236,7 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
     let wide = Stored {
         column: LogicalType::Decimal(DecimalType::new(76, 0).unwrap()),
         text: false,
+        read: false,
     };
     let stored = Lowered {
         stored: vec![Some(wide.clone())],

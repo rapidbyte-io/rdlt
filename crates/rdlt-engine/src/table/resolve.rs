@@ -32,6 +32,34 @@ pub(crate) enum Route {
     DiscardValues,
     /// Nowhere: the column holds only nulls and the table has no column for it.
     Skip,
+    /// A column of JSON whose values the model's column at `own`, of another type, holds go
+    /// there, read into its type; the others go where `rest` says.
+    Split { own: usize, rest: Rest },
+}
+
+/// Where the values of a split column its own column does not hold go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rest {
+    /// Into the model's column at this position, a variant.
+    Column(usize),
+    /// Nowhere, and every row holding one is dropped.
+    DiscardRows,
+    /// Nowhere: those rows load without them.
+    DiscardValues,
+}
+
+impl Route {
+    /// Whether rows holding a value the route sends nowhere are dropped.
+    pub(crate) fn drops_rows(self) -> bool {
+        matches!(
+            self,
+            Self::DiscardRows
+                | Self::Split {
+                    rest: Rest::DiscardRows,
+                    ..
+                }
+        )
+    }
 }
 
 /// A change to a table's model.
@@ -316,25 +344,20 @@ impl Resolver {
                 .into_iter()
                 .find(|candidate| fits(&draft.column_type(*candidate), column.logical))
         };
+        let split = splits(draft, column, original);
+        let rest = |rest: Rest| routed(split, rest);
         if let Some(fitting) = fitting {
             if column.rounding {
                 draft.round(fitting);
             }
-            return Ok(Route::Column(fitting));
+            if fitting == original {
+                return Ok(Route::Column(original));
+            }
+            return Ok(rest(Rest::Column(fitting)));
         }
         let current = draft.column_type(original);
-        let lattice = current.join(column.logical);
         let joined = draft.join(original, column);
-        // Only the lattice's joins widen a column in place: a column of integers joined to floats
-        // by its values takes a variant, since a partition's plan made before may still write it
-        // integers.
-        let widens = !column.hinted
-            && joined == lattice
-            && joined != LogicalType::Json
-            && !self
-                .unwidened
-                .contains(&ColumnKey::Source(column.path.clone()))
-            && self.widens(&current, &joined, column.settings.nested);
+        let widens = self.widens_in_place(column, &current, &joined);
         let cannot = |what: &str| format!("the column is {current} and {what} {}", column.logical);
         if column.is_key {
             // A frozen schema changes for no column, its key's included.
@@ -353,8 +376,8 @@ impl Resolver {
             SchemaPolicy::Freeze => {
                 return Err(self.refused(column, "schema_frozen", &cannot("cannot hold")));
             }
-            SchemaPolicy::DiscardRow => return Ok(Route::DiscardRows),
-            SchemaPolicy::DiscardValue => return Ok(Route::DiscardValues),
+            SchemaPolicy::DiscardRow => return Ok(rest(Rest::DiscardRows)),
+            SchemaPolicy::DiscardValue => return Ok(rest(Rest::DiscardValues)),
             SchemaPolicy::Evolve => {}
         }
         if widens {
@@ -368,7 +391,26 @@ impl Resolver {
                 cannot("the destination cannot change it, without a variant column, to hold");
             return Err(self.refused(column, "schema_change_unsupported", &detail));
         }
-        Ok(Route::Column(self.variant(draft, column, &joined)))
+        Ok(rest(Rest::Column(self.variant(draft, column, &joined))))
+    }
+
+    /// Whether `column`'s values widen its column of `current` in place to `joined`.
+    ///
+    /// Only the lattice's joins do: a column of integers joined to floats by its values takes a
+    /// variant, since a partition's plan made before may still write it integers.
+    fn widens_in_place(
+        &self,
+        column: &Arriving<'_>,
+        current: &LogicalType,
+        joined: &LogicalType,
+    ) -> bool {
+        !column.hinted
+            && *joined == current.join(column.logical)
+            && *joined != LogicalType::Json
+            && !self
+                .unwidened
+                .contains(&ColumnKey::Source(column.path.clone()))
+            && self.widens(current, joined, column.settings.nested)
     }
 
     /// The variant column that takes `column`'s values: the variant of the joined type's kind,
@@ -465,5 +507,32 @@ fn family(kind: TypeKind) -> TypeKind {
     match kind {
         TypeKind::Int8 | TypeKind::Int16 | TypeKind::Int32 => TypeKind::Int64,
         other => other,
+    }
+}
+
+/// The own column of `column`, at `original`, where it is JSON text and its own column is of
+/// another type: one value of another kind makes a flush's column JSON, and each value its own
+/// column holds still goes there, only the others taking a variant or the policy.
+fn splits(draft: &mut Draft, column: &Arriving<'_>, original: usize) -> Option<usize> {
+    let own = draft.column_type(original);
+    if *column.logical != LogicalType::Json || own == LogicalType::Json {
+        return None;
+    }
+    // Its integers are read only once the plan lowers them, after the model records which
+    // columns hold only integers a float holds exactly: a column of integers may hold any.
+    if own == LogicalType::Int64 {
+        draft.round(original);
+    }
+    Some(original)
+}
+
+/// The route of a column's values that `rest` takes, where none goes to its own column `split`
+/// splits them with.
+fn routed(split: Option<usize>, rest: Rest) -> Route {
+    match (split, rest) {
+        (Some(own), rest) => Route::Split { own, rest },
+        (None, Rest::Column(column)) => Route::Column(column),
+        (None, Rest::DiscardRows) => Route::DiscardRows,
+        (None, Rest::DiscardValues) => Route::DiscardValues,
     }
 }

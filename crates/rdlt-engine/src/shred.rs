@@ -26,6 +26,7 @@ mod reference;
 mod render;
 #[cfg(test)]
 mod tests;
+pub(crate) mod values;
 mod visit;
 
 use std::sync::Arc;

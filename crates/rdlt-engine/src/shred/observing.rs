@@ -131,10 +131,10 @@ impl Visitor<'_> for Key<'_> {
 }
 
 /// One value, `depth` levels deep, observed into `node`.
-struct Look<'a> {
-    node: &'a mut Observed,
-    context: &'a Context,
-    depth: u64,
+pub(crate) struct Look<'a> {
+    pub(crate) node: &'a mut Observed,
+    pub(crate) context: &'a Context,
+    pub(crate) depth: u64,
 }
 
 impl<'a> Look<'a> {

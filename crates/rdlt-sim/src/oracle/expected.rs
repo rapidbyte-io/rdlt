@@ -14,7 +14,7 @@ use rdlt_testkit::drawn::Scalar;
 use rdlt_testkit::drawn::json::text;
 use serde_json::Value;
 
-use super::arrivals::{Arrival, all, arrival, fixed, widest};
+use super::arrivals::{Arrival, all, alone, arrival, fixed, splits, widest};
 use crate::workload::{Drift, Relaxed, Row, SimStream};
 pub(super) use discards::{Chance, Discards, discards, dropped, pruned};
 pub(super) use sent::Sent;
@@ -122,11 +122,19 @@ fn drifted(
             _ => pending.whole(&path, node),
         }
         if let Some(own) = &owned[column] {
-            let fits = |arrival: Option<Arrival>| arrival.and_then(|arrival| arrival.fits(own));
-            let placement = match (
-                fits(arrival(stream, row, column)),
-                fits(widest(stream, row, column)),
-            ) {
+            let (arrival, widest) = (arrival(stream, row, column), widest(stream, row, column));
+            let fits = |arrival: &Option<Arrival>| arrival.as_ref().and_then(|a| a.fits(own));
+            // A column arriving as JSON text sends each value its own column holds alone there.
+            let alone = || alone(stream, row, column, own);
+            let placement = match (fits(&arrival), fits(&widest)) {
+                _ if splits(arrival.as_ref(), own) => match alone() {
+                    Some(true) => Placement::Own(own.clone()),
+                    Some(false) => Placement::Variant,
+                    None => Placement::Any,
+                },
+                (Some(false), _) if splits(widest.as_ref(), own) && alone() != Some(false) => {
+                    Placement::Any
+                }
                 (Some(false), _) => Placement::Variant,
                 (Some(true), Some(true)) => Placement::Own(own.clone()),
                 _ => Placement::Any,
@@ -171,10 +179,24 @@ fn changed(stream: &SimStream, row: &Row, column: usize) -> Chance {
         };
     };
     let unfit =
-        |arrival: Option<Arrival>| arrival.and_then(|arrival| arrival.fits(&fixed)) == Some(false);
-    if unfit(Some(arrival)) {
-        Chance::Surely
-    } else if unfit(widest(stream, row, column)) {
+        |arrival: Option<&Arrival>| arrival.and_then(|arrival| arrival.fits(&fixed)) == Some(false);
+    // A column arriving as JSON text changes only with the values its own column does not hold
+    // alone.
+    let alone = alone(stream, row, column, &fixed);
+    let widest = widest(stream, row, column);
+    if splits(Some(&arrival), &fixed) {
+        match alone {
+            Some(false) => Chance::Surely,
+            Some(true) => Chance::Never,
+            None => Chance::Perhaps,
+        }
+    } else if unfit(Some(&arrival)) {
+        if splits(widest.as_ref(), &fixed) && alone != Some(false) {
+            Chance::Perhaps
+        } else {
+            Chance::Surely
+        }
+    } else if unfit(widest.as_ref()) {
         Chance::Perhaps
     } else {
         Chance::Never

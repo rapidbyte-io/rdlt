@@ -39,6 +39,7 @@ pub(super) fn lower(
         .enumerate()
         .map(|(index, (name, logical))| holding(view, name, logical, exact(rows, index)))
         .collect();
+    let splits = splits(view, columns);
     let mut expected = Expected {
         sources: vec![None; view.model.columns.len()],
         ..Expected::default()
@@ -48,11 +49,25 @@ pub(super) fn lower(
             expected.sources[*column] = Some(logical.clone());
         }
     }
+    for own in splits.iter().flatten() {
+        expected.sources[*own] = Some(view.model.columns[*own].logical_type().clone());
+    }
+    // The column a split value goes to, where its own column holds it.
+    let held = |value: &Scalar, split: &Option<usize>| {
+        let (Scalar::Json(value), Some(own)) = (value, split) else {
+            return None;
+        };
+        let to = view.model.columns[*own].logical_type();
+        rdlt_testkit::held::held(value, to).map(|scalar| (*own, scalar))
+    };
     for row in rows {
         let changes = row
             .iter()
             .zip(&targets)
-            .filter(|(value, target)| target.is_none() && **value != Scalar::Null)
+            .zip(&splits)
+            .filter(|((value, target), split)| {
+                target.is_none() && **value != Scalar::Null && held(value, split).is_none()
+            })
             .count() as u64;
         if changes > 0 && policy == SchemaPolicy::DiscardRow {
             expected.discarded_rows += 1;
@@ -60,8 +75,13 @@ pub(super) fn lower(
         }
         expected.discarded_values += changes;
         let mut cells = vec![Canon::Null; view.model.columns.len()];
-        for ((value, target), (_, logical)) in row.iter().zip(&targets).zip(columns) {
-            if let Some(column) = target {
+        for (((value, target), (_, logical)), split) in
+            row.iter().zip(&targets).zip(columns).zip(&splits)
+        {
+            if let Some((own, (scalar, from))) = held(value, split) {
+                let to = view.model.columns[own].logical_type();
+                cells[own] = canonical_into(&scalar, &from, to);
+            } else if let Some(column) = target {
                 let to = view.model.columns[*column].logical_type();
                 expected.refused |= !holds(value, logical, to);
                 cells[*column] = canonical_into(value, logical, to);
@@ -70,6 +90,22 @@ pub(super) fn lower(
         expected.rows.push(cells);
     }
     expected
+}
+
+/// For each of `columns`, its own column where it is JSON and its own column is of another type,
+/// which then takes each value it holds.
+fn splits(view: &TableView, columns: &[(String, LogicalType)]) -> Vec<Option<usize>> {
+    let positions = view.model.positions();
+    columns
+        .iter()
+        .map(|(name, logical)| {
+            let key = ColumnKey::Source(ColumnPath::from(name.as_str()));
+            let own = *positions.get(view.model.names.get(&key)?)?;
+            let json = *logical == LogicalType::Json;
+            let typed = *view.model.columns[own].logical_type() != LogicalType::Json;
+            (json && typed).then_some(own)
+        })
+        .collect()
 }
 
 /// Whether every value of the batch's column `column` in `rows` is an integer a 64-bit float holds

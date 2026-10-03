@@ -159,6 +159,25 @@ pub(super) fn null_text(data_type: &DataType) -> u64 {
     text.saturating_add(validity)
 }
 
+/// Bytes: the widest null slot of the items of any list `data_type` holds, at any depth; none
+/// where it holds no list.
+pub(super) fn item_slot(data_type: &DataType) -> u64 {
+    match data_type {
+        DataType::List(item)
+        | DataType::LargeList(item)
+        | DataType::ListView(item)
+        | DataType::LargeListView(item)
+        | DataType::FixedSizeList(item, _)
+        | DataType::Map(item, _) => null_slot(item.data_type()).max(item_slot(item.data_type())),
+        DataType::Struct(fields) => fields
+            .iter()
+            .map(|field| item_slot(field.data_type()))
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// The bytes the names of a struct's `fields` add to every row of its JSON text: each quoted and
 /// escaped, with its colon and comma, between the braces.
 pub(super) fn keys(fields: &Fields) -> u64 {

@@ -315,6 +315,7 @@ fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
     let stored = rdlt_connector::cost::Stored {
         column: LogicalType::Int64,
         text: false,
+        read: false,
     };
     let by_batch = aligned(&unit, &[Some(stored.clone())]);
     assert_eq!(by_batch.len(), 3);
@@ -457,6 +458,7 @@ fn flags_as_text(items: usize, shares: crate::budget::Shares) -> super::pieces::
     let stored = rdlt_connector::cost::Stored {
         column: logical,
         text: true,
+        read: false,
     };
     let (max, limit) = super::piece_bounds(shares, 1);
     let lowered = super::pieces::Lowered {

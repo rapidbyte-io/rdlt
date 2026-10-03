@@ -36,6 +36,7 @@ mod reset;
 mod schema;
 mod shredding;
 mod signals;
+mod split;
 mod stored;
 mod support;
 mod told;
