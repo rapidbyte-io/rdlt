@@ -213,30 +213,35 @@ async fn wide_records_in_small_chunks_are_held_within_the_bound() {
     assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
 }
 
-#[tokio::test(start_paused = true)]
-async fn wide_records_in_full_chunks_are_charged_what_they_hold() {
+/// Loads `chunks` chunks of a megabyte, each with all seven thousand columns, under the default
+/// budget: their columns' parts a chunk are charged, so the heap stays within what the budget
+/// held, a fifth and 32 MiB, and what takes more than a request is refused before it is built.
+async fn wide_full_chunks(chunks: usize) -> RunOutcome {
     const BUDGET: u64 = 256 << 20;
-    // Chunks of a megabyte, each with all seven thousand columns: their columns' parts a chunk
-    // are charged, so the heap stays within what the budget held, a fifth and 32 MiB, and what
-    // takes more than a request is refused before it is built.
-    for (chunks, loads) in [(8, true), (26, false)] {
-        let name = format!("wide_full_chunks_{chunks}");
-        let (peak, outcome) =
-            run_chunked(&name, BUDGET, 1 << 20, wide_chunks(chunks, 1 << 20)).await;
-        match &outcome.error {
-            None => assert!(loads, "{chunks} chunks loaded"),
-            Some(error) => {
-                assert!(!loads, "{error:?}");
-                assert_eq!(error.code(), Some("json_exceeds_budget"), "{error:?}");
-            }
-        }
-        let held = outcome.report.peak_memory;
-        let within = usize::try_from(held + held / 5 + (32 << 20)).expect("a bound in memory");
-        assert!(
-            peak <= within,
-            "{chunks} chunks: the heap held {peak} bytes, the budget {held}"
-        );
-    }
+    let name = format!("wide_full_chunks_{chunks}");
+    let (peak, outcome) = run_chunked(&name, BUDGET, 1 << 20, wide_chunks(chunks, 1 << 20)).await;
+    let held = outcome.report.peak_memory;
+    let within = usize::try_from(held + held / 5 + (32 << 20)).expect("a bound in memory");
+    assert!(
+        peak <= within,
+        "{chunks} chunks: the heap held {peak} bytes, the budget {held}"
+    );
+    outcome
+}
+
+#[tokio::test(start_paused = true)]
+async fn wide_records_in_a_few_full_chunks_load_charged_what_they_hold() {
+    let outcome = wide_full_chunks(8).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+}
+
+#[tokio::test(start_paused = true)]
+async fn wide_records_in_many_full_chunks_are_refused_charged_what_they_hold() {
+    let outcome = wide_full_chunks(26).await;
+    let error = outcome
+        .error
+        .expect("their batches take more than a request");
+    assert_eq!(error.code(), Some("json_exceeds_budget"), "{error:?}");
 }
 
 #[tokio::test(start_paused = true)]

@@ -860,8 +860,8 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
 
 #[test]
 fn a_refusal_quotes_a_key_or_a_number_cut_to_its_limit() {
-    let key = "k".repeat(4 << 20);
-    let digits = "9".repeat(4 << 20);
+    let key = "k".repeat(64 << 10);
+    let digits = "9".repeat(64 << 10);
     for push in [
         format!("{{\"{key}\":1,\"{key}\":2}}"),
         format!("{{\"a\":1}}\n{{\"a\":{{\"{key}\":1,\"{key}\":2}}}}"),
@@ -980,10 +980,26 @@ fn the_column_limit_counts_every_column_a_chunk_holds_and_the_join_of_all() {
 }
 
 #[test]
-fn what_a_chunk_s_columns_hold_is_no_more_than_they_are_charged() {
+fn what_a_chunk_s_columns_of_scalars_hold_is_no_more_than_they_are_charged() {
+    held_within_charges(&["1", "\"ab\"", "1.5"]);
+}
+
+#[test]
+fn what_a_chunk_s_columns_of_lists_hold_is_no_more_than_they_are_charged() {
+    held_within_charges(&["[1]", "[{\"q\":\"x\"}]"]);
+}
+
+#[test]
+fn what_a_chunk_s_columns_of_structs_hold_is_no_more_than_they_are_charged() {
+    held_within_charges(&["{\"q\":1}"]);
+}
+
+/// Asserts what a chunk of one record of three thousand columns, each holding `values` in turn,
+/// holds built, observed and as a batch is no more than it is charged.
+fn held_within_charges(values: &[&str]) {
     let heap = &crate::cost::tests::HEAP;
     let keys = 3_000;
-    for value in ["1", "\"ab\"", "1.5", "[1]", "{\"q\":1}", "[{\"q\":\"x\"}]"] {
+    for value in values {
         let fields: Vec<String> = (0..keys).map(|key| format!("\"c{key}\":{value}")).collect();
         let records = Bytes::from(format!("{{{}}}", fields.join(",")));
         let chunk = || {

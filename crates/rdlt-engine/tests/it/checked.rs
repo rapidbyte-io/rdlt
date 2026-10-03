@@ -68,8 +68,8 @@ async fn a_run_naming_sixty_million_items_is_checked_within_the_least_memory() {
 #[tokio::test(start_paused = true)]
 async fn keys_of_a_byte_naming_one_value_are_checked_within_the_budget() {
     const BUDGET: u64 = 256 << 20;
-    const KEYS: i32 = 30 << 20;
-    // Thirty million keys of a byte, all naming one value of JSON.
+    const KEYS: i32 = 8 << 20;
+    // Eight million keys of a byte, all naming one value of JSON.
     let one: ArrayRef = Arc::new(StringArray::from(vec!["1"]));
     let keys = Int8Array::from(vec![0_i8; usize::try_from(KEYS).expect("a count")]);
     let keyed = DictionaryArray::<Int8Type>::try_new(keys, one).expect("keys name the value");

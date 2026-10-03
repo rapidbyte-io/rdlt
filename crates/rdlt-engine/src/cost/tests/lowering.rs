@@ -590,10 +590,39 @@ fn mixed_json() -> Vec<ArrayRef> {
     typed.iter().flat_map(encodings).chain(each).collect()
 }
 
-#[test]
-fn reading_a_column_of_json_into_any_type_its_own_column_has_allocates_no_more_than_its_charge() {
+in_tenths!(reading_json_into_the_first_half_of_the_types_allocates_no_more_than_its_charge: reads_natively_into_the_first_half);
+in_tenths!(reading_json_into_the_second_half_of_the_types_allocates_no_more_than_its_charge: reads_natively_into_the_second_half);
+in_tenths!(reading_json_as_text_into_the_first_half_of_the_types_allocates_no_more_than_its_charge: reads_as_text_into_the_first_half);
+in_tenths!(reading_json_as_text_into_the_second_half_of_the_types_allocates_no_more_than_its_charge: reads_as_text_into_the_second_half);
+
+fn reads_natively_into_the_first_half(tenth: usize) {
+    reads_within_its_charge(tenth, 0, false);
+}
+
+fn reads_natively_into_the_second_half(tenth: usize) {
+    reads_within_its_charge(tenth, 1, false);
+}
+
+fn reads_as_text_into_the_first_half(tenth: usize) {
+    reads_within_its_charge(tenth, 0, true);
+}
+
+fn reads_as_text_into_the_second_half(tenth: usize) {
+    reads_within_its_charge(tenth, 1, true);
+}
+
+/// Reads each column of JSON of `tenth` into every type of `half` of those its own column may
+/// have, the types by their place, stored as text where `as_text` says, each within what lowering
+/// it is charged: together the halves and tenths read every column into every type.
+fn reads_within_its_charge(tenth: usize, half: usize, as_text: bool) {
+    let types: Vec<LogicalType> = joined()
+        .into_iter()
+        .filter(|to| *to != LogicalType::Json)
+        .enumerate()
+        .filter_map(|(index, to)| (index % 2 == half).then_some(to))
+        .collect();
     let (mut readings, mut beyond) = (0, Vec::new());
-    for column in mixed_json() {
+    for column in in_tenth(mixed_json(), tenth) {
         let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
         let field =
             ArrowField::new("c", column.data_type().clone(), true).with_metadata(extension.into());
@@ -602,29 +631,30 @@ fn reading_a_column_of_json_into_any_type_its_own_column_has_allocates_no_more_t
             vec![Arc::clone(&column)],
         )
         .unwrap();
-        for to in joined().into_iter().filter(|to| *to != LogicalType::Json) {
-            for as_text in [false, true] {
-                let stored = Stored {
-                    column: to.clone(),
-                    text: as_text,
-                    read: true,
-                };
-                let mut measure =
-                    Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
-                let charge = measure.expanded(0..column.len());
-                let (made, peak) = peak(|| crate::table::split_lowered(&column, &to, as_text));
-                made.unwrap();
-                readings += 1;
-                if peak > charge + SLACK {
-                    beyond.push(format!(
-                        "{} into {to:?}, as text {as_text}: charged {charge}, allocated {peak}",
-                        column.data_type()
-                    ));
-                }
+        for to in &types {
+            let stored = Stored {
+                column: to.clone(),
+                text: as_text,
+                read: true,
+            };
+            let mut measure = Rendering::native().lowering(&batch, vec![Some(stored)], 0, u64::MAX);
+            let charge = measure.expanded(0..column.len());
+            let (made, peak) = peak(|| crate::table::split_lowered(&column, to, as_text));
+            made.unwrap();
+            readings += 1;
+            if peak > charge + SLACK {
+                beyond.push(format!(
+                    "{} into {to:?}, as text {as_text}: charged {charge}, allocated {peak}",
+                    column.data_type()
+                ));
             }
         }
     }
-    assert!(readings > 100, "{readings} readings were measured");
+    // Every tenth holds two columns at least, each read into every type.
+    assert!(
+        readings >= 2 * types.len(),
+        "{readings} readings were measured"
+    );
     assert!(
         beyond.is_empty(),
         "{} beyond their charge:\n{}",

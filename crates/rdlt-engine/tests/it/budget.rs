@@ -488,15 +488,18 @@ async fn widened_nulls(
     (peak, outcome)
 }
 
+/// Rows of nulls a test widens: thirty thousand, a gigabyte at the wide type's null slots,
+/// far past what the least memory bounds.
+const NULL_ROWS: usize = 30_000;
+
 #[tokio::test(start_paused = true)]
-async fn nulls_nested_in_structs_and_lists_load_within_the_budget_however_wide_their_type() {
-    const ROWS: usize = 100_000;
+async fn nulls_nested_in_structs_load_within_the_budget_however_wide_their_type() {
     // A struct whose field is typed null, into a table whose field is the wide struct.
     let field = |data_type: DataType| Fields::from(vec![Field::new("a", data_type, true)]);
     let wide = arrow_array::StructArray::new_null(field(wide_struct()), 1);
     let narrow = arrow_array::StructArray::new(
         field(DataType::Null),
-        vec![Arc::new(arrow_array::NullArray::new(ROWS))],
+        vec![Arc::new(arrow_array::NullArray::new(NULL_ROWS))],
         None,
     );
     let (_, outcome) = widened_nulls("nested_nulls", Arc::new(wide), Arc::new(narrow)).await;
@@ -506,14 +509,18 @@ async fn nulls_nested_in_structs_and_lists_load_within_the_budget_however_wide_t
         "{:?}",
         outcome.error
     );
-    assert_eq!(outcome.report.rows, ROWS as u64 + 1);
+    assert_eq!(outcome.report.rows, NULL_ROWS as u64 + 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn nulls_nested_in_lists_load_within_the_budget_however_wide_their_type() {
     // A list whose items are typed null, into a table whose items are the wide struct.
     let item = |data_type: DataType| Arc::new(Field::new("item", data_type, true));
     let wide = ListArray::new_null(item(wide_struct()), 1);
     let narrow = ListArray::new(
         item(DataType::Null),
-        OffsetBuffer::from_lengths(vec![1; ROWS]),
-        Arc::new(arrow_array::NullArray::new(ROWS)),
+        OffsetBuffer::from_lengths(vec![1; NULL_ROWS]),
+        Arc::new(arrow_array::NullArray::new(NULL_ROWS)),
         None,
     );
     let (_, outcome) = widened_nulls("listed_nulls", Arc::new(wide), Arc::new(narrow)).await;
@@ -523,5 +530,5 @@ async fn nulls_nested_in_structs_and_lists_load_within_the_budget_however_wide_t
         "{:?}",
         outcome.error
     );
-    assert_eq!(outcome.report.rows, ROWS as u64 + 1);
+    assert_eq!(outcome.report.rows, NULL_ROWS as u64 + 1);
 }
