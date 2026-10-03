@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ColumnKey, ConnectorError, Field, PipelineState, StateChange, TableChange, TablePath, TableRef,
-    TableState,
+    ColumnKey, ConnectorError, Field, PipelineState, StateChange, StreamName, TableChange,
+    TablePath, TableRef, TableState,
 };
 
 use super::model::Model;
@@ -103,6 +103,8 @@ pub(crate) struct Tables {
 pub(crate) struct TablesDelta {
     pub(crate) changes: Vec<StateChange>,
     pub(crate) revisions: Vec<(usize, u32)>,
+    /// The keys of the records of child tables state does not record yet, with their streams.
+    pub(crate) born: Vec<(StreamName, String)>,
     /// Bytes: what the changes take in a commit's frame, which their schema changes reserved.
     pub(crate) prepaid: u64,
 }
@@ -411,12 +413,23 @@ impl Tables {
     pub(crate) fn delta(&self) -> TablesDelta {
         let mut delta = TablesDelta::default();
         let slots = self.slots.read().clone();
+        let children: BTreeSet<usize> = self.children.lock().values().copied().collect();
         for (index, slot) in slots.iter().enumerate() {
             let view = self.view(index);
             if view.model.revision <= *slot.recorded.lock() {
                 continue;
             }
-            delta.changes.extend(records::records(&view));
+            let records = records::records(&view);
+            if children.contains(&index) && !self.committed.contains_key(&view.table.path) {
+                let stream = &slot.resolver.lock().stream;
+                delta
+                    .born
+                    .extend(records.iter().filter_map(|change| match change {
+                        StateChange::Put(record) => Some((stream.clone(), record.key.clone())),
+                        StateChange::Delete(_) => None,
+                    }));
+            }
+            delta.changes.extend(records);
             delta.revisions.push((index, view.model.revision));
         }
         delta.prepaid = records::recorded_bytes(&delta.changes);

@@ -29,7 +29,7 @@ pub(crate) use exact::EXACT_IN_FLOAT;
 pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
 pub(crate) use lowering::{ChangeRows, LoweringPlan, Prepared, Stamp, data_ordinals};
 pub(crate) use model::Model;
-pub(crate) use registry::{Admission, Tables, shared};
+pub(crate) use registry::{Admission, Tables, TablesDelta, shared};
 pub(crate) use resolve::{Incoming, Resolver, Settings};
 pub(crate) use session::{SharedSession, answered};
 

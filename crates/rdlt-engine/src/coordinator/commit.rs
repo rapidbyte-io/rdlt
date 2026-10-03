@@ -31,10 +31,10 @@ impl Coordinator {
         let completing: Vec<usize> = (0..self.parts.streams.len())
             .filter(|index| self.parts.streams[*index].completes())
             .collect();
-        let tables = self.parts.tables.delta();
+        let mut tables = self.parts.tables.delta();
         delta.extend(self.sequences_delta());
         delta.extend(self.state_delta(&collected.positions, &completing));
-        delta.extend(tables.changes);
+        delta.append(&mut tables.changes);
         let finish_generations = self.finish_generations(&completing);
         if collected.segments.is_empty() && delta.is_empty() {
             return Ok(());
@@ -56,7 +56,7 @@ impl Coordinator {
             drop_tables: Vec::new(),
         };
         if self
-            .log_commit(&meta, tables.prepaid, collected.sealed, begun)
+            .log_commit(&meta, &tables, collected.sealed, begun)
             .await?
         {
             self.acknowledge(&collected.reported, false).await?;
