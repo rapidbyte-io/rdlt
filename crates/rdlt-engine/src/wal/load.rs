@@ -53,11 +53,12 @@ pub(crate) struct LoadLog {
     tables: Arc<Mutex<Described>>,
 }
 
-/// The index each table version's schema frame gave it, with the view its batches are lowered
-/// for while any of them may still be logged, and the index the next version takes.
+/// The index each table version's schema frame gave it, with every view of the version its
+/// batches were logged for, while any of them may still log one, and the index the next version
+/// takes.
 #[derive(Default)]
 struct Described {
-    indexes: BTreeMap<TableKey, (u32, Weak<TableView>)>,
+    indexes: BTreeMap<TableKey, (u32, Vec<Weak<TableView>>)>,
     next: u32,
 }
 
@@ -143,7 +144,17 @@ impl LoadLog {
     ) -> Result<u32, Error> {
         let key = (table, view.table.version, view.table.generation);
         let mut tables = self.tables.lock().await;
-        if let Some((index, _)) = tables.indexes.get(&key) {
+        if let Some((index, views)) = tables.indexes.get_mut(&key) {
+            // Each view of the version keeps it described: one that only rounds a column has
+            // the version of the view before it.
+            let known = |known: &Weak<TableView>| {
+                known
+                    .upgrade()
+                    .is_some_and(|alive| Arc::ptr_eq(&alive, view))
+            };
+            if !views.iter().any(known) {
+                views.push(Arc::downgrade(view));
+            }
             return Ok(*index);
         }
         let index = tables.next;
@@ -163,7 +174,9 @@ impl LoadLog {
         self.writer
             .send(Command::Table { index, frame, held })
             .await?;
-        tables.indexes.insert(key, (index, Arc::downgrade(view)));
+        tables
+            .indexes
+            .insert(key, (index, vec![Arc::downgrade(view)]));
         Ok(index)
     }
 
@@ -241,17 +254,18 @@ impl LoadLog {
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
     }
 
-    /// Tells the writer to forget the schema frames of table versions whose views are gone.
+    /// Tells the writer to forget the schema frames of table versions all of whose views are gone.
     ///
-    /// A batch is logged while its view is held, so every batch frame of such a version was sent
-    /// before this: none follows its retirement. A batch of the version lowered by a view of its
+    /// A batch is logged while its view is held, and its view is noted before its frame is
+    /// sent, so every batch frame of such a version was sent before this: none follows its
+    /// retirement. A batch of the version lowered by a view of its
     /// own after it is described again under a new index.
     async fn retire(&self) -> Result<(), Error> {
         let mut described = self.tables.lock().await;
         let gone: Vec<TableKey> = described
             .indexes
             .iter()
-            .filter(|(_, (_, view))| view.strong_count() == 0)
+            .filter(|(_, (_, views))| views.iter().all(|view| view.strong_count() == 0))
             .map(|(key, _)| *key)
             .collect();
         let tables: Vec<u32> = gone
