@@ -1520,6 +1520,46 @@ fn json_whose_integers_an_integer_column_reads_ends_its_exactness() {
 }
 
 #[test]
+fn rows_whose_json_its_own_column_does_not_hold_are_dropped_and_the_column_is_stored_as_read() {
+    use super::resolve::Rest;
+    use arrow_array::BooleanArray;
+    use arrow_schema::Schema;
+    let stream = plan().schema(SchemaSettings::new().policy(SchemaPolicy::DiscardRow));
+    let resolver = resolver(capabilities(), stream, &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Int64)]);
+    let incoming = schema(&[("amount", LogicalType::Json)]);
+    let resolution = resolver.resolve(&model, &incoming).unwrap();
+    assert_eq!(
+        resolution.routes,
+        [Route::Split {
+            own: 0,
+            rest: Rest::DiscardRows
+        }]
+    );
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
+    let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
+    let amount = ArrowField::new("amount", DataType::Utf8, true).with_metadata(extension.into());
+    let amounts = StringArray::from(vec![Some("1"), Some("\"x\""), None, Some("2")]);
+    let batch =
+        RecordBatch::try_new(Arc::new(Schema::new(vec![amount])), vec![Arc::new(amounts)]).unwrap();
+    // The string is no integer: its row is dropped, the others kept, a null among them.
+    assert_eq!(
+        lowering.kept(&batch).unwrap(),
+        Some(BooleanArray::from(vec![true, false, true, true]))
+    );
+    // The column of integers reads the JSON in part, which what lowering it takes counts.
+    assert_eq!(
+        lowering.stored(),
+        [Some(rdlt_connector::cost::Stored {
+            column: LogicalType::Int64,
+            text: false,
+            read: true,
+        })]
+    );
+}
+
+#[test]
 fn json_an_integer_column_created_for_it_reads_leaves_it_not_exact() {
     // A hint makes the column of JSON a column of integers as the table is created: its integers
     // are read only as the plan lowers them.
