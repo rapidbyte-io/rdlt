@@ -160,3 +160,7 @@ pub(crate) const WAL_UNREADABLE: &str = "wal_unreadable";
 
 /// The code of the error for a log holding a chunk of another pipeline's or load's log.
 pub(crate) const WAL_FOREIGN: &str = "wal_foreign";
+
+/// The code of the error for a logged batch that takes more than one request for lowering may
+/// take of the memory budget: the log was written under more memory than replays it.
+pub(crate) const REPLAY_EXCEEDS_BUDGET: &str = "replay_exceeds_budget";

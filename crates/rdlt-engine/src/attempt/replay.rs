@@ -15,11 +15,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use rdlt_connector::cost::Allocations;
 use rdlt_connector::{Epoch, LoadId, PipelineId, SegmentSet, StreamName, TableChange};
 
 use parking_lot::Mutex;
 
 use super::{RunContext, open};
+use crate::budget::MemoryBudget;
 use crate::crash::crash_point;
 use crate::error::{Error, Side};
 use crate::report::AttemptLog;
@@ -42,6 +44,8 @@ struct Replaying {
     last: Option<(LoadId, u64)>,
     /// The most destination writers held open at once.
     writers: NonZeroUsize,
+    /// The run's memory budget, which what replay stages is charged to.
+    budget: MemoryBudget,
 }
 
 /// Replays every log of the pipeline whose load is gone, then removes it; a session opens only
@@ -127,6 +131,7 @@ async fn begin(context: &RunContext, load_id: LoadId) -> Result<Replaying, Error
         session: opened.session,
         epoch: opened.epoch,
         writers: context.config.growth().writers(),
+        budget: context.budget.clone(),
     })
 }
 
@@ -173,7 +178,7 @@ impl Replaying {
         segments: &SegmentSet,
         limits: rdlt_wire::Limits,
     ) -> Result<(), Error> {
-        let mut staged = Staged::new(self.writers);
+        let mut staged = Staged::new(self.writers, self.budget.clone());
         let mut created = BTreeSet::new();
         for segment in segments.iter() {
             for located in scanned.batches.get(&segment).into_iter().flatten() {
@@ -181,14 +186,19 @@ impl Replaying {
                 if created.insert(located.table) {
                     self.create(scanned, located.table).await?;
                 }
+                // The frame is reserved before it is read, and what its batch holds before the
+                // frame's bytes go.
+                let frame = staged.reserve(located.len).await?;
                 let batch = scan::batch(store, pipeline, *located, limits).await?;
+                let held = staged.reserve(Allocations::of(&batch).bytes()).await?;
+                drop(frame);
                 let open = || async {
                     self.session
                         .writer(table)
                         .await?
                         .map_err(|error| failed("opening a replayed table's writer", error))
                 };
-                staged.write(table, open, segment, batch).await?;
+                staged.write(table, open, (segment, batch), held).await?;
             }
         }
         staged.flush().await

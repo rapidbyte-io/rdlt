@@ -9,6 +9,7 @@ use rdlt_connector::{
 };
 
 use super::Staged;
+use crate::budget::MemoryBudget;
 use crate::error::Error;
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -58,20 +59,35 @@ fn rows() -> RecordBatch {
 /// Writes one batch of each of `tables` in order through writers a [`Staged`] of `limit` holds,
 /// then flushes them; what the writers were asked to do.
 async fn staged(limit: usize, tables: &[TableRef]) -> Vec<String> {
+    let log = staged_within(limit, &MemoryBudget::new(1 << 20), 100, tables).await;
+    log.into_iter()
+        .filter(|line| !line.starts_with("reserved"))
+        .collect()
+}
+
+/// As [`staged`], each batch holding `held` bytes of `budget`.
+async fn staged_within(
+    limit: usize,
+    budget: &MemoryBudget,
+    held: u64,
+    tables: &[TableRef],
+) -> Vec<String> {
     let log = Log::default();
-    let mut staged = Staged::new(NonZeroUsize::new(limit).expect("a limit"));
+    let mut staged = Staged::new(NonZeroUsize::new(limit).expect("a limit"), budget.clone());
     for table in tables {
         let name = match table.generation {
             Some(generation) => format!("{}@{}v{}", table.name, generation.0, table.version.0),
             None => format!("{}v{}", table.name, table.version.0),
         };
+        let held = staged.reserve(held).await.expect("the budget has room");
+        log.lock().push(format!("reserved {}", budget.reserved()));
         let log = Arc::clone(&log);
         let open = || async move {
             log.lock().push(format!("open {name}"));
             Ok::<_, Error>(Box::new(Recording { name, log }) as Box<dyn DestinationWriter>)
         };
         staged
-            .write(table, open, SegmentId(1), rows())
+            .write(table, open, (SegmentId(1), rows()), held)
             .await
             .expect("the batch is staged");
     }
@@ -142,4 +158,55 @@ async fn beyond_its_limit_the_writer_written_longest_ago_closes_once_flushed() {
         "close cv1",
     ];
     assert_eq!(log, expected);
+}
+
+#[tokio::test]
+async fn what_staged_batches_hold_stays_charged_until_their_writers_flush_and_never_passes_it() {
+    // Of 64 MiB the data's share is 37 MiB: two batches of a request's 16 MiB fit, and the third
+    // makes every writer flush first.
+    let budget = MemoryBudget::new(64 << 20);
+    let tables = [
+        table("a", 1, None),
+        table("b", 1, None),
+        table("c", 1, None),
+    ];
+    let log = staged_within(8, &budget, 16 << 20, &tables).await;
+    let reserved = |mib: u64| format!("reserved {}", mib << 20);
+    let expected = [
+        reserved(16),
+        "open av1".to_owned(),
+        "write av1".to_owned(),
+        reserved(32),
+        "open bv1".to_owned(),
+        "write bv1".to_owned(),
+        "flush av1".to_owned(),
+        "close av1".to_owned(),
+        "flush bv1".to_owned(),
+        "close bv1".to_owned(),
+        reserved(16),
+        "open cv1".to_owned(),
+        "write cv1".to_owned(),
+        "flush cv1".to_owned(),
+        "close cv1".to_owned(),
+    ];
+    assert_eq!(log, expected);
+    assert_eq!(budget.reserved(), 0, "every batch released once flushed");
+    assert_eq!(budget.peak(), 32 << 20);
+}
+
+#[tokio::test]
+async fn a_logged_batch_beyond_what_a_request_may_take_is_refused() {
+    let budget = MemoryBudget::new(1 << 20);
+    let mut staged = Staged::new(NonZeroUsize::MIN, budget.clone());
+    let error = staged
+        .reserve((1 << 20) / 4 + 1)
+        .await
+        .expect_err("beyond a request");
+    assert_eq!(error.code(), Some("replay_exceeds_budget"));
+    drop(
+        staged
+            .reserve((1 << 20) / 4)
+            .await
+            .expect("a request's worth"),
+    );
 }
