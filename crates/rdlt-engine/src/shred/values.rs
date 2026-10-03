@@ -82,16 +82,19 @@ fn fits(column: &LogicalType, observed: &Observed, nullable: bool) -> bool {
 /// JSON text keeps it, as it keeps an object repeating a key. A table's column that a column of
 /// JSON is split into is never a merge key, so it holds nulls.
 pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> BooleanArray {
-    let nested = matches!(column, LogicalType::Struct(_) | LogicalType::List(_));
-    texts
-        .iter()
-        .map(|text| {
-            let text = text?;
-            let fits =
-                observed(text, &context()).is_ok_and(|observed| fits(column, &observed, true));
-            Some(fits && !(nested && repeats_a_key(text)))
-        })
-        .collect()
+    // Each value is parsed as a shredding job is, sure of its stack at the nesting limit.
+    super::job(|| {
+        let nested = matches!(column, LogicalType::Struct(_) | LogicalType::List(_));
+        texts
+            .iter()
+            .map(|text| {
+                let text = text?;
+                let fits =
+                    observed(text, &context()).is_ok_and(|observed| fits(column, &observed, true));
+                Some(fits && !(nested && repeats_a_key(text)))
+            })
+            .collect()
+    })
 }
 
 /// Whether an object in the JSON value `text`, at any depth, repeats a key.
@@ -125,6 +128,14 @@ fn repeats_a_key(text: &str) -> bool {
 ///
 /// Where a value is not JSON, nests past the limit, or repeats a key, or a bug stops the build.
 pub(crate) fn read(
+    texts: &StringArray,
+    taken: &BooleanArray,
+) -> Result<(ArrayRef, LogicalType), ShredError> {
+    super::job(|| read_values(texts, taken))
+}
+
+/// The values of `texts` that `taken` names, read as [`read`] reads them.
+fn read_values(
     texts: &StringArray,
     taken: &BooleanArray,
 ) -> Result<(ArrayRef, LogicalType), ShredError> {
