@@ -44,7 +44,8 @@ process; H1b fixed it (ADR 0025).
   - The table's model keeps its exact columns. A column added from a batch that rounds is not
     exact, and one that later takes such a batch stops being exact; nothing makes it exact again.
   - State records them with the schema, as `exact`; a record without them holds none, so a table
-    created before this keeps taking floats as JSON text. Losing exactness changes the model but
+    created before this keeps taking floats as JSON text. Amended 2026-10-03 (ADR 0041): the
+    record always holds them, and a record of the earlier format is refused. Losing exactness changes the model but
     not the table, so it advances the model's revision, which state compares, and not the schema's
     version, which destinations see. It is decided under the table's lock, before any of the
     rounding batch is written, and each commit records the table's current model, so no commit

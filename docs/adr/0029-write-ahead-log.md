@@ -47,7 +47,9 @@ its data from the source again, so an object store backend is not built.
   (ADR 0039 charges seal and commit frames too, and writes a state value as base64 text.) A commit's
   frame is appended, made durable, then answered, and the log moves to a new chunk; a chunk goes
   once every segment and commit in it has a receipt. Every chunk starts with the header and the
-  schema frames its batches name, so it reads alone. After a failed append or sync every later
+  schema frames its batches name, so it reads alone. Amended 2026-10-03 (ADR 0041): segments still
+  open are carried out of chunks whose other segments settled, and a version's schema frame is
+  forgotten once no batch of it can come. After a failed append or sync every later
   command fails: what the chunk holds is unknown.
 - **Order.** A batch's frame is queued before its partition can seal its segment, and a commit's
   frame is queued after the seals it takes; the channel keeps their order, so a commit's frame

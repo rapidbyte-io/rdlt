@@ -131,6 +131,8 @@ data is replayed from the source.
   change merges when the SQL destinations learn them.
 - State written by this build can hold `Sequences` entries, which a build before it cannot read:
   a pipeline's state moves forward only. Nothing is published, so no deployed build meets it.
+  Amended 2026-10-03 (ADR 0041): records name their format and refuse fields their reader does
+  not know, so a build reading another's state refuses it rather than misread it.
 - Switching an existing merge table to CDC needs a new table; a reset that clears a stream's
   table and state is owed with M5d's retention reset.
 - The WAL cannot survive the loss of a worker's disk. That costs a re-read from the source, or,
