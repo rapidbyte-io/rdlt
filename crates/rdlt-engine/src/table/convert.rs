@@ -6,6 +6,7 @@
 
 mod decode;
 mod encoders;
+mod hidden;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -132,7 +133,7 @@ fn wide_dates(data_type: &DataType) -> DataType {
 /// what its rows hold. Filtering rows out of an encoding also leaves their values in it, and a
 /// value no row holds must not fail a conversion.
 pub(crate) fn decoded(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
-    decode::decoded(array)
+    hidden::unhidden(&decode::decoded(array)?)
 }
 
 /// `array` with every map in it, at any depth, as the list of key and value structs it holds,

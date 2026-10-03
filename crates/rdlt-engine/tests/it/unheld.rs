@@ -7,7 +7,8 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{
-    Array, ArrayRef, Date64Array, Int64Array, ListArray, RecordBatch, TimestampSecondArray,
+    Array, ArrayRef, Date64Array, Int64Array, ListArray, RecordBatch, StructArray,
+    TimestampSecondArray,
 };
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field};
@@ -256,4 +257,36 @@ async fn a_change_time_refused_on_two_counts_is_one_value_discarded() {
         .change_time("at");
     let plan = following("at", SchemaPolicy::DiscardValue).write(WriteMode::History);
     loaded(&ran("far_change_time", plan, events).await, 3, (0, 1));
+}
+
+/// A struct column `s` of rows 1 to 3 whose field `d` holds a far date only under its null row 2,
+/// and a list column `l` whose null row 2 spans an item holding one.
+fn hidden() -> RecordBatch {
+    let dates: ArrayRef = Arc::new(Date64Array::from(vec![0, i64::MAX, DAY]));
+    let fields = arrow_schema::Fields::from(vec![Field::new("d", DataType::Date64, true)]);
+    let nulls = Some(vec![true, false, true].into());
+    let rows: ArrayRef =
+        Arc::new(StructArray::try_new(fields, vec![Arc::clone(&dates)], nulls).expect("a struct"));
+    let lists: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(Field::new("item", DataType::Date64, true)),
+        OffsetBuffer::from_lengths([1, 1, 1]),
+        dates,
+        Some(vec![true, false, true].into()),
+    ));
+    batch(vec![("id", ints(&[1, 2, 3])), ("s", rows), ("l", lists)])
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_value_under_a_null_row_is_no_value_and_refuses_nothing() {
+    for policy in [
+        SchemaPolicy::Evolve,
+        SchemaPolicy::Freeze,
+        SchemaPolicy::DiscardRow,
+        SchemaPolicy::DiscardValue,
+    ] {
+        let store = format!("hidden_{policy:?}");
+        let plan = following("s", policy).column("l", SchemaSettings::new().policy(policy));
+        let outcome = ran(&store, plan, BatchStream::new("events", vec![hidden()])).await;
+        loaded(&outcome, 3, (0, 0));
+    }
 }
