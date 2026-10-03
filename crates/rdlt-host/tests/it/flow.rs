@@ -619,6 +619,7 @@ async fn five_writers_of_frame_sized_batches_through_one_connection_are_all_take
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     let bounded = Duration::from_secs(60);
     let committed = tokio::time::timeout(bounded, opened.session.commit(&meta)).await;

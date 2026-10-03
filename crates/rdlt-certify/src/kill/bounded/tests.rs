@@ -181,6 +181,7 @@ async fn a_bounded_destination_commits_and_closes_as_its_own_does() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     let refused = opened
         .session

@@ -137,6 +137,7 @@ async fn writers_index_what_a_commit_finds_by_key_and_the_commit_changes_no_sche
             merge: items.merge.clone().expect("a merge key"),
         }],
         drop_tables: Vec::new(),
+        horizon: None,
     };
     let receipt = opened
         .session

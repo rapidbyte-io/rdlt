@@ -686,6 +686,7 @@ async fn a_reset_of_no_streams_is_refused_before_it_fences_anything() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     running
         .session

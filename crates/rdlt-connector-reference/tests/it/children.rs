@@ -136,6 +136,7 @@ fn meta(opened: &OpenedSession, seq: CommitSeq, segment: u64, items: &TableRef) 
             merge: items.merge.clone().expect("a merge key"),
         }],
         drop_tables: Vec::new(),
+        horizon: None,
     }
 }
 

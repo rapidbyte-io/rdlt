@@ -1,6 +1,7 @@
 //! A transactional destination that keeps tables and state in process memory.
 
 mod owners;
+mod receipts;
 mod table;
 
 use std::collections::BTreeMap;
@@ -12,7 +13,7 @@ use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
     CommitSeq, DeleteModes, Epoch, GenerationId, LoadId, PipelineId, SchemaChanges, SegmentId,
-    SegmentSet, StateChange, StateRecord, TablePath, TypeKind,
+    SegmentSet, StateRecord, TablePath, TypeKind,
 };
 
 use crate::merge::Merged;
@@ -386,17 +387,6 @@ impl Session for MemorySession {
             return Ok(receipt.clone());
         }
         let (rows, bytes) = store.publish(&self.pipeline, self.epoch, meta)?;
-        let pipeline = store.pipelines.entry(self.pipeline.clone()).or_default();
-        for change in &meta.state_delta {
-            match change {
-                StateChange::Put(record) => {
-                    pipeline.state.insert(record.key.clone(), record.clone());
-                }
-                StateChange::Delete(key) => {
-                    pipeline.state.remove(key);
-                }
-            }
-        }
         let receipt = Receipt {
             load_id: meta.load_id,
             commit_seq: meta.commit_seq,
@@ -404,7 +394,8 @@ impl Session for MemorySession {
             rows,
             bytes,
         };
-        pipeline.receipts.insert(key, receipt.clone());
+        let pipeline = store.pipelines.entry(self.pipeline.clone()).or_default();
+        pipeline.committed(meta, &receipt);
         Ok(receipt)
     }
 

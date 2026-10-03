@@ -271,6 +271,7 @@ impl Setup {
             barrier_wait: self.barrier_wait,
             tables,
             source,
+            pipeline: rdlt_connector::PipelineId::parse("orders").unwrap(),
             lanes,
             load_id: LoadId::from_parts(UNIX_EPOCH, 1),
             epoch: Epoch(3),

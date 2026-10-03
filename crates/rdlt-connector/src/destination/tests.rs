@@ -223,6 +223,7 @@ async fn sessions_forward_every_call() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     assert_eq!(session.commit(&meta).await.unwrap().rows, 1);
     session.close().await.unwrap();

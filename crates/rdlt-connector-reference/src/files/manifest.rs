@@ -15,7 +15,7 @@ use arrow_schema::SchemaRef;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use rdlt_connector::{
-    CommitSeq, ConnectorError, Epoch, GenerationId, LoadId, PipelineId, Receipt, Result,
+    CommitSeq, ConnectorError, Epoch, GenerationId, Horizon, LoadId, PipelineId, Receipt, Result,
     StateChange, StateRecord,
 };
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use super::format::FileFormat;
 use super::stored::Format;
 use super::{io, tables, versions};
-use crate::limits::{MANIFEST_BYTES, RECEIPT_LOADS, TEMPORARY_AGE};
+use crate::limits::{MANIFEST_BYTES, TEMPORARY_AGE};
 use crate::rooted::{self, Dir, Limit};
 
 /// The code of an error for a manifest that is not what the destination writes.
@@ -52,7 +52,8 @@ pub(super) struct Manifest {
     pub(super) epoch: Epoch,
     /// The pipeline's state records, their values in base64.
     pub(super) state: BTreeMap<String, String>,
-    /// The receipts of the most recent loads' commits.
+    /// The receipts of the commits the engine may repeat, as the last horizon a commit declared
+    /// leaves them.
     pub(super) receipts: Vec<StoredReceipt>,
     /// Each table's published files and replace generations, by identifier.
     pub(super) tables: BTreeMap<String, TableFiles>,
@@ -142,11 +143,13 @@ impl Manifest {
             })
     }
 
-    /// Records `receipt`, forgetting the receipts of loads older than the most recent ones.
-    ///
-    /// Every receipt of a load that is kept is kept: a replay repeats a commit however far back
-    /// in its load, and is answered with its receipt.
-    pub(super) fn record(&mut self, receipt: &Receipt) {
+    /// Records `receipt`, forgetting the receipts of the commits before `horizon`, which the
+    /// engine never repeats; with no horizon, every receipt is kept.
+    pub(super) fn record(&mut self, receipt: &Receipt, horizon: Option<&Horizon>) {
+        if let Some(horizon) = horizon {
+            self.receipts
+                .retain(|stored| horizon.keeps(stored.load_id, stored.commit_seq));
+        }
         self.receipts.push(StoredReceipt {
             load_id: receipt.load_id,
             commit_seq: receipt.commit_seq,
@@ -154,15 +157,6 @@ impl Manifest {
             rows: receipt.rows,
             bytes: receipt.bytes,
         });
-        let mut loads: Vec<LoadId> = Vec::new();
-        for stored in self.receipts.iter().rev() {
-            if !loads.contains(&stored.load_id) {
-                loads.push(stored.load_id);
-            }
-        }
-        loads.truncate(RECEIPT_LOADS);
-        self.receipts
-            .retain(|stored| loads.contains(&stored.load_id));
     }
 
     /// Every file the manifest lists.

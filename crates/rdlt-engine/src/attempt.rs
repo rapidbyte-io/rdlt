@@ -259,14 +259,14 @@ async fn launch(
         wal: wal.clone(),
     });
     let (tasks, spawned) = mpsc::unbounded_channel();
-    let launcher = launcher(Arc::clone(&partition_context), tasks);
-    let (streams, partitions) = spawn_partitions(&mut scope, planned, partition_context);
+    let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
         env: Arc::clone(&context.env),
         policy: context.config.commit_for(context.plan.commits_as_stream()),
         barrier_wait: context.config.barrier_wait(),
         tables,
         source: Arc::clone(&context.source),
+        pipeline: context.plan.pipeline().clone(),
         lanes,
         load_id,
         epoch: opened.epoch,
@@ -280,7 +280,7 @@ async fn launch(
         stop: context.stop.clone(),
         cancel: scope.token().clone(),
         log,
-        launcher,
+        launcher: launcher(partition_context, tasks),
         wal,
         positions: Positions::of(&opened.state),
         stored: opened.stored,
@@ -340,12 +340,12 @@ fn start_log(
 /// Starts a task per partition to read, and returns the streams and partitions as the
 /// coordinator tracks them.
 ///
-/// It takes `context`, so only the partitions and the launcher keep the lanes and the progress
-/// channel open.
+/// The context goes on to the launcher, so only the partitions and the launcher keep the lanes
+/// and the progress channel open.
 fn spawn_partitions(
     scope: &mut TaskScope<Error>,
     planned: Vec<Planned>,
-    context: Arc<PartitionContext>,
+    context: &Arc<PartitionContext>,
 ) -> (Vec<StreamRun>, Vec<PartitionRun>) {
     let mut streams = Vec::with_capacity(planned.len());
     let mut partitions = Vec::new();
@@ -370,11 +370,10 @@ fn spawn_partitions(
             let stop = job.stop.clone();
             let tracked = PartitionRun::new(index, id, stream.on_demand, stop);
             partitions.push(tracked.starting(job.cursor.as_ref()));
-            scope.spawn(partition::run(job, Arc::clone(&context)));
+            scope.spawn(partition::run(job, Arc::clone(context)));
         }
         streams.push(stream.stream);
     }
-    drop(context);
     (streams, partitions)
 }
 

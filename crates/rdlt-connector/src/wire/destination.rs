@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use super::types::{instant, system_time};
 use super::{Invalid, required, v1};
-use crate::commit::{ChildTable, CommitMeta, DroppedTable, Receipt, SegmentRange, SegmentSet};
+use crate::commit::{
+    ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentRange, SegmentSet,
+};
 use crate::destination::{
     ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey, TableChange, TableRef, WriteStats,
 };
@@ -252,6 +254,10 @@ impl From<&CommitMeta> for v1::CommitMeta {
                     name: dropped.name.to_string(),
                 })
                 .collect(),
+            horizon: meta.horizon.map(|horizon| v1::Horizon {
+                load_id: horizon.load_id.as_bytes().to_vec().into(),
+                commit_seq: horizon.commit_seq.get(),
+            }),
         }
     }
 }
@@ -312,8 +318,18 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
             finish_generations,
             child_tables,
             drop_tables,
+            horizon: meta.horizon.as_ref().map(horizon).transpose()?,
         })
     }
+}
+
+/// The horizon `horizon` says.
+fn horizon(horizon: &v1::Horizon) -> Result<Horizon, Invalid> {
+    Ok(Horizon {
+        load_id: load_id(&horizon.load_id)?,
+        commit_seq: CommitSeq::new(horizon.commit_seq)
+            .ok_or(Invalid::OutOfRange("horizon's commit seq"))?,
+    })
 }
 
 impl From<&Receipt> for v1::Receipt {

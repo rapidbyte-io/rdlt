@@ -179,6 +179,10 @@ impl Session for SimSession {
                 rows: published.iter().map(|(_, rows)| rows.len() as u64).sum(),
                 bytes: 0,
             };
+            // Receipts of the commits the engine never repeats are forgotten, this commit's kept.
+            if let Some(horizon) = &meta.horizon {
+                store.receipts.retain(|key, _| horizon.keeps(key.0, key.1));
+            }
             store.receipts.insert(key, receipt.clone());
             receipt
         };

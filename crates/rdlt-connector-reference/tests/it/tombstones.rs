@@ -111,6 +111,7 @@ async fn commit_as(
         finish_generations: finish,
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     opened
         .session

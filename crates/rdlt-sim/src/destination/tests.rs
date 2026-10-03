@@ -264,6 +264,7 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
                 finish_generations: Vec::new(),
                 child_tables: Vec::new(),
                 drop_tables: Vec::new(),
+                horizon: None,
             };
             let receipt = first.session.commit(&meta).await.unwrap();
             assert_eq!(receipt.rows, 1, "the first pipeline's staged row publishes");

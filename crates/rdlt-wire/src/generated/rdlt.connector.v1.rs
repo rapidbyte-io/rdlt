@@ -1550,6 +1550,20 @@ pub struct CommitMeta {
     /// The tables it drops.
     #[prost(message, repeated, tag = "8")]
     pub drop_tables: ::prost::alloc::vec::Vec<DroppedTable>,
+    /// The oldest commit the engine may still repeat: the receipt of every commit before it may be
+    /// forgotten. Absent, none may.
+    #[prost(message, optional, tag = "9")]
+    pub horizon: ::core::option::Option<Horizon>,
+}
+/// A commit by its load and its sequence in the load; commits order by load id, then sequence.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Horizon {
+    /// The load, a UUIDv7 in its 16 bytes.
+    #[prost(bytes = "bytes", tag = "1")]
+    pub load_id: ::prost::bytes::Bytes,
+    /// The commit's sequence within the load; at least 1.
+    #[prost(uint64, tag = "2")]
+    pub commit_seq: u64,
 }
 /// A table a commit drops.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -1,6 +1,7 @@
-//! The SQLite destination keeps every receipt, and answers a commit sent again from its own.
+//! The SQLite destination keeps every receipt no horizon has passed, and answers a commit sent
+//! again from its own.
 
-use rdlt_connector::{CommitMeta, Receipt, SegmentId};
+use rdlt_connector::{CommitMeta, Horizon, Receipt, SegmentId};
 
 use super::kit::{Shared, table};
 
@@ -82,4 +83,40 @@ async fn a_commit_of_a_load_many_loads_back_is_answered_and_applies_nothing() {
     }
     assert_eq!(shared.ids("orders"), loaded);
     assert_eq!(kept(&shared, "p"), i64::try_from(LOADS).unwrap());
+}
+
+#[tokio::test]
+async fn the_receipts_before_a_commit_s_horizon_are_forgotten_and_the_rest_answered() {
+    let shared = Shared::new().await;
+    let orders = table("orders", "orders", false);
+    let mut other = shared.open("q", 1).await;
+    other.load(&table("others", "others", false), 1, &[1]).await;
+    let mut session = shared.open("p", 1).await;
+    let mut sent: Vec<(CommitMeta, Receipt)> = Vec::new();
+    for commit in 1..=5_u64 {
+        session
+            .stage(&orders, commit, &[i64::try_from(commit).unwrap()])
+            .await;
+        let mut meta = session.meta(&[commit]);
+        // The fifth commit says the engine may repeat no commit before the third.
+        meta.horizon = (commit == 5).then(|| Horizon {
+            load_id: sent[2].0.load_id,
+            commit_seq: sent[2].0.commit_seq,
+        });
+        let receipt = session.commit(&meta).await.expect("the commit lands");
+        sent.push((meta, receipt));
+    }
+    assert_eq!(kept(&shared, "p"), 3);
+    assert_eq!(kept(&shared, "q"), 1, "another pipeline's receipts stay");
+    let unpublished = 6;
+    session.stage(&orders, unpublished, &[-1]).await;
+    for (meta, receipt) in &sent[2..] {
+        let again = CommitMeta {
+            segments: [SegmentId(unpublished)].into_iter().collect(),
+            ..meta.clone()
+        };
+        let answered = session.commit(&again).await.expect("answered again");
+        assert_eq!(&answered, receipt);
+    }
+    assert_eq!(shared.ids("orders"), [1, 2, 3, 4, 5]);
 }

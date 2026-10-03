@@ -164,6 +164,31 @@ pub struct CommitMeta {
     /// Only a destination that declares
     /// [`Capabilities::drop_tables`](crate::Capabilities::drop_tables) receives them.
     pub drop_tables: Vec<DroppedTable>,
+    /// The oldest commit the engine may still repeat, where it says: the destination may forget
+    /// the receipt of every commit before it, and keeps those of the rest.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub horizon: Option<Horizon>,
+}
+
+/// The oldest commit an engine may still repeat: a receipt of a commit before it is never asked
+/// for again, so a destination may forget it.
+///
+/// Commits are ordered by their load's id, then by their sequence in it, as horizons are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Horizon {
+    /// The load of the oldest commit the engine may repeat.
+    pub load_id: LoadId,
+    /// That commit's position in its load.
+    pub commit_seq: CommitSeq,
+}
+
+impl Horizon {
+    /// Whether the engine may still repeat commit `commit_seq` of load `load_id`: it is not
+    /// before the horizon, so its receipt is kept.
+    pub fn keeps(&self, load_id: LoadId, commit_seq: CommitSeq) -> bool {
+        (load_id, commit_seq) >= (self.load_id, self.commit_seq)
+    }
 }
 
 /// A table a commit drops.

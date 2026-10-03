@@ -9,6 +9,7 @@ mod encoding;
 mod evolving;
 mod fence;
 mod history;
+mod idempotent;
 mod lanes;
 mod names;
 mod owned;
@@ -340,30 +341,6 @@ impl Bench<'_> {
         expect_rows(&self.published_rows().await?, &[1])
     }
 
-    /// Replays a committed load the way recovery does: another worker opens the same load,
-    /// stages its segment again and re-commits the same `(load_id, commit_seq)`.
-    async fn recommits_are_idempotent(&self) -> Result<(), Violation> {
-        let mut first = self.staged(self.destination, 1, &[1]).await?;
-        let original = commit(
-            &mut first.session,
-            &meta(self.load_id(1), first.epoch, &[1], Vec::new()),
-        )
-        .await?;
-        let mut replay = self.staged(self.peer, 1, &[1]).await?;
-        let replayed = commit(
-            &mut replay.session,
-            &meta(self.load_id(1), replay.epoch, &[1], Vec::new()),
-        )
-        .await?;
-        if replayed != original {
-            return Err(format!(
-                "the re-commit returned {replayed:?}, not the stored receipt {original:?}"
-            )
-            .into());
-        }
-        expect_rows(&self.published_rows().await?, &[1])
-    }
-
     /// Commits through one connection and reads back through the other, so state kept in one
     /// connection's memory is caught.
     async fn state_round_trips(&self) -> Result<(), Violation> {
@@ -460,6 +437,7 @@ fn meta(load: LoadId, epoch: Epoch, segments: &[u64], state_delta: Vec<StateChan
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     }
 }
 

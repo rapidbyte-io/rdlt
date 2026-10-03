@@ -57,6 +57,7 @@ fn logged() -> Logged {
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
+            horizon: None,
         },
         seals: vec![
             seal(3, "p0", Some(10), 20),

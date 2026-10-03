@@ -44,6 +44,12 @@ impl Log {
         })?;
         crash_point!("engine.wal.sync.after");
         self.chunk += 1;
+        self.forget(&live).await
+    }
+
+    /// Deletes every chunk before the chunk published last that `live` does not name, and notes
+    /// the oldest commit a chunk left holds.
+    async fn forget(&mut self, live: &[u64]) -> Result<(), Error> {
         let gone: Vec<u64> = self
             .written
             .keys()
@@ -65,6 +71,13 @@ impl Log {
             crash_point!("engine.wal.remove");
         }
         self.settled.forget_unwritten(&self.written);
+        let oldest = self
+            .written
+            .values()
+            .flat_map(|written| &written.commits)
+            .min()
+            .copied();
+        *self.shared.oldest.lock() = oldest;
         Ok(())
     }
 

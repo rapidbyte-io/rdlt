@@ -105,6 +105,7 @@ pub(super) fn meta(session: &OpenedSession, load: u128, seq: u64, segments: &[u6
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     }
 }
 

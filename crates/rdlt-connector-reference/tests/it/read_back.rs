@@ -71,6 +71,7 @@ async fn read_back<C: DestinationConnector + ReadBack>(config: serde_json::Value
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     opened
         .session
@@ -151,6 +152,7 @@ async fn the_sqlite_destination_reads_a_large_table_back_in_bounded_batches() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     opened
         .session
@@ -213,6 +215,7 @@ async fn the_sqlite_destination_ends_a_batch_read_back_at_its_bytes_as_at_its_ro
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     opened
         .session
@@ -251,6 +254,7 @@ async fn a_table_read_back_in_whole_batches_ends_without_an_empty_one() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     opened
         .session

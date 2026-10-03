@@ -159,6 +159,7 @@ impl Engine {
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables,
+            horizon: None,
         };
         let receipt = session
             .commit(&meta)

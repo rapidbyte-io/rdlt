@@ -7,7 +7,7 @@ use rusqlite::types::Value;
 use super::{
     Column, Owned, SqlDialect, SqlPlanner, SqlValue, Sqlite, Staged, Statement, micros, receipt,
 };
-use crate::commit::SegmentSet;
+use crate::commit::{Horizon, SegmentSet};
 use crate::destination::{MergeKey, RootKey, TableChange, TableRef};
 use crate::error::ConnectorErrorKind;
 use crate::id::{
@@ -898,6 +898,48 @@ fn state_changes_put_replace_and_delete_one_pipelines_records() {
     );
     let state = query(&connection, &planner.state(&orders));
     assert_eq!(state, [[text("a"), Value::Blob(b"3".to_vec())]]);
+}
+
+#[test]
+fn receipts_before_a_horizon_are_forgotten_and_every_other_kept() {
+    let at = |seconds| std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+    // Loads whose ids differ where a byte's hex digits cross from numerals to letters.
+    let mut loads: Vec<LoadId> = [0, 1, 1_000]
+        .into_iter()
+        .flat_map(|seconds| {
+            [0, 9, 10, 15, 16, 0x9f, 0xa0, 0xff, u128::MAX]
+                .map(|random| LoadId::from_parts(at(seconds), random))
+        })
+        .collect();
+    loads.sort();
+    let seqs = [CommitSeq::FIRST, CommitSeq::FIRST.next()];
+    for (index, horizon) in loads.iter().enumerate() {
+        let (connection, planner) = database();
+        let (orders, other) = (pipeline("orders"), pipeline("other"));
+        for (load, seq) in loads.iter().flat_map(|load| seqs.map(|seq| (*load, seq))) {
+            for pipeline in [&orders, &other] {
+                run(
+                    &connection,
+                    &planner.record_receipt(pipeline, &receipt(load, seq, 0, 0, 0)),
+                );
+            }
+        }
+        let horizon = Horizon {
+            load_id: *horizon,
+            commit_seq: seqs[index % 2],
+        };
+        run(&connection, &planner.forget_receipts(&orders, &horizon));
+        for (load, seq) in loads.iter().flat_map(|load| seqs.map(|seq| (*load, seq))) {
+            let kept = !query(&connection, &planner.receipt(&orders, load, seq)).is_empty();
+            assert_eq!(
+                kept,
+                horizon.keeps(load, seq),
+                "{load} {seq:?} at {horizon:?}"
+            );
+            let other = query(&connection, &planner.receipt(&other, load, seq));
+            assert!(!other.is_empty(), "another pipeline's receipts stay");
+        }
+    }
 }
 
 #[test]

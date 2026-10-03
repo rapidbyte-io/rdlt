@@ -12,7 +12,7 @@ use crate::capabilities::{
     NestedSupport, SchemaChanges, WriteModes,
 };
 use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec};
-use crate::commit::{ChildTable, CommitMeta, DroppedTable, Receipt, SegmentSet};
+use crate::commit::{ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentSet};
 use crate::cursor::Cursor;
 use crate::destination::{
     ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey, TableChange, TableRef, WriteStats,
@@ -321,9 +321,10 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
         ),
         proptest::collection::vec((name(), merge_key()), 0..2),
         proptest::collection::vec((proptest::collection::vec(name(), 1..3), name()), 0..2),
+        proptest::option::of(horizon()),
     )
         .prop_map(
-            |(load_id, seq, epoch, segments, state_delta, finish, children, dropped)| {
+            |(load_id, seq, epoch, segments, state_delta, finish, children, dropped, horizon)| {
                 let mut set = SegmentSet::new();
                 for segment in segments {
                     set.insert(SegmentId(segment));
@@ -354,9 +355,17 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
                             name: Arc::from(name),
                         })
                         .collect(),
+                    horizon,
                 }
             },
         )
+}
+
+fn horizon() -> impl Strategy<Value = Horizon> {
+    (load_id(), 1..u64::MAX).prop_map(|(load_id, seq)| Horizon {
+        load_id,
+        commit_seq: CommitSeq::new(seq).unwrap(),
+    })
 }
 
 fn receipt() -> impl Strategy<Value = Receipt> {
@@ -524,6 +533,62 @@ fn an_unspecified_or_unknown_enum_value_is_refused() {
 }
 
 #[test]
+fn a_horizon_naming_no_commit_is_refused() {
+    let meta = CommitMeta {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+        commit_seq: CommitSeq::FIRST,
+        epoch: Epoch(1),
+        segments: SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+        horizon: Some(Horizon {
+            load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+            commit_seq: CommitSeq::FIRST,
+        }),
+    };
+    let mut wire = v1::CommitMeta::from(&meta);
+    assert_eq!(CommitMeta::try_from(wire.clone()).unwrap(), meta);
+    let horizon = wire.horizon.as_mut().unwrap();
+    horizon.commit_seq = 0;
+    assert!(matches!(
+        CommitMeta::try_from(wire.clone()),
+        Err(Invalid::OutOfRange("horizon's commit seq"))
+    ));
+    let horizon = wire.horizon.as_mut().unwrap();
+    horizon.commit_seq = 1;
+    horizon.load_id = Bytes::from_static(&[1, 2, 3]);
+    assert!(matches!(
+        CommitMeta::try_from(wire),
+        Err(Invalid::OutOfRange("load id"))
+    ));
+}
+
+#[test]
+fn a_horizon_orders_commits_by_load_then_sequence() {
+    let at = |load: u128, seq: u64| {
+        let seq = (1..seq).fold(CommitSeq::FIRST, |seq, _| seq.next());
+        (LoadId::from_parts(UNIX_EPOCH, load), seq)
+    };
+    let (load, seq) = at(2, 3);
+    let horizon = Horizon {
+        load_id: load,
+        commit_seq: seq,
+    };
+    for (load, seq, kept) in [
+        (1, 9, false),
+        (2, 2, false),
+        (2, 3, true),
+        (2, 4, true),
+        (3, 1, true),
+    ] {
+        let (load_id, commit_seq) = at(load, seq);
+        assert_eq!(horizon.keeps(load_id, commit_seq), kept, "{load} {seq}");
+    }
+}
+
+#[test]
 fn numbers_that_do_not_fit_are_out_of_range() {
     let decimal = one_node(v1::type_node::Kind::Decimal(v1::Decimal {
         precision: 300,
@@ -615,6 +680,7 @@ fn values_that_break_their_types_rules_are_rejected() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     });
     meta.segments = vec![
         v1::SegmentRange { first: 5, last: 6 },

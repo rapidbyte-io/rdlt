@@ -105,6 +105,7 @@ async fn commit(destination: &dyn Destination, load: u128, batch: Option<RecordB
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: if drop { vec![dropped] } else { Vec::new() },
+        horizon: None,
     };
     opened
         .session

@@ -176,6 +176,9 @@ impl Session for SqliteSession {
                     rows,
                     bytes,
                 );
+                if let Some(horizon) = &meta.horizon {
+                    run(transaction, &planner.forget_receipts(&pipeline, horizon))?;
+                }
                 run(transaction, &planner.record_receipt(&pipeline, &receipt))?;
                 Ok(receipt)
             })
