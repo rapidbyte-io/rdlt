@@ -31,6 +31,8 @@ pub(crate) struct MemoryWal {
     pub(crate) slow: bool,
     /// What its stagings hold, and how much it may hold in all.
     pub(crate) disk: Arc<Disk>,
+    /// Its identity, once it was asked for.
+    pub(crate) identity: Mutex<Option<LoadId>>,
 }
 
 /// What a [`MemoryWal`]'s stagings hold, and how much the store may hold in all.
@@ -213,6 +215,11 @@ fn ready<T: Send + 'static>(value: io::Result<T>) -> BoxFuture<'static, io::Resu
 }
 
 impl WalStore for MemoryWal {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        let identity = *self.identity.lock().get_or_insert(proposed);
+        ready(Ok(identity))
+    }
+
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,

@@ -146,6 +146,9 @@ pub enum StateEntry {
     /// The first load whose commit reached the pipeline at this destination, which names the
     /// destination to the loads after it.
     Origin(LoadId),
+    /// The write-ahead log store of the loads that commit the pipeline here, which the first
+    /// logging load's commit records: loads with another store are refused.
+    LogStore(LoadId),
 }
 
 /// Who made the `_rdlt_seq` values a table's rows hold, which says whether a later load may
@@ -187,6 +190,7 @@ impl StateEntry {
             Self::Sequences { table, .. } => StateKey::Sequences(table.clone()),
             Self::Receipt(_) => StateKey::Receipt,
             Self::Origin(_) => StateKey::Origin,
+            Self::LogStore(_) => StateKey::LogStore,
         }
     }
 
@@ -326,6 +330,8 @@ pub struct PipelineState {
     pub recorded_by: BTreeMap<(StreamName, PartitionId), LoadId>,
     /// The first load whose commit reached the pipeline at this destination, once one did.
     pub origin: Option<LoadId>,
+    /// The write-ahead log store the pipeline's loads keep their logs in here, once one did.
+    pub log_store: Option<LoadId>,
 }
 
 impl PipelineState {
@@ -402,6 +408,9 @@ impl PipelineState {
         }
         if let Some(origin) = self.origin {
             entries.push(StateEntry::Origin(origin));
+        }
+        if let Some(store) = self.log_store {
+            entries.push(StateEntry::LogStore(store));
         }
         entries.iter().map(StateEntry::to_record).collect()
     }

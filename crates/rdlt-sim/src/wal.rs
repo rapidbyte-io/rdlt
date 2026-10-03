@@ -27,6 +27,8 @@ type Counts = Arc<Mutex<BTreeMap<(PipelineId, LoadId), u64>>>;
 /// Logs in memory, by pipeline and chunk.
 #[derive(Debug, Default)]
 pub struct SimWal {
+    /// Its identity, once it was asked for.
+    identity: Arc<Mutex<Option<LoadId>>>,
     chunks: Chunks,
     logs: Logs,
     /// How many times each log's stagings were deleted: a chunk staged before is lost.
@@ -123,6 +125,10 @@ fn ready<T: Send + 'static>(value: T) -> BoxFuture<'static, io::Result<T>> {
 }
 
 impl WalStore for SimWal {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        ready(*self.identity.lock().get_or_insert(proposed))
+    }
+
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,

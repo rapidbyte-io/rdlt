@@ -55,6 +55,10 @@ pub trait StagedChunk: Send + Sync {
 /// A log is open from [`WalStore::open_log`] until [`WalStore::remove_log`] begins, and never
 /// again: only while it is open is a chunk of it published and the log listed.
 pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
+    /// The store's identity, durable: the first caller's `proposed`, which every later call, of
+    /// any process, answers with.
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>>;
+
     /// Opens `load`'s log of `pipeline`, durably, as a load does once, before it logs anything.
     ///
     /// A log open already, or one whose removal left something behind, is refused with

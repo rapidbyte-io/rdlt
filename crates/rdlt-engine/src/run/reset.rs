@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Destination, DestinationSession, DroppedTable, Epoch, OpenContext,
-    OpenedSession, PipelineId, PipelineState, Receipt, SegmentSet, Source, StateChange, StateEntry,
-    StateKey, StreamName, TablePath,
+    CommitMeta, CommitSeq, Destination, DestinationSession, DroppedTable, Epoch, LoadId,
+    OpenContext, OpenedSession, PipelineId, PipelineState, Receipt, SegmentSet, Source,
+    StateChange, StateEntry, StateKey, StateRecord, StreamName, TablePath,
 };
 
 use super::Engine;
@@ -114,7 +114,12 @@ impl Engine {
         })?;
         // The session fences every load opened before it at the destination; the logs are read
         // only after, each fenced too, so no load adds rows to one once it is read.
-        let reset = match self.logged_unreplayable(pipeline, streams).await {
+        let checked = self.one_store(&state, load_id).await;
+        let checked = match checked {
+            Ok(()) => self.logged_unreplayable(pipeline, streams).await,
+            Err(error) => Err(error),
+        };
+        let reset = match checked {
             Ok(()) => cleared(&state, &naming, streams, scope, epoch),
             Err(error) => Err(error),
         };
@@ -138,7 +143,7 @@ impl Engine {
     async fn commit(
         &self,
         session: &mut dyn DestinationSession,
-        load_id: rdlt_connector::LoadId,
+        load_id: LoadId,
         epoch: Epoch,
         cleared: Cleared,
     ) -> Result<Vec<TablePath>, Error> {
@@ -176,6 +181,19 @@ impl Engine {
 }
 
 impl Engine {
+    /// Refuses a reset whose engine keeps logs in another store than `records`, the pipeline's
+    /// state, names: the logs that hold its rows are elsewhere.
+    async fn one_store(&self, records: &[StateRecord], load_id: LoadId) -> Result<(), Error> {
+        let Some(store) = self.env.wal() else {
+            return Ok(());
+        };
+        let named = PipelineState::from_records(records)
+            .ok()
+            .and_then(|state| state.log_store);
+        let ours = store.identity(load_id).await.map_err(Error::from_wal)?;
+        taken::one_store(Some(ours), named)
+    }
+
     /// Refuses `streams` of `pipeline` a log holds rows of that their source was told were
     /// committed and that never landed, as `reset_unreplayable`: the reset would discard the only
     /// copy of them, whatever the source says of the stream now.
@@ -264,7 +282,7 @@ struct Cleared {
 /// forgotten whatever its names, and a table is dropped only under a name `naming` admits as a
 /// table's, never one under a prefix the destination keeps for its own tables.
 fn cleared(
-    records: &[rdlt_connector::StateRecord],
+    records: &[StateRecord],
     naming: &Naming,
     streams: &[StreamName],
     scope: ResetScope,

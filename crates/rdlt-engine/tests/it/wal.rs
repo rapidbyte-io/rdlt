@@ -378,3 +378,50 @@ async fn a_log_written_for_one_destination_is_never_replayed_into_another() {
     );
     assert_eq!(published_ids("wal_bound_one", "events"), ids(1, 20));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_pipeline_s_destination_takes_logs_from_one_store_only() {
+    let (one, two) = (
+        tempfile::tempdir().expect("a temporary directory"),
+        tempfile::tempdir().expect("a temporary directory"),
+    );
+    let plan = pipeline("wal-stores", [stream("events").read(ReadMode::Incremental)]);
+    let mut events = ScriptStream::new("events", 1, 10, 5);
+    events.replayable = false;
+    let (script, source) = Script::new(vec![events]).connect("wal_stores").await;
+    let run = |base: &std::path::Path| {
+        let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base));
+        let (plan, source) = (plan.clone(), Arc::clone(&source));
+        async move {
+            logging_engine(commit_every(10), store)
+                .run(plan, source, memory("wal_stores").await)
+                .await
+        }
+    };
+    let first = run(one.path()).await;
+    assert_eq!(
+        first.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        first.error
+    );
+    // Another store for the same pipeline and destination is refused before anything is read.
+    script.streams[0].grow(10);
+    let reads = script.reads.load(std::sync::atomic::Ordering::SeqCst);
+    let refused = run(two.path()).await;
+    let error = refused.error.expect("another store");
+    assert_eq!(error.code(), Some("wal_store_other"), "{error}");
+    assert!(!error.is_retryable());
+    assert_eq!(
+        script.reads.load(std::sync::atomic::Ordering::SeqCst),
+        reads
+    );
+    let again = run(one.path()).await;
+    assert_eq!(
+        again.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        again.error
+    );
+    assert_eq!(published_ids("wal_stores", "events"), ids(1, 20));
+}

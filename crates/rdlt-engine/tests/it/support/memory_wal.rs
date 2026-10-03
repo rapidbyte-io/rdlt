@@ -22,6 +22,8 @@ struct Held {
     next: u64,
     /// Bytes the disk holds at most, staged and published; unbounded where none.
     capacity: Option<usize>,
+    /// Its identity, once it was asked for.
+    identity: Option<LoadId>,
 }
 
 /// Bytes: what an open log takes of the disk before it holds anything, as a directory's block.
@@ -120,6 +122,10 @@ impl StagedChunk for Staged {
 }
 
 impl WalStore for Memory {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        ready(Ok(*self.held.lock().identity.get_or_insert(proposed)))
+    }
+
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,

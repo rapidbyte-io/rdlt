@@ -6,6 +6,19 @@ use rdlt_connector::{
 };
 
 use super::checked;
+
+/// Checks as replay does, of a log kept in store [`store`].
+fn checked_in(
+    logged: &Logged,
+    epoch: Epoch,
+    pipeline: &rdlt_connector::PipelineId,
+) -> Result<(), crate::Error> {
+    checked(logged, epoch, Some(store()), pipeline)
+}
+
+fn store() -> LoadId {
+    LoadId::from_parts(UNIX_EPOCH, 40)
+}
 use crate::wal::frame::{BegunPhase, Seal};
 use crate::wal::scan::Logged;
 
@@ -92,13 +105,13 @@ fn honest() -> Vec<StateChange> {
 
 #[test]
 fn a_commit_a_load_logged_before_the_replaying_session_is_replayed() {
-    checked(&logged(honest()), Epoch(5), &pipeline()).expect("as its load logged it");
+    checked_in(&logged(honest()), Epoch(5), &pipeline()).expect("as its load logged it");
 }
 
 #[test]
 fn a_commit_logged_by_a_session_not_older_than_the_replaying_one_is_refused() {
     for epoch in [Epoch(4), Epoch(3)] {
-        let refused = checked(&logged(honest()), epoch, &pipeline()).expect_err("not older");
+        let refused = checked_in(&logged(honest()), epoch, &pipeline()).expect_err("not older");
         assert_eq!(refused.code(), Some("wal_unreadable"));
     }
 }
@@ -125,7 +138,7 @@ fn a_commit_recording_what_its_frames_do_not_back_is_refused() {
     ] {
         let mut delta = honest();
         delta.push(change);
-        let refused = checked(&logged(delta), Epoch(5), &pipeline()).expect_err(case);
+        let refused = checked_in(&logged(delta), Epoch(5), &pipeline()).expect_err(case);
         assert_eq!(refused.code(), Some("wal_unreadable"), "{case}");
     }
 }
@@ -135,17 +148,17 @@ fn a_commit_names_only_its_own_load_as_the_destination_s_first() {
     let own = StateChange::Put(StateEntry::Origin(load()).to_record());
     let mut delta = honest();
     delta.push(own);
-    checked(&logged(delta), Epoch(9), &pipeline()).expect("its own load");
+    checked_in(&logged(delta), Epoch(9), &pipeline()).expect("its own load");
     let other = LoadId::from_parts(UNIX_EPOCH, 7);
     let mut delta = honest();
     delta.push(StateChange::Put(StateEntry::Origin(other).to_record()));
-    let refused = checked(&logged(delta), Epoch(9), &pipeline()).expect_err("another's");
+    let refused = checked_in(&logged(delta), Epoch(9), &pipeline()).expect_err("another's");
     assert_eq!(refused.code(), Some("wal_unreadable"));
     let mut delta = honest();
     delta.push(StateChange::Delete(
         rdlt_connector::StateKey::Origin.encode(),
     ));
-    assert!(checked(&logged(delta), Epoch(9), &pipeline()).is_err());
+    assert!(checked_in(&logged(delta), Epoch(9), &pipeline()).is_err());
 }
 
 #[test]
@@ -168,4 +181,16 @@ fn a_log_is_replayed_only_into_the_destination_it_was_written_for() {
         assert_eq!(refused.code(), Some("wal_foreign"), "{named} {origin:?}");
     }
     assert!(super::bound(None, None, load(), &pipeline()).is_err());
+}
+
+#[test]
+fn a_commit_names_only_the_store_it_was_logged_in_as_the_pipeline_s_logs() {
+    let mut delta = honest();
+    delta.push(StateChange::Put(StateEntry::LogStore(store()).to_record()));
+    checked_in(&logged(delta), Epoch(9), &pipeline()).expect("its own store");
+    let mut delta = honest();
+    let other = LoadId::from_parts(UNIX_EPOCH, 41);
+    delta.push(StateChange::Put(StateEntry::LogStore(other).to_record()));
+    let refused = checked_in(&logged(delta), Epoch(9), &pipeline()).expect_err("another's");
+    assert_eq!(refused.code(), Some("wal_unreadable"));
 }

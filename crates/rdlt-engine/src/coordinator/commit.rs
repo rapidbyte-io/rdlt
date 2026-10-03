@@ -87,10 +87,18 @@ impl Coordinator {
     ) {
         // A destination no commit of the pipeline reached yet learns the load whose commit
         // reaches it first, which names it to the logs of the loads after.
-        if self.seq == rdlt_connector::CommitSeq::FIRST && self.parts.log.lock().origin.is_none() {
+        let log = self.parts.log.lock();
+        if self.seq == rdlt_connector::CommitSeq::FIRST && log.origin.is_none() {
             let origin = StateEntry::Origin(self.parts.load_id);
             delta.push(StateChange::Put(origin.to_record()));
         }
+        // And a destination that names no store for the pipeline's logs learns this load's.
+        if let (rdlt_connector::CommitSeq::FIRST, None, Some(store)) =
+            (self.seq, log.log_store, log.store)
+        {
+            delta.push(StateChange::Put(StateEntry::LogStore(store).to_record()));
+        }
+        drop(log);
         let marker = self.marker(streams);
         delta.push(StateChange::Put(
             StateEntry::Receipt(marker.clone()).to_record(),
