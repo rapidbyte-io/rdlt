@@ -1039,11 +1039,14 @@ fn keyed_list(below: DataType) -> DataType {
     DataType::Dictionary(Box::new(DataType::Int32), Box::new(list))
 }
 
+/// A wrapping of a type in one level of nesting.
+type Wrap = Box<dyn Fn(DataType) -> DataType>;
+
 #[test]
 fn a_schema_nested_to_the_limit_through_unions_or_dictionaries_is_sent_and_one_level_deeper_refused()
  {
     let depth = usize::try_from(crate::limits::NESTING_DEPTH).unwrap();
-    let levels: [(&str, Box<dyn Fn(DataType) -> DataType>); 3] = [
+    let levels: [(&str, Wrap); 3] = [
         (
             "sparse union",
             Box::new(|below| union_of(below, arrow_schema::UnionMode::Sparse)),
