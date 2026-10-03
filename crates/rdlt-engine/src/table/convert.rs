@@ -103,9 +103,10 @@ fn arrow_unit(unit: rdlt_connector::TimeUnit) -> arrow_schema::TimeUnit {
 }
 
 /// `array` in the plain Arrow type of `logical`: large, view and dictionary encodings, maps and
-/// wider integer storage come out as the type the logical type names.
+/// wider integer storage come out as the type the logical type names, and a `Date64` as the
+/// days it is within.
 pub(crate) fn normalize(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, ArrowError> {
-    normalize_to(array, &logical.to_arrow())
+    normalize_to(&temporal::dated(&unmapped(array)?)?, &logical.to_arrow())
 }
 
 /// `array` cast to `target`, with its maps unmapped first.
@@ -197,7 +198,7 @@ fn unmapped(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
 }
 
 /// `field` holding `values`' type.
-fn retyped(field: &FieldRef, values: &ArrayRef) -> FieldRef {
+pub(super) fn retyped(field: &FieldRef, values: &ArrayRef) -> FieldRef {
     Arc::new(
         field
             .as_ref()
