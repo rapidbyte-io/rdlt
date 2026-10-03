@@ -33,7 +33,10 @@ pub trait StagedChunk: Send + Sync {
     ///
     /// The name is taken by whoever publishes it first, which is how a log is fenced: a replay
     /// publishes the chunk a writer would publish next, and the writer finds it taken; once the
-    /// replay removes the log, the writer finds it gone.
+    /// replay removes the log, the writer finds it gone. A store creates the chunk first, where
+    /// its name is free, and only then asks whether the log is still open, deleting the chunk
+    /// where it is not: asked first, a removal could close and list the log between the answer
+    /// and the chunk.
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>>;
 
     /// Deletes what was staged, which is never published: a write that failed gives back the

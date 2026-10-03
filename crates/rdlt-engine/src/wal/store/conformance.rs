@@ -48,6 +48,7 @@ pub(crate) async fn conforms(store: &dyn WalStore) {
     a_chunk_is_staged_only_in_a_log_opened_once(store).await;
     no_chunk_is_published_once_its_log_is_removed(store).await;
     what_was_staged_and_deleted_is_never_published(store).await;
+    a_publish_racing_a_removal_is_never_left_behind(store).await;
     a_staged_chunk_is_seen_by_no_reader_until_published(store).await;
     a_published_chunk_is_whole_read_by_range_and_never_replaced(store).await;
     the_first_of_two_chunks_of_one_name_published_is_kept(store).await;
@@ -132,6 +133,47 @@ async fn what_was_staged_and_deleted_is_never_published(store: &dyn WalStore) {
     published(store, &orders, chunk(1, 0), b"after")
         .await
         .expect("a staging begun after publishes");
+}
+
+/// Publishes run alongside the removal of their log: each is refused, or goes with the log; none
+/// is left behind it, as a store that asked whether the log is open before it created the chunk
+/// would leave one.
+pub(crate) async fn a_publish_racing_a_removal_is_never_left_behind(store: &dyn WalStore) {
+    let orders = pipeline("racing");
+    for round in 0..16 {
+        let load = chunk(100 + round, 0).load;
+        published(store, &orders, chunk(100 + round, 0), b"first")
+            .await
+            .expect("publishes");
+        let mut stagings = Vec::new();
+        for number in 1..=4 {
+            let at = Chunk { load, number };
+            let mut staged = store.stage(&orders, at).await.expect("stages");
+            staged
+                .append(Bytes::from_static(b"racing"))
+                .await
+                .expect("appends");
+            stagings.push(staged);
+        }
+        let mut stagings = stagings.into_iter();
+        let mut next = || stagings.next().expect("four stagings").publish();
+        // The removal begins once the first publishes have begun.
+        let removal = async {
+            tokio::task::yield_now().await;
+            store.remove_log(&orders, load).await
+        };
+        let (one, two, removed, three, four) =
+            tokio::join!(next(), next(), removal, next(), next());
+        removed.expect("removes");
+        for published in [one, two, three, four] {
+            if let Err(refused) = published {
+                assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
+            }
+        }
+        assert_eq!(store.chunks(&orders, load).await.expect("lists"), []);
+        let left = store.leftovers(&orders).await.expect("lists");
+        assert!(!left.contains(&load), "round {round}: {left:?}");
+    }
 }
 
 async fn a_staged_chunk_is_seen_by_no_reader_until_published(store: &dyn WalStore) {
