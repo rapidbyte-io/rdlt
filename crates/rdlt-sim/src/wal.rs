@@ -29,11 +29,11 @@ type Claims = Arc<Mutex<BTreeSet<(PipelineId, LoadId)>>>;
 pub struct SimWal {
     chunks: Mutex<BTreeMap<(PipelineId, Chunk), Stored>>,
     claims: Claims,
-    /// Where appends and syncs fail now and then, the draws deciding when.
+    /// Where appends, syncs and removals of chunks fail now and then, the draws deciding when.
     faults: Mutex<Option<SplitMix64>>,
 }
 
-/// Failures per thousand appends or syncs, while faulty.
+/// Failures per thousand appends, syncs or removals of chunks, while faulty.
 const FAULTS: u64 = 10;
 
 /// A claim on a log, let go when dropped, as a process's lock goes with it.
@@ -68,7 +68,8 @@ impl SimWal {
         }
     }
 
-    /// Makes appends and syncs fail now and then, as `faults` draws, or never again.
+    /// Makes appends, syncs and removals of chunks fail now and then, as `faults` draws, or never
+    /// again.
     pub(crate) fn set_faults(&self, faults: Option<SplitMix64>) {
         *self.faults.lock() = faults;
     }
@@ -203,6 +204,9 @@ impl WalStore for SimWal {
         pipeline: &'a PipelineId,
         chunk: Chunk,
     ) -> BoxFuture<'a, io::Result<()>> {
+        if let Err(error) = self.fault() {
+            return Box::pin(async { Err(error) });
+        }
         self.chunks.lock().remove(&(pipeline.clone(), chunk));
         ready(())
     }

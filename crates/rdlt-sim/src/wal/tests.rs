@@ -104,3 +104,22 @@ async fn a_crash_leaves_every_other_pipeline_s_logs_as_they_were() {
     let kept = wal.read(&other, chunk(0), 0, 100).await.expect("reads");
     assert_eq!(&kept[..], b"never synced");
 }
+
+#[tokio::test]
+async fn a_faulty_disk_fails_a_removal_now_and_then_and_keeps_the_chunk() {
+    let wal = SimWal::default();
+    wal.set_faults(Some(SplitMix64::new(7)));
+    let mut failed = 0;
+    for number in 0..1000 {
+        let chunk = chunk(number);
+        wal.append(&pipeline(), chunk, Bytes::from_static(b"frame"))
+            .await
+            .ok();
+        if wal.remove(&pipeline(), chunk).await.is_err() {
+            failed += 1;
+            let kept = wal.chunks(&pipeline(), chunk.load).await.expect("lists");
+            assert!(kept.iter().any(|(kept, _)| *kept == number));
+        }
+    }
+    assert!((1..100).contains(&failed), "{failed} of 1000 failed");
+}
