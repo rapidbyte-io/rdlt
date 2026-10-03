@@ -694,3 +694,29 @@ fn json_in_a_dictionary_of_structs_is_checked_and_charged_where_its_keys_name_it
         })
     ));
 }
+
+#[test]
+fn keys_listed_from_a_dictionary_of_many_values_hold_no_more_than_their_charge() {
+    // One key a row, past a power of two, naming every 65th of 65 values a key: a bitmap of the
+    // values would take more than the keys listed, which a vector grown by doubling passes.
+    const KEYS: usize = (1 << 16) + 1;
+    let values: ArrayRef = Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+        "1",
+        65 * KEYS,
+    )));
+    let keys = PrimitiveArray::<Int32Type>::from_iter_values(
+        (0..KEYS).map(|key| i32::try_from(65 * key).unwrap()),
+    );
+    let keyed: ArrayRef = Arc::new(DictionaryArray::try_new(keys, values).unwrap());
+    let field = json(Field::new("c", keyed.data_type().clone(), true));
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![keyed]).unwrap();
+    assert!(!super::held::bitmapped(65 * KEYS, KEYS));
+    let charged = super::held(&batch);
+    assert_eq!(charged, 8 * u64::try_from(KEYS).unwrap());
+    let (checked, peak) = check_peak(&batch);
+    assert_eq!(checked, Ok(()));
+    assert!(
+        peak <= charged + (16 << 10),
+        "charged {charged} bytes, held {peak}"
+    );
+}
