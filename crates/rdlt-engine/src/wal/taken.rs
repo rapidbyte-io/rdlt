@@ -35,6 +35,20 @@ pub(crate) enum Taken {
     Gone,
 }
 
+/// Checks that `ours`, the store the attempt keeps its log in, is `named`, the store the
+/// destination names for the pipeline's logs, where both are known.
+///
+/// # Errors
+///
+/// `wal_store_other` where they differ: another store may hold logs of the pipeline that no
+/// replay of this one sees, and a load that read on would move past rows they hold.
+pub(crate) fn one_store(ours: Option<LoadId>, named: Option<LoadId>) -> Result<(), Error> {
+    match (ours, named) {
+        (Some(ours), Some(named)) if ours != named => Err(Error::wal_store_other(ours, named)),
+        _ => Ok(()),
+    }
+}
+
 /// Opens `load`'s own log of `pipeline` in `store`, before it reads any other.
 ///
 /// A disk too full for it is given back what loads of the pipeline staged and did not publish,
@@ -50,7 +64,8 @@ pub(crate) async fn open_own(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,
-) -> Result<(), Error> {
+) -> Result<LoadId, Error> {
+    let identity = store.identity(load).await.map_err(Error::from_wal)?;
     let opened = store.open_log(pipeline, load).await;
     let opened = match opened {
         Err(error) if full(&error) => {
@@ -73,7 +88,8 @@ pub(crate) async fn open_own(
     opened.map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => Error::wal_opening_taken(load),
         _ => Error::from_wal(error),
-    })
+    })?;
+    Ok(identity)
 }
 
 /// Whether `error` says the disk, or the user's share of it, is full.

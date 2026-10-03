@@ -1,6 +1,7 @@
 //! Write-ahead logs kept in a local directory.
 
 mod dir;
+mod identity;
 mod names;
 mod staged;
 #[cfg(test)]
@@ -65,10 +66,15 @@ impl Base {
 
 impl LocalWal {
     /// Logs under `base`, as `.rdlt` is by default.
+    ///
+    /// A relative base is taken against the working directory as the store is made, once: a
+    /// process that moves its working directory after still keeps its logs where it began.
     pub fn new(base: impl Into<PathBuf>) -> Self {
+        let base = base.into();
+        let path = std::path::absolute(&base).unwrap_or(base);
         Self {
             base: Arc::new(Base {
-                path: base.into(),
+                path,
                 open: Mutex::new(None),
             }),
         }
@@ -348,6 +354,11 @@ fn remove(place: &Place, chunk: Chunk) -> io::Result<()> {
 }
 
 impl WalStore for LocalWal {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        let base = Arc::clone(&self.base);
+        blocking(move || identity::identity(base.dir()?.as_ref(), proposed))
+    }
+
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,

@@ -14,7 +14,8 @@ use serde::Serialize;
 
 use crate::budget::Exhausted;
 use crate::limits::{
-    BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_RUNNING, WAL_STORAGE_FULL, WAL_STRAY,
+    BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_RUNNING, WAL_STORAGE_FULL,
+    WAL_STORE_OTHER, WAL_STRAY,
 };
 use crate::scope::ScopeError;
 
@@ -179,6 +180,20 @@ impl Error {
         .with_code(WAL_RUNNING);
         taken.retryable = true;
         taken
+    }
+
+    /// The error for an attempt whose log store, `ours`, is not `named`, the store the
+    /// destination names for the pipeline's logs: its runs must keep their logs in one store.
+    pub(crate) fn wal_store_other(
+        ours: rdlt_connector::LoadId,
+        named: rdlt_connector::LoadId,
+    ) -> Self {
+        Self::config(format!(
+            "the pipeline's logs at this destination are kept in store {named}, and this \
+             engine's is store {ours}: its runs keep their logs in one store, whose identity \
+             file moves with it"
+        ))
+        .with_code(WAL_STORE_OTHER)
     }
 
     /// Classifies a connector's `error` from `side`, keeping it as the cause.

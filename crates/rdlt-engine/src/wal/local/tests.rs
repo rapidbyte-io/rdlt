@@ -689,3 +689,37 @@ async fn a_link_of_the_user_s_own_in_a_sticky_directory_is_followed() {
     assert!(own.join("wal").is_dir());
     set_mode(&sticky, 0o700);
 }
+
+#[tokio::test]
+async fn a_relative_base_is_taken_against_the_directory_the_store_was_made_in() {
+    let (made, moved) = (
+        tempfile::tempdir().expect("a temporary directory"),
+        tempfile::tempdir().expect("a temporary directory"),
+    );
+    // Each test runs in a process of its own, whose working directory this one may move.
+    std::env::set_current_dir(made.path()).expect("moves");
+    let wal = LocalWal::new(".rdlt");
+    std::env::set_current_dir(moved.path()).expect("moves");
+    wal.open_log(&pipeline("orders"), chunk(1, 0).load)
+        .await
+        .expect("opens");
+    assert!(made.path().join(".rdlt").is_dir());
+    assert!(!moved.path().join(".rdlt").exists());
+}
+
+#[tokio::test]
+async fn a_store_s_identity_is_its_first_and_kept_in_its_base() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let (first, second) = (chunk(1, 0).load, chunk(2, 0).load);
+    let identity = LocalWal::new(base.path())
+        .identity(first)
+        .await
+        .expect("named");
+    assert_eq!(identity, first);
+    let again = LocalWal::new(base.path())
+        .identity(second)
+        .await
+        .expect("named");
+    assert_eq!(again, first, "another process of the same base");
+    assert_eq!(mode(&base.path().join("store")), 0o600);
+}

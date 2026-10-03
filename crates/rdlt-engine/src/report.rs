@@ -231,6 +231,11 @@ pub(crate) struct AttemptLog {
     /// The first load whose commit reached the pipeline at the destination, as the attempt
     /// opened; none where none had, so the attempt's first commit records its own.
     pub(crate) origin: Option<LoadId>,
+    /// The write-ahead log store the attempt keeps its log in, where the engine keeps logs.
+    pub(crate) store: Option<LoadId>,
+    /// The store the destination named for the pipeline's logs as the attempt opened; none
+    /// where it named none, so the attempt's first commit records its own.
+    pub(crate) log_store: Option<LoadId>,
     /// How many records each stream's reads were last behind their source's newest.
     pub(crate) behind: BTreeMap<StreamName, u64>,
     /// Each stream's reads that started again from their earliest after a retention loss.

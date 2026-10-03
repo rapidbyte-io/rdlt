@@ -98,7 +98,8 @@ pub(crate) async fn run(
         return logged_run(context, load_id, &log).await;
     };
     let pipeline = context.plan.pipeline();
-    crate::wal::taken::open_own(store.as_ref(), pipeline, load_id).await?;
+    let identity = crate::wal::taken::open_own(store.as_ref(), pipeline, load_id).await?;
+    log.lock().store = Some(identity);
     let ran = logged_run(context, load_id, &log).await;
     // A failed attempt that published nothing leaves no log behind: nothing of it is replayed.
     // The failure matters more than one of removing it, which a later replay retries.
@@ -154,6 +155,8 @@ async fn opened_run(
             .as_ref()
             .map(|receipt| (receipt.load_id, receipt.commit_seq));
         log.origin = opened.state.origin;
+        log.log_store = opened.state.log_store;
+        crate::wal::taken::one_store(log.store, opened.state.log_store)?;
     }
     let catalog = context
         .source

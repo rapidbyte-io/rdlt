@@ -59,6 +59,9 @@ impl Counted {
 }
 
 impl WalStore for Counted {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        self.local.identity(proposed)
+    }
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,

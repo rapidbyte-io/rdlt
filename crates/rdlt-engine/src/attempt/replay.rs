@@ -43,6 +43,8 @@ struct Replaying {
     last: Option<(LoadId, u64)>,
     /// The first load whose commit reached the pipeline at the destination, once one did.
     origin: Option<LoadId>,
+    /// The store the replayed logs are kept in.
+    store: Option<LoadId>,
     /// The most destination writers held open at once.
     writers: NonZeroUsize,
     /// The run's memory budget, which what replay stages is charged to.
@@ -110,9 +112,12 @@ async fn replay_into(
                 continue;
             };
             for logged in scanned.pending() {
-                let replaying = match replaying {
-                    Some(replaying) => replaying,
-                    None => replaying.insert(begin(context, load_id).await?),
+                if replaying.is_none() {
+                    let store = log.lock().store;
+                    *replaying = Some(begin(context, load_id, store).await?);
+                }
+                let Some(replaying) = replaying.as_mut() else {
+                    return Err(Error::internal("a replay's session is gone"));
                 };
                 let landed = replaying
                     .commit(store, pipeline, &scanned, logged, limits)
@@ -133,9 +138,19 @@ async fn replay_into(
     Ok(())
 }
 
-async fn begin(context: &RunContext, load_id: LoadId) -> Result<Replaying, Error> {
+async fn begin(
+    context: &RunContext,
+    load_id: LoadId,
+    store: Option<LoadId>,
+) -> Result<Replaying, Error> {
     let opened = open(context, load_id).await?;
+    // Nothing of another store's pipeline lands here: its logs may hold what this one does not.
+    if let Err(error) = taken::one_store(store, opened.state.log_store) {
+        super::closed_within(context, opened.session.close()).await;
+        return Err(error);
+    }
     Ok(Replaying {
+        store,
         positions: Positions::of(&opened.state),
         resets: opened.state.resets.clone(),
         last: opened
@@ -163,7 +178,7 @@ impl Replaying {
     ) -> Result<bool, Error> {
         let meta = &logged.meta;
         checked::bound(scanned.header.as_ref(), self.origin, meta.load_id, pipeline)?;
-        checked::checked(logged, self.epoch, pipeline)?;
+        checked::checked(logged, self.epoch, self.store, pipeline)?;
         let opened = scanned.header.as_ref().and_then(|header| header.opened);
         let decision = decide(&self.positions, &self.resets, self.last, opened, logged);
         self.stage(store, pipeline, scanned, &decision.staged, limits)

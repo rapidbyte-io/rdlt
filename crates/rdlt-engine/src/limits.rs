@@ -158,6 +158,10 @@ pub(crate) const WAL_FENCED: &str = "wal_fenced";
 /// writing its log: retryable, since the attempt waits for that load to end.
 pub(crate) const WAL_RUNNING: &str = "wal_running";
 
+/// The code of the error for an attempt whose log store is not the store its destination names
+/// for the pipeline's logs: not retryable, as the engine's configuration decides the store.
+pub(crate) const WAL_STORE_OTHER: &str = "wal_store_other";
+
 /// The code of the error for a log this engine cannot read, which an operator removes: a chunk
 /// missing, damaged, of another format, or holding a commit not all of which is there.
 pub(crate) const WAL_UNREADABLE: &str = "wal_unreadable";

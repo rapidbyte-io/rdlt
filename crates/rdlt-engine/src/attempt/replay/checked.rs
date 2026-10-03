@@ -33,7 +33,8 @@ pub(super) fn bound(
 }
 
 /// Checks `logged` is a commit logged by a session older than that of `epoch`, recording no
-/// reset, its own receipt, and no partition's position but those its seals and phases set.
+/// reset, its own receipt, no store but `store`, where it was logged, and no partition's
+/// position but those its seals and phases set.
 ///
 /// Whatever else its frames say a replay cannot confirm: a log is not authenticated, so what it
 /// may change is held to what a load logs.
@@ -41,7 +42,12 @@ pub(super) fn bound(
 /// # Errors
 ///
 /// `wal_unreadable`, naming `pipeline`'s log, for a commit that is not.
-pub(super) fn checked(logged: &Logged, epoch: Epoch, pipeline: &PipelineId) -> Result<(), Error> {
+pub(super) fn checked(
+    logged: &Logged,
+    epoch: Epoch,
+    store: Option<LoadId>,
+    pipeline: &PipelineId,
+) -> Result<(), Error> {
     let meta = &logged.meta;
     let seq = meta.commit_seq.get();
     let refused = |detail: String| {
@@ -58,45 +64,50 @@ pub(super) fn checked(logged: &Logged, epoch: Epoch, pipeline: &PipelineId) -> R
         )));
     }
     for change in &meta.state_delta {
-        let key = match change {
-            StateChange::Put(record) => &record.key,
-            StateChange::Delete(key) => key,
-        };
-        match (StateKey::parse(key), change) {
-            (Ok(StateKey::Reset(stream)), _) => {
-                return Err(refused(format!(
-                    "commit {seq} records a reset of stream {stream}, which no load logs"
-                )));
-            }
-            (Ok(StateKey::Receipt), StateChange::Put(record)) => {
-                let own = matches!(
-                    StateEntry::from_record(record),
-                    Ok(StateEntry::Receipt(receipt)) if receipt.answers(meta)
-                );
-                if !own {
-                    return Err(refused(format!(
-                        "commit {seq} records another commit's receipt"
-                    )));
-                }
-            }
-            (Ok(StateKey::Origin), change)
-                if *change != StateChange::Put(StateEntry::Origin(meta.load_id).to_record()) =>
-            {
-                return Err(refused(format!(
-                    "commit {seq} records another load as the destination's first"
-                )));
-            }
-            (Ok(StateKey::Partition(..)), StateChange::Put(record))
-                if !backed(logged, change, record) =>
-            {
-                return Err(refused(format!(
-                    "commit {seq} records a position no seal or phase of it sets"
-                )));
-            }
-            _ => {}
+        if let Some(detail) = refusal(logged, store, change) {
+            return Err(refused(format!("commit {seq} {detail}")));
         }
     }
     Ok(())
+}
+
+/// What `change`, of `logged`'s state, records that no load of a log in `store` records: a
+/// reset, another commit's receipt, another load as the destination's first, another store, or
+/// a position no seal or phase of the commit sets.
+fn refusal(logged: &Logged, store: Option<LoadId>, change: &StateChange) -> Option<String> {
+    let meta = &logged.meta;
+    let key = match change {
+        StateChange::Put(record) => &record.key,
+        StateChange::Delete(key) => key,
+    };
+    let refused = match (StateKey::parse(key), change) {
+        (Ok(StateKey::Reset(stream)), _) => {
+            return Some(format!(
+                "records a reset of stream {stream}, which no load logs"
+            ));
+        }
+        (Ok(StateKey::Receipt), StateChange::Put(record)) => {
+            let own = matches!(
+                StateEntry::from_record(record),
+                Ok(StateEntry::Receipt(receipt)) if receipt.answers(meta)
+            );
+            (!own).then_some("records another commit's receipt")
+        }
+        (Ok(StateKey::Origin), change) => (*change
+            != StateChange::Put(StateEntry::Origin(meta.load_id).to_record()))
+        .then_some("records another load as the destination's first"),
+        (Ok(StateKey::LogStore), change) => store
+            .is_none_or(|store| {
+                *change != StateChange::Put(StateEntry::LogStore(store).to_record())
+            })
+            .then_some("records another store as the pipeline's logs'"),
+        (Ok(StateKey::Partition(..)), StateChange::Put(record)) => {
+            (!backed(logged, change, record))
+                .then_some("records a position no seal or phase of it sets")
+        }
+        _ => None,
+    };
+    refused.map(str::to_owned)
 }
 
 /// Whether `change`, of `logged`'s state, putting `record`, a partition's position, is one a

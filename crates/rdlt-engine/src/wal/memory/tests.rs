@@ -52,6 +52,9 @@ impl StagedChunk for HastyStaged {
 }
 
 impl WalStore for Hasty {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        self.inner.identity(proposed)
+    }
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,

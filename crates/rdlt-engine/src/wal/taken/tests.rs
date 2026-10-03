@@ -44,6 +44,9 @@ impl Busy {
 }
 
 impl WalStore for Busy {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        self.inner.identity(proposed)
+    }
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -247,6 +250,9 @@ struct Rival {
 }
 
 impl WalStore for Rival {
+    fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
+        self.inner.identity(proposed)
+    }
     fn open_log<'a>(
         &'a self,
         pipeline: &'a PipelineId,
