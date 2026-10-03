@@ -20,13 +20,13 @@ use crate::table::convert::decoded;
 use crate::table::lower::loaded_at_type;
 
 impl LoweringPlan {
-    /// The history columns of `batch`'s rows, lowered, where the plan's table keeps history:
-    /// `columns` starts with the rows' data columns as stored, and `changes` says which rows
-    /// delete; none for another table.
+    /// The history columns of `batch`'s rows, lowered, the first the table's column at `first`,
+    /// where the plan's table keeps history: `held` holds the rows' data columns as the model's
+    /// types hold them, and `changes` says which rows delete; none for another table.
     pub(super) fn history(
         &self,
         batch: &RecordBatch,
-        columns: &[ArrayRef],
+        (held, first): (&[ArrayRef], usize),
         stamp: &Stamp,
         changes: Option<&ChangeRows>,
     ) -> Result<Vec<ArrayRef>, Error> {
@@ -41,7 +41,7 @@ impl LoweringPlan {
             ))
         };
         let data = self
-            .data(batch.num_rows(), columns, names.change_time.as_deref())
+            .data(batch.num_rows(), held, names.change_time.as_deref())
             .map_err(failed)?;
         let from = match &names.change_time {
             Some(column) => Some(batch.column_by_name(column).ok_or_else(|| {
@@ -62,7 +62,6 @@ impl LoweringPlan {
             })
         };
         let history = history_columns(stream, &data, from, stamp.received_at, &deleting)?;
-        let first = columns.len();
         let logical = [
             loaded_at_type(),
             loaded_at_type(),
@@ -80,12 +79,13 @@ impl LoweringPlan {
             .collect()
     }
 
-    /// The rows' data columns, from `columns`, as a batch of `rows` rows, without the column the
-    /// stream's `change_time` fills: when a change happened is not what it changed.
+    /// The rows' data columns, from `held`, as the model's types hold them, as a batch of `rows`
+    /// rows, without the column the stream's `change_time` fills: when a change happened is not
+    /// what it changed.
     fn data(
         &self,
         rows: usize,
-        columns: &[ArrayRef],
+        held: &[ArrayRef],
         change_time: Option<&str>,
     ) -> Result<RecordBatch, arrow_schema::ArrowError> {
         let timed = |source: &Source| match source {
@@ -98,22 +98,22 @@ impl LoweringPlan {
                 .is_some_and(|field| Some(field.name()) == change_time),
             Source::Read(_) | Source::Rest(_) | Source::Nulls => false,
         };
-        // Each column keeps its field's metadata, which says, for one, that its text is JSON.
+        // Each column keeps its type's metadata, which says, for one, that its text is JSON.
         let data: Vec<_> = self
             .view
-            .schema
-            .fields()
+            .model
+            .columns
             .iter()
-            .zip(columns)
+            .zip(held)
             .zip(&self.sources)
             .filter(|(_, source)| !timed(source))
-            .map(|((field, array), _)| (field, array))
+            .map(|((column, array), _)| (column, array))
             .collect();
         let fields: Vec<_> = data
             .iter()
-            .map(|(field, array)| {
-                arrow_schema::Field::new(field.name(), array.data_type().clone(), true)
-                    .with_metadata(field.metadata().clone())
+            .map(|(column, array)| {
+                arrow_schema::Field::new(column.name(), array.data_type().clone(), true)
+                    .with_metadata(column.to_arrow().metadata().clone())
             })
             .collect();
         let arrays = data.iter().map(|(_, array)| Arc::clone(array)).collect();

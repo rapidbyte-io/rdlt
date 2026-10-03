@@ -628,3 +628,125 @@ async fn json_the_source_renders_again_differently_opens_no_version() {
 fn text_array(text: &str) -> ArrayRef {
     Arc::new(arrow_array::StringArray::from(vec![text]))
 }
+
+/// The memory destination at `store`, storing values of none of `kinds` as they are: as text.
+async fn storing_as_text(
+    store: &str,
+    kinds: &'static [rdlt_connector::TypeKind],
+) -> Arc<dyn rdlt_connector::Destination> {
+    limited(memory(store).await, move |capabilities| {
+        for kind in kinds {
+            capabilities.types.remove(kind);
+        }
+        capabilities.nested.json = false;
+    })
+}
+
+/// Loads each of `runs`, a batch of one row of key 1, into the history table of `store`, through
+/// the memory destination storing `kinds` as text; the versions it then holds, and how many are
+/// current.
+async fn versions_of_runs(
+    store: &str,
+    kinds: &'static [rdlt_connector::TypeKind],
+    runs: Vec<RecordBatch>,
+) -> (usize, usize) {
+    for rows in runs {
+        let events = BatchStream::new("events", vec![rows]).primary_key(&["id"]);
+        let outcome = engine(commit_every(10))
+            .run(
+                pipeline(store, [stream("events").write(WriteMode::History)]),
+                batches(store, vec![events]).await,
+                storing_as_text(store, kinds).await,
+            )
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{store}: {:?}",
+            outcome.error
+        );
+    }
+    let current: Vec<bool> = rdlt_connector_reference::published(store, "events")
+        .iter()
+        .flat_map(|batch| {
+            let current = batch
+                .column_by_name("_rdlt_is_current")
+                .expect("a history column");
+            current.as_boolean().iter().flatten().collect::<Vec<_>>()
+        })
+        .collect();
+    (
+        current.len(),
+        current.iter().filter(|current| **current).count(),
+    )
+}
+
+/// A batch of key 1 and `value`, whose field is `field`.
+fn keyed(field: arrow_schema::Field, value: ArrayRef) -> RecordBatch {
+    let schema = arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("id", DataType::Int64, false),
+        field,
+    ]);
+    RecordBatch::try_new(Arc::new(schema), vec![ints(&[1]), value]).expect("a valid batch")
+}
+
+/// One object as JSON text twice, its keys in another order and spaced otherwise.
+fn respelled() -> Vec<RecordBatch> {
+    let json = || {
+        arrow_schema::Field::new("j", DataType::Utf8, true).with_metadata(
+            [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())]
+                .into_iter()
+                .collect(),
+        )
+    };
+    [r#"{"a": 1, "b": [2, 3]}"#, r#"{"b":[2,3],"a":1}"#]
+        .map(|spelling| keyed(json(), text_array(spelling)))
+        .to_vec()
+}
+
+/// One decimal value, at a scale of two and then, its type widened, of four.
+fn rescaled() -> Vec<RecordBatch> {
+    let decimal = |precision: u8, scale: i8, value: i128| {
+        let values = arrow_array::Decimal128Array::from(vec![value])
+            .with_precision_and_scale(precision, scale)
+            .expect("a decimal");
+        let field = arrow_schema::Field::new("d", values.data_type().clone(), true);
+        keyed(field, Arc::new(values))
+    };
+    vec![decimal(10, 2, 150), decimal(12, 4, 15_000)]
+}
+
+/// One 32-bit float, then the 64-bit float it widens to, then it again.
+fn widened() -> Vec<RecordBatch> {
+    let single = || {
+        let field = arrow_schema::Field::new("f", DataType::Float32, true);
+        keyed(
+            field,
+            Arc::new(arrow_array::Float32Array::from(vec![0.1_f32])),
+        )
+    };
+    let field = arrow_schema::Field::new("f", DataType::Float64, true);
+    let double = Arc::new(arrow_array::Float64Array::from(vec![f64::from(0.1_f32)]));
+    vec![single(), keyed(field, double), single()]
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_version_is_hashed_by_the_values_it_holds_however_the_destination_stores_them() {
+    use rdlt_connector::TypeKind as K;
+    let cases: [(&str, &'static [K], Vec<RecordBatch>); 6] = [
+        ("hashed_json_text", &[K::Json], respelled()),
+        ("hashed_json_native", &[], respelled()),
+        ("hashed_decimal_text", &[K::Decimal], rescaled()),
+        ("hashed_decimal_native", &[], rescaled()),
+        ("hashed_float_text", &[K::Float32, K::Float64], widened()),
+        ("hashed_float_native", &[], widened()),
+    ];
+    for (store, kinds, runs) in cases {
+        // Each run sends the same values: one version, current.
+        assert_eq!(
+            versions_of_runs(store, kinds, runs).await,
+            (1, 1),
+            "{store}"
+        );
+    }
+}

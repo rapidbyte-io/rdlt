@@ -212,7 +212,7 @@ impl LoweringPlan {
             + self.splits.discarded(&batch, &fitted);
         check_key(stream, view, &batch, &self.sources, changes.as_ref())?;
         let rows = batch.num_rows();
-        let mut columns = self.model_columns(&batch, &fitted)?;
+        let (mut columns, held) = self.model_columns(&batch, &fitted)?;
         columns.extend(self.constants(stamp, rows).map_err(failed)?);
         if view.meta.seq.is_some() {
             let seq = match &changes {
@@ -227,7 +227,10 @@ impl LoweringPlan {
             self.stored_changes(changes, stamp, &mut columns)
                 .map_err(failed)?;
         }
-        columns.extend(self.history(&batch, &columns, stamp, changes.as_ref())?);
+        if let Some(held) = held {
+            let first = columns.len();
+            columns.extend(self.history(&batch, (&held, first), stamp, changes.as_ref())?);
+        }
         let first = columns.len();
         columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
         columns.extend(self.directives(changes.as_ref()));
@@ -259,10 +262,12 @@ impl LoweringPlan {
     }
 
     /// The model's columns of `batch`, each from where the plan routes it, converted and lowered
-    /// as its column stores it; a column the batch lacks is null.
-    fn model_columns(&self, batch: &RecordBatch, fitted: &Fitted) -> Result<Vec<ArrayRef>, Error> {
+    /// as its column stores it; a column the batch lacks is null. A history table's columns come
+    /// also as the model's types hold them, which its versions are hashed by.
+    fn model_columns(&self, batch: &RecordBatch, fitted: &Fitted) -> Result<Columns, Error> {
         let view = &self.view;
         let mut columns = Vec::with_capacity(view.physical.len());
+        let mut held = view.meta.history.as_ref().map(|_| Vec::new());
         for ((column, lowered), source) in view
             .model
             .columns
@@ -270,27 +275,37 @@ impl LoweringPlan {
             .zip(&view.lowered)
             .zip(&self.sources)
         {
-            let array = match source {
+            let converted = match source {
                 Source::Incoming(index, from) if !source.is_null() => {
-                    store(&self.stream, batch.column(*index), from, column, lowered)?
+                    held_as(&self.stream, batch.column(*index), from, column)?
                 }
                 Source::Read(index) => {
                     let own = fitted.own(*index, column.logical_type());
                     let own = own.map_err(|error| self.unread(column, error))?;
-                    store(&self.stream, &own, column.logical_type(), column, lowered)?
+                    held_as(&self.stream, &own, column.logical_type(), column)?
                 }
                 Source::Rest(index) => {
                     let rest = fitted.rest(*index);
                     let rest = rest.map_err(|error| self.unread(column, error))?;
-                    store(&self.stream, &rest, &LogicalType::Json, column, lowered)?
+                    held_as(&self.stream, &rest, &LogicalType::Json, column)?
                 }
                 // Nulls are built as the destination stores them, never as the wider type the
-                // column holds them in.
-                _ => new_null_array(&lowered.to_arrow(), batch.num_rows()),
+                // column holds them in; a hash leaves a null column out.
+                _ => {
+                    let rows = batch.num_rows();
+                    columns.push(new_null_array(&lowered.to_arrow(), rows));
+                    if let Some(held) = &mut held {
+                        held.push(new_null_array(&arrow_schema::DataType::Null, rows));
+                    }
+                    continue;
+                }
             };
-            columns.push(array);
+            columns.push(stored_as(&self.stream, &converted, column, lowered)?);
+            if let Some(held) = &mut held {
+                held.push(converted);
+            }
         }
-        Ok(columns)
+        Ok((columns, held))
     }
 
     /// The rows of `batch` the schema policy keeps, which those are where it drops some, how many
@@ -383,26 +398,42 @@ impl LoweringPlan {
     }
 }
 
-/// `array`, of type `from`, as `column` holds it and `lowered` stores it; a value the column
-/// cannot hold fails the batch.
-fn store(
+/// A batch's model columns as the destination stores them, and for a history table as the
+/// model's types hold them.
+type Columns = (Vec<ArrayRef>, Option<Vec<ArrayRef>>);
+
+/// `array`, of type `from`, as `column` holds it; a value the column cannot hold fails the
+/// batch.
+fn held_as(
     stream: &StreamName,
     array: &ArrayRef,
     from: &LogicalType,
     column: &Field,
-    lowered: &LogicalType,
 ) -> Result<ArrayRef, Error> {
     convert(array, from, column.logical_type())
-        .and_then(|array| lower_array(&array, column.logical_type(), lowered))
-        .map_err(|error| {
-            let detail = format!(
-                "stream {stream}: column {} cannot hold a value of the batch: {error}",
-                column.name()
-            );
-            Error::schema(detail)
-                .with_code("value_unrepresentable")
-                .with_stream(stream)
-        })
+        .map_err(|error| unrepresentable(stream, column, &error))
+}
+
+/// `array`, as `column` holds it, as `lowered` stores it.
+fn stored_as(
+    stream: &StreamName,
+    array: &ArrayRef,
+    column: &Field,
+    lowered: &LogicalType,
+) -> Result<ArrayRef, Error> {
+    lower_array(array, column.logical_type(), lowered)
+        .map_err(|error| unrepresentable(stream, column, &error))
+}
+
+/// The error for a value of `stream`'s batch `column` cannot hold.
+fn unrepresentable(stream: &StreamName, column: &Field, error: &arrow_schema::ArrowError) -> Error {
+    let detail = format!(
+        "stream {stream}: column {} cannot hold a value of the batch: {error}",
+        column.name()
+    );
+    Error::schema(detail)
+        .with_code("value_unrepresentable")
+        .with_stream(stream)
 }
 
 /// The lineage columns of `view`'s rows and their types: `lineage`, the rows `kept` keeps where
