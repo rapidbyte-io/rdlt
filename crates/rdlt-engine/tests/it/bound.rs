@@ -12,7 +12,7 @@ use rdlt_connector::ReadMode;
 use rdlt_engine::{LocalWal, Nested, RunOutcome, RunStatus, SchemaSettings, StreamPlan, WalStore};
 
 use crate::HEAP;
-use crate::support::destinations::{Step as Fails, failing, null};
+use crate::support::destinations::{Step as Fails, buffering, failing, null};
 use crate::support::making::{Step, Steps, making, making_parts};
 use crate::support::{
     commit_every, engine, pipeline, pooled_engine, pooled_logging_engine, retrying, stream,
@@ -294,4 +294,40 @@ async fn list_views_naming_shared_items_normalize_within_the_bound() {
     });
     let (peak, outcome) = normalizing("bound_views", steps).await;
     within(&outcome, 500 + 500 * 4_000, peak, bound());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_logged_commit_replayed_into_writers_that_buffer_stays_within_the_budget() {
+    const BATCHES: usize = 120;
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    // One commit takes every batch, about four times the budget; it fails before it lands, and
+    // the next attempt stages it again from the log through writers that hold every batch until
+    // they flush.
+    let blob = |_: usize| -> ArrayRef {
+        Arc::new(arrow_array::BinaryArray::from_iter_values([vec![
+            7_u8;
+            1 << 20
+        ]]))
+    };
+    let steps: Steps = Arc::new(move |step| match step {
+        step if step < BATCHES => Some(Step::Batch(batch(blob(step)))),
+        step if step == BATCHES => Some(Step::Checkpoint(8)),
+        _ => None,
+    });
+    let config = retrying(3)
+        .commit(rdlt_engine::CommitPolicy::new(None, Some(1_000_000), None).expect("a policy"))
+        .memory(BUDGET)
+        .lanes(1);
+    let source = making("bound_buffered", steps).await;
+    let plan = pipeline(
+        "bound-buffered",
+        [stream("events").read(ReadMode::Incremental)],
+    )
+    .with_wal(true);
+    let destination = failing(buffering().await, Fails::CommitOnce);
+    let run = pooled_logging_engine(config, 4, store).run(plan, source, destination);
+    let (peak, outcome) = measured(run).await;
+    assert_eq!(outcome.report.attempts.len(), 2, "{:?}", outcome.error);
+    within(&outcome, BATCHES as u64, peak, bound());
 }
