@@ -90,8 +90,8 @@ pub(crate) struct Shared {
     pub(crate) held: AtomicU64,
     /// The first failure, which every later batch and command is answered with.
     pub(crate) failed: parking_lot::Mutex<Option<Error>>,
-    /// The oldest commit whose frame a chunk not deleted holds, which a replay of the log may
-    /// repeat; none where no chunk holds one.
+    /// The oldest commit a replay of the log may repeat: one waiting for its receipt, or whose
+    /// receipt no published chunk records yet; none where there is none.
     pub(crate) oldest: parking_lot::Mutex<Option<CommitSeq>>,
 }
 
@@ -134,6 +134,7 @@ impl WalWriter {
             describing: BTreeMap::new(),
             written: BTreeMap::new(),
             pending: BTreeMap::new(),
+            unrecorded: BTreeSet::new(),
             settled: Settled::default(),
         };
         (Self { commands, shared }, log.run(receiver))
@@ -225,6 +226,8 @@ struct Log {
     written: BTreeMap<u64, Written>,
     /// The segments of each commit without a receipt.
     pending: BTreeMap<CommitSeq, SegmentSet>,
+    /// The commits with receipts that no chunk published since records.
+    unrecorded: BTreeSet<CommitSeq>,
     /// The segments of commits with receipts, and those abandoned, still in a chunk.
     settled: Settled,
     /// What the log holds on disk, and its first failure: after a failed write, what the log
@@ -444,7 +447,14 @@ impl Log {
         self.current().commits.insert(seq);
         self.publish().await?;
         self.pending.insert(seq, segments);
+        self.note_oldest();
         Ok(())
+    }
+
+    /// Notes the oldest commit a replay of the log may repeat.
+    fn note_oldest(&self) {
+        let oldest = self.pending.keys().chain(&self.unrecorded).min().copied();
+        *self.shared.oldest.lock() = oldest;
     }
 
     /// Notes commit `seq`'s receipt, and carries open segments out of chunks it leaves holding
@@ -454,6 +464,8 @@ impl Log {
         crash_point!("engine.receipt.after");
         if let Some(segments) = self.pending.remove(&seq) {
             self.settled.settle(segments.iter());
+            self.unrecorded.insert(seq);
+            self.note_oldest();
         }
         self.carry().await
     }

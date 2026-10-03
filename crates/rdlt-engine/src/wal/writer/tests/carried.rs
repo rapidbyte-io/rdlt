@@ -179,3 +179,24 @@ async fn a_carried_segment_replays_its_batches_in_the_order_they_were_logged() {
         .collect();
     assert_eq!(replayed, [logged[1], logged[0]]);
 }
+
+#[tokio::test]
+async fn a_segment_open_for_long_holds_back_no_commit_a_replay_never_repeats() {
+    let store = Arc::new(MemoryWal::default());
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Segment 1000 stays open, and holds more of each chunk than any commit does, so every
+        // chunk stays, commit 1's among them; commits go on.
+        for number in 1..=4 {
+            round(&mut log, number, 1, 2).await;
+        }
+        log.batch(50, 0).await;
+        log.commit(5, &[50]).await.expect("durable");
+        assert!(numbers(&store).contains(&0), "the open segment keeps chunk 0");
+        // Every receipt before commit 5 is in a published chunk: only commit 5 may be repeated.
+        let oldest = *log.writer.shared().oldest.lock();
+        assert_eq!(oldest.map(rdlt_connector::CommitSeq::get), Some(5));
+    })
+    .await
+    .expect("the writer ends");
+}
