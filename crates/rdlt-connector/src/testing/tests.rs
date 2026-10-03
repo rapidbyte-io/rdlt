@@ -689,6 +689,9 @@ struct VaultConfig {
     /// Publishes one column of those whose names differ only in ASCII case, though it declares
     /// it keeps case.
     merge_cased_names: bool,
+    /// Declares it folds identifiers to lower case and takes any character, but compares them
+    /// by Unicode's simple case folding: one column of those that fold alike so is published.
+    fold_simply: bool,
     /// Keeps only the staging of the table's writer that wrote last, of all its writers.
     lose_lanes: bool,
     /// Fails its check, though sessions open.
@@ -906,6 +909,10 @@ impl DestinationConnector for Vault {
         }
         if self.config.fixed_schema {
             capabilities.schema_changes = SchemaChanges::default();
+        }
+        if self.config.fold_simply {
+            capabilities.identifiers.case = crate::capabilities::IdentifierCase::Lower;
+            capabilities.identifiers.chars = crate::capabilities::IdentifierChars::Any;
         }
         capabilities.merge_changes &= !self.config.no_change_merges;
         capabilities.write_modes.replace &= !self.config.no_replace;
@@ -1227,8 +1234,9 @@ impl Session for VaultSession {
     type Writer = VaultWriter;
 
     async fn apply_schema(&mut self, change: &TableChange) -> Result<()> {
-        // It keeps to the identifiers it declares: ASCII word characters.
+        // It keeps to the identifiers it declares: ASCII word characters, unless it takes any.
         if let TableChange::Create { schema, .. } = change
+            && !self.config.fold_simply
             && let Some(field) = schema.fields().iter().find(|field| {
                 !field
                     .name()
@@ -1430,7 +1438,11 @@ impl VaultWriter {
             }
         }
         let batch = if self.config.merge_cased_names {
-            merged_cased_names(&batch)
+            merged_names(&batch, str::to_ascii_lowercase)
+        } else if self.config.fold_simply {
+            merged_names(&batch, |name| {
+                crate::testing::destination::simply_folded(name)
+            })
         } else {
             batch
         };
@@ -1731,8 +1743,8 @@ fn blanked_names(batch: &RecordBatch) -> RecordBatch {
     RecordBatch::try_new(schema, columns).expect("nulls fit a nullable column")
 }
 
-/// `batch` keeping, of columns whose names differ only in ASCII case, the first.
-fn merged_cased_names(batch: &RecordBatch) -> RecordBatch {
+/// `batch` keeping, of columns whose names `fold` makes alike, the first.
+fn merged_names(batch: &RecordBatch, fold: fn(&str) -> String) -> RecordBatch {
     let schema = batch.schema();
     let mut seen: Vec<String> = Vec::new();
     let (fields, columns): (Vec<_>, Vec<_>) = schema
@@ -1740,7 +1752,7 @@ fn merged_cased_names(batch: &RecordBatch) -> RecordBatch {
         .iter()
         .zip(batch.columns())
         .filter(|(field, _)| {
-            let folded = field.name().to_ascii_lowercase();
+            let folded = fold(field.name());
             let first = !seen.contains(&folded);
             seen.push(folded);
             first
@@ -1830,6 +1842,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("static_epoch", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
     ("merge_cased_names", &["D-NAMES"]),
+    ("fold_simply", &["D-NAMES"]),
     ("refuse_check", &["D-CHECK"]),
     ("lose_lanes", &["D-LANES"]),
     ("keep_dropped", &["D-DROP"]),
