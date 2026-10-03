@@ -490,3 +490,51 @@ async fn a_following_run_reads_a_full_stream_to_its_end_and_swaps_it_in() {
     assert_eq!(published.values().map(Vec::len).collect::<Vec<_>>(), [5, 5]);
     assert_eq!(outcome.report.streams["events"].generations_swapped, 1);
 }
+
+/// How many partitions of `events` the state `store` holds for pipeline `pipeline` records.
+async fn recorded_partitions(store: &str, pipeline: &str) -> usize {
+    let context = rdlt_connector::OpenContext {
+        pipeline: rdlt_connector::PipelineId::parse(pipeline).expect("a valid pipeline"),
+        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let opened = memory(store)
+        .await
+        .open(&context)
+        .await
+        .expect("the store opens");
+    let state =
+        rdlt_connector::PipelineState::from_records(&opened.state).expect("the state reads");
+    let events = StreamName::new("events").expect("a name");
+    state
+        .streams
+        .get(&events)
+        .map_or(0, |stream| stream.partitions.len())
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_a_replan_drops_keeps_its_position_across_runs() {
+    let retiring = json!({
+        "name": "events", "partitions": 3, "messages": 2, "per_second": 4,
+        "partitions_retired": 1, "retired_after_ms": 500,
+    });
+    let run = || async {
+        let plan = pipeline("kept", [incremental()]).with_until(Until::For(Duration::from_secs(3)));
+        let source = log("kept", retiring.clone()).await;
+        let outcome = engine(following())
+            .run(plan, source, memory("kept").await)
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            outcome.error
+        );
+    };
+    // A plan of the run that follows drops the retired partition: its position stays, should a
+    // plan name it again.
+    run().await;
+    assert_eq!(recorded_partitions("kept", "kept").await, 3);
+    // The next run's plans do not name it either, and it stays.
+    run().await;
+    assert_eq!(recorded_partitions("kept", "kept").await, 3);
+}

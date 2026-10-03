@@ -276,3 +276,44 @@ fn the_default_state_limit_is_what_a_message_carrying_state_may_take() {
         16 << 20
     );
 }
+
+/// Loads `name`'s stream with its plans naming `partitions`, which must succeed; the ids of the
+/// partitions the stored state then names.
+async fn planned(name: &str, partitions: &[&str]) -> Vec<String> {
+    let shape = Shape {
+        partitions: partitions.iter().map(ToString::to_string).collect(),
+        cursor: 8,
+        replayable: true,
+    };
+    let outcome = engine(commit_every(1_000))
+        .run(
+            pipeline(name, [stream("events").read(ReadMode::Incremental)]),
+            source(name, shape).await,
+            memory(name).await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let state = stored(memory(name).await.as_ref(), name).await;
+    state
+        .streams
+        .get(&StreamName::new("events").expect("a name"))
+        .map(|stream| stream.partitions.keys().map(ToString::to_string).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_a_plan_omits_keeps_its_position() {
+    let name = "stored-kept";
+    assert_eq!(planned(name, &["p0", "p1"]).await, ["p0", "p1"]);
+    // A plan may omit a partition for a moment, as a listing that failed in part does.
+    assert_eq!(planned(name, &["p1"]).await, ["p0", "p1"]);
+    assert_eq!(crate::support::published_rows(name, "events"), 2);
+    // Named again, it resumes where it stood: no row is read twice.
+    assert_eq!(planned(name, &["p0", "p1"]).await, ["p0", "p1"]);
+    assert_eq!(crate::support::published_rows(name, "events"), 2);
+}
