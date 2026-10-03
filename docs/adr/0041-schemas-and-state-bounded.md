@@ -70,7 +70,10 @@ one run to the next, broke both:
     least memory.
   - `EngineConfig::child_table_limit` is the lesser of `child_tables` and as many tables of a few
     columns, 4 KiB of records each, as that state holds.
-  - A child table beyond it is refused as `child_tables_exceeded` before it is added.
+  - A child table beyond it is refused as `child_tables_exceeded` before it is added. Wider
+    child tables can pass the state limit first: a commit whose state would fit but for the
+    records of the child tables state does not record yet is refused as
+    `child_tables_exceeded` too, for their stream, before `state_bytes_exceeded` is considered.
 - **Counters count, and recorded identifiers are distinct.** A table's schema version, and the
   changes an attempt counts, advance with checked arithmetic: a change past `u32::MAX` is
   `schema_version_exhausted`. A schema recorded at version 0 is `state_invalid`. Building an

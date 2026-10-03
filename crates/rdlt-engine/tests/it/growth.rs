@@ -136,6 +136,27 @@ async fn child_tables_recorded_by_earlier_runs_count_toward_the_limit() {
     refused(&outcome, "child_tables_exceeded");
 }
 
+#[tokio::test(start_paused = true)]
+async fn wide_child_tables_passing_the_state_limit_are_refused_as_child_tables() {
+    let store = "growth_wide_children";
+    let config =
+        least().commit(rdlt_engine::CommitPolicy::new(None, Some(1), None).expect("valid"));
+    let limits = config.clone().build().expect("a valid config");
+    // Fewer child tables than the limit counts, each of a hundred columns.
+    let documents: Vec<Value> = (0..40)
+        .map(|document| {
+            let mut fields: Map<String, Value> = (0..10)
+                .map(|array| (format!("a{document}_{array}"), json!([record("f", 100)])))
+                .collect();
+            fields.insert("id".to_owned(), json!(document));
+            Value::Object(fields)
+        })
+        .collect();
+    assert!(documents.len() * 10 < limits.child_table_limit());
+    let outcome = load(store, &documents, config, Nested::normalize()).await;
+    refused(&outcome, "child_tables_exceeded");
+}
+
 #[tokio::test]
 async fn a_table_changed_by_every_push_loads_through_a_served_destination() {
     use crate::support::targets::Target;

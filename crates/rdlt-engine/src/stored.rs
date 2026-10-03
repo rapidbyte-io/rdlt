@@ -7,11 +7,11 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rdlt_connector::wire::{commit_bytes, record_bytes};
-use rdlt_connector::{CommitMeta, StateChange, StateKey, StateRecord};
+use rdlt_connector::{CommitMeta, StateChange, StateKey, StateRecord, StreamName};
 
 use crate::config::EngineConfig;
 use crate::error::Error;
-use crate::limits::{STATE_BYTES_EXCEEDED, STATE_ENVELOPE};
+use crate::limits::{CHILD_TABLES_EXCEEDED, STATE_BYTES_EXCEEDED, STATE_ENVELOPE};
 
 /// The bytes each stored record takes in an open's answer, and their sum.
 #[derive(Debug)]
@@ -69,19 +69,50 @@ impl Stored {
     /// whose limit fell keeps loading. The receipt, which every commit replaces, is not counted
     /// there: it takes a byte more whenever one of its numbers gains a digit.
     ///
+    /// The records of child tables state does not record yet, `born` by their keys with their
+    /// streams, are blamed first: where the state would fit without them, the commit is refused
+    /// for its stream's child tables.
+    ///
     /// # Errors
     ///
-    /// A `Config` error coded `state_bytes_exceeded` where the commit would grow state past its
-    /// limit or send a request past its: nothing of the commit is logged, acknowledged or sent.
-    pub(crate) fn admit(&self, meta: &CommitMeta) -> Result<(), Error> {
+    /// A `Schema` error coded `child_tables_exceeded` where only the new child tables' records
+    /// take state past its limit, else a `Config` error coded `state_bytes_exceeded` where the
+    /// commit would grow state past its limit or send a request past its: nothing of the commit
+    /// is logged, acknowledged or sent.
+    pub(crate) fn admit(
+        &self,
+        meta: &CommitMeta,
+        born: &[(StreamName, String)],
+    ) -> Result<(), Error> {
         let left = self.after(&meta.state_delta);
         let request = commit_bytes(meta);
         let StateLimits {
             stored,
             request: sent,
         } = self.limits;
-        if (left <= stored || !self.grows(&meta.state_delta)) && request <= sent {
+        let fits = request <= sent;
+        if fits && self.fits(&meta.state_delta) {
             return Ok(());
+        }
+        let unborn: Vec<StateChange> = meta
+            .state_delta
+            .iter()
+            .filter(|change| match change {
+                StateChange::Put(record) => !born.iter().any(|(_, key)| *key == record.key),
+                StateChange::Delete(_) => true,
+            })
+            .cloned()
+            .collect();
+        if let Some((stream, _)) = born.first()
+            && fits
+            && self.fits(&unborn)
+        {
+            return Err(Error::schema(format!(
+                "stream {stream}: its new child tables would leave {left} bytes of state, where \
+                 {stored} may be stored"
+            ))
+            .with_code(CHILD_TABLES_EXCEEDED)
+            .with_stream(stream));
         }
         Err(Error::config(format!(
             "a commit would leave {left} bytes of state, where {stored} may be stored, and send \
@@ -105,6 +136,11 @@ impl Stored {
                 }
             }
         }
+    }
+
+    /// Whether the state `delta` leaves fits its limit, or is no larger than what is stored.
+    fn fits(&self, delta: &[StateChange]) -> bool {
+        self.after(delta) <= self.limits.stored || !self.grows(delta)
     }
 
     /// Bytes: what the stored records take once `delta` lands.

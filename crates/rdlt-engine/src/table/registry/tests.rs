@@ -777,3 +777,67 @@ async fn only_the_column_whose_widen_is_refused_is_kept_from_widening_for_the_at
     assert_eq!(shape[1], ("b".to_owned(), LogicalType::Int32), "{shape:?}");
     assert_eq!(columns.lock().get("b"), Some(&LogicalType::Int32));
 }
+
+#[tokio::test]
+async fn a_commit_names_the_records_of_child_tables_state_does_not_record_yet() {
+    use rdlt_connector::StateKey;
+    let items = vec![Arc::from("items")];
+    let path = TablePath::new(["orders", "items"]).unwrap();
+    let keys = [
+        StateKey::Schema(path.clone()).encode(),
+        StateKey::Names(path.clone()).encode(),
+    ];
+    let stream = StreamName::new("orders").unwrap();
+    // A child table new to state, beside its root's first records.
+    let (tables, _) = tables(None, Model::default());
+    tables
+        .fit(0, &schema(&[("id", LogicalType::Int64)]))
+        .await
+        .unwrap();
+    let child = tables.child(0, &items).await.unwrap();
+    tables
+        .fit(child, &schema(&[("sku", LogicalType::Utf8)]))
+        .await
+        .unwrap();
+    let born: Vec<(StreamName, String)> = keys
+        .iter()
+        .map(|key| (stream.clone(), key.clone()))
+        .collect();
+    assert_eq!(tables.delta().born, born);
+    // One state records changes, but is not born.
+    let mut names = rdlt_connector::NameMap::default();
+    names
+        .insert(ColumnKey::Source(ColumnPath::from("sku")), "sku")
+        .unwrap();
+    let recorded = rdlt_connector::TableState {
+        schema: Some((
+            SchemaVersion(1),
+            TableSchema::new(vec![Field::new("sku", LogicalType::Utf8, true)]).unwrap(),
+        )),
+        physical: Some("orders__items".into()),
+        names,
+        sequences: None,
+        exact: BTreeSet::new(),
+        history: false,
+        key: Vec::new(),
+        change_time: None,
+    };
+    let state = rdlt_connector::PipelineState {
+        tables: BTreeMap::from([(path, recorded)]),
+        ..rdlt_connector::PipelineState::default()
+    };
+    let session = SharedSession::new(Box::new(Recorder(Changes::default())));
+    let tables = Tables::new(session).committed(&state).unwrap();
+    tables.add(resolver(), &table(None), Model::default());
+    let child = tables.child(0, &items).await.unwrap();
+    let wider = schema(&[("sku", LogicalType::Utf8), ("qty", LogicalType::Int64)]);
+    tables.fit(child, &wider).await.unwrap();
+    let delta = tables.delta();
+    assert!(
+        delta
+            .changes
+            .iter()
+            .any(|change| matches!(change, StateChange::Put(record) if record.key == keys[0]))
+    );
+    assert_eq!(delta.born, []);
+}
