@@ -31,7 +31,9 @@ use arrow_array::types::{
 use arrow_schema::{DataType, Fields};
 
 use self::named::{Named, Place};
-use super::widths::{BRACKETS, OFFSET, Scalar, count, key, keys, null_slot, null_text, scalar};
+use super::widths::{
+    BRACKETS, OFFSET, Scalar, count, item_slot, key, keys, null_slot, null_text, scalar,
+};
 use super::{Rendering, Stored};
 use crate::types::{self, LogicalType, TypeKind};
 
@@ -95,6 +97,17 @@ pub(super) struct Within<'t> {
     pub(super) target: Option<&'t LogicalType>,
     /// Whether the destination stores the column as text.
     pub(super) text: bool,
+    /// How the values reach the target's type.
+    pub(super) reach: Reach,
+}
+
+/// How a column's values reach the type of the table column they are converted to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Reach {
+    /// Each is converted.
+    Converted,
+    /// They are JSON text, and those the type holds are read into it, the others copied as text.
+    Read,
 }
 
 impl<'t> Within<'t> {
@@ -105,6 +118,11 @@ impl<'t> Within<'t> {
             planned: stored.is_some(),
             target: stored.map(|stored| &stored.column),
             text: stored.is_some_and(|stored| stored.text),
+            reach: if stored.is_some_and(|stored| stored.read) {
+                Reach::Read
+            } else {
+                Reach::Converted
+            },
         }
     }
 
@@ -114,6 +132,7 @@ impl<'t> Within<'t> {
             nested: true,
             target,
             text: false,
+            reach: Reach::Converted,
             ..self
         }
     }
@@ -140,6 +159,7 @@ pub(super) const JSON: Within<'static> = Within {
     planned: false,
     target: None,
     text: false,
+    reach: Reach::Converted,
 };
 
 impl Meter {
@@ -246,6 +266,26 @@ impl Meter {
     fn range(&mut self, array: &dyn Array, rows: Range<usize>, within: Within<'_>) {
         if rows.is_empty() || self.over() {
             return;
+        }
+        if let (Reach::Read, Some(target)) = (within.reach, within.target) {
+            // The values its type holds are read into it, each a null slot of it at the most and
+            // twice, built and converted, and their items a slot of the widest item it holds
+            // each, which no more than a byte of text names; the others are copied as text.
+            let start = self.spent;
+            self.range(
+                array,
+                rows.clone(),
+                Within {
+                    reach: Reach::Converted,
+                    ..within
+                },
+            );
+            let text = self.spent.saturating_sub(start);
+            let target = target.to_arrow();
+            self.add(text.saturating_mul(2 * item_slot(&target) + 1));
+            // A column stored as text holds each row's text beside: a null's as one is measured.
+            let rendered = if within.text { null_text(&target) } else { 0 };
+            return self.times(rows.len(), 2 * null_slot(&target) + rendered);
         }
         if within.json() {
             // A column of JSON holds each value decoded, and its JSON text beside.

@@ -259,11 +259,11 @@ fn object<'de, A: MapAccess<'de>>(
 
 /// One value, `depth` levels deep, appended to `column`, which a column made for it is sized for
 /// `capacity` rows of.
-struct Value<'a> {
-    column: &'a mut Column,
-    context: &'a Context,
-    depth: u64,
-    capacity: usize,
+pub(crate) struct Value<'a> {
+    pub(crate) column: &'a mut Column,
+    pub(crate) context: &'a Context,
+    pub(crate) depth: u64,
+    pub(crate) capacity: usize,
 }
 
 impl<'a> Value<'a> {

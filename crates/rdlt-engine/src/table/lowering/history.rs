@@ -96,7 +96,7 @@ impl LoweringPlan {
                 .iter()
                 .nth(*index)
                 .is_some_and(|field| Some(field.name()) == change_time),
-            Source::Nulls => false,
+            Source::Read(_) | Source::Rest(_) | Source::Nulls => false,
         };
         // Each column keeps its field's metadata, which says, for one, that its text is JSON.
         let data: Vec<_> = self

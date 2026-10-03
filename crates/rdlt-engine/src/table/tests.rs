@@ -1499,6 +1499,27 @@ fn an_integer_a_float_would_round_ends_a_column_s_exactness_and_later_floats_go_
 }
 
 #[test]
+fn json_whose_integers_an_integer_column_reads_ends_its_exactness() {
+    use super::resolve::Rest;
+    // The plan reads the integers only once it lowers them, past where the model records which
+    // columns hold only integers a float holds exactly.
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let model = created(&resolver, &[("amount", LogicalType::Int64)]);
+    assert!(model.exact.contains("amount"), "{:?}", model.exact);
+    let json = resolver
+        .resolve(&model, &schema(&[("amount", LogicalType::Json)]))
+        .unwrap();
+    assert_eq!(
+        json.routes,
+        [Route::Split {
+            own: 0,
+            rest: Rest::Column(1)
+        }]
+    );
+    assert!(json.model.exact.is_empty(), "{:?}", json.model.exact);
+}
+
+#[test]
 fn a_column_created_from_integers_a_float_would_round_is_not_exact() {
     let resolver = resolver(int_to_float(true), plan(), &[]);
     let model = resolver

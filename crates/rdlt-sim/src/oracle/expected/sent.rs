@@ -4,6 +4,7 @@ use rdlt_connector::LogicalType;
 use rdlt_testkit::canon::{self, Canon};
 use rdlt_testkit::decode;
 use rdlt_testkit::drawn::Scalar;
+use rdlt_testkit::held;
 
 /// A value the source sent, which its cell must mean exactly.
 #[derive(Clone, Debug)]
@@ -24,13 +25,19 @@ impl Sent {
     }
 
     /// Whether a column of `column` holds the value cast, as a column of 64-bit floats holds a
-    /// 64-bit integer a float holds exactly.
+    /// 64-bit integer a float holds exactly, and a column of another type a value of JSON its
+    /// type holds.
     pub(in crate::oracle) fn cast_exactly(&self, column: &LogicalType) -> bool {
-        matches!(
-            (self, column),
-            (Self::Typed(Scalar::Int(value), LogicalType::Int64), LogicalType::Float64)
-                if value.unsigned_abs() <= 1 << 53
-        )
+        match (self, column) {
+            (Self::Typed(Scalar::Int(value), LogicalType::Int64), LogicalType::Float64) => {
+                value.unsigned_abs() <= 1 << 53
+            }
+            // A value of a column of JSON whose own column holds it is read into its type.
+            (Self::Typed(Scalar::Json(value), LogicalType::Json), column) => {
+                held::held(value, column).is_some()
+            }
+            _ => false,
+        }
     }
 
     /// Whether the value, pushed as a JSON integer, is one a column of `column`, of floats, would

@@ -27,6 +27,8 @@ use rdlt_connector::{
 pub(crate) use convert::normalize as plain;
 pub(crate) use exact::EXACT_IN_FLOAT;
 pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
+#[cfg(test)]
+pub(crate) use lowering::split_lowered;
 pub(crate) use lowering::{ChangeRows, LoweringPlan, Prepared, Stamp, data_ordinals};
 pub(crate) use model::Model;
 pub(crate) use registry::{Admission, Tables, TablesDelta, shared};

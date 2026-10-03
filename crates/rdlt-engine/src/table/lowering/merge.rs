@@ -58,7 +58,7 @@ pub(super) fn check_key(
             Source::Incoming(index, _) if nulls(batch.column(*index), &keyed) => {
                 return refuse("merge_key_null", format!("key column {name} holds a null"));
             }
-            Source::Incoming(..) => {}
+            Source::Incoming(..) | Source::Read(_) | Source::Rest(_) => {}
         }
     }
     Ok(())

@@ -8,10 +8,14 @@ mod costs;
 #[cfg(test)]
 mod differential;
 mod history;
+mod kept;
 mod merge;
 mod prepared;
 #[cfg(test)]
 mod reference;
+mod split;
+#[cfg(test)]
+pub(crate) use split::lowered as split_lowered;
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -23,13 +27,15 @@ use rdlt_connector::{Field, LoadId, LogicalType, SegmentId, StreamName};
 use super::TableView;
 use super::convert::{convert, text};
 use super::lower::{ID_TYPE, IDX_TYPE};
-use super::resolve::{Incoming, Route};
+use super::resolve::{Incoming, Rest, Route};
 use crate::error::Error;
 use crate::normalize::Lineage;
 pub(crate) use changes::{ChangeRows, data_ordinals};
 use constants::Constants;
+use kept::{discard_rows, kept_by};
 use merge::{check_key, positions, sequence};
 pub(crate) use prepared::Prepared;
+use split::{Fitted, Splits};
 
 /// What the metadata columns of a batch hold.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +56,12 @@ pub(crate) struct Stamp {
 enum Source {
     /// The incoming column at this position, of this type.
     Incoming(usize, LogicalType),
+    /// The values of the incoming column of JSON at this position that the column holds, read
+    /// into its type.
+    Read(usize),
+    /// The values of the incoming column of JSON at this position that its own column does not
+    /// hold.
+    Rest(usize),
     /// Nowhere: the batch has no values for the column.
     Nulls,
 }
@@ -65,6 +77,8 @@ pub(crate) struct LoweringPlan {
     sources: Vec<Source>,
     /// The incoming columns whose values the schema policy discards.
     discarded: Vec<usize>,
+    /// The incoming columns of JSON whose values their own columns hold in part.
+    splits: Splits,
     /// The metadata columns holding one value per load, built once and sliced per batch.
     constants: Mutex<Option<Constants>>,
 }
@@ -74,6 +88,7 @@ impl Source {
     fn is_null(&self) -> bool {
         match self {
             Self::Incoming(_, from) => *from == LogicalType::Null,
+            Self::Read(_) | Self::Rest(_) => false,
             Self::Nulls => true,
         }
     }
@@ -98,11 +113,24 @@ impl LoweringPlan {
                 Route::Column(column) => {
                     sources[*column] = Source::Incoming(index, field.logical_type().clone());
                 }
+                Route::Split { own, rest } => {
+                    sources[*own] = Source::Read(index);
+                    if let Rest::Column(column) = rest {
+                        sources[*column] = Source::Rest(index);
+                    }
+                }
                 Route::DiscardValues => discarded.push(index),
                 Route::DiscardRows | Route::Skip => {}
             }
         }
+        let types: Vec<LogicalType> = view
+            .model
+            .columns
+            .iter()
+            .map(|column| column.logical_type().clone())
+            .collect();
         Self {
+            splits: Splits::of(&routes, &types),
             stream,
             view,
             incoming,
@@ -121,12 +149,21 @@ impl LoweringPlan {
     /// Whether the schema policy drops some of the rows the plan lowers: those holding a value of
     /// a change it discards.
     pub(crate) fn drops_rows(&self) -> bool {
-        self.routes.contains(&Route::DiscardRows)
+        self.routes.iter().any(|route| route.drops_rows())
     }
 
     /// Which rows of `batch` the schema policy keeps, where it drops some.
-    pub(crate) fn kept(&self, batch: &RecordBatch) -> Option<BooleanArray> {
-        kept_by(batch, &self.routes)
+    ///
+    /// # Errors
+    ///
+    /// Where a value of a column of JSON its own column holds in part cannot be read.
+    pub(crate) fn kept(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<Option<BooleanArray>, arrow_schema::ArrowError> {
+        let fitted = self.splits.fit(batch, true)?;
+        let split = self.splits.kept(&fitted, batch.num_rows());
+        Ok(kept_by(batch, &self.routes, split))
     }
 
     /// The incoming columns the plan lowers.
@@ -151,7 +188,7 @@ impl LoweringPlan {
         let failed = |error: arrow_schema::ArrowError| {
             Error::internal(format!("stream {stream}: preparing a batch: {error}"))
         };
-        let (batch, kept, discarded_rows) = discard_rows(batch, &self.routes).map_err(failed)?;
+        let (batch, kept, discarded_rows, fitted) = self.kept_rows(batch).map_err(failed)?;
         let changes = match (changes, &kept) {
             (Some(changes), Some(kept)) => Some(changes.filter(kept).map_err(failed)?),
             (changes, _) => changes.cloned(),
@@ -171,10 +208,11 @@ impl LoweringPlan {
                 let column = batch.column(*index);
                 (column.len() - column.logical_null_count()) as u64
             })
-            .sum();
+            .sum::<u64>()
+            + self.splits.discarded(&batch, &fitted);
         check_key(stream, view, &batch, &self.sources, changes.as_ref())?;
         let rows = batch.num_rows();
-        let mut columns = self.model_columns(&batch)?;
+        let mut columns = self.model_columns(&batch, &fitted)?;
         columns.extend(self.constants(stamp, rows).map_err(failed)?);
         if view.meta.seq.is_some() {
             let seq = match &changes {
@@ -222,7 +260,7 @@ impl LoweringPlan {
 
     /// The model's columns of `batch`, each from where the plan routes it, converted and lowered
     /// as its column stores it; a column the batch lacks is null.
-    fn model_columns(&self, batch: &RecordBatch) -> Result<Vec<ArrayRef>, Error> {
+    fn model_columns(&self, batch: &RecordBatch, fitted: &Fitted) -> Result<Vec<ArrayRef>, Error> {
         let view = &self.view;
         let mut columns = Vec::with_capacity(view.physical.len());
         for ((column, lowered), source) in view
@@ -236,6 +274,16 @@ impl LoweringPlan {
                 Source::Incoming(index, from) if !source.is_null() => {
                     store(&self.stream, batch.column(*index), from, column, lowered)?
                 }
+                Source::Read(index) => {
+                    let own = fitted.own(*index, column.logical_type());
+                    let own = own.map_err(|error| self.unread(column, &error))?;
+                    store(&self.stream, &own, column.logical_type(), column, lowered)?
+                }
+                Source::Rest(index) => {
+                    let rest = fitted.rest(*index);
+                    let rest = rest.map_err(|error| self.unread(column, &error))?;
+                    store(&self.stream, &rest, &LogicalType::Json, column, lowered)?
+                }
                 // Nulls are built as the destination stores them, never as the wider type the
                 // column holds them in.
                 _ => new_null_array(&lowered.to_arrow(), batch.num_rows()),
@@ -243,6 +291,31 @@ impl LoweringPlan {
             columns.push(array);
         }
         Ok(columns)
+    }
+
+    /// The rows of `batch` the schema policy keeps, which those are where it drops some, how many
+    /// it drops, and which values of its columns of JSON their own columns hold, of those kept.
+    fn kept_rows(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<(RecordBatch, Option<BooleanArray>, u64, Fitted), arrow_schema::ArrowError> {
+        let fitted = self.splits.fit(batch, false)?;
+        let split = self.splits.kept(&fitted, batch.num_rows());
+        let (batch, kept, discarded_rows) = discard_rows(batch, &self.routes, split)?;
+        let fitted = match &kept {
+            Some(kept) => fitted.filtered(kept)?,
+            None => fitted,
+        };
+        Ok((batch, kept, discarded_rows, fitted))
+    }
+
+    /// The error for a value of a column of JSON that `column` holds in part that cannot be read.
+    fn unread(&self, column: &Field, error: &arrow_schema::ArrowError) -> Error {
+        Error::internal(format!(
+            "stream {}: column {}: reading the values of JSON text it holds: {error}",
+            self.stream,
+            column.name()
+        ))
     }
 
     /// The sequence column of `rows` rows of a merge table, which the rows `kept` keeps: a row's
@@ -328,53 +401,6 @@ fn store(
                 .with_code("value_unrepresentable")
                 .with_stream(stream)
         })
-}
-
-/// `batch` without the rows holding a value in a column routed to [`Route::DiscardRows`], and
-/// how many rows were dropped.
-fn discard_rows(
-    batch: &RecordBatch,
-    routes: &[Route],
-) -> Result<(RecordBatch, Option<BooleanArray>, u64), arrow_schema::ArrowError> {
-    let Some(keep) = kept_by(batch, routes) else {
-        return Ok((batch.clone(), None, 0));
-    };
-    let kept = arrow_select::filter::filter_record_batch(batch, &keep)?;
-    let dropped = (batch.num_rows() - kept.num_rows()) as u64;
-    Ok((kept, Some(keep), dropped))
-}
-
-/// Which rows of `batch` hold no value in a column routed to [`Route::DiscardRows`], where some
-/// do.
-fn kept_by(batch: &RecordBatch, routes: &[Route]) -> Option<BooleanArray> {
-    let discarding: Vec<&ArrayRef> = routes
-        .iter()
-        .enumerate()
-        .filter(|(_, route)| **route == Route::DiscardRows)
-        .map(|(index, _)| batch.column(index))
-        .collect();
-    // Run-end and dictionary encodings hold their nulls in their values, so only their logical
-    // nulls say which rows hold a value.
-    let nulls: Vec<Option<arrow_buffer::NullBuffer>> =
-        discarding.iter().map(Array::logical_nulls).collect();
-    let empty = |nulls: &Option<arrow_buffer::NullBuffer>| {
-        nulls
-            .as_ref()
-            .is_some_and(|nulls| nulls.null_count() == nulls.len())
-    };
-    if nulls.iter().all(empty) {
-        return None;
-    }
-    Some(
-        (0..batch.num_rows())
-            .map(|row| {
-                let absent = |nulls: &Option<arrow_buffer::NullBuffer>| {
-                    nulls.as_ref().is_some_and(|nulls| nulls.is_null(row))
-                };
-                Some(nulls.iter().all(absent))
-            })
-            .collect(),
-    )
 }
 
 /// The lineage columns of `view`'s rows and their types: `lineage`, the rows `kept` keeps where

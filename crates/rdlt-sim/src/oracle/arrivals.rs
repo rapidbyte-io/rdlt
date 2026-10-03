@@ -7,6 +7,7 @@ mod tests;
 
 use rdlt_connector::{DecimalType, LogicalType};
 use rdlt_testkit::drawn::Scalar;
+use rdlt_testkit::held::held;
 
 use crate::workload::{Row, SimStream};
 
@@ -161,6 +162,27 @@ pub(super) fn widest(stream: &SimStream, row: &Row, column: usize) -> Option<Arr
         .filter_map(|row| row.extras[column].as_ref())
         .map(pushed)
         .reduce(Arrival::join)
+}
+
+/// Whether a column arriving as `arrival`, JSON text, is one whose own column, of `own`, takes
+/// each value it holds alone: only the others take a variant or the policy.
+pub(super) fn splits(arrival: Option<&Arrival>, own: &LogicalType) -> bool {
+    *own != LogicalType::Json && arrival.and_then(Arrival::logical) == Some(LogicalType::Json)
+}
+
+/// Whether a column of `own` holds `row`'s value of drift column `column` alone; `None` where the
+/// model cannot say.
+pub(super) fn alone(
+    stream: &SimStream,
+    row: &Row,
+    column: usize,
+    own: &LogicalType,
+) -> Option<bool> {
+    match row.extras[column].as_ref()? {
+        value if stream.json => pushed(value).fits(own),
+        Scalar::Json(value) => Some(held(value, own).is_some()),
+        _ => None,
+    }
 }
 
 /// The type the engine infers for `value`, pushed in JSON: a float JSON cannot hold is pushed as

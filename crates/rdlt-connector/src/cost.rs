@@ -155,6 +155,9 @@ pub struct Stored {
     pub column: LogicalType,
     /// Whether the destination stores the column's values as text.
     pub text: bool,
+    /// Whether the batch's column is JSON text whose values the column, of another type, holds
+    /// in part: those it holds are read into its type, and the others copied as text.
+    pub read: bool,
 }
 
 /// A run of rows cut from a batch, and what it was measured to expand to.
