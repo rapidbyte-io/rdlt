@@ -20,6 +20,8 @@ pub(crate) struct Located {
     pub(crate) offset: u64,
     pub(crate) len: u64,
     pub(crate) table: u32,
+    /// Where the batch stands among the load's logged batches.
+    pub(crate) ordinal: u64,
 }
 
 /// A commit frame, and the seal and phase frames its load logged just before it: every partition
@@ -37,7 +39,7 @@ pub(crate) struct Scanned {
     pub(crate) header: Option<Header>,
     /// The tables its batch frames name, by index.
     pub(crate) tables: BTreeMap<u32, Table>,
-    /// Each segment's batch frames, in order.
+    /// Each segment's batch frames, in the order they were logged.
     pub(crate) batches: BTreeMap<SegmentId, Vec<Located>>,
     /// Its commit frames with their seals, in order.
     pub(crate) commits: Vec<Logged>,
@@ -102,6 +104,11 @@ pub(crate) async fn scan(
             return Err(unreadable(pipeline, load, &detail));
         }
     }
+    // A segment's batches replay in the order they were logged, though a carry moved some of
+    // them after others.
+    for batches in scanned.batches.values_mut() {
+        batches.sort_by_key(|located| located.ordinal);
+    }
     Ok(scanned)
 }
 
@@ -147,12 +154,17 @@ fn note(
     load: LoadId,
 ) -> Result<(), Error> {
     let frame = match frame {
-        Skimmed::Batch { segment, table } => {
+        Skimmed::Batch {
+            segment,
+            table,
+            ordinal,
+        } => {
             let located = Located {
                 chunk,
                 offset,
                 len,
                 table,
+                ordinal,
             };
             scanned.batches.entry(segment).or_default().push(located);
             return Ok(());

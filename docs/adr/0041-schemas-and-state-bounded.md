@@ -92,9 +92,9 @@ one run to the next, broke both:
   stages only the segments of commits without receipts, all logged after the carry, so copies a
   crash leaves are never staged; a chunk's removal is durable before anything after it. Copying
   costs at most what it frees, and an open segment keeps at most as much of others' data as of
-  its own. A segment that wrote to the chunk being written before the receipt came is replayed
-  with its carried batches after that one: a row carries its own sequence and identity, so the
-  order a segment's batches are staged in decides nothing.
+  its own. Each batch frame carries its ordinal among the load's batches, and replay stages a
+  segment's batches in that order wherever a carry left them: a change stream's rows of one key
+  and one sequence apply in the order they were written, so a crash never changes which wins.
 - **Stored state stays what a message can carry.** The engine measures each stored record as an
   open's answer carries it, from the records it opened on and each commit that lands, and a
   commit's request by its encoding. A commit whose request would pass `state_bytes` less 256 KiB,

@@ -136,6 +136,7 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
         Frame::Batch(frame::Batch {
             segment: SegmentId(1),
             table: 0,
+            ordinal: 0,
             batch,
         }),
         Frame::Seal(frame::Seal {

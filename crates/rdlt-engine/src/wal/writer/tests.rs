@@ -72,9 +72,12 @@ fn batch(segment: u64, table: u32) -> Command {
     )
     .expect("a valid batch");
     let segment = SegmentId(segment);
+    // Each batch takes the next ordinal, as a load's log gives them.
+    let ordinal = ORDINALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let frame = encoded(&Frame::Batch(Batch {
         segment,
         table,
+        ordinal,
         batch: rows,
     }));
     Command::Batch {
@@ -84,6 +87,9 @@ fn batch(segment: u64, table: u32) -> Command {
         held: Box::new(()),
     }
 }
+
+/// The ordinal the next batch of these tests takes.
+static ORDINALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn seq(number: u64) -> CommitSeq {
     (1..number).fold(CommitSeq::FIRST, |seq, _| seq.next())

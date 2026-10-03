@@ -76,7 +76,8 @@ its data from the source again, so an object store backend is not built.
     forward, since its full reads are refused, but for a change stream's phase transitions, which
     ADR 0034 logs and replays (amended 2026-09-30);
   - the staged segments' batch frames are written again through writers of the logged tables,
-    created first, and the log is removed.
+    created first, each segment's in the order its batches were logged, and the log is removed
+    (amended 2026-10-03: a batch frame carries its ordinal among the load's batches, ADR 0041).
 - **The simulation** keeps logs in a store of the world that outlives runs; a run's crash keeps
   what its worker's logs made durable and a drawn part of the rest, torn or garbled, and leaves
   other pipelines' logs to their own workers (seed 7331 found a crash tearing another's live log). A swarm feature, drawn apart

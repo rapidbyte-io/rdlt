@@ -151,7 +151,7 @@ proptest! {
         segment in any::<u64>(),
     ) {
         for batch in &drawn {
-            let frame = Frame::Batch(Batch { segment: SegmentId(segment), table: 3, batch: arrow(batch) });
+            let frame = Frame::Batch(Batch { segment: SegmentId(segment), table: 3, ordinal: segment, batch: arrow(batch) });
             let bytes = frame.encode().expect("the frame encodes");
             prop_assert_eq!(decoded(&bytes), vec![frame]);
         }
@@ -230,6 +230,7 @@ fn round_trip(batch: RecordBatch) -> (Frame, Vec<Frame>) {
     let frame = Frame::Batch(Batch {
         segment: SegmentId(1),
         table: 0,
+        ordinal: 1,
         batch,
     });
     let bytes = frame.encode().expect("the frame encodes");
