@@ -130,8 +130,8 @@ impl Record {
         if self.rows < self.room {
             return Ok(());
         }
-        // The builders double: they are charged for all they then hold, which beside the copy
-        // they grew from is what they take while they grow.
+        // The builders double, charged for the rows they grow by; the copy they grow from is
+        // a builder's spare capacity while it grows.
         let room = self.room.saturating_mul(2).max(1);
         let width = self
             .columns
@@ -143,7 +143,7 @@ impl Record {
             .iter()
             .map(Column::bits)
             .fold(1, u64::saturating_add);
-        meter.charge(rows_of(count(room), width, bits))?;
+        meter.charge(rows_of(count(room - self.room), width, bits))?;
         self.room = room;
         Ok(())
     }

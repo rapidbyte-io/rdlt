@@ -48,13 +48,13 @@ fn rows_past_what_a_record_was_sized_for_are_charged_as_its_builders_double() {
     }
     let sized = meter.spent();
     assert_eq!(sized, 2 * 8 + 1);
-    // The third row doubles the builders to four rows, charged whole: a value and two bits, the
-    // column's validity and the record's, a row.
+    // The third row doubles the builders to four rows, charged for the two they grow by: a
+    // value and two bits, the column's validity and the record's, a row.
     let position = record.position("a", 0, &columns()).unwrap();
     let column = record.field(position).unwrap();
     assert_eq!(column.scalar(Scalar::Int(3), 2, &meter), Ok(true));
     record.end_row(1, &meter).unwrap();
-    assert_eq!(meter.spent() - sized, 4 * 8 + 1);
+    assert_eq!(meter.spent() - sized, 2 * 8 + 1);
     assert_eq!(record.capacity(), 4);
     // A record with no room to grow trips its meter instead.
     let mut full = Record::empty(0);
@@ -69,13 +69,13 @@ fn text_past_what_its_builder_was_sized_for_is_charged_as_it_doubles() {
     assert_eq!(column.scalar(Scalar::Text("12345678"), 1, &meter), Ok(true));
     assert_eq!(meter.spent(), 5 + 8);
     assert_eq!(column.scalar(Scalar::Text("abc"), 1, &meter), Ok(true));
-    // Past the eight bytes it was sized for, it holds sixteen, all charged.
-    assert_eq!(meter.spent(), 5 + 8 + 16);
+    // Past the eight bytes it was sized for, it holds sixteen, charged for the eight more.
+    assert_eq!(meter.spent(), 5 + 8 + 8);
     // Within what the growth made, nothing more; past it, it doubles again.
     assert_eq!(column.scalar(Scalar::Text("abcde"), 1, &meter), Ok(true));
-    assert_eq!(meter.spent(), 5 + 8 + 16);
+    assert_eq!(meter.spent(), 5 + 8 + 8);
     assert_eq!(column.scalar(Scalar::Text("x"), 1, &meter), Ok(true));
-    assert_eq!(meter.spent(), 5 + 8 + 16 + 32);
+    assert_eq!(meter.spent(), 5 + 8 + 8 + 16);
 }
 
 #[test]
@@ -94,7 +94,8 @@ fn a_list_s_items_past_its_room_are_charged_as_their_builder_doubles() {
     assert_eq!(first, 8 + 1);
     let (item, capacity) = list.item(&meter).unwrap();
     assert_eq!(item.scalar(Scalar::Int(2), capacity, &meter), Ok(true));
-    assert_eq!(meter.spent() - made - first, 2 * 8 + 1);
+    // The second doubles it to two, charged for the slot it grows by.
+    assert_eq!(meter.spent() - made - first, 8 + 1);
     list.end_row(2).unwrap();
     assert_eq!(
         list.observed(),

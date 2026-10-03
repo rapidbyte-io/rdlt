@@ -61,11 +61,11 @@ impl List {
     /// [`Over`] where the meter has no room for the item.
     pub(crate) fn item(&mut self, meter: &Meter) -> Result<(&mut Column, usize), Over> {
         if self.items >= self.room {
-            // The item column doubles, charged for all it then holds; one holding nulls only
+            // The item column doubles, charged for the items it grows by; one holding nulls only
             // takes nothing yet, and is charged for what it is sized for once made.
             let room = self.room.saturating_mul(2).max(1);
             let (width, bits) = (self.item.width(), self.item.bits());
-            meter.charge(rows_of(count(room), width, bits))?;
+            meter.charge(rows_of(count(room - self.room), width, bits))?;
             self.room = room;
         }
         self.items += 1;
