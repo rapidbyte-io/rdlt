@@ -16,6 +16,7 @@ use rdlt_connector::StreamName;
 use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
 use crate::error::Error;
 use crate::normalize::identity::{unread, version_hashes};
+use crate::policy::SchemaPolicy;
 use crate::table::convert::decoded;
 use crate::table::lower::loaded_at_type;
 use crate::table::temporal;
@@ -62,7 +63,15 @@ impl LoweringPlan {
                 )
             })
         };
-        let history = history_columns(stream, &data, from, stamp.received_at, &deleting)?;
+        // A change time whose policy discards values begins its version when its batch arrived
+        // where it holds none, or one no version can begin at, which `nulled` took.
+        let fallback = self.change_time_policy() == SchemaPolicy::DiscardValue;
+        let begun = Begins {
+            from,
+            received: stamp.received_at,
+            fallback,
+        };
+        let history = history_columns(stream, &data, begun, &deleting)?;
         let logical = [
             loaded_at_type(),
             loaded_at_type(),
@@ -145,21 +154,30 @@ impl LoweringPlan {
 pub(super) fn history_columns(
     stream: &StreamName,
     data: &RecordBatch,
-    from: Option<&ArrayRef>,
-    received: SystemTime,
+    begun: Begins<'_>,
     deleting: &dyn Fn(usize) -> bool,
 ) -> Result<[ArrayRef; 4], Error> {
     let rows = data.num_rows();
     let micros = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
-    let valid_from: ArrayRef = if let Some(from) = from {
-        begins(stream, from)?
-    } else {
-        let at = micros_of(received).ok_or_else(|| {
+    let arrived = || {
+        micros_of(begun.received).ok_or_else(|| {
             Error::internal(format!(
                 "stream {stream}: the clock reads a time microseconds since the epoch cannot hold"
             ))
-        })?;
-        Arc::new(TimestampMicrosecondArray::from(vec![at; rows]).with_timezone("UTC"))
+        })
+    };
+    let valid_from: ArrayRef = match begun.from {
+        Some(from) => {
+            let fallback = if begun.fallback {
+                Some(arrived()?)
+            } else {
+                None
+            };
+            begins(stream, from, fallback)?
+        }
+        None => {
+            Arc::new(TimestampMicrosecondArray::from(vec![arrived()?; rows]).with_timezone("UTC"))
+        }
     };
     let valid_to = arrow_array::new_null_array(&micros, rows);
     let current = Arc::new(BooleanArray::from(vec![true; rows]));
@@ -171,6 +189,16 @@ pub(super) fn history_columns(
         .map(|(row, hash)| hash.filter(|_| !deleting(row)))
         .collect();
     Ok([valid_from, valid_to, current, Arc::new(hashes)])
+}
+
+/// Where a history table's versions begin: at the stream's change time `from`, or where it names
+/// none at `received`, when their batch arrived; and with `fallback`, a row without a change time
+/// at `received` too, rather than refused.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Begins<'a> {
+    pub(super) from: Option<&'a ArrayRef>,
+    pub(super) received: SystemTime,
+    pub(super) fallback: bool,
 }
 
 /// The microseconds since the epoch of `time`, before it negative, a time between two the
@@ -188,8 +216,9 @@ fn micros_of(time: SystemTime) -> Option<i64> {
 }
 
 /// When the version of each row whose change time `from` holds begins, in microseconds: a
-/// date's midnight in UTC, and an instant between two microseconds the earlier.
-fn begins(stream: &StreamName, from: &ArrayRef) -> Result<ArrayRef, Error> {
+/// date's midnight in UTC, and an instant between two microseconds the earlier; a row without
+/// one at `fallback`, where there is one.
+fn begins(stream: &StreamName, from: &ArrayRef, fallback: Option<i64>) -> Result<ArrayRef, Error> {
     let refuse = |code: &str, detail: String| {
         Err(Error::schema(format!("stream {stream}: {detail}"))
             .with_code(code)
@@ -213,12 +242,15 @@ fn begins(stream: &StreamName, from: &ArrayRef) -> Result<ArrayRef, Error> {
             format!("its change time holds {held}, not a time"),
         );
     }
-    if from.null_count() > 0 {
+    if from.null_count() > 0 && fallback.is_none() {
         let detail = "a change has no change time, when its version begins".to_owned();
         return refuse("change_time_null", detail);
     }
     let begun: Option<Vec<i64>> = (0..from.len())
-        .map(|row| temporal::micros_at(from.as_ref(), row))
+        .map(|row| match fallback {
+            Some(fallback) if from.is_null(row) => Some(fallback),
+            _ => temporal::micros_at(from.as_ref(), row),
+        })
         .collect();
     let Some(begun) = begun else {
         let detail = "its change time holds a time microseconds since the epoch cannot hold";

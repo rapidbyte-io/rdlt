@@ -4,18 +4,21 @@
 #[cfg(test)]
 mod tests;
 
-/// What happens to values that would change their table's schema.
+/// What happens to values that would change their table's schema, and to values their column
+/// cannot hold whatever its schema: a time beyond its unit, a decimal beyond its precision, a
+/// change time no version can begin at.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SchemaPolicy {
-    /// Change the schema.
+    /// Change the schema; a value the column cannot hold fails its batch.
     #[default]
     Evolve,
     /// Fail with a schema error.
     Freeze,
-    /// Drop every row carrying the change, and count them.
+    /// Drop every row carrying the change or the value, and count them.
     DiscardRow,
-    /// Load the row with the offending value nulled, and count the values.
+    /// Load the row with the offending value nulled, and count the values; a version whose
+    /// change time is nulled begins when its batch arrived.
     DiscardValue,
 }
 

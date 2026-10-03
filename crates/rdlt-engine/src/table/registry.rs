@@ -268,13 +268,16 @@ impl Tables {
         if let Some(plan) = planned(&plans, &view) {
             return Ok(plan);
         }
-        let stream = slot.resolver.lock().stream.clone();
-        let plan = Arc::new(LoweringPlan::new(
-            stream,
-            Arc::clone(&view),
-            incoming,
-            routes,
-        ));
+        let resolver = Arc::clone(&slot.resolver.lock());
+        let policies = incoming
+            .paths
+            .iter()
+            .map(|path| resolver.settings.column(path).policy)
+            .collect();
+        let plan = Arc::new(
+            LoweringPlan::new(resolver.stream.clone(), Arc::clone(&view), incoming, routes)
+                .with_policies(policies),
+        );
         let current = self.view(table);
         cache(&mut plans, Arc::clone(&plan), &current);
         Ok(plan)
