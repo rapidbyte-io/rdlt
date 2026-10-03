@@ -1,7 +1,7 @@
 use rdlt_sim::{Seed, check_exactly_once, seeds};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 11] = [
+const FOUND: [u64; 12] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -33,6 +33,9 @@ const FOUND: [u64; 11] = [
     // Pressed: a partition that ended at its last cursor sealed it again unreserved, so a
     // commit recording many such cursors passed the log's share of the budget.
     820,
+    // Over the network, pressed: a stopped connector listened again only once its drain ended,
+    // which a host holding back its reads kept going past every placement.
+    28960,
 ];
 
 #[test]

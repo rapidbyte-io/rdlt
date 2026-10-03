@@ -158,6 +158,10 @@ const LATENCY: u64 = 0x006c_6174_656e_6379;
 
 /// Serves `side`'s connector on its host, again after each crash or stop, as the network's
 /// connectors say.
+///
+/// A stopping connector lets go of its address before it drains its connections, so a connector
+/// started after it listens at once, as a process restarted beside a draining process does; the
+/// drain goes on apart, until its connections end.
 async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
     // The connectors accept the engine's host alone, by the name in its certificate.
     let accepted = Accepted {
@@ -177,33 +181,55 @@ async fn listen(net: Arc<Net>, side: Side) -> turmoil::Result {
         net.connectors.up(side).await;
         let crashes = net.connectors.crashes(side);
         let listener = turmoil::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, PORT)).await?;
+        let (held, freed) = tokio::sync::oneshot::channel::<()>();
         let served = Arc::new(match side {
             Side::Source => Served::new().with_source(source_factory::<SimSource>()),
             Side::Destination => {
                 Served::new().with_destination(destination_factory::<SimDestination>())
             }
         });
-        let stop = net.connectors.stopping(side);
+        let stop = {
+            let net = Arc::clone(&net);
+            async move { net.connectors.stopping(side).await }
+        };
         let limits = Limits::default();
-        let serving = serve_listener(served, Sockets(listener), listening.clone(), limits, stop);
-        tokio::select! {
+        let sockets = Sockets {
+            listener,
+            _held: held,
+        };
+        let mut serving = Box::pin(serve_listener(
+            served,
+            sockets,
+            listening.clone(),
+            limits,
+            stop,
+        ));
+        let draining = tokio::select! {
             biased;
             // Dropping the serving drops its listener and every connection at once, as a crashed
             // process does; calls it had begun run to their end.
-            () = net.connectors.crashed(side, crashes) => {}
-            () = serving => {}
+            () = net.connectors.crashed(side, crashes) => false,
+            () = &mut serving => false,
+            // Stopping, it let go of the address: the next listens while it drains.
+            _ = freed => true,
+        };
+        if draining {
+            tokio::spawn(serving);
         }
     }
 }
 
-/// A turmoil host's listening socket.
-struct Sockets(turmoil::net::TcpListener);
+/// A turmoil host's listening socket, which tells whoever started it once it is dropped.
+struct Sockets {
+    listener: turmoil::net::TcpListener,
+    _held: tokio::sync::oneshot::Sender<()>,
+}
 
 impl Listener for Sockets {
     type Stream = turmoil::net::TcpStream;
 
     async fn accept(&mut self) -> std::io::Result<(turmoil::net::TcpStream, SocketAddr)> {
-        self.0.accept().await
+        self.listener.accept().await
     }
 }
 
