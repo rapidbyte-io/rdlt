@@ -356,7 +356,7 @@ async fn a_scan_indexes_batches_without_decoding_them_and_a_read_refuses_a_garbl
         "load": load().to_string(),
         "opened": null,
     });
-    let head = br#"{"segment":1,"table":0}"#;
+    let head = br#"{"segment":1,"table":0,"ordinal":0}"#;
     let mut payload = u32::try_from(head.len())
         .expect("short")
         .to_le_bytes()

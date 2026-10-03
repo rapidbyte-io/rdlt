@@ -78,11 +78,34 @@ async fn round(writer: &super::super::WalWriter, round: u64, settled: u64, open:
     send(writer, committed(round)).await;
 }
 
-#[tokio::test]
-async fn a_carried_segment_replays_once_after_the_commit_that_takes_it() {
+/// The seal of segment `segment`, of a partition its read finished.
+fn sealed(segment: u64) -> super::super::Command {
     use rdlt_connector::{PartitionId, PartitionState, SegmentId, StreamName};
 
     use super::super::super::frame::Seal;
+    let segment = SegmentId(segment);
+    let seal = Frame::Seal(Seal {
+        segment,
+        stream: StreamName::new("orders").expect("a name"),
+        partition: PartitionId::parse("p").expect("an id"),
+        replayable: true,
+        phase: 0,
+        from: None,
+        state: PartitionState::Done,
+    });
+    let frame = seal.encode().expect("the seal encodes");
+    let held = Box::new(());
+    super::super::Command::Seal {
+        segment,
+        frame,
+        held,
+    }
+}
+
+#[tokio::test]
+async fn a_carried_segment_replays_once_after_the_commit_that_takes_it() {
+    use rdlt_connector::SegmentId;
+
     use super::super::super::scan::scan;
     let store = Arc::new(MemoryWal::default());
     drive(Arc::clone(&store), |writer| async move {
@@ -91,27 +114,7 @@ async fn a_carried_segment_replays_once_after_the_commit_that_takes_it() {
             round(&writer, number, 4, 1).await;
         }
         // The open segment is sealed and committed; the destination never answers.
-        let seal = Frame::Seal(Seal {
-            segment: SegmentId(1000),
-            stream: StreamName::new("orders").expect("a name"),
-            partition: PartitionId::parse("p").expect("an id"),
-            replayable: true,
-            phase: 0,
-            from: None,
-            state: PartitionState::Done,
-        });
-        let frame = seal.encode().expect("the seal encodes");
-        let held = Box::new(());
-        let segment = SegmentId(1000);
-        send(
-            &writer,
-            super::super::Command::Seal {
-                segment,
-                frame,
-                held,
-            },
-        )
-        .await;
+        send(&writer, sealed(1000)).await;
         let (command, answer) = commit(4, &[1000]);
         send(&writer, command).await;
         answer.await.expect("the writer answers").expect("durable");
@@ -196,4 +199,56 @@ async fn a_failure_between_carrying_and_removing_leaves_nothing_a_replay_stages_
                 .all(|logged| !logged.meta.segments.contains(SegmentId(1000)))
         );
     }
+}
+
+#[tokio::test]
+async fn a_carried_segment_replays_its_batches_in_the_order_they_were_logged() {
+    use rdlt_connector::SegmentId;
+
+    use super::super::super::scan::scan;
+    let store = Arc::new(MemoryWal::default());
+    drive(Arc::clone(&store), |writer| async move {
+        send(&writer, table(0)).await;
+        send(&writer, batch(1000, 0)).await;
+        for segment in 10..14 {
+            send(&writer, batch(segment, 0)).await;
+        }
+        let (command, answer) = commit(1, &[10, 11, 12, 13]);
+        send(&writer, command).await;
+        answer.await.expect("the writer answers").expect("durable");
+        // The open segment logs a batch in the next chunk before the receipt carries its first
+        // one there after it.
+        send(&writer, batch(1000, 0)).await;
+        send(&writer, committed(1)).await;
+        send(&writer, sealed(1000)).await;
+        let (command, answer) = commit(2, &[1000]);
+        send(&writer, command).await;
+        answer.await.expect("the writer answers").expect("durable");
+    })
+    .await
+    .expect("the writer ends");
+    // In the log the carried batch follows the later one.
+    let logged: Vec<u64> = store
+        .stored(&pipeline())
+        .iter()
+        .flat_map(|(_, stored)| {
+            Frames::new(&stored.bytes)
+                .filter_map(|frame| match frame.expect("the frame decodes").1 {
+                    Frame::Batch(batch) if batch.segment.0 == 1000 => Some(batch.ordinal),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(logged.len(), 2);
+    assert!(logged[0] > logged[1], "{logged:?}");
+    store.crash();
+    let scanned = scan(store.as_ref(), &pipeline(), super::load())
+        .await
+        .expect("the log reads");
+    let replayed: Vec<u64> = scanned.batches[&SegmentId(1000)]
+        .iter()
+        .map(|located| located.ordinal)
+        .collect();
+    assert_eq!(replayed, [logged[1], logged[0]]);
 }

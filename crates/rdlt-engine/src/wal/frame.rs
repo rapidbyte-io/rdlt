@@ -79,6 +79,9 @@ pub(crate) struct Table {
 pub(crate) struct Batch {
     pub(crate) segment: SegmentId,
     pub(crate) table: u32,
+    /// Where the batch stands among the load's logged batches: a segment's batches replay in
+    /// this order, wherever in the log a carry left them.
+    pub(crate) ordinal: u64,
     pub(crate) batch: RecordBatch,
 }
 
@@ -88,6 +91,7 @@ pub(crate) struct Batch {
 struct BatchHeader {
     segment: SegmentId,
     table: u32,
+    ordinal: u64,
 }
 
 /// A segment sealed with its partition's position: `from`, where the destination held the
@@ -175,6 +179,7 @@ fn batch_payload(batch: &Batch) -> Result<Vec<u8>, Error> {
     let header = json(&BatchHeader {
         segment: batch.segment,
         table: batch.table,
+        ordinal: batch.ordinal,
     })?;
     let ipc = arrow::encode(&batch.batch)?;
     let len = u32::try_from(header.len()).unwrap_or(u32::MAX);
@@ -236,7 +241,11 @@ impl Iterator for Frames<'_> {
 /// A frame as a scan reads it: a batch's segment and table, without its batch, or any other
 /// frame whole.
 pub(crate) enum Skimmed {
-    Batch { segment: SegmentId, table: u32 },
+    Batch {
+        segment: SegmentId,
+        table: u32,
+        ordinal: u64,
+    },
     Other(Box<Frame>),
 }
 
@@ -252,6 +261,7 @@ pub(crate) fn skim(bytes: &[u8]) -> Option<Result<Skimmed, Error>> {
         3 => batch_head(payload).map(|head| Skimmed::Batch {
             segment: head.segment,
             table: head.table,
+            ordinal: head.ordinal,
         }),
         kind => decode(kind, payload).map(|frame| Skimmed::Other(Box::new(frame))),
     })
@@ -306,6 +316,7 @@ fn decode_batch(payload: &[u8]) -> Result<Batch, Error> {
     Ok(Batch {
         segment: header.segment,
         table: header.table,
+        ordinal: header.ordinal,
         batch,
     })
 }

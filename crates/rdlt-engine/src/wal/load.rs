@@ -6,6 +6,7 @@ mod tests;
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use arrow_array::RecordBatch;
@@ -51,6 +52,8 @@ pub(crate) struct LoadLog {
     /// The table versions the log describes, held while a new one is sent, so no batch frame of
     /// a table precedes its schema frame.
     tables: Arc<Mutex<Described>>,
+    /// The ordinal the next batch frame takes.
+    batches: Arc<AtomicU64>,
 }
 
 /// The index each table version's schema frame gave it, with every view of the version its
@@ -94,6 +97,7 @@ impl LoadLog {
         let log = Self {
             writer,
             tables: Arc::default(),
+            batches: Arc::default(),
         };
         Ok((log, task))
     }
@@ -111,9 +115,11 @@ impl LoadLog {
         batch: &RecordBatch,
     ) -> Result<(), Error> {
         let index = self.describe(budget, table, view).await?;
+        // A partition logs a segment's batches one after another, so their ordinals are their order.
         let batch = frame::Batch {
             segment,
             table: index,
+            ordinal: self.batches.fetch_add(1, Ordering::Relaxed),
             batch: batch.clone(),
         };
         let mut encoded = run_all(compute, [move || Frame::Batch(batch).encode()]).await;
