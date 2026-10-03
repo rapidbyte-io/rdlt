@@ -317,3 +317,34 @@ async fn a_partition_a_plan_omits_keeps_its_position() {
     assert_eq!(planned(name, &["p0", "p1"]).await, ["p0", "p1"]);
     assert_eq!(crate::support::published_rows(name, "events"), 2);
 }
+
+#[tokio::test(start_paused = true)]
+async fn state_at_the_least_memory_stops_at_its_share_of_the_budget_and_still_opens() {
+    let name = "stored-least";
+    let least = EngineConfig::least_memory(16);
+    let config = || commit_every(1).memory(least);
+    let cursor = usize::try_from(config().build().expect("valid").limits().cursor_bytes)
+        .expect("a size")
+        - 64;
+    let shape = Shape {
+        partitions: ids(160),
+        cursor,
+        replayable: true,
+    };
+    let outcome = engine(config())
+        .run(
+            pipeline(name, [stream("events").read(ReadMode::Incremental)]),
+            source(name, shape).await,
+            memory(name).await,
+        )
+        .await;
+    refused(&outcome);
+    let context = OpenContext {
+        pipeline: PipelineId::parse(name).expect("a valid pipeline"),
+        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let opened = memory(name).await.open(&context).await.expect("it opens");
+    let carried: u64 = opened.state.iter().map(record_bytes).sum();
+    assert!(carried <= least / 16, "{carried} bytes of state");
+    assert!(carried > least / 32, "{carried} bytes of state");
+}

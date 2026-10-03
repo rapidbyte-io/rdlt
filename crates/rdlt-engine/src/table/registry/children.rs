@@ -87,7 +87,7 @@ impl Tables {
             .range((root, Vec::new())..)
             .take_while(|((parent, _), _)| *parent == root)
             .count();
-        let limit = self.growth.child_tables().get();
+        let limit = self.children_limit;
         if below < limit {
             return Ok(());
         }
