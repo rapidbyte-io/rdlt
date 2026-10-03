@@ -525,3 +525,145 @@ fn what_checking_holds_counts_maps_and_large_list_views() {
         RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![Arc::new(views)]).unwrap();
     assert_eq!(super::held(&batch), 32);
 }
+
+#[test]
+fn a_dictionary_s_named_values_are_a_bitmap_while_it_takes_no_more_than_its_keys_listed() {
+    // Two keys listed take sixteen bytes: a bitmap of 128 values as many, of 129 one more.
+    assert!(super::held::bitmapped(120, 2));
+    assert!(super::held::bitmapped(128, 2));
+    assert!(!super::held::bitmapped(129, 2));
+    assert!(super::held::bitmapped(0, 0));
+    assert!(!super::held::bitmapped(1, 0));
+}
+
+/// A batch whose only column, `c`, is `array`.
+fn alone(array: ArrayRef) -> RecordBatch {
+    let field = Field::new("c", array.data_type().clone(), true);
+    RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![array]).unwrap()
+}
+
+/// A dictionary of `values` values of JSON that keys 0 and 1 of type `K` name.
+fn two_keys<K: arrow_array::types::ArrowDictionaryKeyType>(values: usize) -> ArrayRef {
+    let keys = PrimitiveArray::<K>::from_iter_values(
+        [0_usize, 1].map(|key| K::Native::from_usize(key).unwrap()),
+    );
+    let values: ArrayRef = Arc::new(StringArray::from_iter_values(
+        (0..values).map(|value| value.to_string()),
+    ));
+    Arc::new(DictionaryArray::<K>::try_new(keys, values).unwrap())
+}
+
+/// What checking a dictionary of JSON, keyed by `K`, holds: a bit a value where that is no
+/// more than its keys listed, else eight bytes a key.
+fn held_by_keys<K: arrow_array::types::ArrowDictionaryKeyType>() {
+    let held = |values: usize| {
+        let dictionary = two_keys::<K>(values);
+        let field = json(Field::new("c", dictionary.data_type().clone(), true));
+        let batch =
+            RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![dictionary]).unwrap();
+        assert_eq!(check_batch(&batch), Ok(()));
+        super::held(&batch)
+    };
+    assert_eq!(held(100), 13, "{}", K::DATA_TYPE);
+    assert_eq!(held(128), 16, "{}", K::DATA_TYPE);
+    assert_eq!(held(129), 16, "{}", K::DATA_TYPE);
+    assert_eq!(held(1_000), 16, "{}", K::DATA_TYPE);
+}
+
+#[test]
+fn what_checking_a_dictionary_holds_is_charged_exactly_for_every_key_type() {
+    held_by_keys::<Int8Type>();
+    held_by_keys::<Int16Type>();
+    held_by_keys::<Int32Type>();
+    held_by_keys::<Int64Type>();
+    held_by_keys::<UInt8Type>();
+    held_by_keys::<UInt16Type>();
+    held_by_keys::<UInt32Type>();
+    held_by_keys::<UInt64Type>();
+}
+
+/// A dictionary of a thousand values of JSON two keys name, which checking holds as its keys,
+/// sixteen bytes, in a field `item` of JSON.
+fn keyed_item() -> (Arc<Field>, ArrayRef) {
+    let dictionary = two_keys::<Int32Type>(1_000);
+    let item = json(Field::new("item", dictionary.data_type().clone(), true));
+    (Arc::new(item), dictionary)
+}
+
+/// What checking a run-end encoded column of a struct of [`keyed_item`], ends of type `R`, holds.
+fn held_in_runs<R: RunEndIndexType>() -> u64 {
+    let (item, dictionary) = keyed_item();
+    let row: ArrayRef = Arc::new(StructArray::new(
+        Fields::from(vec![item]),
+        vec![dictionary],
+        None,
+    ));
+    let ends = PrimitiveArray::<R>::from_iter_values(
+        [1_usize, 2].map(|end| R::Native::from_usize(end).unwrap()),
+    );
+    let runs = RunArray::<R>::try_new(&ends, &row).unwrap();
+    let batch = alone(Arc::new(runs));
+    assert_eq!(check_batch(&batch), Ok(()));
+    super::held(&batch)
+}
+
+#[test]
+fn what_checking_holds_is_charged_exactly_in_runs_of_every_end_type_and_lists_of_every_layout() {
+    assert_eq!(held_in_runs::<Int16Type>(), 16);
+    assert_eq!(held_in_runs::<Int32Type>(), 16);
+    assert_eq!(held_in_runs::<Int64Type>(), 16);
+    let (item, items) = keyed_item();
+    let lists: [ArrayRef; 6] = [
+        Arc::new(ListArray::new(
+            Arc::clone(&item),
+            OffsetBuffer::new(ScalarBuffer::from(vec![0_i32, 2])),
+            Arc::clone(&items),
+            None,
+        )),
+        Arc::new(LargeListArray::new(
+            Arc::clone(&item),
+            OffsetBuffer::new(ScalarBuffer::from(vec![0_i64, 2])),
+            Arc::clone(&items),
+            None,
+        )),
+        Arc::new(FixedSizeListArray::new(
+            Arc::clone(&item),
+            2,
+            Arc::clone(&items),
+            None,
+        )),
+        Arc::new(StructArray::new(
+            Fields::from(vec![Arc::clone(&item)]),
+            vec![Arc::clone(&items)],
+            None,
+        )),
+        Arc::new(ListViewArray::new(
+            Arc::clone(&item),
+            ScalarBuffer::from(vec![0_i32]),
+            ScalarBuffer::from(vec![2_i32]),
+            Arc::clone(&items),
+            None,
+        )),
+        Arc::new(LargeListViewArray::new(
+            Arc::clone(&item),
+            ScalarBuffer::from(vec![0_i64]),
+            ScalarBuffer::from(vec![2_i64]),
+            Arc::clone(&items),
+            None,
+        )),
+    ];
+    for list in lists {
+        let batch = alone(list);
+        assert_eq!(check_batch(&batch), Ok(()));
+        assert_eq!(super::held(&batch), 16, "{}", batch.schema().field(0));
+    }
+    // Views naming their items out of order hold a span a row beside the items' keys.
+    let reversed = ListViewArray::new(
+        Arc::clone(&item),
+        ScalarBuffer::from(vec![1_i32, 0]),
+        ScalarBuffer::from(vec![1_i32, 1]),
+        items,
+        None,
+    );
+    assert_eq!(super::held(&alone(Arc::new(reversed))), 2 * 16 + 16);
+}

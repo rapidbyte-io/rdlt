@@ -13,7 +13,7 @@ use std::borrow::Cow;
 
 use rdlt_connector::limits::MAX_NESTING_DEPTH;
 
-pub(crate) use check::{NotJson, check_batch, held as held_by_check, holds_json};
+pub(crate) use check::{NotJson, check_batch, held as held_by_check};
 #[cfg(test)]
 pub(crate) use number::{canonical_float, canonical_float32, canonical_number};
 pub(crate) use number::{
