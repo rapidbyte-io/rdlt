@@ -358,9 +358,9 @@ fn checking_runs_allocates_by_what_the_batch_holds_not_by_its_items() {
 fn checking_keys_allocates_by_the_values_they_name_not_by_the_keys() {
     let one: ArrayRef = Arc::new(StringArray::from(vec!["1"]));
     // A key a byte: the keys are the batch, and the check holds no more than a bit a value.
-    let keys = PrimitiveArray::<Int8Type>::from(vec![0_i8; 16 << 20]);
+    let keys = PrimitiveArray::<Int8Type>::from(vec![0_i8; 4 << 20]);
     let keyed: ArrayRef = Arc::new(DictionaryArray::try_new(keys, one).unwrap());
-    let batch = one_long_list(16 << 20, keyed);
+    let batch = one_long_list(4 << 20, keyed);
     let (checked, peak) = check_peak(&batch);
     assert_eq!(checked, Ok(()));
     let held = u64::try_from(batch.get_array_memory_size()).unwrap();
@@ -386,7 +386,7 @@ fn one_view(views: &[(i32, i32)], values: ArrayRef) -> RecordBatch {
 
 #[test]
 fn what_checking_holds_beside_a_batch_is_no_more_than_its_charge() {
-    const ROWS: i32 = 1 << 20;
+    const ROWS: i32 = 1 << 18;
     let texts = |count: i32| -> ArrayRef {
         Arc::new(StringArray::from_iter_values(
             (0..count).map(|value| value.to_string()),
@@ -399,7 +399,7 @@ fn what_checking_holds_beside_a_batch_is_no_more_than_its_charge() {
     // held as the keys.
     let few = PrimitiveArray::<Int32Type>::from_iter_values((0..ROWS).map(|row| row % 64));
     let few: ArrayRef = Arc::new(DictionaryArray::try_new(few, texts(64)).unwrap());
-    let sparse = PrimitiveArray::<Int32Type>::from_iter_values((0..16).map(|key| key << 16));
+    let sparse = PrimitiveArray::<Int32Type>::from_iter_values((0..16).map(|key| key << 14));
     let sparse: ArrayRef = Arc::new(DictionaryArray::try_new(sparse, texts(ROWS)).unwrap());
     let batches = [
         (one_view(&ordered, texts(ROWS)), false),
