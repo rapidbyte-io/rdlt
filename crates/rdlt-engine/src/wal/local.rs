@@ -296,11 +296,16 @@ impl WalStore for LocalWal {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
-            // The load's directory goes with its last chunk; one still holding chunks stays.
-            if let Some(dir) = path.parent() {
-                drop(std::fs::remove_dir(dir));
+            // The load's directory goes with its last chunk; one still holding chunks stays,
+            // the removal durable before anything logged after it, frames carried out of the
+            // chunk among them.
+            match path.parent().map(std::fs::remove_dir) {
+                Some(Err(error)) if error.kind() != io::ErrorKind::NotFound => {
+                    let dir = path.parent().unwrap_or(Path::new("."));
+                    std::fs::File::open(dir)?.sync_all()
+                }
+                _ => Ok(()),
             }
-            Ok(())
         })
     }
 }

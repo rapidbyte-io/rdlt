@@ -1,6 +1,7 @@
 //! The task that owns a load's write-ahead log: it appends frames in the order they are sent,
 //! makes a commit's frame durable before answering, and removes chunks nothing waits for.
 
+mod carry;
 #[cfg(test)]
 mod tests;
 
@@ -143,12 +144,31 @@ impl Settled {
 /// What one chunk of the log holds.
 #[derive(Default)]
 struct Written {
-    /// The tables whose schema frames it holds.
-    tables: BTreeSet<u32>,
+    /// Bytes: what was appended to it.
+    len: u64,
+    /// Where each table's schema frame lies in it.
+    schemas: BTreeMap<u32, Span>,
     /// The segments with frames in it.
     segments: BTreeSet<SegmentId>,
+    /// Its batch frames, in order.
+    batches: Vec<Logged>,
     /// The commits whose frames it holds.
     commits: BTreeSet<CommitSeq>,
+}
+
+/// Where a frame lies in its chunk: its offset and its length.
+#[derive(Clone, Copy, Debug)]
+struct Span {
+    offset: u64,
+    len: u64,
+}
+
+/// A batch frame in a chunk: its segment, its table, and where it lies.
+#[derive(Clone, Copy, Debug)]
+struct Logged {
+    segment: SegmentId,
+    table: u32,
+    span: Span,
 }
 
 /// The writer's state: the chunk it appends to, and what every chunk it has not removed holds.
@@ -207,7 +227,7 @@ impl Log {
                 frame,
                 held,
             } => {
-                let result = self.append(frame).await;
+                let result = self.append(frame).await.map(drop);
                 drop(held);
                 self.note(&result);
                 self.current().segments.insert(segment);
@@ -254,39 +274,59 @@ impl Log {
         self.written.entry(self.chunk.number).or_default()
     }
 
-    async fn append(&mut self, frame: Bytes) -> Result<(), Error> {
+    /// Appends `frame` to the current chunk, after its header where it is the first: where it
+    /// lies there.
+    async fn append(&mut self, frame: Bytes) -> Result<Span, Error> {
         if let Some((failed, retryable)) = &self.failed {
             return Err(Error::wal_failed_before(failed, *retryable));
         }
         if self.headed != Some(self.chunk.number) {
-            self.current();
             self.store
                 .append(&self.pipeline, self.chunk, self.header.clone())
                 .await
                 .map_err(Error::from_wal)?;
+            self.current().len = count(self.header.len());
             self.headed = Some(self.chunk.number);
         }
         crash_point!("engine.wal.append");
+        let span = Span {
+            offset: self.current().len,
+            len: count(frame.len()),
+        };
         self.store
             .append(&self.pipeline, self.chunk, frame)
             .await
-            .map_err(Error::from_wal)
+            .map_err(Error::from_wal)?;
+        self.current().len += span.len;
+        Ok(span)
     }
 
     async fn batch(&mut self, segment: SegmentId, table: u32, frame: Bytes) -> Result<(), Error> {
-        if !self.current().tables.contains(&table) {
+        if !self.current().schemas.contains_key(&table) {
             let schema = self.tables.get(&table).cloned().ok_or_else(|| {
                 Error::internal(format!(
                     "a batch of table {table}, whose schema was never sent"
                 ))
             })?;
-            self.append(schema).await?;
+            self.describe(table, schema).await?;
             // Appended once, the frame is the writer's to keep for the chunks after.
             drop(self.describing.remove(&table));
-            self.current().tables.insert(table);
         }
-        self.append(frame).await?;
-        self.current().segments.insert(segment);
+        let span = self.append(frame).await?;
+        let current = self.current();
+        current.segments.insert(segment);
+        current.batches.push(Logged {
+            segment,
+            table,
+            span,
+        });
+        Ok(())
+    }
+
+    /// Appends `frame`, the schema frame of `table`, to the current chunk.
+    async fn describe(&mut self, table: u32, frame: Bytes) -> Result<(), Error> {
+        let span = self.append(frame).await?;
+        self.current().schemas.insert(table, span);
         Ok(())
     }
 
@@ -316,6 +356,7 @@ impl Log {
             self.settled.settle(segments.iter());
         }
         self.remove_done().await?;
+        self.carry().await?;
         self.settled.forget_unwritten(&self.written);
         Ok(())
     }
@@ -374,4 +415,8 @@ impl Log {
         crash_point!("engine.wal.removed");
         Ok(())
     }
+}
+
+fn count(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
 }

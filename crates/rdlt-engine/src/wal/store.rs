@@ -71,7 +71,8 @@ pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
     /// finished, and appended to again only after a failure left it unknown.
     fn sync<'a>(&'a self, pipeline: &'a PipelineId, chunk: Chunk) -> BoxFuture<'a, io::Result<()>>;
 
-    /// Removes chunk `chunk` of `load`'s log; the log goes with its last chunk.
+    /// Removes chunk `chunk` of `load`'s log, durably, so no crash after it brings the chunk
+    /// back; the log goes with its last chunk.
     fn remove<'a>(
         &'a self,
         pipeline: &'a PipelineId,
