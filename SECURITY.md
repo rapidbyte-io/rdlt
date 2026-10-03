@@ -323,6 +323,26 @@ A log is not signed: whoever can write as the engine's user holds its authority 
 that cannot be read stops its pipeline's runs until an operator removes it, since setting it
 aside would drop rows its source was told were committed.
 
+## What a value is held to
+
+The values a connector sends are held exactly, or refused (ADR 0046):
+
+- A row's id, and a history version's hash, is BLAKE3's 256 bits of one canonical encoding of
+  its values, so no two rows anyone can find share one, however their values were chosen.
+- A source column cannot take the name of a metadata column the engine writes, whatever its
+  table holds yet (`column_name_reserved`); state naming one so is `state_invalid`.
+- Dates, times, timestamps, durations and decimals are converted and rendered exactly over each
+  type's whole range. A value its column cannot hold, and a change time no version can begin
+  at, follows the column's schema policy row by row: the batch is refused with a typed error,
+  the row is dropped, or the value nulled, and each is counted.
+- A key no row can be matched by, missing, null, NaN or flagged unchanged by a change, is
+  refused before any destination sees it, for every keyed table.
+- A history version begins no earlier than the latest instant its key's versions hold, so none
+  ends before it begins; `D-HIST` holds a destination to it.
+
+Not guaranteed: when a source says a change happened. A version begins when its change says,
+moved only as late as its key's history already reaches.
+
 ## Building rdlt
 
 rdlt turns a panic, of the Arrow library on a corrupt frame or of a connector's task, into a

@@ -85,7 +85,8 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
                     current version changes nothing, any other closes it where the next begins, \
                     a delete closes it, or opens a deleted version keeping its data, and a \
                     truncate does so to every version sequenced before it; a change stream's \
-                    change applies only past its key's newest version, tombstone and bound",
+                    change applies only past its key's newest version, tombstone and bound; and \
+                    a version begins no earlier than the latest instant its key's versions hold",
         unless: "the destination keeps no history",
     },
     Clause {

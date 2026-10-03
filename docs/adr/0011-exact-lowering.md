@@ -51,6 +51,10 @@ and M3d deferred.
     way to JSON or text: dates go to timestamps from their own days, and to JSON, and within
     structs and lists, as `Date64`s. A `Date` column still refuses them.
   - Arrow renders a `Date64` as a date and a time: it is rendered as a date.
+  - Amended 2026-10-03 (ADR 0046): a `Date64` is the day it is within wherever it goes, a
+    struct's and a list's included, and one a `Date32` cannot hold is refused; a decimal beyond
+    its declared precision is refused; Arrow renders a zoned instant only where chrono holds it
+    and its local time at an offset of whole minutes, and never a time of day.
   - Arrow widens times of day outside a day unchecked (`Time64` microseconds to nanoseconds
     overflowed, panicking in debug builds): times are rescaled here and refused where the finer
     type cannot hold them.

@@ -39,6 +39,13 @@ never sees.
     version an empty span. A change time of another type, or beyond what microseconds hold, is
     `change_time_invalid`, refused where the catalog declares it and else at the batch; a null one
     is `change_time_null`. Versions follow the sequence, whatever their times.
+  - Amended 2026-10-03 (ADR 0046): a version begins no earlier than the latest instant its key's
+    versions hold, so none ends before it begins; a change time no version can begin at follows
+    its column's schema policy row by row; versions begun when their batch arrived follow a load
+    clock that never reads earlier; validity a destination stores without timestamps is integer
+    microseconds.
+  - Amended 2026-10-03 (ADR 0046): `row_hash` is BLAKE3's 256 bits of the data columns as their
+    logical types hold them, before they are lowered.
   - `row_hash` is the xxh3-128 of the row's data columns as one object of its non-null columns by
     name, the encoding row ids use (ADR 0009), JSON by the values its text says: an added null
     column, a wider type, another encoding or JSON rendered again changes no hash, so schema
