@@ -16,7 +16,7 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::{ArrowNativeType, BooleanBufferBuilder};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field};
 
 use super::{JsonError, check};
 use rows::{Ends, Offsets, Rows, Views};
@@ -50,17 +50,12 @@ pub(crate) fn check_batch(batch: &RecordBatch) -> Result<(), NotJson> {
         if !field_holds_json(field) {
             continue;
         }
-        walk(field, false, column.as_ref(), &Rows::All(column.len())).map_err(|error| NotJson {
+        walk(column.as_ref(), &Rows::All(column.len())).map_err(|error| NotJson {
             column: field.name().clone(),
             error,
         })?;
     }
     Ok(())
-}
-
-/// Whether a batch of `schema` holds a column of JSON at any depth.
-pub(crate) fn holds_json(schema: &Schema) -> bool {
-    schema.fields().iter().any(|field| field_holds_json(field))
 }
 
 /// Whether `field` is a column of JSON, or holds one at any depth.
@@ -101,28 +96,27 @@ fn children(data_type: &DataType) -> Vec<&Field> {
     }
 }
 
-/// Checks the values of `array`, of `field`, at the rows `rows` names: as JSON where the field,
-/// or the encoded column it is the values of, is one of JSON (`encoded`).
-fn walk(field: &Field, encoded: bool, array: &dyn Array, rows: &Rows<'_>) -> Result<(), JsonError> {
-    let json = encoded || is_json(field);
+/// Checks the values of `array`, of a field holding JSON, at the rows `rows` names: text there is
+/// the field's JSON, as it is or the values of its dictionary or its runs.
+fn walk(array: &dyn Array, rows: &Rows<'_>) -> Result<(), JsonError> {
     let valid = || match array.nulls() {
         Some(nulls) => Rows::Valid(Rc::new(rows.clone()), nulls.clone()),
         None => rows.clone(),
     };
     match array.data_type() {
-        DataType::Utf8 if json => {
+        DataType::Utf8 => {
             let texts = array.as_string::<i32>();
             checked(rows, |row| texts.is_valid(row).then(|| texts.value(row)))
         }
-        DataType::LargeUtf8 if json => {
+        DataType::LargeUtf8 => {
             let texts = array.as_string::<i64>();
             checked(rows, |row| texts.is_valid(row).then(|| texts.value(row)))
         }
-        DataType::Utf8View if json => {
+        DataType::Utf8View => {
             let texts = array.as_string_view();
             checked(rows, |row| texts.is_valid(row).then(|| texts.value(row)))
         }
-        DataType::Dictionary(key, _) => keyed(field, json, array, key, rows),
+        DataType::Dictionary(key, _) => keyed(array, key, rows),
         DataType::RunEndEncoded(ends, _) => {
             let ends = match ends.data_type() {
                 DataType::Int16 => Ends::I16(array.as_run::<Int16Type>().run_ends()),
@@ -135,12 +129,7 @@ fn walk(field: &Field, encoded: bool, array: &dyn Array, rows: &Rows<'_>) -> Res
                 Ends::I64(_) => array.as_run::<Int64Type>().values(),
             };
             let runs = Rows::Runs(Rc::new(rows.clone()), ends);
-            walk(
-                field,
-                json,
-                values.as_ref(),
-                &Rows::Clamped(Rc::new(runs), values.len()),
-            )
+            walk(values.as_ref(), &Rows::Clamped(Rc::new(runs), values.len()))
         }
         _ => nested(array, valid()),
     }
@@ -155,7 +144,7 @@ fn nested(array: &dyn Array, valid: Rows<'_>) -> Result<(), JsonError> {
             let columns = array.as_struct().columns();
             for (field, column) in fields.iter().zip(columns) {
                 if field_holds_json(field) {
-                    walk(field, false, column.as_ref(), &within)?;
+                    walk(column.as_ref(), &within)?;
                 }
             }
             Ok(())
@@ -218,13 +207,7 @@ fn checked<'a>(rows: &Rows<'_>, text: impl Fn(usize) -> Option<&'a str>) -> Resu
 }
 
 /// Checks the values of a dictionary array that its keys name at `rows`, each once.
-fn keyed(
-    field: &Field,
-    json: bool,
-    array: &dyn Array,
-    key: &DataType,
-    rows: &Rows<'_>,
-) -> Result<(), JsonError> {
+fn keyed(array: &dyn Array, key: &DataType, rows: &Rows<'_>) -> Result<(), JsonError> {
     let (named, values) = match key {
         DataType::Int8 => named_keys::<Int8Type>(array, rows),
         DataType::Int16 => named_keys::<Int16Type>(array, rows),
@@ -235,11 +218,13 @@ fn keyed(
         DataType::UInt32 => named_keys::<UInt32Type>(array, rows),
         _ => named_keys::<UInt64Type>(array, rows),
     };
-    walk(field, json, values, &named)
+    walk(values, &named)
 }
 
 /// Which values of the dictionary array `array` its valid keys at `rows` name, and its values:
 /// a bit a value where that is no more than a byte a key, else the keys named, sorted.
+///
+/// A valid key names one of the values, as Arrow checks wherever an array is made or read.
 fn named_keys<'a, K: ArrowDictionaryKeyType>(
     array: &'a dyn Array,
     rows: &Rows<'_>,
@@ -251,8 +236,7 @@ fn named_keys<'a, K: ArrowDictionaryKeyType>(
         .ranges()
         .flatten()
         .filter(|row| keys.is_valid(*row))
-        .map(|row| keys.value(row).as_usize())
-        .filter(|key| *key < values.len());
+        .map(|row| keys.value(row).as_usize());
     if held::bitmapped(values.len(), keys.len()) {
         let mut bits = BooleanBufferBuilder::new(values.len());
         bits.append_n(values.len(), false);
@@ -291,19 +275,7 @@ fn viewed(
             .map(|row| views.span(row))
             .filter(|span| !span.is_empty()),
     );
-    spans.sort_unstable_by_key(|span| span.start);
-    let mut kept: usize = 0;
-    for at in 0..spans.len() {
-        let span = spans[at].clone();
-        match kept.checked_sub(1).map(|last| &mut spans[last]) {
-            Some(last) if span.start <= last.end => last.end = last.end.max(span.end),
-            _ => {
-                spans[kept] = span;
-                kept += 1;
-            }
-        }
-    }
-    spans.truncate(kept);
+    rows::disjoint(&mut spans);
     items(item, values, &Rows::Ranges(Rc::new(spans)))
 }
 
@@ -313,5 +285,5 @@ fn items(item: &Field, values: &dyn Array, named: &Rows<'_>) -> Result<(), JsonE
         return Ok(());
     }
     let within = Rows::Clamped(Rc::new(named.clone()), values.len());
-    walk(item, false, values, &within)
+    walk(values, &within)
 }

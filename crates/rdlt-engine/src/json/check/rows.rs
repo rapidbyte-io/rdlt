@@ -8,6 +8,9 @@ use std::rc::Rc;
 use arrow_buffer::bit_iterator::BitSliceIterator;
 use arrow_buffer::{ArrowNativeType, BooleanBuffer, NullBuffer, RunEndBuffer};
 
+#[cfg(test)]
+mod tests;
+
 /// The ends of a run-end encoded array's runs, of any width.
 #[derive(Clone, Copy)]
 pub(super) enum Ends<'a> {
@@ -146,6 +149,24 @@ impl Rows<'_> {
             ),
         }
     }
+}
+
+/// Sorts `spans` and merges those that overlap or touch, in place: what they name, as sorted,
+/// disjoint ranges, so a list view naming its items many times reads each once.
+pub(super) fn disjoint(spans: &mut Vec<Range<usize>>) {
+    spans.sort_unstable_by_key(|span| span.start);
+    let mut kept: usize = 0;
+    for at in 0..spans.len() {
+        let span = spans[at].clone();
+        match kept.checked_sub(1).map(|last| &mut spans[last]) {
+            Some(last) if span.start <= last.end => last.end = last.end.max(span.end),
+            _ => {
+                spans[kept] = span;
+                kept += 1;
+            }
+        }
+    }
+    spans.truncate(kept);
 }
 
 /// Rows in order, each once, as ranges of the consecutive ones.

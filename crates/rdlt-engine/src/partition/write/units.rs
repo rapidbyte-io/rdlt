@@ -48,12 +48,6 @@ async fn checked(
     context: &PartitionContext,
     batches: &[RecordBatch],
 ) -> Result<(), Error> {
-    if !batches
-        .first()
-        .is_some_and(|batch| json::holds_json(&batch.schema()))
-    {
-        return Ok(());
-    }
     let batches = batches.to_vec();
     let compute = context.env.compute();
     let measured = batches.clone();
