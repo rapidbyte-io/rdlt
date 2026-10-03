@@ -390,3 +390,27 @@ async fn a_merge_key_stored_as_json_on_a_normalized_stream_is_refused_before_any
     );
     assert_eq!(crate::support::published_rows(store, "events"), 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_merge_key_a_normalized_stream_takes_apart_is_refused_before_any_row_lands() {
+    // An object key is flattened into columns of its own, an array key into a child table: the
+    // table would have no column for its key.
+    for (store, key) in [("object_key", r#"{"a":1}"#), ("array_key", "[1]")] {
+        let first = format!(r#"{{"id":{key},"items":[{{"sku":"victim1"}}]}}"#);
+        let source = batches(store, vec![BatchStream::json("events", &[&first])]).await;
+        let outcome = engine(commit_every(1))
+            .run(
+                pipeline(store, vec![merged("events")]),
+                source,
+                crate::support::memory(store).await,
+            )
+            .await;
+        let error = outcome.error.expect("the run fails");
+        assert_eq!(
+            (error.kind(), error.code()),
+            (rdlt_engine::ErrorKind::Schema, Some("merge_key_nested")),
+            "{store}: {error:?}"
+        );
+        assert_eq!(crate::support::published_rows(store, "events"), 0);
+    }
+}
