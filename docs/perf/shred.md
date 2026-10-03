@@ -92,14 +92,32 @@ about 4.1× the fastest core: the mix of cores, not the shredder, sets that figu
 
 ## Metering (ADR 0040)
 
-Since ADR 0040 the shredder charges every builder what it is made with and grows by, and a
-chunk that would pass twice its text is read again observing before its batch is built. Dense
-data stays within its allowance and parses once. Measured back to back against the engine before
-it, on the same machine, one core, every corpus above and the normalizing groups below were
-within the run-to-run noise of the shared machine (5–10 %). Two choices keep it so: a growing
-builder is charged what it grows by, not what it holds while it copies (charging the copy made
-`string_heavy` chunks trip and parse three times, 460 against 195 MiB/s), and identity writes a
-float's canonical text in place rather than allocating it (allocating cost `keyless` a quarter).
+Since ADR 0040 the shredder charges every builder what it is made with and grows by, and each
+column its fixed parts a chunk, and a chunk that would pass twice its text is read again
+observing before its batch is built. Dense data stays within its allowance and parses once; the
+charges cost a few percent of throughput. Measured on the same machine against `main`
+(`8ed5317d`), one core (`taskset -c 0`), the two benches' runs interleaved five times, criterion's
+mean of each, the median of five; 2026-10-03, load average 3 to 9:
+
+| Corpus | `main` | ADR 0040 | Ratio |
+|---|---|---|---|
+| `nested` | 506 MiB/s | 466 MiB/s | 0.92 |
+| `sparse` | 499 MiB/s | 464 MiB/s | 0.93 |
+| `flat_narrow` | 391 MiB/s | 378 MiB/s | 0.97 |
+| `flat_wide` | 453 MiB/s | 432 MiB/s | 0.95 |
+| `string_heavy` | 536 MiB/s | 522 MiB/s | 0.97 |
+| normalize `shred_only` | 412 MiB/s | 377 MiB/s | 0.92 |
+| normalize `keyed` | 328 MiB/s | 304 MiB/s | 0.93 |
+| normalize `keyless` | 208 MiB/s | 197 MiB/s | 0.95 |
+
+The figures are lower than those above, measured another day, on mains power: only the ratios
+compare. `nested` stays above five times the old engine (5.85 × 0.92), past the gate of four. The
+cost is spread through the parse: a builder's append returns whether its meter had room, text
+counts what it writes, a row's end may charge its record's growth, and each chunk keeps its
+shape for the reckoning. Two choices keep it this small: a growing builder is charged what it
+grows by, not what it holds while it copies (charging the copy made `string_heavy` chunks trip
+and parse three times, at 40 % of `main`), and identity writes a float's canonical text in place
+rather than allocating it (allocating cost `keyless` a quarter).
 
 ## The `arrow-json` fast path
 

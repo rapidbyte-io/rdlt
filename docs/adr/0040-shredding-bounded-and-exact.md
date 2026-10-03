@@ -9,8 +9,9 @@ before it is held, or bounded by a limit with a typed refusal. JSON pushes, the 
 Arrow columns and the rows normalizing makes of both escaped that in several ways:
 
 - The shredder built a chunk's columns before it counted them. Its only bound on cells was
-  checked once the chunks were joined, after every chunk had built its columns: empty records before one
-  wide record took about 80 KB a row, and a push of a few hundred kilobytes ended the process.
+  checked once the chunks were joined, after every chunk had built its columns: empty records
+  before one wide record took about 80 KB a row, and a push of a few hundred kilobytes ended the
+  process.
   A list's items were not counted as rows of their level, its column limit held each object and
   not a record, and a megabyte of records of one key each, three hundred keys in turn, became
   241 MB under a budget that reserved 10.5 MB for it (ADR 0039 named that gap).
@@ -36,14 +37,21 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   paid for first. A JSON push is admitted for three times its text (ADR 0039): the text, and twice
   it for its batches. Each chunk may build within twice its own text: its builders charge a meter
   their presized capacity as they are made and what they grow by as they grow (values, offsets,
-  validity bits, text and list items). A column's fixed parts, a field, an array header and a
-  buffer's rounding, are not charged, as the cost model charges none; the column limit bounds
-  them. A chunk that would pass its allowance stops building and is read again observing: kinds,
-  counts of rows, items and text, no cells, nothing that grows with its rows.
+  validity bits, text and list items), and each column the fixed parts it takes a chunk, whatever
+  its rows: its entry in the chunk's record (192 bytes and its name), and its builder (256 bytes,
+  a struct's 1,536), its buffers' rounding included. A chunk that would pass its allowance stops
+  building and is read again observing: kinds, counts of rows, items and text, no cells, nothing
+  that grows with its rows. An observation charges each column's entry in its shape the same way,
+  and an object its own shape (384 bytes). A chunk smaller than its records' columns, the last of
+  a flush, may observe them past its allowance: what a flush's observations hold so is limited
+  to one shape of every column a schema may hold, objects all (576 bytes a column, 4.3 MB at the
+  default budget), reserved before the pushes are observed and refused past it, `limit_exceeded`.
 - **What building takes beyond the admission is reserved before it is built.** Once every chunk
   is parsed or observed and the shapes joined, the bytes each chunk's batch takes against the
-  joined shape are reckoned from the counts. A chunk that fits keeps its columns; one built again
-  is built presized. What all of it takes beyond the push's admission is reserved from the data
+  joined shape are reckoned from the counts, with its columns' fixed parts (640 bytes an array, a
+  struct's 1,536) and what its parse holds until then. A chunk that fits keeps its columns; one
+  built again is built presized. What all of it and the joined shape take beyond the pushes'
+  admission, reckoned over the flush, is reserved from the data
   share (`acquire_working`) before any of it is built and held with the batches; more than one
   request may take is refused, `json_exceeds_budget` (`ErrorKind::Source`). `shred` is now
   `observe` and `build`, and the partition reserves between them.
@@ -56,14 +64,17 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 - **JSON text is read by one reader.** The engine's `json` module reads JSON text as tokens,
   iteratively, without recursion and without building a document; nesting past
   `MAX_NESTING_DEPTH` is refused, `limit_exceeded`. Numbers stay text. Row identity reads JSON
-  text through it: text that is not JSON fails the write, `json_invalid`, never hashed as a
-  string.
+  text through it: text that is not JSON fails the write, `json_invalid` (`ErrorKind::Source`),
+  never hashed as a string.
 - **Numbers are hashed by their value.** A number's canonical text is its exact value in plain
   notation (`-12.5`, `0.001`, `1000`) while that is at most 400 bytes, which every value a 64-bit
   float or a decimal holds is, and in scientific notation beyond. It is a function of the value,
   so distinct values never share it, and no longer than the text it came from plus its exponent.
   A number whose exponent has more than 18 significant digits, whose place no 64-bit integer
-  holds, is refused, `limit_exceeded`. A float is hashed by the canonical text of its shortest
+  holds, is refused, `limit_exceeded`, as its push arrives, whatever the stream does with it: the
+  check of an Arrow column of JSON refuses it, and so does the shredder's exact parse. The fast
+  parse reads such a number as zero, so a record where it read a float of zero and whose text
+  holds a digit, an `e` and more than 18 digits is parsed exactly. A float is hashed by the canonical text of its shortest
   JSON text, a tie going to the even digit as JSON writers break it (`ryu`), so a float and the
   JSON text a writer makes of it hash alike.
 - **A JSON column's numbers are kept as written.** A chunk whose column of JSON holds a float is
@@ -72,23 +83,34 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   typing: a number with a fraction or exponent is a 64-bit float.
 - **Every value of an Arrow push's columns of JSON is checked before it is used.** On the
   compute pool, at any depth and in every encoding (dictionaries, runs, views, structs, lists,
-  list views and maps), only the values rows name: text that is not JSON fails the write,
-  `json_invalid`, and nesting past the limit `limit_exceeded`. Lowering then only splices checked
-  text. An object repeating a key is valid JSON there, and kept; only records of JSON pushes
+  list views and maps), only the values rows name, each once: text that is not JSON fails the
+  write, `json_invalid`, and nesting past the limit `limit_exceeded`. Which rows are named is
+  read as ranges, each level mapping its parent's (a list's rows to its items by their offsets, a
+  run's rows to its values, a struct's through its nulls), so nothing is held a row or an item.
+  Only a dictionary's named values (a bit a value, or the keys named where that is less) and the
+  spans of a list view naming its items out of order are held, and what they take is reserved
+  before the check runs. Lowering then only splices checked text. An object repeating a key is valid JSON there, and kept; only records of JSON pushes
   refuse one.
 - **A merge key stored as JSON on a normalized stream is refused** when its table is created,
   `merge_key_json` (`ErrorKind::Schema`). Its rows would merge by the text the destination stores,
   where `1` and `1.0` differ, while their child rows follow the root id the values give, where
-  they are one value. A stream that does not normalize keeps merging by the text.
+  they are one value. A stream that does not normalize keeps merging by the text. A key whose
+  values are objects or arrays, which normalizing flattens into columns or moves to a table of
+  its own, is refused as the batch is normalized, `merge_key_nested` (`ErrorKind::Schema`): the
+  table would have no column for it.
 - **A column of JSON is split value by value.** A column arriving as JSON text whose own column
-  is of another type sends there each value whose type, as the shredder reads that value alone,
-  joins into the column's type, or that is an integer a 64-bit float holds exactly, for a column
-  of such floats; the value is read and converted. Only the others take the variant, or the
-  discard, the schema policy names. A value that would widen the column, an object with a new
-  key, goes with the others: the column's type is fixed once planned. An object repeating a key
-  keeps its text, and so does a value the shredder would refuse alone, a number beyond a
-  float's range. A frozen table still refuses, and a merge key still refuses to change. Row
-  identity and history read the batch as it arrived. A column of integers that JSON text is read
+  is of another type sends there each value that is a value of the column's type, read as the
+  shredder reads that value alone, and converted: a null, of any column; an object whose fields
+  the struct holds by name, in any order, those it lacks being null, which a field that may not
+  be null may not be; an array whose items the list holds, which may be null; an integer of at
+  most 2⁵³ in magnitude, in a column of 64-bit floats at any depth; and any other value whose
+  type joins into the column's. Only the others take the variant, or the discard, the schema
+  policy names. A value that would widen the column, an object with a field the struct lacks,
+  goes with the others: the column's type is fixed once planned. An object repeating a key keeps
+  its text, and so does a value the shredder would refuse alone, a number beyond a float's
+  range. A frozen table still refuses, and a merge key still refuses to change. Row identity
+  reads the batch as it arrived, and history hashes the columns as the table stores them. The
+  values are read as a shredding job is, sure of its stack. A column of integers that JSON text is read
   into is no longer recorded exact (ADR 0026): its integers are read only as the plan lowers
   them. The cost model charges what reading takes: two null slots of the column's type a row,
   its null text where stored as text, and for each byte of text one more and two slots of the
@@ -118,13 +140,16 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 
 ## Consequences
 
-- No JSON push builds what it was not admitted or reserved for, so ADR 0039's bound now holds
-  for JSON without exception; a JSON flush whose batches take more than a quarter of the budget
-  beyond twice its text is refused.
+- No JSON push builds or observes what it was not admitted or reserved for, and no check of an
+  Arrow column of JSON holds what was not, so ADR 0039's bound holds for JSON without exception;
+  a JSON flush whose batches take more than a quarter of the budget beyond twice its text is
+  refused. Twenty-six records of 7,480 keys, each in a chunk of 1 MiB, are refused so; eight load.
+- Every JSON flush reserves the room its observations may hold beyond its text while it is
+  observed, 4.3 MB at the default budget.
 - JSON records that held up to 10,000 columns in an object are refused past the derived limit.
 - Narrow records that widen a column past a chunk's allowance are parsed twice more; dense data
-  still parses once. Shredding and normalizing throughput stay within noise of the engine before
-  (docs/perf/shred.md).
+  still parses once. Shredding and normalizing run 3 to 8 % slower on one core than before the
+  charges, past the spec's gate still (docs/perf/shred.md).
 - Row ids of floats whose shortest text is a tie, and of JSON numbers a float rounded, differ from
   earlier runs.
 - `1.50` and `1.5` stay distinct texts in a destination's column of JSON, one value to identity.
