@@ -37,7 +37,7 @@ use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
 
 use super::as_list;
-use crate::json::{JsonError, Reader, Token, canonical_float, canonical_float32, canonical_number};
+use crate::json::{JsonError, Reader, Token, write_float, write_float32, write_number};
 use crate::table::convert::decoded;
 use canonical::{Stored, decimal_scale, temporal_tag, unit_nanoseconds};
 
@@ -340,7 +340,7 @@ fn json(text: &str, out: &mut Vec<u8>) -> Result<(), JsonError> {
             Token::Bool(value) => place(&mut open, out, Some(&[if value { TRUE } else { FALSE }])),
             Token::Number(written) => {
                 let mut number = vec![NUMBER];
-                number.extend_from_slice(canonical_number(written)?.as_bytes());
+                write_number(written, &mut number)?;
                 number.push(b';');
                 place(&mut open, out, Some(&number));
             }
@@ -447,13 +447,15 @@ fn number(row: &mut Vec<u8>, digits: impl FnOnce(&mut Vec<u8>) -> std::io::Resul
 /// going to the even one as JSON writers break it, which is the text the engine writes a float
 /// into JSON as, so the float and that text hash alike; negative zero is zero.
 fn float64(row: &mut Vec<u8>, value: f64) {
-    number(row, |row| row.write_all(canonical_float(value).as_bytes()));
+    row.push(NUMBER);
+    write_float(value, row);
+    row.push(b';');
 }
 
 fn float32(row: &mut Vec<u8>, value: f32) {
-    number(row, |row| {
-        row.write_all(canonical_float32(value).as_bytes())
-    });
+    row.push(NUMBER);
+    write_float32(value, row);
+    row.push(b';');
 }
 
 /// Appends `bytes` after their length, in LEB128.

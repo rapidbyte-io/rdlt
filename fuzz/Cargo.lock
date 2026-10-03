@@ -1028,6 +1028,7 @@ dependencies = [
  "rayon",
  "rdlt-connector",
  "rdlt-wire",
+ "ryu",
  "schemars",
  "serde",
  "serde_json",
