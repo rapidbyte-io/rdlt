@@ -4,11 +4,11 @@
 use std::sync::Arc;
 
 use rdlt_connector::{PipelineId, ReadMode};
-use rdlt_engine::{ErrorKind, LocalWal, RunOutcome, RunStatus, WalStore};
+use rdlt_engine::{ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatus, WalStore};
 
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, counting, failing};
-use crate::support::logs::Counted;
+use crate::support::logs::{Counted, Filling};
 use crate::support::script::{Script, ScriptStream, id};
 use crate::support::{
     commit_every, engine, logging_engine, memory, pipeline, published_ids, retrying, stream,
@@ -234,4 +234,78 @@ async fn a_logged_commit_of_a_table_nested_to_the_limit_replays() {
         let pipeline = PipelineId::parse(name.replace('_', "-")).expect("a valid pipeline");
         assert_eq!(store.loads(&pipeline).await.expect("loads list"), []);
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_that_never_checkpoints_is_refused_before_its_log_passes_its_limit() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    // A partition that checkpoints only at its end: every commit's barrier finds it unsealed.
+    let mut events = ScriptStream::new("events", 1, 4_000, 20);
+    events.replayable = false;
+    events.checkpoint_every = u64::MAX;
+    let (script, source) = Script::new(vec![events]).connect("wal_unsealed").await;
+    let limit = 16 << 10;
+    let growth = GrowthLimits::default()
+        .with_log_bytes(limit)
+        .expect("a valid limit");
+    let plan = pipeline(
+        "wal-unsealed",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let outcome = logging_engine(commit_every(100).growth(growth), Arc::clone(&store))
+        .run(plan, source, memory("wal_unsealed").await)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(error.code(), Some("log_bytes_exceeded"), "{error:?}");
+    assert!(!error.is_retryable());
+    // Nothing of the read was committed, and the source heard of nothing.
+    assert!(script.acks.lock().is_empty());
+    assert_eq!(published_ids("wal_unsealed", "events"), Vec::<i64>::new());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_full_disk_fails_its_attempt_retryably_and_the_next_lands_every_row_once() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let filling = Arc::new(Filling {
+        local: LocalWal::new(base.path()),
+        appends: Arc::default(),
+        failing: Arc::new(std::sync::atomic::AtomicUsize::new(12)),
+    });
+    let store: Arc<dyn WalStore> = Arc::clone(&filling) as Arc<dyn WalStore>;
+    let mut events = ScriptStream::new("events", 2, 30, 7);
+    events.replayable = false;
+    let (_, source) = Script::new(vec![events]).connect("wal_full_disk").await;
+    let plan = pipeline(
+        "wal-full-disk",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let full = logging_engine(retrying(1), Arc::clone(&store))
+        .run(
+            plan.clone(),
+            Arc::clone(&source),
+            memory("wal_full_disk").await,
+        )
+        .await;
+    assert_eq!(full.report.status, RunStatus::Failed);
+    let error = full.error.expect("the disk is full");
+    assert_eq!(error.code(), Some("wal_storage_full"), "{error:?}");
+    assert!(error.is_retryable());
+    // Space freed, the next run replays what was logged and lands every row once.
+    filling
+        .failing
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+    let freed = logging_engine(retrying(1), Arc::clone(&store))
+        .run(plan, source, memory("wal_full_disk").await)
+        .await;
+    assert_eq!(
+        freed.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        freed.error
+    );
+    assert_eq!(published_ids("wal_full_disk", "events"), ids(2, 30));
+    let pipeline = PipelineId::parse("wal-full-disk").expect("a valid pipeline");
+    assert_eq!(store.loads(&pipeline).await.expect("loads list"), []);
 }

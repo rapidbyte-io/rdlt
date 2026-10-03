@@ -338,7 +338,7 @@ fn started(store: Arc<MemoryWal>) -> LoadLog {
         epoch: Epoch(1),
         opened: None,
     };
-    let (log, writer) = LoadLog::start(store, owner);
+    let (log, writer) = LoadLog::start(store, owner, std::num::NonZeroU64::MAX);
     tokio::spawn(writer);
     log
 }

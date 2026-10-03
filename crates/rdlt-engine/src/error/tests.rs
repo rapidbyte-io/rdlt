@@ -289,3 +289,29 @@ fn no_connector_error_is_of_the_memory_budget_s_kind_or_code() {
     );
     assert!(memory.to_string().contains("waited 3600s"), "{memory}");
 }
+
+#[test]
+fn a_full_disk_under_the_log_is_retryable_and_says_so() {
+    use std::io::{Error as Io, ErrorKind as Kind};
+    for full in [Kind::StorageFull, Kind::QuotaExceeded] {
+        let error = Error::from_wal(Io::from(full));
+        assert_eq!(error.kind(), ErrorKind::Wal);
+        assert_eq!(error.code(), Some("wal_storage_full"), "{full:?}");
+        assert!(error.is_retryable(), "{full:?}");
+    }
+    for transient in [
+        Kind::Interrupted,
+        Kind::TimedOut,
+        Kind::WouldBlock,
+        Kind::ResourceBusy,
+    ] {
+        let error = Error::from_wal(Io::from(transient));
+        assert_eq!(error.code(), None, "{transient:?}");
+        assert!(error.is_retryable(), "{transient:?}");
+    }
+    for lasting in [Kind::PermissionDenied, Kind::InvalidData, Kind::Other] {
+        let error = Error::from_wal(Io::from(lasting));
+        assert_eq!(error.code(), None, "{lasting:?}");
+        assert!(!error.is_retryable(), "{lasting:?}");
+    }
+}

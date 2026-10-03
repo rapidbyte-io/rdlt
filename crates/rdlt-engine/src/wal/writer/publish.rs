@@ -1,6 +1,8 @@
 //! Publishing the chunk staged: its end, naming what of the log a replay still needs, then the
 //! chunk written whole, then the deletion of every chunk it leaves unneeded.
 
+use std::sync::atomic::Ordering;
+
 use super::super::frame::{End, Frame};
 use super::{Chunk, Log, Written};
 use crate::crash::crash_point;
@@ -57,7 +59,9 @@ impl Log {
                 .remove(&self.owner.pipeline, chunk)
                 .await
                 .map_err(Error::from_wal)?;
-            self.written.remove(&number);
+            if let Some(written) = self.written.remove(&number) {
+                self.shared.held.fetch_sub(written.len, Ordering::Relaxed);
+            }
             crash_point!("engine.wal.remove");
         }
         self.settled.forget_unwritten(&self.written);
@@ -97,6 +101,7 @@ impl Log {
             .remove_log(&self.owner.pipeline, self.owner.load)
             .await
             .map_err(Error::from_wal)?;
+        self.shared.held.store(0, Ordering::Relaxed);
         crash_point!("engine.wal.removed");
         Ok(())
     }

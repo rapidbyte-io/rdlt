@@ -65,7 +65,7 @@ fn start(
         epoch: Epoch(1),
         opened: None,
     };
-    LoadLog::start(wal, owner)
+    LoadLog::start(wal, owner, std::num::NonZeroU64::MAX)
 }
 
 /// The view of `table` at `version`.
@@ -580,6 +580,113 @@ async fn a_version_stays_described_while_any_view_of_it_lives() {
         .count();
     // Once in each chunk that holds its batches, under one index.
     assert_eq!(schemas, 2);
+}
+
+#[tokio::test]
+async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let owner = Owner {
+        pipeline: pipeline(),
+        load: load(),
+        epoch: Epoch(1),
+        opened: None,
+    };
+    let limit = 4_000;
+    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap());
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let written = async {
+        let mut refused = None;
+        for segment in 0..100 {
+            if let Err(error) = logged(&log, &budget, 0, &orders, SegmentId(segment), &ids(0)).await
+            {
+                refused = Some((segment, error));
+                break;
+            }
+            assert!(log.held() <= limit, "{} bytes", log.held());
+        }
+        let (segment, error) = refused.expect("the log fills");
+        assert!(segment > 2, "refused at batch {segment}");
+        assert_eq!(error.code(), Some("log_bytes_exceeded"));
+        assert!(!error.is_retryable());
+        assert!(log.held() <= limit);
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
+#[tokio::test]
+async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_after() {
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let owner = Owner {
+        pipeline: pipeline(),
+        load: load(),
+        epoch: Epoch(1),
+        opened: None,
+    };
+    let limit = 80_000;
+    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap());
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let written = async {
+        let segments = std::sync::atomic::AtomicU64::new(0);
+        let fill = |until: u64| {
+            let (log, budget, orders, segments) = (&log, &budget, &orders, &segments);
+            async move {
+                while log.held() < until {
+                    let segment = segments.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    logged(log, budget, 0, orders, SegmentId(segment), &ids(0))
+                        .await
+                        .expect("logged");
+                }
+            }
+        };
+        fill(limit / 2 - 1_000).await;
+        assert!(!log.due(), "{} bytes", log.held());
+        fill(limit / 2).await;
+        assert!(log.due());
+        // A commit that lets nothing go makes the next due an eighth later.
+        log.passed();
+        assert!(!log.due());
+        let held = log.held();
+        fill(held + limit / 8 - 1_000).await;
+        assert!(!log.due());
+        fill(held + limit / 8).await;
+        assert!(log.due());
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
+#[tokio::test]
+async fn a_failed_write_fails_the_batches_after_it_at_once() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let failing = Arc::clone(&store);
+    let written = async {
+        *failing.failing.lock() = true;
+        // The writer fails the first batch it writes, and the batches logged after it hear so.
+        let mut refused = None;
+        for segment in 0..64 {
+            if let Err(error) = logged(&log, &budget, 0, &orders, SegmentId(segment), &ids(0)).await
+            {
+                refused = Some(error);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let error = refused.expect("a batch after the failure is refused");
+        assert_eq!(error.kind(), crate::ErrorKind::Wal);
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
 }
 
 #[tokio::test]

@@ -10,6 +10,7 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use rdlt_connector::{CommitSeq, Epoch, LoadId, Permit, PipelineId, SegmentId, SegmentSet};
@@ -80,10 +81,32 @@ pub(crate) enum Command {
     },
 }
 
+/// What a load's writer and its senders share: what the log holds on disk, and its first
+/// failure.
+#[derive(Default)]
+pub(crate) struct Shared {
+    /// Bytes: what the log holds on disk, its chunks published and the chunk staged; a batch
+    /// frame counted once it is sent, every other frame once it is written.
+    pub(crate) held: AtomicU64,
+    /// The first failure, which every later batch and command is answered with.
+    pub(crate) failed: parking_lot::Mutex<Option<Error>>,
+}
+
+impl Shared {
+    /// The failure every command answers with once one failed.
+    pub(crate) fn failure(&self) -> Result<(), Error> {
+        match &*self.failed.lock() {
+            Some(failed) => Err(Error::wal_failed_before(failed)),
+            None => Ok(()),
+        }
+    }
+}
+
 /// The sending end of a load's writer.
 #[derive(Clone)]
 pub(crate) struct WalWriter {
     commands: mpsc::Sender<Command>,
+    shared: Arc<Shared>,
 }
 
 impl WalWriter {
@@ -97,7 +120,9 @@ impl WalWriter {
         impl Future<Output = Result<(), Error>> + Send + 'static,
     ) {
         let (commands, receiver) = mpsc::channel(QUEUED);
+        let shared = Arc::<Shared>::default();
         let log = Log {
+            shared: Arc::clone(&shared),
             store,
             owner,
             chunk: 0,
@@ -107,9 +132,13 @@ impl WalWriter {
             written: BTreeMap::new(),
             pending: BTreeMap::new(),
             settled: Settled::default(),
-            failed: None,
         };
-        (Self { commands }, log.run(receiver))
+        (Self { commands, shared }, log.run(receiver))
+    }
+
+    /// What the writer and its senders share.
+    pub(crate) fn shared(&self) -> &Arc<Shared> {
+        &self.shared
     }
 
     /// Sends `command`, waiting while the writer is behind.
@@ -195,9 +224,9 @@ struct Log {
     pending: BTreeMap<CommitSeq, SegmentSet>,
     /// The segments of commits with receipts, and those abandoned, still in a chunk.
     settled: Settled,
-    /// The first failure, which every later command answers with: after a failed write, what the
-    /// log holds is unknown, and no later frame may be trusted to follow it.
-    failed: Option<Error>,
+    /// What the log holds on disk, and its first failure: after a failed write, what the log
+    /// holds is unknown, and no later frame may be trusted to follow it.
+    shared: Arc<Shared>,
 }
 
 impl Log {
@@ -271,26 +300,32 @@ impl Log {
 
     /// Keeps the first failure.
     fn note(&mut self, result: &Result<(), Error>) {
-        if let (Err(error), None) = (result, &self.failed) {
-            self.failed = Some(Error::wal_failed_before(error));
+        let mut failed = self.shared.failed.lock();
+        if let (Err(error), None) = (result, &*failed) {
+            *failed = Some(Error::wal_failed_before(error));
         }
     }
 
     /// The failure every command answers with once one failed.
     fn failure(&self) -> Result<(), Error> {
-        match &self.failed {
-            Some(failed) => Err(Error::wal_failed_before(failed)),
-            None => Ok(()),
-        }
+        self.shared.failure()
     }
 
     fn current(&mut self) -> &mut Written {
         self.written.entry(self.chunk).or_default()
     }
 
+    /// Writes `frame` to the chunk staged, as [`Log::written`] does, counting it on disk.
+    async fn append(&mut self, frame: Bytes) -> Result<Span, Error> {
+        self.shared
+            .held
+            .fetch_add(count(frame.len()), Ordering::Relaxed);
+        self.written_out(frame).await
+    }
+
     /// Writes `frame` to the chunk staged, staging it with its preamble and header where it is
     /// the first: where it lies there.
-    async fn append(&mut self, frame: Bytes) -> Result<Span, Error> {
+    async fn written_out(&mut self, frame: Bytes) -> Result<Span, Error> {
         self.failure()?;
         let chunk = Chunk {
             load: self.owner.load,
@@ -305,6 +340,7 @@ impl Log {
             let mut head = frame::preamble().to_vec();
             head.extend_from_slice(&self.header()?);
             let len = count(head.len());
+            self.shared.held.fetch_add(len, Ordering::Relaxed);
             staged
                 .append(Bytes::from(head))
                 .await
@@ -353,7 +389,8 @@ impl Log {
             // Written once, the frame is the writer's to keep for the chunks after.
             drop(self.describing.remove(&table));
         }
-        let span = self.append(frame).await?;
+        // Counted on disk once it was sent.
+        let span = self.written_out(frame).await?;
         let current = self.current();
         current.segments.insert(segment);
         current.batches.push(Logged {

@@ -13,7 +13,9 @@ use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 use serde::Serialize;
 
 use crate::budget::Exhausted;
-use crate::limits::{BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_STRAY};
+use crate::limits::{
+    BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_STORAGE_FULL, WAL_STRAY,
+};
 use crate::scope::ScopeError;
 
 /// What kind of failure an [`Error`] reports.
@@ -108,20 +110,25 @@ impl Error {
     /// succeed if tried again.
     ///
     /// What a local log's store refused, as no user's alone or as a name it never writes, is
-    /// `wal_not_private` or `wal_stray`.
+    /// `wal_not_private` or `wal_stray`; a full disk or quota is `wal_storage_full`.
     pub(crate) fn from_wal(error: std::io::Error) -> Self {
         use std::io::ErrorKind as Io;
-        let transient = matches!(
-            error.kind(),
-            Io::Interrupted | Io::TimedOut | Io::WouldBlock | Io::ResourceBusy
-        );
-        let code = error
+        // A full disk is no end: the next attempt's replay deletes the failed load's log, writing
+        // nothing first.
+        let full = matches!(error.kind(), Io::StorageFull | Io::QuotaExceeded);
+        let transient = full
+            || matches!(
+                error.kind(),
+                Io::Interrupted | Io::TimedOut | Io::WouldBlock | Io::ResourceBusy
+            );
+        let refused = error
             .get_ref()
             .and_then(|inner| inner.downcast_ref::<crate::wal::Refusal>())
             .map(|refusal| match refusal {
                 crate::wal::Refusal::NotPrivate { .. } => WAL_NOT_PRIVATE,
                 crate::wal::Refusal::Stray { .. } => WAL_STRAY,
             });
+        let code = refused.or(full.then_some(WAL_STORAGE_FULL));
         let mut wal = Self::wal(format!("the write-ahead log failed: {error}"));
         wal.retryable = transient;
         wal.code = code.map(Arc::from);

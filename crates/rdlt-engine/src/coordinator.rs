@@ -313,15 +313,20 @@ impl Coordinator {
         self.commit().await?;
         self.advance_phases().await?;
         self.cursors_may_free = false;
+        if let Some(log) = &self.parts.wal {
+            log.passed();
+        }
         Ok(self.timer())
     }
 
-    /// Whether a commit is due: by the policy's rows and bytes, or by the cursors of the seals
-    /// waiting, which hold budget only a commit releases, once they take half their share.
+    /// Whether a commit is due: by the policy's rows and bytes, by the cursors of the seals
+    /// waiting, which hold budget only a commit releases, once they take half their share, or by
+    /// what the load's log holds on disk, which only a commit lets go.
     fn commit_due(&self) -> bool {
         let cursors = (self.parts.budget.shares().cursors / 2).max(1);
         self.parts.policy.is_due(self.due.rows(), self.due.bytes())
             || self.sealed.cursor_bytes() >= cursors
+            || self.parts.wal.as_ref().is_some_and(LoadLog::due)
     }
 
     fn timer(&self) -> Sleep {

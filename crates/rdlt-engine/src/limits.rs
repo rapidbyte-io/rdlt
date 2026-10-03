@@ -164,3 +164,15 @@ pub(crate) const WAL_FOREIGN: &str = "wal_foreign";
 /// The code of the error for a logged batch that takes more than one request for lowering may
 /// take of the memory budget: the log was written under more memory than replays it.
 pub(crate) const REPLAY_EXCEEDS_BUDGET: &str = "replay_exceeds_budget";
+
+/// Bytes: what a load's write-ahead log holds on disk at most by default, 4 GiB: four commits'
+/// worth at the default policy's byte threshold.
+pub(crate) const LOG_BYTES: u64 = 4 << 30;
+
+/// The code of the error for a batch whose frame would take its load's write-ahead log past
+/// what it may hold on disk: its source sent that much without a checkpoint a commit could take.
+pub(crate) const LOG_BYTES_EXCEEDED: &str = "log_bytes_exceeded";
+
+/// The code of the error for a write-ahead log whose disk is full: retryable, since the next
+/// attempt's replay deletes the failed load's log before it writes anything.
+pub(crate) const WAL_STORAGE_FULL: &str = "wal_storage_full";

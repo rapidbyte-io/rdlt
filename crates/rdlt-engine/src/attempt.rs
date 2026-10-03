@@ -332,7 +332,7 @@ fn start_log(
             .as_ref()
             .map(|receipt| (receipt.load_id, receipt.commit_seq)),
     };
-    let (log, task) = LoadLog::start(store, owner);
+    let (log, task) = LoadLog::start(store, owner, context.config.growth().log_bytes());
     scope.spawn(task);
     Some(log)
 }

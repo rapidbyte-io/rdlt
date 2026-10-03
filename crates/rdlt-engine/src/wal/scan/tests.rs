@@ -116,7 +116,7 @@ fn owner() -> Owner {
 async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryWal> {
     let store = Arc::new(MemoryWal::default());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, owner());
+    let (log, task) = LoadLog::start(wal, owner(), std::num::NonZeroU64::MAX);
     let budget = MemoryBudget::new(1 << 20);
     let (orders, items) = (view("orders"), view("items"));
     let written = async {
@@ -245,7 +245,7 @@ async fn a_commit_s_receipt_noted_in_a_later_chunk_s_end_settles_it() {
     // Commit 1 is received while segment 3 stays open: chunk 0 stays, its commit received.
     let store = Arc::new(MemoryWal::default());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, owner());
+    let (log, task) = LoadLog::start(wal, owner(), std::num::NonZeroU64::MAX);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let written = async {
