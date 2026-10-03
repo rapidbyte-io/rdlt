@@ -13,7 +13,7 @@ use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visit
 
 use super::ShredError;
 use super::build::{Column, List, Record, Scalar};
-use super::meter::{Columns, Meter, Over};
+use super::meter::{Columns, KEY, Meter, Over};
 use super::observe::{Observed, Shape};
 use super::render::Render;
 pub(crate) use skip::Skip;
@@ -116,6 +116,19 @@ impl Context {
         self.zeroed.replace(false)
     }
 
+    /// Charges an observation `bytes` it holds: within its chunk's allowance, or beyond it as far
+    /// as the flush's room beyond allows.
+    ///
+    /// # Errors
+    ///
+    /// [`ShredError::ColumnsBeyondText`] where neither has room.
+    pub(crate) fn held<E: de::Error>(&self, bytes: u64) -> Result<(), E> {
+        self.meter.charge(bytes).map_err(|Over| {
+            let limit = self.meter.beyond_limit();
+            self.fail(ShredError::ColumnsBeyondText(limit))
+        })
+    }
+
     /// Notes that the chunk must be parsed again exactly.
     pub(crate) fn reparse(&self) {
         self.imprecise.set(true);
@@ -176,9 +189,11 @@ impl Visitor<'_> for Field<'_> {
     }
 
     fn visit_str<E: de::Error>(self, name: &str) -> Result<usize, E> {
+        let context = self.context;
         self.record
-            .position(name, self.hint, &self.context.columns)
-            .map_err(|error| self.context.fail(error))
+            .position(name, self.hint, &context.columns, &context.meter)
+            .map_err(|error| context.fail(error))?
+            .ok_or_else(|| over(Over))
     }
 }
 
@@ -320,6 +335,7 @@ impl<'a> Value<'a> {
                     .columns
                     .add()
                     .map_err(|error| self.context.fail(error))?;
+                self.context.meter.charge(KEY).map_err(over)?;
             }
             *self.column =
                 Column::new(observed, nulls, self.capacity, &self.context.meter).map_err(over)?;

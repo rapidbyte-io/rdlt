@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use rdlt_engine::{ErrorKind, RunOutcome, RunStatus};
+use std::time::Duration;
+
+use rdlt_engine::{BatchPolicy, ErrorKind, RunOutcome, RunStatus};
 
 use crate::HEAP;
 use crate::support::destinations::null;
@@ -21,10 +23,26 @@ fn bound(budget: u64) -> usize {
 /// Loads the JSON push `text` under `budget`: the most the heap held beyond what it held before,
 /// and how the run ended.
 async fn run(name: &str, budget: u64, text: String) -> (usize, RunOutcome) {
+    run_chunked(name, budget, 1 << 20, text).await
+}
+
+/// Loads the JSON push `text` under `budget`, shredded in chunks of `chunk_bytes`: the most the
+/// heap held beyond what it held before, and how the run ended.
+async fn run_chunked(
+    name: &str,
+    budget: u64,
+    chunk_bytes: usize,
+    text: String,
+) -> (usize, RunOutcome) {
     let pushed = bytes::Bytes::from(text);
     let steps: Steps = Arc::new(move |step| (step < 1).then(|| Step::Json(pushed.clone())));
     let source = making(name, steps).await;
-    let config = commit_every(1_000_000_000).memory(budget).lanes(1);
+    let batch = BatchPolicy::new(8 << 20, 1 << 20, Duration::from_secs(1), chunk_bytes)
+        .expect("a valid policy");
+    let config = commit_every(1_000_000_000)
+        .memory(budget)
+        .lanes(1)
+        .batch(batch);
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let outcome = engine(config)
@@ -165,4 +183,58 @@ async fn narrow_records_after_a_wide_one_fill_its_table_within_the_budget() {
     );
     assert_eq!(outcome.report.rows, 20_001);
     assert!(peak <= bound(LEAST), "the heap held {peak} bytes");
+}
+
+/// A push of `chunks` records of 7,480 keys, each followed by a record of filler that fills its
+/// chunk of `chunk_bytes`.
+fn wide_chunks(chunks: usize, chunk_bytes: usize) -> String {
+    let wide = wide_object(0, 7_480, "1");
+    let fill = chunk_bytes.saturating_sub(wide.len()).max(1);
+    let filler = format!("{{\"pad\":\"{}\"}}", "x".repeat(fill));
+    let mut text = String::new();
+    for _ in 0..chunks {
+        text.push_str(&wide);
+        text.push('\n');
+        text.push_str(&filler);
+        text.push('\n');
+    }
+    text
+}
+
+#[tokio::test(start_paused = true)]
+async fn wide_records_in_small_chunks_are_held_within_the_bound() {
+    const BUDGET: u64 = 256 << 20;
+    // Three hundred and eighty chunks of 64 KiB, each with all seven thousand columns.
+    let text = wide_chunks(380, 64 << 10);
+    let (peak, outcome) = run_chunked("wide_small_chunks", BUDGET, 64 << 10, text).await;
+    if let Some(error) = &outcome.error {
+        assert_eq!(error.kind(), ErrorKind::Source, "{error:?}");
+    }
+    assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn wide_records_in_full_chunks_are_charged_what_they_hold() {
+    const BUDGET: u64 = 256 << 20;
+    // Chunks of a megabyte, each with all seven thousand columns: their columns' parts a chunk
+    // are charged, so the heap stays within what the budget held, a fifth and 32 MiB, and what
+    // takes more than a request is refused before it is built.
+    for (chunks, loads) in [(8, true), (26, false)] {
+        let name = format!("wide_full_chunks_{chunks}");
+        let (peak, outcome) =
+            run_chunked(&name, BUDGET, 1 << 20, wide_chunks(chunks, 1 << 20)).await;
+        match &outcome.error {
+            None => assert!(loads, "{chunks} chunks loaded"),
+            Some(error) => {
+                assert!(!loads, "{error:?}");
+                assert_eq!(error.code(), Some("json_exceeds_budget"), "{error:?}");
+            }
+        }
+        let held = outcome.report.peak_memory;
+        let within = usize::try_from(held + held / 5 + (32 << 20)).expect("a bound in memory");
+        assert!(
+            peak <= within,
+            "{chunks} chunks: the heap held {peak} bytes, the budget {held}"
+        );
+    }
 }

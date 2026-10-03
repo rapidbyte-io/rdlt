@@ -40,6 +40,7 @@ impl Record {
     pub(crate) fn new(shape: &Shape, capacity: usize, meter: &Meter) -> Result<Self, Over> {
         let mut record = Self::empty(capacity);
         for (name, observed) in shape.fields() {
+            meter.charge(Meter::key(name))?;
             record.index.insert(Arc::clone(name), record.names.len());
             record.names.push(Arc::clone(name));
             record
@@ -80,6 +81,8 @@ impl Record {
     /// counting it among `columns`: objects usually repeat their keys' order, so the field after
     /// the last one found is most often next.
     ///
+    /// A field's entry is charged to `meter`: none where it has no room for it.
+    ///
     /// # Errors
     ///
     /// [`ShredError::TooManyColumns`] for a field past the limit, before the rest of the chunk is
@@ -89,28 +92,32 @@ impl Record {
         name: &str,
         hint: usize,
         columns: &Columns,
-    ) -> Result<usize, ShredError> {
+        meter: &Meter,
+    ) -> Result<Option<usize>, ShredError> {
         if self
             .names
             .get(hint)
             .is_some_and(|field| field.as_ref() == name)
         {
-            return Ok(hint);
+            return Ok(Some(hint));
         }
         #[cfg(test)]
         {
             self.searches += 1;
         }
         if let Some(&position) = self.index.get(name) {
-            return Ok(position);
+            return Ok(Some(position));
         }
         columns.add()?;
+        if meter.charge(Meter::key(name)).is_err() {
+            return Ok(None);
+        }
         let name: Arc<str> = name.into();
         self.index.insert(Arc::clone(&name), self.names.len());
         self.names.push(name);
         self.columns.push(Column::Null(self.rows));
         self.written.push(usize::MAX);
-        Ok(self.names.len() - 1)
+        Ok(Some(self.names.len() - 1))
     }
 
     /// The column of the field at `position`, for the row being appended; a field the row already
