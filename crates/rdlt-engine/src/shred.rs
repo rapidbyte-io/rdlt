@@ -16,6 +16,7 @@ mod conform;
 mod cost;
 #[cfg(test)]
 mod differential;
+mod error;
 mod exact;
 mod meter;
 mod observe;
@@ -41,66 +42,12 @@ use crate::compute::{ComputePool, run_all};
 use crate::limits::MAX_CELLS;
 
 use build::Record;
-use meter::{Columns, Meter};
+use meter::{Beyond, Columns, Meter};
 use observe::Shape;
 use records::{Chunk, chunks};
 use visit::{Context, Row};
 
-/// Why a JSON push cannot be shredded.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum ShredError {
-    /// The push is not JSON.
-    #[error("the push is not valid JSON: {0}")]
-    Invalid(String),
-    /// A record is not an object.
-    #[error("a record is not a JSON object")]
-    NotObject,
-    /// A value nests deeper than the limit.
-    #[error(
-        "a value nests deeper than {} levels",
-        rdlt_connector::limits::MAX_NESTING_DEPTH
-    )]
-    TooDeep,
-    /// An object repeats a key, which is shown cut to a limit.
-    #[error("an object repeats the key {0:?}")]
-    DuplicateKey(String),
-    /// The records hold more columns than the limit, the second.
-    #[error("the records hold {0} columns or more, over the limit of {1}")]
-    TooManyColumns(u64, u64),
-    /// The records would shred into more cells than the limit.
-    #[error("the records would shred into {0} cells, over the limit of {MAX_CELLS}")]
-    TooManyCells(u64),
-    /// A number's exponent, shown cut to a limit, has more digits than its value's canonical
-    /// text holds.
-    #[error(
-        "the number {0} has an exponent of more than {digits} digits",
-        digits = crate::json::EXPONENT_DIGITS
-    )]
-    Exponent(String),
-    /// A list holds more items than a column can.
-    #[error("a list column holds more items than one batch can")]
-    TooLarge,
-    /// A bug in the shredder.
-    #[error("shredding: {0}")]
-    Internal(String),
-}
-
-impl ShredError {
-    /// The machine code of the error.
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            Self::Invalid(_) => "json_invalid",
-            Self::NotObject => "json_not_object",
-            Self::TooDeep
-            | Self::Exponent(_)
-            | Self::TooManyColumns(..)
-            | Self::TooManyCells(_)
-            | Self::TooLarge => "limit_exceeded",
-            Self::DuplicateKey(_) => "json_duplicate_key",
-            Self::Internal(_) => "shred_internal",
-        }
-    }
-}
+pub(crate) use error::ShredError;
 
 /// What shredding pushes may take.
 #[derive(Clone, Copy, Debug)]
@@ -121,6 +68,15 @@ impl ShredLimits {
             columns,
             admitted: crate::cost::JSON_CHARGE - 1,
         }
+    }
+
+    /// Bytes observing a flush's chunks may hold beyond their allowances: one chunk's shape of
+    /// every column the records may hold, each an object.
+    fn beyond(self) -> Arc<Beyond> {
+        Beyond::new(
+            self.columns
+                .saturating_mul(meter::KEY.saturating_add(meter::OBJECT_SHAPE)),
+        )
     }
 }
 
@@ -200,7 +156,7 @@ impl Shredding {
 ///
 /// A chunk the fast parse finds a float that may be a rounded integer in is parsed again with its
 /// numbers exact.
-fn parse(chunk: Chunk, limits: ShredLimits) -> Result<Parsed, ShredError> {
+fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
     let mut exact = false;
     loop {
         let allowance = count(chunk.bytes).saturating_mul(limits.admitted);
@@ -215,7 +171,7 @@ fn parse(chunk: Chunk, limits: ShredLimits) -> Result<Parsed, ShredError> {
         })?;
         if appended.tripped {
             drop(record);
-            return observed(chunk, exact, limits);
+            return observed(chunk, exact, limits, beyond);
         }
         if appended.imprecise && !exact {
             exact = true;
@@ -235,10 +191,17 @@ fn parse(chunk: Chunk, limits: ShredLimits) -> Result<Parsed, ShredError> {
 
 /// Observes `chunk`'s values, exactly where `exact` says or where the fast parse finds a float
 /// that may be a rounded integer, building nothing.
-fn observed(chunk: Chunk, exact: bool, limits: ShredLimits) -> Result<Parsed, ShredError> {
+fn observed(
+    chunk: Chunk,
+    exact: bool,
+    limits: ShredLimits,
+    beyond: &Arc<Beyond>,
+) -> Result<Parsed, ShredError> {
     let mut exact = exact;
     loop {
-        let context = Context::new(Meter::new(0), Columns::new(limits.columns));
+        let allowance = count(chunk.bytes).saturating_mul(limits.admitted);
+        let meter = Meter::observing(allowance, beyond);
+        let context = Context::new(meter, Columns::new(limits.columns));
         let mut shape = Shape::default();
         let appended = each(&chunk, exact, &context, |bytes| {
             let row = observing::Record {
@@ -258,7 +221,7 @@ fn observed(chunk: Chunk, exact: bool, limits: ShredLimits) -> Result<Parsed, Sh
             spoiled: true,
             exact,
             json_floats: context.json_floats(),
-            spent: 0,
+            spent: context.meter.spent(),
         });
     }
 }
@@ -357,7 +320,9 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
         return Err(ShredError::TooManyColumns(columns, limits.columns));
     }
     let text = cost::holds_text(&joined);
-    let (mut cells, mut excess) = (0_u64, 0_u64);
+    // What the chunks hold together, the joined shape beside them, against what the pushes
+    // were admitted for together.
+    let (mut cells, mut takes, mut admitted) = (0_u64, cost::shape(&joined), 0_u64);
     let mut plans = Vec::with_capacity(parsed.len());
     for chunk in parsed {
         let rows = count(chunk.chunk.rows);
@@ -367,18 +332,25 @@ fn join(parsed: &[Parsed], limits: ShredLimits) -> Result<(Shape, Vec<Plan>, u64
             chunk.record.is_none() || chunk.spoiled || !conform::shape_fits(&chunk.shape, &joined);
         let exact = chunk.exact || chunk.json_floats || cost::floats_in_json(&joined, &chunk.shape);
         let bytes = count(chunk.chunk.bytes);
-        let takes = if again {
+        // What the chunk's parse holds until the build, and its batch's columns' fixed parts:
+        // all of them built again, or those it lacks fitted.
+        let held = if again {
             // Text grows as it is written, to twice the chunk's at most.
             let text = if text { bytes.saturating_mul(2) } else { 0 };
-            size.bytes.saturating_add(text)
+            let arrays = cost::arrays(&joined, None);
+            (chunk.spent.saturating_add(size.bytes))
+                .saturating_add(text)
+                .saturating_add(arrays)
         } else {
             let fitted = cost::fitted(&joined, &chunk.shape, rows);
-            chunk.spent.saturating_add(fitted)
+            let arrays = cost::arrays(&joined, Some(&chunk.shape));
+            chunk.spent.saturating_add(fitted).saturating_add(arrays)
         };
-        let admitted = bytes.saturating_mul(limits.admitted);
-        excess = excess.saturating_add(takes.saturating_sub(admitted));
+        takes = takes.saturating_add(held);
+        admitted = admitted.saturating_add(bytes.saturating_mul(limits.admitted));
         plans.push(Plan { again, exact });
     }
+    let excess = takes.saturating_sub(admitted);
     if cells > MAX_CELLS {
         return Err(ShredError::TooManyCells(cells));
     }
@@ -477,11 +449,13 @@ pub(crate) async fn observe(
         .ok_or_else(|| {
             ShredError::Internal("the scan of the pushes returned nothing".to_owned())
         })??;
+    let beyond = limits.beyond();
     let parsed: Vec<Parsed> = run_all(
         pool,
-        chunks
-            .into_iter()
-            .map(|chunk| move || job(|| parse(chunk, limits))),
+        chunks.into_iter().map(|chunk| {
+            let beyond = Arc::clone(&beyond);
+            move || job(|| parse(chunk, limits, &beyond))
+        }),
     )
     .await
     .into_iter()

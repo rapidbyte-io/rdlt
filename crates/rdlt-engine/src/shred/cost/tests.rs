@@ -12,7 +12,10 @@ fn observed(text: &str) -> (Shape, u64) {
         .unwrap()
         .remove(0);
     let rows = u64::try_from(chunk.rows).unwrap();
-    (parse(chunk, limits()).unwrap().shape, rows)
+    (
+        parse(chunk, limits(), &limits().beyond()).unwrap().shape,
+        rows,
+    )
 }
 
 /// Records of every kind, nested in objects and lists, with nulls, empty and missing values.
@@ -31,7 +34,7 @@ fn a_batch_built_again_holds_no_more_than_its_build_was_reckoned_to_take() {
         let mut parsed: Vec<_> = chunks(&pushes, chunk_bytes)
             .unwrap()
             .into_iter()
-            .map(|chunk| parse(chunk, limits()).unwrap())
+            .map(|chunk| parse(chunk, limits(), &limits().beyond()).unwrap())
             .collect();
         let (joined, plans, _) = join(&parsed, limits()).unwrap();
         for (chunk, plan) in parsed.drain(..).zip(plans) {

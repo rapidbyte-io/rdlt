@@ -5,15 +5,16 @@
 //! list's items as many as the chunk's arrays held. A cell is a row under a column holding values,
 //! at any level.
 //!
-//! What is reckoned is what grows with the rows, the items and the text: a column's fixed parts,
-//! its field, its array and its buffers' rounding to 64 bytes, are not, as the cost model counts
-//! none, and the column limit bounds them.
+//! What grows with the rows, the items and the text is reckoned from the counts; a column's fixed
+//! parts, its entry in a shape, its builder or array and its buffers' rounding to 64 bytes, are
+//! reckoned a column a chunk.
 
 #[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
 
+use super::meter::{ARRAY, KEY, Meter, OBJECT_SHAPE, RECORD};
 use super::observe::{Observed, Shape};
 
 /// What a chunk's batch takes.
@@ -51,6 +52,57 @@ pub(crate) fn fitted(joined: &Shape, local: &Shape, rows: u64) -> u64 {
         .iter()
         .map(|(name, observed)| fitting(observed, local.get(name), rows))
         .fold(0, u64::saturating_add)
+}
+
+/// Bytes the fixed parts of a batch's columns of `joined` take, but for those of the columns
+/// `local` already holds built: each column's array, or a struct's.
+pub(crate) fn arrays(joined: &Shape, local: Option<&Shape>) -> u64 {
+    joined
+        .fields()
+        .iter()
+        .map(|(name, observed)| {
+            let local = local.and_then(|local| local.get(name));
+            arrays_node(observed, local)
+        })
+        .fold(0, u64::saturating_add)
+}
+
+fn arrays_node(joined: &Observed, local: Option<&Observed>) -> u64 {
+    let own = |bytes: u64| if local.is_some() { 0 } else { bytes };
+    match joined {
+        Observed::Object(shape) => {
+            let local = match local {
+                Some(Observed::Object(local)) => Some(local),
+                _ => None,
+            };
+            own(RECORD).saturating_add(arrays(shape, local))
+        }
+        Observed::Array(item, _) => {
+            let local = match local {
+                Some(Observed::Array(local, _)) => Some(local.as_ref()),
+                _ => None,
+            };
+            own(ARRAY).saturating_add(arrays_node(item, local))
+        }
+        _ => own(ARRAY),
+    }
+}
+
+/// Bytes a shape of `joined` takes: an entry a column, and a shape of its own an object.
+pub(crate) fn shape(joined: &Shape) -> u64 {
+    joined
+        .fields()
+        .iter()
+        .map(|(name, observed)| Meter::key(name).saturating_add(shape_node(observed)))
+        .fold(0, u64::saturating_add)
+}
+
+fn shape_node(observed: &Observed) -> u64 {
+    match observed {
+        Observed::Object(fields) => OBJECT_SHAPE.saturating_add(shape(fields)),
+        Observed::Array(item, _) => KEY.saturating_add(shape_node(item)),
+        _ => 0,
+    }
 }
 
 /// Whether a column of `joined` that is JSON holds, in the records observed as `local`, a value

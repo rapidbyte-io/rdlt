@@ -26,7 +26,7 @@ use arrow_array::{ArrayRef, NullArray};
 use arrow_buffer::i256;
 
 use super::ShredError;
-use super::meter::{Meter, Over};
+use super::meter::{BUILDER, Meter, Over, RECORD};
 use super::observe::Observed;
 pub(crate) use list::List;
 pub(crate) use record::Record;
@@ -112,13 +112,13 @@ impl Column {
         let rows = count(capacity);
         let (width, bits, more) = match observed {
             Observed::Null => return Ok(Self::Null(nulls)),
-            Observed::Bool => (0, 2, 0),
-            Observed::Int { .. } | Observed::Float => (8, 1, 0),
-            Observed::Wide | Observed::Huge => (16, 1, 0),
-            Observed::Vast => (32, 1, 0),
-            Observed::Text | Observed::Json => (OFFSET, 1, count(text)),
-            Observed::Object(_) => (0, 1, 0),
-            Observed::Array(..) => (OFFSET, 1, OFFSET),
+            Observed::Bool => (0, 2, BUILDER),
+            Observed::Int { .. } | Observed::Float => (8, 1, BUILDER),
+            Observed::Wide | Observed::Huge => (16, 1, BUILDER),
+            Observed::Vast => (32, 1, BUILDER),
+            Observed::Text | Observed::Json => (OFFSET, 1, count(text).saturating_add(BUILDER)),
+            Observed::Object(_) => (0, 1, RECORD),
+            Observed::Array(..) => (OFFSET, 1, OFFSET + BUILDER),
         };
         meter.charge(rows_of(rows, width, bits).saturating_add(more))?;
         let mut column = match observed {

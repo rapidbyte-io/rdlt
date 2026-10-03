@@ -25,7 +25,12 @@ fn parsed(text: &str) -> Parsed {
         admitted: 1 << 20,
         ..limits()
     };
-    parse(chunks(&[records], 1 << 20).unwrap().remove(0), roomy).unwrap()
+    parse(
+        chunks(&[records], 1 << 20).unwrap().remove(0),
+        roomy,
+        &roomy.beyond(),
+    )
+    .unwrap()
 }
 
 /// The batch `pushes` shred into, in chunks of `chunk_bytes`.
@@ -709,7 +714,7 @@ fn cells_are_bounded_at_the_limit_before_anything_is_built() {
     let at = |rows: usize| {
         let push = format!("{}{}", "{}\n".repeat(rows - 1), wide_object(0, 8192));
         let chunk = chunks(&[Bytes::from(push)], 1 << 30).unwrap().remove(0);
-        let parsed = parse(chunk, limits()).unwrap();
+        let parsed = parse(chunk, limits(), &limits().beyond()).unwrap();
         assert!(parsed.record.is_none(), "observed, not built");
         super::join(&[parsed], limits()).map(|_| ())
     };
@@ -972,4 +977,58 @@ fn the_column_limit_counts_every_column_a_chunk_holds_and_the_join_of_all() {
         shredded(&[r#"{"a":1,"b":1}"#, r#"{"c":1,"d":1}"#], 3),
         Err(super::ShredError::TooManyColumns(4, 3))
     );
+}
+
+#[test]
+fn what_a_chunk_s_columns_hold_is_no_more_than_they_are_charged() {
+    let heap = &crate::cost::tests::HEAP;
+    let keys = 3_000;
+    for value in ["1", "\"ab\"", "1.5", "[1]", "{\"q\":1}", "[{\"q\":\"x\"}]"] {
+        let fields: Vec<String> = (0..keys).map(|key| format!("\"c{key}\":{value}")).collect();
+        let records = Bytes::from(format!("{{{}}}", fields.join(",")));
+        let chunk = || {
+            chunks(std::slice::from_ref(&records), 1 << 20)
+                .unwrap()
+                .remove(0)
+        };
+        // Built as it is parsed, with room; observed, with none.
+        for admitted in [1 << 20, 0] {
+            let limits = ShredLimits {
+                admitted,
+                ..limits()
+            };
+            heap.reset_peak_usage();
+            let before = heap.current_usage();
+            let parsed = parse(chunk(), limits, &limits.beyond()).unwrap();
+            let held = u64::try_from(heap.peak_usage() - before).unwrap();
+            assert_eq!(parsed.record.is_some(), admitted > 0, "{value}");
+            assert!(
+                held <= parsed.spent,
+                "{value}: held {held}, charged {}",
+                parsed.spent
+            );
+        }
+        // The batch: its columns' arrays, beside the values they hold.
+        let parsed = parse(chunk(), limits(), &limits().beyond()).unwrap();
+        let shape = parsed.shape.clone();
+        drop(parsed);
+        heap.reset_peak_usage();
+        let before = heap.current_usage();
+        let batches = crate::compute::ready(shred(
+            &crate::compute::Inline,
+            std::slice::from_ref(&records),
+            1 << 20,
+            limits(),
+        ))
+        .unwrap();
+        let held = u64::try_from(heap.current_usage() - before).unwrap();
+        drop(batches);
+        let charged = super::cost::arrays(&shape, None)
+            + super::cost::built(&shape, &shape, 1).bytes
+            + 2 * records.len() as u64;
+        assert!(
+            held <= charged,
+            "{value}: a batch held {held}, charged {charged}"
+        );
+    }
 }

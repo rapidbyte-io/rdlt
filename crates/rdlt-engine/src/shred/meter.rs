@@ -5,11 +5,63 @@
 mod tests;
 
 use std::cell::Cell;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::ShredError;
 
 /// Bytes a speculative build presizes a column of text for each row it is sized for.
 const TEXT_PER_ROW: usize = 8;
+
+/// Bytes a column's entry in a chunk's record or shape takes beside its name: its name's
+/// allocation, its place in the record's or shape's vectors and its index's node.
+pub(crate) const KEY: u64 = 192;
+
+/// Bytes a leaf's or a list's builder takes beside what grows with its rows: the builder and
+/// its buffers' rounding to 64 bytes.
+pub(crate) const BUILDER: u64 = 256;
+
+/// Bytes a struct's builder, a record of its own, or its built array, takes beside its fields.
+pub(crate) const RECORD: u64 = 1_536;
+
+/// Bytes a leaf's or a list's built array takes beside what grows with its rows: the array, its
+/// data and its buffers' rounding, and the builder it is made from while it is made.
+pub(crate) const ARRAY: u64 = 640;
+
+/// Bytes an observed object's own shape takes beside its fields.
+pub(crate) const OBJECT_SHAPE: u64 = 384;
+
+/// What observing a flush's chunks may hold beyond their chunks' allowances, shared by them: a
+/// chunk smaller than its records' columns, the last of the flush, observes them beyond it.
+#[derive(Debug)]
+pub(crate) struct Beyond {
+    room: AtomicU64,
+    limit: u64,
+}
+
+impl Beyond {
+    /// Room for `limit` bytes beyond the chunks' allowances.
+    pub(crate) fn new(limit: u64) -> Arc<Self> {
+        Arc::new(Self {
+            room: AtomicU64::new(limit),
+            limit,
+        })
+    }
+
+    /// Takes `bytes` of the room, where there is that much.
+    fn take(&self, bytes: u64) -> bool {
+        self.room
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |room| {
+                room.checked_sub(bytes)
+            })
+            .is_ok()
+    }
+
+    /// The bytes the room had.
+    pub(crate) fn limit(&self) -> u64 {
+        self.limit
+    }
+}
 
 /// The bytes a chunk's builders may still take.
 ///
@@ -24,6 +76,10 @@ pub(crate) struct Meter {
     tripped: Cell<bool>,
     /// Bytes of text a column presizes for each row.
     text_per_row: usize,
+    /// Where a charge past the room is taken from instead of tripping, for an observation.
+    beyond: Option<Arc<Beyond>>,
+    /// Bytes taken from beyond the room.
+    drawn: Cell<u64>,
 }
 
 /// A charge the meter has no room for.
@@ -38,6 +94,17 @@ impl Meter {
             allowance,
             tripped: Cell::new(false),
             text_per_row: TEXT_PER_ROW,
+            beyond: None,
+            drawn: Cell::new(0),
+        }
+    }
+
+    /// An observation's meter, with room for `allowance` bytes and, past it, what `beyond`
+    /// has room for.
+    pub(crate) fn observing(allowance: u64, beyond: &Arc<Beyond>) -> Self {
+        Self {
+            beyond: Some(Arc::clone(beyond)),
+            ..Self::new(allowance)
         }
     }
 
@@ -49,6 +116,8 @@ impl Meter {
             allowance: u64::MAX,
             tripped: Cell::new(false),
             text_per_row: 0,
+            beyond: None,
+            drawn: Cell::new(0),
         }
     }
 
@@ -60,6 +129,16 @@ impl Meter {
     pub(crate) fn charge(&self, bytes: u64) -> Result<(), Over> {
         let room = self.room.get();
         if bytes > room {
+            let short = bytes - room;
+            if self
+                .beyond
+                .as_ref()
+                .is_some_and(|beyond| beyond.take(short))
+            {
+                self.room.set(0);
+                self.drawn.set(self.drawn.get().saturating_add(short));
+                return Ok(());
+            }
             self.tripped.set(true);
             return Err(Over);
         }
@@ -72,9 +151,19 @@ impl Meter {
         self.tripped.get()
     }
 
-    /// Bytes charged so far.
+    /// Bytes charged so far, within the room and beyond it.
     pub(crate) fn spent(&self) -> u64 {
-        self.allowance - self.room.get()
+        (self.allowance - self.room.get()).saturating_add(self.drawn.get())
+    }
+
+    /// The bytes an observation may hold beyond its chunk's allowance, for all the flush's chunks.
+    pub(crate) fn beyond_limit(&self) -> u64 {
+        self.beyond.as_ref().map_or(0, |beyond| beyond.limit())
+    }
+
+    /// Bytes `name`'s entry as a column of a record or shape takes.
+    pub(crate) fn key(name: &str) -> u64 {
+        KEY.saturating_add(name.len() as u64)
     }
 
     /// Bytes of text a column sized for `rows` rows presizes.

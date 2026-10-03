@@ -12,6 +12,7 @@ use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visit
 
 use super::ShredError;
 use super::build::Scalar;
+use super::meter::{KEY, Meter, OBJECT_SHAPE};
 use super::observe::{Observed, Shape};
 use super::visit::{Context, MAX_DEPTH, Skip, nest};
 
@@ -125,6 +126,7 @@ impl Visitor<'_> for Key<'_> {
             .columns
             .add()
             .map_err(|error| self.context.fail(error))?;
+        self.context.held(Meter::key(name))?;
         self.shape.push(name.into(), Observed::Null);
         Ok(self.shape.fields().len() - 1)
     }
@@ -233,6 +235,7 @@ impl<'de> Visitor<'de> for Look<'_> {
 
     fn visit_map<A: MapAccess<'de>>(mut self, map: A) -> Result<(), A::Error> {
         if *self.node == Observed::Null {
+            self.context.held(OBJECT_SHAPE)?;
             *self.node = Observed::Object(Shape::default());
         }
         if let Observed::Object(shape) = self.node {
@@ -249,6 +252,7 @@ impl<'de> Visitor<'de> for Look<'_> {
                     .columns
                     .add()
                     .map_err(|error| self.context.fail(error))?;
+                self.context.held(KEY)?;
                 *self.node = Observed::Array(Box::new(Observed::Null), 0);
             }
             let Observed::Array(item, items) = self.node else {
