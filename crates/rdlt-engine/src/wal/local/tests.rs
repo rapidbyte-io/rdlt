@@ -658,3 +658,34 @@ async fn a_log_appears_open_or_not_at_all_and_an_open_a_crash_cut_is_a_leftover(
         .collect();
     assert_eq!(names, [std::ffi::OsString::from(names::load(opened))]);
 }
+
+#[test]
+fn a_link_in_a_directory_others_may_write_is_followed_only_where_it_is_the_user_s_or_root_s() {
+    use super::dir::link_followed;
+    let (me, other) = (1_000, 1_001);
+    for (mode, owner, followed) in [
+        (0o1777, me, true),
+        (0o1777, 0, true),
+        (0o1777, other, false),
+        (0o1770, other, false),
+        (0o755, other, true),
+        (0o700, me, true),
+    ] {
+        assert_eq!(link_followed(mode, owner, me), followed, "{mode:o} {owner}");
+    }
+}
+
+#[tokio::test]
+async fn a_link_of_the_user_s_own_in_a_sticky_directory_is_followed() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let (sticky, own) = (base.path().join("sticky"), base.path().join("own"));
+    for dir in [&sticky, &own] {
+        std::fs::create_dir(dir).expect("creates");
+    }
+    std::os::unix::fs::symlink(&own, sticky.join("link")).expect("links");
+    set_mode(&sticky, 0o1777);
+    let wal = LocalWal::new(sticky.join("link").join("wal"));
+    wal.loads(&pipeline("orders")).await.expect("lists");
+    assert!(own.join("wal").is_dir());
+    set_mode(&sticky, 0o700);
+}

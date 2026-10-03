@@ -28,6 +28,12 @@ const LINKS: usize = 40;
 /// The error a step answers a link with, which a walk then reads.
 const LINKED: i32 = rustix::io::Errno::LOOP.raw_os_error();
 
+/// Whether a link `owner` owns, in a directory of `mode`, may be followed by user `me`: in a
+/// directory others may write, only one of `me`'s or root's.
+pub(in crate::wal::local) fn link_followed(mode: u32, owner: u32, me: u32) -> bool {
+    mode & BASE == 0 || owner == me || owner == 0
+}
+
 /// The names of `path`'s components, `..` among them, in order.
 fn names(path: &Path) -> VecDeque<OsString> {
     path.components()
@@ -62,6 +68,7 @@ impl Dir {
             match dir.step(&name) {
                 Err(error) if error.raw_os_error() == Some(LINKED) => {
                     links += 1;
+                    dir.link_trusted(&name)?;
                     let target = dir.link_target(&name, links)?;
                     if target.is_absolute() {
                         dir = Self::at_root()?;
@@ -116,6 +123,19 @@ impl Dir {
             file: File::from(opened),
             path: self.path.join(name),
         })
+    }
+
+    /// Checks that the link `name` here may be followed: in a directory others may write, which
+    /// passed only for being sticky, it must be this user's or root's, as the kernel's own rule
+    /// for links in such directories has it.
+    fn link_trusted(&self, name: &OsStr) -> io::Result<()> {
+        let mode = self.file.metadata()?.mode();
+        let link = rustix::fs::statat(&self.file, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+        let me = rustix::process::geteuid().as_raw();
+        if link_followed(mode, link.st_uid, me) {
+            return Ok(());
+        }
+        Err(self.refused(name, "another user's link in a directory others may write"))
     }
 
     /// The target of the link `name` here, the `links`th the walk met: anything but a link, and a

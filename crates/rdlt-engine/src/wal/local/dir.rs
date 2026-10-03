@@ -285,7 +285,7 @@ impl Dir {
 }
 
 #[cfg(test)]
-pub(super) use base::OPENED;
+pub(super) use base::{OPENED, link_followed};
 
 /// The directories synced, in order, for tests to see which names were made durable.
 #[cfg(test)]
