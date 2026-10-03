@@ -35,6 +35,7 @@ mod phases;
 mod placement;
 mod recorded;
 mod replanning;
+mod replay_failures;
 mod reset;
 mod schema;
 mod shredding;
