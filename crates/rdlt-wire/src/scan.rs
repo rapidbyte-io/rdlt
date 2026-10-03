@@ -183,7 +183,8 @@ fn entries(size: usize, count: usize) -> usize {
 fn key(bytes: &mut &[u8]) -> Result<Key, Unscanned> {
     let key = varint(bytes)?;
     let (number, wire) = (key >> 3, key & 7);
-    if key > u64::from(u32::MAX) || number == 0 || wire > 5 {
+    // A key within 32 bits, as the decoder takes it: a number within 29.
+    if number > u64::from(u32::MAX >> 3) || number == 0 || wire > 5 {
         return Err(Unscanned::Malformed);
     }
     Ok(Key { number, wire })
