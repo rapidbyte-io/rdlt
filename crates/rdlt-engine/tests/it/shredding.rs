@@ -132,3 +132,37 @@ async fn sparse_records_whose_batches_fit_a_request_load_within_the_budget() {
     assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
     assert!(outcome.report.peak_memory <= BUDGET);
 }
+
+#[tokio::test(start_paused = true)]
+async fn narrow_records_after_a_wide_one_fill_its_table_within_the_budget() {
+    // One record gives the table nine hundred columns; twenty thousand records of one key then
+    // take a null in each, 160 MB from 160 KB pushed.
+    let wide = bytes::Bytes::from(wide_object(0, 900, "1"));
+    let narrow = bytes::Bytes::from(vec!["{\"a\":1}"; 20_000].join("\n"));
+    let steps: Steps = Arc::new(move |step| match step {
+        0 => Some(Step::Json(wide.clone())),
+        1 => Some(Step::Checkpoint(8)),
+        2 => Some(Step::Json(narrow.clone())),
+        _ => None,
+    });
+    let source = making("narrow_after_wide", steps).await;
+    let config = commit_every(1_000_000_000).memory(LEAST).lanes(1);
+    HEAP.reset_peak_usage();
+    let before = HEAP.current_usage();
+    let outcome = engine(config)
+        .run(
+            pipeline("narrow_after_wide", [stream("events")]),
+            source,
+            null().await,
+        )
+        .await;
+    let peak = HEAP.peak_usage().saturating_sub(before);
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 20_001);
+    assert!(peak <= bound(LEAST), "the heap held {peak} bytes");
+}
