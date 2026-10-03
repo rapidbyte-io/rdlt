@@ -46,6 +46,10 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   a flush, may observe them past its allowance: what a flush's observations hold so is limited
   to one shape of every column a schema may hold, objects all (576 bytes a column, 4.3 MB at the
   default budget), reserved before the pushes are observed and refused past it, `limit_exceeded`.
+  What building then takes is reserved without a wait while that is held, from it where it is
+  enough; where it must wait, the observation and its reservation are let go first, so the
+  partition waits holding nothing but its pushes, and the pushes are observed again once it is
+  reserved.
 - **What building takes beyond the admission is reserved before it is built.** Once every chunk
   is parsed or observed and the shapes joined, the bytes each chunk's batch takes against the
   joined shape are reckoned from the counts, with its columns' fixed parts (640 bytes an array, a
