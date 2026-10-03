@@ -47,6 +47,7 @@ fn sample_state() -> PipelineState {
     let mut state = PipelineState {
         epoch: Epoch(4),
         last_receipt: Some(receipt()),
+        origin: Some(load(1)),
         ..PipelineState::default()
     };
     let orders = state.streams.entry(stream("orders")).or_default();
@@ -472,6 +473,7 @@ fn states() -> impl Strategy<Value = PipelineState> {
                 .collect(),
             last_receipt: with_receipt.then(receipt),
             recorded_by: std::collections::BTreeMap::new(),
+            origin: with_receipt.then(|| load(epoch % (1 << 40))),
         })
         .prop_flat_map(|state| (Just(state), tables(), any::<u64>()))
         .prop_map(|(mut state, tables, first)| {

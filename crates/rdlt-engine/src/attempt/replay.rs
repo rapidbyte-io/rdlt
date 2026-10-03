@@ -41,6 +41,8 @@ struct Replaying {
     resets: BTreeMap<StreamName, Epoch>,
     /// The last commit the destination received.
     last: Option<(LoadId, u64)>,
+    /// The first load whose commit reached the pipeline at the destination, once one did.
+    origin: Option<LoadId>,
     /// The most destination writers held open at once.
     writers: NonZeroUsize,
     /// The run's memory budget, which what replay stages is charged to.
@@ -136,6 +138,7 @@ async fn begin(context: &RunContext, load_id: LoadId) -> Result<Replaying, Error
             .last_receipt
             .as_ref()
             .map(|receipt| (receipt.load_id, receipt.commit_seq.get())),
+        origin: opened.state.origin,
         session: opened.session,
         epoch: opened.epoch,
         writers: context.config.growth().writers(),
@@ -154,6 +157,7 @@ impl Replaying {
         limits: rdlt_wire::Limits,
     ) -> Result<bool, Error> {
         let meta = &logged.meta;
+        checked::bound(scanned.header.as_ref(), self.origin, meta.load_id, pipeline)?;
         checked::checked(logged, self.epoch, pipeline)?;
         let opened = scanned.header.as_ref().and_then(|header| header.opened);
         let decision = decide(&self.positions, &self.resets, self.last, opened, logged);

@@ -138,6 +138,7 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
             chunk: 0,
             epoch: rdlt_connector::Epoch(1),
             opened: None,
+            origin: load,
         }),
         Frame::Schema(frame::Table {
             index: 0,

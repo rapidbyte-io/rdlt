@@ -25,7 +25,7 @@ use crate::error::Error;
 pub(crate) use self::arrow::limits;
 
 /// The format of the chunks this engine writes.
-pub(crate) const VERSION: u16 = 3;
+pub(crate) const VERSION: u16 = 4;
 
 /// What every chunk starts with.
 const MAGIC: [u8; 8] = *b"rdltwal\0";
@@ -70,6 +70,9 @@ pub(crate) struct Header {
     pub(crate) epoch: Epoch,
     #[serde(deserialize_with = "Option::deserialize")]
     pub(crate) opened: Option<(LoadId, CommitSeq)>,
+    /// The destination the log is written for: the first load whose commit reached the pipeline
+    /// there, or, where none had when the load opened, the load itself.
+    pub(crate) origin: LoadId,
 }
 
 /// A chunk a replay published as the next of a log, so its load publishes nothing more.

@@ -33,6 +33,8 @@ pub(crate) struct Owner {
     pub(crate) epoch: Epoch,
     /// The last commit the destination had received when the load opened.
     pub(crate) opened: Option<(LoadId, CommitSeq)>,
+    /// The destination the log is written for, as its header names it.
+    pub(crate) origin: LoadId,
 }
 
 /// A frame for the writer, encoded, with what it says about the log.
@@ -413,6 +415,7 @@ impl Log {
             chunk: self.chunk,
             epoch: self.owner.epoch,
             opened: self.owner.opened,
+            origin: self.owner.origin,
         })
         .encode()
     }

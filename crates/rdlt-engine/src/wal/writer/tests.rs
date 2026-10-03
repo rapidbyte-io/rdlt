@@ -35,6 +35,7 @@ fn owner() -> Owner {
         load: load(),
         epoch: Epoch(1),
         opened: None,
+        origin: load(),
     }
 }
 

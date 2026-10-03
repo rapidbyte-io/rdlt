@@ -34,6 +34,7 @@ impl Busy {
             chunk: number,
             epoch: Epoch(1),
             opened: None,
+            origin: load(),
         });
         for frame in [header, Frame::Closed, Frame::End(End::default())] {
             bytes.extend_from_slice(&frame.encode().expect("encodes"));

@@ -66,6 +66,7 @@ fn metadata() -> Vec<Frame> {
             chunk: 4,
             epoch: Epoch(3),
             opened: Some((load(), CommitSeq::FIRST)),
+            origin: load(),
         }),
         Frame::Schema(Table {
             index: 0,
@@ -249,7 +250,8 @@ fn a_chunk_of_another_format_or_none_at_all_is_told_from_one_damaged() {
     let mut older = preamble;
     older[8..10].copy_from_slice(&(VERSION - 1).to_le_bytes());
     let refused = super::check_preamble(&resealed(older)).expect_err("refused");
-    assert!(refused.to_string().contains("format 2"), "{refused}");
+    let named = format!("format {}", VERSION - 1);
+    assert!(refused.to_string().contains(&named), "{refused}");
     let mut other = preamble;
     other[..8].copy_from_slice(b"notalog\0");
     let refused = super::check_preamble(&resealed(other)).expect_err("refused");
@@ -616,6 +618,7 @@ fn a_frame_lacking_any_member_it_writes_is_refused() {
         chunk: 0,
         epoch: Epoch(1),
         opened: None,
+        origin: load(),
     }));
     frames.push(Frame::Seal(Seal {
         segment: SegmentId(5),
