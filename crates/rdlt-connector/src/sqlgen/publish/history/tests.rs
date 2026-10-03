@@ -787,3 +787,39 @@ fn truncates_cost_their_count_and_the_keys_not_their_product() {
         }
     }
 }
+
+#[test]
+fn a_change_sent_as_of_before_its_key_s_latest_instant_begins_at_that_instant() {
+    let history = History::new(Kind::Plain);
+    history.commit(&[upsert(1, "a", 1, 30)]);
+    // Sent as of before the version it replaces began, in a later commit and within one.
+    let published = history.commit(&[
+        upsert(1, "b", 2, 10),
+        upsert(2, "c", 3, 50),
+        upsert(2, "d", 4, 5),
+        upsert(2, "c", 5, 5),
+    ]);
+    let expected = [
+        closed(1, "a", 1, 30, 30),
+        current(1, "b", 2, 30),
+        closed(2, "c", 3, 50, 50),
+        closed(2, "d", 4, 50, 50),
+        current(2, "c", 5, 50),
+    ];
+    assert_eq!(published, sorted(expected.to_vec()));
+}
+
+#[test]
+fn a_key_opened_again_after_a_delete_begins_no_earlier_than_its_deletion() {
+    for kind in [Kind::Hard, Kind::Soft] {
+        let history = History::new(kind);
+        history.commit(&[upsert(1, "a", 1, 10)]);
+        history.commit(&[delete(1, 2, 20)]);
+        let published = history.commit(&[upsert(1, "b", 3, 15)]);
+        for (_, _, _, _, from, to, _) in &published {
+            assert!(to.is_none_or(|to| to >= *from), "{published:?}");
+        }
+        let (.., from, _, current) = published.last().unwrap();
+        assert_eq!((*from, *current), (20, true), "{published:?}");
+    }
+}

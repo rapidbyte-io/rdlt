@@ -678,6 +678,8 @@ struct VaultConfig {
     history_truncate_spares_commit: bool,
     /// Stores versions without their hash.
     history_drops_hash: bool,
+    /// Begins versions when their changes say, however late.
+    history_trusts_times: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
@@ -1582,6 +1584,7 @@ impl VaultConfig {
             soft_keeps_seq: self.history_soft_keeps_seq,
             spare_commit: self.history_truncate_spares_commit,
             drop_hash: self.history_drops_hash,
+            trust_times: self.history_trusts_times,
         }
     }
 
@@ -1788,6 +1791,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("history_soft_keeps_seq", &["D-HIST"]),
     ("history_truncate_spares_commit", &["D-HIST"]),
     ("history_drops_hash", &["D-HIST"]),
+    ("history_trusts_times", &["D-HIST"]),
     ("static_epoch", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
     ("refuse_check", &["D-CHECK"]),

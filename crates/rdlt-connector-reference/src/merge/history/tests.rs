@@ -716,3 +716,49 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn a_change_sent_as_of_before_its_key_s_latest_instant_begins_at_that_instant() {
+    for kind in [Kind::Plain, Kind::Hard, Kind::Soft] {
+        let merged = history(
+            &[
+                &[upsert(1, "a", 1, 30)],
+                &[
+                    upsert(1, "b", 2, 10),
+                    upsert(2, "c", 3, 50),
+                    upsert(2, "d", 4, 5),
+                    upsert(2, "c", 5, 5),
+                ],
+            ],
+            kind,
+        );
+        let expected = vec![
+            closed(1, "a", 1, 30, 30),
+            current(1, "b", 2, 30),
+            closed(2, "c", 3, 50, 50),
+            closed(2, "d", 4, 50, 50),
+            current(2, "c", 5, 50),
+        ];
+        assert_eq!(versions(&merged), sorted(expected));
+    }
+}
+
+#[test]
+fn a_key_opened_again_after_a_delete_begins_no_earlier_than_its_deletion() {
+    for kind in [Kind::Hard, Kind::Soft] {
+        let merged = history(
+            &[
+                &[upsert(1, "a", 1, 10)],
+                &[delete(1, 2, 20)],
+                &[upsert(1, "b", 3, 15)],
+            ],
+            kind,
+        );
+        let published = versions(&merged);
+        for (.., from, to, _) in &published {
+            assert!(to.is_none_or(|to| to >= *from), "{published:?}");
+        }
+        let opened = published.iter().find(|version| version.2 == 3).unwrap();
+        assert_eq!((opened.4, opened.6), (20, true), "{published:?}");
+    }
+}

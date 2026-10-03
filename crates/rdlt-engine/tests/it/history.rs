@@ -283,7 +283,9 @@ async fn history_streams_the_run_cannot_keep_are_refused() {
     let text_time = kept("text_time", text_time, memory("text_time").await).await;
     let normalized = kept("normalized_history", keyed(), memory("normalized").await).await;
     let instantless = limited(memory("instantless").await, |capabilities| {
-        capabilities.types.remove(&rdlt_connector::TypeKind::Timestamp);
+        capabilities
+            .types
+            .remove(&rdlt_connector::TypeKind::Timestamp);
         capabilities.types.remove(&rdlt_connector::TypeKind::Int64);
     });
     let instantless = kept("instantless", keyed(), instantless).await;
@@ -755,6 +757,80 @@ async fn a_version_is_hashed_by_the_values_it_holds_however_the_destination_stor
             "{store}"
         );
     }
+}
+
+/// Each version `table` of `store` at `target` holds: its value, when it began and ended, in
+/// microseconds however the destination stores them, sorted.
+fn spans_at(target: Target, store: &str, table: &str) -> Vec<(String, Option<i64>, Option<i64>)> {
+    let mut spans = Vec::new();
+    for batch in &target.published(store, table) {
+        let values = arrow_cast::cast(batch.column_by_name("v").expect("a value"), &DataType::Utf8)
+            .expect("text values");
+        let values = values.as_string::<i32>();
+        let (from, to) = (
+            micros(batch, "_rdlt_valid_from"),
+            micros(batch, "_rdlt_valid_to"),
+        );
+        for row in 0..batch.num_rows() {
+            spans.push((values.value(row).to_owned(), from[row], to[row]));
+        }
+    }
+    spans.sort();
+    spans
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_change_time_before_its_keys_latest_begins_at_the_latest() {
+    each(Target::IN_PROCESS, |target| async move {
+        let store = "late_times";
+        let second = 1_000_000_i64;
+        let runs: [&[(&str, i64)]; 2] = [
+            &[("genuine", 30 * second)],
+            &[
+                ("forged", 0),
+                ("later", 50 * second),
+                ("earlier", 5 * second),
+            ],
+        ];
+        for run in runs {
+            let at: ArrayRef = Arc::new(
+                arrow_array::TimestampMicrosecondArray::from(
+                    run.iter().map(|(_, at)| *at).collect::<Vec<_>>(),
+                )
+                .with_timezone("UTC"),
+            );
+            let values: Vec<&str> = run.iter().map(|(value, _)| *value).collect();
+            let ids: Vec<i64> = run.iter().map(|_| 1).collect();
+            let rows = batch(vec![("id", ints(&ids)), ("v", text(&values)), ("at", at)]);
+            let events = BatchStream::new("events", vec![rows])
+                .primary_key(&["id"])
+                .change_time("at");
+            let outcome = engine(commit_every(10))
+                .run(
+                    pipeline(store, [stream("events").write(WriteMode::History)]),
+                    batches(store, vec![events]).await,
+                    target.destination(store).await,
+                )
+                .await;
+            assert_eq!(
+                outcome.report.status,
+                RunStatus::Succeeded,
+                "{target:?}: {:?}",
+                outcome.error
+            );
+        }
+        let (thirty, fifty) = (Some(30 * second), Some(50 * second));
+        // Sent as of 0 after a version of 30, the forged one begins at 30, closing it there;
+        // sent as of 5 after one of 50, the earlier one begins at 50.
+        let expected = vec![
+            ("earlier".to_owned(), fifty, None),
+            ("forged".to_owned(), thirty, fifty),
+            ("genuine".to_owned(), thirty, thirty),
+            ("later".to_owned(), fifty, fifty),
+        ];
+        assert_eq!(spans_at(target, store, "events"), expected, "{target:?}");
+    })
+    .await;
 }
 
 #[tokio::test(start_paused = true)]

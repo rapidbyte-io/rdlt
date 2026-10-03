@@ -1,14 +1,19 @@
 //! Merging a history table's rows: each key keeps every version, and a change closes its key's
 //! current version where the change begins, or leaves it as it is (SCD2).
+//!
+//! A change begins when it says, or at the latest instant its key held before it where that is
+//! later: the latest beginning or end of the key's versions, those it opened included. So no
+//! version ends before it begins, whatever times a source sends.
 
 #[cfg(test)]
 mod tests;
+mod versions;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow_array::{Array, ArrayRef, BooleanArray, Int64Array, RecordBatch};
 use arrow_row::Rows;
 use arrow_schema::{ArrowError, DataType, SchemaRef};
 use rdlt_connector::{ChangeOp, Deletion, HistoryColumns, MergeKey};
@@ -21,122 +26,7 @@ use super::tombstones::{self, Tombstones};
 use super::written::ops;
 use super::{converter, source_bytes, source_keys, source_seqs, sources};
 
-/// A row a version's values come from, of the merge's sources.
-type Row = At;
-
-/// One version of a key, by the rows its values come from.
-#[derive(Clone, Copy, Debug)]
-struct Version {
-    /// The row holding its data, key and hash.
-    data: Row,
-    /// The row that published it, holding its sequence, `valid_from` and deletion time: `data`,
-    /// or the delete of a version a soft delete kept.
-    opened: Row,
-    /// A published row, whose `valid_to` it keeps, or the row that closed it, whose `valid_from`
-    /// it takes; none while it is open.
-    until: Option<Row>,
-    current: bool,
-    /// Whether the merge opened or closed it: a version it left is its published row whole.
-    touched: bool,
-}
-
-/// A key's newest version's row, which guards a change stream's key, its current version, how
-/// many of the table's truncates it has met, and whether one of them opened its newest version.
-#[derive(Debug)]
-struct Key {
-    newest: Row,
-    current: Option<usize>,
-    met: usize,
-    /// A version a truncate opened carries the truncate's sequence, and a change of its key at
-    /// that sequence is not before the truncate: it applies.
-    truncated: bool,
-}
-
-/// The sequences, hashes and deletion times of each of the merge's sources.
-struct Guards {
-    seqs: Vec<ArrayRef>,
-    hashes: Vec<ArrayRef>,
-    /// Where deletes are soft, the deletion times.
-    at: Option<Vec<ArrayRef>>,
-}
-
-impl Guards {
-    fn seq(&self, row: Row) -> &[u8] {
-        self.seqs[row.source].as_binary::<i32>().value(row.row)
-    }
-
-    fn hash(&self, row: Row) -> Option<&[u8]> {
-        let hashes = self.hashes[row.source].as_binary::<i32>();
-        hashes.is_valid(row.row).then(|| hashes.value(row.row))
-    }
-
-    /// Whether `row` deleted what it holds.
-    fn deleted(&self, row: Row) -> bool {
-        self.at
-            .as_ref()
-            .is_some_and(|at| at[row.source].is_valid(row.row))
-    }
-}
-
-/// A history table's versions, and the rows they come from.
-struct Versions {
-    list: Vec<Version>,
-    sources: Guards,
-}
-
-impl Versions {
-    /// Closes the version at `index` where `by` begins.
-    fn close(&mut self, index: usize, by: Row) {
-        let version = &mut self.list[index];
-        version.until = Some(by);
-        version.current = false;
-        version.touched = true;
-    }
-
-    /// Publishes a current version of `data` that `opened` published as `key`'s.
-    fn open(&mut self, key: &mut Key, data: Row, opened: Row) {
-        key.current = Some(self.list.len());
-        self.list.push(Version {
-            data,
-            opened,
-            until: None,
-            current: true,
-            touched: true,
-        });
-        // A change stream opens a version only past its key's newest; a plain table never asks.
-        key.newest = opened;
-    }
-
-    /// Applies the upsert `by` to `key`: unless its hash is the current version's, which is not
-    /// deleted, it closes that version and becomes the current one.
-    fn upsert(&mut self, key: &mut Key, by: Row) {
-        if let Some(index) = key.current {
-            let version = self.list[index];
-            let sources = &self.sources;
-            if !sources.deleted(version.opened) && sources.hash(version.data) == sources.hash(by) {
-                return;
-            }
-            self.close(index, by);
-        }
-        self.open(key, by, by);
-    }
-
-    /// Applies the delete `by` to `key`'s current version: closes it, and where deletes are
-    /// soft, keeps its data in a deleted current version, unless it is deleted already.
-    fn remove(&mut self, key: &mut Key, by: Row) {
-        let Some(index) = key.current else {
-            return;
-        };
-        let version = self.list[index];
-        if self.sources.at.is_none() {
-            self.close(index, by);
-            key.current = None;
-        } else if !self.sources.deleted(version.opened) {
-            self.close(index, by);
-            self.open(key, version.data, by);
-        }
-    }
-}
+use versions::{Guards, Key, Row, Version, Versions};
 
 /// A history table while its changes apply: its versions, each key's, and the truncates applied
 /// so far, in sequence order, which a key meets when it is next touched.
@@ -197,13 +87,17 @@ impl History {
     /// Adds the published version at `at`, of `key`, which is its key's current one or not.
     fn hold(&mut self, key: &[u8], at: Row, current: bool) {
         let index = self.versions.list.len();
+        let sources = &self.versions.sources;
+        let (began, ended) = (sources.begins(at), sources.ends(at));
         self.versions.list.push(Version {
             data: at,
             opened: at,
-            until: Some(at),
+            began,
+            ended,
             current,
             touched: false,
         });
+        let latest = ended.map_or(began, |ended| ended.max(began));
         let sources = &self.versions.sources;
         if let Some(state) = self.keys.get_mut(key) {
             if sources.seq(at) > sources.seq(state.newest) {
@@ -212,10 +106,12 @@ impl History {
             if current {
                 state.current = Some(index);
             }
+            state.floor = Some(state.floor.map_or(latest, |floor| floor.max(latest)));
         } else {
             let state = Key {
                 newest: at,
                 current: current.then_some(index),
+                floor: Some(latest),
                 met: 0,
                 truncated: false,
             };
@@ -247,6 +143,7 @@ impl History {
             let mut state = Key {
                 newest: by,
                 current: None,
+                floor: None,
                 met: self.truncates.len(),
                 truncated: false,
             };
@@ -312,7 +209,7 @@ pub(crate) fn merge_history(
     }
     let versions = table.finish();
     let buried = tombstones.assemble(&tombstone_schema, &sources, key, &mut nulls)?;
-    let merged = assemble(&mut sources, held, &versions, (key, history))?;
+    let merged = assemble(&mut sources, &versions, (key, history))?;
     Ok((merged, buried))
 }
 
@@ -363,7 +260,8 @@ fn deleted_at(key: &MergeKey) -> Option<&str> {
     }
 }
 
-/// The sequences, hashes and, where deletes are soft, deletion times of each of `sources`.
+/// The sequences, hashes, validity and, where deletes are soft, deletion times of each of
+/// `sources`.
 fn guards(
     sources: &Sources,
     (key, history): (&MergeKey, &HistoryColumns),
@@ -377,9 +275,17 @@ fn guards(
         }
         None => None,
     };
+    let instants = |name: &str, nulls: &mut Nulls| -> Result<Vec<ArrayRef>, ArrowError> {
+        let column = sources.schema().index_of(name)?;
+        (0..sources.len())
+            .map(|source| counted_as(&sources.dense(source, column, nulls), &DataType::Int64))
+            .collect()
+    };
     Ok(Guards {
         seqs: source_seqs(sources, key, nulls)?,
         hashes: source_bytes(sources, &history.row_hash, nulls)?,
+        begins: instants(&history.valid_from, nulls)?,
+        ends: instants(&history.valid_to, nulls)?,
         at: times,
     })
 }
@@ -414,12 +320,48 @@ fn changes(
     Ok(rows)
 }
 
+/// A source holding the validity of each version the merge touched, in order, in the columns
+/// `from` and `to` of the table: a row of each.
+fn decided(
+    sources: &mut Sources,
+    versions: &Versions,
+    (from, to): (usize, usize),
+) -> Result<usize, ArrowError> {
+    let schema = Arc::clone(sources.schema());
+    let touched: Vec<&Version> = versions
+        .list
+        .iter()
+        .filter(|version| version.touched)
+        .collect();
+    let began: ArrayRef = Arc::new(Int64Array::from_iter_values(
+        touched.iter().map(|version| version.began),
+    ));
+    let ended: Int64Array = touched.iter().map(|version| version.ended).collect();
+    let ended: ArrayRef = Arc::new(ended);
+    Ok(sources.add_held(
+        touched.len(),
+        vec![
+            (from, counted_as(&began, schema.field(from).data_type())?),
+            (to, counted_as(&ended, schema.field(to).data_type())?),
+        ],
+    ))
+}
+
+/// `instants`, timestamps or the integers they count, as `to`, the other: each value the same
+/// count of its unit.
+fn counted_as(instants: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
+    let options = arrow_cast::CastOptions {
+        safe: false,
+        ..arrow_cast::CastOptions::default()
+    };
+    arrow_cast::cast_with_options(instants, to, &options)
+}
+
 /// The versions as batches of the columns they hold: a version the merge left is its published
-/// row whole; of another, each column comes from the rows its values come from, `valid_to` from
-/// the row that closed it and `is_current` from its flag.
+/// row whole; of another, each column comes from the rows its values come from, its validity
+/// as the merge decided it and `is_current` from its flag.
 fn assemble(
     sources: &mut Sources,
-    published: usize,
     versions: &Versions,
     (key, history): (&MergeKey, &HistoryColumns),
 ) -> Result<Vec<RecordBatch>, ArrowError> {
@@ -427,22 +369,14 @@ fn assemble(
     let column = |name: &str| schema.index_of(name);
     let (from, to) = (column(&history.valid_from)?, column(&history.valid_to)?);
     let current = column(&history.is_current)?;
-    let mut opened = vec![column(&key.seq)?, from];
+    let mut opened = vec![column(&key.seq)?];
     if let Some(at) = deleted_at(key) {
         opened.push(column(at)?);
     }
-    // A version ends where the row that closed it begins: each incoming source's `valid_from`
-    // stands as a source of `valid_to`, and a source of two rows holds the two flags.
-    let mut closing: BTreeMap<usize, usize> = BTreeMap::new();
-    for source in published..sources.len() {
-        if let Some(begins) = sources.column(source, from) {
-            let ends = retyped(begins, schema.field(to).data_type())?;
-            let rows = sources.rows(source);
-            closing.insert(source, sources.add_held(rows, vec![(to, ends)]));
-        }
-    }
+    let validity = decided(sources, versions, (from, to))?;
     let flags: ArrayRef = Arc::new(BooleanArray::from(vec![false, true]));
     let flag = sources.add_held(2, vec![(current, flags)]);
+    let mut placed = 0;
     let over: Vec<Vec<(usize, Option<At>)>> = versions
         .list
         .iter()
@@ -450,23 +384,17 @@ fn assemble(
             if !version.touched {
                 return Vec::new();
             }
-            // A published row closed it and it keeps that row's own end, or an incoming row did
-            // and it ends where that begins; open, it has no end.
-            let until = version
-                .until
-                .and_then(|until| match closing.get(&until.source) {
-                    Some(shadow) => Some(At {
-                        source: *shadow,
-                        row: until.row,
-                    }),
-                    None if until.source < published => Some(until),
-                    None => None,
-                });
+            let decided = At {
+                source: validity,
+                row: placed,
+            };
+            placed += 1;
             let mut over: Vec<(usize, Option<At>)> = opened
                 .iter()
                 .map(|column| (*column, Some(version.opened)))
                 .collect();
-            over.push((to, until));
+            // An open version holds no end, as a version the merge left holds none.
+            over.extend([(from, Some(decided)), (to, version.ended.map(|_| decided))]);
             let flagged = At {
                 source: flag,
                 row: usize::from(version.current),
