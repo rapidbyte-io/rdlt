@@ -67,17 +67,25 @@ async fn checked(
     };
     let check = move || batches.iter().try_for_each(json::check_batch);
     let checked = run_all(compute, [check]).await.pop();
-    let Some(Err(NotJson { column, error })) = checked else {
-        return Ok(());
-    };
+    match checked {
+        Some(Err(refused)) => Err(not_json(job, refused)),
+        _ => Ok(()),
+    }
+}
+
+/// The error for an Arrow push holding a value of a column of JSON that is not JSON, why kept
+/// as its cause.
+pub(super) fn not_json(job: &PartitionJob, refused: NotJson) -> Error {
+    let NotJson { column, error } = refused;
     let message = format!(
-        "stream {}: column {} of a push holds a value that is not JSON: {error}",
+        "stream {}: column {} of a push holds a value that is not JSON",
         job.stream,
         rdlt_connector::text::shown(&column, NAME_SHOWN),
     );
-    Err(Error::new(ErrorKind::Source, message)
+    Error::new(ErrorKind::Source, message)
         .with_code(error.code())
-        .with_stream(&job.stream))
+        .with_stream(&job.stream)
+        .with_source(error)
 }
 
 /// The JSON `pushes`, admitted with `permits`, shredded into a unit a batch.
@@ -91,7 +99,7 @@ async fn shredded(
     pushes: Vec<Bytes>,
     permits: Vec<Permit>,
 ) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
-    let failed = |error: ShredError| shred_failed(job, &error);
+    let failed = |error: ShredError| shred_failed(job, error);
     let compute = context.env.compute();
     let chunk_bytes = context.batch.chunk_bytes().get();
     let limits = ShredLimits::new(context.budget.limits().schema_columns);
@@ -157,15 +165,15 @@ fn beyond_a_request(job: &PartitionJob, large: &TooLarge) -> Error {
     .with_stream(&job.stream)
 }
 
-/// The error for a JSON push the shredder refused.
-pub(super) fn shred_failed(job: &PartitionJob, error: &ShredError) -> Error {
-    let message = format!(
-        "stream {}: a JSON push cannot be loaded: {error}",
-        job.stream
-    );
+/// The error for a JSON push the shredder refused, its error kept as the cause.
+pub(super) fn shred_failed(job: &PartitionJob, error: ShredError) -> Error {
+    let message = format!("stream {}: a JSON push cannot be loaded", job.stream);
     let failed = match error {
         ShredError::Internal(_) => Error::internal(message),
         _ => Error::new(ErrorKind::Source, message),
     };
-    failed.with_code(error.code()).with_stream(&job.stream)
+    failed
+        .with_code(error.code())
+        .with_stream(&job.stream)
+        .with_source(error)
 }
