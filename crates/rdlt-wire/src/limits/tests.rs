@@ -408,3 +408,36 @@ fn each_call_s_answer_has_the_class_of_what_it_carries() {
         assert_eq!(Class::of_answer(method), expected, "{method}");
     }
 }
+
+#[test]
+fn each_call_s_request_is_bounded_as_what_it_carries() {
+    use super::Class;
+    use crate::bounded::Bounds;
+    let expected = [
+        ("Handshake", Class::Handshake),
+        ("Configure", Class::Config),
+        ("Check", Class::Control),
+        ("Discover", Class::Control),
+        ("Plan", Class::State),
+        ("Read", Class::Cursor),
+        ("Committed", Class::State),
+        ("Open", Class::Control),
+        ("ApplySchema", Class::Schema),
+        ("Write", Class::Data),
+        ("Commit", Class::State),
+        ("Close", Class::Control),
+        ("Heartbeat", Class::Control),
+        ("ReadPublished", Class::Control),
+        ("ReadAcknowledged", Class::Control),
+    ];
+    for (method, class) in expected {
+        assert_eq!(Class::of_request(method), class, "{method}");
+    }
+    // A schema change is bounded by the schema limit, beyond any other control message's.
+    let limits = Limits::default();
+    let request = crate::scan::request("ApplySchema");
+    let bounds = Bounds::of(&limits, Class::of_request("ApplySchema"), request);
+    let schema = usize::try_from(limits.schema_bytes).unwrap() + 65_536;
+    assert_eq!((bounds.wire, bounds.decoded), (schema, schema * 16));
+    assert!(bounds.wire > limits.decoding(Class::Control));
+}
