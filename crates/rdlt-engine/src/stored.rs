@@ -7,7 +7,7 @@ mod tests;
 use std::collections::BTreeMap;
 
 use rdlt_connector::wire::{commit_bytes, record_bytes};
-use rdlt_connector::{CommitMeta, StateChange, StateRecord};
+use rdlt_connector::{CommitMeta, StateChange, StateKey, StateRecord};
 
 use crate::config::EngineConfig;
 use crate::error::Error;
@@ -61,13 +61,18 @@ impl Stored {
         self.total
     }
 
-    /// Admits the commit `meta`: the state it leaves, as an open's answer carries it, and its
-    /// own request, each within its limit.
+    /// Admits the commit `meta`: the state it leaves, as an open's answer carries it, within its
+    /// limit or no more than what is stored, and its own request within its limit.
+    ///
+    /// State stored under a larger limit, before the memory was lowered, or by a replayed commit
+    /// logged under one, is past the limit: a commit that does not grow it lands, so a pipeline
+    /// whose limit fell keeps loading. The receipt, which every commit replaces, is not counted
+    /// there: it takes a byte more whenever one of its numbers gains a digit.
     ///
     /// # Errors
     ///
-    /// A `Config` error coded `state_bytes_exceeded` where either would pass it: nothing of the
-    /// commit is logged, acknowledged or sent.
+    /// A `Config` error coded `state_bytes_exceeded` where the commit would grow state past its
+    /// limit or send a request past its: nothing of the commit is logged, acknowledged or sent.
     pub(crate) fn admit(&self, meta: &CommitMeta) -> Result<(), Error> {
         let left = self.after(&meta.state_delta);
         let request = commit_bytes(meta);
@@ -75,7 +80,7 @@ impl Stored {
             stored,
             request: sent,
         } = self.limits;
-        if left <= stored && request <= sent {
+        if (left <= stored || !self.grows(&meta.state_delta)) && request <= sent {
             return Ok(());
         }
         Err(Error::config(format!(
@@ -104,17 +109,40 @@ impl Stored {
 
     /// Bytes: what the stored records take once `delta` lands.
     fn after(&self, delta: &[StateChange]) -> u64 {
-        let mut changed: BTreeMap<&str, u64> = BTreeMap::new();
-        for change in delta {
-            let (key, bytes) = match change {
-                StateChange::Put(record) => (record.key.as_str(), record_bytes(record)),
-                StateChange::Delete(key) => (key.as_str(), 0),
-            };
-            changed.insert(key, bytes);
-        }
-        changed.iter().fold(self.total, |total, (key, bytes)| {
-            let before = self.records.get(*key).copied().unwrap_or(0);
-            total.saturating_sub(before).saturating_add(*bytes)
-        })
+        changed(delta)
+            .iter()
+            .fold(self.total, |total, (key, bytes)| {
+                let before = self.records.get(*key).copied().unwrap_or(0);
+                total.saturating_sub(before).saturating_add(*bytes)
+            })
     }
+
+    /// Whether `delta` leaves the records other than the receipt taking more than they take.
+    fn grows(&self, delta: &[StateChange]) -> bool {
+        let receipt = StateKey::Receipt.encode();
+        let (more, less) = changed(delta)
+            .into_iter()
+            .filter(|(key, _)| *key != receipt)
+            .fold((0_u64, 0_u64), |(more, less), (key, bytes)| {
+                let before = self.records.get(key).copied().unwrap_or(0);
+                (
+                    more.saturating_add(bytes.saturating_sub(before)),
+                    less.saturating_add(before.saturating_sub(bytes)),
+                )
+            });
+        more > less
+    }
+}
+
+/// Bytes: what each record `delta` changes takes once it lands, nothing where it is deleted.
+fn changed(delta: &[StateChange]) -> BTreeMap<&str, u64> {
+    let mut changed = BTreeMap::new();
+    for change in delta {
+        let (key, bytes) = match change {
+            StateChange::Put(record) => (record.key.as_str(), record_bytes(record)),
+            StateChange::Delete(key) => (key.as_str(), 0),
+        };
+        changed.insert(key, bytes);
+    }
+    changed
 }

@@ -2,7 +2,9 @@ use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
 use rdlt_connector::wire::{commit_bytes, record_bytes};
-use rdlt_connector::{CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateRecord};
+use rdlt_connector::{
+    CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateKey, StateRecord,
+};
 
 use super::{StateLimits, Stored};
 use crate::config::{EngineConfig, GrowthLimits};
@@ -89,6 +91,47 @@ fn a_commit_whose_state_passes_the_limit_is_refused_though_its_request_fits() {
         StateChange::Put(record("b", 1000)),
     ]);
     full.admit(&freeing).unwrap();
+}
+
+#[test]
+fn a_commit_that_grows_no_state_is_admitted_though_state_is_past_the_limit() {
+    // State stored under a larger limit, before the memory was lowered.
+    let records = [record("a", 2000), record("b", 2000)];
+    let over = Stored::of(&records, limits(1000, ROOM));
+    assert!(over.total() > 1000);
+    // A commit that frees some of it, or replaces a record with one of its size, is admitted.
+    over.admit(&meta(vec![StateChange::Delete("a".to_owned())]))
+        .unwrap();
+    over.admit(&meta(vec![StateChange::Put(record("a", 2000))]))
+        .unwrap();
+    let shrinking = meta(vec![
+        StateChange::Delete("a".to_owned()),
+        StateChange::Put(record("c", 1500)),
+    ]);
+    over.admit(&shrinking).unwrap();
+    // One that grows it by a byte is refused.
+    let error = over
+        .admit(&meta(vec![StateChange::Put(record("a", 2001))]))
+        .unwrap_err();
+    assert_eq!(error.code(), Some("state_bytes_exceeded"));
+}
+
+#[test]
+fn past_the_limit_the_receipt_taking_a_byte_more_grows_no_state() {
+    let receipt = StateKey::Receipt.encode();
+    let records = [record("a", 2000), record(&receipt, 100)];
+    let over = Stored::of(&records, limits(1000, ROOM));
+    let replacing = |bytes, receipt_bytes| {
+        meta(vec![
+            StateChange::Put(record("a", bytes)),
+            StateChange::Put(record(&receipt, receipt_bytes)),
+        ])
+    };
+    over.admit(&replacing(2000, 101)).unwrap();
+    over.admit(&replacing(1999, 200)).unwrap();
+    // Another record growing is refused, though the receipt shrinks by as much.
+    let error = over.admit(&replacing(2001, 99)).unwrap_err();
+    assert_eq!(error.code(), Some("state_bytes_exceeded"));
 }
 
 #[test]

@@ -21,13 +21,15 @@ use serde_json::json;
 use crate::support::{commit_every, engine, logging_engine, memory, pipeline, stream};
 
 /// What a test's source plans and sends: the ids of the partitions its plans name, the bytes of
-/// the cursor each checkpoints after its one row, and whether it can read again what it
-/// acknowledged.
+/// the cursor each checkpoints after its one row, whether it can read again what it
+/// acknowledged, and whether a partition resumed from its first cursor sends one row more and a
+/// cursor of half its size.
 #[derive(Clone, Debug)]
 struct Shape {
     partitions: Vec<String>,
     cursor: usize,
     replayable: bool,
+    again: bool,
 }
 
 static SHAPES: LazyLock<Mutex<BTreeMap<String, Shape>>> = LazyLock::new(Mutex::default);
@@ -90,14 +92,16 @@ impl ReadStream<Planned> for Events {
         cursor: String,
         out: &mut Emitter<String>,
     ) -> Result<()> {
-        if !cursor.is_empty() {
-            return Ok(());
-        }
-        let size = SHAPES.lock()[&source.name].cursor;
+        let shape = SHAPES.lock()[&source.name].clone();
+        let (mark, size) = match cursor.chars().last() {
+            None => ('c', shape.cursor),
+            Some('c') if shape.again => ('d', shape.cursor / 2),
+            Some(_) => return Ok(()),
+        };
         let ids: ArrayRef = Arc::new(Int64Array::from(vec![1_i64]));
         out.batch(RecordBatch::try_from_iter([("id", ids)]).expect("a batch"))
             .await?;
-        let text = format!("{}:{}", partition.id(), "c".repeat(size));
+        let text = format!("{}:{}", partition.id(), mark.to_string().repeat(size));
         out.checkpoint(&text).await
     }
 
@@ -128,6 +132,17 @@ fn acks(name: &str) -> usize {
 /// `count` partition ids, `p0` onwards.
 fn ids(count: usize) -> Vec<String> {
     (0..count).map(|index| format!("p{index}")).collect()
+}
+
+/// Bytes: what the memory destination `name` stores of pipeline `name`'s state takes in an
+/// open's answer.
+async fn carried(name: &str) -> u64 {
+    let context = OpenContext {
+        pipeline: PipelineId::parse(name).expect("a valid pipeline"),
+        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+    };
+    let opened = memory(name).await.open(&context).await.expect("it opens");
+    opened.state.iter().map(record_bytes).sum()
 }
 
 /// The state `destination` holds for pipeline `name`.
@@ -200,6 +215,7 @@ async fn a_commit_whose_state_would_pass_the_limit_is_refused_before_it_is_logge
         partitions: ids(10),
         cursor,
         replayable: false,
+        again: false,
     };
     let base = tempfile::tempdir().expect("a temporary directory");
     let store: Arc<dyn rdlt_engine::WalStore> = Arc::new(LocalWal::new(base.path()));
@@ -231,6 +247,7 @@ async fn state_grown_by_small_commits_stops_at_the_limit_and_still_opens() {
         partitions: ids(12),
         cursor,
         replayable: true,
+        again: false,
     };
     let outcome = engine(config())
         .run(
@@ -284,6 +301,7 @@ async fn planned(name: &str, partitions: &[&str]) -> Vec<String> {
         partitions: partitions.iter().map(ToString::to_string).collect(),
         cursor: 8,
         replayable: true,
+        again: false,
     };
     let outcome = engine(commit_every(1_000))
         .run(
@@ -330,6 +348,7 @@ async fn state_at_the_least_memory_stops_at_its_share_of_the_budget_and_still_op
         partitions: ids(160),
         cursor,
         replayable: true,
+        again: false,
     };
     let outcome = engine(config())
         .run(
@@ -339,12 +358,58 @@ async fn state_at_the_least_memory_stops_at_its_share_of_the_budget_and_still_op
         )
         .await;
     refused(&outcome);
-    let context = OpenContext {
-        pipeline: PipelineId::parse(name).expect("a valid pipeline"),
-        load_id: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
-    };
-    let opened = memory(name).await.open(&context).await.expect("it opens");
-    let carried: u64 = opened.state.iter().map(record_bytes).sum();
+    let carried = carried(name).await;
     assert!(carried <= least / 16, "{carried} bytes of state");
     assert!(carried > least / 32, "{carried} bytes of state");
+}
+
+#[tokio::test(start_paused = true)]
+async fn state_past_a_lowered_limit_keeps_loading_while_it_shrinks() {
+    let name = "stored-lowered";
+    let least = EngineConfig::least_memory(16);
+    let config = |memory| commit_every(1).memory(memory);
+    let cursor = usize::try_from(config(least).build().expect("valid").limits().cursor_bytes)
+        .expect("a size")
+        - 64;
+    let mut shape = Shape {
+        partitions: ids(400),
+        cursor,
+        replayable: true,
+        again: false,
+    };
+    // Under twice the memory, state grows to its limit, past what the least memory admits.
+    let outcome = engine(config(2 * least))
+        .run(
+            pipeline(name, [stream("events").read(ReadMode::Incremental)]),
+            source(name, shape.clone()).await,
+            memory(name).await,
+        )
+        .await;
+    refused(&outcome);
+    let grown = carried(name).await;
+    assert!(grown > least / 16, "{grown} bytes of state");
+    let state = stored(memory(name).await.as_ref(), name).await;
+    let recorded = &state.streams[&StreamName::new("events").expect("a name")].partitions;
+    // Under the least memory, each partition's commit replaces its cursor with a smaller one.
+    shape.partitions = recorded.keys().map(ToString::to_string).collect();
+    shape.again = true;
+    let outcome = engine(config(least))
+        .run(
+            pipeline(name, [stream("events").read(ReadMode::Incremental)]),
+            source(name, shape.clone()).await,
+            memory(name).await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let shrunk = carried(name).await;
+    assert!(shrunk < grown, "{shrunk} bytes of state");
+    assert_eq!(
+        crate::support::published_rows(name, "events"),
+        2 * shape.partitions.len()
+    );
 }

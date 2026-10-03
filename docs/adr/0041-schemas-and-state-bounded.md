@@ -103,7 +103,10 @@ one run to the next, broke both:
   or whose state once landed would pass the state limit, is refused as `state_bytes_exceeded`, a
   non-retryable `Config` error, before it is logged or any source hears of a position. A plan's
   request and a report of committed positions carry less of a stream than its stored records.
-  A commit is never split: its segments and positions land together or not at all.
+  A commit is never split: its segments and positions land together or not at all. State past
+  the limit, stored before the memory was lowered or by a replayed commit logged under a larger
+  one, takes a commit that does not grow it, the receipt left out of that measure since every
+  commit replaces it and its numbers gain digits, so a pipeline whose limit fell keeps loading.
 - **A plan never forgets a position.** A partition a plan omits keeps its entry, running or
   `Done`: a plan may omit a partition for a moment, a listing that failed in part, and a
   partition planned again without its entry is read again from its beginning, its rows twice.
@@ -147,7 +150,8 @@ Rejected:
 - A lane may reopen a writer: a table written by more partitions at once than the lane's share,
   or a batch lowered for a version a newer one has replaced.
 - A pipeline whose state is honestly larger than its state limit stops at the commit that would
-  pass it until memory or `state_bytes` is raised at both ends, or its streams are reset. The
+  pass it until memory or `state_bytes` is raised at both ends, or its streams are reset; one
+  whose limit fell below its state keeps loading while its commits do not grow it. The
   cursor limit is derived for the partitions read at once, not for those state records: about a
   hundred partitions each holding a cursor as long as a cursor may be reach the limit, at the
   defaults and at the least memory alike.
