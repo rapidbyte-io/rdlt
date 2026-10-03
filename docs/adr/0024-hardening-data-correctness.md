@@ -31,7 +31,8 @@ M5b follows H1b.
     review then whether a fitted name can meet another table's own.
   - The name functions became planner methods.
   - User columns may still start with `_rdlt_`: the engine names its own metadata columns around
-    them.
+    them. Amended 2026-10-03 (ADR 0046): one named exactly as a metadata column, folded and
+    cleaned, is refused, whatever metadata columns its table has yet.
 - **A merge key changes type only where equal keys keep matching.**
   - That holds where the destination stores both types by value: as themselves, or as integers of
     another width.

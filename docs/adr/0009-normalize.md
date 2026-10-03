@@ -38,6 +38,10 @@ leaves open, and one it words otherwise.
   depend on the batch, chunk or Arrow type that carried the row. A reference normalizer over JSON
   values, with its own encoding, checks it. Roots that share a key, or whose key is null, share an
   id, as the spec's keyed identity has them.
+  - Amended 2026-10-03 (ADR 0046): ids are BLAKE3's 256 bits, each kind of id after a tag of its
+    own; numbers carry their length; a float encodes as the 64-bit float it widens to, and a
+    Date64 as the day it is within. A batch lacking a key column, or holding a null or NaN key, is
+    refused before it is identified (`merge_key_missing`, `merge_key_null`, `merge_key_nan`).
   - Amended 2026-10-03 (ADR 0040): JSON text is read without recursion and its numbers by their
     exact value, in one canonical text a value; a float's text is its shortest, a tie going to
     the even digit. Text that is not JSON fails the write, `json_invalid`. A merge key stored as

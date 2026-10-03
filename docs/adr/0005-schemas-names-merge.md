@@ -64,6 +64,9 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   bytes of `Binary`: the segment id then the row's index in the segment, big-endian. Their
   identifiers follow the destination's rules, and source columns never take them. The spec's
   dictionary-encoded load id arrives with the lowering plan (M3).
+  - Amended 2026-10-03 (ADR 0046): every metadata column's identifier is fixed by the rules
+    alone, whatever columns a table has, and a source column asking for one is refused
+    (`column_name_reserved`), not renamed.
 - **Merge.** The key comes from the plan or the catalog's primary key. `TableRef::merge` names the
   key columns and the sequence column; the engine keeps the last row of each key within a batch,
   and the destination keeps one row per key: the newest commit's, and within a commit the
@@ -82,6 +85,8 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   reserved or metadata identifier gets `_` and six base32 digits of the xxh3 hash of the exact
   source path, extended while still taken. The columns one batch adds are named in sorted order,
   so arrival order never matters.
+  - Amended 2026-10-03 (ADR 0046): a source column whose name folds and cleans to a metadata
+    column's is refused rather than suffixed.
 - **M2a's deferred minors.** Configured lanes never exceed the destination's
   `max_parallel_writers`; a budget waiter that gave up no longer counts toward `peak_memory`;
   `RunOutcome` documents the error a stop during backoff carries; the coordinator's commit
