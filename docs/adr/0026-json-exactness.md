@@ -62,12 +62,19 @@ process; H1b fixed it (ADR 0025).
     the column integers. Only the lattice's joins widen a column.
   - Values go first to the column's own, as they are or cast; then to a variant that holds them as
     they are. A variant never takes a cast.
+  - Amended 2026-10-03 (ADR 0040): a column arriving as JSON text whose own column is of another
+    type sends there each value that column holds alone, and a column of integers it is read
+    into stops being exact, since its integers are read only as the plan lowers them.
   - This amends spec §8.2: `Int64 ∨ FloatM` is `Json` in the lattice, and `Float64` in a variant
     for a column whose values a float holds exactly.
 - **A merge key keeps matching where its values render alike.** A key widens where the destination
   stores both types by value, as before, or renders both into one type alike: integers and
   decimals of one scale render the same digits. A scale that grows still changes the key's text
   (`1.50` to `1.5000`) and is refused as `merge_key_changed`.
+- **A column of JSON keeps its numbers as written** (amended 2026-10-03, ADR 0040): a chunk whose
+  column of JSON holds a float is built by the exact parse, which renders each number as its
+  text was written, never through a 64-bit float. Row identity hashes JSON numbers by their exact
+  value.
 - **The simulation models values.**
   - An arrival of 64-bit integers is exact where a float holds each of them, over the batch and
     over the batches the engine may gather with it, for JSON and Arrow alike. Exact integers join

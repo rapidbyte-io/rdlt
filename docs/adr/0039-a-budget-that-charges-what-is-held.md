@@ -196,6 +196,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A JSON push reserves three times its text when it is admitted: the text, and twice it for
     the batches it is shredded into, which are paid for before they are built. Once shredded
     the push holds what its batches keep alive, where that is less.
+  - Amended 2026-10-03 (ADR 0040): what a JSON push's batches take beyond twice its text is
+    reckoned before they are built and reserved from the data share, held with the batches;
+    beyond one request it is refused, `json_exceeds_budget`. A null converted to a type of no
+    fixed width is charged that type's null slot, inside structs and lists too. A piece and a
+    row take at most `i32::MAX` bytes whatever the budget, as far as a text array's offsets
+    reach.
 - **No request waits on the budget for ever.**
   - Every wait ends at a deadline on the engine's clock, `memory_wait`, an hour by default,
     longer than any call of a destination may take by default. The attempt then fails with
@@ -333,14 +339,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
 ## The bound
 
 A run never reserves more than its memory budget, and its heap stays within the budget, a fifth
-of it and 32 MiB, beside three things that are not reserved: the push each read's source holds
-before it is admitted, what a JSON push's records become beyond three times their text, and
-what replay stages.
+of it and 32 MiB, beside two things that are not reserved: the push each read's source holds
+before it is admitted, and what replay stages.
 
 - The first is one push or one frame a partition, within the wire's limits.
-- The second is the shredder's to bound, by its limit on cells: a megabyte of records of one
-  key each, three hundred keys in turn, becomes 241 MB under a budget of 16 MiB, of which
-  10 MiB are reserved.
+- What a JSON push's records become beyond three times their text was a third, bounded only by
+  the shredder's limit on cells: a megabyte of records of one key each, three hundred keys in
+  turn, became 241 MB under a budget of 16 MiB, of which 10 MiB were reserved. Since ADR 0040
+  it is reserved before it is built, and that push is refused unbuilt.
 - The fifth and the 32 MiB are measured, not derived: what the runtime, the channels and the
   builders' spare capacity take. The loads above peak far below them: 5 MB of heap where 300 KB
   pushed fill a table of two hundred 256-bit columns, 9 MB where sixteen million small integers
@@ -418,6 +424,6 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
   wire's weigher can stop within a row, but only for the wire crate's own cut, so one row
   whose list views nest and name the same items is weighed to its end before it is refused.
 - Not bounded here: how much one push may expand to in total, which costs CPU and destination
-  storage in proportion; the nulls of a nested column's fields the shredder builds, and what a
-  JSON push of sparse records becomes beyond three times its text, which the shredder's limit
-  on cells bounds; and what replay stages.
+  storage in proportion; and what replay stages. The nulls of a nested column's fields the
+  shredder builds, and what a JSON push of sparse records becomes beyond three times its text,
+  are reserved before they are built since ADR 0040.
