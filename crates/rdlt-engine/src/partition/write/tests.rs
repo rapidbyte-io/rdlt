@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::cost::Allocations;
-use rdlt_connector::{Partition, Permit, StreamName};
+use rdlt_connector::{LogicalType, Partition, Permit, StreamName};
 
 use super::Held;
 use super::held::shredded;
@@ -313,7 +313,7 @@ fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
     );
     // How the table stores each data column is told by the batch's own columns.
     let stored = rdlt_connector::cost::Stored {
-        column: rdlt_connector::LogicalType::Int64,
+        column: LogicalType::Int64,
         text: false,
     };
     let by_batch = aligned(&unit, &[Some(stored.clone())]);
@@ -403,4 +403,70 @@ fn a_window_reserves_a_piece_beside_those_it_holds_only_where_the_budget_has_roo
     assert_eq!(beside.bytes(), 1 << 20);
     // More than a request may take is never reserved at once.
     assert!(window.reserve(&budget, 17 << 20).is_none());
+}
+
+#[test]
+fn a_piece_and_a_row_lower_no_more_text_than_a_text_array_s_offsets_reach() {
+    // At sixty-four gibibytes a piece's share and a request's are past what 32-bit offsets
+    // reach; a piece and a row are held below it whatever the budget.
+    let reach = u64::try_from(i32::MAX).unwrap();
+    let shares = crate::budget::Shares::of(64 << 30);
+    assert!(shares.piece > reach && shares.request > reach);
+    for times in [1, 2] {
+        let (piece, row) = super::piece_bounds(shares, times);
+        assert!(
+            piece <= reach && row <= reach,
+            "{piece} and {row}, {times} times"
+        );
+    }
+    let cutter = super::allowance::Cutter::new(shares.request, shares.piece, 1);
+    assert!(cutter.bounds().0 <= reach && cutter.bounds().1 <= reach);
+    // One row of 400 million booleans renders to more text than offsets reach: it is refused
+    // before it is lowered, rather than overflowing them.
+    let refused = flags_as_text(400_000_000, shares);
+    assert!(refused.expanded > reach, "{}", refused.expanded);
+    assert_eq!(refused.limit, reach);
+    // Under the default budget, forty million take more than a request may.
+    let shares = crate::budget::Shares::of(256 << 20);
+    let refused = flags_as_text(40_000_000, shares);
+    assert!(refused.expanded > shares.request, "{}", refused.expanded);
+    assert_eq!(refused.limit, shares.request);
+}
+
+/// Cuts one row of `items` booleans, stored as text, by what `shares` lets a piece and a row
+/// take: the row's refusal.
+fn flags_as_text(items: usize, shares: crate::budget::Shares) -> super::pieces::RowTooLarge {
+    let flags = arrow_array::BooleanArray::new(arrow_buffer::BooleanBuffer::new_unset(items), None);
+    let item = Arc::new(arrow_schema::Field::new(
+        "item",
+        arrow_schema::DataType::Boolean,
+        true,
+    ));
+    let list = arrow_array::ListArray::new(
+        item,
+        arrow_buffer::OffsetBuffer::from_lengths([items]),
+        Arc::new(flags),
+        None,
+    );
+    let unit = RecordBatch::try_from_iter([("l", Arc::new(list) as ArrayRef)]).unwrap();
+    let logical = LogicalType::List(Box::new(rdlt_connector::Field::new(
+        "item",
+        LogicalType::Bool,
+        true,
+    )));
+    let stored = rdlt_connector::cost::Stored {
+        column: logical,
+        text: true,
+    };
+    let (max, limit) = super::piece_bounds(shares, 1);
+    let lowered = super::pieces::Lowered {
+        rendering: rdlt_connector::cost::Rendering::text(),
+        stored: vec![Some(stored)],
+        row: 0,
+        item: 0,
+        max,
+        limit,
+    };
+    let mut pieces = super::pieces::Pieces::new(vec![unit], lowered);
+    pieces.next().unwrap_err()
 }

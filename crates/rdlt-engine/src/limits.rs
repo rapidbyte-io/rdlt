@@ -59,6 +59,12 @@ pub(crate) const REQUEST_SHARE: u64 = 4;
 /// the budget.
 pub(crate) const PIECE_SHARE: u64 = 16;
 
+/// Bytes: the most lowering one piece, or one row, may take whatever the budget, and so the most
+/// text one column of a piece holds: as far as a text array's 32-bit offsets reach.
+///
+/// A row that alone takes more fails its write with `row_exceeds_budget`, before it is lowered.
+pub(crate) const MAX_PIECE_BYTES: u64 = (1 << 31) - 1;
+
 /// Bytes: the fewest a piece holds whatever the budget, so a small budget still lowers rows in
 /// useful batches.
 pub(crate) const MIN_PIECE: u64 = 64 << 10;

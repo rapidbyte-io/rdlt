@@ -19,6 +19,7 @@ use super::pieces::{Lowered, Pieces, RowTooLarge};
 use super::reserved_times;
 use crate::budget::MemoryBudget;
 use crate::error::Error;
+use crate::limits::MAX_PIECE_BYTES;
 use crate::normalize::{Lineage, Parent};
 use crate::partition::PartitionContext;
 use crate::table::LoweringPlan;
@@ -70,14 +71,21 @@ fn permits(bytes: u64) -> u32 {
 
 impl Cutter {
     /// A cutter of parts whose lowering may take `available` bytes, in pieces of `piece` bytes,
-    /// each held `times` times.
+    /// each held `times` times, a piece and a row within what a text array's offsets reach.
     pub(super) fn new(available: u64, piece: u64, times: u32) -> Self {
         let each = u64::from(times.max(1));
+        let bound = |bytes: u64| (bytes / each).min(MAX_PIECE_BYTES);
         Self {
-            row: available / each / UNIT * UNIT,
-            piece: (piece / each).max(UNIT) / UNIT * UNIT,
+            row: bound(available) / UNIT * UNIT,
+            piece: bound(piece).max(UNIT) / UNIT * UNIT,
             times: times.max(1),
         }
+    }
+
+    /// Bytes: the most a piece and a row may take.
+    #[cfg(test)]
+    pub(super) fn bounds(&self) -> (u64, u64) {
+        (self.piece, self.row)
     }
 
     /// A cutter of parts whose lowering may take `available` bytes of `context`'s budget.
