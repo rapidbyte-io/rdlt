@@ -32,6 +32,7 @@ fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
                     truncates_ignored: 0,
                     behind: None,
                     retention_resets: 0,
+                    forgotten: Vec::new(),
                 };
                 (StreamName::new(name).unwrap(), report)
             })

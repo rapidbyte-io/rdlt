@@ -73,6 +73,7 @@ proptest! {
                     stream: stream.clone(),
                     partition: partition.clone(),
                     state: state.clone(),
+                    load: LoadId::from_parts(UNIX_EPOCH, 1),
                 };
                 record_bytes(&entry.to_record())
             })

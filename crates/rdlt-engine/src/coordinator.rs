@@ -12,6 +12,7 @@ mod delta;
 mod due;
 mod held;
 mod phases;
+mod pressure;
 mod replan;
 mod signals;
 #[cfg(test)]
@@ -66,6 +67,9 @@ pub(crate) struct StreamRun {
     /// How the stream's table sequences and matches its rows, where state records otherwise; the
     /// next commit records it.
     pub(crate) sequences: Option<(TablePath, Keying)>,
+    /// Every partition the stream's latest plan names: the done ones it leaves unread among
+    /// them, whose markers stay under state pressure.
+    pub(crate) named: BTreeSet<PartitionId>,
     /// Whether the stream's source can read again what it acknowledged; one that cannot learns
     /// its position once the load's log holds it, before the destination commits.
     pub(crate) replayable: bool,
@@ -427,9 +431,9 @@ impl Coordinator {
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
         crash_point!("engine.commit.after");
         self.parts.stored.apply(&meta.state_delta);
+        self.parts.positions.apply(&meta.state_delta);
         if let Some(log) = &self.parts.wal {
             log.committed(&receipt).await?;
-            self.parts.positions.apply(&meta.state_delta);
         }
         Ok(receipt)
     }

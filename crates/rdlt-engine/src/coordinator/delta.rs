@@ -217,6 +217,7 @@ impl Coordinator {
             stream: self.parts.streams[partition.stream].name.clone(),
             partition: partition.id.clone(),
             state: state.clone(),
+            load: self.parts.load_id,
         };
         StateChange::Put(entry.to_record())
     }

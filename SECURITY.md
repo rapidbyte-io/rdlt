@@ -268,7 +268,8 @@ in forms its readers read back (ADR 0041):
   commit's request to a message carrying state: a commit beyond either is refused before it is
   logged or acknowledged (`state_bytes_exceeded`), unless state was past the limit already and
   the commit does not grow it. A plan never forgets a partition's
-  position; a reset of the stream does.
+  position; a commit that would pass the limit deletes the done markers of partitions no plan
+  names, oldest first, each reported, and a reset of the stream clears the rest.
 - State that records two tables under one identifier is refused (`state_invalid`); a reset never
   drops such a table.
 - A lane holds a bounded share of open destination writers and retires superseded ones; the log

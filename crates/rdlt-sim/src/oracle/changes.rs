@@ -99,6 +99,7 @@ fn stands(world: &World, stream: &str, partition: &str) -> Option<u64> {
             stream: named,
             partition: id,
             state: PartitionState::Cursor(cursor),
+            ..
         } if named.name() == stream && id.as_str() == partition => {
             cursor.decode::<Position>(1).ok()
         }
@@ -236,6 +237,7 @@ fn check_acknowledged(world: &World, round: usize, seed: Seed) {
                 stream: named,
                 partition: id,
                 state: PartitionState::Cursor(cursor),
+                ..
             } if named.name() == stream && id.as_str() == partition => cursor
                 .decode::<Position>(1)
                 .ok()

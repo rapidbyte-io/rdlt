@@ -31,6 +31,11 @@ impl Coordinator {
     /// the phase before.
     pub(super) async fn replan_stream(&mut self, stream: usize) -> Result<(), Error> {
         let planned = self.plan_stream(stream).await?;
+        self.parts.streams[stream].named = planned
+            .partitions
+            .iter()
+            .map(|partition| partition.id().clone())
+            .collect();
         let Some(phases) = self.parts.streams[stream].phases.as_mut() else {
             return Ok(());
         };

@@ -24,6 +24,9 @@ use crate::support::{commit_every, engine, logging_engine, memory, pipeline, str
 /// the cursor each checkpoints after its one row, whether it can read again what it
 /// acknowledged, and whether a partition resumed from its first cursor sends one row more and a
 /// cursor of half its size.
+///
+/// A partition whose id starts with `d` is read to its end: after its row and a cursor of a few
+/// bytes it pushes a row more, so its position records it done.
 #[derive(Clone, Debug)]
 struct Shape {
     partitions: Vec<String>,
@@ -33,6 +36,9 @@ struct Shape {
 }
 
 static SHAPES: LazyLock<Mutex<BTreeMap<String, Shape>>> = LazyLock::new(Mutex::default);
+
+/// The reads each test's source started, by its name.
+static READS: LazyLock<Mutex<BTreeMap<String, Arc<AtomicUsize>>>> = LazyLock::new(Mutex::default);
 
 /// Acknowledgements each test's source heard, by its name.
 static ACKS: LazyLock<Mutex<BTreeMap<String, Arc<AtomicUsize>>>> = LazyLock::new(Mutex::default);
@@ -93,14 +99,24 @@ impl ReadStream<Planned> for Events {
         out: &mut Emitter<String>,
     ) -> Result<()> {
         let shape = SHAPES.lock()[&source.name].clone();
+        let reads = READS.lock().entry(source.name.clone()).or_default().clone();
+        reads.fetch_add(1, Ordering::SeqCst);
+        let ids: ArrayRef = Arc::new(Int64Array::from(vec![1_i64]));
+        let row = RecordBatch::try_from_iter([("id", ids)]).expect("a batch");
+        if partition.id().as_str().starts_with('d') {
+            if cursor.is_empty() {
+                out.batch(row.clone()).await?;
+                out.checkpoint(&format!("{}:d", partition.id())).await?;
+                out.batch(row).await?;
+            }
+            return Ok(());
+        }
         let (mark, size) = match cursor.chars().last() {
             None => ('c', shape.cursor),
             Some('c') if shape.again => ('d', shape.cursor / 2),
             Some(_) => return Ok(()),
         };
-        let ids: ArrayRef = Arc::new(Int64Array::from(vec![1_i64]));
-        out.batch(RecordBatch::try_from_iter([("id", ids)]).expect("a batch"))
-            .await?;
+        out.batch(row).await?;
         let text = format!("{}:{}", partition.id(), mark.to_string().repeat(size));
         out.checkpoint(&text).await
     }
@@ -127,6 +143,14 @@ fn acks(name: &str) -> usize {
     ACKS.lock()
         .get(name)
         .map_or(0, |acks| acks.load(Ordering::SeqCst))
+}
+
+/// The reads `name`'s source started.
+fn reads(name: &str) -> usize {
+    READS
+        .lock()
+        .get(name)
+        .map_or(0, |reads| reads.load(Ordering::SeqCst))
 }
 
 /// `count` partition ids, `p0` onwards.
@@ -412,4 +436,154 @@ async fn state_past_a_lowered_limit_keeps_loading_while_it_shrinks() {
         crate::support::published_rows(name, "events"),
         2 * shape.partitions.len()
     );
+}
+
+/// Loads `name`'s stream of partitions `partitions` under `config`; the outcome.
+async fn run(
+    name: &str,
+    partitions: Vec<String>,
+    cursor: usize,
+    config: EngineConfigBuilder,
+) -> RunOutcome {
+    let shape = Shape {
+        partitions,
+        cursor,
+        replayable: true,
+        again: false,
+    };
+    engine(config)
+        .run(
+            pipeline(name, [stream("events").read(ReadMode::Incremental)]),
+            source(name, shape).await,
+            memory(name).await,
+        )
+        .await
+}
+
+/// The positions stored state records of `name`'s stream, by partition.
+async fn positions(name: &str) -> BTreeMap<String, rdlt_connector::PartitionState> {
+    let state = stored(memory(name).await.as_ref(), name).await;
+    state
+        .streams
+        .get(&StreamName::new("events").expect("a name"))
+        .map(|stream| {
+            let positions = stream.partitions.iter();
+            positions
+                .map(|(id, state)| (id.to_string(), state.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Checks that `outcome` succeeded, and returns the partitions its report says it forgot.
+fn succeeded(outcome: &RunOutcome) -> Vec<String> {
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    outcome
+        .report
+        .streams
+        .get("events")
+        .map(|stream| stream.forgotten.iter().map(ToString::to_string).collect())
+        .unwrap_or_default()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_done_partition_keeps_no_cursor_and_a_plan_naming_it_again_reads_nothing() {
+    let name = "stored-done";
+    let done = vec!["d0".to_owned(), "d1".to_owned()];
+    assert_eq!(
+        succeeded(&run(name, done.clone(), 8, commit_every(1)).await),
+        Vec::<String>::new()
+    );
+    let read = reads(name);
+    assert_eq!(read, 2);
+    assert_eq!(crate::support::published_rows(name, "events"), 4);
+    let recorded = positions(name).await;
+    assert!(
+        recorded
+            .values()
+            .all(|position| *position == rdlt_connector::PartitionState::Done)
+    );
+    // Named again, neither is read.
+    succeeded(&run(name, done, 8, commit_every(1)).await);
+    assert_eq!(reads(name), read);
+    assert_eq!(crate::support::published_rows(name, "events"), 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn done_markers_of_partitions_no_plan_names_stay_while_state_fits() {
+    let name = "stored-unplanned";
+    let first: Vec<String> = (0..3).map(|index| format!("d{index}")).collect();
+    succeeded(&run(name, first, 8, commit_every(1)).await);
+    let forgotten = succeeded(&run(name, vec!["d9".to_owned()], 8, commit_every(1)).await);
+    assert_eq!(forgotten, Vec::<String>::new());
+    assert_eq!(
+        positions(name).await.keys().collect::<Vec<_>>(),
+        ["d0", "d1", "d2", "d9"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn churning_done_partitions_keep_state_bounded_and_loading_at_the_least_memory() {
+    let name = "stored-churned";
+    let least = EngineConfig::least_memory(16);
+    let config = || commit_every(1).memory(least);
+    let limit = config().build().expect("valid").state_limit();
+    // The oldest done partitions, named to sort after the later ones, then a stream of cursors
+    // that fills state to its limit.
+    let oldest: Vec<String> = (0..10).map(|index| format!("dz{index}")).collect();
+    succeeded(&run(name, oldest.clone(), 4000, config()).await);
+    let filling = oldest
+        .iter()
+        .cloned()
+        .chain((0..500).map(|index| format!("c{index}")));
+    refused(&run(name, filling.collect(), 4000, config()).await);
+    let cursors: Vec<String> = positions(name)
+        .await
+        .into_keys()
+        .filter(|id| id.starts_with('c'))
+        .collect();
+    assert!(!cursors.is_empty());
+    // Each later run reads the cursors' partitions, which add nothing, eight new done ones, and
+    // the oldest done one, which it keeps.
+    let kept = oldest[0].clone();
+    let mut forgotten = Vec::new();
+    let mut earlier: Vec<String> = oldest[1..].to_vec();
+    for round in 0..6 {
+        let rows = crate::support::published_rows(name, "events");
+        let churned: Vec<String> = (0..8).map(|index| format!("dr{round}x{index}")).collect();
+        let planned = cursors
+            .iter()
+            .chain(&churned)
+            .chain([&kept])
+            .cloned()
+            .collect();
+        let forgot = succeeded(&run(name, planned, 4000, config()).await);
+        assert!(
+            forgot.iter().all(|id| earlier.contains(id)),
+            "round {round} forgot {forgot:?}"
+        );
+        assert_eq!(
+            crate::support::published_rows(name, "events"),
+            rows + 16,
+            "round {round}"
+        );
+        assert!(carried(name).await <= limit);
+        forgotten.extend(forgot);
+        earlier.extend(churned);
+    }
+    // The oldest unplanned go first, and a partition that is not done is never forgotten.
+    let unplanned = &oldest[1..];
+    assert!(forgotten.len() > unplanned.len(), "{forgotten:?}");
+    let mut first: Vec<String> = forgotten[..unplanned.len()].to_vec();
+    first.sort();
+    assert_eq!(first, unplanned);
+    let recorded = positions(name).await;
+    assert!(recorded.contains_key(&kept));
+    assert!(cursors.iter().all(|id| recorded.contains_key(id)));
+    assert!(forgotten.iter().all(|id| !recorded.contains_key(id)));
 }

@@ -72,7 +72,8 @@ partition inside a run; the second is an operator's command between runs. So the
   - a running partition the plan no longer names is stopped through a token of its own. What it
     sealed up to its last checkpoint commits; what it read after (for an on-demand stream,
     everything since its last barrier) is read again should a plan name it again. Its state entry
-    stays, as initial planning keeps the entries of partitions a plan drops;
+    stays, as initial planning keeps the entries of partitions a plan drops (amended 2026-10-03:
+    a done one's marker may go when state would pass its limit, reported, ADR 0041);
   - an ended partition whose end is not yet committed waits for a later plan. Read again from its
     committed position, it would read again what its end seals;
   - a partition read again takes the place its ended read had, so a run that reads for ever
