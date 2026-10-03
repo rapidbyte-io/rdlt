@@ -36,7 +36,11 @@ impl LoweringPlan {
         if let Some(index) = self.change_time().filter(|index| following(*index))
             && let Some(rows) = unbegun(batch.column(index))?
         {
-            unheld.push((index, rows));
+            // A value refused on both counts is one value its column cannot hold.
+            match unheld.iter_mut().find(|(refused, _)| *refused == index) {
+                Some((_, refused)) => *refused = either(refused, &rows),
+                None => unheld.push((index, rows)),
+            }
         }
         Ok(unheld)
     }
@@ -93,6 +97,14 @@ impl LoweringPlan {
         ));
         Ok((RecordBatch::try_new(schema, columns)?, nulled))
     }
+}
+
+/// The rows `one` or `other` names.
+fn either(one: &BooleanArray, other: &BooleanArray) -> BooleanArray {
+    one.iter()
+        .zip(other.iter())
+        .map(|(one, other)| Some(one == Some(true) || other == Some(true)))
+        .collect()
 }
 
 /// Which rows of `array`, of `from`, a column of `to` cannot hold: those whose conversion alone
