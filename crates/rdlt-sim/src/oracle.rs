@@ -31,7 +31,7 @@ use crate::swarm::Features;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
-use config::{config, endless, pressed};
+use config::{config, endless, growth, pressed};
 use expected::Discards;
 pub use pressure::Checked;
 use pressure::explained;
@@ -76,7 +76,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     env.perturb(world.workload.features.perturb);
     env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
     let streaming = world.workload.features.streaming;
-    let config = config(&mut rng, streaming, endless(&world.workload));
+    let config = config(&mut rng, streaming, endless(&world.workload), growth(seed));
     let (limits, budget) = (config.limits(), config.memory().get());
     world.press(pressed(seed, &config, &world.workload));
     let engine = Engine::new(config, env);

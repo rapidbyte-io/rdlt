@@ -163,6 +163,9 @@ Rejected:
 - A source whose partition ids keep changing grows its state with each new one until a commit is
   refused as `state_bytes_exceeded`; a reset of its stream clears the entries.
 - `LocalWal` makes a chunk's removal durable with a sync of the load's directory.
+- The simulation holds one to three writers open in a quarter of its worlds, drawn apart from
+  the rest of the seed, so lanes close writers, and its faulty disk fails a chunk's removal as it
+  fails appends and syncs.
 - The control plane (ADR 0042) bounds the messages carrying state on the wire and refuses, at
   commit, state its open could not decode; when both are on `main`, one commit-time refusal
   stays, and `state_bytes` is the protocol's limit of that name.

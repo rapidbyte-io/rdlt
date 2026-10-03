@@ -9,7 +9,7 @@ use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamNam
 use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WalStore, WriteMode};
 use rdlt_testkit::canon::Canon;
 
-use super::config::config;
+use super::config::{config, growth};
 use super::reports::Reported;
 use super::scenario::{Scenario, execute_all, pick};
 use super::{FAULTY_RUNS, settle};
@@ -52,7 +52,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let features = world.workload.features;
     env.perturb(features.perturb);
     env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
-    let engine = Engine::new(config(&mut rng, false, 0), env);
+    let engine = Engine::new(config(&mut rng, false, 0, growth(seed)), env);
     let plan = plan(&world.changes.streams).with_wal(features.wal);
     for round in 0..ROUNDS {
         world.set_phase(round);

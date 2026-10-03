@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use rdlt_engine::{CommitPolicy, EngineConfig, RetryPolicy};
+use rdlt_engine::{CommitPolicy, EngineConfig, GrowthLimits, RetryPolicy};
 
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -16,8 +16,13 @@ use crate::world::Pressure;
 /// that: small enough that a source pressing on it, as [`pressed`] draws, fills its shares.
 ///
 /// A run reads at least one partition more at once than the `endless` partitions it follows
-/// without end, which hold their places for as long as it runs.
-pub(super) fn config(rng: &mut SplitMix64, streaming: bool, endless: usize) -> EngineConfig {
+/// without end, which hold their places for as long as it runs, and holds to `growth`.
+pub(super) fn config(
+    rng: &mut SplitMix64,
+    streaming: bool,
+    endless: usize,
+    growth: GrowthLimits,
+) -> EngineConfig {
     let least = EngineConfig::least_memory(1);
     let every = rng
         .chance(700)
@@ -44,8 +49,27 @@ pub(super) fn config(rng: &mut SplitMix64, streaming: bool, endless: usize) -> E
         .barrier_wait(Duration::from_millis(10 + rng.below(2000)))
         .commit(commit)
         .retry(retry)
+        .growth(growth)
         .build()
         .expect("the drawn configuration is valid")
+}
+
+/// The growth limits of an engine of the world `seed`, drawn apart from the world, so every other
+/// draw of the seed is as it was: in a quarter of worlds one to three destination writers open at
+/// once, so lanes close the writers they wrote longest ago, and the defaults elsewhere.
+pub(super) fn growth(seed: Seed) -> GrowthLimits {
+    let mut rng = SplitMix64::new(seed.value().rotate_left(29));
+    let defaults = GrowthLimits::default();
+    if !rng.chance(250) {
+        return defaults;
+    }
+    let writers = to_usize(1 + rng.below(3));
+    GrowthLimits::new(
+        defaults.child_tables().get(),
+        writers,
+        defaults.state_bytes().get(),
+    )
+    .expect("the drawn limits are valid")
 }
 
 /// How many partitions of `workload`'s streams never end.
@@ -74,3 +98,6 @@ pub(super) fn pressed(seed: Seed, config: &EngineConfig, workload: &Workload) ->
 fn to_usize(value: u64) -> usize {
     usize::try_from(value).unwrap_or(1)
 }
+
+#[cfg(test)]
+mod tests;
