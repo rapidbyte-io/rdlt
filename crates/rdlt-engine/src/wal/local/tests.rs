@@ -470,3 +470,52 @@ async fn a_directory_inside_a_load_s_keeps_its_log_from_going() {
         std::io::ErrorKind::InvalidData
     );
 }
+
+#[tokio::test]
+async fn a_base_is_resolved_once_and_never_made_again_once_it_is_gone() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let path = base.path().join("wal");
+    let wal = LocalWal::new(&path);
+    let orders = pipeline("orders");
+    published(&wal, &orders, chunk(1, 0), b"frame").await;
+    std::fs::remove_dir_all(&path).expect("removes");
+    assert!(
+        wal.loads(&orders).await.is_err(),
+        "the base it opened is gone"
+    );
+    assert!(
+        wal.open_log(&orders, chunk(2, 0).load).await.is_err(),
+        "nothing is logged where no reader looks"
+    );
+    assert!(!path.exists(), "the base is not made again");
+}
+
+#[tokio::test]
+async fn a_base_under_a_directory_others_may_write_is_refused_unless_it_is_sticky() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let shared = base.path().join("shared");
+    std::fs::create_dir(&shared).expect("creates");
+    let orders = pipeline("orders");
+    for (mode, refused) in [
+        (0o777, true),
+        (0o775, true),
+        (0o1777, false),
+        (0o755, false),
+    ] {
+        set_mode(&shared, mode);
+        let wal = LocalWal::new(shared.join("wal"));
+        let listed = wal.loads(&orders).await;
+        assert_eq!(listed.is_err(), refused, "{mode:o}: {listed:?}");
+        if let Err(error) = listed {
+            assert!(not_private(&error), "{mode:o}: {error}");
+        }
+    }
+    // A link to the base that others could replace is refused as well.
+    let own = base.path().join("own");
+    std::fs::create_dir(&own).expect("creates");
+    set_mode(&shared, 0o777);
+    std::os::unix::fs::symlink(&own, shared.join("link")).expect("links");
+    let wal = LocalWal::new(shared.join("link").join("wal"));
+    assert!(not_private(&wal.loads(&orders).await.expect_err("refused")));
+    set_mode(&shared, 0o700);
+}
