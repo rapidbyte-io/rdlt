@@ -17,6 +17,7 @@ use rdlt_connector::{
     TypeKind,
 };
 
+mod decimals;
 mod keys;
 mod limits;
 mod unwidened;

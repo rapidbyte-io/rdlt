@@ -1,7 +1,8 @@
 //! Converting arrays between logical types and into the types a destination stores.
 //!
 //! Every conversion is exact: a column's type is the join of every type it received, so it holds
-//! each incoming value as it is, and text or JSON renderings keep every value.
+//! each incoming value as it is, and text or JSON renderings keep every value. A decimal beyond
+//! the precision its type declares is no value of that type, and is refused.
 
 mod decode;
 mod encoders;
@@ -33,6 +34,7 @@ pub(crate) fn convert(
     to: &LogicalType,
 ) -> Result<ArrayRef, ArrowError> {
     let array = &decoded(array)?;
+    precise(array)?;
     if from == to {
         return normalize(array, to);
     }
@@ -281,6 +283,8 @@ fn list<O: OffsetSizeTrait>(
 
 /// Each value of `array`, of `logical`, as JSON text; nulls stay null.
 pub(crate) fn json(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, ArrowError> {
+    let array = &decoded(array)?;
+    precise(array)?;
     if *logical == LogicalType::Json {
         return normalize(array, logical);
     }
@@ -315,6 +319,8 @@ pub(crate) fn json(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
 /// nested values and JSON as JSON text, anything else as Arrow renders it, or exactly where
 /// Arrow cannot.
 pub(crate) fn text(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, ArrowError> {
+    let array = &decoded(array)?;
+    precise(array)?;
     match logical {
         LogicalType::Struct(_) | LogicalType::List(_) | LogicalType::Json => json(array, logical),
         LogicalType::Uuid | LogicalType::Binary => {
@@ -335,6 +341,33 @@ pub(crate) fn text(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
             Ok(Arc::new(builder.finish()))
         }
         _ => temporal::text(array),
+    }
+}
+
+/// Refuses `array`, holding only what its rows name, where a decimal in it, at any depth, is
+/// beyond the precision its type declares: Arrow builds and widens such a decimal unchecked, and
+/// renders it cut to the precision.
+fn precise(array: &ArrayRef) -> Result<(), ArrowError> {
+    use arrow_array::types::{Decimal32Type, Decimal64Type, Decimal128Type, Decimal256Type};
+    match array.data_type() {
+        DataType::Decimal32(precision, _) => array
+            .as_primitive::<Decimal32Type>()
+            .validate_decimal_precision(*precision),
+        DataType::Decimal64(precision, _) => array
+            .as_primitive::<Decimal64Type>()
+            .validate_decimal_precision(*precision),
+        DataType::Decimal128(precision, _) => array
+            .as_primitive::<Decimal128Type>()
+            .validate_decimal_precision(*precision),
+        DataType::Decimal256(precision, _) => array
+            .as_primitive::<Decimal256Type>()
+            .validate_decimal_precision(*precision),
+        DataType::Struct(_) => array.as_struct().columns().iter().try_for_each(precise),
+        DataType::List(_) => precise(array.as_list::<i32>().values()),
+        DataType::LargeList(_) => precise(array.as_list::<i64>().values()),
+        DataType::FixedSizeList(..) => precise(array.as_fixed_size_list().values()),
+        DataType::Map(..) => precise(&(Arc::new(array.as_map().entries().clone()) as ArrayRef)),
+        _ => Ok(()),
     }
 }
 
