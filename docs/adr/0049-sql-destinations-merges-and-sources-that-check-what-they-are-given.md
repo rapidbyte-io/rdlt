@@ -335,8 +335,9 @@ given:
 - A SQLite database with a second hard link is refused.
 - A merge gives its rows back by the columns they hold, not in the order they were published.
 - The engine answers `schema_conflict` by resolving names again, which helps a clashing new
-  column and not a widen of a column that exists: a refused widen fails its load until the
-  engine can route such a column elsewhere.
+  column and not a widen of a column that exists. Amended 2026-10-03 (ADR 0041): a refused widen
+  now routes the column's values to a variant column, or is refused typed where none may take
+  them.
 - A connector that flags its key column is refused at every destination, since the engine
   carries the flag through.
 - Cost tests of a SQL plan count the steps SQLite's virtual machine takes, many operations

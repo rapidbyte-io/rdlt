@@ -102,7 +102,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     share at each schema change, the latest change of a table in place of the one before, and
     held until a commit records it: the commit's frame reserves the rest from the log's share.
     A table's first frame in the log, its schema, is reserved from the log's share until the
-    log appends it. A table wider than a schema may be is refused where the source pushes it.
+    log appends it. A table wider than a schema may be is refused where the source pushes it,
+    and, across pushes, at the schema change that would make it so (ADR 0041, amended
+    2026-10-03).
   - **Dictionaries.** The sender and the decoder hold dictionaries to the limit by one
     function of the wire crate, `held_bytes`, what the decoder lays out rounded up to 64
     bytes; the sender counts what its receiver holds from every batch since the last schema,

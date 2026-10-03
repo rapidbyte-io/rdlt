@@ -251,6 +251,29 @@ How much one push may expand to in total is not bounded: it costs time and desti
 proportion, within the budget's memory. What a JSON push of sparse records becomes beyond three
 times its text is not reserved either: the shredder's limit on cells bounds it, not the budget.
 
+## What a pipeline keeps
+
+What a pipeline keeps from one push and one run to the next is bounded as a whole, and stored
+in forms its readers read back (ADR 0041):
+
+- A stored type nests no deeper however deep the type, and a schema nested beyond the nesting
+  limit cannot be built: state, the write-ahead log and the files destination's catalog read
+  back every schema written. Stored records name their format and refuse fields their reader
+  does not know.
+- A table's columns, nested fields counted, are held to the schema columns the budget admits
+  (`table_columns_exceeded`), a stream's child tables to `GrowthLimits` and the stored state
+  limit (`child_tables_exceeded`), and a schema version to what it counts
+  (`schema_version_exhausted`).
+- Stored state is held to what an open's answer can carry and a 16th of the budget, and a
+  commit's request to a message carrying state: a commit beyond either is refused before it is
+  logged or acknowledged (`state_bytes_exceeded`). A plan never forgets a partition's
+  position; a reset of the stream does.
+- State that records two tables under one identifier is refused (`state_invalid`); a reset never
+  drops such a table.
+- A lane holds a bounded share of open destination writers and retires superseded ones; the log
+  forgets superseded schema frames, and an open segment keeps at most as much of the log as it
+  holds itself.
+
 ## Building rdlt
 
 rdlt turns a panic, of the Arrow library on a corrupt frame or of a connector's task, into a
