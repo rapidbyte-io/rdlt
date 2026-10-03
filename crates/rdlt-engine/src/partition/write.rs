@@ -28,7 +28,7 @@ use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
-use crate::limits::ROW_EXCEEDS_BUDGET;
+use crate::limits::{MAX_PIECE_BYTES, ROW_EXCEEDS_BUDGET};
 use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
@@ -168,9 +168,11 @@ async fn write(
 }
 
 /// Bytes: the most a piece's rows take to lower, and a row's alone, where what lowering takes is
-/// reserved `times` over: a piece's and a request's share of `shares`.
+/// reserved `times` over: a piece's and a request's share of `shares`, within what a text array's
+/// offsets reach.
 fn piece_bounds(shares: Shares, times: u64) -> (u64, u64) {
-    (shares.piece / times, shares.request / times)
+    let bound = |bytes: u64| (bytes / times).min(MAX_PIECE_BYTES);
+    (bound(shares.piece), bound(shares.request))
 }
 
 /// The next piece of `pieces`, cut on the compute pool.
