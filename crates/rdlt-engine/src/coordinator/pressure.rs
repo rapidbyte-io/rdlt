@@ -72,7 +72,7 @@ impl Coordinator {
     pub(super) fn forgot(&self, forgotten: BTreeMap<StreamName, Vec<PartitionId>>) {
         let mut log = self.parts.log.lock();
         for (stream, ids) in forgotten {
-            log.forgotten.entry(stream).or_default().extend(ids);
+            log.forgotten.entry(stream).or_default().note(ids);
         }
     }
 }

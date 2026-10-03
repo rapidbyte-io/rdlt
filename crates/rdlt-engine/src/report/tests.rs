@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, UNIX_EPOCH};
 
-use rdlt_connector::{CommitSeq, LoadId, PipelineId, Receipt, StreamName};
+use rdlt_connector::{CommitSeq, LoadId, PartitionId, PipelineId, Receipt, StreamName};
 
 use super::{
-    AttemptLog, AttemptRecord, CommitRecord, Committed, REPORTED_ATTEMPTS, Report, RunStatus,
-    StreamReport,
+    AttemptLog, AttemptRecord, CommitRecord, Committed, Forgotten, REPORTED_ATTEMPTS,
+    REPORTED_FORGOTTEN, Report, RunStatus, StreamReport,
 };
 use crate::error::{Error, ErrorKind};
 
@@ -32,7 +32,7 @@ fn commit(load: LoadId, rows: u64, streams: &[(&str, u64, u64)]) -> CommitRecord
                     truncates_ignored: 0,
                     behind: None,
                     retention_resets: 0,
-                    forgotten: Vec::new(),
+                    forgotten: Forgotten::default(),
                 };
                 (StreamName::new(name).unwrap(), report)
             })
@@ -174,6 +174,65 @@ fn a_report_totals_each_stream_s_resets_and_keeps_its_latest_known_lag() {
     report.absorb(signalled(3, Some(7), 0)).unwrap();
     assert_eq!(report.streams["orders"].behind, Some(7));
     assert_eq!(report.streams["orders"].retention_resets, 3);
+}
+
+/// Partitions `p{from}` up to `p{to}`, `to` left out.
+fn partitions(from: usize, to: usize) -> Vec<PartitionId> {
+    (from..to)
+        .map(|index| PartitionId::parse(format!("p{index}")).unwrap())
+        .collect()
+}
+
+#[test]
+fn an_attempt_names_the_latest_partitions_it_forgot_and_counts_the_rest() {
+    let mut forgotten = Forgotten::default();
+    forgotten.note(partitions(0, REPORTED_FORGOTTEN));
+    assert_eq!(forgotten.partitions, partitions(0, REPORTED_FORGOTTEN));
+    assert_eq!(forgotten.unlisted, 0);
+    forgotten.note(partitions(REPORTED_FORGOTTEN, REPORTED_FORGOTTEN + 3));
+    assert_eq!(forgotten.partitions, partitions(3, REPORTED_FORGOTTEN + 3));
+    assert_eq!(forgotten.unlisted, 3);
+}
+
+#[test]
+fn a_report_names_the_latest_partitions_its_attempts_forgot_and_counts_the_rest() {
+    let mut report = Report::new(PipelineId::parse("orders").unwrap());
+    let forgot = |load, partitions: Vec<PartitionId>| {
+        let mut forgot = attempt(LoadId::from_parts(UNIX_EPOCH, load), vec![], None);
+        let orders = StreamName::new("orders").unwrap();
+        forgot
+            .log
+            .forgotten
+            .entry(orders)
+            .or_default()
+            .note(partitions);
+        forgot
+    };
+    let most = REPORTED_FORGOTTEN;
+    report.absorb(forgot(1, partitions(0, most - 1))).unwrap();
+    report
+        .absorb(forgot(2, partitions(most - 1, most)))
+        .unwrap();
+    let listed = |report: &Report| report.streams["orders"].forgotten.clone();
+    assert_eq!(listed(&report).partitions, partitions(0, most));
+    assert_eq!(listed(&report).unlisted, 0);
+    // A later attempt forgot more than the report names: it counts what it left out.
+    report
+        .absorb(forgot(3, partitions(most, 3 * most)))
+        .unwrap();
+    assert_eq!(listed(&report).partitions, partitions(2 * most, 3 * most));
+    assert_eq!(listed(&report).unlisted, u64::try_from(2 * most).unwrap());
+    report
+        .absorb(forgot(4, partitions(3 * most, 3 * most + 1)))
+        .unwrap();
+    assert_eq!(
+        listed(&report).partitions,
+        partitions(2 * most + 1, 3 * most + 1)
+    );
+    assert_eq!(
+        listed(&report).unlisted,
+        u64::try_from(2 * most + 1).unwrap()
+    );
 }
 
 /// A commit of `load` whose receipt counts `rows` and `bytes`.

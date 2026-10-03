@@ -492,7 +492,11 @@ fn succeeded(outcome: &RunOutcome) -> Vec<String> {
         .report
         .streams
         .get("events")
-        .map(|stream| stream.forgotten.iter().map(ToString::to_string).collect())
+        .map(|stream| {
+            assert_eq!(stream.forgotten.unlisted, 0);
+            let partitions = stream.forgotten.partitions.iter();
+            partitions.map(ToString::to_string).collect()
+        })
         .unwrap_or_default()
 }
 

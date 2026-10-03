@@ -106,9 +106,40 @@ pub struct StreamReport {
     /// source's retention had dropped where they would resume.
     pub retention_resets: u64,
     /// Partitions read to their end whose done markers commits deleted to keep stored state
-    /// within its limit, the earliest recorded first: a plan that names one again reads it
-    /// again from its beginning.
-    pub forgotten: Vec<PartitionId>,
+    /// within its limit: a plan that names one again reads it again from its beginning.
+    pub forgotten: Forgotten,
+}
+
+/// How many of the partitions a stream's commits forgot during a run its report names.
+pub const REPORTED_FORGOTTEN: usize = 128;
+
+/// The partitions a stream's commits forgot, as a run reports them: the latest named, the rest
+/// counted, so a run that forgets for ever keeps a bounded report.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Forgotten {
+    /// The latest forgotten, at most [`REPORTED_FORGOTTEN`], in the order commits forgot them
+    /// and, within a commit, the earliest recorded first.
+    pub partitions: Vec<PartitionId>,
+    /// How many partitions forgotten before them the report no longer names.
+    pub unlisted: u64,
+}
+
+impl Forgotten {
+    /// Notes that a commit forgot `partitions`, after every partition noted before; the
+    /// earliest beyond the latest [`REPORTED_FORGOTTEN`] are counted, no longer named.
+    pub(crate) fn note(&mut self, partitions: impl IntoIterator<Item = PartitionId>) {
+        self.partitions.extend(partitions);
+        let over = self.partitions.len().saturating_sub(REPORTED_FORGOTTEN);
+        self.partitions.drain(..over);
+        let over = u64::try_from(over).unwrap_or(u64::MAX);
+        self.unlisted = self.unlisted.saturating_add(over);
+    }
+
+    /// Notes what `later` holds, forgotten after every partition noted before.
+    fn absorb(&mut self, later: &Self) {
+        self.unlisted = self.unlisted.saturating_add(later.unlisted);
+        self.note(later.partitions.iter().cloned());
+    }
 }
 
 /// How an attempt that did not fail ended.
@@ -202,7 +233,7 @@ pub(crate) struct AttemptLog {
     /// Each stream's reads that started again from their earliest after a retention loss.
     pub(crate) retention_resets: BTreeMap<StreamName, u64>,
     /// The partitions whose done markers each stream's commits forgot to make room in state.
-    pub(crate) forgotten: BTreeMap<StreamName, Vec<PartitionId>>,
+    pub(crate) forgotten: BTreeMap<StreamName, Forgotten>,
 }
 
 /// A finished attempt.
@@ -252,7 +283,7 @@ impl Report {
                 .entry(stream.to_string())
                 .or_default()
                 .forgotten
-                .extend(forgotten.iter().cloned());
+                .absorb(forgotten);
         }
         for (stream, resets) in &attempt.log.retention_resets {
             self.streams
