@@ -238,3 +238,17 @@ async fn wide_records_in_full_chunks_are_charged_what_they_hold() {
         );
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn observing_a_push_reserves_what_its_columns_may_hold_beyond_its_text() {
+    // However small, a push's chunks may hold a shape of every column the records may hold
+    // beyond what the push was admitted for: 576 bytes a column, of the 7,489 a schema may hold
+    // under the default budget, reserved while the push is observed.
+    let (_, outcome) = run("observing_reserved", 256 << 20, "{\"a\":1}".to_owned()).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert!(
+        outcome.report.peak_memory >= 7_489 * 576,
+        "the budget held at most {} bytes",
+        outcome.report.peak_memory
+    );
+}
