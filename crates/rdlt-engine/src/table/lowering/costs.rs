@@ -6,9 +6,9 @@ use rdlt_connector::cost::Stored;
 
 use super::{LoweringPlan, Source};
 
-/// Bytes: what a row takes in a metadata column of text or bytes, as an id's sixteen bytes, its
-/// offset and its validity.
-const META_BYTES: u64 = 40;
+/// Bytes: what a row takes in a metadata column of text or bytes, at most an id's 32 bytes as
+/// hex, its offset and its validity.
+const META_BYTES: u64 = 72;
 
 impl LoweringPlan {
     /// The bytes the columns a batch of `rows` rows holds nothing in take once lowered: each a

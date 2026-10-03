@@ -33,11 +33,11 @@ pub(crate) const JSON_CHARGE: u64 = 3;
 
 /// Bytes: what normalizing makes of each of a batch's rows beside its values: its id and its
 /// place.
-pub(crate) const LINEAGE_ROW: u64 = 32;
+pub(crate) const LINEAGE_ROW: u64 = 48;
 
 /// Bytes: what normalizing makes of each item an array holds beside the item, which it copies:
 /// the item's id, its parent's and its root's, and its places among them.
-pub(crate) const LINEAGE_ITEM: u64 = 96;
+pub(crate) const LINEAGE_ITEM: u64 = 144;
 
 /// Times what a batch's rows expand to that normalizing them may hold: the items it copies out of
 /// their arrays, and an array of another layout cast to a list first.

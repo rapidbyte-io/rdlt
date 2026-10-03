@@ -39,10 +39,16 @@ fn keyed_ids(values: ArrayRef) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// The ids of roots whose encodings are `encodings`: their BLAKE3 hashes after a root's tag.
 fn hashed(encodings: &[Vec<u8>]) -> Vec<Vec<u8>> {
     encodings
         .iter()
-        .map(|encoding| xxhash_rust::xxh3::xxh3_128(encoding).to_be_bytes().to_vec())
+        .map(|encoding| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(&[0x01]);
+            hasher.update(encoding);
+            hasher.finalize().as_bytes().to_vec()
+        })
         .collect()
 }
 
@@ -71,24 +77,28 @@ fn numbers_have_one_rendering_whatever_their_type() {
     check(vec![
         (
             Arc::new(Int8Array::from(vec![Some(-5), Some(120), None])),
-            vec![b"d-5;".to_vec(), b"d120;".to_vec(), b"n".to_vec()],
+            vec![tagged(b'd', b"-5"), tagged(b'd', b"120"), b"n".to_vec()],
         ),
         (
             Arc::new(UInt64Array::from(vec![u64::MAX])),
-            vec![b"d18446744073709551615;".to_vec()],
+            vec![tagged(b'd', b"18446744073709551615")],
         ),
         (
             Arc::new(Float32Array::from(vec![1.5, -0.0])),
-            vec![b"d1.5;".to_vec(), b"d0;".to_vec()],
+            vec![tagged(b'd', b"1.5"), tagged(b'd', b"0")],
         ),
-        (half, vec![b"d0.5;".to_vec()]),
+        (half, vec![tagged(b'd', b"0.5")]),
         (
             Arc::new(Float64Array::from(vec![2.25, -0.0, 3.0])),
-            vec![b"d2.25;".to_vec(), b"d0;".to_vec(), b"d3;".to_vec()],
+            vec![
+                tagged(b'd', b"2.25"),
+                tagged(b'd', b"0"),
+                tagged(b'd', b"3"),
+            ],
         ),
         (
             Arc::new(decimals),
-            vec![b"d12.3;".to_vec(), b"d2;".to_vec()],
+            vec![tagged(b'd', b"12.3"), tagged(b'd', b"2")],
         ),
         (
             Arc::new(BooleanArray::from(vec![true, false])),
@@ -149,7 +159,8 @@ fn arrays_maps_and_other_types_encode_by_their_values() {
         tagged(b's', b"k"),
         b"k".to_vec(),
         prefixed(b"values"),
-        b"d1;}]".to_vec(),
+        tagged(b'd', b"1"),
+        b"}]".to_vec(),
     ]
     .concat();
     let list =
@@ -159,7 +170,18 @@ fn arrays_maps_and_other_types_encode_by_their_values() {
             Arc::clone(&timestamps),
             vec![[vec![b'i'], prefixed(b"-2000000000")].concat()],
         ),
-        (Arc::new(list), vec![b"[d1;d2;]".to_vec()]),
+        (
+            Arc::new(list),
+            vec![
+                [
+                    b"[".to_vec(),
+                    tagged(b'd', b"1"),
+                    tagged(b'd', b"2"),
+                    b"]".to_vec(),
+                ]
+                .concat(),
+            ],
+        ),
         (Arc::new(map.finish()), vec![entry]),
     ]);
 }
@@ -198,10 +220,16 @@ fn narrow(data_type: &DataType) -> ArrayRef {
             through(&DataType::Decimal128(9, 0))
         }
         DataType::Date32 | DataType::Time32(_) => through(&DataType::Int32),
-        DataType::Date64
-        | DataType::Time64(_)
-        | DataType::Timestamp(..)
-        | DataType::Duration(_) => through(&DataType::Int64),
+        // A `Date64` names the day it is within, so its values are whole days apart.
+        DataType::Date64 => Arc::new(arrow_array::Date64Array::from(vec![
+            Some(86_400_000),
+            None,
+            Some(3 * 86_400_000),
+            Some(4 * 86_400_000),
+        ])),
+        DataType::Time64(_) | DataType::Timestamp(..) | DataType::Duration(_) => {
+            through(&DataType::Int64)
+        }
         other => arrow_cast::cast(&ints, other).unwrap(),
     }
 }
@@ -403,4 +431,105 @@ fn json_identity_cannot_read_is_refused_typed_for_the_stream() {
             (crate::ErrorKind::Source, Some(code))
         );
     }
+}
+
+/// 400 bytes of `A` holding `window` at `at`: two windows of one XXH3 collision.
+fn blob(window: [u8; 16], at: usize) -> Vec<u8> {
+    let mut bytes = vec![0x41_u8; 400];
+    bytes[at..at + 16].copy_from_slice(&window);
+    bytes
+}
+
+const COLLIDING: [[u8; 16]; 2] = [
+    [
+        0x01, 0, 0, 0, 0xf6, 0x21, 0xad, 0x1c, 0, 0, 0, 0, 0x82, 0x90, 0x97, 0xdb,
+    ],
+    [
+        0, 0, 0, 0, 0xf6, 0x21, 0xad, 0x1c, 0x01, 0, 0, 0, 0x82, 0x90, 0x97, 0xdb,
+    ],
+];
+
+#[test]
+fn values_crafted_to_collide_under_an_unkeyed_fast_hash_have_distinct_ids() {
+    let whole = |at: usize| {
+        let blobs: Vec<Vec<u8>> = COLLIDING.iter().map(|window| blob(*window, at)).collect();
+        let column: ArrayRef = Arc::new(BinaryArray::from_iter_values(&blobs));
+        let batch = RecordBatch::try_from_iter([("blob", column)]).unwrap();
+        root_ids(&batch, &[]).unwrap()
+    };
+    let ids = whole(54);
+    assert_ne!(ids.value(0), ids.value(1));
+    assert_eq!(ids.value(0).len(), 32);
+    let keyed = keyed_ids(Arc::new(BinaryArray::from_iter_values(
+        COLLIDING.iter().map(|window| blob(*window, 61)),
+    )));
+    assert_ne!(keyed[0], keyed[1]);
+    let parents = BinaryArray::from_iter_values(&keyed);
+    let children = super::child_ids(&parents, &Int64Array::from(vec![0, 0]));
+    assert_ne!(children.value(0), children.value(1));
+    assert_ne!(children.value(0), keyed[0].as_slice());
+}
+
+#[test]
+fn a_float32_hashes_as_the_float64_it_widens_to() {
+    let singles = vec![
+        0.1_f32,
+        -0.1,
+        1.0e-45,
+        f32::MIN_POSITIVE,
+        f32::MAX,
+        f32::MIN,
+        16_777_217.0,
+        -0.0,
+        0.0,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        1.5,
+    ];
+    let narrow: ArrayRef = Arc::new(Float32Array::from(singles.clone()));
+    let widened = arrow_cast::cast(&narrow, &DataType::Float64).unwrap();
+    assert_eq!(keyed_ids(narrow), keyed_ids(widened));
+    let half = arrow_cast::cast(
+        &(Arc::new(Float32Array::from(vec![0.1_f32, 65_504.0])) as ArrayRef),
+        &DataType::Float16,
+    )
+    .unwrap();
+    let widened = arrow_cast::cast(&half, &DataType::Float64).unwrap();
+    assert_eq!(keyed_ids(half), keyed_ids(widened));
+}
+
+#[test]
+fn a_float32_and_a_float64_that_print_alike_differ() {
+    for (single, double) in [(0.1_f32, 0.1_f64), (0.2, 0.2), (3.3, 3.3), (1e-8, 1e-8)] {
+        let singles = keyed_ids(Arc::new(Float32Array::from(vec![single])));
+        let doubles = keyed_ids(Arc::new(Float64Array::from(vec![double])));
+        assert_eq!(single.to_string(), double.to_string());
+        assert_ne!(singles, doubles, "{single}");
+    }
+}
+
+#[test]
+fn a_date64_identifies_as_the_day_it_is_within() {
+    let day = 86_400_000_i64;
+    let millis = vec![-1, -day, -day - 1, 0, day - 1, day, i64::MIN, i64::MAX];
+    let days: Vec<i64> = millis.iter().map(|ms| ms.div_euclid(day)).collect();
+    let date64 = keyed_ids(Arc::new(arrow_array::Date64Array::from(millis)));
+    // The days the ends of a `Date64` are within begin before or after what it holds.
+    let whole = keyed_ids(Arc::new(arrow_array::Date64Array::from(
+        days[..6].iter().map(|days| days * day).collect::<Vec<_>>(),
+    )));
+    assert_eq!(date64[..6], whole[..]);
+    let near = keyed_ids(Arc::new(arrow_array::Date32Array::from(
+        days[..6]
+            .iter()
+            .map(|days| i32::try_from(*days).unwrap())
+            .collect::<Vec<_>>(),
+    )));
+    assert_eq!(date64[..6], near[..]);
+    assert_eq!(
+        (date64[0] == date64[1], date64[1] == date64[2]),
+        (true, false)
+    );
+    assert_ne!(date64[6], date64[7]);
 }

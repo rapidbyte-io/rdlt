@@ -31,7 +31,7 @@ pub(super) fn normalize(records: &[Json], max_depth: u8, key: &[&str], whole: &[
                 encode(object.get(*column).unwrap_or(&Json::Null), &mut encoding);
             }
         }
-        let id = hash(&encoding);
+        let id = hash(ROOT, &encoding);
         let mut row = Pending::default();
         for (name, value) in object {
             if whole.contains(&name.as_str()) {
@@ -96,9 +96,10 @@ impl Pending {
             child_table.extend(path);
             for (position, item) in items.iter().enumerate() {
                 let idx = i64::try_from(position).expect("arrays are short");
-                let mut bytes = id.to_vec();
+                let mut bytes = Vec::new();
+                length(&mut bytes, id);
                 bytes.extend_from_slice(&u64::try_from(idx).expect("positive").to_be_bytes());
-                let child_id = hash(&bytes);
+                let child_id = hash(CHILD, &bytes);
                 let mut row = Pending::default();
                 let item_depth = depth + 1;
                 match item {
@@ -120,8 +121,16 @@ impl Pending {
     }
 }
 
-fn hash(bytes: &[u8]) -> Vec<u8> {
-    xxhash_rust::xxh3::xxh3_128(bytes).to_be_bytes().to_vec()
+/// The tags of a root's and a child's ids.
+const ROOT: u8 = 0x01;
+const CHILD: u8 = 0x02;
+
+/// The BLAKE3 hash of `bytes` after the tag of their `domain`.
+fn hash(domain: u8, bytes: &[u8]) -> Vec<u8> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&[domain]);
+    hasher.update(bytes);
+    hasher.finalize().as_bytes().to_vec()
 }
 
 /// `bytes` after their length in LEB128.
@@ -149,8 +158,7 @@ fn encode(value: &Json, out: &mut Vec<u8>) {
                 _ => unreachable_number(),
             };
             out.push(b'd');
-            out.extend_from_slice(text.as_bytes());
-            out.push(b';');
+            length(out, text.as_bytes());
         }
         Json::String(text) => {
             out.push(b's');

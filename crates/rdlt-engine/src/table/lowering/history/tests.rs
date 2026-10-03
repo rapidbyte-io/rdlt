@@ -43,7 +43,7 @@ fn equal_data_hashes_alike_and_other_data_differently() {
     assert!(
         hashes
             .iter()
-            .all(|hash| hash.as_ref().is_some_and(|hash| hash.len() == 16))
+            .all(|hash| hash.as_ref().is_some_and(|hash| hash.len() == 32))
     );
     assert_eq!(hashes[0], hashes[1]);
     assert_ne!(hashes[0], hashes[2]);
