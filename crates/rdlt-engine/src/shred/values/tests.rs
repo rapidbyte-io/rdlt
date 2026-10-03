@@ -36,38 +36,38 @@ fn a_value_fits_a_column_whose_type_holds_its_own_as_it_is() {
         (
             LogicalType::Int64,
             [
-                true, false, false, false, false, true, false, false, false, false, false,
+                true, false, false, false, false, true, false, true, false, false, false,
             ],
         ),
         (
             LogicalType::Utf8,
             [
-                false, true, false, false, false, false, false, false, false, false, false,
+                false, true, false, false, false, false, false, true, false, false, false,
             ],
         ),
         (
             decimal(20),
             [
-                true, false, true, false, false, true, false, false, false, false, false,
+                true, false, true, false, false, true, false, true, false, false, false,
             ],
         ),
         (
             decimal(38),
             [
-                true, false, true, true, false, true, false, false, false, false, false,
+                true, false, true, true, false, true, false, true, false, false, false,
             ],
         ),
-        // Floats hold an integer only where it is exact as one.
+        // Floats hold an integer only where it is exact as one; every column holds a null.
         (
             LogicalType::Float64,
             [
-                true, false, false, false, true, false, false, false, false, false, false,
+                true, false, false, false, true, false, false, true, false, false, false,
             ],
         ),
         (
             LogicalType::Bool,
             [
-                false, false, false, false, false, false, true, false, false, false, false,
+                false, false, false, false, false, false, true, true, false, false, false,
             ],
         ),
     ];
@@ -97,6 +97,30 @@ fn an_object_or_array_fits_a_column_whose_type_holds_each_of_its_values() {
         fit(&[Some("[1,2]"), Some("[1,\"x\"]"), Some("[]")], &list),
         [true, false, true]
     );
+    // Fields in any order, those lacking null; a field that may not be null must be there.
+    let ordered = LogicalType::Struct(
+        Fields::new(vec![
+            Field::new("b", LogicalType::Float64, true),
+            Field::new("a", LogicalType::Int64, false),
+        ])
+        .unwrap(),
+    );
+    assert_eq!(
+        fit(
+            &[
+                Some("{\"a\":1,\"b\":2}"),
+                Some("{\"a\":1}"),
+                Some("{\"b\":2.5}"),
+                Some("{\"a\":null,\"b\":2}"),
+                Some("{\"a\":1,\"b\":9007199254740993}"),
+            ],
+            &ordered
+        ),
+        [true, true, false, false, false]
+    );
+    // Items that may not be null hold no array but an empty one, whose items are not known.
+    let strict = LogicalType::List(Box::new(Field::new("item", LogicalType::Int64, false)));
+    assert_eq!(fit(&[Some("[1]"), Some("[]")], &strict), [false, true]);
 }
 
 #[test]

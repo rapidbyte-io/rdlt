@@ -128,12 +128,38 @@ fn scalar(value: &Value, kind: &Kind) -> Scalar {
     }
 }
 
-/// `value` as a value of its own kind and that kind's type, where a column of `to` holds it: its
-/// type joins into the column's, or it is an integer a 64-bit float holds exactly.
+/// Whether a column of `to`, nullable where `nullable` says, holds `value`, as the shredder
+/// fits one value: a null where it is nullable, an object whose fields its struct holds by name,
+/// those it lacks nullable, an array whose items its list holds, an integer of at most 2⁵³ in
+/// magnitude in a column of 64-bit floats, and else a value whose type joins into the column's.
+fn fits(to: &LogicalType, value: &Value, nullable: bool) -> bool {
+    match (to, value) {
+        (_, Value::Null) => nullable,
+        (LogicalType::Struct(fields), Value::Object(members)) => {
+            members.iter().all(|(name, member)| {
+                fields
+                    .get(name)
+                    .is_some_and(|field| fits(field.logical_type(), member, field.is_nullable()))
+            }) && fields
+                .iter()
+                .all(|field| field.is_nullable() || members.contains_key(field.name()))
+        }
+        (LogicalType::List(item), Value::Array(items)) => {
+            items.is_empty()
+                || (item.is_nullable()
+                    && items
+                        .iter()
+                        .all(|value| fits(item.logical_type(), value, true)))
+        }
+        (LogicalType::Struct(_) | LogicalType::List(_), _) => false,
+        (LogicalType::Float64, _) if kind(value) == (Kind::Int { exact: true }) => true,
+        (to, value) => to.join(&logical(&kind(value))) == *to,
+    }
+}
+
+/// `value` as a value of its own kind and that kind's type, where a column of `to`, which holds
+/// nulls, holds it.
 pub fn held(value: &Value, to: &LogicalType) -> Option<(Scalar, LogicalType)> {
     let kind = kind(value);
-    let from = logical(&kind);
-    let exact = kind == Kind::Int { exact: true } && *to == LogicalType::Float64;
-    let holds = kind != Kind::Null && (to.join(&from) == *to || exact);
-    holds.then(|| (scalar(value, &kind), from))
+    fits(to, value, true).then(|| (scalar(value, &kind), logical(&kind)))
 }
