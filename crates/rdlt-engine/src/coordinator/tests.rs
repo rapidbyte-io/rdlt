@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
 use crate::compute::RayonPool;
-use crate::config::{CommitPolicy, EngineConfig};
+use crate::config::CommitPolicy;
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Lanes;
@@ -288,8 +288,7 @@ impl Setup {
             launcher: Box::new(|_| Err(Error::internal("the tests start no phases"))),
             wal,
             positions: crate::wal::Positions::default(),
-            state: crate::coordinator::HeldState::default(),
-            stored: stored(),
+            stored: stored(harness.budget.limits().state_bytes),
             follow: false,
             replan: Duration::from_secs(60),
         });
@@ -401,12 +400,13 @@ fn schema() -> TableSchema {
     .unwrap()
 }
 
-/// Nothing stored, held to the default limits.
-fn stored() -> crate::stored::Stored {
-    crate::stored::Stored::of(
-        &[],
-        crate::stored::StateLimits::of(&EngineConfig::default()),
-    )
+/// No state stored yet, held to `limit` bytes as an open's answer holds it.
+fn stored(limit: u64) -> crate::stored::Stored {
+    let limits = crate::stored::StateLimits {
+        stored: limit,
+        request: limit,
+    };
+    crate::stored::Stored::of(&[], limits)
 }
 
 fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRun {

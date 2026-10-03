@@ -8,7 +8,6 @@ use rdlt_connector::{CommitMeta, StateChange, StateEntry, StreamName};
 use super::Coordinator;
 use crate::crash::crash_point;
 use crate::error::Error;
-use crate::limits::STATE_EXCEEDS_BUDGET;
 use crate::partition::CursorHold;
 use crate::report::{CommitRecord, StreamReport};
 
@@ -41,7 +40,7 @@ impl Coordinator {
         }
         let progressed = self.progresses(&collected, &delta);
         let streams = self.stream_reports(collected.streams, &completing);
-        self.receipted(&streams, &mut delta)?;
+        self.receipted(&streams, &mut delta);
         crash_point!("engine.flush.before");
         self.parts.lanes.flush().await?;
         crash_point!("engine.flush.after");
@@ -65,7 +64,6 @@ impl Coordinator {
         // The commit completing a stream publishes it: a replace swaps its generation in.
         crash_point!("engine.complete.before", !completing.is_empty());
         let receipt = self.committed(&meta).await?;
-        self.parts.state.apply(&meta.state_delta);
         crash_point!("engine.complete.after", !completing.is_empty());
         self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing)?;
@@ -78,41 +76,20 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Refuses a commit of `delta` after which the state would hold more decoded than a message
-    /// of state may: the pipeline could not open it again.
-    fn within_state(&self, delta: &[StateChange]) -> Result<(), Error> {
-        let (held, limit) = (
-            self.parts.state.after(delta),
-            self.parts.budget.limits().state_bytes,
-        );
-        if held <= limit {
-            return Ok(());
-        }
-        Err(Error::config(format!(
-            "the commit would leave state holding {held} bytes decoded, more than the {limit} \
-             an open may answer within the memory budget: raise the memory, or read fewer \
-             partitions or smaller cursors"
-        ))
-        .with_code(STATE_EXCEEDS_BUDGET))
-    }
-
     /// Records the commit's own receipt in `delta` and as pending, so an attempt that loses the
-    /// response can still be credited with it once a later attempt reads it back; once the state
-    /// `delta` leaves is within its bound.
+    /// response can still be credited with it once a later attempt reads it back.
     fn receipted(
         &self,
         streams: &BTreeMap<StreamName, StreamReport>,
         delta: &mut Vec<StateChange>,
-    ) -> Result<(), Error> {
+    ) {
         let marker = self.marker(streams);
         delta.push(StateChange::Put(
             StateEntry::Receipt(marker.clone()).to_record(),
         ));
-        self.within_state(delta)?;
         self.parts.log.lock().pending = Some(CommitRecord {
             receipt: marker,
             streams: streams.clone(),
         });
-        Ok(())
     }
 }

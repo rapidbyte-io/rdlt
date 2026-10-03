@@ -25,7 +25,7 @@ const MEMORY_DEADLINE: &str = "memory_budget_wait_exceeded";
 
 /// The code of a commit refused for leaving more state than an open may answer: the workload's
 /// cursors are sized so its state stays well within it.
-const STATE_BOUND: &str = "state_exceeds_budget";
+const STATE_BOUND: &str = "state_bytes_exceeded";
 
 impl super::Simulation {
     /// Checks that none of the runs `reports` tell of reserved more than the budget, and counts

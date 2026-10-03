@@ -41,7 +41,7 @@ async fn a_commit_whose_state_an_open_could_not_answer_is_refused_before_it_land
     assert_eq!(commits, 1);
     let (ended, commits) = sealing(64 << 10).await;
     let refused = ended.expect_err("state beyond the bound is refused");
-    assert_eq!(refused.code(), Some("state_exceeds_budget"), "{refused}");
+    assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
     assert_eq!(commits, 0, "nothing of it was committed");
 }
 
@@ -75,6 +75,6 @@ async fn state_is_bounded_with_all_the_commits_before_it() {
         .await
         .unwrap()
         .expect_err("the second commit is refused");
-    assert_eq!(refused.code(), Some("state_exceeds_budget"), "{refused}");
+    assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
     assert_eq!(harness.commits.lock().len(), 1, "the first landed");
 }

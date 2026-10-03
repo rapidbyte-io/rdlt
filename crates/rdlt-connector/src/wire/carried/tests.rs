@@ -5,7 +5,7 @@ use proptest::prelude::*;
 use rdlt_wire::prost::Message as _;
 
 use super::super::v1;
-use super::{commit_bytes, record_bytes};
+use super::{answer_bytes, commit_bytes, counted, record_bytes};
 use crate::commit::CommitMeta;
 use crate::cursor::Cursor;
 use crate::id::{CommitSeq, Epoch, LoadId, PartitionId, SegmentId, StreamName};
@@ -26,14 +26,19 @@ fn records() -> impl Strategy<Value = Vec<StateRecord>> {
 
 proptest! {
     #[test]
-    fn records_take_in_an_open_s_answer_what_their_measure_says(records in records()) {
+    fn records_hold_in_an_open_s_answer_what_their_measures_sum_to(records in records()) {
         let answer = v1::OpenResponse {
-            session: 0,
-            epoch: 0,
+            session: u64::MAX,
+            epoch: u64::MAX,
             state: records.iter().map(v1::StateRecord::from).collect(),
         };
-        let measured: u64 = records.iter().map(record_bytes).sum();
-        prop_assert_eq!(u64::try_from(answer.encoded_len()).unwrap(), measured);
+        let scanned = counted(rdlt_wire::scan::response("Open"), &answer.encode_to_vec());
+        let measured: u64 = records.iter().map(record_bytes).sum::<u64>() + answer_bytes(&[]);
+        prop_assert_eq!(answer_bytes(&records), measured);
+        // An answer's handle and epoch hold nothing decoded beyond their fields.
+        prop_assert_eq!(scanned, measured);
+        // What a message holds decoded is never less than what it takes on the wire.
+        prop_assert!(u64::try_from(answer.encoded_len()).unwrap() <= scanned);
     }
 
     #[test]
@@ -48,9 +53,11 @@ proptest! {
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
         };
-        let request = v1::CommitRequest { session: u64::MAX, meta: Some(v1::CommitMeta::from(&meta)) };
-        // A session's handle takes eleven bytes at most.
-        prop_assert!(u64::try_from(request.encoded_len()).unwrap() <= commit_bytes(&meta) + 11);
+        let request = v1::CommitRequest { session: 1, meta: Some(v1::CommitMeta::from(&meta)) };
+        let scanned = counted(rdlt_wire::scan::request("Commit"), &request.encode_to_vec());
+        // Its session's handle holds what a number does decoded, whichever it is.
+        prop_assert_eq!(commit_bytes(&meta), scanned);
+        prop_assert!(u64::try_from(request.encoded_len()).unwrap() <= scanned);
     }
 
     #[test]
@@ -96,7 +103,9 @@ proptest! {
                 })
                 .collect(),
         };
-        prop_assert!(u64::try_from(plan.encoded_len()).unwrap() <= stored);
-        prop_assert!(u64::try_from(report.encoded_len()).unwrap() <= stored);
+        let plan = counted(rdlt_wire::scan::request("Plan"), &plan.encode_to_vec());
+        let report = counted(rdlt_wire::scan::request("Committed"), &report.encode_to_vec());
+        prop_assert!(plan <= stored, "{plan} > {stored}");
+        prop_assert!(report <= stored, "{report} > {stored}");
     }
 }

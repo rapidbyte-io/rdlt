@@ -64,12 +64,12 @@ one run to the next, broke both:
   |---|---|---|
   | `child_tables` | 1024 | the child tables a normalized stream's table has, recorded and new |
   | `writers` | 128 | the destination writers an attempt holds open, across its lanes |
-  | `state_bytes` | 16 MiB | one message carrying state: an open's answer, a commit's request |
 
-  - `EngineConfig::state_limit` holds stored state to the lesser of `state_bytes` less 256 KiB,
-    for what such a message holds beside, and a 16th of the budget, the share the state an attempt
-    opens on is held within (ADR 0042): the message's room at the defaults, about 2 MiB at the
-    least memory.
+  - `EngineConfig::state_limit` is `state_bytes` of `EngineConfig::limits`, the one limit the
+    host advertises for a message carrying state and the budget's control share holds (ADR
+    0042), lowered where the operator's limits say: 16 MiB at the defaults, about 2 MiB at the
+    least memory. Stored state, and a commit's request, are held to it as the host's scan counts
+    what they hold decoded.
   - `EngineConfig::child_table_limit` is the lesser of `child_tables` and as many tables of a few
     columns, 4 KiB of records each, as that state holds.
   - A child table beyond it is refused as `child_tables_exceeded` before it is added. Wider
@@ -103,11 +103,12 @@ one run to the next, broke both:
   its own. Each batch frame carries its ordinal among the load's batches, and replay stages a
   segment's batches in that order wherever a carry left them: a change stream's rows of one key
   and one sequence apply in the order they were written, so a crash never changes which wins.
-- **Stored state stays what a message can carry.** The engine measures each stored record as an
-  open's answer carries it, from the records it opened on and each commit that lands, and a
-  commit's request by its encoding. A commit whose request would pass `state_bytes` less 256 KiB,
-  or whose state once landed would pass the state limit, is refused as `state_bytes_exceeded`, a
-  non-retryable `Config` error, before it is logged or any source hears of a position. A plan's
+- **Stored state stays what a message can carry.** The engine measures what an open's answer
+  carrying the stored state holds decoded, as the host's scan counts it, from the records it
+  opened on and each commit that lands, and a commit's request alike. A commit whose request, or
+  whose state once landed, would pass the state limit is refused as `state_bytes_exceeded`, a
+  non-retryable `Config` error, before it is logged or any source hears of a position: one
+  refusal, which the control plane's own commit-time check folded into (ADR 0042). A plan's
   request and a report of committed positions carry less of a stream than its stored records.
   A commit is never split: its segments and positions land together or not at all. State past
   the limit, stored before the memory was lowered or by a replayed commit logged under a larger
@@ -183,6 +184,7 @@ Rejected:
 - The simulation holds one to three writers open in a quarter of its worlds, drawn apart from
   the rest of the seed, so lanes close writers, and its faulty disk fails a chunk's removal as it
   fails appends and syncs.
-- The control plane (ADR 0042) bounds the messages carrying state on the wire and refuses, at
-  commit, state its open could not decode; when both are on `main`, one commit-time refusal
-  stays, and `state_bytes` is the protocol's limit of that name.
+- One measure, one limit and one refusal hold state: what an open's answer holds decoded, the
+  advertised `state_bytes`, and `state_bytes_exceeded`. `GrowthLimits` sets no state limit of
+  its own, and the code `state_exceeds_budget` is gone. Two tables recorded under one
+  identifier are refused once, as the tables are read from state.

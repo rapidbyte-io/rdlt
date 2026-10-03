@@ -319,7 +319,7 @@ pub(crate) async fn takes_a_normalized_stream_through_one_writer_open(target: Ta
         ("one_writer_append", normalized("events")),
         ("one_writer_merge", merged("events")),
     ] {
-        let growth = rdlt_engine::GrowthLimits::new(1024, 1, 16 << 20).expect("valid limits");
+        let growth = rdlt_engine::GrowthLimits::new(1024, 1).expect("valid limits");
         let config = commit_every(7).lanes(1).growth(growth);
         let source = batches(
             &target.name(store),

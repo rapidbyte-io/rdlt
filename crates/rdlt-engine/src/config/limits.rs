@@ -5,7 +5,7 @@ use rdlt_wire::Limits;
 use super::{EngineConfig, EngineConfigBuilder};
 use crate::budget::{Shares, admitted, least};
 use crate::error::Error;
-use crate::limits::{MEMORY_BELOW_MINIMUM, STATE_ENVELOPE, STATE_SHARE, TABLE_RECORDS};
+use crate::limits::{MEMORY_BELOW_MINIMUM, TABLE_RECORDS};
 
 impl EngineConfig {
     /// The limits on what connectors send that this configuration admits: the lesser, for each
@@ -19,18 +19,11 @@ impl EngineConfig {
         self.limits.lesser(&admitted(shares, self.partitions.get()))
     }
 
-    /// Bytes: the most a pipeline's stored state may take as an open's answer carries it.
-    ///
-    /// It is the lesser of what a message carrying state may take beside its handles and names,
-    /// [`GrowthLimits::state_bytes`](super::GrowthLimits::state_bytes) less 256 KiB, and a 16th
-    /// of the memory budget, the share an attempt holds the state it opens on within.
+    /// Bytes: the most a pipeline's stored state may hold decoded in an open's answer, and a
+    /// commit's request: [`Limits::state_bytes`] of [`EngineConfig::limits`], which the host
+    /// advertises and the control share of the memory budget holds.
     pub fn state_limit(&self) -> u64 {
-        let message = self
-            .growth
-            .state_bytes()
-            .get()
-            .saturating_sub(STATE_ENVELOPE);
-        message.min(self.memory.get() / STATE_SHARE)
+        self.limits().state_bytes
     }
 
     /// Tables: the most child tables a normalized stream's table may have: the lesser of
