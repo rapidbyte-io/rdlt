@@ -99,6 +99,27 @@ fn passed(mut body: Bounded) -> Vec<Passed> {
 }
 
 #[test]
+fn the_body_says_it_has_ended_only_once_all_it_holds_is_passed_on() {
+    // A caller stops polling a body that says it has ended: it says so once nothing it holds
+    // waits to be passed on, and not before.
+    let (first, second) = (message(&[0x0a, 0x00]), message(&[]));
+    let (feed, body) = fed();
+    feed.send(Frame::data([first.clone(), second.clone()].concat().into()))
+        .unwrap();
+    drop(feed);
+    let mut body = Bounded::new(body, bounds(1024, 1 << 20), None);
+    assert!(!body.is_end_stream(), "nothing has been read");
+    assert_eq!(poll(&mut body), Passed::Data(first));
+    assert!(!body.is_end_stream(), "a message waits to be passed on");
+    assert_eq!(poll(&mut body), Passed::Data(second));
+    assert_eq!(poll(&mut body), Passed::End);
+    assert!(body.is_end_stream(), "all of it was passed on");
+    let mut ended = Bounded::new(chunks(&[]), bounds(1024, 1 << 20), None);
+    assert_eq!(poll(&mut ended), Passed::End);
+    assert!(ended.is_end_stream());
+}
+
+#[test]
 fn a_message_is_passed_on_once_it_has_arrived_whole() {
     let whole = message(&[0x0a, 0x00, 0x0a, 0x00]);
     let body = chunks(&[&whole[..3], &whole[3..7], &whole[7..]]);
