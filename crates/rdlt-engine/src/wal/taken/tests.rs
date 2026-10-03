@@ -90,6 +90,14 @@ impl WalStore for Busy {
         self.inner.read(pipeline, chunk, offset, len)
     }
 
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_staged(pipeline, load)
+    }
+
     fn remove<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -137,6 +145,27 @@ async fn a_log_that_needs_nothing_is_fenced_before_it_is_called_finished() {
         .map(|(number, _)| number)
         .collect();
     assert_eq!(chunks, [0, 1]);
+}
+
+#[tokio::test]
+async fn a_disk_a_crashed_load_filled_is_freed_before_its_log_is_fenced() {
+    let store = MemoryWal {
+        disk: std::sync::Arc::new(super::super::memory::Disk::of(4_096)),
+        ..MemoryWal::default()
+    };
+    store.open(&pipeline(), load());
+    let mut written = store.stage(&pipeline(), chunk(0)).await.expect("stages");
+    written.append(Busy::written(0)).await.expect("appends");
+    written.publish().await.expect("publishes");
+    // The load staged its next chunk until the disk was full, and crashed.
+    let mut crashed = store.stage(&pipeline(), chunk(1)).await.expect("stages");
+    while crashed.append(Bytes::from_static(&[0; 64])).await.is_ok() {}
+    drop(crashed);
+    let taken = take(&store, &pipeline(), load(), 1 << 20)
+        .await
+        .expect("the fence finds room");
+    assert_eq!(taken, Taken::Finished);
+    assert_eq!(store.disk.staged(), 0);
 }
 
 fn chunk(number: u64) -> Chunk {

@@ -177,6 +177,7 @@ pub(crate) const LOG_BYTES: u64 = 4 << 30;
 /// what it may hold on disk: its source sent that much without a checkpoint a commit could take.
 pub(crate) const LOG_BYTES_EXCEEDED: &str = "log_bytes_exceeded";
 
-/// The code of the error for a write-ahead log whose disk is full: retryable, since the next
-/// attempt's replay deletes the failed load's log before it writes anything.
+/// The code of the error for a write-ahead log whose disk is full: retryable, since the failed
+/// write gives back what its chunk staged, and the next attempt's replay deletes what a crashed
+/// load staged before it writes its fences, a few hundred bytes.
 pub(crate) const WAL_STORAGE_FULL: &str = "wal_storage_full";

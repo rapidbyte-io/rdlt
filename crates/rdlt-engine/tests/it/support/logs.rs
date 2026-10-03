@@ -1,4 +1,5 @@
-//! A write-ahead log store that counts what it is asked to do, over a local one.
+//! A write-ahead log store that counts what it is asked to do, over a local one, and logs
+//! rewritten as whoever can write their directory rewrites them.
 
 use std::io;
 use std::sync::Arc;
@@ -32,6 +33,10 @@ impl StagedChunk for Counting {
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
         self.publishes.fetch_add(1, Ordering::SeqCst);
         self.staged.publish()
+    }
+
+    fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+        self.staged.discard()
     }
 }
 
@@ -103,102 +108,12 @@ impl WalStore for Counted {
         self.local.read(pipeline, chunk, offset, len)
     }
 
-    fn remove<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        self.local.remove(pipeline, chunk)
-    }
-
-    fn remove_log<'a>(
+    fn remove_staged<'a>(
         &'a self,
         pipeline: &'a PipelineId,
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>> {
-        self.local.remove_log(pipeline, load)
-    }
-}
-
-/// A [`LocalWal`] whose staged chunks fail their `failing`th append and those after it with a
-/// full disk, until `failing` is set to zero.
-#[derive(Debug)]
-pub(crate) struct Filling {
-    pub(crate) local: LocalWal,
-    pub(crate) appends: Arc<AtomicUsize>,
-    pub(crate) failing: Arc<AtomicUsize>,
-}
-
-/// A chunk a [`Filling`] stages.
-struct Full {
-    staged: Box<dyn StagedChunk>,
-    appends: Arc<AtomicUsize>,
-    failing: Arc<AtomicUsize>,
-}
-
-impl StagedChunk for Full {
-    fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>> {
-        let append = self.appends.fetch_add(1, Ordering::SeqCst) + 1;
-        let failing = self.failing.load(Ordering::SeqCst);
-        if failing > 0 && append >= failing {
-            return Box::pin(async { Err(io::Error::from(io::ErrorKind::StorageFull)) });
-        }
-        self.staged.append(bytes)
-    }
-
-    fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
-        self.staged.publish()
-    }
-}
-
-impl WalStore for Filling {
-    fn open_log<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        self.local.open_log(pipeline, load)
-    }
-
-    fn stage<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-    ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
-        Box::pin(async move {
-            let staged = self.local.stage(pipeline, chunk).await?;
-            Ok(Box::new(Full {
-                staged,
-                appends: Arc::clone(&self.appends),
-                failing: Arc::clone(&self.failing),
-            }) as Box<dyn StagedChunk>)
-        })
-    }
-
-    fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
-        self.local.loads(pipeline)
-    }
-
-    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
-        self.local.leftovers(pipeline)
-    }
-
-    fn chunks<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>> {
-        self.local.chunks(pipeline, load)
-    }
-
-    fn read<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-        offset: u64,
-        len: u64,
-    ) -> BoxFuture<'a, io::Result<Bytes>> {
-        self.local.read(pipeline, chunk, offset, len)
+        self.local.remove_staged(pipeline, load)
     }
 
     fn remove<'a>(

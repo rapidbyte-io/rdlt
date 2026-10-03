@@ -472,6 +472,31 @@ async fn a_batch_of_a_table_never_described_fails_the_commit_after_it() {
 }
 
 #[tokio::test]
+async fn a_write_the_disk_has_no_room_for_gives_back_what_its_chunk_staged() {
+    let store = Arc::new(MemoryWal {
+        disk: Arc::new(super::super::memory::Disk::of(2_000)),
+        ..MemoryWal::default()
+    });
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        for _ in 0..20 {
+            log.batch(1, 0).await;
+        }
+        let error = log.commit(1, &[1]).await.expect_err("the disk is full");
+        assert_eq!(error.code(), Some("wal_storage_full"), "{error}");
+        assert!(error.is_retryable());
+    })
+    .await
+    .expect("the writer ends");
+    assert_eq!(
+        store.disk.staged(),
+        0,
+        "the failed chunk's bytes are given back"
+    );
+    assert!(chunks(&store).is_empty());
+}
+
+#[tokio::test]
 async fn a_failed_publish_fails_its_commit_and_every_one_after() {
     let store = Arc::new(MemoryWal::default());
     let failing = Arc::clone(&store);

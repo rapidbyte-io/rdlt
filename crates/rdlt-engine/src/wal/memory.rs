@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use parking_lot::Mutex;
@@ -28,10 +29,42 @@ pub(crate) struct MemoryWal {
     pub(crate) published: Arc<Mutex<Vec<Bytes>>>,
     /// Whether each append waits a few turns of the scheduler first, as a slow disk does.
     pub(crate) slow: bool,
+    /// What its stagings hold, and how much it may hold in all.
+    pub(crate) disk: Arc<Disk>,
 }
 
-/// Each log ever opened, by pipeline and load, and whether it is open still.
-pub(crate) type Logs = Arc<Mutex<BTreeMap<(PipelineId, LoadId), bool>>>;
+/// What a [`MemoryWal`]'s stagings hold, and how much the store may hold in all.
+#[derive(Debug, Default)]
+pub(crate) struct Disk {
+    /// Bytes the store may hold, staged and published; unbounded where none.
+    pub(crate) capacity: Option<usize>,
+    /// Each staging not yet published or deleted: its log and the bytes it holds.
+    staged: Mutex<BTreeMap<u64, (Log, usize)>>,
+    next: AtomicU64,
+}
+
+impl Disk {
+    /// A disk of `capacity` bytes.
+    #[cfg(test)]
+    pub(crate) fn of(capacity: usize) -> Self {
+        Self {
+            capacity: Some(capacity),
+            ..Self::default()
+        }
+    }
+
+    /// Bytes its stagings hold.
+    #[cfg(test)]
+    pub(crate) fn staged(&self) -> usize {
+        self.staged.lock().values().map(|(_, len)| len).sum()
+    }
+}
+
+/// A log, by its pipeline and load.
+type Log = (PipelineId, LoadId);
+
+/// Each log ever opened, and whether it is open still.
+pub(crate) type Logs = Arc<Mutex<BTreeMap<Log, bool>>>;
 
 /// What makes a [`MemoryWal`]'s calls fail, shared with the chunks it stages.
 #[derive(Clone, Debug)]
@@ -56,6 +89,9 @@ impl Faults {
 struct Staged {
     chunks: Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>,
     logs: Logs,
+    disk: Arc<Disk>,
+    /// Which staging of the disk's it is.
+    id: u64,
     key: (PipelineId, Chunk),
     bytes: Vec<u8>,
     faults: Faults,
@@ -73,13 +109,36 @@ impl StagedChunk for Staged {
                 }
             }
             self.faults.check()?;
+            let published: usize = self.chunks.lock().values().map(Bytes::len).sum();
+            let mut staged = self.disk.staged.lock();
+            let held: usize = staged.values().map(|(_, len)| len).sum();
+            if self
+                .disk
+                .capacity
+                .is_some_and(|capacity| published + held + bytes.len() > capacity)
+            {
+                return Err(io::Error::from(io::ErrorKind::StorageFull));
+            }
+            let Some((_, len)) = staged.get_mut(&self.id) else {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            };
+            *len += bytes.len();
             self.bytes.extend_from_slice(&bytes);
             Ok(())
         })
     }
 
+    fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+        self.disk.staged.lock().remove(&self.id);
+        Box::pin(async { Ok(()) })
+    }
+
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+        let staged = self.disk.staged.lock().remove(&self.id).is_some();
         let published = self.faults.check().and_then(|()| {
+            if !staged {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
             if *self.unpublishable.lock() {
                 return Err(io::Error::other("the disk failed to flush"));
             }
@@ -174,9 +233,14 @@ impl WalStore for MemoryWal {
             if !open {
                 return Err(io::Error::from(io::ErrorKind::NotFound));
             }
+            let id = self.disk.next.fetch_add(1, Ordering::Relaxed);
+            let log = (pipeline.clone(), chunk.load);
+            self.disk.staged.lock().insert(id, (log, 0));
             Ok(Box::new(Staged {
                 chunks: Arc::clone(&self.chunks),
                 logs: Arc::clone(&self.logs),
+                disk: Arc::clone(&self.disk),
+                id,
                 key: (pipeline.clone(), chunk),
                 bytes: Vec::new(),
                 faults: self.faults(),
@@ -251,6 +315,21 @@ impl WalStore for MemoryWal {
         ready(read)
     }
 
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        let removed = self.check().map(|()| {
+            let log = (pipeline.clone(), load);
+            self.disk
+                .staged
+                .lock()
+                .retain(|_, (staged, _)| *staged != log);
+        });
+        ready(removed)
+    }
+
     fn remove<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -275,6 +354,11 @@ impl WalStore for MemoryWal {
             if let Some(open) = self.logs.lock().get_mut(&(pipeline.clone(), load)) {
                 *open = false;
             }
+            let log = (pipeline.clone(), load);
+            self.disk
+                .staged
+                .lock()
+                .retain(|_, (staged, _)| *staged != log);
             self.chunks
                 .lock()
                 .retain(|(owner, chunk), _| owner != pipeline || chunk.load != load);

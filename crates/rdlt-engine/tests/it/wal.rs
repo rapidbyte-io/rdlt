@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use rdlt_connector::{PipelineId, ReadMode};
-use rdlt_engine::{ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatus, WalStore};
+use rdlt_engine::{Chunk, ErrorKind, GrowthLimits, LocalWal, RunOutcome, RunStatus, WalStore};
 
 use crate::support::batches::{BatchStream, batches};
 use crate::support::destinations::{Step, counting, failing};
-use crate::support::logs::{Counted, Filling};
+use crate::support::logs::Counted;
+use crate::support::memory_wal::Memory;
 use crate::support::script::{Script, ScriptStream, id};
 use crate::support::{
     commit_every, engine, logging_engine, memory, pipeline, published_ids, retrying, stream,
@@ -266,14 +268,9 @@ async fn a_source_that_never_checkpoints_is_refused_before_its_log_passes_its_li
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_full_disk_fails_its_attempt_retryably_and_the_next_lands_every_row_once() {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let filling = Arc::new(Filling {
-        local: LocalWal::new(base.path()),
-        appends: Arc::default(),
-        failing: Arc::new(std::sync::atomic::AtomicUsize::new(12)),
-    });
-    let store: Arc<dyn WalStore> = Arc::clone(&filling) as Arc<dyn WalStore>;
+async fn a_full_disk_fails_its_attempts_retryably_and_keeps_none_of_what_they_staged() {
+    // A disk with room for less than one commit's chunk.
+    let store = Arc::new(Memory::of(2_048));
     let mut events = ScriptStream::new("events", 2, 30, 7);
     events.replayable = false;
     let (_, source) = Script::new(vec![events]).connect("wal_full_disk").await;
@@ -281,23 +278,40 @@ async fn a_full_disk_fails_its_attempt_retryably_and_the_next_lands_every_row_on
         "wal-full-disk",
         [stream("events").read(ReadMode::Incremental)],
     );
-    let full = logging_engine(retrying(1), Arc::clone(&store))
-        .run(
-            plan.clone(),
-            Arc::clone(&source),
-            memory("wal_full_disk").await,
-        )
+    let full = logging_engine(retrying(3), Arc::clone(&store) as Arc<dyn WalStore>)
+        .run(plan, source, memory("wal_full_disk").await)
         .await;
     assert_eq!(full.report.status, RunStatus::Failed);
+    assert_eq!(full.report.attempted, 3);
     let error = full.error.expect("the disk is full");
     assert_eq!(error.code(), Some("wal_storage_full"), "{error:?}");
     assert!(error.is_retryable());
-    // Space freed, the next run replays what was logged and lands every row once.
-    filling
-        .failing
-        .store(0, std::sync::atomic::Ordering::SeqCst);
-    let freed = logging_engine(retrying(1), Arc::clone(&store))
-        .run(plan, source, memory("wal_full_disk").await)
+    // Each attempt gave back what it staged: a disk full is not filled further by retrying.
+    assert_eq!(store.staged(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_disk_a_crashed_load_filled_is_freed_by_the_next_replay_before_it_writes() {
+    let store = Arc::new(Memory::of(64 << 10));
+    let pipeline_id = PipelineId::parse("wal-freed").expect("a valid pipeline");
+    // A load staged until the disk was full, and crashed.
+    let crashed = Chunk {
+        load: rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+        number: 0,
+    };
+    store
+        .open_log(&pipeline_id, crashed.load)
+        .await
+        .expect("opens");
+    let mut staged = store.stage(&pipeline_id, crashed).await.expect("stages");
+    while staged.append(Bytes::from_static(&[0; 1024])).await.is_ok() {}
+    drop(staged);
+    let mut events = ScriptStream::new("events", 2, 30, 7);
+    events.replayable = false;
+    let (_, source) = Script::new(vec![events]).connect("wal_freed").await;
+    let plan = pipeline("wal-freed", [stream("events").read(ReadMode::Incremental)]);
+    let freed = logging_engine(commit_every(10), Arc::clone(&store) as Arc<dyn WalStore>)
+        .run(plan, source, memory("wal_freed").await)
         .await;
     assert_eq!(
         freed.report.status,
@@ -305,7 +319,7 @@ async fn a_full_disk_fails_its_attempt_retryably_and_the_next_lands_every_row_on
         "{:?}",
         freed.error
     );
-    assert_eq!(published_ids("wal_full_disk", "events"), ids(2, 30));
-    let pipeline = PipelineId::parse("wal-full-disk").expect("a valid pipeline");
-    assert_eq!(store.loads(&pipeline).await.expect("loads list"), []);
+    assert_eq!(published_ids("wal_freed", "events"), ids(2, 30));
+    assert_eq!(store.loads(&pipeline_id).await.expect("lists"), []);
+    assert_eq!(store.staged(), 0);
 }

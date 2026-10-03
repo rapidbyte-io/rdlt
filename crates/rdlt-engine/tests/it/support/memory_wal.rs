@@ -1,5 +1,5 @@
 //! A write-ahead log store in memory, keeping the contract a local one keeps, for runs that
-//! share one store between engines.
+//! share one store between engines, on a disk of a size a test chooses.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -16,6 +16,23 @@ struct Held {
     chunks: BTreeMap<(PipelineId, Chunk), Bytes>,
     /// Each log ever opened, and whether it is open still.
     logs: BTreeMap<(PipelineId, LoadId), bool>,
+    /// Each staging not yet published or deleted, by number: its log and its bytes.
+    staged: BTreeMap<u64, ((PipelineId, LoadId), Vec<u8>)>,
+    next: u64,
+    /// Bytes the disk holds at most, staged and published; unbounded where none.
+    capacity: Option<usize>,
+}
+
+impl Held {
+    /// Bytes the disk holds.
+    fn used(&self) -> usize {
+        let published: usize = self.chunks.values().map(Bytes::len).sum();
+        published + self.staged()
+    }
+
+    fn staged(&self) -> usize {
+        self.staged.values().map(|(_, bytes)| bytes.len()).sum()
+    }
 }
 
 /// Logs in memory.
@@ -24,10 +41,28 @@ pub(crate) struct Memory {
     held: Arc<Mutex<Held>>,
 }
 
+impl Memory {
+    /// Logs on a disk of `capacity` bytes.
+    pub(crate) fn of(capacity: usize) -> Self {
+        let held = Held {
+            capacity: Some(capacity),
+            ..Held::default()
+        };
+        Self {
+            held: Arc::new(Mutex::new(held)),
+        }
+    }
+
+    /// Bytes the stagings not yet published or deleted hold.
+    pub(crate) fn staged(&self) -> usize {
+        self.held.lock().staged()
+    }
+}
+
 struct Staged {
     held: Arc<Mutex<Held>>,
     key: (PipelineId, Chunk),
-    bytes: Vec<u8>,
+    id: u64,
 }
 
 fn ready<T: Send + 'static>(value: io::Result<T>) -> BoxFuture<'static, io::Result<T>> {
@@ -36,22 +71,41 @@ fn ready<T: Send + 'static>(value: io::Result<T>) -> BoxFuture<'static, io::Resu
 
 impl StagedChunk for Staged {
     fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>> {
-        self.bytes.extend_from_slice(&bytes);
+        let mut held = self.held.lock();
+        let full = held
+            .capacity
+            .is_some_and(|capacity| held.used() + bytes.len() > capacity);
+        let appended = match held.staged.get_mut(&self.id) {
+            _ if full => Err(io::Error::from(io::ErrorKind::StorageFull)),
+            Some((_, staged)) => {
+                staged.extend_from_slice(&bytes);
+                Ok(())
+            }
+            None => Err(io::Error::from(io::ErrorKind::NotFound)),
+        };
+        ready(appended)
+    }
+
+    fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+        self.held.lock().staged.remove(&self.id);
         ready(Ok(()))
     }
 
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
         let mut held = self.held.lock();
         let log = (self.key.0.clone(), self.key.1.load);
-        let published = if held.logs.get(&log) != Some(&true) {
-            Err(io::Error::from(io::ErrorKind::NotFound))
-        } else if held.chunks.contains_key(&self.key) {
-            Err(io::Error::from(io::ErrorKind::AlreadyExists))
-        } else {
-            held.chunks
-                .insert(self.key.clone(), Bytes::from(self.bytes));
-            Ok(())
-        };
+        let staged = held.staged.remove(&self.id);
+        let published =
+            if let Some((_, bytes)) = staged.filter(|_| held.logs.get(&log) == Some(&true)) {
+                if held.chunks.contains_key(&self.key) {
+                    Err(io::Error::from(io::ErrorKind::AlreadyExists))
+                } else {
+                    held.chunks.insert(self.key.clone(), Bytes::from(bytes));
+                    Ok(())
+                }
+            } else {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            };
         ready(published)
     }
 }
@@ -82,10 +136,15 @@ impl WalStore for Memory {
         if !open {
             return ready(Err(io::Error::from(io::ErrorKind::NotFound)));
         }
+        let mut held = self.held.lock();
+        let id = held.next;
+        held.next += 1;
+        held.staged
+            .insert(id, ((pipeline.clone(), chunk.load), Vec::new()));
         ready(Ok(Box::new(Staged {
             held: Arc::clone(&self.held),
             key: (pipeline.clone(), chunk),
-            bytes: Vec::new(),
+            id,
         }) as Box<dyn StagedChunk>))
     }
 
@@ -149,6 +208,19 @@ impl WalStore for Memory {
         ready(read)
     }
 
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        let log = (pipeline.clone(), load);
+        self.held
+            .lock()
+            .staged
+            .retain(|_, (staged, _)| *staged != log);
+        ready(Ok(()))
+    }
+
     fn remove<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -167,6 +239,8 @@ impl WalStore for Memory {
         if let Some(open) = held.logs.get_mut(&(pipeline.clone(), load)) {
             *open = false;
         }
+        let log = (pipeline.clone(), load);
+        held.staged.retain(|_, (staged, _)| *staged != log);
         held.chunks
             .retain(|(owner, chunk), _| owner != pipeline || chunk.load != load);
         ready(Ok(()))

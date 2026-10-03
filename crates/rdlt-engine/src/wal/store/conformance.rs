@@ -47,6 +47,7 @@ async fn published(
 pub(crate) async fn conforms(store: &dyn WalStore) {
     a_chunk_is_staged_only_in_a_log_opened_once(store).await;
     no_chunk_is_published_once_its_log_is_removed(store).await;
+    what_was_staged_and_deleted_is_never_published(store).await;
     a_staged_chunk_is_seen_by_no_reader_until_published(store).await;
     a_published_chunk_is_whole_read_by_range_and_never_replaced(store).await;
     the_first_of_two_chunks_of_one_name_published_is_kept(store).await;
@@ -103,6 +104,34 @@ async fn no_chunk_is_published_once_its_log_is_removed(store: &dyn WalStore) {
     assert_eq!(store.leftovers(&orders).await.expect("lists"), []);
     assert_eq!(store.chunks(&orders, load).await.expect("lists"), []);
     assert!(store.read(&orders, chunk(1, 1), 0, 4).await.is_err());
+}
+
+async fn what_was_staged_and_deleted_is_never_published(store: &dyn WalStore) {
+    let orders = pipeline("unstaged");
+    let load = chunk(1, 0).load;
+    opened(store, &orders, load).await;
+    let mut discarded = store.stage(&orders, chunk(1, 0)).await.expect("stages");
+    discarded
+        .append(Bytes::from_static(b"failed"))
+        .await
+        .expect("appends");
+    discarded.discard().await.expect("discards");
+    // A load that crashed left a staging, which a replay deletes before it fences the log.
+    let mut crashed = store.stage(&orders, chunk(1, 0)).await.expect("stages");
+    crashed
+        .append(Bytes::from_static(b"crashed"))
+        .await
+        .expect("appends");
+    store
+        .remove_staged(&orders, load)
+        .await
+        .expect("deletes what was staged");
+    let refused = crashed.publish().await.expect_err("its staging is gone");
+    assert_eq!(refused.kind(), io::ErrorKind::NotFound, "{refused}");
+    assert_eq!(store.chunks(&orders, load).await.expect("lists"), []);
+    published(store, &orders, chunk(1, 0), b"after")
+        .await
+        .expect("a staging begun after publishes");
 }
 
 async fn a_staged_chunk_is_seen_by_no_reader_until_published(store: &dyn WalStore) {

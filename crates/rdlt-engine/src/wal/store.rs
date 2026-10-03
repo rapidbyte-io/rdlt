@@ -35,6 +35,10 @@ pub trait StagedChunk: Send + Sync {
     /// publishes the chunk a writer would publish next, and the writer finds it taken; once the
     /// replay removes the log, the writer finds it gone.
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>>;
+
+    /// Deletes what was staged, which is never published: a write that failed gives back the
+    /// room it took.
+    fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>>;
 }
 
 /// Keeps each load's write-ahead log as numbered chunks, each an object written whole.
@@ -88,6 +92,16 @@ pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
         offset: u64,
         len: u64,
     ) -> BoxFuture<'a, io::Result<Bytes>>;
+
+    /// Deletes what `load`'s log staged and has not published, whoever staged it, needing no room
+    /// to do so.
+    ///
+    /// A publish of what was deleted is refused with [`io::ErrorKind::NotFound`].
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>>;
 
     /// Deletes the published chunk `chunk`, durably; one that is gone is no error.
     fn remove<'a>(
