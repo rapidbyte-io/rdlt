@@ -1,5 +1,6 @@
 //! A write-ahead log store in memory, keeping the contract a local one keeps, for runs that
-//! share one store between engines, on a disk of a size a test chooses.
+//! share one store between engines, on a disk of a size a test chooses, which charges each open
+//! log the block a file system takes for a directory.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -23,11 +24,21 @@ struct Held {
     capacity: Option<usize>,
 }
 
+/// Bytes: what an open log takes of the disk before it holds anything, as a directory's block.
+const DIRECTORY: usize = 1 << 10;
+
 impl Held {
     /// Bytes the disk holds.
     fn used(&self) -> usize {
         let published: usize = self.chunks.values().map(Bytes::len).sum();
-        published + self.staged()
+        let open = self.logs.values().filter(|open| **open).count();
+        published + self.staged() + open * DIRECTORY
+    }
+
+    /// Whether the disk has no room for `bytes` more.
+    fn full(&self, bytes: usize) -> bool {
+        self.capacity
+            .is_some_and(|capacity| self.used() + bytes > capacity)
     }
 
     fn staged(&self) -> usize {
@@ -72,9 +83,7 @@ fn ready<T: Send + 'static>(value: io::Result<T>) -> BoxFuture<'static, io::Resu
 impl StagedChunk for Staged {
     fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>> {
         let mut held = self.held.lock();
-        let full = held
-            .capacity
-            .is_some_and(|capacity| held.used() + bytes.len() > capacity);
+        let full = held.full(bytes.len());
         let appended = match held.staged.get_mut(&self.id) {
             _ if full => Err(io::Error::from(io::ErrorKind::StorageFull)),
             Some((_, staged)) => {
@@ -120,6 +129,8 @@ impl WalStore for Memory {
         let key = (pipeline.clone(), load);
         let opened = if held.logs.get(&key) == Some(&true) {
             Err(io::Error::from(io::ErrorKind::AlreadyExists))
+        } else if held.full(DIRECTORY) {
+            Err(io::Error::from(io::ErrorKind::StorageFull))
         } else {
             held.logs.insert(key, true);
             Ok(())

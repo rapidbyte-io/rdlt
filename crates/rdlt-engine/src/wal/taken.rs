@@ -37,19 +37,51 @@ pub(crate) enum Taken {
 
 /// Opens `load`'s own log of `pipeline` in `store`, before it reads any other.
 ///
+/// A disk too full for it is given back what loads of the pipeline staged and did not publish,
+/// and what removals a crash cut short left, which needs no room, and the log opened once more:
+/// a load that crashed filling the disk leaves no attempt after it unable to begin. A load whose
+/// staging goes so finds it gone, as a take would make it find.
+///
 /// # Errors
 ///
-/// `wal_running`, retryably, where another attempt's replay took the log as it was opened.
+/// `wal_storage_full` where the disk is full still; `wal_running`, retryably, where another
+/// attempt's replay took the log as it was opened.
 pub(crate) async fn open_own(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,
 ) -> Result<(), Error> {
     let opened = store.open_log(pipeline, load).await;
+    let opened = match opened {
+        Err(error) if full(&error) => {
+            for leftover in store.leftovers(pipeline).await.map_err(Error::from_wal)? {
+                store
+                    .remove_log(pipeline, leftover)
+                    .await
+                    .map_err(Error::from_wal)?;
+            }
+            for other in store.loads(pipeline).await.map_err(Error::from_wal)? {
+                store
+                    .remove_staged(pipeline, other)
+                    .await
+                    .map_err(Error::from_wal)?;
+            }
+            store.open_log(pipeline, load).await
+        }
+        opened => opened,
+    };
     opened.map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => Error::wal_opening_taken(load),
         _ => Error::from_wal(error),
     })
+}
+
+/// Whether `error` says the disk, or the user's share of it, is full.
+fn full(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded
+    )
 }
 
 /// Whether a fence was published.

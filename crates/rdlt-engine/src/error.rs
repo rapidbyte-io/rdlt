@@ -114,7 +114,7 @@ impl Error {
     pub(crate) fn from_wal(error: std::io::Error) -> Self {
         use std::io::ErrorKind as Io;
         // A full disk is no end: the failed write gave back what it staged, and the next
-        // attempt's replay frees what a crashed load staged before it writes a fence.
+        // attempt frees what a crashed load staged before it needs room of its own.
         let full = matches!(error.kind(), Io::StorageFull | Io::QuotaExceeded);
         let transient = full
             || matches!(
