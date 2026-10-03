@@ -111,14 +111,22 @@ impl SchemaChanges {
 }
 
 /// How a destination folds the case of identifiers.
+///
+/// The engine gives two columns or tables one identifier where their names fold alike, and keeps
+/// apart names that fold apart: a destination whose identifiers compare alike more widely, by
+/// Unicode's case folding (`straße` and `strasse`), by normalization (`é` composed and
+/// decomposed) or by ASCII case under `Preserve`, declares narrower characters
+/// ([`IdentifierChars::AsciiWord`]) or fails `D-NAMES`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentifierCase {
-    /// Keeps case.
+    /// Keeps case: names compare as written.
     Preserve,
-    /// Folds to lower case.
+    /// Folds to lower case as Unicode's lower-case mapping does (`str::to_lowercase`), and no
+    /// further: `Kept` is `kept`, `ẞ` is `ß`, `ß` stays `ß`.
     Lower,
-    /// Folds to upper case.
+    /// Folds to upper case as Unicode's upper-case mapping does (`str::to_uppercase`): `kept` is
+    /// `KEPT`, `ß` is `SS`.
     Upper,
 }
 

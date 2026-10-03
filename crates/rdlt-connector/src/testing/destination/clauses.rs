@@ -107,8 +107,9 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "D-NAMES",
-        statement: "identifiers at the edges of the destination's own rules are published under \
-                    their names",
+        statement: "identifiers at the edges of the destination's own rules, and names its \
+                    rules keep apart though they compare alike by case, case folding or \
+                    normalization, are published under their names",
         unless: "",
     },
     Clause {
