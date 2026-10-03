@@ -34,12 +34,20 @@ pub(crate) enum Taken {
 
 /// Takes `load`'s log of `pipeline` in `store` over, its chunks read for frames of at most
 /// `frame_bytes`.
+///
+/// What the log's load staged and did not publish is deleted first, which takes no room: a load
+/// that crashed with a disk full gives it back, so the fence fits, and one still running finds
+/// its staging gone.
 pub(crate) async fn take(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     load: LoadId,
     frame_bytes: u64,
 ) -> Result<Taken, Error> {
+    store
+        .remove_staged(pipeline, load)
+        .await
+        .map_err(Error::from_wal)?;
     for _ in 0..TRIES {
         let tail = scan::tail(store, pipeline, load, frame_bytes).await?;
         // A log that needs nothing is fenced all the same: its load may still publish a commit

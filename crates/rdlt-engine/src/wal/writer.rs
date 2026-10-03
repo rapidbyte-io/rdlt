@@ -241,7 +241,17 @@ impl Log {
                 break;
             }
         }
+        // What was staged and never published goes, giving back the room it took.
+        self.discard().await;
         Ok(())
+    }
+
+    /// Deletes the chunk staged, where there is one: after a failed write nothing of it is
+    /// published, and a full disk is given back what it held.
+    async fn discard(&mut self) {
+        if let Some(staged) = self.staged.take() {
+            drop(staged.discard().await);
+        }
     }
 
     async fn handle(&mut self, command: Command) {
@@ -344,10 +354,10 @@ impl Log {
             head.extend_from_slice(&self.header()?);
             let len = count(head.len());
             self.shared.held.fetch_add(len, Ordering::Relaxed);
-            staged
-                .append(Bytes::from(head))
-                .await
-                .map_err(Error::from_wal)?;
+            if let Err(error) = staged.append(Bytes::from(head)).await {
+                drop(staged.discard().await);
+                return Err(Error::from_wal(error));
+            }
             self.written.entry(self.chunk).or_default().len = len;
             self.staged = Some(staged);
         }
@@ -356,10 +366,10 @@ impl Log {
             .as_mut()
             .ok_or_else(|| Error::internal("a chunk staged is gone"))?;
         crash_point!("engine.wal.append");
-        staged
-            .append(frame.clone())
-            .await
-            .map_err(Error::from_wal)?;
+        if let Err(error) = staged.append(frame.clone()).await {
+            self.discard().await;
+            return Err(Error::from_wal(error));
+        }
         let current = self.current();
         let span = Span {
             offset: current.len,

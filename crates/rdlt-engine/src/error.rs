@@ -113,8 +113,8 @@ impl Error {
     /// `wal_not_private` or `wal_stray`; a full disk or quota is `wal_storage_full`.
     pub(crate) fn from_wal(error: std::io::Error) -> Self {
         use std::io::ErrorKind as Io;
-        // A full disk is no end: the next attempt's replay deletes the failed load's log, writing
-        // nothing first.
+        // A full disk is no end: the failed write gave back what it staged, and the next
+        // attempt's replay frees what a crashed load staged before it writes a fence.
         let full = matches!(error.kind(), Io::StorageFull | Io::QuotaExceeded);
         let transient = full
             || matches!(

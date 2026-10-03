@@ -21,11 +21,16 @@ type Chunks = Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>;
 /// Each log ever opened, by pipeline and load, and whether it is open still.
 type Logs = Arc<Mutex<BTreeMap<(PipelineId, LoadId), bool>>>;
 
+/// A count for each log, by pipeline and load.
+type Counts = Arc<Mutex<BTreeMap<(PipelineId, LoadId), u64>>>;
+
 /// Logs in memory, by pipeline and chunk.
 #[derive(Debug, Default)]
 pub struct SimWal {
     chunks: Chunks,
     logs: Logs,
+    /// How many times each log's stagings were deleted: a chunk staged before is lost.
+    cleared: Counts,
     /// How many times each pipeline's worker crashed: a chunk staged before a crash is lost.
     crashes: Arc<Mutex<BTreeMap<PipelineId, u64>>>,
     /// Where stagings, publishes and deletions fail now and then, the draws deciding when.
@@ -39,6 +44,9 @@ const FAULTS: u64 = 10;
 struct Staged {
     chunks: Chunks,
     logs: Logs,
+    cleared: Counts,
+    /// How many times the log's stagings were deleted when this one began.
+    generation: u64,
     crashes: Arc<Mutex<BTreeMap<PipelineId, u64>>>,
     faults: Arc<Mutex<Option<SplitMix64>>>,
     key: (PipelineId, Chunk),
@@ -59,7 +67,8 @@ impl StagedChunk for Staged {
                 return Err(io::Error::other("the worker that staged the chunk crashed"));
             }
             let log = (self.key.0.clone(), self.key.1.load);
-            if self.logs.lock().get(&log) != Some(&true) {
+            let cleared = self.cleared.lock().get(&log).copied().unwrap_or(0);
+            if self.logs.lock().get(&log) != Some(&true) || cleared != self.generation {
                 return Err(io::Error::from(io::ErrorKind::NotFound));
             }
             let mut chunks = self.chunks.lock();
@@ -70,6 +79,10 @@ impl StagedChunk for Staged {
             Ok(())
         });
         Box::pin(async move { published })
+    }
+
+    fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -138,9 +151,13 @@ impl WalStore for SimWal {
             return Box::pin(async { Err(io::Error::from(io::ErrorKind::NotFound)) });
         }
         let crashed = self.crashes.lock().get(pipeline).copied().unwrap_or(0);
+        let log = (pipeline.clone(), chunk.load);
+        let generation = self.cleared.lock().get(&log).copied().unwrap_or(0);
         let staged = Staged {
             chunks: Arc::clone(&self.chunks),
             logs: Arc::clone(&self.logs),
+            cleared: Arc::clone(&self.cleared),
+            generation,
             crashes: Arc::clone(&self.crashes),
             faults: Arc::clone(&self.faults),
             key: (pipeline.clone(), chunk),
@@ -208,6 +225,19 @@ impl WalStore for SimWal {
             .saturating_add(usize::try_from(len).unwrap_or(usize::MAX))
             .min(bytes.len());
         ready(bytes.slice(start..end))
+    }
+
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        *self
+            .cleared
+            .lock()
+            .entry((pipeline.clone(), load))
+            .or_default() += 1;
+        ready(())
     }
 
     fn remove<'a>(

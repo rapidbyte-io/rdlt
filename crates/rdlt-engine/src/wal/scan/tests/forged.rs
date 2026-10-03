@@ -343,6 +343,14 @@ impl WalStore for Measured {
         self.inner.read(pipeline, chunk, offset, len)
     }
 
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_staged(pipeline, load)
+    }
+
     fn remove<'a>(
         &'a self,
         pipeline: &'a PipelineId,

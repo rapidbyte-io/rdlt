@@ -182,9 +182,21 @@ impl StagedChunk for Staged {
             published
         })
     }
+
+    fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+        blocking(move || self.discarded())
+    }
 }
 
 impl Staged {
+    /// Unlinks the staged file, where its log's directory is still there.
+    fn discarded(&self) -> io::Result<()> {
+        match self.place.load(self.chunk.load)? {
+            Some(dir) => dir.remove_file(OsStr::new(&self.part)),
+            None => Ok(()),
+        }
+    }
+
     /// Links the staged file into `dir` under the chunk's name, as [`Staged::publish`] says.
     fn linked(&self, dir: &Dir) -> io::Result<()> {
         self.file.lock().sync_all()?;
@@ -336,6 +348,17 @@ fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
     pipeline.sync()
 }
 
+/// Deletes the files `load`'s log in `place` staged, which need no room to go.
+fn remove_staged(place: &Place, load: LoadId) -> io::Result<()> {
+    let Some(dir) = place.load(load)? else {
+        return Ok(());
+    };
+    for part in listed(&dir)?.1 {
+        dir.remove_file(&part)?;
+    }
+    Ok(())
+}
+
 /// Deletes chunk `chunk` in `place`, durably.
 fn remove(place: &Place, chunk: Chunk) -> io::Result<()> {
     let Some(dir) = place.load(chunk.load)? else {
@@ -407,6 +430,15 @@ impl WalStore for LocalWal {
     ) -> BoxFuture<'a, io::Result<Bytes>> {
         let place = self.place(pipeline);
         blocking(move || read(&place, chunk, offset, len))
+    }
+
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        let place = self.place(pipeline);
+        blocking(move || remove_staged(&place, load))
     }
 
     fn remove<'a>(
