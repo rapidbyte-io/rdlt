@@ -41,25 +41,54 @@ fn observed(text: &str, context: &Context) -> Result<Observed, ShredError> {
     Ok(node)
 }
 
-/// Whether a column of `column` holds the value `observed` as it is: its type joins into the
-/// column's, or it is an integer a 64-bit float holds exactly and the column is of such floats.
-fn holds(column: &LogicalType, observed: &Observed) -> bool {
-    let exact = *observed == Observed::Int { exact: true };
-    column.join(&observed.logical_type()) == *column || (*column == LogicalType::Float64 && exact)
+/// Whether a column of `column`, nullable where `nullable` says, holds one value observed as
+/// `observed`: a value of its type.
+///
+/// A null fits a nullable column. An object fits a struct holding each of its fields, by name in
+/// any order, a field it lacks being null. An array fits a list whose items hold its items, and
+/// may be null where it holds nulls. An integer of at most 2⁵³ in magnitude fits a column of
+/// 64-bit floats, which hold it exactly. Any other value fits a column whose type its own type
+/// joins into.
+fn fits(column: &LogicalType, observed: &Observed, nullable: bool) -> bool {
+    match (column, observed) {
+        (_, Observed::Null) => nullable,
+        (LogicalType::Struct(fields), Observed::Object(shape)) => {
+            let held = shape.fields().iter().all(|(name, value)| {
+                let field = fields.iter().find(|field| field.name() == &**name);
+                field.is_some_and(|field| fits(field.logical_type(), value, field.is_nullable()))
+            });
+            let lacking = fields.iter().all(|field| {
+                field.is_nullable()
+                    || shape
+                        .get(field.name())
+                        .is_some_and(|value| *value != Observed::Null)
+            });
+            held && lacking
+        }
+        // An array's items are observed together, so whether one is null is not known: a list
+        // of items that may not be null holds none of them.
+        (LogicalType::List(item), Observed::Array(items, count)) => {
+            *count == 0 || (item.is_nullable() && fits(item.logical_type(), items, true))
+        }
+        (LogicalType::Float64, Observed::Int { exact: true }) => true,
+        (LogicalType::Struct(_) | LogicalType::List(_), _) => false,
+        (column, observed) => column.join(&observed.logical_type()) == *column,
+    }
 }
 
 /// Which values of `texts`, JSON text, a column of `column` holds: null for a null.
 ///
 /// A value the shredder would refuse, as a number beyond a float's range is, fits no column:
-/// JSON text keeps it, as it keeps an object repeating a key.
+/// JSON text keeps it, as it keeps an object repeating a key. A table's column that a column of
+/// JSON is split into is never a merge key, so it holds nulls.
 pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> BooleanArray {
     let nested = matches!(column, LogicalType::Struct(_) | LogicalType::List(_));
     texts
         .iter()
         .map(|text| {
             let text = text?;
-            let fits = observed(text, &context())
-                .is_ok_and(|observed| observed != Observed::Null && holds(column, &observed));
+            let fits =
+                observed(text, &context()).is_ok_and(|observed| fits(column, &observed, true));
             Some(fits && !(nested && repeats_a_key(text)))
         })
         .collect()

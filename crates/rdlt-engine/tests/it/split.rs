@@ -143,35 +143,42 @@ async fn objects_a_struct_holds_keep_it_and_one_that_would_widen_it_takes_the_va
     );
 }
 
-/// Loads into `store` an Arrow batch whose `amount` holds `first`, integers, then past a
-/// checkpoint one whose `amount` is a column of JSON holding `second`, ids counting on.
-async fn arrow_amounts(store: &str, first: DataType, second: Vec<Option<&str>>) -> RunOutcome {
-    let schema = |amount: Field| {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            amount,
-        ]))
-    };
-    let firsts: ArrayRef =
-        arrow_cast::cast(&Int64Array::from(vec![7]), &first).expect("an integer casts");
-    let first = RecordBatch::try_new(
-        schema(Field::new("amount", first, true)),
-        vec![Arc::new(Int64Array::from(vec![0])), firsts],
-    )
-    .expect("columns match their schema");
+/// An Arrow batch of one row, id 0, whose `amount` is 7 as `first`.
+fn arrow_amounts_batch(first: &DataType) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("amount", first.clone(), true),
+    ]));
+    let amount: ArrayRef =
+        arrow_cast::cast(&Int64Array::from(vec![7]), first).expect("an integer casts");
+    RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![0])), amount])
+        .expect("columns match their schema")
+}
+
+/// An Arrow batch whose `amount` is a column of JSON holding `amounts`, ids from 1 on.
+fn json_amounts(amounts: Vec<Option<&str>>) -> RecordBatch {
     let json = Field::new("amount", DataType::Utf8, true)
         .with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into());
-    let ids = Int64Array::from_iter_values(1..=i64::try_from(second.len()).expect("few rows"));
-    let second = RecordBatch::try_new(
-        schema(json),
-        vec![Arc::new(ids), Arc::new(StringArray::from(second))],
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        json,
+    ]));
+    let ids = Int64Array::from_iter_values(1..=i64::try_from(amounts.len()).expect("few rows"));
+    RecordBatch::try_new(
+        schema,
+        vec![Arc::new(ids), Arc::new(StringArray::from(amounts))],
     )
-    .expect("columns match their schema");
+    .expect("columns match their schema")
+}
+
+/// Loads into `store` an Arrow batch whose `amount` holds 7 as `first`, then past a checkpoint
+/// one whose `amount` is a column of JSON holding `second`.
+async fn arrow_amounts(store: &str, first: DataType, second: Vec<Option<&str>>) -> RunOutcome {
     load(
         store,
         SchemaSettings::default(),
-        Sent::Batch(first),
-        Sent::Batch(second),
+        Sent::Batch(arrow_amounts_batch(&first)),
+        Sent::Batch(json_amounts(second)),
     )
     .await
 }
@@ -256,6 +263,93 @@ async fn a_child_table_s_column_of_json_sends_each_value_its_own_column_holds_th
             (json!(1), Value::Null),
             (json!(2), Value::Null),
             (json!(3), Value::Null),
+        ]
+    );
+}
+
+/// Loads, under `DiscardRow`, a table made from `first` and then `second`, JSON lines, the
+/// second holding one hostile row: the ids of the rows kept, and the rows discarded.
+async fn kept_beside_one_hostile(name: &str, first: &'static str, second: &str) -> (Vec<i64>, u64) {
+    let settings = SchemaSettings::default()
+        .nested(Nested::Native)
+        .policy(SchemaPolicy::DiscardRow);
+    let first = Sent::Json(Bytes::from_static(first.as_bytes()));
+    let second = Sent::Json(Bytes::from(second.to_owned()));
+    let outcome = load(name, settings, first, second).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let mut ids: Vec<i64> = published_json(name, "events")
+        .iter()
+        .map(|row| row["id"].as_i64().expect("every row has an id"))
+        .collect();
+    ids.sort_unstable();
+    (ids, outcome.report.streams["events"].discarded_rows)
+}
+
+#[tokio::test(start_paused = true)]
+async fn objects_in_any_order_or_lacking_fields_keep_their_struct_beside_one_hostile_row() {
+    // The table's struct has its fields in the order first seen, not by name.
+    let second = "{\"id\":1,\"meta\":{\"b\":3,\"a\":4}}\n{\"id\":2,\"meta\":{\"a\":5,\"b\":6}}\n\
+                  {\"id\":3,\"meta\":{\"b\":7}}\n{\"id\":4,\"meta\":{}}\n{\"id\":5,\"meta\":\"s\"}";
+    let first = r#"{"id":0,"meta":{"b":1,"a":2}}"#;
+    let (kept, dropped) = kept_beside_one_hostile("split_order", first, second).await;
+    assert_eq!((kept, dropped), (vec![0, 1, 2, 3, 4], 1));
+    let rows = published_json("split_order", "events");
+    let meta = |id: i64| {
+        let row = rows
+            .iter()
+            .find(|row| row["id"] == id)
+            .expect("the row is kept");
+        row["meta"].clone()
+    };
+    assert_eq!(meta(2), json!({"a": 5, "b": 6}));
+    assert_eq!(meta(3), json!({"b": 7}));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_integer_a_float_holds_exactly_keeps_a_nested_column_of_floats() {
+    let first = r#"{"id":0,"m":{"y":1.5}}"#;
+    let second = "{\"id\":1,\"m\":{\"y\":2}}\n{\"id\":2,\"m\":{\"y\":2.5}}\n\
+                  {\"id\":3,\"m\":{\"y\":9007199254740993}}\n{\"id\":4,\"m\":\"s\"}";
+    let (kept, dropped) = kept_beside_one_hostile("split_nested_float", first, second).await;
+    // Beyond 2⁵³ a float would round the integer: that row goes with the hostile one.
+    assert_eq!((kept, dropped), (vec![0, 1, 2], 2));
+    let rows = published_json("split_nested_float", "events");
+    let one = rows
+        .iter()
+        .find(|row| row["id"] == 1)
+        .expect("the row is kept");
+    assert_eq!(one["m"], json!({"y": 2.0}));
+}
+
+#[tokio::test(start_paused = true)]
+async fn json_null_is_a_null_of_any_column() {
+    let amounts = vec![Some("1"), Some("null"), None, Some("\"x\"")];
+    let settings = SchemaSettings::default().policy(SchemaPolicy::DiscardRow);
+    let first = arrow_amounts_batch(&DataType::Int64);
+    let outcome = load(
+        "split_null",
+        settings,
+        Sent::Batch(first),
+        Sent::Batch(json_amounts(amounts)),
+    )
+    .await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.streams["events"].discarded_rows, 1);
+    assert_eq!(
+        placed("split_null", "amount", "amount__json")
+            .into_iter()
+            .map(|(id, amount, _)| (id, amount))
+            .collect::<Vec<_>>(),
+        [
+            (0, json!(7)),
+            (1, json!(1)),
+            (2, Value::Null),
+            (3, Value::Null),
         ]
     );
 }
