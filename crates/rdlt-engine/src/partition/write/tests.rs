@@ -8,7 +8,7 @@ use super::Held;
 use super::held::shredded;
 use super::normalized::{judge, part_growth};
 use super::queue::written_bytes;
-use super::units::shred_failed;
+use super::units::{not_json, shred_failed};
 use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::partition::PartitionJob;
@@ -32,7 +32,7 @@ fn job() -> PartitionJob {
 
 #[test]
 fn a_refused_push_is_a_source_error_and_a_shredder_bug_an_internal_one() {
-    let refused = shred_failed(&job(), &ShredError::NotObject);
+    let refused = shred_failed(&job(), ShredError::NotObject);
     assert_eq!(
         (refused.kind(), refused.code()),
         (ErrorKind::Source, Some("json_not_object"))
@@ -42,11 +42,40 @@ fn a_refused_push_is_a_source_error_and_a_shredder_bug_an_internal_one() {
         refused.to_string().contains("a JSON push cannot be loaded"),
         "{refused}"
     );
-    let bug = shred_failed(&job(), &ShredError::Internal("a bug".to_owned()));
+    let bug = shred_failed(&job(), ShredError::Internal("a bug".to_owned()));
     assert_eq!(
         (bug.kind(), bug.code()),
         (ErrorKind::Internal, Some("shred_internal"))
     );
+    // The shredder's error is the cause, kept whole.
+    for (error, failed) in [
+        (ShredError::NotObject, refused),
+        (ShredError::Internal("a bug".to_owned()), bug),
+    ] {
+        let cause =
+            std::error::Error::source(&failed).and_then(|cause| cause.downcast_ref::<ShredError>());
+        assert_eq!(cause, Some(&error));
+        assert_eq!(failed.report().causes, [error.to_string()]);
+    }
+}
+
+#[test]
+fn a_value_that_is_not_json_is_a_source_error_caused_by_why() {
+    use crate::json::{JsonError, NotJson};
+    let refused = NotJson {
+        column: "c".to_owned(),
+        error: JsonError::TooDeep,
+    };
+    let failed = not_json(&job(), refused);
+    assert_eq!(
+        (failed.kind(), failed.code()),
+        (ErrorKind::Source, Some(JsonError::TooDeep.code()))
+    );
+    assert_eq!(failed.stream(), Some(&job().stream));
+    let cause =
+        std::error::Error::source(&failed).and_then(|cause| cause.downcast_ref::<JsonError>());
+    assert_eq!(cause, Some(&JsonError::TooDeep));
+    assert_eq!(failed.report().causes, [JsonError::TooDeep.to_string()]);
 }
 
 /// The bytes `batch` keeps alive, its schema with its buffers.
