@@ -1,6 +1,8 @@
 //! Writing the units of a normalized stream: each normalized into its table's and child tables'
 //! parts, planned parents first so dropped rows change no schema, and lowered on the pool.
 
+mod keys;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -417,6 +419,16 @@ const PATH_SHOWN: usize = 256;
 
 /// `parts`, one batch once concatenated, normalized as `shape`.
 fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Vec<Part>, Error> {
+    if let Some(key) = keys::taken_apart(&parts[0].schema(), shape) {
+        let detail = format!(
+            "stream {stream}: the merge key {key} holds objects or arrays, which normalizing \
+             takes apart into columns or tables of their own: a key must be a value the stream \
+             keeps whole"
+        );
+        return Err(Error::schema(detail)
+            .with_code("merge_key_nested")
+            .with_stream(stream));
+    }
     let failed =
         |error: ArrowError| normalize::identity::unread(stream, "normalizing a batch", &error);
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
