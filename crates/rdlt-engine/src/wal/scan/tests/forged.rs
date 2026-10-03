@@ -300,6 +300,14 @@ struct Measured {
 }
 
 impl WalStore for Measured {
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.open_log(pipeline, load)
+    }
+
     fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -310,6 +318,10 @@ impl WalStore for Measured {
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
         self.inner.loads(pipeline)
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.inner.leftovers(pipeline)
     }
 
     fn chunks<'a>(

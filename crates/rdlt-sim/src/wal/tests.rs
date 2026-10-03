@@ -18,8 +18,17 @@ fn chunk(number: u64) -> Chunk {
     }
 }
 
-/// Stages `bytes` as `chunk` of `owner`'s log in `wal` and publishes it.
+/// Opens `load`'s log of `owner` in `wal` where it is not open yet.
+async fn opened(wal: &SimWal, owner: &PipelineId, load: LoadId) {
+    if !wal.loads(owner).await.expect("lists").contains(&load) {
+        wal.open_log(owner, load).await.expect("opens");
+    }
+}
+
+/// Stages `bytes` as `chunk` of `owner`'s log in `wal`, opening it where it is not, and publishes
+/// it.
 async fn published(wal: &SimWal, owner: &PipelineId, chunk: Chunk, bytes: &'static [u8]) {
+    opened(wal, owner, chunk.load).await;
     let mut staged = wal.stage(owner, chunk).await.expect("stages");
     staged
         .append(Bytes::from_static(bytes))
@@ -37,6 +46,7 @@ async fn a_crash_keeps_every_chunk_published_and_loses_every_one_staged() {
     lost.append(Bytes::from_static(b"staged"))
         .await
         .expect("appends");
+    opened(&wal, &other, chunk(0).load).await;
     let mut kept = wal.stage(&other, chunk(0)).await.expect("stages");
     kept.append(Bytes::from_static(b"another's"))
         .await
@@ -55,7 +65,7 @@ async fn a_crash_keeps_every_chunk_published_and_loses_every_one_staged() {
 }
 
 #[tokio::test]
-async fn a_log_s_removal_goes_by_number_and_a_crash_part_way_leaves_the_highest() {
+async fn a_log_s_removal_closes_it_first_and_a_crash_part_way_leaves_what_leftovers_list() {
     let wal = SimWal::default();
     for number in [0, 1, 2] {
         published(&wal, &pipeline(), chunk(number), b"chunk").await;
@@ -69,6 +79,11 @@ async fn a_log_s_removal_goes_by_number_and_a_crash_part_way_leaves_the_highest(
     assert_eq!(
         wal.chunks(&pipeline(), chunk(0).load).await.expect("lists"),
         [(1, 5), (2, 5)]
+    );
+    assert_eq!(wal.loads(&orders).await.expect("lists"), []);
+    assert_eq!(
+        wal.leftovers(&orders).await.expect("lists"),
+        [chunk(0).load]
     );
 }
 
@@ -104,6 +119,7 @@ async fn it_holds_logs_until_every_one_is_removed() {
 #[tokio::test]
 async fn a_faulty_disk_fails_a_publish_or_a_removal_now_and_then_and_keeps_the_chunk() {
     let wal = SimWal::default();
+    opened(&wal, &pipeline(), chunk(0).load).await;
     wal.set_faults(Some(SplitMix64::new(7)));
     let (mut unpublished, mut unremoved) = (0, 0);
     for number in 0..1000 {

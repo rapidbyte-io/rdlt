@@ -291,6 +291,20 @@ fn no_connector_error_is_of_the_memory_budget_s_kind_or_code() {
 }
 
 #[test]
+fn a_log_another_load_still_writes_is_waited_for_and_a_taken_one_is_not() {
+    let load = rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 3);
+    let running = Error::wal_running(load);
+    assert_eq!(running.code(), Some("wal_running"));
+    assert!(running.is_retryable(), "another attempt may end");
+    let fenced = Error::wal_fenced(load);
+    assert_eq!(fenced.kind(), ErrorKind::Fenced);
+    assert!(
+        !fenced.is_retryable(),
+        "another attempt took the load's place"
+    );
+}
+
+#[test]
 fn a_full_disk_under_the_log_is_retryable_and_says_so() {
     use std::io::{Error as Io, ErrorKind as Kind};
     for full in [Kind::StorageFull, Kind::QuotaExceeded] {

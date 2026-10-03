@@ -92,11 +92,38 @@ pub(crate) async fn run(
         ))
         .with_code("wal_store_missing"));
     }
+    // The load's log opens before any other is read, so a replay that starts later lists it
+    // and fences it before it reads the pipeline's logs itself.
+    let Some(store) = context.env.wal() else {
+        return logged_run(context, load_id, &log).await;
+    };
+    let pipeline = context.plan.pipeline();
+    store
+        .open_log(pipeline, load_id)
+        .await
+        .map_err(Error::from_wal)?;
+    let ran = logged_run(context, load_id, &log).await;
+    // A failed attempt that published nothing leaves no log behind: nothing of it is replayed.
+    // The failure matters more than one of removing it, which a later replay retries.
+    if ran.is_err()
+        && matches!(store.chunks(pipeline, load_id).await, Ok(chunks) if chunks.is_empty())
+    {
+        drop(store.remove_log(pipeline, load_id).await);
+    }
+    ran
+}
+
+/// Runs the attempt as [`run`] does, its log opened where the engine keeps one.
+async fn logged_run(
+    context: &RunContext,
+    load_id: LoadId,
+    log: &Arc<Mutex<AttemptLog>>,
+) -> Result<AttemptEnd, Error> {
     // What earlier loads logged and never saw committed lands before this one plans.
-    replay::replay(context, load_id, &log).await?;
+    replay::replay(context, load_id, log).await?;
     let opened = open(context, load_id).await?;
     let session = Arc::clone(&opened.session);
-    let ran = opened_run(context, load_id, opened, &log).await;
+    let ran = opened_run(context, load_id, opened, log).await;
     if ran.is_err() {
         // A failed attempt's session releases what it holds now; the failure matters more than
         // any error from closing, and a session the coordinator closed stays closed.
@@ -312,6 +339,8 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
 
 /// The load's write-ahead log, started in `scope`, where the pipeline asks for one or a stream's
 /// source cannot read again what it acknowledged; `opened` is the session the attempt opened.
+///
+/// The log opened for a load that needs none is removed in `scope`.
 fn start_log(
     context: &RunContext,
     load_id: LoadId,
@@ -321,7 +350,17 @@ fn start_log(
 ) -> Option<LoadLog> {
     let needed =
         context.plan.logs_ahead() || planned.iter().any(|stream| !stream.stream.replayable);
-    let store = context.env.wal().filter(|_| needed)?;
+    let store = context.env.wal()?;
+    if !needed {
+        let pipeline = context.plan.pipeline().clone();
+        scope.spawn(async move {
+            store
+                .remove_log(&pipeline, load_id)
+                .await
+                .map_err(Error::from_wal)
+        });
+        return None;
+    }
     let owner = Owner {
         pipeline: context.plan.pipeline().clone(),
         load: load_id,

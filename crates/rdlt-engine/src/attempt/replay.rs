@@ -9,7 +9,6 @@
 mod checked;
 mod decide;
 mod staged;
-mod taken;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
@@ -28,10 +27,10 @@ use crate::report::AttemptLog;
 use crate::table::SharedSession;
 use crate::wal::frame;
 use crate::wal::scan::{self, Logged, Scanned};
+use crate::wal::taken::{self, Taken};
 use crate::wal::{Positions, WalStore};
 use decide::decide;
 use staged::Staged;
-use taken::Taken;
 
 /// The session replay commits through, and where the destination stands as it goes.
 struct Replaying {
@@ -85,12 +84,21 @@ async fn replay_into(
 ) -> Result<(), Error> {
     let pipeline = context.plan.pipeline();
     let limits = frame::limits(context.config.memory().get());
-    for load in store.loads(pipeline).await.map_err(Error::from_wal)? {
+    // What removals a crash interrupted left is never read, only removed.
+    for load in store.leftovers(pipeline).await.map_err(Error::from_wal)? {
+        store
+            .remove_log(pipeline, load)
+            .await
+            .map_err(Error::from_wal)?;
+    }
+    let loads = store.loads(pipeline).await.map_err(Error::from_wal)?;
+    for load in loads.into_iter().filter(|load| *load != load_id) {
         let number = match taken::take(store, pipeline, load, limits.frame_bytes).await? {
             Taken::Finished => None,
             Taken::Fenced { number } => Some(number),
-            // A load still running commits its log itself, or leaves it to a later replay.
-            Taken::Running => continue,
+            // A load still running holds the pipeline: the attempt waits for it to end, as its
+            // session would fence the load at the destination while its log takes rows on.
+            Taken::Running => return Err(Error::wal_running(load)),
         };
         if let Some(number) = number {
             let scanned = scan::scan(store, pipeline, load, limits.frame_bytes).await?;

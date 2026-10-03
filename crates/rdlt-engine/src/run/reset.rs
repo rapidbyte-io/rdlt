@@ -13,6 +13,7 @@ use crate::deadline::Waits;
 use crate::error::{Error, ErrorKind, Side};
 use crate::naming::Naming;
 use crate::scope::contained;
+use crate::wal::taken::{self, Taken};
 
 /// What a reset clears of each stream.
 #[non_exhaustive]
@@ -98,7 +99,6 @@ impl Engine {
             .with_code("drop_unsupported"));
         }
         readable_again(source.as_ref(), streams).await?;
-        self.logged_unreplayable(pipeline, streams).await?;
         let naming = Naming::checked(&destination.capabilities().identifiers)?;
         let load_id = self.env.load_id();
         let context = OpenContext {
@@ -112,7 +112,12 @@ impl Engine {
         } = destination.open(&context).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
-        let reset = cleared(&state, &naming, streams, scope, epoch);
+        // The session fences every load opened before it at the destination; the logs are read
+        // only after, each fenced too, so no load adds rows to one once it is read.
+        let reset = match self.logged_unreplayable(pipeline, streams).await {
+            Ok(()) => cleared(&state, &naming, streams, scope, epoch),
+            Err(error) => Err(error),
+        };
         let committed = match reset {
             Ok(cleared) => self.commit(&mut *session, load_id, epoch, cleared).await,
             Err(error) => Err(error),
@@ -175,7 +180,9 @@ impl Engine {
     /// committed and that never landed, as `reset_unreplayable`: the reset would discard the only
     /// copy of them, whatever the source says of the stream now.
     ///
-    /// A run of the pipeline replays the log, landing them, after which the reset may go ahead.
+    /// Each log is fenced before it is read, so its load, if it still runs, logs nothing more; a
+    /// log whose load keeps publishing is refused as `wal_running`. A run of the pipeline replays
+    /// the logs, landing their rows, after which the reset may go ahead.
     async fn logged_unreplayable(
         &self,
         pipeline: &PipelineId,
@@ -186,6 +193,17 @@ impl Engine {
         };
         let frame_bytes = crate::wal::frame::limits(self.config.memory().get()).frame_bytes;
         for load in store.loads(pipeline).await.map_err(Error::from_wal)? {
+            match taken::take(store.as_ref(), pipeline, load, frame_bytes).await? {
+                Taken::Finished => {
+                    store
+                        .remove_log(pipeline, load)
+                        .await
+                        .map_err(Error::from_wal)?;
+                    continue;
+                }
+                Taken::Fenced { .. } => {}
+                Taken::Running => return Err(Error::wal_running(load)),
+            }
             let scanned =
                 crate::wal::scan::scan(store.as_ref(), pipeline, load, frame_bytes).await?;
             let unlanded = scanned

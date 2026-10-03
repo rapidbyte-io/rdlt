@@ -332,9 +332,11 @@ fn lanes(tables: &Arc<Tables>) -> Lanes {
 
 /// A log of the coordinator's load in `store`, its writer running.
 fn started(store: Arc<MemoryWal>) -> LoadLog {
+    let pipeline = rdlt_connector::PipelineId::parse("orders").unwrap();
+    store.open(&pipeline, LoadId::from_parts(UNIX_EPOCH, 1));
     let store: Arc<dyn WalStore> = store;
     let owner = crate::wal::Owner {
-        pipeline: rdlt_connector::PipelineId::parse("orders").unwrap(),
+        pipeline,
         load: LoadId::from_parts(UNIX_EPOCH, 1),
         epoch: Epoch(1),
         opened: None,

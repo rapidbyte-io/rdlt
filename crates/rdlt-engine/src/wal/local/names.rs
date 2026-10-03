@@ -38,6 +38,9 @@ fn base32(bytes: &[u8]) -> String {
     out
 }
 
+/// The name of the file a load's directory holds while its log is open.
+pub(super) const OPEN: &str = "open";
+
 /// The name of `load`'s directory.
 pub(super) fn load(load: LoadId) -> String {
     load.to_string()

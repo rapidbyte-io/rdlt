@@ -116,6 +116,7 @@ fn owner() -> Owner {
 /// A log as [`logged`] writes it, whose second commit begins the phases `begun`.
 async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryWal> {
     let store = Arc::new(MemoryWal::default());
+    store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
     let (log, task) = LoadLog::start(wal, owner(), std::num::NonZeroU64::MAX);
     let budget = MemoryBudget::new(1 << 20);
@@ -166,6 +167,7 @@ async fn copied(from: &MemoryWal, change: impl Fn(Chunk, &mut Vec<u8>)) -> Memor
 
 /// Publishes `bytes` as `chunk` of `pipeline`'s log in `store`.
 async fn published(store: &MemoryWal, pipeline: &PipelineId, chunk: Chunk, bytes: Vec<u8>) {
+    store.open(pipeline, chunk.load);
     let mut staged = store.stage(pipeline, chunk).await.expect("stages");
     staged.append(Bytes::from(bytes)).await.expect("appends");
     staged.publish().await.expect("publishes");
@@ -245,6 +247,7 @@ async fn a_received_commit_s_chunk_is_gone_and_only_what_is_needed_is_read() {
 async fn a_commit_s_receipt_noted_in_a_later_chunk_s_end_settles_it() {
     // Commit 1 is received while segment 3 stays open: chunk 0 stays, its commit received.
     let store = Arc::new(MemoryWal::default());
+    store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
     let (log, task) = LoadLog::start(wal, owner(), std::num::NonZeroU64::MAX);
     let budget = MemoryBudget::new(1 << 20);

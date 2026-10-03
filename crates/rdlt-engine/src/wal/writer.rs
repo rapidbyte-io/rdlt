@@ -339,7 +339,7 @@ impl Log {
                 .store
                 .stage(&self.owner.pipeline, chunk)
                 .await
-                .map_err(Error::from_wal)?;
+                .map_err(|error| self.lost(error))?;
             let mut head = frame::preamble().to_vec();
             head.extend_from_slice(&self.header()?);
             let len = count(head.len());
@@ -367,6 +367,17 @@ impl Log {
         };
         current.len += span.len;
         Ok(span)
+    }
+
+    /// The error for `error` of the store: a log found removed, or a chunk name found taken, was
+    /// taken over by a replay.
+    fn lost(&self, error: std::io::Error) -> Error {
+        match error.kind() {
+            std::io::ErrorKind::NotFound | std::io::ErrorKind::AlreadyExists => {
+                Error::wal_fenced(self.owner.load)
+            }
+            _ => Error::from_wal(error),
+        }
     }
 
     /// The header frame of the chunk staged.

@@ -92,6 +92,7 @@ pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
         message: error.to_string(),
     };
     let wal = |error: std::io::Error| code(crate::error::Error::from_wal(error));
+    ready(store.open_log(&pipeline, load)).map_err(wal)?;
     let mut staged = ready(store.stage(&pipeline, chunk)).map_err(wal)?;
     ready(staged.append(Bytes::copy_from_slice(bytes))).map_err(wal)?;
     ready(staged.publish()).map_err(wal)?;
