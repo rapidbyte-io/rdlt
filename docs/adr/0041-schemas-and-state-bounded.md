@@ -121,8 +121,10 @@ one run to the next, broke both:
   cursor, and a plan naming it reads nothing from it. Each partition entry records the load
   whose commit wrote it. A commit that would otherwise be refused as `state_bytes_exceeded`
   deletes with it as few done markers as it needs, of partitions the latest plans of the
-  attempt's streams do not name, the earliest recorded first; the run report lists each, by
-  stream, as `forgotten`, since a plan that names one again reads it again from its beginning.
+  attempt's streams do not name, the earliest recorded first; the run report names them, by
+  stream, as `forgotten`, since a plan that names one again reads it again from its beginning:
+  the latest 128 (`REPORTED_FORGOTTEN`), and a count of those before, so a run that forgets for
+  ever keeps a bounded report.
   A partition that is not done is never forgotten: where state still does not fit, the commit
   is refused, and raising the budget or resetting the stream is the remedy (ADR 0031, ADR 0033).
 - **A widen the destination refuses is routed aside.** The engine applies a change one table
@@ -170,11 +172,11 @@ Rejected:
   hundred partitions each holding a cursor as long as a cursor may be reach the limit, at the
   defaults and at the least memory alike.
 - A source whose partitions keep being created and read to their end stays within its state
-  limit: its oldest done markers go as new ones need room, each named in the report. A source
-  says a partition is finished by ending its read with data after its last checkpoint; the
-  engine never infers it from a cursor. The reference files, memory and generator sources end a
-  read that does not follow so, answering a barrier pending before the last push ahead of it;
-  a following read keeps its cursor. They read in full, so each cycle also clears the one
+  limit: its oldest done markers go as new ones need room, the latest named in the report and
+  the rest counted. A source says a partition is finished by ending its read with data after its
+  last checkpoint; the engine never infers it from a cursor. The reference files, memory and
+  generator sources end a read that does not follow so, answering a barrier pending before the
+  last push ahead of it; a following read keeps its cursor. They read in full, so each cycle also clears the one
   before. The change source's snapshot partitions say they are done in their own cursors, and
   their entries go with their phase; the log's partitions never end. One whose partitions keep
   being created and end at a cursor in an incremental stream keeps every cursor and stops at
