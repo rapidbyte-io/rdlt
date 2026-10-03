@@ -340,7 +340,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
 A run never reserves more than its memory budget, and its heap stays within the budget, a fifth
 of it and 32 MiB, beside two things that are not reserved: the push each read's source holds
-before it is admitted, and what replay stages.
+before it is admitted, and what replay stages. Amended 2026-10-03 (ADR 0045): replay reserves
+what it stages, so only the first is not reserved.
 
 - The first is one push or one frame a partition, within the wire's limits.
 - What a JSON push's records become beyond three times their text was a third, bounded only by
@@ -424,6 +425,6 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
   wire's weigher can stop within a row, but only for the wire crate's own cut, so one row
   whose list views nest and name the same items is weighed to its end before it is refused.
 - Not bounded here: how much one push may expand to in total, which costs CPU and destination
-  storage in proportion; and what replay stages. The nulls of a nested column's fields the
-  shredder builds, and what a JSON push of sparse records becomes beyond three times its text,
-  are reserved before they are built since ADR 0040.
+  storage in proportion; and what replay stages, which ADR 0045 reserves since. The nulls of a
+  nested column's fields the shredder builds, and what a JSON push of sparse records becomes
+  beyond three times its text, are reserved before they are built since ADR 0040.

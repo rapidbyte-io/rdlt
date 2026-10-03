@@ -32,11 +32,16 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
     may become a change table, and any pipeline may create a table of the name.
   - A stream the pipeline recorded nothing of is refused as `stream_not_found`, so a typo in a
     command that deletes never passes silently. The source's catalog decides nothing here: a stream
-    the source no longer serves can be reset.
+    the source no longer serves can be reset. Amended 2026-10-03 (ADR 0045): a stream is recorded
+    only by state keyed by its own name, never by a table path its displayed name begins, and one
+    whose displayed name another recorded stream shares is refused as `stream_ambiguous`.
   - A stream whose source cannot read again is refused as `reset_unreplayable`. Read from its
     beginning, it would wait for rows its source forgot. The simulation found that a source
     starting such a read where it last acknowledged instead is unsafe: a commit it acknowledged
     may still wait in a crashed load's log, and a racing run would move past it for good.
+    Amended 2026-10-03 (ADR 0045): a stream whose source no longer lists it, or now calls it one
+    it reads again, is refused as well while a log holds rows of it that its source was told
+    were committed and no commit received; a run of the pipeline lands them first.
   - A destination that does not declare `drop_tables` refuses a `Tables` reset as
     `drop_unsupported`, and a reset naming no streams is refused as `no_streams`.
   - These refusals, and `reset_unreplayable`, come before the destination opens, fencing nothing.
