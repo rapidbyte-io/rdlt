@@ -52,6 +52,10 @@ proptest! {
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
+            horizon: Some(crate::Horizon {
+                load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+                commit_seq: CommitSeq::FIRST,
+            }),
         };
         let request = v1::CommitRequest { session: 1, meta: Some(v1::CommitMeta::from(&meta)) };
         let scanned = counted(rdlt_wire::scan::request("Commit"), &request.encode_to_vec());

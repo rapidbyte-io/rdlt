@@ -90,6 +90,9 @@ pub(crate) struct Shared {
     pub(crate) held: AtomicU64,
     /// The first failure, which every later batch and command is answered with.
     pub(crate) failed: parking_lot::Mutex<Option<Error>>,
+    /// The oldest commit whose frame a chunk not deleted holds, which a replay of the log may
+    /// repeat; none where no chunk holds one.
+    pub(crate) oldest: parking_lot::Mutex<Option<CommitSeq>>,
 }
 
 impl Shared {

@@ -1,6 +1,7 @@
-//! The memory destination keeps every receipt, and answers a commit sent again from its own.
+//! The memory destination keeps every receipt no horizon has passed, and answers a commit sent
+//! again from its own.
 
-use rdlt_connector::{CommitMeta, Receipt, SegmentId};
+use rdlt_connector::{CommitMeta, Horizon, Receipt, SegmentId};
 
 use super::owned::{ids, meta, open, stage, store, table};
 
@@ -89,4 +90,47 @@ async fn a_commit_naming_every_segment_publishes_what_was_staged_without_walking
     .expect("the commit ends");
     assert_eq!(committed.expect("the commit lands").rows, 2);
     assert_eq!(ids("receipts-wide", "orders"), [1, 2]);
+}
+
+#[tokio::test]
+async fn the_receipts_before_a_commit_s_horizon_are_forgotten_and_the_rest_answered() {
+    let destination = store("receipts-horizon").await;
+    let orders = table("orders", "orders", None);
+    let mut session = open(destination.as_ref(), "p", 1).await;
+    let mut sent: Vec<(CommitMeta, Receipt)> = Vec::new();
+    for commit in 1..=5_u64 {
+        stage(
+            &mut session,
+            &orders,
+            commit,
+            &[i64::try_from(commit).unwrap()],
+        )
+        .await;
+        let mut meta = meta(&session, 1, commit, &[commit]);
+        // The fifth commit says the engine may repeat no commit before the third.
+        meta.horizon = (commit == 5).then(|| Horizon {
+            load_id: sent[2].0.load_id,
+            commit_seq: sent[2].0.commit_seq,
+        });
+        let landed = session.session.commit(&meta).await;
+        sent.push((meta, landed.expect("the commit lands")));
+    }
+    let unpublished = 6;
+    stage(&mut session, &orders, unpublished, &[-1]).await;
+    for (meta, receipt) in &sent[2..] {
+        let again = CommitMeta {
+            segments: [SegmentId(unpublished)].into_iter().collect(),
+            ..meta.clone()
+        };
+        let answered = session.session.commit(&again).await;
+        assert_eq!(&answered.expect("answered again"), receipt);
+    }
+    assert_eq!(ids("receipts-horizon", "orders"), [1, 2, 3, 4, 5]);
+    // The second commit's receipt is gone: sent again, it is taken for a new commit.
+    let again = CommitMeta {
+        segments: [SegmentId(unpublished)].into_iter().collect(),
+        ..sent[1].0.clone()
+    };
+    session.session.commit(&again).await.expect("taken anew");
+    assert_eq!(ids("receipts-horizon", "orders"), [-1, 1, 2, 3, 4, 5]);
 }

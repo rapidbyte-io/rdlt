@@ -60,6 +60,7 @@ fn logged(delta: Vec<StateChange>) -> Logged {
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
+            horizon: None,
         },
         seals: vec![Seal {
             segment: SegmentId(1),

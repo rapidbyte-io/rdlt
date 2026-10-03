@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::owned::OWNERS;
 use super::upsert::Row;
 use super::{Owned, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
-use crate::commit::Receipt;
+use crate::commit::{Horizon, Receipt};
 use crate::destination::TableRef;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, TablePath};
@@ -221,6 +221,23 @@ impl<D: SqlDialect> SqlPlanner<D> {
             "INSERT INTO {RECEIPTS} (pipeline, load_id, commit_seq, committed_at, rows, bytes) \
              VALUES ({})",
             values.join(", ")
+        ));
+        sql.finish()
+    }
+
+    /// The statement forgetting `pipeline`'s receipts of the commits before `horizon`, which the
+    /// engine never repeats: of loads ordered before its load, and of its load before its commit.
+    ///
+    /// A load id is stored as its hyphenated lower-case text, which orders as its bytes do.
+    pub fn forget_receipts(&self, pipeline: &PipelineId, horizon: &Horizon) -> Statement {
+        let mut sql = self.sql();
+        let name = sql.bind(SqlValue::Text(pipeline.to_string()));
+        let load = sql.bind(SqlValue::Text(horizon.load_id.to_string()));
+        let same = sql.bind(SqlValue::Text(horizon.load_id.to_string()));
+        let seq = sql.bind(integer(horizon.commit_seq.get()));
+        sql.push(&format!(
+            "DELETE FROM {RECEIPTS} WHERE pipeline = {name} \
+             AND (load_id < {load} OR (load_id = {same} AND commit_seq < {seq}))"
         ));
         sql.finish()
     }

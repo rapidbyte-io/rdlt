@@ -27,7 +27,7 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "D-IDEMPOTENT",
-        statement: "re-committing a commit returns its receipt and publishes nothing",
+        statement: "re-committing a commit no horizon has passed returns its receipt and publishes nothing",
         unless: "",
     },
     Clause {

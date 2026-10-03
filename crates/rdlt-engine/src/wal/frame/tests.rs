@@ -31,11 +31,9 @@ fn table() -> TableRef {
     }
 }
 
-/// One frame of every kind but a batch's.
-fn metadata() -> Vec<Frame> {
-    let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
-        .expect("a valid schema");
-    let meta = CommitMeta {
+/// A commit that declares its horizon, as a commit's frame holds it.
+fn commit_meta() -> CommitMeta {
+    CommitMeta {
         load_id: load(),
         commit_seq: CommitSeq::FIRST.next(),
         epoch: Epoch(3),
@@ -47,7 +45,18 @@ fn metadata() -> Vec<Frame> {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
-    };
+        horizon: Some(rdlt_connector::Horizon {
+            load_id: load(),
+            commit_seq: CommitSeq::FIRST,
+        }),
+    }
+}
+
+/// One frame of every kind but a batch's.
+fn metadata() -> Vec<Frame> {
+    let schema = TableSchema::new(vec![Field::new("id", LogicalType::Int64, false)])
+        .expect("a valid schema");
+    let meta = commit_meta();
     vec![
         Frame::Header(Header {
             pipeline: PipelineId::parse("orders").expect("a valid pipeline"),
@@ -479,6 +488,7 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     let committing = Committing {
         meta,

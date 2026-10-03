@@ -1123,6 +1123,7 @@ async fn a_stopping_connector_closes_a_connection_still_busy_at_its_drain_wait()
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     let committing = tokio::spawn(async move { opened.session.commit(&meta).await });
     settle(Duration::from_secs(1)).await;

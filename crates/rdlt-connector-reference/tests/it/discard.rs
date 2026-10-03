@@ -61,6 +61,7 @@ async fn late_discard<C: DestinationConnector>(config: serde_json::Value) -> u64
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     newer
         .session

@@ -31,10 +31,6 @@ pub(crate) const TABLE_NAME_BYTES: u16 = 128;
 /// files an older manifest lists may be gone.
 pub(crate) const KEPT_VERSIONS: u64 = 8;
 
-/// Loads: bounds the loads whose receipts a manifest keeps, the most recent ones; of each it keeps
-/// every receipt.
-pub(crate) const RECEIPT_LOADS: usize = 16;
-
 /// Attempts: bounds how often an open or a schema change is worked out again when another
 /// session's lands first.
 pub(crate) const PUBLISH_ATTEMPTS: u32 = 64;

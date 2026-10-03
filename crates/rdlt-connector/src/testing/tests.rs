@@ -614,6 +614,8 @@ struct VaultConfig {
     wrong_fence_kind: bool,
     refuse_connect: bool,
     forget_receipts: bool,
+    /// Forgets the receipt of the commit a horizon names, with those of the commits before it.
+    forget_at_horizon: bool,
     publish_all: bool,
     /// Publishes, for each segment a commit lists, one it staged and the commit does not list.
     publish_other: bool,
@@ -1338,6 +1340,13 @@ impl Session for VaultSession {
             rows,
             bytes: 0,
         };
+        if let Some(horizon) = &meta.horizon {
+            let past = self.config.forget_at_horizon;
+            store.receipts.retain(|key, _| {
+                horizon.keeps(key.0, key.1)
+                    && !(past && *key == (horizon.load_id, horizon.commit_seq))
+            });
+        }
         store.receipts.insert(key, receipt.clone());
         Ok(receipt)
     }
@@ -1792,6 +1801,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("no_fence", &["D-FENCE"]),
     ("wrong_fence_kind", &["D-FENCE"]),
     ("forget_receipts", &["D-IDEMPOTENT"]),
+    ("forget_at_horizon", &["D-IDEMPOTENT"]),
     ("publish_all", &["D-COMMIT"]),
     (
         "blank_names",

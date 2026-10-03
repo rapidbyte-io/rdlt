@@ -95,6 +95,7 @@ fn a_file_a_commit_writes_is_named_for_its_own_load_and_number_and_for_no_other_
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     let [kind, first] = Location::written_by("merged", &meta).unwrap();
     let [_, second] = Location::written_by("merged", &meta).unwrap();
@@ -193,6 +194,7 @@ impl Sessions {
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
             drop_tables: Vec::new(),
+            horizon: None,
         }
     }
 

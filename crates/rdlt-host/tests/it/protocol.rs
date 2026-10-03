@@ -326,6 +326,7 @@ async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     let error = opened.session.commit(&meta).await.unwrap_err();
     assert_eq!(

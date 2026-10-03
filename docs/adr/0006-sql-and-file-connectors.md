@@ -55,7 +55,8 @@ and building them surfaced decisions the spec leaves open.
   `_rdlt/pipelines/<dir>/staging/<epoch>/<load>/<segment>/<table>/<generation>/<part>.<ext>` and
   are published where they are; opening removes the files older epochs staged that the latest
   manifest does not list. A merge table's commit rewrites the table as one file. The manifest
-  keeps the receipts of the 16 most recent loads and the last 8 versions stay on disk.
+  keeps the receipts of the 16 most recent loads and the last 8 versions stay on disk. Amended
+  2026-10-03 (ADR 0045): the manifest keeps the receipts no commit's horizon has passed.
 - **Formats decide types.** Arrow IPC files keep every type; JSON lines keep scalars, structs and
   lists, and the engine stores the rest as text. A table's columns live in a catalog under the root, which schema changes update with the rules
   the memory destination follows; each change creates the table's next catalog version

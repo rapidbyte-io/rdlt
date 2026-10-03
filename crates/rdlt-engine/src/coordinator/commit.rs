@@ -44,6 +44,7 @@ impl Coordinator {
         crash_point!("engine.flush.before");
         self.parts.lanes.flush().await?;
         crash_point!("engine.flush.after");
+        let horizon = self.horizon().await?;
         let mut meta = CommitMeta {
             load_id: self.parts.load_id,
             commit_seq: self.seq,
@@ -53,6 +54,7 @@ impl Coordinator {
             finish_generations,
             child_tables: self.parts.tables.child_tables(),
             drop_tables: Vec::new(),
+            horizon: Some(horizon),
         };
         let forgotten = self.relieve(&mut meta, &tables.born);
         if self

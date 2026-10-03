@@ -13,8 +13,8 @@ use std::sync::{Arc, Weak};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use rdlt_connector::{
-    CommitMeta, GenerationId, PartitionId, PartitionState, Permit, Receipt, SchemaVersion,
-    SegmentId, StreamName,
+    CommitMeta, CommitSeq, GenerationId, PartitionId, PartitionState, Permit, Receipt,
+    SchemaVersion, SegmentId, StreamName,
 };
 use tokio::sync::{Mutex, oneshot};
 
@@ -127,6 +127,12 @@ impl LoadLog {
             .saturating_add(self.disk.limit / 8)
             .max(self.disk.limit / 2);
         self.disk.due.store(next, Ordering::Relaxed);
+    }
+
+    /// The oldest commit of the load a replay of its log may repeat: the oldest whose frame a
+    /// chunk not deleted holds; none where no chunk holds one.
+    pub(crate) fn oldest(&self) -> Option<CommitSeq> {
+        *self.writer.shared().oldest.lock()
     }
 
     /// Bytes: what the log holds on disk.

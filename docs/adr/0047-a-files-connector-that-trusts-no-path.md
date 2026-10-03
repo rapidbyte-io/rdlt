@@ -131,7 +131,9 @@ when it is read and never written in a form its reader refuses.
 - **Lists stay short.** A table's catalog keeps 8 versions behind the latest, as manifests do. A
   manifest keeps every receipt of each of its 16 latest loads: a commit repeated however far
   back in its load is answered with its receipt, and how many receipts a load may hold is the
-  engine's to bound, not the destination's. An append table's commit merges the
+  engine's to bound, not the destination's. Amended 2026-10-03 (ADR 0045): the engine bounds
+  them, declaring with each commit the oldest it may repeat, and the manifest forgets the
+  receipts before it, of whichever load; with no horizon it keeps them all. An append table's commit merges the
   files it adds with each other, whatever rows each holds, and a file listed before them with
   those after it while it holds at most twice their rows, never reading more than 64 MiB into
   one file and keeping row order. Every two files next to each other in a list then either at

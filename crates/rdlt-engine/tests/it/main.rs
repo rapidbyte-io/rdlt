@@ -23,6 +23,7 @@ mod following;
 mod following_changes;
 mod growth;
 mod history;
+mod horizon;
 mod json;
 mod ledger;
 mod lowering;

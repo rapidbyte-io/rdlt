@@ -10,6 +10,7 @@ mod barrier;
 mod commit;
 mod delta;
 mod due;
+mod horizon;
 mod phases;
 mod pressure;
 mod replan;
@@ -24,8 +25,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, Receipt, Source, StreamName,
-    TablePath,
+    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, Receipt, Source,
+    StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -157,6 +158,8 @@ pub(crate) struct CoordinatorParts {
     /// The tables, and through them the destination session.
     pub(crate) tables: Arc<Tables>,
     pub(crate) source: Arc<dyn Source>,
+    /// The pipeline, whose logs bound the commits a replay may repeat.
+    pub(crate) pipeline: PipelineId,
     pub(crate) lanes: Lanes,
     pub(crate) load_id: LoadId,
     pub(crate) epoch: Epoch,

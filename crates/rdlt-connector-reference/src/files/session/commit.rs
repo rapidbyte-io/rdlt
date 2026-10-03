@@ -175,7 +175,7 @@ fn put(
         rows: staged.iter().map(|staged| staged.file.rows).sum(),
         bytes: staged.iter().map(|staged| staged.file.bytes).sum(),
     };
-    manifest.record(&receipt);
+    manifest.record(&receipt, meta.horizon.as_ref());
     let Some(version) = manifest.version.checked_add(1) else {
         return Err(ConnectorError::data(format!(
             "pipeline {} holds the last manifest version there is",

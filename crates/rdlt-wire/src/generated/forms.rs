@@ -333,6 +333,11 @@ pub(crate) static COMMIT_META: Form = Form {
             kind: Kind::Message(&DROPPED_TABLE),
             repeated: true,
         },
+        Field {
+            number: 9,
+            kind: Kind::Message(&HORIZON),
+            repeated: false,
+        },
     ],
 };
 
@@ -758,6 +763,24 @@ pub(crate) static HISTORY_COLUMNS: Form = Form {
         Field {
             number: 4,
             kind: Kind::String,
+            repeated: false,
+        },
+    ],
+};
+
+/// The form of `Horizon`.
+pub(crate) static HORIZON: Form = Form {
+    name: "Horizon",
+    size: size_of::<v1::Horizon>(),
+    fields: &[
+        Field {
+            number: 1,
+            kind: Kind::Bytes,
+            repeated: false,
+        },
+        Field {
+            number: 2,
+            kind: Kind::Scalar(8),
             repeated: false,
         },
     ],

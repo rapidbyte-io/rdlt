@@ -39,6 +39,7 @@ fn meta(segments: &[u64]) -> CommitMeta {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     }
 }
 

@@ -90,6 +90,7 @@ fn meta(opened: &OpenedSession, load: u128) -> CommitMeta {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     }
 }
 

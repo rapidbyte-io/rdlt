@@ -242,6 +242,17 @@ message CommitMeta {
   repeated ChildTable child_tables = 7;
   // The tables it drops.
   repeated DroppedTable drop_tables = 8;
+  // The oldest commit the engine may still repeat: the receipt of every commit before it may be
+  // forgotten. Absent, none may.
+  Horizon horizon = 9;
+}
+
+// A commit by its load and its sequence in the load; commits order by load id, then sequence.
+message Horizon {
+  // The load, a UUIDv7 in its 16 bytes.
+  bytes load_id = 1;
+  // The commit's sequence within the load; at least 1.
+  uint64 commit_seq = 2;
 }
 
 // A table a commit drops.

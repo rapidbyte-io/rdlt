@@ -71,7 +71,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-EPOCH` | each open returns a higher epoch than the last | — |
 | `D-STAGING` | staged segments are invisible until committed | — |
 | `D-COMMIT` | a commit publishes exactly its segments and reports their rows | — |
-| `D-IDEMPOTENT` | re-committing a commit returns its receipt and publishes nothing | — |
+| `D-IDEMPOTENT` | re-committing a commit no horizon has passed returns its receipt and publishes nothing | — |
 | `D-STATE` | committed state records are returned by the next open | — |
 | `D-DISCARD` | segments staged by an earlier session are never published | — |
 | `D-REPLACE` | a replace generation stays hidden until the commit that finishes it swaps it in | the destination cannot replace |

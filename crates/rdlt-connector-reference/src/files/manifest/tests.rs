@@ -1,13 +1,13 @@
 use std::time::{Duration, UNIX_EPOCH};
 
-use rdlt_connector::{CommitSeq, ConnectorErrorKind, Epoch, LoadId, PipelineId, Receipt};
+use rdlt_connector::{CommitSeq, ConnectorErrorKind, Epoch, Horizon, LoadId, PipelineId, Receipt};
 
 use super::{
     Listed, MANIFEST_INVALID, MANIFESTS, Manifest, TableFiles, format_of, latest, located,
     pipeline_dir, put, read, staged, sweep, truncated,
 };
 use crate::files::FileFormat;
-use crate::limits::{KEPT_VERSIONS, MANIFEST_BYTES, RECEIPT_LOADS};
+use crate::limits::{KEPT_VERSIONS, MANIFEST_BYTES};
 use crate::rooted::Dir;
 
 fn receipt(load: u128, commit_seq: CommitSeq) -> Receipt {
@@ -40,39 +40,54 @@ fn listed(path: &str) -> Listed {
 }
 
 #[test]
-fn a_manifest_keeps_the_receipts_of_the_most_recent_loads() {
+fn a_manifest_forgets_the_receipts_before_a_horizon_and_keeps_every_one_after() {
     let mut manifest = Manifest::default();
-    let loads = u128::try_from(RECEIPT_LOADS).unwrap() + 1;
-    for load in 0..loads {
-        manifest.record(&receipt(load, CommitSeq::FIRST));
-        manifest.record(&receipt(load, CommitSeq::FIRST.next()));
+    for load in 1..=3 {
+        for commit in 1..=3 {
+            manifest.record(&receipt(load, seq(commit)), None);
+        }
     }
-    let oldest = LoadId::from_parts(UNIX_EPOCH, 0);
-    assert_eq!(manifest.receipt(oldest, CommitSeq::FIRST), None);
-    for seq in [CommitSeq::FIRST, CommitSeq::FIRST.next()] {
-        let kept = manifest.receipt(LoadId::from_parts(UNIX_EPOCH, 1), seq);
-        assert_eq!(kept, Some(receipt(1, seq)));
+    assert_eq!(
+        manifest.receipts.len(),
+        9,
+        "with no horizon every receipt stays"
+    );
+    // Load 2's second commit is the oldest the engine may repeat.
+    let horizon = Horizon {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 2),
+        commit_seq: seq(2),
+    };
+    manifest.record(&receipt(3, seq(4)), Some(&horizon));
+    for load in 1..=3_u128 {
+        let load_id = LoadId::from_parts(UNIX_EPOCH, load);
+        for commit in 1..=4 {
+            let recorded = commit <= 3 || (load, commit) == (3, 4);
+            let kept = recorded && (load, commit) >= (2, 2);
+            let stored = manifest.receipt(load_id, seq(commit));
+            assert_eq!(stored.is_some(), kept, "load {load} commit {commit}");
+        }
     }
-    assert_eq!(manifest.receipts.len(), RECEIPT_LOADS * 2);
 }
 
 #[test]
-fn a_manifest_keeps_every_receipt_of_a_load_it_keeps() {
+fn a_manifest_of_one_long_load_keeps_only_the_receipts_its_horizon_spares() {
     let mut manifest = Manifest::default();
-    // Two loads committing in turn, far more often than loads are kept.
+    // A run that follows its source is one load: each commit declares the oldest it may
+    // repeat, a few commits back, and what the manifest keeps stays as short.
     for commit in 1..=100 {
-        for load in [1, 2] {
-            manifest.record(&receipt(load, seq(commit)));
-        }
+        let horizon = Horizon {
+            load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+            commit_seq: seq(commit.max(3) - 2),
+        };
+        manifest.record(&receipt(1, seq(commit)), Some(&horizon));
+        assert!(manifest.receipts.len() <= 3, "{commit}");
     }
-    assert_eq!(manifest.receipts.len(), 200);
-    for load in [1, 2] {
-        let load_id = LoadId::from_parts(UNIX_EPOCH, load);
-        for commit in 1..=100 {
-            let kept = manifest.receipt(load_id, seq(commit));
-            assert_eq!(kept, Some(receipt(load, seq(commit))), "{commit}");
-        }
-        assert_eq!(manifest.receipt(load_id, seq(101)), None);
+    let load_id = LoadId::from_parts(UNIX_EPOCH, 1);
+    for commit in 98..=100 {
+        assert_eq!(
+            manifest.receipt(load_id, seq(commit)),
+            Some(receipt(1, seq(commit)))
+        );
     }
 }
 

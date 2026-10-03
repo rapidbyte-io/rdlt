@@ -106,7 +106,8 @@ pub use capabilities::{
 pub use catalog::{Catalog, Checkpointing, InvalidCatalog, Partitioning, ReadMode, StreamSpec};
 pub use change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, validate_change_batch};
 pub use commit::{
-    ChildTable, CommitMeta, DroppedTable, Receipt, SegmentRange, SegmentSet, UnorderedRanges,
+    ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentRange, SegmentSet,
+    UnorderedRanges,
 };
 pub use cursor::Cursor;
 pub use destination::{

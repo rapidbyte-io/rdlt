@@ -215,6 +215,7 @@ async fn a_transition_a_newer_load_committed_past_lands_from_the_log() {
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
+        horizon: None,
     };
     newer
         .session

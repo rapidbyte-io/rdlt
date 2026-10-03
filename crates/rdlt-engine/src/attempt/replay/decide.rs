@@ -53,6 +53,7 @@ impl Decision {
             finish_generations,
             child_tables,
             drop_tables: Vec::new(),
+            horizon: None,
         }
     }
 }
