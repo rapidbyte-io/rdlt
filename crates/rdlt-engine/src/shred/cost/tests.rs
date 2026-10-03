@@ -192,3 +192,33 @@ fn a_list_of_text_holds_text() {
     shape.push("l".into(), Observed::Array(Box::new(Observed::Text), 1));
     assert!(holds_text(&shape));
 }
+
+#[test]
+fn fitting_a_list_reckons_its_items_for_what_they_lack_or_cast() {
+    let list = |item: Observed, items| {
+        let mut shape = Shape::default();
+        shape.push("l".into(), Observed::Array(Box::new(item), items));
+        shape
+    };
+    let object = |fields: &[&str]| {
+        let mut object = Shape::default();
+        for field in fields {
+            object.push((*field).into(), Observed::Int { exact: true });
+        }
+        Observed::Object(object)
+    };
+    // Two rows whose lists held three objects: `b` built as nulls for each, a value and a
+    // validity bit each.
+    let lacking = fitted(&list(object(&["a", "b"]), 0), &list(object(&["a"]), 3), 2);
+    assert_eq!(lacking, 3 * 8 + 1);
+    // Five integers cast to floats.
+    let cast = fitted(
+        &list(Observed::Float, 0),
+        &list(Observed::Int { exact: true }, 5),
+        2,
+    );
+    assert_eq!(cast, 5 * 8 + 1);
+    // Items built as they are take nothing beside them.
+    let int = Observed::Int { exact: true };
+    assert_eq!(fitted(&list(int.clone(), 0), &list(int, 5), 2), 0);
+}

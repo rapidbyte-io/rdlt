@@ -16,6 +16,9 @@ use super::meter::{KEY, Meter, OBJECT_SHAPE};
 use super::observe::{Observed, Shape};
 use super::visit::{Context, MAX_DEPTH, Skip, nest};
 
+#[cfg(test)]
+mod tests;
+
 /// One record, which is an object, observed into `shape`.
 pub(crate) struct Record<'a> {
     pub(crate) shape: &'a mut Shape,

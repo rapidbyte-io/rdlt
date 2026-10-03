@@ -50,7 +50,7 @@ impl Held {
 /// the last is written.
 pub(super) fn shredded(
     mut permits: Vec<Permit>,
-    beyond: Option<Reservation>,
+    mut beyond: Reservation,
     batches: &[RecordBatch],
 ) -> Vec<Held> {
     let mut alive = batches
@@ -63,10 +63,8 @@ pub(super) fn shredded(
             alive = alive.saturating_sub(admitted.bytes);
         }
     }
-    if let Some(mut beyond) = beyond {
-        beyond.shrink(alive);
-        permits.push(Box::new(beyond));
-    }
+    beyond.shrink(alive);
+    permits.push(Box::new(beyond));
     let shared = Arc::new(Mutex::new(permits));
     batches
         .iter()

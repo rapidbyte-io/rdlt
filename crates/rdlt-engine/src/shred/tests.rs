@@ -1111,9 +1111,22 @@ fn observed_only(text: &str) -> Result<Parsed, super::ShredError> {
 
 #[test]
 fn an_observation_refuses_records_that_are_not_objects_and_notes_floats_only_in_json() {
-    for record in ["null", "[1]"] {
+    // An object first, which trips the build: the records after it are observed.
+    assert!(observed_only("{\"a\":1}").unwrap().record.is_none());
+    let kinds = [
+        "null",
+        "true",
+        "1",
+        "-1",
+        "18446744073709551615",
+        "1.5",
+        "\"s\"",
+        "[1]",
+        "[]",
+    ];
+    for record in kinds {
         assert_eq!(
-            observed_only(record).err(),
+            observed_only(&format!("{{\"a\":1}}\n{record}")).err(),
             Some(super::ShredError::NotObject),
             "{record}"
         );
@@ -1147,4 +1160,22 @@ fn a_shape_counts_a_column_for_each_list_s_items_at_every_depth() {
     // `l` and its items, `m`, its items and theirs, `o` and `x`.
     let shape = parsed("{\"l\":[1],\"m\":[[1]],\"o\":{\"x\":1}}").shape;
     assert_eq!(shape.columns(), 7);
+}
+
+#[test]
+fn a_chunk_built_again_where_it_needs_exact_numbers_but_was_not_planned_so_is_refused_unbuilt() {
+    // A whole float beyond 64 bits, which may be an integer the fast parse rounded: its chunk is
+    // parsed exactly, and a build planned otherwise is a fault, not a guess.
+    let text = "{\"a\":1e20}";
+    let shape = parsed(text).shape;
+    let chunk = || chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
+    let built = super::again(&chunk(), &shape, true).unwrap();
+    assert_eq!(
+        built[0].as_primitive::<Float64Type>().value(0).to_bits(),
+        1e20_f64.to_bits()
+    );
+    assert!(matches!(
+        super::again(&chunk(), &shape, false),
+        Err(super::ShredError::Internal(_))
+    ));
 }

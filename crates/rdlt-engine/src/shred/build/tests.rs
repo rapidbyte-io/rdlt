@@ -153,3 +153,84 @@ fn a_column_of_booleans_is_charged_two_bits_a_row() {
     // A value's bit and a validity bit for each of the hundred rows.
     assert_eq!(meter.spent(), BUILDER + 25);
 }
+
+#[test]
+fn a_list_s_booleans_past_its_room_are_charged_two_bits_an_item() {
+    let meter = Meter::new(u64::MAX);
+    let mut column =
+        Column::new(&Observed::Array(Box::new(Observed::Bool), 8), 0, 1, &meter).unwrap();
+    let Column::List(list) = &mut column else {
+        panic!("a list column");
+    };
+    let made = meter.spent();
+    let mut append = |items: usize| {
+        for _ in 0..items {
+            let (item, capacity) = list.item(&meter).unwrap();
+            assert_eq!(item.scalar(Scalar::Bool(true), capacity, &meter), Ok(true));
+        }
+        meter.spent() - made
+    };
+    // The eight items it was sized for take nothing more.
+    assert_eq!(append(8), 0);
+    // The ninth doubles it to sixteen, charged a value's bit and a validity bit for the eight
+    // it grows by; the seventeenth to thirty-two, for sixteen more.
+    assert_eq!(append(1), 2);
+    assert_eq!(append(7), 2);
+    assert_eq!(append(1), 2 + 4);
+}
+
+#[test]
+fn integers_widen_through_every_whole_decimal_charged_the_wider_builders() {
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::{Decimal128Type, Decimal256Type};
+    let meter = Meter::new(u64::MAX);
+    let mut column = Column::Null(0);
+    let mut widened = |value: Scalar<'_>, observed: Observed| {
+        let before = meter.spent();
+        assert_eq!(column.scalar(value, 4, &meter), Ok(true));
+        assert_eq!(column.observed(), observed);
+        meter.spent() - before
+    };
+    widened(Scalar::Int(1), Observed::Int { exact: true });
+    // Each widening makes builders sized for the four rows: sixteen bytes a decimal of 20 or 38
+    // digits, thirty-two of 76, and a validity bit each.
+    assert_eq!(
+        widened(Scalar::Wide(u64::MAX), Observed::Wide),
+        BUILDER + 4 * 16 + 1
+    );
+    assert_eq!(
+        widened(Scalar::Huge(1 << 70), Observed::Huge),
+        BUILDER + 4 * 16 + 1
+    );
+    let vast = arrow_buffer::i256::from_i128(i128::MAX).wrapping_mul(arrow_buffer::i256::from(4));
+    assert_eq!(
+        widened(Scalar::Vast(vast), Observed::Vast),
+        BUILDER + 4 * 32 + 1
+    );
+    let Ok(array) = column.finish() else {
+        panic!("a decimal column");
+    };
+    let decimals = array.as_primitive::<Decimal256Type>();
+    let values: Vec<String> = (0..4).map(|row| decimals.value_as_string(row)).collect();
+    assert_eq!(
+        values,
+        [
+            "1".to_owned(),
+            u64::MAX.to_string(),
+            (1_i128 << 70).to_string(),
+            vast.to_string()
+        ]
+    );
+    // From 20 digits to 38 alone, the values are kept as well.
+    let mut wide = Column::Null(0);
+    assert_eq!(wide.scalar(Scalar::Wide(u64::MAX), 2, &meter), Ok(true));
+    assert_eq!(wide.scalar(Scalar::Huge(-1 << 70), 2, &meter), Ok(true));
+    let Ok(array) = wide.finish() else {
+        panic!("a decimal column");
+    };
+    let decimals = array.as_primitive::<Decimal128Type>();
+    assert_eq!(
+        (decimals.value(0), decimals.value(1)),
+        (i128::from(u64::MAX), -1 << 70)
+    );
+}
