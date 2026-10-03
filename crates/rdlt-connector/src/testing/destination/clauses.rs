@@ -37,7 +37,8 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "D-DISCARD",
-        statement: "segments staged by an earlier session are never published",
+        statement: "segments staged by an earlier session, or that a commit abandons, are never \
+                    published",
         unless: "",
     },
     Clause {

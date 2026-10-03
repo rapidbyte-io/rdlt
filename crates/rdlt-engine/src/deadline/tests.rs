@@ -137,6 +137,7 @@ fn meta() -> CommitMeta {
         commit_seq: CommitSeq::FIRST,
         epoch: Epoch(1),
         segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

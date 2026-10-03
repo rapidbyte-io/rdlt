@@ -65,6 +65,7 @@ fn receipt(load: LoadId, seq: CommitSeq) -> StateChange {
 fn logged(delta: Vec<StateChange>) -> Logged {
     Logged {
         meta: CommitMeta {
+            abandoned: rdlt_connector::SegmentSet::new(),
             load_id: load(),
             commit_seq: CommitSeq::FIRST,
             epoch: Epoch(4),

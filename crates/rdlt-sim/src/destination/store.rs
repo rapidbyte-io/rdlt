@@ -161,6 +161,10 @@ impl Store {
     ) -> Vec<(String, Vec<Stored>)> {
         let mut published = Vec::new();
         let mut merging: BTreeMap<String, (MergeKey, Vec<Stored>)> = BTreeMap::new();
+        // What the session staged in a segment the load abandoned is never published.
+        self.staged.retain(|(staged, segment), _| {
+            staged != pipeline || !meta.abandoned.contains(*segment)
+        });
         for segment in meta.segments.iter() {
             let staged = self.staged.remove(&(pipeline.clone(), segment));
             for staged in staged.unwrap_or_default() {

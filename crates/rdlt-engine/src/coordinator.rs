@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, Receipt, Source,
-    StreamName, TablePath,
+    CommitMeta, CommitSeq, Epoch, GenerationId, LoadId, PartitionId, PipelineId, Receipt,
+    SegmentSet, Source, StreamName, TablePath,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -216,6 +216,9 @@ pub(crate) struct Coordinator {
     /// The places of ended partitions no stream reads any more, which a partition a plan names
     /// takes once no seal of theirs waits for a commit.
     retired: BTreeSet<usize>,
+    /// The segments partitions abandoned since the last commit, whose staging the next commit
+    /// removes.
+    abandoned: SegmentSet,
 }
 
 impl Coordinator {
@@ -235,6 +238,7 @@ impl Coordinator {
             owing: BTreeSet::new(),
             sealing: BTreeSet::new(),
             retired: BTreeSet::new(),
+            abandoned: SegmentSet::new(),
         }
     }
 
@@ -380,7 +384,12 @@ impl Coordinator {
                     .is_some_and(|run| run.on_demand);
                 self.due.written(partition, asked, rows, bytes);
             }
-            Progress::Abandoned { partition, .. } => self.due.abandoned(partition),
+            Progress::Abandoned {
+                partition, segment, ..
+            } => {
+                self.due.abandoned(partition);
+                self.abandoned.insert(segment);
+            }
             Progress::Sealed(seal) => self.seal(seal),
             Progress::Moved { partition, epoch } => {
                 if let Some(seal) = self.parts.latest.seal(partition, epoch) {

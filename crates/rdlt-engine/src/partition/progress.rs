@@ -52,6 +52,8 @@ pub(crate) enum Progress {
     Abandoned {
         /// The partition's index in the attempt.
         partition: usize,
+        /// The segment it abandoned.
+        segment: SegmentId,
         /// Rows abandoned.
         rows: u64,
         /// Their bytes in memory.

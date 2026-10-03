@@ -183,6 +183,7 @@ fn sample_commit(load: rdlt_connector::LoadId) -> rdlt_connector::CommitMeta {
         commit_seq: rdlt_connector::CommitSeq::FIRST,
         epoch: rdlt_connector::Epoch(1),
         segments: [rdlt_connector::SegmentId(1)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

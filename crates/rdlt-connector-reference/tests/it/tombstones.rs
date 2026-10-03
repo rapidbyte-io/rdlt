@@ -107,6 +107,7 @@ async fn commit_as(
         commit_seq: CommitSeq::FIRST,
         epoch: opened.epoch,
         segments: [SegmentId(1)].into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: finish,
         child_tables: Vec::new(),

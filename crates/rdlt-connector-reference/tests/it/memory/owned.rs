@@ -101,6 +101,7 @@ pub(super) fn meta(session: &OpenedSession, load: u128, seq: u64, segments: &[u6
         commit_seq,
         epoch: session.epoch,
         segments: segments.iter().copied().map(SegmentId).collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

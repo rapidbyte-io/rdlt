@@ -299,6 +299,7 @@ async fn commit(
         commit_seq: (1..seq).fold(CommitSeq::FIRST, |commit, _| commit.next()),
         epoch: opened.epoch,
         segments: segments.into_iter().collect(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

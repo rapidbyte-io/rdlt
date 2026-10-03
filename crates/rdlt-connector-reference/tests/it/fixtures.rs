@@ -104,6 +104,7 @@ pub(crate) fn meta(
             .copied()
             .map(SegmentId)
             .collect::<SegmentSet>(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

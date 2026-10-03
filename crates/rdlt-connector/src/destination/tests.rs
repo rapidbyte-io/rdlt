@@ -219,6 +219,7 @@ async fn sessions_forward_every_call() {
         commit_seq: CommitSeq::FIRST,
         epoch: Epoch(3),
         segments: SegmentSet::from_iter([SegmentId(4)]),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

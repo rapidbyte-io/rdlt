@@ -65,9 +65,18 @@ pub(super) fn commit(
     };
     {
         let mut shared = shared.lock();
-        shared
-            .staged
-            .retain(|file| !meta.segments.contains(file.segment));
+        // What the session staged in a segment the load abandoned is never published: its files
+        // go with those the manifest no longer lists.
+        held.extend(
+            shared
+                .staged
+                .iter()
+                .filter(|file| meta.abandoned.contains(file.segment))
+                .map(|file| file.file.path.clone()),
+        );
+        shared.staged.retain(|file| {
+            !meta.segments.contains(file.segment) && !meta.abandoned.contains(file.segment)
+        });
         // A dropped table is the session's no longer, until it creates the table again.
         for dropped in &meta.drop_tables {
             shared.names.remove(&path_key(&dropped.path));

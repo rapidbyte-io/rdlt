@@ -1119,6 +1119,7 @@ async fn a_stopping_connector_closes_a_connection_still_busy_at_its_drain_wait()
         commit_seq: CommitSeq::FIRST,
         epoch: opened.epoch,
         segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

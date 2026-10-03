@@ -199,6 +199,7 @@ async fn abandon(
 ) -> Result<(), Error> {
     context.report(Progress::Abandoned {
         partition,
+        segment: open.id,
         rows: open.rows,
         bytes: open.bytes,
     })?;

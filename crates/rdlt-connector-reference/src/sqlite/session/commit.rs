@@ -3,7 +3,7 @@
 
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{self, Owned, SqlPlanner, Sqlite, Staged};
-use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId};
+use rdlt_connector::{CommitSeq, Epoch, GenerationId, LoadId, PipelineId, SegmentSet};
 use rusqlite::Transaction;
 use rusqlite::types::Value;
 
@@ -72,7 +72,31 @@ pub(super) fn publish(
         transaction,
         &planner.forget(pipeline, epoch, &meta.segments),
     )?;
+    abandon(transaction, planner, (pipeline, epoch), &meta.abandoned)?;
     Ok((rows, bytes))
+}
+
+/// Removes what this session staged in `abandoned`, segments the load abandoned, which nothing
+/// publishes.
+fn abandon(
+    transaction: &Transaction<'_>,
+    planner: &SqlPlanner<Sqlite>,
+    (pipeline, epoch): (&PipelineId, Epoch),
+    abandoned: &SegmentSet,
+) -> Result<()> {
+    if abandoned.is_empty() {
+        return Ok(());
+    }
+    for row in query(transaction, &planner.staged(pipeline, epoch, abandoned))? {
+        let (staged, ..) = staged_segment(&row)?;
+        let table = owned(transaction, planner, pipeline, &staged.name)?;
+        run(
+            transaction,
+            &planner.abandon(&table, &staged, (pipeline, epoch), abandoned)?,
+        )?;
+    }
+    run(transaction, &planner.forget(pipeline, epoch, abandoned))?;
+    Ok(())
 }
 
 /// A row of [`SqlPlanner::staged`]: what a table staged, with its rows and bytes.

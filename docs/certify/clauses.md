@@ -73,7 +73,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-COMMIT` | a commit publishes exactly its segments and reports their rows | — |
 | `D-IDEMPOTENT` | re-committing a commit no horizon of its pipeline has passed returns its receipt and publishes nothing | — |
 | `D-STATE` | committed state records are returned by the next open | — |
-| `D-DISCARD` | segments staged by an earlier session are never published | — |
+| `D-DISCARD` | segments staged by an earlier session, or that a commit abandons, are never published | — |
 | `D-REPLACE` | a replace generation stays hidden until the commit that finishes it swaps it in | the destination cannot replace |
 | `D-SCHEMA` | every declared schema change applies, and applying it again changes nothing | the destination adds no column and widens no 32-bit integer |
 | `D-MERGE` | a merge keeps one row per key: the newest commit's, and within a commit the greatest sequence's; a change stream's change applies only past the sequence of the row its key holds | the destination cannot merge |

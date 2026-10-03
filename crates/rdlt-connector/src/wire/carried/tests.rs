@@ -48,6 +48,7 @@ proptest! {
             commit_seq: (1..seq.min(64)).fold(CommitSeq::FIRST, |seq, _| seq.next()),
             epoch: Epoch(seq),
             segments: [SegmentId(seq)].into_iter().collect(),
+            abandoned: crate::SegmentSet::new(),
             state_delta: records.into_iter().map(StateChange::Put).collect(),
             finish_generations: Vec::new(),
             child_tables: Vec::new(),

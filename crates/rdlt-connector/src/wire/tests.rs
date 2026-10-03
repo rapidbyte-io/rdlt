@@ -299,8 +299,8 @@ fn load_id() -> impl Strategy<Value = LoadId> {
     })
 }
 
-fn commit_meta() -> impl Strategy<Value = CommitMeta> {
-    let change = prop_oneof![
+fn state_change() -> impl Strategy<Value = StateChange> {
+    prop_oneof![
         (name(), proptest::collection::vec(any::<u8>(), 0..8)).prop_map(|(key, value)| {
             StateChange::Put(StateRecord {
                 key,
@@ -308,12 +308,17 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
             })
         }),
         name().prop_map(StateChange::Delete),
-    ];
+    ]
+}
+
+fn commit_meta() -> impl Strategy<Value = CommitMeta> {
+    let change = state_change();
     (
         load_id(),
         1..u64::MAX,
         any::<u64>(),
         proptest::collection::btree_set(0..64_u64, 0..10),
+        proptest::collection::btree_set(64..128_u64, 0..10),
         proptest::collection::vec(change, 0..3),
         proptest::collection::vec(
             (proptest::collection::vec(name(), 1..3), any::<u64>()),
@@ -324,16 +329,24 @@ fn commit_meta() -> impl Strategy<Value = CommitMeta> {
         proptest::option::of(horizon()),
     )
         .prop_map(
-            |(load_id, seq, epoch, segments, state_delta, finish, children, dropped, horizon)| {
-                let mut set = SegmentSet::new();
-                for segment in segments {
-                    set.insert(SegmentId(segment));
-                }
+            |(
+                load_id,
+                seq,
+                epoch,
+                segments,
+                abandoned,
+                state_delta,
+                finish,
+                children,
+                dropped,
+                horizon,
+            )| {
                 CommitMeta {
                     load_id,
                     commit_seq: CommitSeq::new(seq).unwrap(),
                     epoch: Epoch(epoch),
-                    segments: set,
+                    segments: segments.into_iter().map(SegmentId).collect(),
+                    abandoned: abandoned.into_iter().map(SegmentId).collect(),
                     state_delta,
                     finish_generations: finish
                         .into_iter()
@@ -535,6 +548,7 @@ fn an_unspecified_or_unknown_enum_value_is_refused() {
 #[test]
 fn a_horizon_naming_no_commit_is_refused() {
     let meta = CommitMeta {
+        abandoned: SegmentSet::new(),
         load_id: LoadId::from_parts(UNIX_EPOCH, 2),
         commit_seq: CommitSeq::FIRST,
         epoch: Epoch(1),
@@ -676,6 +690,7 @@ fn values_that_break_their_types_rules_are_rejected() {
         commit_seq: CommitSeq::FIRST,
         epoch: Epoch(1),
         segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
@@ -693,6 +708,43 @@ fn values_that_break_their_types_rules_are_rejected() {
             ..
         })
     ));
+}
+
+#[test]
+fn abandoned_segments_are_ordered_and_none_is_committed() {
+    let mut abandoned = v1::CommitMeta::from(&CommitMeta {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+        commit_seq: CommitSeq::FIRST,
+        epoch: Epoch(1),
+        segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
+        state_delta: Vec::new(),
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+        horizon: None,
+    });
+    abandoned.abandoned = vec![
+        v1::SegmentRange { first: 5, last: 6 },
+        v1::SegmentRange { first: 1, last: 2 },
+    ];
+    assert!(matches!(
+        CommitMeta::try_from(abandoned.clone()),
+        Err(Invalid::Rejected {
+            what: "abandoned segments",
+            ..
+        })
+    ));
+    // A segment a commit both publishes and abandons is refused.
+    abandoned.segments = vec![v1::SegmentRange { first: 2, last: 4 }];
+    abandoned.abandoned = vec![v1::SegmentRange { first: 4, last: 9 }];
+    assert!(matches!(
+        CommitMeta::try_from(abandoned.clone()),
+        Err(Invalid::OutOfRange(_))
+    ));
+    abandoned.abandoned = vec![v1::SegmentRange { first: 5, last: 9 }];
+    let decoded = CommitMeta::try_from(abandoned).expect("disjoint segments decode");
+    assert_eq!(decoded.abandoned.len(), 5);
 }
 
 #[test]

@@ -44,11 +44,13 @@ impl Decision {
         } else {
             meta.child_tables.clone()
         };
+        // What the commit's load abandoned its next open removed: the replay abandons nothing.
         CommitMeta {
             load_id: meta.load_id,
             commit_seq: meta.commit_seq,
             epoch,
             segments: self.staged,
+            abandoned: SegmentSet::new(),
             state_delta,
             finish_generations,
             child_tables,

@@ -338,6 +338,11 @@ pub(crate) static COMMIT_META: Form = Form {
             kind: Kind::Message(&HORIZON),
             repeated: false,
         },
+        Field {
+            number: 10,
+            kind: Kind::Message(&SEGMENT_RANGE),
+            repeated: true,
+        },
     ],
 };
 

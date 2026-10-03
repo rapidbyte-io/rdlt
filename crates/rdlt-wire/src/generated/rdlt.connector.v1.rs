@@ -1554,6 +1554,10 @@ pub struct CommitMeta {
     /// forgotten. Absent, none may.
     #[prost(message, optional, tag = "9")]
     pub horizon: ::core::option::Option<Horizon>,
+    /// The segments of the load abandoned since its last commit, whose staged rows it removes;
+    /// ascending, disjoint, not adjacent, and none among `segments`.
+    #[prost(message, repeated, tag = "10")]
+    pub abandoned: ::prost::alloc::vec::Vec<SegmentRange>,
 }
 /// A commit by its load and its sequence in the load; commits order by load id, then sequence.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

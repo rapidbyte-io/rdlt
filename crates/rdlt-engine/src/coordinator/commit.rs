@@ -50,6 +50,7 @@ impl Coordinator {
             commit_seq: self.seq,
             epoch: self.parts.epoch,
             segments: collected.segments,
+            abandoned: std::mem::take(&mut self.abandoned),
             state_delta: delta,
             finish_generations,
             child_tables: self.parts.tables.child_tables(),

@@ -245,6 +245,9 @@ message CommitMeta {
   // The oldest commit the engine may still repeat: the receipt of every commit before it may be
   // forgotten. Absent, none may.
   Horizon horizon = 9;
+  // The segments of the load abandoned since its last commit, whose staged rows it removes;
+  // ascending, disjoint, not adjacent, and none among `segments`.
+  repeated SegmentRange abandoned = 10;
 }
 
 // A commit by its load and its sequence in the load; commits order by load id, then sequence.

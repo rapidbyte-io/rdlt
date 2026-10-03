@@ -220,15 +220,8 @@ impl From<&CommitMeta> for v1::CommitMeta {
             load_id: meta.load_id.as_bytes().to_vec().into(),
             commit_seq: meta.commit_seq.get(),
             epoch: meta.epoch.0,
-            segments: meta
-                .segments
-                .ranges()
-                .iter()
-                .map(|range| v1::SegmentRange {
-                    first: range.first.0,
-                    last: range.last.0,
-                })
-                .collect(),
+            segments: ranges(&meta.segments),
+            abandoned: ranges(&meta.abandoned),
             state_delta: meta.state_delta.iter().map(v1::StateChange::from).collect(),
             finish_generations: meta
                 .finish_generations
@@ -266,14 +259,13 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
     type Error = Invalid;
 
     fn try_from(meta: v1::CommitMeta) -> Result<Self, Invalid> {
-        let ranges = meta
-            .segments
-            .into_iter()
-            .map(|range| SegmentRange {
-                first: SegmentId(range.first),
-                last: SegmentId(range.last),
-            })
-            .collect::<Vec<_>>();
+        let segments = segment_set("segments", meta.segments)?;
+        let abandoned = segment_set("abandoned segments", meta.abandoned)?;
+        if segments.overlaps(&abandoned) {
+            return Err(Invalid::OutOfRange(
+                "abandoned segment among those committed",
+            ));
+        }
         let finish_generations = meta
             .finish_generations
             .into_iter()
@@ -308,8 +300,8 @@ impl TryFrom<v1::CommitMeta> for CommitMeta {
             load_id: load_id(&meta.load_id)?,
             commit_seq: CommitSeq::new(meta.commit_seq).ok_or(Invalid::OutOfRange("commit seq"))?,
             epoch: Epoch(meta.epoch),
-            segments: SegmentSet::try_from(ranges)
-                .map_err(|error| Invalid::rejected("segments", error))?,
+            segments,
+            abandoned,
             state_delta: meta
                 .state_delta
                 .into_iter()
@@ -330,6 +322,30 @@ fn horizon(horizon: &v1::Horizon) -> Result<Horizon, Invalid> {
         commit_seq: CommitSeq::new(horizon.commit_seq)
             .ok_or(Invalid::OutOfRange("horizon's commit seq"))?,
     })
+}
+
+/// `set`'s ranges, as the wire carries them.
+fn ranges(set: &SegmentSet) -> Vec<v1::SegmentRange> {
+    set.ranges()
+        .iter()
+        .map(|range| v1::SegmentRange {
+            first: range.first.0,
+            last: range.last.0,
+        })
+        .collect()
+}
+
+/// The set of segments the wire's `ranges` name, which must be ascending, disjoint and not
+/// adjacent.
+fn segment_set(what: &'static str, ranges: Vec<v1::SegmentRange>) -> Result<SegmentSet, Invalid> {
+    let ranges: Vec<SegmentRange> = ranges
+        .into_iter()
+        .map(|range| SegmentRange {
+            first: SegmentId(range.first),
+            last: SegmentId(range.last),
+        })
+        .collect();
+    SegmentSet::try_from(ranges).map_err(|error| Invalid::rejected(what, error))
 }
 
 impl From<&Receipt> for v1::Receipt {

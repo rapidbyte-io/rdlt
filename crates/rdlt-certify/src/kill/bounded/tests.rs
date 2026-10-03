@@ -177,6 +177,7 @@ async fn a_bounded_destination_commits_and_closes_as_its_own_does() {
         commit_seq: rdlt_connector::CommitSeq::FIRST,
         epoch: opened.epoch,
         segments: rdlt_connector::SegmentSet::default(),
+        abandoned: rdlt_connector::SegmentSet::new(),
         state_delta: Vec::new(),
         finish_generations: Vec::new(),
         child_tables: Vec::new(),

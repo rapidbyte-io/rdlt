@@ -587,6 +587,7 @@ async fn rows_a_partition_abandoned_make_no_commit_due() {
     });
     harness.send(Progress::Abandoned {
         partition: 0,
+        segment: SegmentId(1),
         rows: 6,
         bytes: 48,
     });

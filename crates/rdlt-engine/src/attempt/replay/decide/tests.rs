@@ -53,6 +53,7 @@ fn logged() -> Logged {
             commit_seq: CommitSeq::FIRST.next(),
             epoch: Epoch(4),
             segments: [3, 4, 6].into_iter().map(SegmentId).collect(),
+            abandoned: rdlt_connector::SegmentSet::new(),
             state_delta: vec![position("p0", 30), position("p1", 6), position("p2", 1)],
             finish_generations: Vec::new(),
             child_tables: Vec::new(),
@@ -250,6 +251,7 @@ fn a_partial_replay_commits_only_what_it_staged_and_the_positions_it_moves() {
         CommitMeta {
             epoch: Epoch(9),
             segments: segments(&[6]),
+            abandoned: rdlt_connector::SegmentSet::new(),
             state_delta: vec![position("p1", 6), position("p2", 1)],
             finish_generations: Vec::new(),
             ..logged.meta.clone()
