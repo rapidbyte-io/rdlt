@@ -94,3 +94,14 @@ fn an_attempt_reads_as_many_partitions_at_once_as_a_plan_may_name_and_no_more() 
     let refused = super::within_partition_limit(MAX_PLAN_PARTITIONS + 1).unwrap_err();
     assert_eq!(refused.code(), Some("plan_invalid"));
 }
+
+#[test]
+fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
+    let growth = crate::config::GrowthLimits::new(1, 3).unwrap();
+    let config = EngineConfig::builder()
+        .lanes(5)
+        .growth(growth)
+        .build()
+        .unwrap();
+    assert_eq!(lane_count(&config, &destination(8)).get(), 3);
+}
