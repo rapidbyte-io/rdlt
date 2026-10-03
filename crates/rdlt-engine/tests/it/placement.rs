@@ -202,3 +202,58 @@ async fn merges_changes_read_from_a_spawned_source() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn pushes_joined_past_the_destination_s_frame_limit_are_written_as_several_frames() {
+    use std::sync::Arc;
+
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    use rdlt_host::Provider as _;
+    use rdlt_wire::limits::MIN_FRAME_BYTES;
+
+    use crate::support::batches::{BatchStream, batches};
+    // The host sends frames of the least size a peer may take; a budget this large joins the two
+    // pushes, each within that size, into one batch beyond it, which the host cuts as it writes.
+    let options = rdlt_host::Options {
+        limits: rdlt_wire::Limits {
+            frame_bytes: MIN_FRAME_BYTES,
+            ..rdlt_wire::Limits::default()
+        },
+        ..rdlt_host::Options::default()
+    };
+    let store = Target::SpawnedJsonl.name("joined_frames");
+    let root = tempfile::tempdir().expect("a temporary directory");
+    let config = serde_json::json!({ "root": root.path(), "format": "jsonl" });
+    let id = rdlt_connector::ConnectorId::parse("io.rapidbyte.files").expect("a valid id");
+    let reference = rdlt_host::ConnectorRef::new(id).path(crate::support::example("serve_files"));
+    let placed = crate::support::local()
+        .options(options)
+        .destination(&reference, &config)
+        .await
+        .expect("the destination starts");
+    let push = |from: i64, rows: usize| {
+        let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(from..from + 3000));
+        let text: ArrayRef = Arc::new(StringArray::from(vec!["t".repeat(1000); rows]));
+        RecordBatch::try_from_iter([("id", ids), ("text", text)]).expect("a batch")
+    };
+    let pushes = vec![push(0, 3000), push(3000, 3000)];
+    let source = batches(
+        &store,
+        vec![BatchStream::new("events", pushes).one_segment()],
+    )
+    .await;
+    let outcome = engine(commit_every(1_000_000).memory(2 << 30))
+        .run(
+            pipeline(&store, [stream("events")]),
+            source,
+            Arc::from(placed.connector),
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert_eq!(outcome.report.rows, 6000);
+}
