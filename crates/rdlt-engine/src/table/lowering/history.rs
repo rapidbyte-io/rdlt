@@ -18,6 +18,7 @@ use crate::error::Error;
 use crate::normalize::identity::{unread, version_hashes};
 use crate::table::convert::decoded;
 use crate::table::lower::loaded_at_type;
+use crate::table::temporal;
 
 impl LoweringPlan {
     /// The history columns of `batch`'s rows, lowered, the first the table's column at `first`,
@@ -147,7 +148,7 @@ pub(super) fn history_columns(
     let rows = data.num_rows();
     let micros = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
     let valid_from: ArrayRef = if let Some(from) = from {
-        begins(stream, from, &micros)?
+        begins(stream, from)?
     } else {
         let since = received.duration_since(UNIX_EPOCH).unwrap_or_default();
         let at = i64::try_from(since.as_micros()).unwrap_or(i64::MAX);
@@ -165,8 +166,9 @@ pub(super) fn history_columns(
     Ok([valid_from, valid_to, current, Arc::new(hashes)])
 }
 
-/// When the version of each row whose change time `from` holds begins, in microseconds.
-fn begins(stream: &StreamName, from: &ArrayRef, micros: &DataType) -> Result<ArrayRef, Error> {
+/// When the version of each row whose change time `from` holds begins, in microseconds: a
+/// date's midnight in UTC, and an instant between two microseconds the earlier.
+fn begins(stream: &StreamName, from: &ArrayRef) -> Result<ArrayRef, Error> {
     let refuse = |code: &str, detail: String| {
         Err(Error::schema(format!("stream {stream}: {detail}"))
             .with_code(code)
@@ -194,15 +196,14 @@ fn begins(stream: &StreamName, from: &ArrayRef, micros: &DataType) -> Result<Arr
         let detail = "a change has no change time, when its version begins".to_owned();
         return refuse("change_time_null", detail);
     }
-    // A strict cast: a time microseconds cannot hold fails rather than turning null.
-    let strict = arrow_cast::CastOptions {
-        safe: false,
-        ..arrow_cast::CastOptions::default()
+    let begun: Option<Vec<i64>> = (0..from.len())
+        .map(|row| temporal::micros_at(from.as_ref(), row))
+        .collect();
+    let Some(begun) = begun else {
+        let detail = "its change time holds a time microseconds since the epoch cannot hold";
+        return refuse("change_time_invalid", detail.to_owned());
     };
-    arrow_cast::cast_with_options(&from, micros, &strict).or_else(|error| {
-        refuse(
-            "change_time_invalid",
-            format!("its change time holds a time out of range: {error}"),
-        )
-    })
+    Ok(Arc::new(
+        TimestampMicrosecondArray::from(begun).with_timezone("UTC"),
+    ))
 }

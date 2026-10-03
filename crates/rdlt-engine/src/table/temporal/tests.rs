@@ -1,5 +1,8 @@
 mod rendered;
 
+use arrow_array::types::Date32Type;
+use arrow_array::{Date32Array, StructArray};
+
 use super::text::{clock, date, duration};
 use super::*;
 
@@ -49,7 +52,7 @@ fn unit_of(array: &ArrayRef) -> TimeUnit {
 }
 
 fn dates(days: Vec<Option<i32>>) -> ArrayRef {
-    Arc::new(arrow_array::Date32Array::from(days))
+    Arc::new(Date32Array::from(days))
 }
 
 #[test]
@@ -185,4 +188,72 @@ fn an_instant_beyond_the_years_arrow_renders_at_midnight_shows_an_unsigned_clock
         rendered.as_string::<i32>().value(0),
         "+2739877-01-03T00:00:00"
     );
+}
+
+#[test]
+fn a_date64_holding_part_of_a_day_is_the_day_it_is_within_everywhere() {
+    use rdlt_connector::{Field, LogicalType, TimeUnit as Unit};
+    let day = 86_400_000_i64;
+    let millis = vec![-1_i64, -day - 1, day - 1, -day, 0];
+    let within = [-1_i64, -2, 0, -1, 0];
+    let date64: ArrayRef = Arc::new(arrow_array::Date64Array::from(millis.clone()));
+    let seconds: Vec<i64> = within.iter().map(|days| days * 86_400).collect();
+    let placed = midnights(&date64, TimeUnit::Second, None).unwrap();
+    assert_eq!(
+        timestamps(&placed),
+        seconds.iter().copied().map(Some).collect::<Vec<_>>()
+    );
+    let convert = crate::table::convert::convert;
+    let as_timestamp = convert(
+        &date64,
+        &LogicalType::Date,
+        &LogicalType::Timestamp(Unit::Second, None),
+    );
+    assert_eq!(timestamps(&as_timestamp.unwrap()), placed_values(&seconds));
+    let as_date = convert(&date64, &LogicalType::Date, &LogicalType::Date).unwrap();
+    let days: Vec<i64> = as_date
+        .as_primitive::<Date32Type>()
+        .values()
+        .iter()
+        .map(|days| i64::from(*days))
+        .collect();
+    assert_eq!(days, within);
+    let rendered = text(&date64).unwrap();
+    let texts: Vec<&str> = rendered.as_string::<i32>().iter().flatten().collect();
+    assert_eq!(
+        texts,
+        [
+            "1969-12-31",
+            "1969-12-30",
+            "1970-01-01",
+            "1969-12-31",
+            "1970-01-01"
+        ]
+    );
+    // A struct holding a `Date64` holds the day too, whichever way it converts.
+    let field = Field::new("d", LogicalType::Date, true);
+    let logical = LogicalType::Struct(rdlt_connector::Fields::new(vec![field]).unwrap());
+    let fields =
+        arrow_schema::Fields::from(vec![arrow_schema::Field::new("d", DataType::Date64, true)]);
+    let nested: ArrayRef =
+        Arc::new(StructArray::try_new(fields, vec![Arc::clone(&date64)], None).unwrap());
+    let held = convert(&nested, &logical, &logical).unwrap();
+    let held = held.as_struct().column(0).as_primitive::<Date32Type>();
+    let held: Vec<i64> = held.values().iter().map(|days| i64::from(*days)).collect();
+    assert_eq!(held, within);
+}
+
+fn placed_values(seconds: &[i64]) -> Vec<Option<i64>> {
+    seconds.iter().copied().map(Some).collect()
+}
+
+#[test]
+fn a_date64_beyond_a_date32_s_days_is_refused_as_a_date() {
+    use rdlt_connector::LogicalType;
+    let far: ArrayRef = Arc::new(arrow_array::Date64Array::from(vec![i64::MAX, i64::MIN]));
+    for row in 0..2 {
+        let one = far.slice(row, 1);
+        let refused = crate::table::convert::convert(&one, &LogicalType::Date, &LogicalType::Date);
+        assert!(refused.is_err(), "{row}");
+    }
 }

@@ -241,3 +241,53 @@ fn a_change_time_beyond_what_microseconds_hold_is_refused() {
     assert_eq!(refused.kind(), ErrorKind::Schema);
     assert_eq!(refused.code(), Some("change_time_invalid"));
 }
+
+/// When each version of `data`'s rows begins, by its change time `time`.
+fn begins(data: &RecordBatch, time: &ArrayRef) -> Result<Vec<i64>, crate::Error> {
+    let [from, ..] = history_columns(&stream(), data, Some(time), UNIX_EPOCH, &|_| false)?;
+    Ok(from
+        .as_primitive::<TimestampMicrosecondType>()
+        .values()
+        .to_vec())
+}
+
+#[test]
+fn a_change_time_of_any_unit_begins_at_the_microsecond_it_is_within() {
+    let day = 86_400_000_i64;
+    let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2, 3, 4])))]);
+    let date64: ArrayRef = Arc::new(Date64Array::from(vec![-1, -day - 1, day - 1, 0]));
+    assert_eq!(
+        begins(&data, &date64).unwrap(),
+        [-day * 1_000, -2 * day * 1_000, 0, 0]
+    );
+    let nanos: ArrayRef = Arc::new(TimestampNanosecondArray::from(vec![-1, -1_001, 999, 1_000]));
+    assert_eq!(begins(&data, &nanos).unwrap(), [-1, -2, 0, 1]);
+    // The last day whose midnight microseconds hold begins there.
+    let last = i64::MAX / 86_400_000_000;
+    let edge: ArrayRef = Arc::new(Date64Array::from(vec![last * day + day - 1; 4]));
+    assert_eq!(begins(&data, &edge).unwrap(), [last * 86_400_000_000; 4]);
+}
+
+#[test]
+fn a_change_time_a_microsecond_cannot_hold_is_refused_never_wrapped() {
+    let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1])))]);
+    let far = [
+        18_446_744_160_109_552_i64,
+        18_448_385_673_709_552,
+        // The first day past the last whose midnight microseconds hold, and the last before the
+        // first.
+        (i64::MAX / 86_400_000_000 + 1) * 86_400_000,
+        i64::MIN / 1_000 - 1,
+        i64::MAX,
+        i64::MIN,
+    ];
+    for millis in far {
+        let time: ArrayRef = Arc::new(Date64Array::from(vec![millis]));
+        let refused = begins(&data, &time).unwrap_err();
+        assert_eq!(
+            (refused.kind(), refused.code()),
+            (ErrorKind::Schema, Some("change_time_invalid")),
+            "{millis}"
+        );
+    }
+}

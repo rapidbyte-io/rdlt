@@ -2,7 +2,9 @@
 //! zone, and text as Arrow renders it wherever it can and beyond the years Arrow renders.
 //!
 //! Arrow multiplies dates into nanoseconds without checking, so a far date wraps silently; here
-//! every product is checked and a value beyond the `i64` of its unit is refused. A wall-clock
+//! every product is checked and a value beyond the `i64` of its unit is refused. A `Date64`
+//! holding part of a day is the day it is within, as Arrow renders it, never the day its
+//! milliseconds round toward zero to. A wall-clock
 //! value in a zone is the instant it names there; where the zone's clocks repeat it, the earlier
 //! one, and where they skip it, the instant the offset in force then gives.
 //!
@@ -12,10 +14,13 @@
 //! Arrow renders them in range: `PT1.5S`. Other values Arrow cannot render are rendered here in
 //! UTC, with as many year digits as they need.
 
+mod days;
 #[cfg(test)]
 mod tests;
 mod text;
 
+use days::day_within;
+pub(crate) use days::{dated, micros_at};
 pub(crate) use text::{Renderer, text};
 
 use std::sync::Arc;
@@ -52,7 +57,7 @@ pub(crate) fn midnights(
         DataType::Date64 => array
             .as_primitive::<Date64Type>()
             .iter()
-            .map(|millis| millis.map(|millis| millis / 86_400_000))
+            .map(|millis| millis.map(day_within))
             .collect(),
         _ => arrow_cast::cast(array, &DataType::Date32)?
             .as_primitive::<Date32Type>()
