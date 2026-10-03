@@ -175,11 +175,19 @@ struct Discarded {
 /// What becomes of one of a unit's parts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fate {
-    /// Its table takes it; `refused` where its frozen schema refuses it should any of its rows
-    /// remain.
-    Taken { refused: bool },
+    /// Its table takes it, or refuses it, as `refused` says, should any of its rows remain.
+    Taken { refused: Option<Refused> },
     /// It is a new array its stream discards: its rows whose parents load are discarded values.
     Discarded,
+}
+
+/// Why a new child table refuses a part's rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refused {
+    /// The stream's schema is frozen.
+    Frozen,
+    /// No table can be named after the part's path.
+    Unnamable,
 }
 
 /// The table and plan of each of `parts`, a unit's, found in order, parents first, and what they
@@ -221,8 +229,14 @@ async fn plan_parts(
             continue;
         }
         let path = &pruned.part.path;
-        if fate == (Fate::Taken { refused: true }) {
-            return Err(frozen(job, path));
+        match fate {
+            Fate::Taken {
+                refused: Some(Refused::Frozen),
+            } => return Err(frozen(job, path)),
+            Fate::Taken {
+                refused: Some(Refused::Unnamable),
+            } => return Err(unnamable(job, path)),
+            _ => {}
         }
         let table = if path.is_empty() {
             job.table
@@ -267,11 +281,20 @@ fn admit(
             skipped.insert(part.path);
             continue;
         }
-        let mut fate = Fate::Taken { refused: false };
+        let mut fate = Fate::Taken { refused: None };
         if !part.path.is_empty() {
             match context.tables.admit_child(job.table, &part.path, existed) {
                 Admission::Add => {}
-                Admission::Refuse => fate = Fate::Taken { refused: true },
+                Admission::Refuse => {
+                    fate = Fate::Taken {
+                        refused: Some(Refused::Frozen),
+                    };
+                }
+                Admission::Unnamable => {
+                    fate = Fate::Taken {
+                        refused: Some(Refused::Unnamable),
+                    };
+                }
                 Admission::Discard => {
                     skipped.insert(part.path.clone());
                     fate = Fate::Discarded;
@@ -360,6 +383,21 @@ fn frozen(job: &PartitionJob, path: &[Arc<str>]) -> Error {
     .with_code("schema_frozen")
     .with_stream(&job.stream)
 }
+
+/// The error for an array at `path` no table can be named after.
+fn unnamable(job: &PartitionJob, path: &[Arc<str>]) -> Error {
+    let array = rdlt_connector::text::shown(path.join("."), PATH_SHOWN);
+    Error::schema(format!(
+        "stream {}: array {array}: no table can be named after its path: a key of it is empty, \
+         longer than a table path's segment may be, or holds a control character",
+        job.stream
+    ))
+    .with_code("table_path_invalid")
+    .with_stream(&job.stream)
+}
+
+/// Bytes: the most of an array's path an error quotes.
+const PATH_SHOWN: usize = 256;
 
 /// `parts`, one batch once concatenated, normalized as `shape`.
 fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Vec<Part>, Error> {

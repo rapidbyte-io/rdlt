@@ -26,6 +26,9 @@ pub(crate) enum Admission {
     /// The stream discards rows that would change its schema: the rows are dropped with the
     /// parent rows holding them, and those parents' other descendants.
     DiscardParents,
+    /// No table can be named after the array's path, a key of the source's being empty, too long
+    /// or holding a control character: the rows fail the stream.
+    Unnamable,
 }
 
 impl Tables {
@@ -112,28 +115,31 @@ impl Tables {
     /// its rows, as does a new one while the stream's table is being created: before a unit that
     /// `existed` says found it created, as a table being created takes every column. After that,
     /// a new child table is a change to the stream's schema, which its policy for the array's
-    /// column decides.
+    /// column decides. So is an array no table can be named after, whenever it arrives: a stream
+    /// that discards changes drops it, and any other is refused.
     pub(crate) fn admit_child(&self, root: usize, path: &[Arc<str>], existed: bool) -> Admission {
         let key = (root, path.to_vec());
-        if !existed
-            || self.children.lock().contains_key(&key)
-            || self.declared.lock().contains(&key)
+        let base = self.view(root).table.path.clone();
+        let child = TablePath::new(base.segments().chain(path.iter().map(AsRef::as_ref)));
+        if let Ok(child) = &child
+            && (!existed
+                || self.children.lock().contains_key(&key)
+                || self.declared.lock().contains(&key)
+                || self.committed.contains_key(child))
         {
             return Admission::Add;
         }
-        let base = self.view(root).table.path.clone();
-        let child = base.segments().chain(path.iter().map(AsRef::as_ref));
-        if TablePath::new(child).is_ok_and(|child| self.committed.contains_key(&child)) {
-            return Admission::Add;
-        }
-        let Ok(column) = ColumnPath::new(path.to_vec()) else {
-            return Admission::Add;
-        };
+        // A child table's settings are those of the stream's column whose arrays it holds.
+        let column = path.first().map_or_else(
+            || ColumnPath::from(""),
+            |column| ColumnPath::from(column.as_ref()),
+        );
         match self.resolver(root).settings.column(&column).policy {
             SchemaPolicy::Freeze => Admission::Refuse,
             SchemaPolicy::DiscardValue => Admission::Discard,
             SchemaPolicy::DiscardRow => Admission::DiscardParents,
-            SchemaPolicy::Evolve => Admission::Add,
+            SchemaPolicy::Evolve if child.is_ok() => Admission::Add,
+            SchemaPolicy::Evolve => Admission::Unnamable,
         }
     }
 
