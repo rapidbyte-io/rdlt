@@ -66,6 +66,36 @@ test *args:
 sim seed="" seeds="1000" from="0":
     RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim
 
+# Run a count of seeds from a first seed as shards side by side, one a core by default; each
+# shard's output is in `target/sim-shards/<shard>.log`, and a failing shard names its seed there
+sim-shards seeds="100000" shards=`nproc 2>/dev/null || sysctl -n hw.ncpu` from="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --no-run
+    rm -rf target/sim-shards && mkdir -p target/sim-shards
+    per=$(( ({{ seeds }} + {{ shards }} - 1) / {{ shards }} ))
+    pids=()
+    for shard in $(seq 0 $(( {{ shards }} - 1 ))); do
+        first=$(( {{ from }} + shard * per ))
+        count=$(( {{ from }} + {{ seeds }} - first ))
+        (( count > per )) && count=$per
+        (( count > 0 )) || break
+        RDLT_SIM_SEED="" RDLT_SIM_SEEDS="$count" RDLT_SIM_SEEDS_FROM="$first" \
+            cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --test-threads 1 \
+            > "target/sim-shards/$shard.log" 2>&1 &
+        pids+=("$!")
+    done
+    failed=0
+    for shard in "${!pids[@]}"; do
+        if wait "${pids[$shard]}"; then
+            echo "shard $shard passed"
+        else
+            echo "shard $shard failed: $(grep -m1 'failing seed' "target/sim-shards/$shard.log" || echo 'see its log')"
+            failed=1
+        fi
+    done
+    exit "$failed"
+
 # Crash a pipeline run in a process of its own at every durability step, and kill it or its
 # spawned connectors as it loads, then check every row landed once; a seed draws the same kill points
 crashes seed="":
