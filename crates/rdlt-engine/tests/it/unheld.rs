@@ -241,3 +241,19 @@ async fn a_change_time_holding_no_time_is_refused_whatever_its_policy() {
         refused(&ran(&store, plan, events).await, "change_time_invalid");
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_change_time_refused_on_two_counts_is_one_value_discarded() {
+    // A far `Date64` no date holds is also a time no version can begin at.
+    let at: ArrayRef = Arc::new(Date64Array::from(vec![10 * DAY, i64::MAX, 30 * DAY]));
+    let rows = batch(vec![
+        ("id", ints(&[1, 2, 3])),
+        ("v", text(&["a", "b", "c"])),
+        ("at", at),
+    ]);
+    let events = BatchStream::new("events", vec![rows])
+        .primary_key(&["id"])
+        .change_time("at");
+    let plan = following("at", SchemaPolicy::DiscardValue).write(WriteMode::History);
+    loaded(&ran("far_change_time", plan, events).await, 3, (0, 1));
+}
