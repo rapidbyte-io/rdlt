@@ -49,7 +49,8 @@ pub(super) fn scalar(data_type: &DataType) -> Option<Scalar> {
         DataType::Int32 | DataType::UInt16 => scalar(4, 11, &[K::Int32]),
         DataType::Int64 | DataType::UInt32 => scalar(8, 20, &[K::Int64]),
         DataType::UInt64 => scalar(16, 26, &[K::Decimal]),
-        DataType::Float16 | DataType::Float32 => scalar(4, 16, &[K::Float32]),
+        // A 32-bit float renders into JSON as the 64-bit float it widens to.
+        DataType::Float16 | DataType::Float32 => scalar(4, 25, &[K::Float32]),
         DataType::Float64 => scalar(8, 25, &[K::Float64]),
         DataType::Decimal32(precision, scale)
         | DataType::Decimal64(precision, scale)

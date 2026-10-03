@@ -15,7 +15,7 @@ use rdlt_connector::StreamName;
 
 use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
 use crate::error::Error;
-use crate::normalize::identity::{root_ids, unread};
+use crate::normalize::identity::{unread, version_hashes};
 use crate::table::convert::decoded;
 use crate::table::lower::loaded_at_type;
 
@@ -125,8 +125,8 @@ impl LoweringPlan {
 
 /// The history columns of rows holding `data`, the table's data columns as stored: when each
 /// version begins, from `from`, the stream's change time, or `received`, when its batch arrived,
-/// where the stream names none; no end; current; and the xxh3-128 of its data, null where `deleting` says
-/// the row deletes.
+/// where the stream names none; no end; current; and the hash of its data, null where `deleting`
+/// says the row deletes.
 ///
 /// A row's hash encodes its data as one object of its non-null columns by name, so a column
 /// added since, null in the row, a wider type or another encoding of the same values hashes
@@ -155,8 +155,8 @@ pub(super) fn history_columns(
     };
     let valid_to = arrow_array::new_null_array(&micros, rows);
     let current = Arc::new(BooleanArray::from(vec![true; rows]));
-    let hashes =
-        root_ids(data, &[]).map_err(|error| unread(stream, "preparing history columns", &error))?;
+    let hashes = version_hashes(data)
+        .map_err(|error| unread(stream, "preparing history columns", &error))?;
     let hashes: BinaryArray = hashes
         .iter()
         .enumerate()

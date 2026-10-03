@@ -1228,7 +1228,7 @@ fn non_finite_floats_are_named_in_json() {
 }
 
 #[test]
-fn floats_are_written_to_json_as_the_shortest_text_that_reads_back_as_them() {
+fn floats_are_written_to_json_as_the_shortest_text_of_the_double_they_are() {
     // The last is exactly 83220810649108.625, halfway between two shortest texts: it goes to the
     // even one.
     let doubles: ArrayRef = Arc::new(Float64Array::from(vec![
@@ -1248,10 +1248,11 @@ fn floats_are_written_to_json_as_the_shortest_text_that_reads_back_as_them() {
             Some("83220810649108.62")
         ]
     );
+    // A 32-bit float is the 64-bit float it widens to: its text reads back as that float.
     let singles: ArrayRef = Arc::new(Float32Array::from(vec![0.1_f32, 16_777_216.0]));
     let rendered = json(&singles, &LogicalType::Float32).unwrap();
     let texts: Vec<Option<&str>> = rendered.as_string::<i32>().iter().collect();
-    assert_eq!(texts, [Some("0.1"), Some("16777216.0")]);
+    assert_eq!(texts, [Some("0.10000000149011612"), Some("16777216.0")]);
 }
 
 #[test]
@@ -1907,7 +1908,7 @@ fn columns_a_batch_holds_nothing_in_are_nulls_as_the_destination_stores_them() {
 }
 
 #[test]
-fn a_rows_metadata_of_bytes_costs_forty_bytes_a_column() {
+fn a_rows_metadata_of_bytes_costs_seventy_two_bytes_a_column() {
     let row_bytes = |capabilities: Capabilities, lineage: bool| {
         let mut resolver = resolver(capabilities, plan(), &["id"]);
         if lineage {
@@ -1926,14 +1927,14 @@ fn a_rows_metadata_of_bytes_costs_forty_bytes_a_column() {
         let plan = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
         (plan.row_bytes(), metadata)
     };
-    // A keyed table's sequence, and a normalized row's id, are bytes: forty bytes a row each,
-    // an id's sixteen, its offset and its validity, rather than an empty value's slot.
+    // A keyed table's sequence, and a normalized row's id, are bytes: seventy-two bytes a row
+    // each, at most an id's 32 as hex, its offset and its validity, rather than a value's slot.
     assert_eq!(
         row_bytes(capabilities(), false),
-        (40, vec![LogicalType::Binary])
+        (72, vec![LogicalType::Binary])
     );
     assert_eq!(
         row_bytes(capabilities(), true),
-        (80, vec![LogicalType::Binary, LogicalType::Binary])
+        (144, vec![LogicalType::Binary, LogicalType::Binary])
     );
 }

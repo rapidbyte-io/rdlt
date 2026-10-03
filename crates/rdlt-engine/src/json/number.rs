@@ -130,25 +130,8 @@ pub(crate) fn canonical_float(value: f64) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// The canonical text of the 32-bit float `value`, as [`canonical_float`] gives a float's.
-#[cfg(test)]
-pub(crate) fn canonical_float32(value: f32) -> String {
-    let mut out = Vec::new();
-    write_float32(value, &mut out);
-    String::from_utf8(out).unwrap_or_default()
-}
-
 /// Appends the canonical text of the float `value` to `out`, as [`canonical_float`] gives it.
 pub(crate) fn write_float(value: f64, out: &mut Vec<u8>) {
-    if value.is_finite() {
-        written_float(ryu::Buffer::new().format_finite(value), out);
-    } else {
-        write!(out, "{value}").unwrap_or_default();
-    }
-}
-
-/// Appends the canonical text of the 32-bit float `value` to `out`.
-pub(crate) fn write_float32(value: f32, out: &mut Vec<u8>) {
     if value.is_finite() {
         written_float(ryu::Buffer::new().format_finite(value), out);
     } else {

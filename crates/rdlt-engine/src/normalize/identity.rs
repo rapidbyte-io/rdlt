@@ -1,19 +1,25 @@
-//! Row identity (spec §7.4): each row's `_rdlt_id`, the xxh3-128 of a canonical encoding of its
-//! key, of the whole row, or of its parent's id and its index in the parent's array.
+//! Row identity: each row's `_rdlt_id`, the BLAKE3 hash of a canonical encoding of its key, of
+//! the whole row, or of its parent's id and its index in the parent's array, and each history
+//! version's `_rdlt_row_hash`, of its data.
+//!
+//! The hash is BLAKE3's whole 256 bits, so no two rows anyone can find share an id, however their
+//! values were chosen; each kind of id hashes its own domain's tag first, so ids of different kinds
+//! never come from one input.
 //!
 //! The encoding tags every value with its kind and renders every number one way, so a value hashes
 //! alike whichever batch, chunk or Arrow type carries it: integers as their digits, floats as
-//! their shortest round-trip text, which for an integral float is its digits too. JSON text, as
-//! a column whose values mix types holds it, encodes as the values it renders. Objects list their
-//! non-null fields in name order, so a field missing from a record and a null one encode alike.
-//! Every field starts with its own tag and every value with its kind's, and lengths are LEB128, so
-//! no encoding is a prefix of another.
+//! the shortest round-trip text of the 64-bit float they widen to, which for an integral float is
+//! its digits too. JSON text, as a column whose values mix types holds it, encodes as the values
+//! it renders. Objects list their non-null fields in name order, so a field missing from a record
+//! and a null one encode alike. Every field starts with its own tag and every value with its
+//! kind's, and every name, text, byte string and number with its length in LEB128, so no encoding
+//! is a prefix of another.
 //!
 //! Rows encode one at a time into one buffer, through encoders worked out once per batch: other
 //! string, binary and array types are cast to the plain ones first, maps are arrays of their
 //! entries, and dictionaries and run-end encodings are their values. Dates, times, timestamps and
 //! durations encode as their kind and nanoseconds, so a value's unit, zone or date type does not
-//! change its encoding.
+//! change its encoding; a `Date64` holding part of a day is the day it is within.
 //!
 //! JSON text is read a token at a time, never recursed into, and its numbers are read exactly:
 //! each encodes as the canonical text of its value, as an integer, a decimal or a float of that
@@ -24,28 +30,53 @@ mod canonical;
 #[cfg(test)]
 mod tests;
 
-use std::io::Write;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int64Array, ListArray,
-    RecordBatch, StringArray, UInt64Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch,
+    StringArray, UInt64Array,
 };
 use arrow_buffer::NullBuffer;
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
 
 use super::as_list;
-use crate::json::{JsonError, Reader, Token, write_float, write_float32, write_number};
+use crate::json::{JsonError, Reader, Token, write_float, write_number};
 use crate::table::convert::decoded;
-use canonical::{Stored, decimal_scale, temporal_tag, unit_nanoseconds};
+use canonical::{Since, Stored, decimal_scale, temporal_tag};
 
 /// The ids of `batch`'s rows as roots: of the `key` columns' values in order, or of the whole row
 /// where there is no key.
 ///
 /// A key column the batch lacks encodes as null.
 pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryArray, ArrowError> {
+    hashes(Domain::Root, batch, key)
+}
+
+/// The hashes of `batch`'s rows as history versions: of each whole row.
+pub(crate) fn version_hashes(batch: &RecordBatch) -> Result<BinaryArray, ArrowError> {
+    hashes(Domain::Version, batch, &[])
+}
+
+/// What an id identifies, whose tag its input starts with.
+#[derive(Clone, Copy, Debug)]
+enum Domain {
+    /// A root row, by its key or whole.
+    Root = 0x01,
+    /// A child row, by its parent's id and its index.
+    Child = 0x02,
+    /// A history version, by its data.
+    Version = 0x03,
+}
+
+/// The hashes in `domain` of `batch`'s rows: of the `key` columns' values in order, or of the
+/// whole row where there is no key.
+fn hashes(
+    domain: Domain,
+    batch: &RecordBatch,
+    key: &[Arc<str>],
+) -> Result<BinaryArray, ArrowError> {
     let schema = batch.schema();
     let encoders: Vec<Option<Encoder>> = if key.is_empty() {
         let fields = schema.fields().iter().zip(batch.columns());
@@ -61,7 +92,7 @@ pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryAr
             .collect::<Result<_, _>>()?
     };
     let mut row = Vec::with_capacity(ROW_BYTES);
-    let ids: Vec<[u8; 16]> = (0..batch.num_rows())
+    let ids: Vec<[u8; ID_BYTES]> = (0..batch.num_rows())
         .map(|index| {
             row.clear();
             for encoder in &encoders {
@@ -70,7 +101,7 @@ pub(crate) fn root_ids(batch: &RecordBatch, key: &[Arc<str>]) -> Result<BinaryAr
                     None => row.push(NULL),
                 }
             }
-            Ok(hash(&row))
+            Ok(hash(domain, &row))
         })
         .collect::<Result<_, ArrowError>>()?;
     Ok(BinaryArray::from_iter_values(ids))
@@ -104,22 +135,29 @@ pub(crate) fn unread(
 
 /// The ids of child rows: of each row's parent's id and its index in the parent's array.
 pub(crate) fn child_ids(parents: &BinaryArray, idx: &Int64Array) -> BinaryArray {
-    let mut bytes = Vec::with_capacity(24);
-    let ids: Vec<[u8; 16]> = parents
+    let mut bytes = Vec::with_capacity(ID_BYTES + 16);
+    let ids: Vec<[u8; ID_BYTES]> = parents
         .iter()
         .zip(idx.values())
         .map(|(parent, idx)| {
             bytes.clear();
-            bytes.extend_from_slice(parent.unwrap_or_default());
+            length(&mut bytes, parent.unwrap_or_default());
             bytes.extend_from_slice(&idx.to_be_bytes());
-            hash(&bytes)
+            hash(Domain::Child, &bytes)
         })
         .collect();
     BinaryArray::from_iter_values(ids)
 }
 
-fn hash(bytes: &[u8]) -> [u8; 16] {
-    xxhash_rust::xxh3::xxh3_128(bytes).to_be_bytes()
+/// Bytes in an id: BLAKE3's whole output.
+pub(crate) const ID_BYTES: usize = blake3::OUT_LEN;
+
+/// The BLAKE3 hash of `bytes` in `domain`.
+fn hash(domain: Domain, bytes: &[u8]) -> [u8; ID_BYTES] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&[domain as u8]);
+    hasher.update(bytes);
+    *hasher.finalize().as_bytes()
 }
 
 /// The bytes a row's encoding is expected to take, which its buffer starts with.
@@ -152,7 +190,7 @@ enum Encoder {
     /// Integers of any type a signed 64-bit one holds, read as their type stores them.
     Integer(ArrayRef, Stored),
     Unsigned(UInt64Array),
-    Float32(Float32Array),
+    /// Floats of any width, as the 64-bit floats they widen to.
     Float(Float64Array),
     Text(StringArray),
     /// JSON text, encoded as the values it renders.
@@ -165,8 +203,8 @@ enum Encoder {
     /// An array, and its items.
     Array(ListArray, Box<Encoder>),
     /// Dates, timestamps, times of day or durations: their kind's tag, the values as their type
-    /// stores them, and the nanoseconds in one of its units.
-    Temporal(u8, ArrayRef, Stored, i128),
+    /// stores them, and how many nanoseconds they are since their origin.
+    Temporal(u8, ArrayRef, Stored, Since),
     /// Values of any other type, as their type and text.
     Other(ArrayRef, String),
 }
@@ -195,8 +233,9 @@ impl Encoder {
             | DataType::UInt16
             | DataType::UInt32 => Self::Integer(Arc::clone(array), stored()?),
             DataType::UInt64 => Self::Unsigned(array.as_primitive().clone()),
+            // Every 16- and 32-bit float widens to a 64-bit float exactly.
             DataType::Float16 | DataType::Float32 => {
-                Self::Float32(cast(&DataType::Float32)?.as_primitive().clone())
+                Self::Float(cast(&DataType::Float64)?.as_primitive().clone())
             }
             DataType::Float64 => Self::Float(array.as_primitive().clone()),
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
@@ -214,8 +253,8 @@ impl Encoder {
             }
             data_type if temporal_tag(data_type).is_some() => {
                 let tag = temporal_tag(data_type).expect("a temporal type");
-                let unit = unit_nanoseconds(data_type).expect("a temporal type");
-                Self::Temporal(tag, Arc::clone(array), stored()?, unit)
+                let since = Since::of(data_type).expect("a temporal type");
+                Self::Temporal(tag, Arc::clone(array), stored()?, since)
             }
             DataType::Struct(_) => {
                 let object = array.as_struct();
@@ -268,7 +307,6 @@ impl Encoder {
             | Self::Temporal(_, values, ..)
             | Self::Other(values, _) => values.is_null(index),
             Self::Unsigned(values) => values.is_null(index),
-            Self::Float32(values) => values.is_null(index),
             Self::Float(values) => values.is_null(index),
             Self::Text(values) | Self::Json(values) => values.is_null(index),
             Self::Bytes(values) => values.is_null(index),
@@ -292,7 +330,6 @@ impl Encoder {
             Self::Boolean(values) => out.push(if values.value(index) { TRUE } else { FALSE }),
             Self::Integer(_, values) => integer(out, values.value(index)),
             Self::Unsigned(values) => integer(out, values.value(index).into()),
-            Self::Float32(values) => float32(out, values.value(index)),
             Self::Float(values) => float64(out, values.value(index)),
             Self::Text(values) => {
                 out.push(STRING);
@@ -303,12 +340,12 @@ impl Encoder {
                 length(out, values.value(index));
             }
             Self::Decimal(_, values, scale) => {
-                let text = values.decimal(*scale, index);
-                number(out, |row| row.write_all(text.as_bytes()));
+                out.push(NUMBER);
+                length(out, values.decimal(*scale, index).as_bytes());
             }
-            Self::Temporal(tag, _, values, unit) => {
+            Self::Temporal(tag, _, values, since) => {
                 out.push(*tag);
-                let nanos = (values.value(index) * unit).to_string();
+                let nanos = since.nanoseconds(values.value(index)).to_string();
                 length(out, nanos.as_bytes());
             }
             Self::Json(values) => json(values.value(index), out)
@@ -364,9 +401,10 @@ fn json(text: &str, out: &mut Vec<u8>) -> Result<(), JsonError> {
             Token::Null => place(&mut open, out, None),
             Token::Bool(value) => place(&mut open, out, Some(&[if value { TRUE } else { FALSE }])),
             Token::Number(written) => {
+                let mut text = Vec::new();
+                write_number(written, &mut text)?;
                 let mut number = vec![NUMBER];
-                write_number(written, &mut number)?;
-                number.push(b';');
+                length(&mut number, &text);
                 place(&mut open, out, Some(&number));
             }
             Token::String(text) => {
@@ -434,15 +472,8 @@ fn formatted(values: &ArrayRef, index: usize) -> String {
     )
 }
 
-/// Appends an integer.
-fn integer(out: &mut Vec<u8>, value: i128) {
-    out.push(NUMBER);
-    digits(out, value);
-    out.push(b';');
-}
-
-/// Appends the decimal digits of `value`, with a minus sign where it is negative.
-fn digits(row: &mut Vec<u8>, value: i128) {
+/// Appends an integer, as its decimal digits, with a minus sign where it is negative.
+fn integer(row: &mut Vec<u8>, value: i128) {
     let mut buffer = [0_u8; 40];
     let mut at = buffer.len();
     let mut rest = value.unsigned_abs();
@@ -458,29 +489,18 @@ fn digits(row: &mut Vec<u8>, value: i128) {
         at -= 1;
         buffer[at] = b'-';
     }
-    row.extend_from_slice(&buffer[at..]);
-}
-
-/// Appends a number, which `digits` writes.
-fn number(row: &mut Vec<u8>, digits: impl FnOnce(&mut Vec<u8>) -> std::io::Result<()>) {
     row.push(NUMBER);
-    digits(row).expect("writing to a vector never fails");
-    row.push(b';');
+    length(row, &buffer[at..]);
 }
 
 /// Floats encode as the canonical text of the shortest text that reads back as them, a tie
 /// going to the even one as JSON writers break it, which is the text the engine writes a float
 /// into JSON as, so the float and that text hash alike; negative zero is zero.
 fn float64(row: &mut Vec<u8>, value: f64) {
+    let mut text = Vec::with_capacity(32);
+    write_float(value, &mut text);
     row.push(NUMBER);
-    write_float(value, row);
-    row.push(b';');
-}
-
-fn float32(row: &mut Vec<u8>, value: f32) {
-    row.push(NUMBER);
-    write_float32(value, row);
-    row.push(b';');
+    length(row, &text);
 }
 
 /// Appends `bytes` after their length, in LEB128.

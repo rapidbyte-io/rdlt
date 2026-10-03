@@ -34,6 +34,7 @@ arrow-row = "59.2" # comparable row encodings of merge keys
 arrow-schema = "59.2" # arrow data types and schemas
 arrow-select = "59.2" # take, filter and concat for discards, compaction and merges
 base64 = "0.22" # cursor bytes inside JSON state values
+blake3 = "1.8.7" # row identity: the collision-resistant hash of each row's canonical encoding
 crc32c = "0.6" # the write-ahead log's frame checksums, spec §15.6
 bytes = { version = "1.12.1", features = [
   "serde",

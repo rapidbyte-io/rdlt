@@ -132,7 +132,7 @@ impl MetaNames {
     }
 }
 
-/// The type of the lineage id columns: 16 bytes of xxh3-128.
+/// The type of the lineage id columns: the 32 bytes of a row's id.
 pub(crate) const ID_TYPE: LogicalType = LogicalType::Binary;
 
 /// The type of the position column.

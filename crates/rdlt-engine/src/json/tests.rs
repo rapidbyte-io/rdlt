@@ -5,10 +5,7 @@ use rdlt_connector::limits::MAX_NESTING_DEPTH;
 
 use super::number::PLAIN_BYTES;
 
-use super::{
-    EXPONENT_DIGITS, JsonError, Reader, Token, canonical_float, canonical_float32,
-    canonical_number, check,
-};
+use super::{EXPONENT_DIGITS, JsonError, Reader, Token, canonical_float, canonical_number, check};
 
 fn tokens(text: &str) -> Result<Vec<Token<'_>>, JsonError> {
     let mut reader = Reader::new(text);
@@ -190,9 +187,6 @@ fn a_float_ties_to_its_even_shortest_text_and_a_float_json_lacks_keeps_its_name(
     assert_eq!(canonical_float(2.5e-7), "0.00000025");
     let names = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY].map(canonical_float);
     assert_eq!(names, ["NaN", "inf", "-inf"]);
-    let names = [f32::NAN, f32::INFINITY, f32::NEG_INFINITY].map(canonical_float32);
-    assert_eq!(names, ["NaN", "inf", "-inf"]);
-    assert_eq!(canonical_float32(0.1), "0.1");
 }
 
 #[test]
@@ -290,10 +284,13 @@ proptest! {
             canonical_number(&format!("{float:e}")).unwrap(),
             canonical_number(&format!("{float}")).unwrap()
         );
+        // A 32-bit float is the 64-bit float it widens to, whose text reads back as both.
         let single = u32::try_from(bits >> 32).unwrap();
         let float = f32::from_bits(single);
         prop_assume!(float.is_normal() || float.is_subnormal());
-        prop_assert_eq!(canonical_float32(float).parse::<f32>().unwrap().to_bits(), single);
+        let widened = canonical_float(f64::from(float));
+        prop_assert_eq!(widened.parse::<f64>().unwrap().to_bits(), f64::from(float).to_bits());
+        prop_assert_eq!(widened.parse::<f32>().unwrap().to_bits(), single);
     }
 
     #[test]

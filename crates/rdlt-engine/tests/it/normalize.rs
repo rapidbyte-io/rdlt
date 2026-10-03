@@ -185,7 +185,7 @@ async fn ids_are_the_same_whenever_the_same_row_loads() {
     assert_eq!(roots[0], roots[1], "one key, one id, in every run");
     let items = lineage("stable", "events__items", "_rdlt_id");
     assert_eq!(items[0], items[1]);
-    assert_eq!(roots[0].len(), 16, "ids are 16 bytes of xxh3-128");
+    assert_eq!(roots[0].len(), 32, "ids are the 32 bytes of BLAKE3");
 }
 
 #[tokio::test(start_paused = true)]

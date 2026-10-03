@@ -18,24 +18,43 @@ pub(super) fn temporal_tag(data_type: &DataType) -> Option<u8> {
     }
 }
 
-/// The nanoseconds in one unit of the temporal `data_type`: its values are since the epoch for
-/// dates and timestamps, since midnight for times, and elapsed for durations.
-pub(super) fn unit_nanoseconds(data_type: &DataType) -> Option<i128> {
-    use arrow_schema::TimeUnit;
-    let per = |unit: &TimeUnit| match unit {
-        TimeUnit::Second => 1_000_000_000,
-        TimeUnit::Millisecond => 1_000_000,
-        TimeUnit::Microsecond => 1_000,
-        TimeUnit::Nanosecond => 1,
-    };
-    match data_type {
-        DataType::Date32 => Some(86_400_000_000_000),
-        DataType::Date64 => Some(1_000_000),
-        DataType::Time32(unit)
-        | DataType::Time64(unit)
-        | DataType::Timestamp(unit, _)
-        | DataType::Duration(unit) => Some(per(unit)),
-        _ => None,
+/// How a temporal type's values count nanoseconds since their origin: the epoch for dates and
+/// timestamps, midnight for times; durations count them elapsed.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Since {
+    /// Nanoseconds in one unit of the type.
+    unit: i128,
+    /// Units in the least step a value takes: a day of milliseconds for a `Date64`, whose
+    /// values name the day they are within; one for any other type.
+    step: i128,
+}
+
+impl Since {
+    /// How values of the temporal `data_type` count; `None` for another type.
+    pub(super) fn of(data_type: &DataType) -> Option<Self> {
+        use arrow_schema::TimeUnit;
+        let per = |unit: &TimeUnit| match unit {
+            TimeUnit::Second => 1_000_000_000,
+            TimeUnit::Millisecond => 1_000_000,
+            TimeUnit::Microsecond => 1_000,
+            TimeUnit::Nanosecond => 1,
+        };
+        let (unit, step) = match data_type {
+            DataType::Date32 => (86_400_000_000_000, 1),
+            DataType::Date64 => (1_000_000, 86_400_000),
+            DataType::Time32(unit)
+            | DataType::Time64(unit)
+            | DataType::Timestamp(unit, _)
+            | DataType::Duration(unit) => (per(unit), 1),
+            _ => return None,
+        };
+        Some(Self { unit, step })
+    }
+
+    /// The nanoseconds `value`, as its type stores it, is since its origin: the start of the step
+    /// it is within, which a value of 64 bits or less always has in 128 bits.
+    pub(super) fn nanoseconds(self, value: i128) -> i128 {
+        value.div_euclid(self.step) * self.step * self.unit
     }
 }
 
