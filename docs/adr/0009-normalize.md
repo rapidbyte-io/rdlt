@@ -38,6 +38,13 @@ leaves open, and one it words otherwise.
   depend on the batch, chunk or Arrow type that carried the row. A reference normalizer over JSON
   values, with its own encoding, checks it. Roots that share a key, or whose key is null, share an
   id, as the spec's keyed identity has them.
+  - Amended 2026-10-03 (ADR 0040): JSON text is read without recursion and its numbers by their
+    exact value, in one canonical text a value; a float's text is its shortest, a tie going to
+    the even digit. Text that is not JSON fails the write, `json_invalid`. A merge key stored as
+    JSON on a normalized stream is refused, `merge_key_json`: its rows would merge by stored
+    text while their children follow ids that read the values. An array under a key that cannot
+    name a child table follows the stream's policy, refused as `table_path_invalid` where it
+    does not discard.
 - **Lineage columns' types.** The spec gives the ids as `FixedSizeBinary(16)` and the position as
   `UInt32`. The contract has no fixed-size binary or unsigned logical types, so the ids are 16
   bytes of `Binary`, as `_rdlt_seq` already is, and the position is `Int64`; every destination

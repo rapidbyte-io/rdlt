@@ -27,6 +27,10 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   holding a column that stopped building, or one the join made `Json` or another kind, is parsed
   again and built against the joined shape. Batches therefore always have the joined shape, as
   the spec requires, and optional keys cost no second parse.
+  - Amended 2026-10-03 (ADR 0040): the pass is metered. Builders charge what they are made with
+    and grow by, within twice the chunk's text; a chunk that would pass that is read again
+    observing kinds and counts, and what the batches take beyond the push's admission is
+    reserved before any of them is built.
 - **Pushes are split into records on the pool.** Each push's records are found on the compute
   pool before chunking: JSON lines by their line ends, a JSON array by its top-level commas,
   scanned without recursion however deep its values nest. Each record is then parsed on its own,
@@ -46,7 +50,12 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   when chunks join), or a shred of more than 32 Mi cells, `limit_exceeded`; anything else
   unparsable, `json_invalid`. A cell is a row under a column holding values: every row takes one
   in every column, so without the bound a small push of sparse, wide records builds gigabytes of
-  nulls. Only JSON's whitespace may surround a record, and an error names what broke and the
+  nulls.
+  - Amended 2026-10-03 (ADR 0040): the column limit is the engine's derived `schema_columns`,
+    counted for every column the records hold together, list items included, while a chunk is
+    parsed and for the joined shape; cells are counted a level at a time, a list's items being
+    the rows of their level, before anything is built. A refusal quotes a key or a number cut
+    to 128 bytes. Only JSON's whitespace may surround a record, and an error names what broke and the
   record's place among the pushes without quoting the record.
   Parsing recurses once per level and stops at the depth limit, so no input exhausts the stack.
   Unoptimized builds use far more stack per level than release ones, so each level grows the

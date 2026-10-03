@@ -90,6 +90,17 @@ mode every figure falls to about a third, so compare only runs taken back to bac
 Unpinned, the pool's eighth thread lands on slower cores than the first, so eight threads reach
 about 4.1× the fastest core: the mix of cores, not the shredder, sets that figure.
 
+## Metering (ADR 0040)
+
+Since ADR 0040 the shredder charges every builder what it is made with and grows by, and a
+chunk that would pass twice its text is read again observing before its batch is built. Dense
+data stays within its allowance and parses once. Measured back to back against the engine before
+it, on the same machine, one core, every corpus above and the normalizing groups below were
+within the run-to-run noise of the shared machine (5–10 %). Two choices keep it so: a growing
+builder is charged what it grows by, not what it holds while it copies (charging the copy made
+`string_heavy` chunks trip and parse three times, 460 against 195 MiB/s), and identity writes a
+float's canonical text in place rather than allocating it (allocating cost `keyless` a quarter).
+
 ## The `arrow-json` fast path
 
 The spec lets flat JSON of a known schema go through `arrow-json`'s decoder where that is faster

@@ -222,7 +222,14 @@ bounded by a limit with a typed refusal (ADR 0039):
   `push_exceeds_budget`, `row_exceeds_budget`, `log_frame_exceeds_budget`,
   `table_exceeds_budget`, and `limit_exceeded` naming `cursor bytes` or `read kept bytes`.
 - A push reserves what it keeps alive, its schema included; JSON text reserves three times
-  itself, for the batches it becomes.
+  itself, for the batches it becomes, and what its batches take beyond that is reckoned and
+  reserved before any of it is built, or refused, `json_exceeds_budget` (ADR 0040). The
+  shredder counts every column its records hold together against the schema's column limit,
+  and its cells a level at a time, before it builds them.
+- JSON text is read without recursion, nesting past 64 levels refused, and its numbers by their
+  exact value. Every value of an Arrow push's columns of JSON is checked before it is used:
+  text that is not JSON fails the write, `json_invalid`. A refusal quotes a record's keys and
+  numbers cut to 128 bytes.
 - A batch is lowered a piece at a time, through plans that normalize too. Each piece reserves
   what lowering it holds, as its table stores it and with the nulls of the columns it lacks,
   before it is lowered. A row that alone takes more than a quarter of the budget is refused.
@@ -248,8 +255,7 @@ bounded by a limit with a typed refusal (ADR 0039):
   own, `dictionary bytes` and `staged bytes`.
 
 How much one push may expand to in total is not bounded: it costs time and destination storage in
-proportion, within the budget's memory. What a JSON push of sparse records becomes beyond three
-times its text is not reserved either: the shredder's limit on cells bounds it, not the budget.
+proportion, within the budget's memory.
 
 ## What a pipeline keeps
 
