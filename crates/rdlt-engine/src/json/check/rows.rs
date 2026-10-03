@@ -85,8 +85,9 @@ pub(super) enum Rows<'a> {
     Items(Rc<Rows<'a>>, Offsets<'a>),
     /// The items of a list view's rows, which name them in row order.
     Viewed(Rc<Rows<'a>>, Views<'a>),
-    /// The items of a fixed-size list's rows: a row's from its first, so many a row.
-    Fixed(Rc<Rows<'a>>, usize, usize),
+    /// The items of a fixed-size list's rows, so many a row: a fixed-size list's values are
+    /// sliced with it, so its first row's start at the first.
+    Fixed(Rc<Rows<'a>>, usize),
     /// The values of a run-end encoded array's rows.
     Runs(Rc<Rows<'a>>, Ends<'a>),
     /// The rows set in a bitmap.
@@ -121,9 +122,9 @@ impl Rows<'_> {
                     .map(|row| views.span(row))
                     .filter(|span| !span.is_empty()),
             ),
-            Self::Fixed(rows, first, size) => Box::new(
+            Self::Fixed(rows, size) => Box::new(
                 rows.ranges()
-                    .map(move |range| first + range.start * size..first + range.end * size)
+                    .map(move |range| range.start * size..range.end * size)
                     .filter(|range| !range.is_empty()),
             ),
             Self::Runs(rows, ends) => {

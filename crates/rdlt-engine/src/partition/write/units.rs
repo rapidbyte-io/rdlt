@@ -106,29 +106,22 @@ async fn shredded(
             .await
             .map_err(failed)
     };
-    // What observing may hold beyond what the pushes were admitted for is reserved before it is
-    // held. Once what building takes is known, it is reserved without a wait while that is held;
-    // where it must wait, it waits holding nothing but the pushes, and they are observed again.
-    let too_large = |large: TooLarge| beyond_a_request(job, &large);
-    let mut observing = reserving(job, context, limits.beyond_bytes(), too_large).await?;
-    let mut observed = observe().await?;
-    let excess = observed.excess();
-    let beyond = if excess <= observing.bytes() {
-        observing.shrink(excess);
-        observing
-    } else if let Some(reserved) = context.budget.try_acquire_working(excess) {
-        drop(observing);
-        reserved
-    } else {
-        drop((observed, observing));
+    // Observing reserves its room first; building's bytes are taken without a wait while that
+    // is held, or else waited for holding only the pushes, which are then observed again.
+    let mut room = limits.beyond_bytes();
+    let (beyond, observed) = loop {
         let too_large = |large: TooLarge| beyond_a_request(job, &large);
-        let reserved = reserving(job, context, excess, too_large).await?;
-        observed = observe().await?;
-        if observed.excess() > excess {
-            let detail = "observing the pushes again took more than it did before";
-            return Err(Error::internal(format!("stream {}: {detail}", job.stream)));
+        let mut observing = reserving(job, context, room, too_large).await?;
+        let observed = observe().await?;
+        let excess = observed.excess();
+        if excess <= observing.bytes() {
+            observing.shrink(excess);
+            break (observing, observed);
         }
-        reserved
+        if let Some(reserved) = context.budget.try_acquire_working(excess) {
+            break (reserved, observed);
+        }
+        room = excess;
     };
     let beyond = (beyond.bytes() > 0).then_some(beyond);
     let batches = observed.build(compute).await.map_err(failed)?;

@@ -369,3 +369,14 @@ fn objects_and_arrays_nested_to_the_limit_are_read_as_serde_json_reads_them() {
     assert_eq!(check(&text), Ok(()));
     assert_eq!(check(&format!("[{text}]")), Err(JsonError::TooDeep));
 }
+
+#[test]
+fn a_vast_number_s_power_counts_from_its_first_significant_digit() {
+    // Leading zeros before its digits: 0.00125e500 is 1.25 × 10⁴⁹⁷.
+    assert_eq!(canonical_number("0.00125e500").unwrap(), "1.25e497");
+    // Text that opens with an exponent's letter is no number.
+    let digits = "1".repeat(EXPONENT_DIGITS + 1);
+    assert!(!super::may_hold_long_exponent(
+        format!("e{digits}").as_bytes()
+    ));
+}

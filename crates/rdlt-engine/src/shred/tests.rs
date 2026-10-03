@@ -13,6 +13,11 @@ use super::reference::Code;
 use super::{Parsed, ShredLimits, chunks, parse, shred};
 use crate::compute::RayonPool;
 
+thread_local! {
+    /// How many chunks this thread built again.
+    pub(super) static BUILT_AGAIN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The limits of pushes whose records may hold as many columns as the wire's schemas.
 pub(crate) fn limits() -> ShredLimits {
     ShredLimits::new(MAX_COLUMNS)
@@ -1047,4 +1052,99 @@ fn held_within_charges(values: &[&str]) {
             "{value}: a batch held {held}, charged {charged}"
         );
     }
+}
+
+/// How many chunks shredding `push` in one chunk builds again, and the batch.
+fn built_again(push: &str) -> (usize, RecordBatch) {
+    let before = BUILT_AGAIN.with(std::cell::Cell::get);
+    let batch = batch_of(&[push], 1 << 20);
+    (BUILT_AGAIN.with(std::cell::Cell::get) - before, batch)
+}
+
+/// A hundred records of `first` and a hundred of `then`, each `{"a": value}` beside a note:
+/// enough text that the chunk's allowance holds its builders, the widened ones too.
+fn hundreds(first: &str, then: &str) -> String {
+    let note = "x".repeat(64);
+    let records = |value: &str| vec![format!("{{\"a\":{value},\"n\":\"{note}\"}}"); 100].join("\n");
+    format!("{}\n{}", records(first), records(then))
+}
+
+#[test]
+fn a_chunk_whose_columns_fit_is_built_once_and_one_whose_column_spoiled_twice() {
+    // Integers widen to floats and to 256-bit decimals where they are built.
+    let (again, batch) = built_again(&hundreds("1", "1.5"));
+    assert_eq!(again, 0);
+    let floats = batch.column(0).as_primitive::<Float64Type>();
+    assert_eq!((floats.value(0), floats.value(199)), (1.0, 1.5));
+    let vast = "1234567890123456789012345678901234567890123";
+    let (again, batch) = built_again(&hundreds("1", vast));
+    assert_eq!(again, 0);
+    let decimals = batch.column(0).as_primitive::<Decimal256Type>();
+    assert_eq!(decimals.value_as_string(0), "1");
+    assert_eq!(decimals.value_as_string(199), vast);
+    // A string after integers spoils the column, which is built again as JSON text.
+    let (again, _) = built_again(&hundreds("1", "\"x\""));
+    assert_eq!(again, 1);
+}
+
+#[test]
+fn a_chunk_is_parsed_exactly_only_where_a_zero_may_be_a_vast_exponent() {
+    let lookalike = "\"1e1234567890123456789\"";
+    assert!(!parsed("{\"a\":0.0}").exact);
+    assert!(!parsed(&format!("{{\"a\":1.5,\"n\":{lookalike}}}")).exact);
+    assert!(parsed(&format!("{{\"a\":0.0,\"n\":{lookalike}}}")).exact);
+}
+
+/// The first chunk of `text`, observed: parsed with no room to build anything.
+fn observed_only(text: &str) -> Result<Parsed, super::ShredError> {
+    let records = Bytes::from(text.to_owned());
+    let tight = ShredLimits {
+        admitted: 0,
+        ..limits()
+    };
+    parse(
+        chunks(&[records], 1 << 20).unwrap().remove(0),
+        tight,
+        &tight.beyond(),
+    )
+}
+
+#[test]
+fn an_observation_refuses_records_that_are_not_objects_and_notes_floats_only_in_json() {
+    for record in ["null", "[1]"] {
+        assert_eq!(
+            observed_only(record).err(),
+            Some(super::ShredError::NotObject),
+            "{record}"
+        );
+    }
+    assert!(!observed_only("{\"a\":1.5}").unwrap().json_floats);
+    assert!(
+        observed_only("{\"a\":1.5}\n{\"a\":\"x\"}")
+            .unwrap()
+            .json_floats
+    );
+}
+
+#[test]
+fn an_observation_past_its_chunk_s_room_and_the_flush_s_is_refused_naming_the_flush_s() {
+    // Ten columns of 400-byte names take more than the room of ten columns' shapes.
+    let fields: Vec<String> = (0..10)
+        .map(|key| format!("\"{}{key}\":1", "k".repeat(399)))
+        .collect();
+    let records = Bytes::from(format!("{{{}}}", fields.join(",")));
+    let tight = ShredLimits {
+        columns: 10,
+        admitted: 0,
+    };
+    let chunk = chunks(&[records], 1 << 20).unwrap().remove(0);
+    let error = parse(chunk, tight, &tight.beyond()).err();
+    assert_eq!(error, Some(super::ShredError::ColumnsBeyondText(10 * 576)));
+}
+
+#[test]
+fn a_shape_counts_a_column_for_each_list_s_items_at_every_depth() {
+    // `l` and its items, `m`, its items and theirs, `o` and `x`.
+    let shape = parsed("{\"l\":[1],\"m\":[[1]],\"o\":{\"x\":1}}").shape;
+    assert_eq!(shape.columns(), 7);
 }

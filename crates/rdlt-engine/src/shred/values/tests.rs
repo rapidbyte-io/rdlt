@@ -211,3 +211,17 @@ fn values_nested_to_the_limit_are_fitted_and_read_on_a_small_stack() {
     // The record counts as the first level: a value nests one level less than a record may.
     assert_eq!(fitted, [true, false, false]);
 }
+
+#[test]
+fn a_key_repeated_after_a_list_is_found() {
+    let lists = LogicalType::Struct(
+        Fields::new(vec![Field::new(
+            "l",
+            LogicalType::List(Box::new(Field::new("item", LogicalType::Int64, true))),
+            true,
+        )])
+        .unwrap(),
+    );
+    assert_eq!(fit(&[Some("{\"l\":[1],\"l\":[2]}")], &lists), [false]);
+    assert_eq!(fit(&[Some("{\"l\":[1]}")], &lists), [true]);
+}

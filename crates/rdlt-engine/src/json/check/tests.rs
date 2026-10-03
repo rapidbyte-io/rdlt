@@ -418,3 +418,110 @@ fn what_checking_holds_beside_a_batch_is_no_more_than_its_charge() {
         );
     }
 }
+
+#[test]
+fn columns_that_hold_no_json_are_neither_checked_nor_charged() {
+    // A million text values a million keys name, none of it JSON.
+    let values: ArrayRef = Arc::new(StringArray::from_iter_values(
+        (0..1 << 20).map(|value| format!("not json {value}")),
+    ));
+    let keys = PrimitiveArray::<Int32Type>::from_iter_values(0..1 << 20);
+    let keyed: ArrayRef = Arc::new(DictionaryArray::try_new(keys, values).unwrap());
+    let field = Field::new("c", keyed.data_type().clone(), true);
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![keyed]).unwrap();
+    assert_eq!(super::held(&batch), 0);
+    let (result, peak) = check_peak(&batch);
+    assert_eq!(result, Ok(()));
+    assert!(peak <= 1 << 10, "checked with {peak} bytes");
+    // Text beside JSON in a struct is not JSON, in any text type.
+    let plain: [ArrayRef; 2] = [
+        Arc::new(StringArray::from(vec!["not json"])),
+        Arc::new(StringViewArray::from(vec!["not json"])),
+    ];
+    for text in plain {
+        let fields = Fields::from(vec![
+            Field::new("t", text.data_type().clone(), true),
+            json(Field::new("j", DataType::Utf8, true)),
+        ]);
+        let json_text: ArrayRef = Arc::new(StringArray::from(vec!["1"]));
+        let row = StructArray::new(fields.clone(), vec![text, json_text], None);
+        let field = Field::new("c", DataType::Struct(fields), true);
+        assert_eq!(checked(field, Arc::new(row)), Ok(()));
+    }
+}
+
+#[test]
+fn json_is_checked_in_runs_of_structs_large_lists_fixed_lists_and_sparse_keys() {
+    let bad = || -> ArrayRef { Arc::new(StringArray::from(vec!["{"])) };
+    // A run of a struct whose field is JSON.
+    let fields = Fields::from(vec![json(Field::new("j", DataType::Utf8, true))]);
+    let row: ArrayRef = Arc::new(StructArray::new(fields, vec![bad()], None));
+    let ends = PrimitiveArray::<Int32Type>::from(vec![3]);
+    let runs = RunArray::<Int32Type>::try_new(&ends, &row).unwrap();
+    let field = Field::new("c", runs.data_type().clone(), true);
+    assert!(invalid(&checked(field, Arc::new(runs))));
+    // A large list and a fixed-size list of JSON.
+    let item = Arc::new(json(Field::new("item", DataType::Utf8, true)));
+    let large = LargeListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0_i64, 1])),
+        bad(),
+        None,
+    );
+    let field = Field::new("c", large.data_type().clone(), true);
+    assert!(invalid(&checked(field, Arc::new(large))));
+    let fixed = FixedSizeListArray::new(item, 1, bad(), None);
+    let field = Field::new("c", fixed.data_type().clone(), true);
+    assert!(invalid(&checked(field, Arc::new(fixed))));
+    // A key naming one of a thousand values, the bad one: its keys are listed, not a bitmap.
+    let values: ArrayRef = Arc::new(StringArray::from_iter_values((0..1_000).map(|value| {
+        if value == 5 {
+            "{".to_owned()
+        } else {
+            value.to_string()
+        }
+    })));
+    let keys = PrimitiveArray::<Int32Type>::from(vec![5]);
+    let keyed = DictionaryArray::try_new(keys, values).unwrap();
+    let field = json(Field::new("c", keyed.data_type().clone(), true));
+    assert!(invalid(&checked(field, Arc::new(keyed))));
+}
+
+#[test]
+fn what_checking_holds_counts_maps_and_large_list_views() {
+    // A map whose values are JSON a dictionary names.
+    let values: ArrayRef = Arc::new(StringArray::from(vec!["1"]));
+    let keys = PrimitiveArray::<Int32Type>::from(vec![0, 0]);
+    let keyed: ArrayRef = Arc::new(DictionaryArray::try_new(keys, values).unwrap());
+    let entries = Fields::from(vec![
+        Field::new("key", DataType::Utf8, false),
+        json(Field::new("value", keyed.data_type().clone(), true)),
+    ]);
+    let names: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+    let entries = StructArray::new(entries, vec![names, keyed], None);
+    let entry = Arc::new(Field::new("entries", entries.data_type().clone(), false));
+    let map = MapArray::new(
+        entry,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2])),
+        entries,
+        None,
+        false,
+    );
+    let field = Field::new("c", map.data_type().clone(), true);
+    let batch =
+        RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![Arc::new(map)]).unwrap();
+    assert!(super::held(&batch) > 0);
+    // A large list view naming its items in reverse.
+    let item = Arc::new(json(Field::new("item", DataType::Utf8, true)));
+    let views = LargeListViewArray::new(
+        item,
+        ScalarBuffer::from(vec![1_i64, 0]),
+        ScalarBuffer::from(vec![1_i64, 1]),
+        Arc::new(StringArray::from(vec!["1", "2"])),
+        None,
+    );
+    let field = Field::new("c", views.data_type().clone(), true);
+    let batch =
+        RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![Arc::new(views)]).unwrap();
+    assert_eq!(super::held(&batch), 32);
+}
