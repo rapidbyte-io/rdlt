@@ -42,11 +42,19 @@ with the semantics the local store has, though no object-store backend is built.
   chunk published as its log is removed is never listed. A staging can be discarded, and a
   log's stagings deleted by anyone (`remove_staged`), which needs no room. It lists a pipeline's
   open logs, the leftovers of removals a crash interrupted, a load's chunks; reads a chunk by
-  range; deletes a chunk; and removes a log, closing it first, then deleting what it holds.
-  Nothing is appended to a published chunk, renamed over another, or locked, and nothing relies
-  on a directory's order or on an operation over several objects.
+  range; deletes a chunk; and removes a log, closing it first, then listing and deleting what it
+  holds. A publish creates the chunk where its name is free first and asks whether the log is
+  open after, deleting the chunk where it is not: asked first, a removal could close and list
+  the log in between. Nothing is appended to a published chunk, renamed over another, or locked,
+  and nothing relies on a directory's order or on an operation over several objects.
+- A store has an identity, written once by the first to ask (`identity`) and kept with it.
 - `LocalWal` marks a load's log open with a file `open` in the load's directory, removed, and
-  made durable, first when the log is removed. It stages a chunk as a file
+  made durable, first when the log is removed. It opens a log in a directory `.<load>.opening`,
+  which no listing reads as a log, with its mark in it, then renames it to the load's name with
+  `RENAME_NOREPLACE`, so a load's directory is never seen without its mark; one a crash left
+  half opened is a leftover. Its identity is a file `store` in the base, written whole and linked
+  in where no file of the name exists. A relative base is taken against the working directory
+  once, as the store is made. It stages a chunk as a file
   `{chunk:08}.{token:016x}.part`, created exclusive and 0600; publishing syncs it, links it to
   `{chunk:08}.wal` with `linkat`, which fails where that name exists, checks the name is the file
   it staged (device and inode) and the log still open, unlinking it again otherwise, unlinks the
@@ -60,7 +68,16 @@ with the semantics the local store has, though no object-store backend is built.
   replay that finds the next number taken eight times fails its attempt as `wal_running`,
   retryably, rather than open a session that fences a load whose log takes rows on. Because a
   load opens its log before it lists the others, of two attempts starting at once at least one
-  lists, and fences, the other's log.
+  lists, and fences, the other's log. A take, a release or a scan that finds the log closed
+  since it was listed leaves it to the replay that took it; a fence whose staging a rival
+  deleted is tried again; an open a rival's replay removed is `wal_running`. So every race
+  between attempts ends in a typed, retryable code, or in `wal_fenced` for a load that lost.
+- One store per pipeline and destination: the first commit of a pipeline at a destination that
+  names no store records its store's identity (`StateEntry::LogStore`), and an attempt, a
+  replay or a reset whose store is another is refused, `wal_store_other`, before it reads or
+  tells a source anything; a logged commit may name only its own store. Logs another store
+  holds are never replayed against a destination they did not log for, and a load never reads
+  past rows they hold.
 - A load that logs nothing removes the log it opened, and so does an attempt that fails having
   published nothing. Leftovers of a removal are removed before anything else of a replay.
 - A conformance suite, generic over `WalStore`, holds the memory and local stores to this
@@ -75,7 +92,9 @@ with the semantics the local store has, though no object-store backend is built.
 - The base is reached once, the first time the store is used, from the root one directory at a
   time, each opened without following a link from the directory checked before it and checked
   on its own descriptor: it must belong to the user or to root and be writable by no other
-  unless it is sticky. A link is read only out of a directory that passed and its target walked
+  unless it is sticky; in a directory others may write, a link is followed only where it is the
+  user's or root's, as the kernel's rule for such directories has it. A link is read only out of
+  a directory that passed and its target walked
   the same way, at most forty links; a missing directory is created there, 0700, and made
   durable. The directories the base lies in are then walked up from it by descriptor and
   checked the same way. The base must belong to the user and be writable by no other (`0o022`
@@ -146,9 +165,11 @@ lowering may take, logged under more memory than replays it, is refused as
   frame would pass it fails its write as `log_bytes_exceeded` before its source hears of it, and
   a carry of an open segment's frames that would pass it is left undone, the old chunks kept.
 - A failed write fails every batch after it at once and discards what its chunk staged. A full
-  disk or quota is `wal_storage_full` and retryable: the next attempt's replay deletes what a
-  crashed load staged, which needs no room, before it writes; it needs room for its fences
-  alone, a few hundred bytes a log.
+  disk or quota is `wal_storage_full` and retryable. Where opening its own log finds the disk
+  full, the next attempt removes what removals a crash cut short left and deletes what every load
+  of the pipeline staged and did not publish, which needs no room, then opens it once more; its
+  replay deletes a log's stagings before it fences it. A retry needs room for its log's
+  directory and its fences alone, a block and a few hundred bytes.
 
 ### Receipts have a horizon the engine declares
 
@@ -214,10 +235,15 @@ draw is then taken again among the reads and commits that run told, so every dra
   started. A fenced load can no longer publish once fenced, and every attempt replays the logs it
   lists before it reads, so a commit its source was told of is replayed before any newer load of
   the pipeline reads, unless the newer load could not fence its log, in which case it fails as
-  `wal_running` instead of reading.
+  `wal_running` instead of reading. It rests on every load of a pipeline and destination keeping
+  its log in one store, which the store binding holds them to.
 - **Two destinations that no commit of the pipeline ever reached cannot be told apart.** A log
   whose load opened on a destination with no origin names itself, and so may be replayed into
   another destination no commit reached either; once any commit lands, the destination is named.
+- **The store binding begins with the first commit.** A destination no commit of the pipeline
+  reached names no store, so two stores' first loads may each begin; the first commit to land
+  names its store, and the other's next attempt is refused. Moving a pipeline's logs keeps its
+  store's identity file with them.
 - **A staged file's name is told apart by process id and a counter.** Two processes of different
   process namespaces may take one name once a staging was deleted; a publish compares the file it
   linked with the file it holds, by device and inode, and refuses another's.

@@ -289,7 +289,8 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
 
 - The local store reaches its base once, from the root, one directory at a time, each opened
   without following a link and checked on that descriptor: the user's or root's, and writable by
-  no other unless sticky; a link is read only out of a directory that passed. It then keeps the
+  no other unless sticky; a link is read only out of a directory that passed, and out of one
+  others may write only where it is the user's or root's. It then keeps the
   base open, and refuses one removed rather than make it again. The base must be the engine's
   user's and writable by no other; every directory and file below it must be the user's alone,
   of the kind expected, on the base's file system, checked on the descriptor used
@@ -308,12 +309,15 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
 - What replay reads and decodes is reserved from the memory budget before it is held
   (`replay_exceeds_budget`). A load's log holds at most `GrowthLimits::log_bytes` on disk, 4 GiB
   by default (`log_bytes_exceeded`). A full disk is retried (`wal_storage_full`): a failed write
-  gives back what it staged, and a replay deletes what a crashed load staged before it writes a
-  fence of a few hundred bytes.
+  gives back what it staged, and the next attempt deletes what a crashed load staged, which
+  needs no room, before it needs a directory's block and a few hundred bytes of its own.
 - A load opens its log before it reads any other. A replay or a reset fences a running load by
   publishing its log's next chunk, and its load can publish nothing once the log is removed, so
   the two never both write; a load that keeps publishing fails the other attempt
-  (`wal_running`).
+  (`wal_running`), as every race between attempts ends typed and retryable.
+- A pipeline's destination takes logs from one store: the store's identity is kept in its base
+  and recorded by the pipeline's first commit there, and an engine with another store is refused
+  (`wal_store_other`) before it reads anything.
 
 A log is not signed: whoever can write as the engine's user holds its authority already. A log
 that cannot be read stops its pipeline's runs until an operator removes it, since setting it
