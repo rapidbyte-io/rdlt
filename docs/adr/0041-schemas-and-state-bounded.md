@@ -113,12 +113,13 @@ one run to the next, broke both:
   Entries leave state only as before, with a new full read's cycle, a change stream's new phase,
   or a reset, so a source whose partition ids keep changing grows its state until a commit is
   refused as `state_bytes_exceeded`; a reset of the stream is the remedy (ADR 0031, ADR 0033).
-- **A widen the destination refuses is routed aside.** A `schema_conflict` does not say which
-  change it refused. A conflicting change that widens columns in place is resolved again with
-  those columns kept as they are: values they cannot hold go to a variant column, and a variant
-  kept so leaves them to the JSON variant. Where the column's policy refuses variants, or the
-  destination cannot add a column, the change is refused as `schema_change_unsupported`. New
-  columns' names are hashed only once no widen is left to blame.
+- **A widen the destination refuses is routed aside.** The engine applies a change one table
+  change a call, so a `schema_conflict` names the change it refused. A refused widen keeps its
+  column as it is for the rest of the attempt, the column's own and no other: values it cannot
+  hold go to a variant column, and a variant kept so leaves them to the JSON variant. Where the
+  column's policy refuses variants, or the destination cannot add a column, the change is
+  refused as `schema_change_unsupported`. A refused new column or table has its new names
+  hashed, as before. A child table keeps none of its root's columns from widening.
 
 Rejected:
 - **Reading stored JSON with no recursion limit**, on a stack grown as needed: a stored form that

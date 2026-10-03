@@ -31,6 +31,10 @@ pub(crate) use children::Admission;
 /// left behind before the conflict fails the run.
 pub(crate) const CONFLICT_RETRIES: usize = 4;
 
+/// A schema change the destination refused as `schema_conflict`, and the column it refused to
+/// widen, where it refused a widen.
+type Conflict = (Option<ColumnKey>, ConnectorError);
+
 /// Lowering plans kept per table: one per incoming schema its partitions send, for its current
 /// view.
 const PLANS: usize = 8;
@@ -38,7 +42,9 @@ const PLANS: usize = 8;
 /// One table and its resolver.
 #[derive(Debug)]
 struct Slot {
-    resolver: Resolver,
+    /// Resolves the table's changes; it keeps from widening, for the rest of the attempt, the
+    /// columns whose widening the destination refused.
+    resolver: Mutex<Arc<Resolver>>,
     current: Mutex<Arc<TableView>>,
     /// Held while a schema change is worked out and applied, so changes to one table never race.
     evolving: tokio::sync::Mutex<()>,
@@ -194,7 +200,7 @@ impl Tables {
         let view = TableView::new(table, model, &resolver);
         let mut slots = self.slots.write();
         slots.push(Arc::new(Slot {
-            resolver,
+            resolver: Mutex::new(Arc::new(resolver)),
             current: Mutex::new(Arc::new(view)),
             evolving: tokio::sync::Mutex::new(()),
             recorded: Mutex::new(recorded),
@@ -207,6 +213,11 @@ impl Tables {
 
     fn slot(&self, table: usize) -> Arc<Slot> {
         Arc::clone(&self.slots.read()[table])
+    }
+
+    /// The resolver of `table`.
+    fn resolver(&self, table: usize) -> Arc<Resolver> {
+        Arc::clone(&self.slot(table).resolver.lock())
     }
 
     /// The current view of `table`.
@@ -242,7 +253,7 @@ impl Tables {
         if let Some(plan) = planned(&plans, &view) {
             return Ok(plan);
         }
-        let stream = slot.resolver.stream.clone();
+        let stream = slot.resolver.lock().stream.clone();
         let plan = Arc::new(LoweringPlan::new(
             stream,
             Arc::clone(&view),
@@ -269,58 +280,70 @@ impl Tables {
         let unchanged = |resolution: &Resolution, view: &TableView| {
             resolution.model.revision == view.model.revision
         };
-        let resolution = slot.resolver.resolve(&view.model, incoming)?;
+        let resolution = self.resolver(table).resolve(&view.model, incoming)?;
         if unchanged(&resolution, &view) {
             return Ok((view, resolution.routes));
         }
         let _evolving = slot.evolving.lock().await;
         let view = self.view(table);
-        let resolution = slot.resolver.resolve(&view.model, incoming)?;
+        let kept = self.resolver(table);
+        let resolution = kept.resolve(&view.model, incoming)?;
         if unchanged(&resolution, &view) {
             return Ok((view, resolution.routes));
         }
-        let (mut resolver, mut resolution, mut retries) =
-            (Cow::Borrowed(&slot.resolver), resolution, 0);
+        let (mut resolver, mut resolution, mut retries) = (Cow::Borrowed(&*kept), resolution, 0);
+        let mut blamed = Vec::new();
         let next = loop {
-            let widened = widened(&view.model, &resolution.changes);
             match self.evolve(table, &view, resolution, &resolver).await? {
                 Ok(next) => break next,
-                Err(error) if retries == CONFLICT_RETRIES => return Err(self.refused(table, error)),
-                // The refusal does not say which change it refused: a widen, whose column then
-                // keeps its type, before the names of new columns.
-                Err(_conflict) => {
-                    resolver = Cow::Owned(if widened.is_empty() {
-                        resolver.hashing(retries as u64)
-                    } else {
-                        resolver.unwidening(widened)
-                    });
-                    resolution = resolver.resolve(&view.model, incoming)?;
+                // A widen the destination refuses keeps its column as it is, for the attempt.
+                Err((Some(column), _)) if !resolver.unwidened.contains(&column) => {
+                    resolver = Cow::Owned(resolver.unwidening([column.clone()]));
+                    blamed.push(column);
+                }
+                Err((_, error)) if retries == CONFLICT_RETRIES => {
+                    return Err(self.refused(table, error));
+                }
+                // Else a name an attempt that never committed left behind: new columns are
+                // named around it.
+                Err(_) => {
+                    resolver = Cow::Owned(resolver.hashing(retries as u64));
                     retries += 1;
                 }
             }
+            resolution = resolver.resolve(&view.model, incoming)?;
         };
+        if !blamed.is_empty() {
+            *slot.resolver.lock() = Arc::new(kept.unwidening(blamed));
+        }
         *slot.current.lock() = Arc::clone(&next.0);
         Ok(next)
     }
 
-    /// Applies what `resolution` changes in `view`; the destination's `schema_conflict`, from
-    /// columns an attempt that never committed left behind, is returned for the caller to name
-    /// around.
+    /// Applies what `resolution` changes in `view`; the destination's `schema_conflict` is
+    /// returned for the caller to resolve around, with the column it refused to widen, if it
+    /// refused a widen.
     async fn evolve(
         &self,
         table: usize,
         view: &TableView,
         resolution: Resolution,
         resolver: &Resolver,
-    ) -> Result<Result<(Arc<TableView>, Vec<Route>), ConnectorError>, Error> {
+    ) -> Result<Result<(Arc<TableView>, Vec<Route>), Conflict>, Error> {
         let next = Arc::new(TableView::new(&view.table, resolution.model, resolver));
         // What the commit will record of the change is reserved before the destination sees it.
         self.reserve_records(table, &next).await?;
         let changes = table_changes(view, &next, &resolution.changes);
-        match self.session.apply_schema(&changes).await? {
+        match self.session.apply_each(&changes).await? {
             Ok(()) => Ok(Ok((next, resolution.routes))),
-            Err(error) if error.code() == Some("schema_conflict") => Ok(Err(error)),
-            Err(error) => Err(self.refused(table, error)),
+            Err((index, error)) if error.code() == Some("schema_conflict") => {
+                let widened = match changes.get(index) {
+                    Some(TableChange::Widen { column, .. }) => next.model.names.owner(column),
+                    _ => None,
+                };
+                Ok(Err((widened.cloned(), error)))
+            }
+            Err((_, error)) => Err(self.refused(table, error)),
         }
     }
 
@@ -334,8 +357,8 @@ impl Tables {
 
     /// The error for the destination refusing a change to `table`.
     fn refused(&self, table: usize, error: ConnectorError) -> Error {
-        let slot = self.slot(table);
-        let stream = &slot.resolver.stream;
+        let resolver = self.resolver(table);
+        let stream = &resolver.stream;
         let context = format!("changing the table of stream {stream}");
         Error::connector(Side::Destination, context, error).with_stream(stream)
     }
@@ -410,18 +433,6 @@ impl Tables {
             self.release_records(*index, *revision);
         }
     }
-}
-
-/// The columns of `model` that `changes` widen in place.
-fn widened(model: &Model, changes: &[Change]) -> Vec<ColumnKey> {
-    changes
-        .iter()
-        .filter_map(|change| match change {
-            Change::Widen { column, .. } => model.names.owner(model.columns[*column].name()),
-            Change::Add { .. } => None,
-        })
-        .cloned()
-        .collect()
 }
 
 /// The identifiers `state` records for more than one table.

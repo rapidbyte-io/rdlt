@@ -84,7 +84,7 @@ impl Tables {
             () = charge.cancel.cancelled() => return Err(Error::cancelled("the attempt was cancelled")),
             reserved = charge.budget.acquire_tables(bytes) => reserved,
         };
-        let stream = &slot.resolver.stream;
+        let stream = &slot.resolver.lock().stream.clone();
         let reserved = reserved.map_err(|denied| match denied {
             Denied::Exhausted(exhausted) => Error::memory(exhausted).with_stream(stream),
             Denied::TooLarge(large) => Error::schema(format!(

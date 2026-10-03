@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use rdlt_connector::{
-    CommitMeta, DestinationSession, DestinationWriter, Receipt, TableChange, TableRef,
+    CommitMeta, ConnectorError, DestinationSession, DestinationWriter, Receipt, TableChange,
+    TableRef,
 };
 
 use crate::error::{Error, ErrorKind, Side};
@@ -25,11 +26,20 @@ impl SharedSession {
         &self,
         changes: &[TableChange],
     ) -> Result<rdlt_connector::Result<()>, Error> {
+        Ok(self.apply_each(changes).await?.map_err(|(_, error)| error))
+    }
+
+    /// Applies `changes` in order, one call each, stopping at the first the destination refuses,
+    /// which the refusal names by its index.
+    pub(crate) async fn apply_each(
+        &self,
+        changes: &[TableChange],
+    ) -> Result<Result<(), (usize, ConnectorError)>, Error> {
         let mut session = self.0.lock().await;
         let session = session.as_mut().ok_or_else(closed)?;
-        for change in changes {
+        for (index, change) in changes.iter().enumerate() {
             if let Err(error) = session.apply_schema(change).await {
-                return Ok(Err(error));
+                return Ok(Err((index, error)));
             }
         }
         Ok(Ok(()))

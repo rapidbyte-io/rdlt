@@ -55,3 +55,15 @@ fn a_variant_kept_from_widening_leaves_its_values_to_the_json_variant() {
         ("d__json".to_owned(), LogicalType::Json)
     );
 }
+
+#[test]
+fn a_child_table_widens_its_own_column_of_a_name_its_root_keeps_from_widening() {
+    let kept = resolver(capabilities(), plan(), &[])
+        .unwidening([ColumnKey::Source(ColumnPath::from("n"))]);
+    let child = kept.child(None, ColumnPath::from("items")).unwrap();
+    let model = created(&child, &[("n", LogicalType::Int32)]);
+    let widened = child
+        .resolve(&model, &schema(&[("n", LogicalType::Int64)]))
+        .unwrap();
+    assert!(matches!(widened.changes[..], [Change::Widen { .. }]));
+}

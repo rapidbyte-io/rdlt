@@ -40,7 +40,7 @@ impl Tables {
         if let Some(index) = self.children.lock().get(&key) {
             return Ok(*index);
         }
-        let parent = self.slot(root);
+        let parent = self.resolver(root);
         let root_view = self.view(root);
         let base = &root_view.table;
         let table_path = TablePath::new(base.path.segments().chain(path.iter().map(AsRef::as_ref)))
@@ -61,9 +61,9 @@ impl Tables {
         )?;
         let recorded = self.committed.get(&table_path);
         if recorded.is_none() {
-            self.admit_another(root, &parent.resolver.stream)?;
+            self.admit_another(root, &parent.stream)?;
         }
-        let resolver = parent.resolver.child(root_key, owner)?;
+        let resolver = parent.child(root_key, owner)?;
         let model = Model::from_state(recorded)?;
         let table = TableRef {
             name: self.name(&table_path, &resolver.naming)?,
@@ -129,7 +129,7 @@ impl Tables {
         let Ok(column) = ColumnPath::new(path.to_vec()) else {
             return Admission::Add;
         };
-        match self.slot(root).resolver.settings.column(&column).policy {
+        match self.resolver(root).settings.column(&column).policy {
             SchemaPolicy::Freeze => Admission::Refuse,
             SchemaPolicy::DiscardValue => Admission::Discard,
             SchemaPolicy::DiscardRow => Admission::DiscardParents,
