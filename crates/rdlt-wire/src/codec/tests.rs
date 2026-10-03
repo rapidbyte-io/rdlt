@@ -1018,3 +1018,61 @@ fn a_schemas_message_is_measured_as_its_sender_encodes_it() {
         );
     }
 }
+
+/// A schema of one column nested `levels` deep through `level`, which wraps the type below it
+/// in one level more, its innermost type an integer.
+fn nested_through(levels: usize, level: impl Fn(DataType) -> DataType) -> Schema {
+    let inner = (1..levels).fold(DataType::Int32, |below, _| level(below));
+    Schema::new(vec![Field::new("deep", inner, true)])
+}
+
+/// A union of one member, `a`, of `below`, in `mode`.
+fn union_of(below: DataType, mode: arrow_schema::UnionMode) -> DataType {
+    let fields = arrow_schema::UnionFields::from_fields(vec![Field::new("a", below, true)]);
+    DataType::Union(fields, mode)
+}
+
+/// A dictionary keyed by `Int32` whose values are lists of `below`: the list's item is one
+/// level below the dictionary's field.
+fn keyed_list(below: DataType) -> DataType {
+    let list = DataType::List(Arc::new(Field::new("item", below, true)));
+    DataType::Dictionary(Box::new(DataType::Int32), Box::new(list))
+}
+
+#[test]
+fn a_schema_nested_to_the_limit_through_unions_or_dictionaries_is_sent_and_one_level_deeper_refused()
+ {
+    let depth = usize::try_from(crate::limits::NESTING_DEPTH).unwrap();
+    let levels: [(&str, Box<dyn Fn(DataType) -> DataType>); 3] = [
+        (
+            "sparse union",
+            Box::new(|below| union_of(below, arrow_schema::UnionMode::Sparse)),
+        ),
+        (
+            "dense union",
+            Box::new(|below| union_of(below, arrow_schema::UnionMode::Dense)),
+        ),
+        ("dictionary of lists", Box::new(keyed_list)),
+    ];
+    for (what, level) in levels {
+        let mut encoder = Encoder::default();
+        let mut decoder = Decoder::new(Limits::default());
+        let deepest = nested_through(depth, &level);
+        let sent = encoder
+            .schema(&deepest)
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        let received = decoder
+            .schema(&sent)
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        assert_eq!(
+            received.field(0).data_type(),
+            deepest.field(0).data_type(),
+            "{what}"
+        );
+        let deeper = encoder.schema(&nested_through(depth + 1, &level)).unwrap();
+        match decoder.schema(&deeper).unwrap_err() {
+            WireError::Refused(refusal) => assert_eq!(refusal.field, "nesting depth", "{what}"),
+            other => panic!("{what}: {other}"),
+        }
+    }
+}
