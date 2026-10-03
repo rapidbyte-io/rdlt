@@ -30,11 +30,12 @@ const DRIFT_NAMES: [&str; 6] = ["d0", "D0", "extra", "Extra", "note", "a__b"];
 /// ASCII words, one that grows as it folds to upper case, and one only spaces set apart.
 const WIDE_NAMES: [&str; 5] = ["naïve", "日付", "straße", "a b", "Ünï-cöde"];
 
-/// More names drift columns draw from where a seed exercises identifiers: the engine's own
-/// metadata columns, a name its SQL uses to rank merged rows, and one its staging tables use.
+/// More names drift columns draw from where a seed exercises identifiers: names beginning as the
+/// engine's metadata columns' do, whose own no source column may ask for, a name its SQL uses to
+/// rank merged rows, and one its staging tables use.
 const ENGINE_NAMES: [&str; 4] = [
-    "_rdlt_seq",
-    "_rdlt_load_id",
+    "_rdlt_seq_",
+    "_rdlt_load_ids",
     "_rdlt_rank",
     "_rdlt_staging__x",
 ];

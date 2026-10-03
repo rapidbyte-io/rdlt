@@ -191,7 +191,7 @@ impl Resolver {
     /// `owner`: with the settings of `owner` for every column, no hints or merge key, a child's
     /// lineage columns, and none of the root's columns kept from widening; a merge stream's child
     /// table follows `root`, its root table, with a sequence column.
-    pub(crate) fn child(&self, root: Option<RootKey>, owner: ColumnPath) -> Result<Self, Error> {
+    pub(crate) fn child(&self, root: Option<RootKey>, owner: ColumnPath) -> Self {
         let settings = Settings {
             stream: self.settings.stream.without_hints(),
             key: Vec::new(),
@@ -199,13 +199,13 @@ impl Resolver {
             ..self.settings.clone()
         };
         let merge = root.is_some();
-        Ok(Self {
+        Self {
             settings,
-            meta: MetaNames::assign(&self.naming, merge, LineageColumns::Child)?,
+            meta: MetaNames::assign(&self.naming, merge, LineageColumns::Child),
             root,
             unwidened: BTreeSet::new(),
             ..self.clone()
-        })
+        }
     }
 
     /// The same resolver, widening none of `columns` in place.
@@ -249,9 +249,7 @@ impl Resolver {
             routes.push(self.route(&mut draft, &column, model.created())?);
         }
         let stream = |error: Error| error.with_stream(&self.stream);
-        let mut resolution = draft
-            .finish(routes, &self.naming, &self.meta.all())
-            .map_err(stream)?;
+        let mut resolution = draft.finish(routes, &self.naming).map_err(stream)?;
         // A normalized stream's table holds its rows' lineage even where they hold no other value,
         // so its first batch creates it.
         if self.meta.id.is_some() && !resolution.model.created() {

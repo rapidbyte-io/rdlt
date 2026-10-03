@@ -23,6 +23,8 @@ use rdlt_connector::{
     SchemaVersion, TableRef, TableSchema,
 };
 
+use crate::error::{Error, ErrorKind};
+
 #[cfg(test)]
 pub(crate) use convert::normalize as plain;
 pub(crate) use exact::EXACT_IN_FLOAT;
@@ -45,6 +47,8 @@ pub(crate) struct TableView {
     pub(crate) lowered: Vec<LogicalType>,
     /// The destination's columns: the model's lowered, then the metadata columns.
     pub(crate) physical: Vec<Field>,
+    /// The same columns as a schema, as a table is created.
+    created: TableSchema,
     /// The Arrow schema of prepared batches, whose load id and load start columns are
     /// dictionaries of one value.
     pub(crate) schema: SchemaRef,
@@ -58,7 +62,12 @@ pub(crate) struct TableView {
 
 impl TableView {
     /// `model` of `table`, as `resolver` lowers and names it.
-    pub(crate) fn new(table: &TableRef, model: Model, resolver: &Resolver) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// A model column under a metadata column's identifier is `state_invalid`, a Destination
+    /// error: naming gives none, so only state can record one.
+    pub(crate) fn new(table: &TableRef, model: Model, resolver: &Resolver) -> Result<Self, Error> {
         let nested: Vec<_> = model
             .columns
             .iter()
@@ -72,6 +81,7 @@ impl TableView {
             .collect();
         let logical = lower::logical_fields(&model, &resolver.meta);
         let physical = lower::physical_fields(&logical, &nested, &resolver.capabilities);
+        let created = created(table, &physical)?;
         let lowered = physical
             .iter()
             .take(model.columns.len())
@@ -93,7 +103,7 @@ impl TableView {
                     .position(|column| column.name() == *name)
             })
             .collect();
-        Self {
+        Ok(Self {
             table: TableRef {
                 version: SchemaVersion(model.version),
                 merge,
@@ -106,11 +116,12 @@ impl TableView {
             ),
             lowered,
             physical,
+            created,
             meta: resolver.meta.clone(),
             key,
             key_len: resolver.settings.key.len(),
             model,
-        }
+        })
     }
 
     /// Whether batches keep only the last row of each key: a merge table's do, but not a child
@@ -125,9 +136,23 @@ impl TableView {
 
     /// The destination's columns as a schema, as a table is created.
     pub(crate) fn physical_schema(&self) -> TableSchema {
-        TableSchema::new(self.physical.clone())
-            .expect("identifiers are distinct, metadata ones included")
+        self.created.clone()
     }
+}
+
+/// `physical`, `table`'s columns, as a schema; a column and a metadata column of one name, which
+/// only state can record, are `state_invalid`.
+fn created(table: &TableRef, physical: &[Field]) -> Result<TableSchema, Error> {
+    TableSchema::new(physical.to_vec()).map_err(|duplicate| {
+        Error::new(
+            ErrorKind::Destination,
+            format!(
+                "table {} holds a column and a metadata column of one name: {duplicate}",
+                table.path
+            ),
+        )
+        .with_code("state_invalid")
+    })
 }
 
 /// `schema`, the stored columns of prepared batches, with the columns that only direct a merge

@@ -148,10 +148,9 @@ impl Draft {
         mut self,
         routes: Vec<Route>,
         naming: &Naming,
-        reserved: &[&str],
     ) -> Result<Resolution, Error> {
         let keys: BTreeSet<ColumnKey> = self.adds.iter().map(|(key, ..)| key.clone()).collect();
-        naming.assign_columns(&mut self.model.names, &keys, reserved)?;
+        naming.assign_columns(&mut self.model.names, &keys)?;
         for (key, logical, nullable) in self.adds {
             let name = self
                 .model

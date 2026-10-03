@@ -22,7 +22,7 @@ pub(crate) fn resolver(stream: &str) -> Resolver {
             owner: None,
         },
         stream,
-        meta: MetaNames::assign(&naming, false, LineageColumns::None).expect("metadata names"),
+        meta: MetaNames::assign(&naming, false, LineageColumns::None),
         naming,
         capabilities: Arc::new(capabilities),
         root: None,
@@ -40,5 +40,5 @@ pub(crate) fn view(name: &str) -> Arc<TableView> {
         generation: None,
         merge: None,
     };
-    Arc::new(TableView::new(&table, Model::default(), &resolver(name)))
+    Arc::new(TableView::new(&table, Model::default(), &resolver(name)).expect("a view"))
 }

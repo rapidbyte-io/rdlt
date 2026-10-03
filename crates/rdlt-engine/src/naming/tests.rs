@@ -31,9 +31,7 @@ fn source(segments: &[&str]) -> ColumnKey {
 fn assign(naming: &Naming, keys: &[ColumnKey]) -> BTreeMap<ColumnKey, String> {
     let mut names = NameMap::default();
     let keys: BTreeSet<ColumnKey> = keys.iter().cloned().collect();
-    naming
-        .assign_columns(&mut names, &keys, &["_rdlt_load_id"])
-        .unwrap();
+    naming.assign_columns(&mut names, &keys).unwrap();
     names
         .iter()
         .map(|(key, name)| (key.clone(), name.to_owned()))
@@ -97,14 +95,10 @@ fn a_taken_identifier_gets_a_hash_of_its_source_path() {
 }
 
 #[test]
-fn reserved_words_and_metadata_columns_are_never_assigned() {
-    let assigned = assign(&lower(), &[source(&["SELECT"]), source(&["_rdlt_load_id"])]);
+fn reserved_words_are_never_assigned() {
+    let assigned = assign(&lower(), &[source(&["SELECT"])]);
     assert!(
         hashed(&assigned[&source(&["SELECT"])], "select"),
-        "{assigned:?}"
-    );
-    assert!(
-        hashed(&assigned[&source(&["_rdlt_load_id"])], "_rdlt_load_id"),
         "{assigned:?}"
     );
 }
@@ -154,9 +148,9 @@ fn assigned_names_never_move() {
     let naming = lower();
     let mut names = NameMap::default();
     let first = BTreeSet::from([source(&["b"])]);
-    naming.assign_columns(&mut names, &first, &[]).unwrap();
+    naming.assign_columns(&mut names, &first).unwrap();
     let second = BTreeSet::from([source(&["B"]), source(&["b"])]);
-    naming.assign_columns(&mut names, &second, &[]).unwrap();
+    naming.assign_columns(&mut names, &second).unwrap();
     assert_eq!(names.get(&source(&["b"])), Some("b"));
     assert!(hashed(names.get(&source(&["B"])).unwrap(), "b"));
 }
@@ -246,10 +240,10 @@ proptest! {
         let split = split.min(keys.len());
         let mut names = NameMap::default();
         let first: BTreeSet<ColumnKey> = keys[..split].iter().cloned().collect();
-        naming.assign_columns(&mut names, &first, &["_rdlt_load_id"]).unwrap();
+        naming.assign_columns(&mut names, &first).unwrap();
         let before = names.clone();
         let all: BTreeSet<ColumnKey> = keys.iter().cloned().collect();
-        naming.assign_columns(&mut names, &all, &["_rdlt_load_id"]).unwrap();
+        naming.assign_columns(&mut names, &all).unwrap();
         for (key, name) in before.iter() {
             prop_assert_eq!(names.get(key), Some(name), "stable");
         }
@@ -257,14 +251,14 @@ proptest! {
         for (key, name) in names.iter() {
             prop_assert!(seen.insert(name.to_owned()), "{} is assigned twice", name);
             prop_assert!(!name.is_empty() && name.len() <= usize::from(rules.max_len.get()), "{}", name);
-            prop_assert!(name != "_rdlt_load_id" && name.to_lowercase() != "select", "{}", name);
+            prop_assert!(!naming.is_metadata(name) && name.to_lowercase() != "select", "{}", name);
             if rules.chars == IdentifierChars::AsciiWord {
                 prop_assert!(name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{}", name);
             }
             prop_assert!(all.contains(key));
         }
         let settled = names.clone();
-        naming.assign_columns(&mut names, &all, &["_rdlt_load_id"]).unwrap();
+        naming.assign_columns(&mut names, &all).unwrap();
         prop_assert_eq!(names, settled, "idempotent");
     }
 }
@@ -272,20 +266,18 @@ proptest! {
 #[test]
 fn metadata_columns_follow_the_rules_and_never_share_an_identifier() {
     let upper = Naming::new(rules(IdentifierCase::Upper, IdentifierChars::AsciiWord, 63));
-    assert_eq!(
-        upper.metadata("_rdlt_load_id", &BTreeSet::new()).unwrap(),
-        "_RDLT_LOAD_ID"
-    );
-    let short = Naming::new(rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 16));
-    let first = short
-        .metadata("_rdlt_is_current_a", &BTreeSet::new())
-        .unwrap();
-    let second = short
-        .metadata("_rdlt_is_current_b", &BTreeSet::from([first.clone()]))
-        .unwrap();
-    assert_eq!(first, "_rdlt_is_current");
-    assert_ne!(first, second);
-    assert!(second.len() <= 16);
+    assert_eq!(&*upper.metadata("_rdlt_load_id"), "_RDLT_LOAD_ID");
+    let mut reserving = rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 16);
+    reserving.reserved.insert("_rdlt_seq".to_owned());
+    let short = Naming::new(reserving);
+    let names: BTreeSet<String> = super::METADATA
+        .iter()
+        .map(|column| short.metadata(column).to_string())
+        .collect();
+    assert_eq!(names.len(), super::METADATA.len(), "{names:?}");
+    assert!(names.iter().all(|name| name.len() <= 16), "{names:?}");
+    assert!(hashed(&short.metadata("_rdlt_seq"), "_rdlt_seq"));
+    assert_eq!(&*short.metadata("_rdlt_is_current"), "_rdlt_is_current");
 }
 
 /// The hash that tells collisions apart is the xxh3 of the exact source identity, so it never
@@ -406,4 +398,77 @@ fn a_name_whose_hash_falls_under_a_reserved_prefix_is_escaped_instead() {
         name,
         "the same every time"
     );
+}
+
+#[test]
+fn a_source_column_asking_for_a_metadata_name_is_refused_under_every_rule() {
+    use IdentifierCase as Case;
+    use IdentifierChars as Chars;
+    for case in [Case::Preserve, Case::Lower, Case::Upper] {
+        for chars in [Chars::Any, Chars::AsciiWord] {
+            let naming = Naming::new(rules(case, chars, 63));
+            for column in super::METADATA {
+                let spellings = [
+                    column.to_owned(),
+                    column.to_uppercase(),
+                    column.replacen('_', "-", 2),
+                    format!("{column}_"),
+                ];
+                for spelling in spellings {
+                    let mut names = NameMap::default();
+                    let keys = BTreeSet::from([source(&[&spelling])]);
+                    let assigned = naming.assign_columns(&mut names, &keys);
+                    let asks = naming.clean(&spelling) == naming.clean(column);
+                    if let Err(error) = assigned {
+                        assert!(asks, "{case:?} {chars:?} {spelling:?}: {error}");
+                        assert_eq!(error.code(), Some(super::COLUMN_NAME_RESERVED));
+                        assert_eq!(error.kind(), crate::ErrorKind::Schema);
+                        assert!(names.is_empty());
+                    } else {
+                        assert!(!asks, "{case:?} {chars:?} {spelling:?} is not refused");
+                        let name = names.get(&source(&[&spelling])).unwrap();
+                        assert!(!naming.is_metadata(name), "{name}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_source_column_never_takes_a_metadata_identifier_its_table_lacks() {
+    let mut reserving = rules(IdentifierCase::Lower, IdentifierChars::AsciiWord, 63);
+    reserving.reserved.insert("_rdlt_seq".to_owned());
+    let naming = Naming::new(reserving);
+    let seq = naming.metadata("_rdlt_seq");
+    assert!(hashed(&seq, "_rdlt_seq"), "{seq}");
+    let assigned = assign(&naming, &[source(&[&seq])]);
+    let name = &assigned[&source(&[&seq])];
+    assert_ne!(name.as_str(), &*seq);
+    assert!(!naming.is_metadata(name), "{name}");
+}
+
+#[test]
+fn state_naming_a_column_as_a_metadata_column_is_refused() {
+    let naming = lower();
+    for column in super::METADATA {
+        let mut names = NameMap::default();
+        names
+            .insert(source(&["note"]), naming.metadata(column).to_string())
+            .unwrap();
+        let table = rdlt_connector::TableState {
+            names,
+            ..rdlt_connector::TableState::default()
+        };
+        let state = rdlt_connector::PipelineState {
+            tables: BTreeMap::from([(TablePath::new(["orders"]).unwrap(), table)]),
+            ..rdlt_connector::PipelineState::default()
+        };
+        let error = super::recorded::check(&naming, &state).unwrap_err();
+        assert_eq!(
+            (error.kind(), error.code()),
+            (crate::ErrorKind::Destination, Some("state_invalid")),
+            "{column}"
+        );
+    }
 }

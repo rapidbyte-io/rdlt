@@ -103,7 +103,7 @@ fn tables(generation: Option<GenerationId>, model: Model) -> (Tables, Changes) {
     let changes = Changes::default();
     let session = SharedSession::new(Box::new(Recorder(Arc::clone(&changes))));
     let tables = Tables::new(session);
-    tables.add(resolver(), &table(generation), model);
+    tables.add(resolver(), &table(generation), model).unwrap();
     (tables, changes)
 }
 
@@ -362,7 +362,9 @@ fn attempt(columns: &Columns) -> Tables {
     resolver.naming = Naming::new(capabilities.identifiers.clone());
     resolver.capabilities = Arc::new(capabilities);
     let tables = Tables::new(SharedSession::new(Box::new(Physical(Arc::clone(columns)))));
-    tables.add(resolver, &table(None), Model::default());
+    tables
+        .add(resolver, &table(None), Model::default())
+        .unwrap();
     tables
 }
 
@@ -462,7 +464,9 @@ async fn conflicts_are_named_around_a_bounded_number_of_times() {
             calls: Arc::clone(&counted),
         };
         let tables = Tables::new(SharedSession::new(Box::new(session)));
-        tables.add(resolver(), &table(None), Model::default());
+        tables
+            .add(resolver(), &table(None), Model::default())
+            .unwrap();
         let error = tables
             .fit(0, &schema(&[("id", LogicalType::Int64)]))
             .await
@@ -571,7 +575,9 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
         ..rdlt_connector::PipelineState::default()
     };
     let tables = Tables::new(session).committed(&state).unwrap();
-    tables.add(resolver(), &table(Some(GenerationId(3))), Model::default());
+    tables
+        .add(resolver(), &table(Some(GenerationId(3))), Model::default())
+        .unwrap();
     let items = vec![Arc::from("items")];
     // Creating the child's generation yields, so the second call waits on the first.
     let (one, two) = tokio::join!(tables.child(0, &items), tables.child(0, &items));
@@ -584,8 +590,9 @@ async fn partitions_adding_one_child_table_at_once_add_it_once() {
 fn a_plan_for_a_superseded_view_is_not_cached_over_the_current_views_plans() {
     let resolver = resolver();
     let incoming = schema(&[("id", LogicalType::Int64)]);
-    let view =
-        |model: Model| Arc::new(crate::table::TableView::new(&table(None), model, &resolver));
+    let view = |model: Model| {
+        Arc::new(crate::table::TableView::new(&table(None), model, &resolver).unwrap())
+    };
     let old = resolver.resolve(&Model::default(), &incoming).unwrap();
     let wide = schema(&[("id", LogicalType::Int64), ("note", LogicalType::Utf8)]);
     let new = resolver.resolve(&old.model, &wide).unwrap();
@@ -619,7 +626,7 @@ async fn a_merge_streams_table_created_before_it_merged_gains_only_its_sequence_
         .resolve(&Model::default(), &schema(&[("id", LogicalType::Int64)]))
         .unwrap()
         .model;
-    tables.add(merging, &table(None), appended);
+    tables.add(merging, &table(None), appended).unwrap();
     tables.add_meta_columns(0).await.unwrap();
     let applied = changes.lock();
     let [TableChange::AddColumn { field, .. }] = &applied[..] else {
@@ -828,7 +835,9 @@ async fn a_commit_names_the_records_of_child_tables_state_does_not_record_yet() 
     };
     let session = SharedSession::new(Box::new(Recorder(Changes::default())));
     let tables = Tables::new(session).committed(&state).unwrap();
-    tables.add(resolver(), &table(None), Model::default());
+    tables
+        .add(resolver(), &table(None), Model::default())
+        .unwrap();
     let child = tables.child(0, &items).await.unwrap();
     let wider = schema(&[("sku", LogicalType::Utf8), ("qty", LogicalType::Int64)]);
     tables.fit(child, &wider).await.unwrap();
@@ -840,4 +849,35 @@ async fn a_commit_names_the_records_of_child_tables_state_does_not_record_yet() 
             .any(|change| matches!(change, StateChange::Put(record) if record.key == keys[0]))
     );
     assert_eq!(delta.born, []);
+}
+
+#[tokio::test]
+async fn a_committed_column_under_a_metadata_identifier_is_refused_not_a_panic() {
+    let changes = Changes::default();
+    let session = SharedSession::new(Box::new(Recorder(Arc::clone(&changes))));
+    let tables = Tables::new(session);
+    let mut appended = resolver()
+        .resolve(&Model::default(), &schema(&[("id", LogicalType::Int64)]))
+        .unwrap()
+        .model;
+    let column = appended.columns[0].clone();
+    appended.columns[0] = Field::new("_rdlt_id", column.logical_type().clone(), true);
+    appended.names = rdlt_connector::NameMap::default();
+    appended
+        .names
+        .insert(
+            ColumnKey::Source(ColumnPath::from("id")),
+            "_rdlt_id".to_owned(),
+        )
+        .unwrap();
+    let mut normalizing = resolver();
+    normalizing.meta.id = Some("_rdlt_id".into());
+    let error = tables
+        .add(normalizing, &table(Some(GenerationId(1))), appended)
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code()),
+        (ErrorKind::Destination, Some("state_invalid"))
+    );
+    assert!(changes.lock().is_empty());
 }

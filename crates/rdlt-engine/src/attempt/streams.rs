@@ -61,7 +61,7 @@ impl Planning<'_> {
         let recorded = tables.recorded_table(&table.path);
         let sequences = sequences::to_record(plan, recorded, &key, spec.change_time())?
             .map(|keying| (table.path.clone(), keying));
-        let index = tables.add_normalized(resolver, &table, model, shape.clone());
+        let index = tables.add_normalized(resolver, &table, model, shape.clone())?;
         if let Some(declared) = spec.schema() {
             let incoming = match &shape {
                 Some(shape) => {
@@ -121,15 +121,16 @@ impl Planning<'_> {
         } else {
             LineageColumns::None
         };
-        let meta = MetaNames::assign_changes(&self.naming, !key.is_empty(), lineage, layout(plan))?;
+        let meta = MetaNames::assign_changes(&self.naming, !key.is_empty(), lineage, layout(plan));
         let meta = if plan.keeps_history() {
-            meta.with_history(&self.naming, change_time(spec))?
+            meta.with_history(&self.naming, change_time(spec))
         } else {
             meta
         };
         let keys: BTreeSet<ColumnKey> = key.iter().cloned().map(ColumnKey::Source).collect();
         self.naming
-            .assign_columns(&mut model.names, &keys, &meta.all())?;
+            .assign_columns(&mut model.names, &keys)
+            .map_err(|error| error.with_stream(name))?;
         let table = TableRef {
             path,
             name: physical,

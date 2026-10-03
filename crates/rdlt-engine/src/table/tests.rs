@@ -410,7 +410,7 @@ fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
 fn prepared(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> Prepared {
     let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let resolution = resolver.resolve(model, &incoming).unwrap();
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver).unwrap());
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .prepare(batch, None, &stamp(), None)
         .unwrap()
@@ -627,7 +627,7 @@ fn merge_batches_without_a_whole_key_are_refused() {
     for (batch, code) in cases {
         let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
         let resolution = resolver.resolve(&model, &incoming).unwrap();
-        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
         let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
             .prepare(&batch, None, &stamp(), None)
             .unwrap_err();
@@ -642,7 +642,7 @@ fn views_name_their_merge_key_and_version() {
         &resolver,
         &[("v", LogicalType::Utf8), ("id", LogicalType::Int64)],
     );
-    let view = TableView::new(&table("t"), model, &resolver);
+    let view = TableView::new(&table("t"), model, &resolver).unwrap();
     let merge = view.table.merge.clone().unwrap();
     assert_eq!(merge.columns, [Arc::from("id")]);
     assert_eq!(merge.seq.as_ref(), "_rdlt_seq");
@@ -773,7 +773,7 @@ fn a_views_physical_schema_is_its_lowered_columns_then_metadata() {
         &resolver,
         &[("id", LogicalType::Int64), ("tags", LogicalType::Json)],
     );
-    let view = TableView::new(&table("t"), model, &resolver);
+    let view = TableView::new(&table("t"), model, &resolver).unwrap();
     let physical = view.physical_schema();
     let columns: Vec<(&str, &LogicalType, bool)> = physical
         .fields()
@@ -797,12 +797,24 @@ fn a_views_physical_schema_is_its_lowered_columns_then_metadata() {
 }
 
 #[test]
-fn a_source_column_named_like_a_metadata_column_is_renamed() {
+fn a_source_column_named_like_a_metadata_column_is_refused() {
     let resolver = resolver(capabilities(), plan(), &[]);
-    let model = created(&resolver, &[("_rdlt_load_id", LogicalType::Int64)]);
-    let name = model.columns[0].name();
-    assert_ne!(name, "_rdlt_load_id");
-    assert!(name.starts_with("_rdlt_load_id_"), "{name}");
+    let error = resolver
+        .resolve(
+            &Model::default(),
+            &schema(&[("_rdlt_load_id", LogicalType::Int64)]),
+        )
+        .unwrap_err();
+    assert_eq!(
+        (error.kind(), error.code(), error.stream()),
+        (
+            ErrorKind::Schema,
+            Some("column_name_reserved"),
+            Some(&resolver.stream)
+        )
+    );
+    let model = created(&resolver, &[("_rdlt_load", LogicalType::Int64)]);
+    assert_eq!(model.columns[0].name(), "_rdlt_load");
 }
 
 #[test]
@@ -842,7 +854,7 @@ fn a_merge_table_created_without_its_key_column_refuses_batches() {
     let batch = batch(vec![("v", Arc::new(StringArray::from(vec!["a"])) as _)]);
     let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let resolution = resolver.resolve(&model, &incoming).unwrap();
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     assert!(view.key.is_empty());
     let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .prepare(&batch, None, &stamp(), None)
@@ -969,7 +981,7 @@ fn a_value_its_column_cannot_represent_fails_the_batch() {
         resolution.changes.is_empty(),
         "the column's type holds the batch's"
     );
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let error = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
         .prepare(&batch, None, &stamp(), None)
         .unwrap_err();
@@ -992,7 +1004,7 @@ fn constant_metadata_columns_are_built_once_and_sliced_per_batch() {
     };
     let incoming = Incoming::declared(TableSchema::from_arrow(&ids(1).schema()).unwrap());
     let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
     // The keys of the load id column, and the buffer they sit in.
     let keys = |rows: i64, stamp: &Stamp| {
@@ -1065,7 +1077,7 @@ proptest! {
         };
         let incoming = Incoming::declared(TableSchema::from_arrow(&ids(1).schema()).unwrap());
         let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
-        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
         let fresh = || {
             LoweringPlan::new(resolver.stream.clone(), Arc::clone(&view), incoming.clone(), resolution.routes.clone())
         };
@@ -1536,7 +1548,7 @@ fn rows_whose_json_its_own_column_does_not_hold_are_dropped_and_the_column_is_st
             rest: Rest::DiscardRows
         }]
     );
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
     let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
     let amount = ArrowField::new("amount", DataType::Utf8, true).with_metadata(extension.into());
@@ -1579,7 +1591,7 @@ fn a_row_is_kept_only_where_neither_a_new_column_nor_a_split_column_drops_it() {
             Route::DiscardRows
         ]
     );
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
     let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
     let schema = Schema::new(vec![
@@ -1611,7 +1623,7 @@ fn a_column_of_nulls_arriving_at_a_typed_column_is_charged_as_the_nulls_it_fills
     ]);
     let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let resolution = resolver.resolve(&model, &incoming).unwrap();
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
     let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
     let id = rdlt_connector::cost::Stored {
         column: LogicalType::Int64,
@@ -1850,7 +1862,7 @@ fn a_variant_of_64_bit_integers_is_exact_only_where_its_integers_are() {
 fn lowering(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> LoweringPlan {
     let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
     let resolution = resolver.resolve(model, &incoming).unwrap();
-    let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver));
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver).unwrap());
     LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
 }
 
@@ -1904,7 +1916,7 @@ fn a_rows_metadata_of_bytes_costs_forty_bytes_a_column() {
         let ids = batch(vec![("id", Arc::new(Int64Array::from(vec![1_i64])) as _)]);
         let incoming = Incoming::declared(TableSchema::from_arrow(&ids.schema()).unwrap());
         let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
-        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver));
+        let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
         let metadata: Vec<LogicalType> = view
             .physical
             .iter()

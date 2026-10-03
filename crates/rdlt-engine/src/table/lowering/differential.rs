@@ -70,7 +70,7 @@ fn resolver(capabilities: Capabilities, policy: SchemaPolicy, nested: Nested) ->
             owner: None,
         },
         stream,
-        meta: MetaNames::assign(&naming, false, LineageColumns::None).expect("metadata names"),
+        meta: MetaNames::assign(&naming, false, LineageColumns::None),
         naming,
         capabilities: Arc::new(capabilities),
         root: None,
@@ -180,7 +180,8 @@ fn check(
             Err(error) if error.kind() == ErrorKind::Schema => return Ok(()),
             Err(error) => panic!("resolving: {error:?}"),
         };
-        let view = Arc::new(TableView::new(&table, resolution.model.clone(), &resolver));
+        let view =
+            Arc::new(TableView::new(&table, resolution.model.clone(), &resolver).expect("a view"));
         for (column, lowered) in view.model.columns.iter().zip(&view.lowered) {
             prop_assert_eq!(
                 lowered,

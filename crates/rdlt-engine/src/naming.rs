@@ -5,16 +5,24 @@
 //! path is appended, so two source paths never share an identifier and a path keeps its identifier
 //! whatever else arrives. Assigned identifiers are recorded in an append-only name map and never
 //! move.
+//!
+//! Every metadata column the engine writes has one identifier under a destination's rules, whether
+//! or not a table has the column yet, and no source column takes one: a table keeps its names when
+//! its stream starts to merge, normalize or keep history. A source column asking for a metadata
+//! column's name is refused.
 
 pub(crate) mod recorded;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use rdlt_connector::{
-    ColumnKey, IdentifierCase, IdentifierChars, IdentifierRules, NameMap, TablePath,
+    ColumnKey, DELETED_AT_COLUMN, ID_COLUMN, IDX_COLUMN, IS_CURRENT_COLUMN, IdentifierCase,
+    IdentifierChars, IdentifierRules, LOAD_ID_COLUMN, LOADED_AT_COLUMN, NameMap, OP_COLUMN,
+    PARENT_ID_COLUMN, ROOT_ID_COLUMN, ROW_HASH_COLUMN, SEQ_COLUMN, TablePath, UNCHANGED_COLUMN,
+    VALID_FROM_COLUMN, VALID_TO_COLUMN,
 };
 
 use crate::error::{Error, ErrorKind};
@@ -25,6 +33,28 @@ const ALPHABET: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 /// Hash digits appended at first; more are added one at a time while the result is taken.
 const HASH_DIGITS: usize = 6;
 
+/// Every metadata column the engine writes, in the order their identifiers are assigned: each
+/// takes the first identifier the ones before it leave free.
+const METADATA: [&str; 14] = [
+    LOAD_ID_COLUMN,
+    LOADED_AT_COLUMN,
+    SEQ_COLUMN,
+    OP_COLUMN,
+    UNCHANGED_COLUMN,
+    DELETED_AT_COLUMN,
+    VALID_FROM_COLUMN,
+    VALID_TO_COLUMN,
+    IS_CURRENT_COLUMN,
+    ROW_HASH_COLUMN,
+    ID_COLUMN,
+    PARENT_ID_COLUMN,
+    ROOT_ID_COLUMN,
+    IDX_COLUMN,
+];
+
+/// The code of the error refusing a source column that asks for a metadata column's name.
+pub(crate) const COLUMN_NAME_RESERVED: &str = "column_name_reserved";
+
 /// Assigns identifiers under one destination's rules.
 #[derive(Clone, Debug)]
 pub(crate) struct Naming {
@@ -34,39 +64,26 @@ pub(crate) struct Naming {
     salt: Option<u64>,
 }
 
-/// A destination's rules, its reserved words and table prefixes folded as identifiers are.
+/// A destination's rules, its reserved words and table prefixes folded as identifiers are, and
+/// the identifiers of the engine's metadata columns under them.
 #[derive(Debug)]
 struct Folded {
     rules: IdentifierRules,
     reserved: BTreeSet<String>,
     prefixes: Vec<String>,
+    /// Each metadata column's identifier, by the column's name.
+    metadata: BTreeMap<&'static str, String>,
+    /// Each metadata column's name folded and cleaned, which no source column may ask for.
+    claimed: BTreeSet<String>,
 }
 
 impl Naming {
-    /// Naming under `rules`, which are within their limits, as an attempt checks them.
-    pub(crate) fn new(rules: IdentifierRules) -> Self {
-        let fold = |name: &str| fold(rules.case, name);
-        let reserved = rules.reserved.iter().map(|word| fold(word)).collect();
-        let prefixes = rules
-            .reserved_table_prefixes
-            .iter()
-            .map(|prefix| fold(prefix))
-            .collect();
-        Self {
-            rules: Arc::new(Folded {
-                rules,
-                reserved,
-                prefixes,
-            }),
-            salt: None,
-        }
-    }
-
     /// Naming under `rules` as a destination declares them.
     ///
     /// # Errors
     ///
-    /// Rules beyond their limits are `capabilities_invalid`, a Destination error.
+    /// Rules beyond their limits are `capabilities_invalid`, and rules that leave a metadata
+    /// column no identifier `identifier_exhausted`, Destination errors.
     pub(crate) fn checked(rules: &IdentifierRules) -> Result<Self, Error> {
         rules.validate().map_err(|invalid| {
             Error::new(
@@ -75,7 +92,48 @@ impl Naming {
             )
             .with_code("capabilities_invalid")
         })?;
-        Ok(Self::new(rules.clone()))
+        Self::build(rules.clone())
+    }
+
+    /// Naming under `rules`, which tests hold within their limits.
+    #[cfg(test)]
+    pub(crate) fn new(rules: IdentifierRules) -> Self {
+        Self::build(rules).expect("the rules leave every metadata column an identifier")
+    }
+
+    /// Naming under `rules`, with the identifier of every metadata column assigned.
+    fn build(rules: IdentifierRules) -> Result<Self, Error> {
+        let fold = |name: &str| fold(rules.case, name);
+        let reserved = rules.reserved.iter().map(|word| fold(word)).collect();
+        let prefixes = rules
+            .reserved_table_prefixes
+            .iter()
+            .map(|prefix| fold(prefix))
+            .collect();
+        let mut naming = Self {
+            rules: Arc::new(Folded {
+                rules,
+                reserved,
+                prefixes,
+                metadata: BTreeMap::new(),
+                claimed: BTreeSet::new(),
+            }),
+            salt: None,
+        };
+        let mut metadata = BTreeMap::new();
+        let mut taken = BTreeSet::new();
+        for column in METADATA {
+            let mut bytes = b"metadata".to_vec();
+            push_segment(&mut bytes, column);
+            let name = naming.identifier(column, &bytes, |candidate| taken.contains(candidate))?;
+            taken.insert(name.clone());
+            metadata.insert(column, name);
+        }
+        let claimed = METADATA.iter().map(|column| naming.clean(column)).collect();
+        let folded = Arc::get_mut(&mut naming.rules).expect("the rules are not shared yet");
+        folded.metadata = metadata;
+        folded.claimed = claimed;
+        Ok(naming)
     }
 
     /// Whether these rules could have given a table `name`: cleaned, within the length limit,
@@ -109,23 +167,35 @@ impl Naming {
         }
     }
 
-    /// Maps every key of `keys` that `names` lacks to a free identifier, never one in
-    /// `reserved` (the metadata columns).
+    /// Maps every key of `keys` that `names` lacks to a free identifier, never a metadata
+    /// column's.
     ///
     /// Keys are assigned in their sorted order, so the result does not depend on the order they
     /// arrived in.
+    ///
+    /// # Errors
+    ///
+    /// A key asking for the name of a metadata column, folded and cleaned as the rules make it,
+    /// is `column_name_reserved`, a Schema error.
     pub(crate) fn assign_columns(
         &self,
         names: &mut NameMap,
         keys: &BTreeSet<ColumnKey>,
-        reserved: &[&str],
     ) -> Result<(), Error> {
         for key in keys {
             if names.get(key).is_some() {
                 continue;
             }
-            let taken = |name: &str| names.owner(name).is_some() || reserved.contains(&name);
-            let name = self.identifier(&candidate(key), &path_bytes(key), taken)?;
+            let candidate = candidate(key);
+            if self.rules.claimed.contains(&self.clean(&candidate)) {
+                return Err(Error::schema(format!(
+                    "column {} asks for the name of a metadata column the engine writes",
+                    key.column()
+                ))
+                .with_code(COLUMN_NAME_RESERVED));
+            }
+            let taken = |name: &str| names.owner(name).is_some() || self.is_metadata(name);
+            let name = self.identifier(&candidate, &path_bytes(key), taken)?;
             names.insert(key.clone(), name).map_err(|conflict| {
                 Error::internal(format!("assigning a column identifier: {conflict}"))
             })?;
@@ -180,11 +250,21 @@ impl Naming {
         .with_code("identifier_exhausted"))
     }
 
-    /// The identifier of the metadata column `name`, never one of `taken`.
-    pub(crate) fn metadata(&self, name: &str, taken: &BTreeSet<String>) -> Result<String, Error> {
-        let mut bytes = b"metadata".to_vec();
-        push_segment(&mut bytes, name);
-        self.identifier(name, &bytes, |candidate| taken.contains(candidate))
+    /// The identifier of the metadata column `column`, one of the engine's.
+    pub(crate) fn metadata(&self, column: &str) -> Arc<str> {
+        let name = self.rules.metadata.get(column);
+        Arc::from(
+            name.expect("every metadata column has an identifier")
+                .as_str(),
+        )
+    }
+
+    /// Whether `name` is the identifier of a metadata column.
+    pub(crate) fn is_metadata(&self, name: &str) -> bool {
+        self.rules
+            .metadata
+            .values()
+            .any(|metadata| metadata == name)
     }
 
     /// `candidate` cleaned under the rules if that is free, and otherwise with a hash of
