@@ -87,7 +87,7 @@ async fn staged_within(
             Ok::<_, Error>(Box::new(Recording { name, log }) as Box<dyn DestinationWriter>)
         };
         staged
-            .write(table, open, (SegmentId(1), rows()), held)
+            .write(table, open, (SegmentId(1), rows()), [held])
             .await
             .expect("the batch is staged");
     }

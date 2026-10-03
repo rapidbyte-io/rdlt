@@ -100,6 +100,17 @@ impl Decoder {
         self.shaped(frame).map(|(batch, _)| batch)
     }
 
+    /// Bytes: the allocation decoding `frame` would make, measured without making it, so a
+    /// receiver can reserve it first.
+    ///
+    /// # Errors
+    ///
+    /// As [`Decoder::frame`], for every check made before anything is copied.
+    pub fn held(&self, frame: &IpcFrame) -> Result<u64, WireError> {
+        let measured = measured(self.columns.as_ref(), &self.limits, frame)?;
+        Ok(held_bytes(&measured.walked))
+    }
+
     /// Decodes `frame` as [`Decoder::frame`] does, and measures what it holds.
     ///
     /// # Errors

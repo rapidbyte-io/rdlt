@@ -8,6 +8,9 @@ use crate::error::Error;
 use crate::wal::frame::{self, End, Fence, Frame, HEAD, Header, PREAMBLE, Skimmed};
 use crate::wal::store::{Chunk, WalStore};
 
+/// Bytes: the most of a batch frame a scan reads at once.
+const PIECE: u64 = 1 << 16;
+
 /// A frame of a chunk, where it lies and what it holds, a batch's data left unread.
 pub(super) struct Read {
     pub(super) offset: u64,
@@ -76,10 +79,16 @@ impl Reading<'_> {
                 let detail = format!("chunk {number} ends inside its frame at {offset}");
                 return Err(self.unreadable(&detail));
             }
-            let bytes = self.read(chunk, offset, frame_len).await?;
-            let frame = frame::skim(&bytes).map_err(|error| {
-                self.unreadable(&format!("chunk {number}, at {offset}: {error}"))
-            })?;
+            let at =
+                |error: Error| self.unreadable(&format!("chunk {number}, at {offset}: {error}"));
+            let frame = if head[0] == frame::BATCH {
+                self.batch(chunk, offset, &head, payload)
+                    .await
+                    .map_err(at)?
+            } else {
+                let bytes = self.read(chunk, offset, frame_len).await?;
+                frame::skim(&bytes).map_err(at)?
+            };
             frames.push(Read {
                 offset,
                 len: frame_len,
@@ -88,6 +97,39 @@ impl Reading<'_> {
             offset += frame_len;
         }
         self.shaped(number, frames)
+    }
+
+    /// The header of the batch frame at `offset` of `chunk`, whose head is `head` and whose
+    /// payload is `payload` bytes long, its checksum summed as it is read a piece at a time: a
+    /// scan holds no more of it at once than [`PIECE`].
+    async fn batch(
+        &self,
+        chunk: Chunk,
+        offset: u64,
+        head: &[u8],
+        payload: u64,
+    ) -> Result<Skimmed, Error> {
+        let mut summing =
+            frame::Summing::of(head).ok_or_else(|| Error::internal("a frame's head is short"))?;
+        let start = offset + HEAD as u64;
+        let mut header = None;
+        let mut read = 0;
+        while read < payload {
+            let piece = self
+                .read(chunk, start + read, PIECE.min(payload - read))
+                .await?;
+            if piece.is_empty() {
+                return Err(Error::internal("the chunk ends inside a frame"));
+            }
+            summing.add(&piece);
+            if header.is_none() {
+                header = Some(frame::batch_header_in(&piece)?);
+            }
+            read += piece.len() as u64;
+        }
+        summing.check()?;
+        let header = header.ok_or_else(|| Error::internal("a batch frame holds no header"))?;
+        Ok(Skimmed::Batch(header))
     }
 
     async fn read(&self, chunk: Chunk, offset: u64, len: u64) -> Result<bytes::Bytes, Error> {

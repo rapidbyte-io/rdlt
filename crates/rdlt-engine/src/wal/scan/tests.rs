@@ -10,6 +10,8 @@ use rdlt_connector::{
     SegmentId, StateChange, StateEntry, StreamName,
 };
 
+use rdlt_connector::cost::Allocations;
+
 use super::{batch, scan};
 use crate::budget::MemoryBudget;
 use crate::compute::Inline;
@@ -209,10 +211,19 @@ async fn a_log_scans_back_to_what_its_load_wrote() {
     let mut read = Vec::new();
     for (segment, located) in &scanned.batches {
         for located in located {
-            let batch = batch(store.as_ref(), &pipeline(), *located, limits())
+            let read_batch = batch(store.as_ref(), &pipeline(), *located, limits())
                 .await
                 .expect("the batch reads");
-            read.push((segment.0, located.table, batch));
+            let held = read_batch.held();
+            let decoded = read_batch.decode().expect("the batch decodes");
+            // What its buffers were measured to take before it was decoded, they take; what else
+            // the batch holds is little.
+            let holds = Allocations::of(&decoded).bytes();
+            assert!(
+                held <= holds && holds - held < 1 << 10,
+                "{held} {holds}: {located:?}"
+            );
+            read.push((segment.0, located.table, decoded));
         }
     }
     assert_eq!(read, [(1, 0, ids(0)), (1, 1, ids(10)), (2, 0, ids(20))]);
@@ -407,14 +418,16 @@ async fn a_batch_read_past_its_frame_is_refused() {
     located.len += 9;
     let error = batch(store.as_ref(), &pipeline(), located, limits())
         .await
-        .expect_err("more than the batch's frame");
+        .err()
+        .expect("more than the batch's frame");
     assert_eq!(error.code(), Some("wal_unreadable"));
     // Nor is the frame of another batch.
     let mut other = scanned.batches[&SegmentId(1)][0];
     other.ordinal += 1;
     let error = batch(store.as_ref(), &pipeline(), other, limits())
         .await
-        .expect_err("another batch");
+        .err()
+        .expect("another batch");
     assert_eq!(error.code(), Some("wal_unreadable"));
 }
 

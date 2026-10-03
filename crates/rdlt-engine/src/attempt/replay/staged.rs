@@ -88,7 +88,7 @@ impl Staged {
         table: &TableRef,
         open: impl FnOnce() -> Opening,
         (segment, batch): (SegmentId, RecordBatch),
-        held: Reservation,
+        held: impl IntoIterator<Item = Reservation>,
     ) -> Result<(), Error>
     where
         Opening: Future<Output = Result<Box<dyn DestinationWriter>, Error>>,
@@ -123,7 +123,7 @@ impl Staged {
                 held: Vec::new(),
             }),
         };
-        writer.held.push(held);
+        writer.held.extend(held);
         writer
             .writer
             .write(segment, batch)

@@ -288,29 +288,59 @@ fn headed(scanned: &mut Scanned, first: First, number: u64, of: Of<'_>) -> Resul
     }
 }
 
-/// The batch at `located` in `load`'s log of `pipeline`, decoded within `limits`.
+/// A logged batch read and measured as [`batch`] finds it, its batch not decoded yet.
+pub(crate) struct Read {
+    pending: frame::Pending,
+    pipeline: PipelineId,
+    load: LoadId,
+}
+
+impl Read {
+    /// Bytes: what decoding the batch allocates, which a caller reserves first.
+    pub(crate) fn held(&self) -> u64 {
+        self.pending.held()
+    }
+
+    /// The batch.
+    ///
+    /// # Errors
+    ///
+    /// `wal_unreadable` where its data does not decode, or holds other rows than it says.
+    pub(crate) fn decode(self) -> Result<RecordBatch, Error> {
+        let (pipeline, load) = (self.pipeline, self.load);
+        self.pending
+            .decode()
+            .map(|batch| batch.batch)
+            .map_err(|error| unreadable(&pipeline, load, &error))
+    }
+}
+
+/// The batch frame `located` names in `pipeline`'s log in `store`, read and measured within
+/// `limits`: exactly the frame the scan found.
+///
+/// # Errors
+///
+/// The store's failure to read it, and `wal_unreadable` where it no longer reads as it did.
 pub(crate) async fn batch(
     store: &dyn WalStore,
     pipeline: &PipelineId,
     located: Located,
     limits: rdlt_wire::Limits,
-) -> Result<RecordBatch, Error> {
+) -> Result<Read, Error> {
     let load = located.chunk.load;
     let bytes = store
         .read(pipeline, located.chunk, located.offset, located.len)
         .await
         .map_err(Error::from_wal)?;
-    let frame =
-        frame::decode(&bytes, limits).map_err(|error| unreadable(pipeline, load, &error))?;
-    // Exactly the frame the scan found.
-    match frame {
-        Frame::Batch(batch) if batch.ordinal == located.ordinal && batch.table == located.table => {
-            Ok(batch.batch)
-        }
-        _ => Err(unreadable(
-            pipeline,
-            load,
-            &"a batch frame read once no longer reads back",
-        )),
+    let pending =
+        frame::pending(&bytes, limits).map_err(|error| unreadable(pipeline, load, &error))?;
+    if pending.header.ordinal != located.ordinal || pending.header.table != located.table {
+        let detail = "a batch frame read once no longer reads back";
+        return Err(unreadable(pipeline, load, &detail));
     }
+    Ok(Read {
+        pending,
+        pipeline: pipeline.clone(),
+        load,
+    })
 }

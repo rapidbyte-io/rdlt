@@ -397,3 +397,38 @@ async fn a_frame_announcing_more_than_a_frame_may_hold_is_refused_before_it_is_r
         );
     }
 }
+
+#[tokio::test]
+async fn a_scan_reads_a_large_batch_frame_a_piece_at_a_time() {
+    let rows = 1 << 16;
+    let values: arrow_array::ArrayRef =
+        std::sync::Arc::new(arrow_array::Int64Array::from_iter_values(0..rows));
+    let large = arrow_array::RecordBatch::try_from_iter([("id", values)]).expect("a batch");
+    let frames = vec![
+        header(0, 1),
+        table(0, 1),
+        Frame::Batch(Batch {
+            segment: SegmentId(1),
+            table: 0,
+            ordinal: 0,
+            batch: large,
+        }),
+        seal(1, 1, u64::try_from(rows).expect("fits")),
+        commit(1, &[1], 1),
+        end(&[], &[]),
+    ];
+    let bytes = chunk(&frames);
+    assert!(bytes.len() > 1 << 19, "{} bytes", bytes.len());
+    let store = Measured::default();
+    let at = Chunk {
+        load: load(),
+        number: 0,
+    };
+    published(&store.inner, &pipeline(), at, bytes).await;
+    let scanned = scan(&store, &pipeline(), load(), FRAME_BYTES)
+        .await
+        .expect("it reads");
+    assert_eq!(scanned.pending().count(), 1);
+    let largest = store.largest.load(Ordering::Relaxed);
+    assert!(largest <= 1 << 16, "read {largest} bytes at once");
+}

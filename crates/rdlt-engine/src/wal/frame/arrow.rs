@@ -54,26 +54,62 @@ fn garbled(what: &dyn std::fmt::Display) -> Error {
     Error::internal(format!("a write-ahead log batch does not decode: {what}"))
 }
 
-/// The batch `data` holds, within `limits`.
-pub(super) fn decode(data: &[u8], limits: Limits) -> Result<RecordBatch, Error> {
-    let mut data = Bytes::copy_from_slice(data);
+/// A batch's messages, checked and measured but not decoded: what decoding them holds is known
+/// before it is made.
+pub(crate) struct Measured {
+    decoder: Decoder,
+    frames: Vec<IpcFrame>,
+    held: u64,
+}
+
+impl Measured {
+    /// Bytes: what decoding the batch allocates, its dictionaries included.
+    pub(crate) fn held(&self) -> u64 {
+        self.held
+    }
+
+    /// The batch.
+    pub(crate) fn decode(mut self) -> Result<RecordBatch, Error> {
+        let mut batch = None;
+        for frame in &self.frames {
+            batch = self.decoder.frame(frame).map_err(|error| garbled(&error))?;
+        }
+        batch.ok_or_else(|| garbled(&"it holds no batch"))
+    }
+}
+
+/// The batch `data` holds, within `limits`, measured: its messages are `data`'s bytes, never a
+/// copy of them.
+pub(super) fn measured(mut data: Bytes, limits: Limits) -> Result<Measured, Error> {
     let mut decoder = Decoder::new(limits);
     decoder
         .schema(&take(&mut data)?)
         .map_err(|error| garbled(&error))?;
-    let frames = count(&mut data)?;
-    let mut batch = None;
-    for _ in 0..frames {
+    let count = count(&mut data)?;
+    let (mut frames, mut held) = (Vec::new(), 0_u64);
+    for _ in 0..count {
         let frame = IpcFrame {
             header: take(&mut data)?,
             body: take(&mut data)?,
         };
-        batch = decoder.frame(&frame).map_err(|error| garbled(&error))?;
+        let bytes = decoder.held(&frame).map_err(|error| garbled(&error))?;
+        held = held.saturating_add(bytes);
+        frames.push(frame);
     }
     if data.has_remaining() {
         return Err(garbled(&"bytes follow its last message"));
     }
-    batch.ok_or_else(|| garbled(&"it holds no batch"))
+    Ok(Measured {
+        decoder,
+        frames,
+        held,
+    })
+}
+
+/// The batch `data` holds, within `limits`.
+#[cfg(test)]
+pub(super) fn decode(data: Bytes, limits: Limits) -> Result<RecordBatch, Error> {
+    measured(data, limits)?.decode()
 }
 
 fn length(len: usize) -> Result<u32, Error> {
