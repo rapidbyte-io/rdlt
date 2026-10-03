@@ -85,7 +85,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | schema bytes | a fifth of the other half, for the message and the schema it decodes to | 52,830 | 419,430 | 4 MiB |
   | schema columns | the tables' share over a kilobyte a column, and schema bytes over 56 a column | 943 | 7,489 | 10,000 |
   | catalog bytes | the answers' share over sixteen, what a catalog may hold decoded for each byte | 132,076 | 1,048,576 | 4 MiB |
-  | state bytes | the answers' share over eight, as for state | 264,152 | 2,097,152 | 16 MiB |
+  | state bytes | the answers' share: state is bounded on what it holds decoded, and a commit leaves no more | 2,113,223 | 16,777,216 | 16 MiB |
   | control message bytes | the answers' share over sixteen | 132,076 | 262,144 | 256 KiB |
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer

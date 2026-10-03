@@ -35,9 +35,10 @@ still taken largely on trust:
     within its class's bytes on the wire, refused from its prefix, so no decoder reserves a
     length before its bytes arrive; and, every message, frames among them, counted by a scan of
     its encoding (`rdlt_wire::scan`) within what its class may hold decoded: `Limits::decoded`,
-    2 times the wire bound for a frame, 4 for a handshake, a configuration and a read's start, 8
-    for state, 16 (`DECODED_PER_BYTE`) for a catalog, a schema change and any other control
-    message: 128 MiB for a frame, 64 MiB for a catalog and 128 MiB for state by default. A
+    2 times the wire bound for a frame, 4 for a handshake, a configuration and a read's start, 16
+    (`DECODED_PER_BYTE`) for a catalog, a schema change and any other control message: 128 MiB
+    for a frame and 64 MiB for a catalog by default. State is bounded on what it holds decoded:
+    `state_bytes` is that bound, and its bytes on the wire are bounded by the same. A
     message arriving is held in room that doubles, and goes straight to the message's end once
     within twice what it holds, so a frame at its limit holds less than twice its bytes.
   - The scan walks the encoding by forms `cargo xtask codegen` generates from the `.proto`
@@ -56,8 +57,9 @@ still taken largely on trust:
   - A message beyond either bound fails its call as `OutOfRange`, which the host reports as a
     non-retryable transport failure naming the sizes, before anything decodes it. Measured at the
     class limits, a refused 4 MiB catalog of empty entries holds 9 MiB at its peak, a refused
-    16 MiB plan or open answer 27 MiB, a served commit of empty child tables 21 MiB, and a 64 MiB
-    frame, read or written, of empty path segments 103 MiB, within the 128 MiB of its bound.
+    16 MiB plan or open answer 27 MiB, a served commit of empty child tables 21 MiB, each within
+    its bytes and its decoded bound together, and a 64 MiB frame, read or written, of empty path
+    segments 103 MiB, within the 128 MiB of its bound.
   - On a served connection, the requests still arriving hold at most four of its largest
     messages together. A request finding no room is not refused: its body is not read until
     room comes back, so HTTP/2 flow control holds its sender on that stream alone, the
@@ -83,9 +85,14 @@ still taken largely on trust:
     already keeps a frame within half of what pushes may take.
   - Every other answer is charged to a share of its own, a sixteenth of the budget, which waits
     for no push. The catalog, state and control message limits a connector is told are what
-    that share holds of one answer decoded, at sixteen, eight and sixteen times their bytes, so a
-    connector that keeps to them is refused nothing: 1 MiB, 2 MiB and 256 KiB at the default
-    budget, 129 KiB, 258 KiB and 129 KiB at the least.
+    that share holds of one answer decoded: a catalog and a control message at sixteen times
+    their bytes, and state, bounded decoded, the whole share; so a connector that keeps to them
+    is refused nothing: 1 MiB, 16 MiB and 256 KiB at the default budget, 129 KiB, 2 MiB and
+    129 KiB at the least.
+  - An open's answer is the engine's own committed state echoed back, so the engine keeps it
+    within the bound: a commit after which the state would hold more decoded than the state
+    limit, as the scan of an open's answer carrying it counts it, is refused before it is logged
+    or sent, with `state_exceeds_budget`. A pipeline can always open what it committed.
   - A charge waits as any request of the budget does, in turn, and fails its call at the
     budget's deadline; one larger than its share fails it at once. No charge is held while
     another is waited for, and none while its holder waits for anything but the answer's bytes.
@@ -162,10 +169,10 @@ still taken largely on trust:
   still be refused for what it decodes to, when its fields are far smaller than any a connector
   sends.
 - A host's decoded bounds are what one message may hold before it is decoded, and a run charges
-  what each holds to its budget. An open's answer carries all the state a pipeline committed:
-  one whose state passes what the budget's state limit holds is refused until the memory is
-  raised; cursors as large as a cursor may be, of more partitions than about seventeen, pass it.
-  The handshake, a configuration's answer and calls made outside a run are not charged.
+  what each holds to its budget. A run whose commit would leave more state than the state limit
+  fails with `state_exceeds_budget` until the memory is raised or its state shrinks; nothing of
+  that commit lands. The handshake, a configuration's answer and calls made outside a run are
+  not charged.
 - An engine reading one partition at once needs 53.7 MB rather than 33.8 MB, and pushes may take
   a sixteenth of the budget less.
 - A pipeline whose stream, partition or recorded identifier holds a hidden or reordering
