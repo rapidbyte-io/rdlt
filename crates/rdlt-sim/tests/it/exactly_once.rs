@@ -1,7 +1,7 @@
 use rdlt_sim::{Seed, check_exactly_once, seeds};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 13] = [
+const FOUND: [u64; 14] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -39,6 +39,9 @@ const FOUND: [u64; 13] = [
     // Pressed: partitions held what observing their JSON pushes might hold while they waited
     // for what building them took, until none could build.
     1_987,
+    // A column of integers made for a column of JSON as its table was created was recorded
+    // exact, though the integers split into it were read only as they were lowered.
+    7_964,
 ];
 
 #[test]
