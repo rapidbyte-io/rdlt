@@ -40,6 +40,8 @@ pub(crate) struct Context {
     fault: Cell<Option<ShredError>>,
     spoiled: Cell<bool>,
     imprecise: Cell<bool>,
+    /// Whether the fast parse read a float of zero since this was last asked.
+    zeroed: Cell<bool>,
     /// Whether a value of a column that stopped building held a float.
     json_floats: Cell<bool>,
     /// The text of the number the exact parse visits, which JSON text renders as it is.
@@ -65,6 +67,7 @@ impl Context {
             fault: Cell::new(None),
             spoiled: Cell::new(false),
             imprecise: Cell::new(false),
+            zeroed: Cell::new(false),
             json_floats: Cell::new(false),
             number: RefCell::new(None),
             meter,
@@ -96,10 +99,21 @@ impl Context {
 
     /// Notes `value`, a float the parse read, which may be an integer beyond 64 bits rounded to
     /// the float nearest it when it is whole and that large.
+    ///
+    /// A zero may be a number whose exponent is too long for a canonical text, which the fast
+    /// parse reads as zero.
     pub(crate) fn float(&self, value: f64) {
         if value.abs() >= ROUNDED_FROM && value.fract() == 0.0 {
             self.imprecise.set(true);
         }
+        if value == 0.0 {
+            self.zeroed.set(true);
+        }
+    }
+
+    /// Whether the parse read a float of zero since this was last asked.
+    pub(crate) fn zeroed(&self) -> bool {
+        self.zeroed.replace(false)
     }
 
     /// Notes that the chunk must be parsed again exactly.

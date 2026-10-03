@@ -15,7 +15,7 @@ use rdlt_connector::StreamName;
 
 use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
 use crate::error::Error;
-use crate::normalize::identity::root_ids;
+use crate::normalize::identity::{root_ids, unread};
 use crate::table::convert::decoded;
 use crate::table::lower::loaded_at_type;
 
@@ -145,11 +145,6 @@ pub(super) fn history_columns(
     deleting: &dyn Fn(usize) -> bool,
 ) -> Result<[ArrayRef; 4], Error> {
     let rows = data.num_rows();
-    let failed = |error: arrow_schema::ArrowError| {
-        Error::internal(format!(
-            "stream {stream}: preparing history columns: {error}"
-        ))
-    };
     let micros = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
     let valid_from: ArrayRef = if let Some(from) = from {
         begins(stream, from, &micros)?
@@ -160,7 +155,8 @@ pub(super) fn history_columns(
     };
     let valid_to = arrow_array::new_null_array(&micros, rows);
     let current = Arc::new(BooleanArray::from(vec![true; rows]));
-    let hashes = root_ids(data, &[]).map_err(failed)?;
+    let hashes =
+        root_ids(data, &[]).map_err(|error| unread(stream, "preparing history columns", &error))?;
     let hashes: BinaryArray = hashes
         .iter()
         .enumerate()
