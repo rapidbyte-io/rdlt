@@ -15,6 +15,9 @@ use super::super::convert::{convert, normalize};
 use super::super::resolve::{Rest, Route};
 use crate::shred::values;
 
+#[cfg(test)]
+mod tests;
+
 /// The split columns of a plan: each's position among the incoming columns, its own column's
 /// type and where its other values go.
 #[derive(Clone, Debug, Default)]
@@ -128,9 +131,8 @@ impl Fitted {
     /// holds, read into that type; the others null.
     pub(super) fn own(&self, index: usize, own: &LogicalType) -> Result<ArrayRef, ArrowError> {
         let (texts, fits) = self.split(index)?;
-        let (values, read) = values::read(texts, fits).map_err(|error| {
-            ArrowError::ParseError(format!("reading a value of JSON text: {error}"))
-        })?;
+        let (values, read) = values::read(texts, fits)
+            .map_err(|error| ArrowError::ExternalError(Box::new(error)))?;
         convert(&values, &read, own)
     }
 

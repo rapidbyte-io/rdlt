@@ -276,12 +276,12 @@ impl LoweringPlan {
                 }
                 Source::Read(index) => {
                     let own = fitted.own(*index, column.logical_type());
-                    let own = own.map_err(|error| self.unread(column, &error))?;
+                    let own = own.map_err(|error| self.unread(column, error))?;
                     store(&self.stream, &own, column.logical_type(), column, lowered)?
                 }
                 Source::Rest(index) => {
                     let rest = fitted.rest(*index);
-                    let rest = rest.map_err(|error| self.unread(column, &error))?;
+                    let rest = rest.map_err(|error| self.unread(column, error))?;
                     store(&self.stream, &rest, &LogicalType::Json, column, lowered)?
                 }
                 // Nulls are built as the destination stores them, never as the wider type the
@@ -309,13 +309,15 @@ impl LoweringPlan {
         Ok((batch, kept, discarded_rows, fitted))
     }
 
-    /// The error for a value of a column of JSON that `column` holds in part that cannot be read.
-    fn unread(&self, column: &Field, error: &arrow_schema::ArrowError) -> Error {
+    /// The error for a value of a column of JSON that `column` holds in part that cannot be read,
+    /// `error` kept as its cause.
+    fn unread(&self, column: &Field, error: arrow_schema::ArrowError) -> Error {
         Error::internal(format!(
-            "stream {}: column {}: reading the values of JSON text it holds: {error}",
+            "stream {}: column {}: reading the values of JSON text it holds",
             self.stream,
             column.name()
         ))
+        .with_source(error)
     }
 
     /// The sequence column of `rows` rows of a merge table, which the rows `kept` keeps: a row's
