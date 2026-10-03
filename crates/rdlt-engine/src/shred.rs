@@ -393,6 +393,8 @@ fn batch(
 
 /// The columns of `chunk`'s records built against `shape`, presized for what they hold: every
 /// value fits it, so no column stops building and no builder grows past what was reserved.
+///
+/// Its meter has no limit, so the build never trips.
 fn again(
     chunk: &Chunk,
     shape: &Shape,
@@ -411,7 +413,7 @@ fn again(
         };
         visit(bytes, row, exact, &context)
     })?;
-    if appended.tripped || (appended.imprecise && !exact) {
+    if appended.imprecise && !exact {
         return Err(unbuilt("its records"));
     }
     record.finish_columns()

@@ -117,7 +117,6 @@ async fn shredded(
         }
         room = excess;
     };
-    let beyond = (beyond.bytes() > 0).then_some(beyond);
     let batches = observed.build(compute).await.map_err(failed)?;
     drop(pushes);
     let held = held::shredded(permits, beyond, &batches);
