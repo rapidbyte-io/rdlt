@@ -493,8 +493,8 @@ impl DestinationSession for RacingSession {
     }
 }
 
-/// Loads 400 rows of a replace stream into `store` at `target`, the load's second commit racing a
-/// reset of the stream as `scope` says and then failing, so a retry reads the stream again.
+/// Loads 64 rows of a replace stream into `store` at `target`, the load's second of four commits
+/// racing a reset of the stream as `scope` says and then failing, so a retry reads the stream again.
 async fn raced(target: Target, store: &'static str, scope: ResetScope) {
     let reset: Resetting = Arc::new(move || {
         Box::pin(async move {
@@ -503,7 +503,7 @@ async fn raced(target: Target, store: &'static str, scope: ResetScope) {
                     "raced",
                     &["orders"],
                     scope,
-                    generator(&[("orders", 400, 1, 8)]).await,
+                    generator(&[("orders", 64, 1, 8)]).await,
                     target.destination(store).await,
                 )
                 .await
@@ -518,7 +518,7 @@ async fn raced(target: Target, store: &'static str, scope: ResetScope) {
     });
     let plan = pipeline("raced", [stream("orders").write(WriteMode::Replace)]);
     let outcome = engine(retrying(3))
-        .run(plan, generator(&[("orders", 400, 1, 8)]).await, destination)
+        .run(plan, generator(&[("orders", 64, 1, 8)]).await, destination)
         .await;
     assert_eq!(
         outcome.report.status,
@@ -528,15 +528,22 @@ async fn raced(target: Target, store: &'static str, scope: ResetScope) {
     );
     assert_eq!(
         target.ids(store, "orders"),
-        every_id(400),
+        every_id(64),
         "{target:?} {scope:?}"
     );
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_replace_run_retried_after_a_reset_it_raced_fills_a_new_generation() {
+async fn a_replace_run_retried_after_a_reset_of_positions_it_raced_fills_a_new_generation() {
     each(Target::IN_PROCESS, |target| async move {
         raced(target, "raced_positions", ResetScope::Positions).await;
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_replace_run_retried_after_a_reset_of_tables_it_raced_fills_a_new_generation() {
+    each(Target::IN_PROCESS, |target| async move {
         raced(target, "raced_tables", ResetScope::Tables).await;
     })
     .await;

@@ -48,7 +48,7 @@ nix = { workspace = true, features = ["user"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true, features = ["signal", "user"] }
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "time"] }
 
 [dev-dependencies]
 criterion.workspace = true
