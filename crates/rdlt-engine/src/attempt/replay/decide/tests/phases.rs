@@ -57,6 +57,8 @@ fn crossing() -> Logged {
             phase: 1,
             from: Some(at(10)),
             state: at(15),
+            batches: 0,
+            rows: 0,
         }],
         begun: vec![begun],
     }

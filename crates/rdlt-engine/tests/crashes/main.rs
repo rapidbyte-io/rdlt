@@ -225,12 +225,15 @@ fn sweep(scenario: &Scenario) {
     if !scenario.logged {
         return;
     }
-    // A crash before a commit lands leaves it to replay, which crashes too, before and after it
-    // lands, and the next run replays it again.
+    // A crash before a commit lands leaves it to replay, which crashes too: once it fenced the
+    // log, before and after the commit lands, and once it released the log before deleting it;
+    // the next run replays it again.
     let replays = [
         "engine.commit.before=return".to_owned(),
+        "engine.replay.fenced=return".to_owned(),
         "engine.replay.before=return".to_owned(),
         "engine.replay.after=return".to_owned(),
+        "engine.replay.released=return".to_owned(),
     ];
     crashes(scenario, &replays, "in replays");
 }

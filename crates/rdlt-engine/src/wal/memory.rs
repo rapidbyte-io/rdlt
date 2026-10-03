@@ -1,7 +1,7 @@
-//! A write-ahead log store in memory, for tests: what each chunk was appended and how much of it
-//! was made durable.
+//! A write-ahead log store in memory, for tests: each published chunk, and what can make each
+//! operation fail.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
 
@@ -9,46 +9,33 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use rdlt_connector::{BoxFuture, LoadId, PipelineId};
 
-use super::store::{Chunk, Claim, WalStore};
+use super::store::{Chunk, StagedChunk, WalStore};
 
-/// A chunk's bytes and how many of them are durable.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Stored {
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) synced: usize,
-}
-
-/// Chunks by pipeline and chunk; `failing` makes every call fail, `unsyncable` every sync and
-/// `unremovable` every removal of a chunk.
+/// Published chunks by pipeline and chunk; `failing` makes every call fail, `interrupted` every
+/// call fail as a transient failure does, `unpublishable` every publish and `unremovable` every
+/// deletion of a chunk.
 #[derive(Debug, Default)]
 pub(crate) struct MemoryWal {
-    pub(crate) chunks: Mutex<BTreeMap<(PipelineId, Chunk), Stored>>,
-    pub(crate) failing: Mutex<bool>,
+    pub(crate) chunks: Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>,
+    pub(crate) failing: Arc<Mutex<bool>>,
     /// Whether every call is interrupted, as a transient failure a retry may not meet.
-    pub(crate) interrupted: Mutex<bool>,
-    pub(crate) unsyncable: Mutex<bool>,
+    pub(crate) interrupted: Arc<Mutex<bool>>,
+    pub(crate) unpublishable: Arc<Mutex<bool>>,
     pub(crate) unremovable: Mutex<bool>,
-    /// The logs claimed, each until its claim is dropped.
-    pub(crate) claimed: Arc<Mutex<BTreeSet<(PipelineId, LoadId)>>>,
-    /// Every append, in order, removed chunks' included.
-    pub(crate) appended: Mutex<Vec<Bytes>>,
+    /// Every chunk published, in order, deleted ones included.
+    pub(crate) published: Arc<Mutex<Vec<Bytes>>>,
     /// Whether each append waits a few turns of the scheduler first, as a slow disk does.
     pub(crate) slow: bool,
 }
 
-/// A claim on a log in memory, let go when dropped.
-struct Held {
-    claimed: Arc<Mutex<BTreeSet<(PipelineId, LoadId)>>>,
-    log: (PipelineId, LoadId),
+/// What makes a [`MemoryWal`]'s calls fail, shared with the chunks it stages.
+#[derive(Clone, Debug)]
+struct Faults {
+    failing: Arc<Mutex<bool>>,
+    interrupted: Arc<Mutex<bool>>,
 }
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        self.claimed.lock().remove(&self.log);
-    }
-}
-
-impl MemoryWal {
+impl Faults {
     fn check(&self) -> io::Result<()> {
         if *self.failing.lock() {
             Err(io::Error::other("the disk is full"))
@@ -58,23 +45,82 @@ impl MemoryWal {
             Ok(())
         }
     }
+}
 
-    /// The chunks of `pipeline`'s logs, in order, with their stored state.
-    pub(crate) fn stored(&self, pipeline: &PipelineId) -> Vec<(Chunk, Stored)> {
+/// A chunk a [`MemoryWal`] stages: its bytes, until it is published.
+struct Staged {
+    chunks: Arc<Mutex<BTreeMap<(PipelineId, Chunk), Bytes>>>,
+    key: (PipelineId, Chunk),
+    bytes: Vec<u8>,
+    faults: Faults,
+    unpublishable: Arc<Mutex<bool>>,
+    published: Arc<Mutex<Vec<Bytes>>>,
+    slow: bool,
+}
+
+impl StagedChunk for Staged {
+    fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>> {
+        Box::pin(async move {
+            if self.slow {
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            self.faults.check()?;
+            self.bytes.extend_from_slice(&bytes);
+            Ok(())
+        })
+    }
+
+    fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+        let published = self.faults.check().and_then(|()| {
+            if *self.unpublishable.lock() {
+                return Err(io::Error::other("the disk failed to flush"));
+            }
+            let mut chunks = self.chunks.lock();
+            if chunks.contains_key(&self.key) {
+                return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+            }
+            let bytes = Bytes::from(self.bytes);
+            chunks.insert(self.key.clone(), bytes.clone());
+            self.published.lock().push(bytes);
+            Ok(())
+        });
+        Box::pin(async move { published })
+    }
+}
+
+impl MemoryWal {
+    fn faults(&self) -> Faults {
+        Faults {
+            failing: Arc::clone(&self.failing),
+            interrupted: Arc::clone(&self.interrupted),
+        }
+    }
+
+    fn check(&self) -> io::Result<()> {
+        self.faults().check()
+    }
+
+    /// The frames of every chunk published, in order, deleted ones included.
+    #[cfg(test)]
+    pub(crate) fn published_frames(&self) -> Vec<super::frame::Frame> {
+        let limits = super::frame::limits(1 << 30);
+        self.published
+            .lock()
+            .iter()
+            .flat_map(|chunk| super::frame::frames(chunk, limits).expect("a chunk reads"))
+            .collect()
+    }
+
+    /// The published chunks of `pipeline`'s logs, in order.
+    pub(crate) fn stored(&self, pipeline: &PipelineId) -> Vec<(Chunk, Bytes)> {
         self.chunks
             .lock()
             .iter()
             .filter(|((owner, _), _)| owner == pipeline)
-            .map(|((_, chunk), stored)| (*chunk, stored.clone()))
+            .map(|((_, chunk), bytes)| (*chunk, bytes.clone()))
             .collect()
-    }
-
-    /// Keeps only what each chunk made durable, as a crash does.
-    #[cfg(test)]
-    pub(crate) fn crash(&self) {
-        for stored in self.chunks.lock().values_mut() {
-            stored.bytes.truncate(stored.synced);
-        }
     }
 }
 
@@ -83,34 +129,23 @@ fn ready<T: Send + 'static>(value: io::Result<T>) -> BoxFuture<'static, io::Resu
 }
 
 impl WalStore for MemoryWal {
-    fn claim<'a>(
+    fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<Option<Claim>>> {
-        let claimed = self.check().map(|()| {
-            let log = (pipeline.clone(), load);
-            self.claimed.lock().insert(log.clone()).then(|| {
-                Box::new(Held {
-                    claimed: Arc::clone(&self.claimed),
-                    log,
-                }) as Claim
-            })
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
+        let staged = self.check().map(|()| {
+            Box::new(Staged {
+                chunks: Arc::clone(&self.chunks),
+                key: (pipeline.clone(), chunk),
+                bytes: Vec::new(),
+                faults: self.faults(),
+                unpublishable: Arc::clone(&self.unpublishable),
+                published: Arc::clone(&self.published),
+                slow: self.slow,
+            }) as Box<dyn StagedChunk>
         });
-        ready(claimed)
-    }
-
-    fn remove_log<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        let removed = self.check().map(|()| {
-            self.chunks
-                .lock()
-                .retain(|(owner, chunk), _| owner != pipeline || chunk.load != load);
-        });
-        ready(removed)
+        ready(staged)
     }
 
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
@@ -135,7 +170,7 @@ impl WalStore for MemoryWal {
             self.stored(pipeline)
                 .iter()
                 .filter(|(chunk, _)| chunk.load == load)
-                .map(|(chunk, stored)| (chunk.number, stored.bytes.len() as u64))
+                .map(|(chunk, bytes)| (chunk.number, bytes.len() as u64))
                 .collect()
         });
         ready(chunks)
@@ -150,52 +185,18 @@ impl WalStore for MemoryWal {
     ) -> BoxFuture<'a, io::Result<Bytes>> {
         let read = self.check().and_then(|()| {
             let chunks = self.chunks.lock();
-            let stored = chunks
+            let bytes = chunks
                 .get(&(pipeline.clone(), chunk))
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
             let start = usize::try_from(offset)
                 .unwrap_or(usize::MAX)
-                .min(stored.bytes.len());
+                .min(bytes.len());
             let end = start
                 .saturating_add(usize::try_from(len).unwrap_or(usize::MAX))
-                .min(stored.bytes.len());
-            Ok(Bytes::copy_from_slice(&stored.bytes[start..end]))
+                .min(bytes.len());
+            Ok(bytes.slice(start..end))
         });
         ready(read)
-    }
-
-    fn append<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-        bytes: Bytes,
-    ) -> BoxFuture<'a, io::Result<()>> {
-        Box::pin(async move {
-            if self.slow {
-                for _ in 0..8 {
-                    tokio::task::yield_now().await;
-                }
-            }
-            self.check()?;
-            let mut chunks = self.chunks.lock();
-            let stored = chunks.entry((pipeline.clone(), chunk)).or_default();
-            stored.bytes.extend_from_slice(&bytes);
-            self.appended.lock().push(bytes);
-            Ok(())
-        })
-    }
-
-    fn sync<'a>(&'a self, pipeline: &'a PipelineId, chunk: Chunk) -> BoxFuture<'a, io::Result<()>> {
-        let synced = self.check().and_then(|()| {
-            if *self.unsyncable.lock() {
-                return Err(io::Error::other("the disk failed to flush"));
-            }
-            if let Some(stored) = self.chunks.lock().get_mut(&(pipeline.clone(), chunk)) {
-                stored.synced = stored.bytes.len();
-            }
-            Ok(())
-        });
-        ready(synced)
     }
 
     fn remove<'a>(
@@ -212,4 +213,20 @@ impl WalStore for MemoryWal {
         });
         ready(removed)
     }
+
+    fn remove_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        let removed = self.check().map(|()| {
+            self.chunks
+                .lock()
+                .retain(|(owner, chunk), _| owner != pipeline || chunk.load != load);
+        });
+        ready(removed)
+    }
 }
+
+#[cfg(test)]
+mod tests;

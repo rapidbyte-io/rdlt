@@ -285,11 +285,10 @@ impl World {
         self.wal.set_faults(draws);
     }
 
-    /// Crashes the worker running `pipeline`: what its logs had not made durable is lost, but for
-    /// a part the draw keeps, which may be torn.
+    /// Crashes the worker running `pipeline`: every chunk its logs staged and did not publish is
+    /// lost.
     pub(crate) fn crash_logs(&self, pipeline: &rdlt_connector::PipelineId) {
-        let mut rng = self.rng.lock();
-        self.wal.crash(pipeline, &mut rng);
+        self.wal.crash(pipeline);
     }
 
     /// A failure at `point`, when faults are on and the draw says so: mostly transient or

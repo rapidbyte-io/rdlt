@@ -13,7 +13,7 @@ use rdlt_connector::{ConnectorError, ConnectorErrorKind, StreamName};
 use serde::Serialize;
 
 use crate::budget::Exhausted;
-use crate::limits::BUDGET_WAIT_EXCEEDED;
+use crate::limits::{BUDGET_WAIT_EXCEEDED, WAL_FENCED, WAL_NOT_PRIVATE, WAL_STRAY};
 use crate::scope::ScopeError;
 
 /// What kind of failure an [`Error`] reports.
@@ -106,24 +106,49 @@ impl Error {
 
     /// The error for `error`, from the write-ahead log's store: retryable where the operation may
     /// succeed if tried again.
+    ///
+    /// What a local log's store refused, as no user's alone or as a name it never writes, is
+    /// `wal_not_private` or `wal_stray`.
     pub(crate) fn from_wal(error: std::io::Error) -> Self {
         use std::io::ErrorKind as Io;
         let transient = matches!(
             error.kind(),
             Io::Interrupted | Io::TimedOut | Io::WouldBlock | Io::ResourceBusy
         );
+        let code = error
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<crate::wal::Refusal>())
+            .map(|refusal| match refusal {
+                crate::wal::Refusal::NotPrivate { .. } => WAL_NOT_PRIVATE,
+                crate::wal::Refusal::Stray { .. } => WAL_STRAY,
+            });
         let mut wal = Self::wal(format!("the write-ahead log failed: {error}"));
         wal.retryable = transient;
+        wal.code = code.map(Arc::from);
         wal.source = Some(Box::new(error));
         wal
     }
 
-    /// The error for a write-ahead log an earlier failure, `failure`, left unknown: retryable as
-    /// that failure was, since the next attempt writes a log of its own.
-    pub(crate) fn wal_failed_before(failure: &str, retryable: bool) -> Self {
-        let mut wal = Self::wal(format!("the write-ahead log failed before: {failure}"));
-        wal.retryable = retryable;
+    /// The error for a write-ahead log an earlier failure, `failure`, left unknown: of its kind
+    /// and code, and retryable as it was, since the next attempt writes a log of its own.
+    pub(crate) fn wal_failed_before(failure: &Self) -> Self {
+        let mut wal = Self::new(
+            failure.kind,
+            format!("the write-ahead log failed before: {failure}"),
+        );
+        wal.code.clone_from(&failure.code);
+        wal.retryable = failure.retryable;
         wal
+    }
+
+    /// The error for a load whose log a replay took over, publishing the chunk the load was to
+    /// publish next: another attempt runs, which fences this one.
+    pub(crate) fn wal_fenced(load: rdlt_connector::LoadId) -> Self {
+        Self::new(
+            ErrorKind::Fenced,
+            format!("the write-ahead log of load {load} was taken over by a replay"),
+        )
+        .with_code(WAL_FENCED)
     }
 
     /// Classifies a connector's `error` from `side`, keeping it as the cause.

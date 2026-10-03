@@ -7,37 +7,30 @@ use rdlt_connector::SegmentId;
 
 use super::super::super::memory::MemoryWal;
 use super::super::{Command, Settled, Written};
-use super::{batch, chunks, commit, committed, drive, send, table};
+use super::{drive, numbers, table};
 
 #[tokio::test]
 async fn a_segment_its_partition_abandons_holds_no_chunk_back() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);
-    drive(Arc::clone(&store), |writer| async move {
-        send(&writer, table(0)).await;
-        send(&writer, batch(1, 0)).await;
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        log.batch(1, 0).await;
         // Segment 2's partition stopped before sealing it: no commit ever takes it.
-        send(&writer, batch(2, 0)).await;
-        send(
-            &writer,
-            Command::Abandon {
-                segment: SegmentId(2),
-            },
-        )
+        log.batch(2, 0).await;
+        log.send(Command::Abandon {
+            segment: SegmentId(2),
+        })
         .await;
-        let (command, answer) = commit(1, &[1]);
-        send(&writer, command).await;
-        answer.await.expect("the writer answers").expect("durable");
-        send(&writer, committed(1)).await;
-        send(&writer, batch(3, 0)).await;
-        let (command, answer) = commit(2, &[3]);
-        send(&writer, command).await;
-        answer.await.expect("the writer answers").expect("durable");
-        let numbers: Vec<u64> = chunks(&observed)
-            .into_iter()
-            .map(|(number, _)| number)
-            .collect();
-        assert_eq!(numbers, [1], "chunk 0 holds only settled segments");
+        log.commit(1, &[1]).await.expect("durable");
+        log.committed(1).await;
+        log.batch(3, 0).await;
+        log.commit(2, &[3]).await.expect("durable");
+        assert_eq!(
+            numbers(&observed),
+            [1],
+            "chunk 0 holds only settled segments"
+        );
     })
     .await
     .expect("the writer ends");

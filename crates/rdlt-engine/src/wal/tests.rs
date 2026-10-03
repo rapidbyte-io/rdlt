@@ -10,7 +10,7 @@ use rdlt_connector_reference::{GeneratorSource, MemoryDestination};
 use serde_json::json;
 
 use super::WalStore;
-use super::frame::{Frame, Frames};
+use super::frame::Frame;
 use super::memory::MemoryWal;
 use crate::compute::RayonPool;
 use crate::config::{CommitPolicy, EngineConfig};
@@ -65,28 +65,28 @@ async fn a_commit_s_frame_follows_every_batch_of_its_segments_however_slow_the_d
     assert!(commits >= 2, "{commits} commits");
 }
 
-/// The commits and the rows `store`'s appends logged, checking each batch was logged before the
-/// commit that took its segment, and none after; a batch carried out of an old chunk, the same
-/// frame appended again, counts once.
+/// The commits and the rows `store`'s published chunks logged, checking each batch was logged
+/// before the commit that took its segment, and none after; a batch carried out of an old chunk,
+/// the same frame written again, counts once.
 fn logged_in_order(store: &MemoryWal) -> (usize, usize) {
     let (mut logged, mut committed) = (BTreeSet::new(), BTreeSet::new());
-    let (mut commits, mut rows, mut frames) = (0, 0, BTreeSet::new());
-    for frame in store.appended.lock().iter() {
-        match Frames::new(frame).next() {
-            Some(Ok((_, Frame::Batch(batch)))) => {
+    let (mut commits, mut rows, mut batches) = (0, 0, BTreeSet::new());
+    for frame in store.published_frames() {
+        match frame {
+            Frame::Batch(batch) => {
                 assert!(
                     !committed.contains(&batch.segment),
                     "a batch of segment {:?} after the commit that took it",
                     batch.segment
                 );
                 logged.insert(batch.segment);
-                if frames.insert(frame.clone()) {
+                if batches.insert(batch.ordinal) {
                     rows += batch.batch.num_rows();
                 }
             }
-            Some(Ok((_, Frame::Commit(meta)))) => {
+            Frame::Commit(commit) => {
                 commits += 1;
-                for segment in meta.segments.iter() {
+                for segment in commit.meta.segments.iter() {
                     assert!(
                         logged.contains(&segment),
                         "segment {segment:?} after its commit"

@@ -204,7 +204,8 @@ async fn logged(store: &dyn rdlt_engine::WalStore, name: &str) -> Vec<u8> {
                 .read(&pipeline, chunk, 0, len)
                 .await
                 .expect("the chunk reads");
-            let mut at = 0;
+            // Past the chunk's preamble.
+            let mut at = 14;
             while at + 9 <= bytes.len() {
                 kinds.push(bytes[at]);
                 let len = u32::from_le_bytes([
@@ -256,10 +257,10 @@ async fn a_commit_whose_state_would_pass_the_limit_is_refused_before_it_is_logge
         )
         .await;
     refused(&outcome);
-    // Nothing was logged as committed, and the source heard of no position.
+    // Nothing was logged as committed, and the source heard of no position: what was staged of
+    // the log is published with a commit alone.
     assert_eq!(acks(name), 0);
     let kinds = logged(store.as_ref(), name).await;
-    assert!(kinds.contains(&3), "batches were logged: {kinds:?}");
     assert!(!kinds.contains(&5), "a commit was logged: {kinds:?}");
     let state = stored(memory(name).await.as_ref(), name).await;
     assert!(state.streams.is_empty(), "{state:?}");

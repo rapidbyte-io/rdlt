@@ -10,16 +10,23 @@ use rdlt_wire::{Decoder, Encoder, IpcFrame, Limits};
 
 use crate::error::Error;
 
-/// What a log's batches may hold: whatever the engine wrote, of any size, but nested no deeper
-/// than the wire allows any connector's.
-fn limits() -> Limits {
+/// What a log's batches may hold in an engine of `memory` bytes: what one request for lowering
+/// may take, a quarter of the budget, in bytes of a frame, its schema and its strings, and in
+/// rows and values, since each row of a piece costs at least a byte of what the piece reserved;
+/// nested no deeper than the wire allows any connector's.
+///
+/// The engine writes no batch frame larger: a piece of lowering, and its frame, are within a
+/// request.
+pub(crate) fn limits(memory: u64) -> Limits {
+    let request = memory / crate::limits::REQUEST_SHARE;
     Limits {
-        frame_bytes: u64::MAX,
-        batch_rows: u64::MAX,
-        batch_values: u64::MAX,
-        schema_columns: u64::MAX,
-        schema_bytes: u64::MAX,
-        control_string_bytes: u64::MAX,
+        frame_bytes: request,
+        batch_rows: request,
+        batch_values: request,
+        schema_columns: request,
+        schema_bytes: request,
+        control_string_bytes: request,
+        dictionary_bytes: request,
         ..Limits::default()
     }
 }
@@ -47,10 +54,10 @@ fn garbled(what: &dyn std::fmt::Display) -> Error {
     Error::internal(format!("a write-ahead log batch does not decode: {what}"))
 }
 
-/// The batch `data` holds.
-pub(super) fn decode(data: &[u8]) -> Result<RecordBatch, Error> {
+/// The batch `data` holds, within `limits`.
+pub(super) fn decode(data: &[u8], limits: Limits) -> Result<RecordBatch, Error> {
     let mut data = Bytes::copy_from_slice(data);
-    let mut decoder = Decoder::new(limits());
+    let mut decoder = Decoder::new(limits);
     decoder
         .schema(&take(&mut data)?)
         .map_err(|error| garbled(&error))?;

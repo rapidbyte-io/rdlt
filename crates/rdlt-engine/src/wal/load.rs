@@ -12,13 +12,14 @@ use std::sync::{Arc, Weak};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, GenerationId, LoadId, PartitionId, PartitionState, Permit, PipelineId,
-    Receipt, SchemaVersion, SegmentId, StreamName,
+    CommitMeta, GenerationId, PartitionId, PartitionState, Permit, Receipt, SchemaVersion,
+    SegmentId, StreamName,
 };
 use tokio::sync::{Mutex, oneshot};
 
-use super::frame::{self, Frame, Header, VERSION};
+use super::frame::{self, Frame};
 use super::store::WalStore;
+pub(crate) use super::writer::Owner;
 use super::writer::{Command, WalWriter};
 use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::compute::{ComputePool, run_all};
@@ -54,6 +55,15 @@ pub(crate) struct LoadLog {
     tables: Arc<Mutex<Described>>,
     /// The ordinal the next batch frame takes.
     batches: Arc<AtomicU64>,
+    /// The batch frames and rows logged of each segment not yet sealed or abandoned.
+    counts: Arc<parking_lot::Mutex<BTreeMap<SegmentId, Counted>>>,
+}
+
+/// The batch frames and the rows logged of a segment.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counted {
+    batches: u64,
+    rows: u64,
 }
 
 /// The index each table version's schema frame gave it, with every view of the version its
@@ -66,40 +76,23 @@ struct Described {
 }
 
 impl LoadLog {
-    /// The log of `load` of `pipeline` in `store`, claimed before anything of it exists, and the
-    /// task writing it, for the attempt's scope to run until every clone is dropped or the log is
-    /// closed; `opened` is the last commit the destination had received when the load opened.
-    pub(crate) async fn start(
+    /// The log of `owner`'s load in `store`, and the task writing it, for the attempt's scope to
+    /// run until every clone is dropped or the log is closed.
+    pub(crate) fn start(
         store: Arc<dyn WalStore>,
-        pipeline: PipelineId,
-        load: LoadId,
-        opened: Option<(LoadId, CommitSeq)>,
-    ) -> Result<
-        (
-            Self,
-            impl Future<Output = Result<(), Error>> + Send + 'static,
-        ),
-        Error,
-    > {
-        let claim = store
-            .claim(&pipeline, load)
-            .await
-            .map_err(Error::from_wal)?
-            .ok_or_else(|| Error::internal(format!("the log of load {load} is claimed already")))?;
-        let header = Frame::Header(Header {
-            version: VERSION,
-            pipeline: pipeline.clone(),
-            load,
-            opened,
-        })
-        .encode()?;
-        let (writer, task) = WalWriter::start(store, pipeline, load, header, claim);
+        owner: Owner,
+    ) -> (
+        Self,
+        impl Future<Output = Result<(), Error>> + Send + 'static,
+    ) {
+        let (writer, task) = WalWriter::start(store, owner);
         let log = Self {
             writer,
             tables: Arc::default(),
             batches: Arc::default(),
+            counts: Arc::default(),
         };
-        Ok((log, task))
+        (log, task)
     }
 
     /// Logs `batch` of `segment`, lowered for `view` of the attempt's table `table`, encoded on
@@ -115,6 +108,12 @@ impl LoadLog {
         batch: &RecordBatch,
     ) -> Result<(), Error> {
         let index = self.describe(budget, table, view).await?;
+        {
+            let mut counts = self.counts.lock();
+            let counted = counts.entry(segment).or_default();
+            counted.batches += 1;
+            counted.rows += u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
+        }
         // A partition logs a segment's batches one after another, so their ordinals are their order.
         let batch = frame::Batch {
             segment,
@@ -190,7 +189,7 @@ impl LoadLog {
     /// and returns once the commit's frame is durable; `budget` holds each frame's bytes until
     /// it is appended.
     ///
-    /// The phase frames go in one append with the commit's, so a crash tears them with it.
+    /// The phase frames go in the commit's chunk with it, which is written whole.
     pub(crate) async fn commit(
         &self,
         budget: &MemoryBudget,
@@ -206,31 +205,12 @@ impl LoadLog {
         for seal in &sealed {
             segments.insert(seal.segment);
         }
+        let seals = u32::try_from(sealed.len())
+            .map_err(|_| Error::internal("a commit takes more seals than a frame counts"))?;
+        let phases = u32::try_from(begun.len())
+            .map_err(|_| Error::internal("a commit begins more phases than a frame counts"))?;
         for seal in sealed {
-            let segment = seal.segment;
-            // Reserved before it is encoded for the cursors it records, each written twice over
-            // in base64, and for the frame as it is once it exists.
-            let cursors = [seal.from.as_ref(), Some(&seal.state)];
-            let cursors = cursors.into_iter().flatten().map(recorded);
-            let bytes = cursors.fold(FRAMED, u64::saturating_add);
-            let held = reserved(budget, bytes).await?;
-            let frame = Frame::Seal(frame::Seal {
-                segment,
-                stream: seal.stream,
-                partition: seal.partition,
-                replayable: seal.replayable,
-                phase: seal.phase,
-                from: seal.from,
-                state: seal.state,
-            })
-            .encode()?;
-            let held = settled(budget, held, frame.len()).await?;
-            let seal = Command::Seal {
-                segment,
-                frame,
-                held: Box::new(held),
-            };
-            self.writer.send(seal).await?;
+            self.seal(budget, seal).await?;
         }
         // Reserved before they are encoded for what they take at most, but what they record of
         // tables, which each table's change reserved.
@@ -239,7 +219,7 @@ impl LoadLog {
         for begun in begun {
             frames.extend_from_slice(&Frame::Begun(begun).encode()?);
         }
-        frames.extend_from_slice(&frame::commit(meta)?);
+        frames.extend_from_slice(&frame::commit(meta, seals, phases)?);
         let frame = frames
             .len()
             .saturating_sub(usize::try_from(prepaid).unwrap_or(usize::MAX));
@@ -258,6 +238,38 @@ impl LoadLog {
         answer
             .await
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
+    }
+
+    /// Logs `seal` with the batch frames and rows logged of its segment; `budget` holds the
+    /// frame's bytes until it is written.
+    async fn seal(&self, budget: &MemoryBudget, seal: Sealed) -> Result<(), Error> {
+        let segment = seal.segment;
+        let counted = self.counts.lock().remove(&segment).unwrap_or_default();
+        // Reserved before it is encoded for the cursors it records, each written twice over in
+        // base64, and for the frame as it is once it exists.
+        let cursors = [seal.from.as_ref(), Some(&seal.state)];
+        let cursors = cursors.into_iter().flatten().map(recorded);
+        let bytes = cursors.fold(FRAMED, u64::saturating_add);
+        let held = reserved(budget, bytes).await?;
+        let frame = Frame::Seal(frame::Seal {
+            segment,
+            stream: seal.stream,
+            partition: seal.partition,
+            replayable: seal.replayable,
+            phase: seal.phase,
+            from: seal.from,
+            state: seal.state,
+            batches: counted.batches,
+            rows: counted.rows,
+        })
+        .encode()?;
+        let held = settled(budget, held, frame.len()).await?;
+        let seal = Command::Seal {
+            segment,
+            frame,
+            held: Box::new(held),
+        };
+        self.writer.send(seal).await
     }
 
     /// Tells the writer to forget the schema frames of table versions all of whose views are gone.
@@ -285,13 +297,12 @@ impl LoadLog {
         self.writer.send(Command::Retire { tables }).await
     }
 
-    /// Logs `receipt`, the commit's the destination answered with.
+    /// Notes `receipt`, the commit's the destination answered with, which the next chunk the log
+    /// publishes records.
     pub(crate) async fn committed(&self, receipt: &Receipt) -> Result<(), Error> {
-        let frame = Frame::Committed(receipt.clone()).encode()?;
         self.writer
             .send(Command::Committed {
                 seq: receipt.commit_seq,
-                frame,
             })
             .await
     }
@@ -299,6 +310,7 @@ impl LoadLog {
     /// Tells the log `segment`'s partition ended without sealing it: no commit takes it, so it
     /// holds no chunk back.
     pub(crate) async fn abandon(&self, segment: SegmentId) -> Result<(), Error> {
+        self.counts.lock().remove(&segment);
         self.writer.send(Command::Abandon { segment }).await
     }
 
@@ -306,8 +318,7 @@ impl LoadLog {
     /// receipt.
     pub(crate) async fn close(&self) -> Result<(), Error> {
         let (done, answer) = oneshot::channel();
-        let frame = Frame::Closed.encode()?;
-        self.writer.send(Command::Close { frame, done }).await?;
+        self.writer.send(Command::Close { done }).await?;
         answer
             .await
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?

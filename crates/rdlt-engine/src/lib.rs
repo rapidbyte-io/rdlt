@@ -67,4 +67,4 @@ pub use report::{
     StreamReport,
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
-pub use wal::{Chunk, Claim, LocalWal, WalStore};
+pub use wal::{Chunk, LocalWal, StagedChunk, WalStore};

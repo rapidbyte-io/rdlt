@@ -1,8 +1,10 @@
+mod forged;
+
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use rdlt_connector::{
     CommitMeta, CommitSeq, Epoch, LoadId, PartitionId, PartitionState, PipelineId, Receipt,
     SegmentId, StateChange, StateEntry, StreamName,
@@ -14,8 +16,8 @@ use crate::compute::Inline;
 use crate::error::ErrorKind;
 use crate::table::TableView;
 use crate::table::testing::view;
-use crate::wal::frame::BegunPhase;
-use crate::wal::load::{LoadLog, Sealed};
+use crate::wal::frame::{self, BegunPhase};
+use crate::wal::load::{LoadLog, Owner, Sealed};
 use crate::wal::memory::MemoryWal;
 use crate::wal::store::{Chunk, WalStore};
 
@@ -61,8 +63,16 @@ fn sealed(segment: u64) -> Sealed {
     }
 }
 
+/// Bytes: the most a frame read in these tests may take.
+const FRAME_BYTES: u64 = 1 << 20;
+
+/// What a log's batches may hold in these tests.
+fn limits() -> rdlt_wire::Limits {
+    frame::limits(1 << 30)
+}
+
 /// A log of two commits of segments 1 and 2, the first `received` or not, as a load that crashed
-/// after the second's frame was durable writes it.
+/// after the second's chunk was published writes it.
 async fn logged(received: bool) -> Arc<MemoryWal> {
     logged_beginning(received, Vec::new()).await
 }
@@ -92,14 +102,21 @@ async fn log_batch(
         .await
 }
 
+/// The owner of the logs these tests write.
+fn owner() -> Owner {
+    Owner {
+        pipeline: pipeline(),
+        load: load(),
+        epoch: Epoch(1),
+        opened: Some((LoadId::from_parts(UNIX_EPOCH, 1), CommitSeq::FIRST)),
+    }
+}
+
 /// A log as [`logged`] writes it, whose second commit begins the phases `begun`.
 async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryWal> {
     let store = Arc::new(MemoryWal::default());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let opened = Some((LoadId::from_parts(UNIX_EPOCH, 1), CommitSeq::FIRST));
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), opened)
-        .await
-        .expect("the log starts");
+    let (log, task) = LoadLog::start(wal, owner());
     let budget = MemoryBudget::new(1 << 20);
     let (orders, items) = (view("orders"), view("items"));
     let written = async {
@@ -135,16 +152,37 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
     store
 }
 
+/// The chunks of `from`, each changed as `change` says, in a store of their own.
+async fn copied(from: &MemoryWal, change: impl Fn(Chunk, &mut Vec<u8>)) -> MemoryWal {
+    let store = MemoryWal::default();
+    for (chunk, bytes) in from.stored(&pipeline()) {
+        let mut bytes = bytes.to_vec();
+        change(chunk, &mut bytes);
+        published(&store, &pipeline(), chunk, bytes).await;
+    }
+    store
+}
+
+/// Publishes `bytes` as `chunk` of `pipeline`'s log in `store`.
+async fn published(store: &MemoryWal, pipeline: &PipelineId, chunk: Chunk, bytes: Vec<u8>) {
+    let mut staged = store.stage(pipeline, chunk).await.expect("stages");
+    staged.append(Bytes::from(bytes)).await.expect("appends");
+    staged.publish().await.expect("publishes");
+}
+
 #[tokio::test]
 async fn a_log_scans_back_to_what_its_load_wrote() {
     let store = logged(false).await;
-    let scanned = scan(store.as_ref(), &pipeline(), load())
+    let scanned = scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("the log reads");
     let header = scanned.header.as_ref().expect("a header");
     assert_eq!(
-        header.opened,
-        Some((LoadId::from_parts(UNIX_EPOCH, 1), CommitSeq::FIRST))
+        (header.epoch, header.opened),
+        (
+            Epoch(1),
+            Some((LoadId::from_parts(UNIX_EPOCH, 1), CommitSeq::FIRST))
+        )
     );
     let named: Vec<_> = scanned
         .tables
@@ -165,11 +203,10 @@ async fn a_log_scans_back_to_what_its_load_wrote() {
         [(meta(1, &[1]), vec![1]), (meta(2, &[2]), vec![2])]
     );
     assert_eq!(scanned.pending().count(), 2);
-    assert!(!scanned.closed);
     let mut read = Vec::new();
     for (segment, located) in &scanned.batches {
         for located in located {
-            let batch = batch(store.as_ref(), &pipeline(), *located)
+            let batch = batch(store.as_ref(), &pipeline(), *located, limits())
                 .await
                 .expect("the batch reads");
             read.push((segment.0, located.table, batch));
@@ -179,12 +216,13 @@ async fn a_log_scans_back_to_what_its_load_wrote() {
 }
 
 #[tokio::test]
-async fn a_received_commit_s_chunk_is_gone_and_its_receipt_reads_back() {
+async fn a_received_commit_s_chunk_is_gone_and_only_what_is_needed_is_read() {
     let store = logged(true).await;
-    let scanned = scan(store.as_ref(), &pipeline(), load())
+    assert_eq!(store.stored(&pipeline()).len(), 1, "chunk 0 is gone");
+    let scanned = scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("the log reads");
-    // The second chunk restates the schema its batch names, and holds the first receipt.
+    // The second chunk restates the schema its batch names.
     let named: Vec<_> = scanned
         .tables
         .values()
@@ -196,8 +234,6 @@ async fn a_received_commit_s_chunk_is_gone_and_its_receipt_reads_back() {
         .map(|logged| logged.meta.clone())
         .collect();
     assert_eq!(pending, [meta(2, &[2])]);
-    assert_eq!(scanned.commits.len(), 1);
-    assert!(scanned.received.contains(&seq(1)));
     assert_eq!(
         scanned.batches.keys().copied().collect::<Vec<_>>(),
         [SegmentId(2)]
@@ -205,204 +241,176 @@ async fn a_received_commit_s_chunk_is_gone_and_its_receipt_reads_back() {
 }
 
 #[tokio::test]
-async fn a_torn_chunk_reads_up_to_its_tear() {
-    let whole = logged(false).await;
-    let last = whole
-        .stored(&pipeline())
-        .last()
-        .map(|(chunk, stored)| (*chunk, stored.bytes.clone()))
-        .expect("a chunk");
-    for cut in 0..last.1.len() {
-        let torn = MemoryWal::default();
-        for (chunk, stored) in whole.stored(&pipeline()) {
-            let bytes = if chunk == last.0 {
-                Bytes::copy_from_slice(&stored.bytes[..cut])
-            } else {
-                Bytes::from(stored.bytes)
-            };
-            torn.append(&pipeline(), chunk, bytes)
-                .await
-                .expect("appends");
-        }
-        let scanned = scan(&torn, &pipeline(), load())
+async fn a_commit_s_receipt_noted_in_a_later_chunk_s_end_settles_it() {
+    // Commit 1 is received while segment 3 stays open: chunk 0 stays, its commit received.
+    let store = Arc::new(MemoryWal::default());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let (log, task) = LoadLog::start(wal, owner());
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let written = async {
+        log_batch(&log, &budget, (0, &orders), SegmentId(1), &ids(0))
             .await
-            .expect("a torn log reads");
-        // The last chunk holds the second commit's frame, whole only where nothing was cut.
-        let commits: Vec<_> = scanned.commits.iter().map(|logged| &logged.meta).collect();
-        assert_eq!(commits, [&meta(1, &[1])], "cut at {cut}");
-        assert_eq!(scanned.pending().count(), 1, "cut at {cut}");
-    }
+            .expect("logged");
+        for from in [100, 102] {
+            log_batch(&log, &budget, (0, &orders), SegmentId(3), &ids(from))
+                .await
+                .expect("logged");
+        }
+        log.commit(&budget, vec![sealed(1)], Vec::new(), &meta(1, &[1]), 0)
+            .await
+            .expect("durable");
+        let receipt = Receipt {
+            load_id: load(),
+            commit_seq: seq(1),
+            committed_at: UNIX_EPOCH,
+            rows: 2,
+            bytes: 16,
+        };
+        log.committed(&receipt).await.expect("noted");
+        log_batch(&log, &budget, (0, &orders), SegmentId(2), &ids(20))
+            .await
+            .expect("logged");
+        log.commit(&budget, vec![sealed(2)], Vec::new(), &meta(2, &[2]), 0)
+            .await
+            .expect("durable");
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+    assert_eq!(store.stored(&pipeline()).len(), 2);
+    let scanned = scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
+        .await
+        .expect("the log reads");
+    assert!(scanned.received.contains(&seq(1)));
+    let pending: Vec<_> = scanned
+        .pending()
+        .map(|logged| logged.meta.clone())
+        .collect();
+    assert_eq!(pending, [meta(2, &[2])]);
 }
 
 #[tokio::test]
-async fn a_phase_a_commit_began_scans_back_with_it_and_not_where_the_commit_is_torn() {
+async fn a_phase_a_commit_began_scans_back_with_it() {
     let whole = logged_beginning(false, vec![begun()]).await;
-    let scanned = scan(whole.as_ref(), &pipeline(), load())
+    let scanned = scan(whole.as_ref(), &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("the log reads");
     let begun_of: Vec<_> = scanned.commits.iter().map(|logged| &logged.begun).collect();
     assert_eq!(begun_of, [&Vec::new(), &vec![begun()]]);
-    let last = whole
-        .stored(&pipeline())
-        .last()
-        .map(|(chunk, stored)| (*chunk, stored.bytes.clone()))
-        .expect("a chunk");
-    for cut in 0..last.1.len() {
-        let torn = MemoryWal::default();
-        for (chunk, stored) in whole.stored(&pipeline()) {
-            let bytes = if chunk == last.0 {
-                Bytes::copy_from_slice(&stored.bytes[..cut])
-            } else {
-                Bytes::from(stored.bytes)
-            };
-            torn.append(&pipeline(), chunk, bytes)
-                .await
-                .expect("appends");
-        }
-        let scanned = scan(&torn, &pipeline(), load())
-            .await
-            .expect("a torn log reads");
-        // The phase is logged with the commit that began it, and is gone where that commit is.
-        let begun_of: Vec<_> = scanned.commits.iter().map(|logged| &logged.begun).collect();
-        assert_eq!(begun_of, [&Vec::new()], "cut at {cut}");
-    }
-}
-
-/// A frame of `kind` whose checksum matches `payload`.
-fn framed(kind: u8, payload: &[u8]) -> Bytes {
-    let mut frame = BytesMut::new();
-    frame.put_u8(kind);
-    frame.put_u32_le(u32::try_from(payload.len()).expect("a short payload"));
-    frame.put_u32_le(crc32c::crc32c(payload));
-    frame.put_slice(payload);
-    frame.freeze()
 }
 
 #[tokio::test]
-async fn a_whole_frame_that_does_not_decode_makes_the_log_unreadable() {
-    let header = |version: u16, load: LoadId| {
-        let header = serde_json::json!({
-            "version": version,
-            "pipeline": "orders",
-            "load": load.to_string(),
-            "opened": null,
-        });
-        framed(1, header.to_string().as_bytes())
-    };
-    let chunk = Chunk {
+async fn a_chunk_the_log_needs_that_is_missing_is_refused() {
+    let whole = logged(false).await;
+    let first = Chunk {
         load: load(),
         number: 0,
     };
-    let version = super::super::frame::VERSION;
-    for frames in [
-        vec![header(version, load()), framed(99, b"")],
-        vec![
-            header(version, load()),
-            framed(5, b"{\"not\":\"a commit\"}"),
-        ],
-        vec![header(version + 1, load())],
-        vec![header(version, LoadId::from_parts(UNIX_EPOCH, 6))],
-    ] {
-        let store = MemoryWal::default();
-        for frame in frames {
-            store
-                .append(&pipeline(), chunk, frame)
+    whole.remove(&pipeline(), first).await.expect("removes");
+    let error = scan(whole.as_ref(), &pipeline(), load(), FRAME_BYTES)
+        .await
+        .expect_err("chunk 0 holds commit 1 and its batches");
+    assert_eq!(error.code(), Some("wal_unreadable"));
+}
+
+#[tokio::test]
+async fn a_byte_changed_anywhere_in_any_chunk_or_a_chunk_cut_is_refused() {
+    let whole = logged(false).await;
+    let chunks = whole.stored(&pipeline());
+    for (damaged, bytes) in &chunks {
+        let len = bytes.len();
+        // Every byte of the last chunk, which holds the second commit, and a stride of the first.
+        let stride = if damaged.number == 1 { 1 } else { 7 };
+        for at in (0..len).step_by(stride) {
+            let store = copied(&whole, |chunk, bytes| {
+                if chunk == *damaged {
+                    bytes[at] ^= 0x01;
+                }
+            })
+            .await;
+            let error = scan(&store, &pipeline(), load(), FRAME_BYTES)
                 .await
-                .expect("appends");
+                .expect_err("a published chunk is whole: damage is never a tear");
+            assert!(
+                matches!(error.code(), Some("wal_unreadable" | "wal_foreign")),
+                "chunk {} byte {at}: {error}",
+                damaged.number
+            );
         }
-        let error = scan(&store, &pipeline(), load())
+        for cut in [0, 1, 13, 14, len / 2, len - 1] {
+            let store = copied(&whole, |chunk, bytes| {
+                if chunk == *damaged {
+                    bytes.truncate(cut);
+                }
+            })
+            .await;
+            let error = scan(&store, &pipeline(), load(), FRAME_BYTES)
+                .await
+                .expect_err("a chunk cut is refused");
+            assert_eq!(error.code(), Some("wal_unreadable"), "cut at {cut}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_chunk_of_another_pipeline_or_load_is_refused_as_foreign() {
+    let whole = logged(false).await;
+    // The log of `orders`, found where `payments`' log, or another load's, is.
+    let payments = PipelineId::parse("payments").expect("a valid pipeline");
+    let other = LoadId::from_parts(UNIX_EPOCH, 6);
+    for (pipeline, load) in [(payments.clone(), load()), (pipeline(), other)] {
+        let store = MemoryWal::default();
+        for (chunk, bytes) in whole.stored(&self::pipeline()) {
+            let chunk = Chunk { load, ..chunk };
+            published(&store, &pipeline, chunk, bytes.to_vec()).await;
+        }
+        let error = scan(&store, &pipeline, load, FRAME_BYTES)
             .await
-            .expect_err("the log is not one this engine wrote");
+            .expect_err("not this log's");
         assert_eq!(error.kind(), ErrorKind::Wal);
-        assert_eq!(error.code(), Some("wal_unreadable"));
+        assert_eq!(error.code(), Some("wal_foreign"));
         assert!(!error.is_retryable());
     }
 }
 
 #[tokio::test]
-async fn a_chunk_before_the_last_that_ends_early_or_garbled_makes_the_log_unreadable() {
-    // Every chunk but the last ends with a commit's frame, made durable: no crash tears it.
+async fn a_log_of_another_format_is_refused() {
     let whole = logged(false).await;
-    let stored = whole.stored(&pipeline());
-    assert_eq!(stored.len(), 2);
-    let first = stored[0].1.bytes.clone();
-    for damage in ["cut", "garbled"] {
-        let damaged = MemoryWal::default();
-        for (chunk, stored) in whole.stored(&pipeline()) {
-            let mut bytes = stored.bytes;
-            if chunk.number == 0 {
-                match damage {
-                    "cut" => bytes.truncate(first.len() - 1),
-                    _ => bytes[first.len() / 2] ^= 0x5a,
-                }
-            }
-            damaged
-                .append(&pipeline(), chunk, Bytes::from(bytes))
-                .await
-                .expect("appends");
-        }
-        let error = scan(&damaged, &pipeline(), load())
-            .await
-            .expect_err("a durable chunk damaged is not a crash");
-        assert_eq!(error.code(), Some("wal_unreadable"), "{damage}");
-    }
-}
-
-#[tokio::test]
-async fn a_scan_indexes_batches_without_decoding_them_and_a_read_refuses_a_garbled_one() {
-    let header = serde_json::json!({
-        "version": super::super::frame::VERSION,
-        "pipeline": "orders",
-        "load": load().to_string(),
-        "opened": null,
-    });
-    let head = br#"{"segment":1,"table":0,"ordinal":0}"#;
-    let mut payload = u32::try_from(head.len())
-        .expect("short")
-        .to_le_bytes()
-        .to_vec();
-    payload.extend_from_slice(head);
-    payload.extend_from_slice(b"not an arrow stream");
-    let chunk = Chunk {
-        load: load(),
-        number: 0,
-    };
-    let store = MemoryWal::default();
-    for frame in [
-        framed(1, header.to_string().as_bytes()),
-        framed(3, &payload),
-    ] {
-        store
-            .append(&pipeline(), chunk, frame)
-            .await
-            .expect("appends");
-    }
-    let scanned = scan(&store, &pipeline(), load())
+    let store = copied(&whole, |_, bytes| {
+        bytes[8..10].copy_from_slice(&(frame::VERSION - 1).to_le_bytes());
+        let check = crc32c::crc32c(&bytes[..10]);
+        bytes[10..14].copy_from_slice(&check.to_le_bytes());
+    })
+    .await;
+    let error = scan(&store, &pipeline(), load(), FRAME_BYTES)
         .await
-        .expect("the scan reads only the batch's head");
-    let located = scanned.batches[&SegmentId(1)][0];
-    assert_eq!(located.table, 0);
-    let error = batch(&store, &pipeline(), located)
-        .await
-        .expect_err("the batch does not decode");
+        .expect_err("the log is of the previous format");
     assert_eq!(error.code(), Some("wal_unreadable"));
 }
 
 #[tokio::test]
 async fn a_batch_read_past_its_frame_is_refused() {
     let store = logged(false).await;
-    let scanned = scan(store.as_ref(), &pipeline(), load())
+    let scanned = scan(store.as_ref(), &pipeline(), load(), FRAME_BYTES)
         .await
         .expect("the log reads");
     let mut located = scanned.batches[&SegmentId(1)][0];
-    batch(store.as_ref(), &pipeline(), located)
+    batch(store.as_ref(), &pipeline(), located, limits())
         .await
         .expect("the batch reads where the scan found it");
     // A location that runs on into the next frame is not the frame the scan found.
     located.len += 9;
-    let error = batch(store.as_ref(), &pipeline(), located)
+    let error = batch(store.as_ref(), &pipeline(), located, limits())
         .await
         .expect_err("more than the batch's frame");
+    assert_eq!(error.code(), Some("wal_unreadable"));
+    // Nor is the frame of another batch.
+    let mut other = scanned.batches[&SegmentId(1)][0];
+    other.ordinal += 1;
+    let error = batch(store.as_ref(), &pipeline(), other, limits())
+        .await
+        .expect_err("another batch");
     assert_eq!(error.code(), Some("wal_unreadable"));
 }
 
@@ -413,27 +421,4 @@ fn frame(budget: &MemoryBudget) -> rdlt_connector::Permit {
             .try_acquire_working(4_096)
             .expect("the budget has room"),
     )
-}
-
-#[tokio::test]
-async fn a_log_of_the_previous_format_is_refused() {
-    let header = serde_json::json!({
-        "version": 1,
-        "pipeline": "orders",
-        "load": load().to_string(),
-        "opened": null,
-    });
-    let chunk = Chunk {
-        load: load(),
-        number: 0,
-    };
-    let store = MemoryWal::default();
-    store
-        .append(&pipeline(), chunk, framed(1, header.to_string().as_bytes()))
-        .await
-        .expect("appends");
-    let error = scan(&store, &pipeline(), load())
-        .await
-        .expect_err("the log is of the previous format");
-    assert_eq!(error.code(), Some("wal_unreadable"));
 }

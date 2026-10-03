@@ -141,3 +141,22 @@ pub(crate) const MAX_CELLS: u64 = 1 << 25;
 /// Bytes: the most of a record's content an error quotes, a key or a number, shown as text a
 /// connector sent is.
 pub(crate) const QUOTED_BYTES: usize = 128;
+/// The code of the error for a directory or file of a local log that is not its user's alone:
+/// another user owns it, or its group or others may reach it, or it is a link, or of another
+/// kind than the log keeps there.
+pub(crate) const WAL_NOT_PRIVATE: &str = "wal_not_private";
+
+/// The code of the error for a name a local log's store never writes, in a directory it keeps a
+/// log's files in: such a file is refused, never read.
+pub(crate) const WAL_STRAY: &str = "wal_stray";
+
+/// The code of the error for a load whose log a replay took over: another attempt of the
+/// pipeline runs, and this one stops before it answers its commit.
+pub(crate) const WAL_FENCED: &str = "wal_fenced";
+
+/// The code of the error for a log this engine cannot read, which an operator removes: a chunk
+/// missing, damaged, of another format, or holding a commit not all of which is there.
+pub(crate) const WAL_UNREADABLE: &str = "wal_unreadable";
+
+/// The code of the error for a log holding a chunk of another pipeline's or load's log.
+pub(crate) const WAL_FOREIGN: &str = "wal_foreign";
