@@ -32,7 +32,7 @@ pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
 #[cfg(test)]
 pub(crate) use lowering::split_lowered;
 pub(crate) use lowering::{
-    ChangeRows, LoweringPlan, Prepared, Stamp, check_key_values, data_ordinals,
+    ChangeRows, LoweringPlan, Prepared, Stamp, data_ordinals, key_values, with_columns,
 };
 pub(crate) use model::Model;
 pub(crate) use registry::{Admission, Tables, TablesDelta, shared};
