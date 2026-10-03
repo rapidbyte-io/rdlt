@@ -83,16 +83,28 @@ pub(crate) enum Command {
 
 /// What a load's writer and its senders share: what the log holds on disk, and its first
 /// failure.
-#[derive(Default)]
 pub(crate) struct Shared {
     /// Bytes: what the log holds on disk, its chunks published and the chunk staged; a batch
     /// frame counted once it is sent, every other frame once it is written.
     pub(crate) held: AtomicU64,
+    /// Bytes: what the log may hold on disk; a carry that would take it past is left undone.
+    pub(crate) limit: AtomicU64,
     /// The first failure, which every later batch and command is answered with.
     pub(crate) failed: parking_lot::Mutex<Option<Error>>,
     /// The oldest commit a replay of the log may repeat: one waiting for its receipt, or whose
     /// receipt no published chunk records yet; none where there is none.
     pub(crate) oldest: parking_lot::Mutex<Option<CommitSeq>>,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            held: AtomicU64::new(0),
+            limit: AtomicU64::new(u64::MAX),
+            failed: parking_lot::Mutex::default(),
+            oldest: parking_lot::Mutex::default(),
+        }
+    }
 }
 
 impl Shared {

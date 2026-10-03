@@ -6,6 +6,8 @@
 //! Replay stages only the segments of commits without receipts, and the old chunk's commits all
 //! have theirs.
 
+use std::sync::atomic::Ordering;
+
 use bytes::Bytes;
 use rdlt_connector::SegmentId;
 
@@ -16,8 +18,17 @@ impl Log {
     /// Carries the frames of the open segments of the old chunks that hold nothing else a replay
     /// needs into the chunk staged, where they hold at least as many bytes of settled segments as
     /// of open ones: what is copied is never more than what is freed.
+    ///
+    /// A carry whose copies, with their schema frames, would take the log past what it may hold
+    /// is left undone: the old chunks stay, and the deletion that would free their bytes waits
+    /// for a later commit.
     pub(super) async fn carry(&mut self) -> Result<(), Error> {
         let carried = self.carriable();
+        let schemas: u64 = carried
+            .iter()
+            .flat_map(|number| self.written[number].schemas.values())
+            .map(|span| span.len)
+            .fold(0, u64::saturating_add);
         let (open, settled) = carried
             .iter()
             .fold((0_u64, 0_u64), |(open, settled), number| {
@@ -32,7 +43,10 @@ impl Log {
                         }
                     })
             });
-        if open == 0 || settled < open {
+        let held = self.shared.held.load(Ordering::Relaxed);
+        let limit = self.shared.limit.load(Ordering::Relaxed);
+        if open == 0 || settled < open || held.saturating_add(open.saturating_add(schemas)) > limit
+        {
             return Ok(());
         }
         for number in carried {
