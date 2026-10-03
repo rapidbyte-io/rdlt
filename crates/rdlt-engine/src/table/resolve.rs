@@ -160,9 +160,9 @@ struct Arriving<'a> {
 
 impl Resolver {
     /// The resolver of a child table of the same stream holding the arrays of the stream's column
-    /// `owner`: with the settings of `owner` for every column, no hints or merge key, and a
-    /// child's lineage columns; a merge stream's child table follows `root`, its root table, with
-    /// a sequence column.
+    /// `owner`: with the settings of `owner` for every column, no hints or merge key, a child's
+    /// lineage columns, and none of the root's columns kept from widening; a merge stream's child
+    /// table follows `root`, its root table, with a sequence column.
     pub(crate) fn child(&self, root: Option<RootKey>, owner: ColumnPath) -> Result<Self, Error> {
         let settings = Settings {
             stream: self.settings.stream.without_hints(),
@@ -175,6 +175,7 @@ impl Resolver {
             settings,
             meta: MetaNames::assign(&self.naming, merge, LineageColumns::Child)?,
             root,
+            unwidened: BTreeSet::new(),
             ..self.clone()
         })
     }

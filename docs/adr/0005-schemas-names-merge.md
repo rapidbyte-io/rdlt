@@ -35,8 +35,8 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   the run. Recording names in state before applying changes was rejected: it needs a commit per
   schema change, against one commit per barrier. A widen whose join the destination cannot
   store fails the stream until destinations report their columns. Amended 2026-10-03 (ADR 0041):
-  a conflicting change that widens columns in place is resolved again with those columns kept
-  as they are, their values routed to variant columns, before new names are hashed.
+  a widen the destination refuses keeps that column as it is for the attempt, its values
+  routed to variant columns; a refused new column still has new names hashed.
 - **The first batch, or the declared schema, creates the table.** A stream no longer needs a
   declared schema; a declared one is resolved like a batch before anything is read. After the
   table exists, a new column or a value its column cannot hold is a change, which the column's

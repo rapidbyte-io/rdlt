@@ -711,3 +711,69 @@ async fn a_table_whose_records_pass_the_tables_share_is_refused_before_the_desti
     assert!(changes.lock().is_empty());
     assert_eq!(budget.reserved(), 0);
 }
+
+/// The names and types of `view`'s source columns and their variants, metadata left out.
+fn shape(view: &crate::table::TableView) -> Vec<(String, LogicalType)> {
+    view.model
+        .columns
+        .iter()
+        .filter(|column| !column.name().starts_with("_rdlt"))
+        .map(|column| (column.name().to_owned(), column.logical_type().clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_column_a_crashed_attempt_left_behind_is_named_around_though_another_widens() {
+    let columns = Columns::default();
+    let crashed = attempt(&columns);
+    crashed
+        .fit(
+            0,
+            &schema(&[("a", LogicalType::Int32), ("x", LogicalType::Int64)]),
+        )
+        .await
+        .unwrap();
+    let retried = attempt(&columns);
+    retried
+        .fit(0, &schema(&[("a", LogicalType::Int32)]))
+        .await
+        .unwrap();
+    // The new column's name is taken, at another type; the widen is the destination's to take.
+    let (view, _) = retried
+        .fit(
+            0,
+            &schema(&[("a", LogicalType::Int64), ("x", LogicalType::Utf8)]),
+        )
+        .await
+        .unwrap();
+    let shape = shape(&view);
+    assert_eq!(shape[0], ("a".to_owned(), LogicalType::Int64));
+    assert_eq!(shape.len(), 2, "{shape:?}");
+    assert_eq!(shape[1].1, LogicalType::Utf8);
+    assert_ne!(shape[1].0, "x");
+}
+
+#[tokio::test]
+async fn only_the_column_whose_widen_is_refused_is_kept_from_widening_for_the_attempt() {
+    let columns = Columns::default();
+    let tables = attempt(&columns);
+    let narrow = schema(&[("a", LogicalType::Int32), ("b", LogicalType::Int32)]);
+    tables.fit(0, &narrow).await.unwrap();
+    // The destination holds `b` otherwise than the table says: it refuses to widen it.
+    columns.lock().insert("b".to_owned(), LogicalType::Utf8);
+    let wide = schema(&[("a", LogicalType::Int64), ("b", LogicalType::Int64)]);
+    let (view, _) = tables.fit(0, &wide).await.unwrap();
+    let expected = [
+        ("a".to_owned(), LogicalType::Int64),
+        ("b".to_owned(), LogicalType::Int32),
+        ("b__int64".to_owned(), LogicalType::Int64),
+    ];
+    assert_eq!(shape(&view), expected);
+    // A later batch that would widen `b` goes to its variants without asking the destination.
+    columns.lock().insert("b".to_owned(), LogicalType::Int32);
+    let floats = schema(&[("a", LogicalType::Int64), ("b", LogicalType::Float64)]);
+    let (view, _) = tables.fit(0, &floats).await.unwrap();
+    let shape = shape(&view);
+    assert_eq!(shape[1], ("b".to_owned(), LogicalType::Int32), "{shape:?}");
+    assert_eq!(columns.lock().get("b"), Some(&LogicalType::Int32));
+}
