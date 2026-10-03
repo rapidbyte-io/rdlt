@@ -35,6 +35,8 @@ pub(super) struct Flaws {
     pub(super) spare_commit: bool,
     /// Stores versions without their hash.
     pub(super) drop_hash: bool,
+    /// Begins a version when its change says, though its key held a later instant.
+    pub(super) trust_times: bool,
 }
 
 /// One history table's merge: its key and history columns, and the flaws it has.
@@ -180,36 +182,71 @@ impl Versioning<'_> {
             if equal && !self.flaws.duplicate {
                 return;
             }
+        }
+        let began = self.began(stored, &key, row);
+        if let Some(index) = current {
             if self.flaws.overwrite {
                 stored.remove(index);
             } else {
-                stored[index] = self.closed(&stored[index], row);
+                stored[index] = self.closed(&stored[index], &began);
             }
         }
-        stored.push(self.stored(row, None));
+        stored.push(self.stored(row, None, &began));
+    }
+
+    /// The instant at `column` of `version`, where it holds one, as the integer it counts.
+    fn instant(version: &RecordBatch, column: &str) -> Option<(i64, ArrayRef)> {
+        let values = version.column_by_name(column)?;
+        let counted = arrow_cast::cast(values, &DataType::Int64).ok()?;
+        let counted = counted.as_primitive::<arrow_array::types::Int64Type>();
+        counted
+            .is_valid(0)
+            .then(|| (counted.value(0), ArrayRef::clone(values)))
+    }
+
+    /// When `row`, a change of the key `key` that acts, begins: when it says, or the latest
+    /// instant the key's versions in `stored` hold, if that is later.
+    fn began(&self, stored: &[RecordBatch], key: &str, row: &RecordBatch) -> ArrayRef {
+        let (from, to) = (&*self.history.valid_from, &*self.history.valid_to);
+        let says = Self::instant(row, from).expect("rows say when they begin");
+        if self.flaws.trust_times {
+            return says.1;
+        }
+        let held = stored
+            .iter()
+            .filter(|version| self.key_of(version) == key)
+            .flat_map(|version| [Self::instant(version, from), Self::instant(version, to)])
+            .flatten();
+        held.fold(says, |latest, instant| {
+            if instant.0 > latest.0 {
+                instant
+            } else {
+                latest
+            }
+        })
+        .1
     }
 
     /// Removes the version at `index` as `row`, a delete or truncate, says: closes it, and where
     /// deletes are soft opens a deleted version keeping its data, unless it is deleted already.
     fn remove(&self, stored: &mut Vec<RecordBatch>, index: usize, row: &RecordBatch) {
         let version = stored[index].clone();
+        let began = || self.began(stored, &self.key_of(&version), row);
         match self.at() {
             Some(_) if self.deleted(&version) => {}
             Some(at) => {
-                stored[index] = self.closed(&version, row);
-                let kept = self.stored(&version, Some((row, at)));
+                let began = began();
+                stored[index] = self.closed(&version, &began);
+                let kept = self.stored(&version, Some((row, at)), &began);
                 stored.push(kept);
             }
             None if self.flaws.keep_deleted => {}
-            None => stored[index] = self.closed(&version, row),
+            None => stored[index] = self.closed(&version, &began()),
         }
     }
 
-    /// `version` closed where `row` begins.
-    fn closed(&self, version: &RecordBatch, row: &RecordBatch) -> RecordBatch {
-        let from = row
-            .column_by_name(&self.history.valid_from)
-            .expect("rows say when they begin");
+    /// `version` closed at `from`, when the change closing it begins.
+    fn closed(&self, version: &RecordBatch, from: &ArrayRef) -> RecordBatch {
         let columns: Vec<ArrayRef> = version
             .schema()
             .fields()
@@ -228,9 +265,14 @@ impl Versioning<'_> {
         RecordBatch::try_new(version.schema(), columns).expect("a closed version")
     }
 
-    /// `row`'s stored columns as a current version; with `deleting`, `row` is the version kept,
-    /// taking the deleting row's sequence, validity and deletion time.
-    fn stored(&self, row: &RecordBatch, deleting: Option<(&RecordBatch, &str)>) -> RecordBatch {
+    /// `row`'s stored columns as a current version beginning at `began`; with `deleting`, `row`
+    /// is the version kept, taking the deleting row's sequence and deletion time.
+    fn stored(
+        &self,
+        row: &RecordBatch,
+        deleting: Option<(&RecordBatch, &str)>,
+        began: &ArrayRef,
+    ) -> RecordBatch {
         let op = self.key.changes.as_ref().map(|changes| &*changes.op);
         let fields: Vec<_> = row
             .schema()
@@ -255,6 +297,8 @@ impl Versioning<'_> {
                 let dropped = self.flaws.drop_hash && name == &*self.history.row_hash;
                 if name == &*self.history.valid_to || dropped {
                     arrow_array::new_null_array(field.data_type(), 1)
+                } else if name == &*self.history.valid_from {
+                    arrow_cast::cast(began, field.data_type()).expect("validity casts")
                 } else if name == &*self.history.is_current {
                     std::sync::Arc::new(BooleanArray::from(vec![true])) as ArrayRef
                 } else {

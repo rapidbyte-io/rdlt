@@ -1,5 +1,8 @@
 //! A history table's merge, as `HistoryColumns` says: each key's versions, one
 //! closed where the next begins, a change equal to the live version changing nothing.
+//!
+//! A change begins when it says, or at the latest instant its key's versions hold where that is
+//! later, so no version ends before it begins.
 
 use std::sync::Arc;
 
@@ -17,6 +20,43 @@ use super::tombstones::Tombstones;
 struct Versioning<'a> {
     key: &'a MergeKey,
     history: &'a HistoryColumns,
+}
+
+/// An instant a stored row holds in one of its validity columns: the value, as stored, and its
+/// cell.
+#[derive(Clone)]
+struct Instant {
+    value: ArrayRef,
+    cell: Canon,
+}
+
+impl Instant {
+    /// The instant at `column` of `row`, where it holds one.
+    fn of(row: &Stored, column: &str) -> Option<Self> {
+        let cell = row.cells.get(column)?.clone();
+        if cell == Canon::Null {
+            return None;
+        }
+        let value = Arc::clone(row.row.column_by_name(column)?);
+        Some(Self { value, cell })
+    }
+
+    /// Where the instant falls: its nanoseconds, or the number it is stored as.
+    fn at(&self) -> i128 {
+        match &self.cell {
+            Canon::Instant(nanos) => *nanos,
+            Canon::Number(number) => number.parse().unwrap_or(i128::MIN),
+            _ => i128::MIN,
+        }
+    }
+
+    /// The later of `self` and `other`.
+    fn latest(self, other: Option<Self>) -> Self {
+        match other {
+            Some(other) if other.at() > self.at() => other,
+            _ => self,
+        }
+    }
 }
 
 /// Merges a history stream's `incoming` rows into `published`, every version of each key, and
@@ -86,7 +126,8 @@ impl Versioning<'_> {
                 })
                 .collect();
             for index in before {
-                self.remove(published, index, row);
+                let key = self.key_of(&published[index]);
+                self.remove(published, index, row, &key);
             }
             if self.at().is_none() {
                 tombstones.raise(seq);
@@ -108,7 +149,7 @@ impl Versioning<'_> {
         let current = versions().find(|index| self.current(&published[*index]));
         if self.op(row) == ChangeOp::Delete {
             if let Some(index) = current {
-                self.remove(published, index, row);
+                self.remove(published, index, row, &row_key);
             }
             if self.at().is_none() {
                 tombstones.bury(row_key, seq);
@@ -121,27 +162,43 @@ impl Versioning<'_> {
             if !self.deleted(live) && text(live, hash) == text(row, hash) {
                 return;
             }
-            published[index] = self.closed(live, row);
         }
-        published.push(self.version(row, None));
+        let began = self.began(published, &row_key, row);
+        if let Some(index) = current {
+            published[index] = self.closed(&published[index], &began);
+        }
+        published.push(self.version(row, None, &began));
     }
 
-    /// Removes the version at `index` as `row`, a delete or truncate, says: closes it, and where
-    /// deletes are soft opens a deleted version keeping its data, unless it is deleted already.
-    fn remove(&self, published: &mut Vec<Stored>, index: usize, row: &Stored) {
+    /// When `row`, a change of the key `row_key` that acts, begins: when it says, or the latest
+    /// instant the key's versions in `published` hold, if that is later.
+    fn began(&self, published: &[Stored], row_key: &str, row: &Stored) -> Instant {
+        let (from, to) = (&*self.history.valid_from, &*self.history.valid_to);
+        let says = Instant::of(row, from).expect("rows say when they begin");
+        published
+            .iter()
+            .filter(|version| self.key_of(version) == row_key)
+            .flat_map(|version| [Instant::of(version, from), Instant::of(version, to)])
+            .fold(says, Instant::latest)
+    }
+
+    /// Removes the version at `index`, of the key `row_key`, as `row`, a delete or truncate,
+    /// says: closes it, and where deletes are soft opens a deleted version keeping its data,
+    /// unless it is deleted already.
+    fn remove(&self, published: &mut Vec<Stored>, index: usize, row: &Stored, row_key: &str) {
         let version = published[index].clone();
         if self.deleted(&version) {
             return;
         }
-        published[index] = self.closed(&version, row);
+        let began = self.began(published, row_key, row);
+        published[index] = self.closed(&version, &began);
         if let Some(at) = self.at() {
-            published.push(self.version(&version, Some((row, at))));
+            published.push(self.version(&version, Some((row, at)), &began));
         }
     }
 
-    /// `version` closed where `row` begins.
-    fn closed(&self, version: &Stored, row: &Stored) -> Stored {
-        let from = &*self.history.valid_from;
+    /// `version` closed at `began`, when the change closing it begins.
+    fn closed(&self, version: &Stored, began: &Instant) -> Stored {
         let parts = version
             .row
             .schema()
@@ -151,13 +208,9 @@ impl Versioning<'_> {
             .map(|(field, column)| {
                 let name = field.name().as_str();
                 let (column, cell): (ArrayRef, Canon) = if name == &*self.history.valid_to {
-                    let begins = row
-                        .row
-                        .column_by_name(from)
-                        .expect("rows say when they begin");
                     let begins =
-                        arrow_cast::cast(begins, field.data_type()).expect("validity casts");
-                    (begins, row.cells.get(from).cloned().unwrap_or(Canon::Null))
+                        arrow_cast::cast(&began.value, field.data_type()).expect("validity casts");
+                    (begins, began.cell.clone())
                 } else if name == &*self.history.is_current {
                     (
                         Arc::new(BooleanArray::from(vec![false])),
@@ -173,9 +226,9 @@ impl Versioning<'_> {
         compose(parts)
     }
 
-    /// `row`'s stored columns as a current version; with `deleting`, `row` is the version kept,
-    /// taking the deleting row's sequence, beginning and deletion time.
-    fn version(&self, row: &Stored, deleting: Option<(&Stored, &str)>) -> Stored {
+    /// `row`'s stored columns as a current version beginning at `began`; with `deleting`, `row`
+    /// is the version kept, taking the deleting row's sequence and deletion time.
+    fn version(&self, row: &Stored, deleting: Option<(&Stored, &str)>, began: &Instant) -> Stored {
         let op = self.key.changes.as_ref().map(|changes| &*changes.op);
         let taken = [&*self.key.seq, &*self.history.valid_from];
         let parts = row
@@ -192,6 +245,10 @@ impl Versioning<'_> {
                     .map_or(row, |(deleting, _)| deleting);
                 let (column, cell): (ArrayRef, Canon) = if name == &*self.history.valid_to {
                     (new_null_array(field.data_type(), 1), Canon::Null)
+                } else if name == &*self.history.valid_from {
+                    let begins =
+                        arrow_cast::cast(&began.value, field.data_type()).expect("validity casts");
+                    (begins, began.cell.clone())
                 } else if name == &*self.history.is_current {
                     (Arc::new(BooleanArray::from(vec![true])), Canon::Bool(true))
                 } else {

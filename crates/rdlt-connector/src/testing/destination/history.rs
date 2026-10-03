@@ -134,10 +134,12 @@ impl Bench<'_> {
     /// `D-HIST`: a history table keeps each key's versions as the changes it is sent make them.
     pub(super) async fn histories_chain_versions(&self) -> Result<(), Violation> {
         self.plain_histories_chain().await?;
+        self.late_changes_begin_at_the_latest().await?;
         let capabilities = self.destination.capabilities();
         if capabilities.merge_changes {
             if capabilities.delete_modes.hard {
                 self.changed_histories_chain().await?;
+                self.reopened_keys_begin_after_their_deletion().await?;
             }
             if capabilities.delete_modes.soft {
                 self.soft_histories_chain().await?;
@@ -177,6 +179,49 @@ impl Bench<'_> {
             current(3, "d", 22, 3),
         ];
         expect(&published, 1, &second, "a history of upserts")
+    }
+
+    /// A change sent as of before its key's latest instant begins at that instant, in a later
+    /// commit and within one: no version ends before it begins.
+    async fn late_changes_begin_at_the_latest(&self) -> Result<(), Violation> {
+        let commits: [&[Row]; 2] = [
+            &[upsert(1, "a", 1, 30)],
+            &[
+                upsert(1, "b", 2, 10),
+                upsert(2, "c", 3, 50),
+                upsert(2, "d", 4, 5),
+                upsert(2, "c", 5, 5),
+            ],
+        ];
+        let published = self.versioned(("late", 5), Kind::Plain, &commits).await?;
+        let expected = [
+            closed(1, "a", 30, 30, 1),
+            current(1, "b", 30, 2),
+            closed(2, "c", 50, 50, 3),
+            closed(2, "d", 50, 50, 4),
+            current(2, "c", 50, 5),
+        ];
+        expect(&published, 1, &expected, "a history sent late change times")
+    }
+
+    /// A key a delete closed, opened again as of before the delete, begins where it was
+    /// deleted.
+    async fn reopened_keys_begin_after_their_deletion(&self) -> Result<(), Violation> {
+        let commits: [&[Row]; 3] = [
+            &[upsert(1, "a", 1, 10)],
+            &[delete(1, 2, 20)],
+            &[upsert(1, "b", 3, 15)],
+        ];
+        let published = self
+            .versioned(("reopened", 6), Kind::Changes { soft: false }, &commits)
+            .await?;
+        let expected = [closed(1, "a", 10, 20, 1), current(1, "b", 20, 3)];
+        expect(
+            &published,
+            2,
+            &expected,
+            "a key opened again as of before its delete",
+        )
     }
 
     /// A change stream's history: equal changes change nothing, deletes close their key's version

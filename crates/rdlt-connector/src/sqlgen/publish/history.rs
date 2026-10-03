@@ -65,6 +65,13 @@ struct Aliases {
     gone: String,
     /// Whether the event changes the key's versions.
     acts: String,
+    /// The latest a key's acting events up to the event begin.
+    run: String,
+    /// The latest instant a key's versions the table holds hold.
+    floor: String,
+    /// When the event begins: when it says, or the latest instant its key held before it, if
+    /// that is later.
+    began: String,
     /// When the key's next event that acts begins.
     next: String,
     /// The position of the version a soft delete keeps the data of.
@@ -291,6 +298,9 @@ impl<'a> Versioned<'a> {
                 last: alias("_rdlt_last"),
                 gone: alias("_rdlt_gone"),
                 acts: alias("_rdlt_acts"),
+                run: alias("_rdlt_run"),
+                floor: alias("_rdlt_floor"),
+                began: alias("_rdlt_began"),
                 next: alias("_rdlt_next"),
                 from: alias("_rdlt_from"),
                 q: alias("_rdlt_q"),

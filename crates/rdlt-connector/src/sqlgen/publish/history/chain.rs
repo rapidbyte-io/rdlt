@@ -10,6 +10,11 @@
 //! its hash; a delete acts where that version is current and, where deletes are soft, not
 //! deleted. Each acting event closes the version the acting event before it opened, so a version
 //! lasts until the next acting event of its key begins.
+//!
+//! An acting event begins when it says, or at the latest instant its key held before it where
+//! that is later: the latest beginning or end of the key's versions the table holds, and the
+//! latest beginning of the acting events before it. So no version ends before it begins,
+//! whatever times a source sends.
 use super::super::super::tables::STAGING_COLUMNS;
 use super::super::super::{Sql, SqlDialect, SqlPlanner};
 use super::{BOUND, BURIED, CLOSED, OPENED, Versioned};
@@ -191,18 +196,29 @@ fn anchors(versioned: &Versioned<'_>) -> String {
 
 /// The common table expressions deciding each event: `_rdlt_ordered` numbers a key's events,
 /// its current version first; `_rdlt_prior` finds the last version or upsert and the last delete
-/// before each; `_rdlt_decided` says whether it acts, and `_rdlt_acting`, of those that do, when
-/// the next begins and which version or upsert a soft delete keeps.
+/// before each; `_rdlt_decided` says whether it acts; `_rdlt_floors` holds the latest instant of
+/// each key's versions, and `_rdlt_begun` and `_rdlt_floored` when each acting event begins;
+/// `_rdlt_acting`, of those that act, when the next begins and which version or upsert a soft
+/// delete keeps.
 fn chain(versioned: &Versioned<'_>) -> String {
     let Versioned {
         seq,
         valid_from,
+        valid_to,
         row_hash,
         aliases,
+        target,
         ..
     } = versioned;
     let keys = versioned.keys.join(", ");
+    let kept_keys: Vec<String> = versioned
+        .keys
+        .iter()
+        .map(|key| format!("_rdlt_k.{key}"))
+        .collect();
+    let kept_keys = kept_keys.join(", ");
     let (kind, pos, last, gone) = (&aliases.kind, &aliases.pos, &aliases.last, &aliases.gone);
+    let (run, floor, began) = (&aliases.run, &aliases.floor, &aliases.began);
     let before = format!(
         "PARTITION BY {keys} ORDER BY {pos} ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
     );
@@ -224,13 +240,24 @@ fn chain(versioned: &Versioned<'_>) -> String {
          CASE WHEN _rdlt_w.{kind} = 1 THEN 1 ELSE 0 END WHEN _rdlt_w.{kind} = 1 AND \
          _rdlt_w.{row_hash} = _rdlt_l.{row_hash} THEN 0 ELSE 1 END AS {acts} FROM _rdlt_prior \
          _rdlt_w LEFT JOIN _rdlt_prior _rdlt_l ON {on_lw} AND _rdlt_l.{pos} = _rdlt_w.{last}), \
-         _rdlt_acting AS (SELECT _rdlt_d.*, LEAD({valid_from}) OVER (PARTITION BY {keys} ORDER \
-         BY {pos}) AS {next}, MAX(CASE WHEN {kind} IN (0, 1) THEN {pos} END) OVER ({before}) AS \
-         {from} FROM _rdlt_decided _rdlt_d WHERE {acts} = 1)",
+         _rdlt_floors AS (SELECT {kept_keys}, MAX(COALESCE(_rdlt_p.{valid_to}, \
+         _rdlt_p.{valid_from})) AS {floor} FROM _rdlt_keys _rdlt_k CROSS JOIN {target} _rdlt_p \
+         WHERE {on_pk} GROUP BY {kept_keys}), \
+         _rdlt_begun AS (SELECT _rdlt_d.*, MAX({valid_from}) OVER (PARTITION BY {keys} ORDER BY \
+         {pos} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {run} FROM _rdlt_decided \
+         _rdlt_d WHERE {acts} = 1), \
+         _rdlt_floored AS (SELECT _rdlt_b.*, CASE WHEN _rdlt_f.{floor} > _rdlt_b.{run} THEN \
+         _rdlt_f.{floor} ELSE _rdlt_b.{run} END AS {began} FROM _rdlt_begun _rdlt_b LEFT JOIN \
+         _rdlt_floors _rdlt_f ON {on_fb}), \
+         _rdlt_acting AS (SELECT _rdlt_g.*, LEAD({began}) OVER (PARTITION BY {keys} ORDER BY \
+         {pos}) AS {next}, MAX(CASE WHEN {kind} IN (0, 1) THEN {pos} END) OVER ({before}) AS \
+         {from} FROM _rdlt_floored _rdlt_g)",
         acts = aliases.acts,
         next = aliases.next,
         from = aliases.from,
         on_lw = versioned.on("_rdlt_l", "_rdlt_w"),
+        on_pk = versioned.on("_rdlt_p", "_rdlt_k"),
+        on_fb = versioned.on("_rdlt_f", "_rdlt_b"),
     )
 }
 
@@ -242,11 +269,14 @@ impl Versioned<'_> {
     }
 
     /// The columns of a version the commit computes: each as `value` gives it but its validity,
-    /// which ends where the next acting event of its key, `_rdlt_a`'s, begins.
+    /// which begins when the acting event that opened it, `_rdlt_a`, began and ends where the next
+    /// acting event of its key begins.
     fn version(&self, value: impl Fn(&str) -> String) -> String {
-        let next = &self.aliases.next;
+        let (next, began) = (&self.aliases.next, &self.aliases.began);
         self.projected(|column| {
-            if *column == self.valid_to {
+            if *column == self.valid_from {
+                format!("_rdlt_a.{began}")
+            } else if *column == self.valid_to {
                 format!("_rdlt_a.{next}")
             } else if *column == self.is_current {
                 format!("(_rdlt_a.{next} IS NULL)")
