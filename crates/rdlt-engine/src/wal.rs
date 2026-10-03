@@ -14,7 +14,8 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use load::{LoadLog, Sealed};
+pub(crate) use load::{LoadLog, Owner, Sealed};
 pub use local::LocalWal;
+pub(crate) use local::Refusal;
 pub(crate) use positions::Positions;
-pub use store::{Chunk, Claim, WalStore};
+pub use store::{Chunk, StagedChunk, WalStore};

@@ -78,7 +78,7 @@ pub fn normalize(
 /// Returns why the log cannot be read where it is not one the engine wrote.
 pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
     use crate::wal::memory::MemoryWal;
-    use crate::wal::{Chunk, WalStore, scan};
+    use crate::wal::{Chunk, WalStore, frame, scan};
     let store = MemoryWal::default();
     let pipeline = rdlt_connector::PipelineId::parse("fuzzed").expect("a valid pipeline");
     let load = rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 1);
@@ -86,32 +86,37 @@ pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
     let code = |error: crate::error::Error| Refused {
         code: match error.code() {
             Some("wal_unreadable") => "wal_unreadable",
+            Some("wal_foreign") => "wal_foreign",
             _ => "other",
         },
         message: error.to_string(),
     };
-    ready(store.append(&pipeline, chunk, Bytes::copy_from_slice(bytes)))
-        .map_err(|error| code(crate::error::Error::from_wal(error)))?;
-    let scanned = ready(scan::scan(&store, &pipeline, load)).map_err(code)?;
+    let wal = |error: std::io::Error| code(crate::error::Error::from_wal(error));
+    let mut staged = ready(store.stage(&pipeline, chunk)).map_err(wal)?;
+    ready(staged.append(Bytes::copy_from_slice(bytes))).map_err(wal)?;
+    ready(staged.publish()).map_err(wal)?;
+    let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
+    let scanned = ready(scan::scan(&store, &pipeline, load, limits.frame_bytes)).map_err(code)?;
     for located in scanned.batches.values().flatten() {
-        ready(scan::batch(&store, &pipeline, *located)).map_err(code)?;
+        ready(scan::batch(&store, &pipeline, *located, limits)).map_err(code)?;
     }
     Ok(scanned.commits.len())
 }
 
-/// A write-ahead log of one frame of each kind, as the log of load 1 of pipeline `fuzzed`, whose
-/// batch frame holds `batch`: something for fuzzing to cut and garble.
+/// A write-ahead log of one chunk holding a frame of each kind a commit's chunk holds, as the log
+/// of load 1 of pipeline `fuzzed`, whose batch frame holds `batch`: something for fuzzing to cut
+/// and garble.
 ///
 /// # Panics
 ///
 /// Panics where a frame does not encode, which a valid batch always does.
 pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
     use rdlt_connector::{
-        CommitSeq, LoadId, PartitionId, PartitionState, PipelineId, Receipt, SchemaVersion,
-        SegmentId, StreamName, TablePath, TableRef, TableSchema,
+        LoadId, PartitionId, PartitionState, PipelineId, SchemaVersion, SegmentId, StreamName,
+        TablePath, TableRef, TableSchema,
     };
 
-    use crate::wal::frame::{self, Frame, Header};
+    use crate::wal::frame::{self, Committing, End, Frame, Header};
     let load = LoadId::from_parts(std::time::UNIX_EPOCH, 1);
     let table = TableRef {
         path: TablePath::new(["t"]).expect("a valid path"),
@@ -122,11 +127,13 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
     };
     let schema = TableSchema::from_arrow(&batch.schema())
         .unwrap_or_else(|_| TableSchema::new(Vec::new()).expect("an empty schema is valid"));
+    let rows = u64::try_from(batch.num_rows()).expect("rows fit");
     let frames = [
         Frame::Header(Header {
-            version: frame::VERSION,
             pipeline: PipelineId::parse("fuzzed").expect("a valid pipeline"),
             load,
+            chunk: 0,
+            epoch: rdlt_connector::Epoch(1),
             opened: None,
         }),
         Frame::Schema(frame::Table {
@@ -148,21 +155,21 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
             phase: 0,
             from: None,
             state: PartitionState::Done,
+            batches: 1,
+            rows,
         }),
-        Frame::Commit(Box::new(sample_commit(load))),
-        Frame::Committed(Receipt {
-            load_id: load,
-            commit_seq: CommitSeq::FIRST,
-            committed_at: std::time::UNIX_EPOCH,
-            rows: 1,
-            bytes: 1,
-        }),
-        Frame::Closed,
+        Frame::Commit(Box::new(Committing {
+            meta: sample_commit(load),
+            seals: 1,
+            phases: 0,
+        })),
+        Frame::End(End::default()),
     ];
-    frames
-        .iter()
-        .flat_map(|frame| frame.encode().expect("the frame encodes").to_vec())
-        .collect()
+    let mut log = frame::preamble().to_vec();
+    for frame in &frames {
+        log.extend_from_slice(&frame.encode().expect("the frame encodes"));
+    }
+    log
 }
 
 /// The commit of segment 1 that [`sample_log`] holds.

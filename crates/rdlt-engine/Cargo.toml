@@ -33,6 +33,7 @@ rayon.workspace = true
 rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-wire.workspace = true
 ryu.workspace = true
+rustix = { workspace = true, features = ["fs", "process"] }
 schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -42,9 +43,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 xxhash-rust.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["user"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true, features = ["signal", "user"] }

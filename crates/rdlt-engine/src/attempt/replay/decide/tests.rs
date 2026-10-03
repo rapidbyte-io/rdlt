@@ -39,6 +39,8 @@ fn seal(segment: u64, id: &str, from: Option<u64>, to: u64) -> Seal {
         phase: 0,
         from: from.map(at),
         state: at(to),
+        batches: 0,
+        rows: 0,
     }
 }
 

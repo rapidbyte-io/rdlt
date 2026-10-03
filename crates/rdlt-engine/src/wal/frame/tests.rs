@@ -6,13 +6,16 @@ use arrow_schema::Schema;
 use proptest::prelude::*;
 use rdlt_connector::{
     CommitMeta, CommitSeq, Cursor, Epoch, Field, LoadId, LogicalType, PartitionId, PartitionState,
-    PipelineId, Receipt, SchemaVersion, SegmentId, StateChange, StateRecord, StreamName, TablePath,
+    PipelineId, SchemaVersion, SegmentId, StateChange, StateRecord, StreamName, TablePath,
     TableRef, TableSchema,
 };
 use rdlt_testkit::drawn::{self, Drawn};
 use rdlt_testkit::nested;
 
-use super::{Batch, BegunPhase, Frame, Frames, Header, Seal, Table, VERSION};
+use super::{
+    Batch, BatchHeader, BegunPhase, Committing, End, Fence, Frame, HEAD, Header, PREAMBLE, Seal,
+    Table, VERSION,
+};
 
 fn load() -> LoadId {
     LoadId::from_parts(UNIX_EPOCH, 7)
@@ -47,9 +50,10 @@ fn metadata() -> Vec<Frame> {
     };
     vec![
         Frame::Header(Header {
-            version: VERSION,
             pipeline: PipelineId::parse("orders").expect("a valid pipeline"),
             load: load(),
+            chunk: 4,
+            epoch: Epoch(3),
             opened: Some((load(), CommitSeq::FIRST)),
         }),
         Frame::Schema(Table {
@@ -65,21 +69,29 @@ fn metadata() -> Vec<Frame> {
             phase: 2,
             from: Some(PartitionState::Done),
             state: PartitionState::Cursor(Cursor::new(1, b"{}").expect("a cursor")),
+            batches: 3,
+            rows: 40,
         }),
         Frame::Begun(BegunPhase {
             stream: StreamName::new("orders").expect("a valid stream"),
             phase: 2,
             changes: vec![StateChange::Delete("stale".to_owned())],
         }),
-        Frame::Commit(Box::new(meta)),
-        Frame::Committed(Receipt {
-            load_id: load(),
-            commit_seq: CommitSeq::FIRST,
-            committed_at: UNIX_EPOCH,
-            rows: 3,
-            bytes: 40,
-        }),
+        Frame::Commit(Box::new(Committing {
+            meta,
+            seals: 1,
+            phases: 1,
+        })),
         Frame::Closed,
+        Frame::End(End {
+            live: vec![1, 3],
+            received: vec![CommitSeq::FIRST],
+        }),
+        Frame::Fence(Fence {
+            pipeline: PipelineId::parse("orders").expect("a valid pipeline"),
+            load: load(),
+            chunk: 5,
+        }),
     ]
 }
 
@@ -104,17 +116,21 @@ fn arrow(drawn: &Drawn) -> RecordBatch {
         .expect("a drawn batch is valid")
 }
 
-fn decoded(bytes: &[u8]) -> Vec<Frame> {
-    Frames::new(bytes)
-        .map(|frame| frame.expect("the frame decodes").1)
-        .collect()
+/// What a log's batches may hold at the default memory.
+fn limits() -> rdlt_wire::Limits {
+    super::limits(crate::config::EngineConfig::default().memory().get())
+}
+
+/// The frame `bytes` holds, alone.
+fn decoded(bytes: &[u8]) -> Frame {
+    super::decode(bytes, limits()).expect("the frame decodes")
 }
 
 #[test]
 fn every_metadata_frame_decodes_as_it_was_written() {
     for frame in metadata() {
         let bytes = frame.encode().expect("the frame encodes");
-        assert_eq!(decoded(&bytes), [frame]);
+        assert_eq!(decoded(&bytes), frame);
     }
 }
 
@@ -134,12 +150,7 @@ fn a_seal_that_does_not_name_its_phase_is_refused() {
         .expect("the seal names its phase");
     let payload = serde_json::to_vec(&payload).expect("JSON encodes");
     let lacking = super::framed(bytes[0], &payload).expect("a frame");
-    assert!(
-        Frames::new(&lacking)
-            .next()
-            .expect("a whole frame")
-            .is_err()
-    );
+    assert!(super::decode(&lacking, limits()).is_err());
 }
 
 proptest! {
@@ -153,76 +164,117 @@ proptest! {
         for batch in &drawn {
             let frame = Frame::Batch(Batch { segment: SegmentId(segment), table: 3, ordinal: segment, batch: arrow(batch) });
             let bytes = frame.encode().expect("the frame encodes");
-            prop_assert_eq!(decoded(&bytes), vec![frame]);
+            prop_assert_eq!(decoded(&bytes), frame);
         }
     }
 }
 
 #[test]
-fn a_torn_log_keeps_the_frames_before_the_tear() {
+fn a_chunk_s_frames_read_back_and_any_byte_changed_or_cut_is_refused() {
     let frames = metadata();
-    let mut log = Vec::new();
-    let mut ends = Vec::new();
+    let mut chunk = super::preamble().to_vec();
+    let mut starts = Vec::new();
     for frame in &frames {
-        log.extend_from_slice(&frame.encode().expect("the frame encodes"));
-        ends.push(log.len());
+        starts.push(chunk.len());
+        chunk.extend_from_slice(&frame.encode().expect("the frame encodes"));
     }
-    // Cut anywhere, the log keeps exactly the frames that end before the cut.
-    for cut in 0..=log.len() {
-        let whole = ends.iter().filter(|end| **end <= cut).count();
-        let mut read = Frames::new(&log[..cut]);
-        let kept: Vec<Frame> = read
-            .by_ref()
-            .map(|frame| frame.expect("decodes").1)
-            .collect();
-        assert_eq!(kept, frames[..whole], "cut at {cut}");
-        assert_eq!(
-            read.end(),
-            if whole == 0 { 0 } else { ends[whole - 1] },
-            "cut at {cut}"
-        );
-    }
-    // A flipped byte in a frame's payload ends the log before that frame.
-    for (index, end) in ends.iter().enumerate() {
-        let start = if index == 0 { 0 } else { ends[index - 1] };
-        if end - start <= 9 {
-            continue;
+    assert_eq!(super::frames(&chunk, limits()).expect("it reads"), frames);
+    // Its kind, length and checksum are checked as its payload is: no flipped bit passes.
+    for at in PREAMBLE..chunk.len() {
+        for bit in [0x01, 0x80] {
+            let mut flipped = chunk.clone();
+            flipped[at] ^= bit;
+            assert!(super::frames(&flipped, limits()).is_err(), "byte {at}");
         }
-        let mut flipped = log.clone();
-        flipped[end - 1] ^= 0x40;
-        assert_eq!(decoded(&flipped), frames[..index], "frame {index}");
     }
+    // A chunk cut inside a frame is refused; one cut between frames is the frames before.
+    for cut in PREAMBLE..chunk.len() {
+        let read = super::frames(&chunk[..cut], limits());
+        match starts.iter().position(|start| *start == cut) {
+            Some(whole) => assert_eq!(read.expect("whole frames"), frames[..whole]),
+            None => assert!(read.is_err(), "cut at {cut}"),
+        }
+    }
+}
+
+#[test]
+fn a_frame_of_zeros_is_no_frame() {
+    // An empty frame of kind 0 whose checksum is zero, as a region of zeros reads.
+    assert!(super::decode(&[0; HEAD], limits()).is_err());
+    let empty = super::framed(0, &[]).expect("a frame");
+    assert_ne!(
+        &empty[5..],
+        &[0; 4],
+        "an empty frame's checksum is not zero"
+    );
+}
+
+#[test]
+fn a_chunk_of_another_format_or_none_at_all_is_told_from_one_damaged() {
+    let preamble = super::preamble();
+    assert_eq!(&preamble[..8], b"rdltwal\0");
+    assert_eq!(u16::from_le_bytes([preamble[8], preamble[9]]), VERSION);
+    super::check_preamble(&preamble).expect("this format");
+    for cut in 0..PREAMBLE {
+        assert!(super::check_preamble(&preamble[..cut]).is_err());
+    }
+    for at in 0..PREAMBLE {
+        let mut damaged = preamble;
+        damaged[at] ^= 0x10;
+        let refused = super::check_preamble(&damaged).expect_err("refused");
+        assert!(refused.to_string().contains("damaged"), "{refused}");
+    }
+    // A preamble that holds together, of another version or of no log.
+    let resealed = |mut preamble: [u8; PREAMBLE]| {
+        let check = crc32c::crc32c(&preamble[..10]);
+        preamble[10..].copy_from_slice(&check.to_le_bytes());
+        preamble
+    };
+    let mut older = preamble;
+    older[8..10].copy_from_slice(&(VERSION - 1).to_le_bytes());
+    let refused = super::check_preamble(&resealed(older)).expect_err("refused");
+    assert!(refused.to_string().contains("format 2"), "{refused}");
+    let mut other = preamble;
+    other[..8].copy_from_slice(b"notalog\0");
+    let refused = super::check_preamble(&resealed(other)).expect_err("refused");
+    assert!(refused.to_string().contains("no chunk"), "{refused}");
 }
 
 #[test]
 fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error() {
-    let payload = b"not json";
-    let mut frame = vec![2_u8];
-    frame.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
-    frame.extend_from_slice(&crc32c::crc32c(payload).to_le_bytes());
-    frame.extend_from_slice(payload);
-    assert!(Frames::new(&frame).next().expect("a frame").is_err());
+    let frame = super::framed(2, b"not json").expect("a frame");
+    assert!(super::decode(&frame, limits()).is_err());
     // An unknown kind is refused too, and a closing frame that holds anything.
-    for kind in [99, 7] {
-        frame[0] = kind;
-        assert!(
-            Frames::new(&frame).next().expect("a frame").is_err(),
-            "kind {kind}"
-        );
+    for kind in [99, 7, 6] {
+        let frame = super::framed(kind, b"{}").expect("a frame");
+        assert!(super::decode(&frame, limits()).is_err(), "kind {kind}");
     }
 }
 
-/// A log the `wal_log` fuzz target garbled: its batch frame's checksum matches, but its Arrow data
-/// does not hold together, as when it made a raw Arrow reader panic.
-const GARBLED: &[u8] = include_bytes!("garbled_batch.wal");
+/// Arrow data the `wal_log` fuzz target garbled, as when it made a raw Arrow reader panic.
+const GARBLED: &[u8] = include_bytes!("garbled_batch.ipc");
+
+/// A batch frame of segment 1 holding `arrow`, a batch of `rows` rows in the wire's framing.
+fn batch_frame(arrow: &[u8], rows: u64) -> bytes::Bytes {
+    let header = serde_json::to_vec(&BatchHeader {
+        segment: SegmentId(1),
+        table: 0,
+        ordinal: 0,
+        rows,
+    })
+    .expect("a header");
+    let mut payload = u32::try_from(header.len())
+        .expect("small")
+        .to_le_bytes()
+        .to_vec();
+    payload.extend_from_slice(&header);
+    payload.extend_from_slice(arrow);
+    super::framed(3, &payload).expect("a frame")
+}
 
 #[test]
 fn a_batch_whose_arrow_data_does_not_hold_together_is_an_error_not_a_panic() {
-    let read: Vec<_> = Frames::new(GARBLED).collect();
-    assert!(
-        read.iter().any(Result::is_err),
-        "the garbled batch does not decode"
-    );
+    assert!(super::decode(&batch_frame(GARBLED, 1), limits()).is_err());
 }
 
 /// `batch` in a batch frame, and the frames the frame's bytes decode to.
@@ -235,14 +287,15 @@ fn round_trip(batch: RecordBatch) -> (Frame, Vec<Frame>) {
     });
     let bytes = frame.encode().expect("the frame encodes");
     let read = decoded(&bytes);
-    (frame, read)
+    (frame, vec![read])
 }
 
 #[test]
 fn a_batch_beyond_what_a_connector_may_send_reads_back_as_the_engine_logged_it() {
     use arrow_array::{BinaryArray, NullArray};
     // The engine logs what it lowered, which may hold more columns, rows and values, more bytes
-    // and longer names than the wire lets a connector send in one frame.
+    // and longer names than the wire lets a connector send in one frame: as much as a request
+    // for lowering holds.
     let columns = 10_001;
     let wide = RecordBatch::try_new(
         Arc::new(Schema::new(
@@ -268,23 +321,77 @@ fn a_batch_beyond_what_a_connector_may_send_reads_back_as_the_engine_logged_it()
     .expect("a long batch");
     let large = RecordBatch::try_from_iter([(
         "blob",
-        Arc::new(BinaryArray::from_iter_values([vec![7_u8; 65 << 20]])) as arrow_array::ArrayRef,
+        Arc::new(BinaryArray::from_iter_values([vec![7_u8; 48 << 20]])) as arrow_array::ArrayRef,
     )])
     .expect("a large batch");
-    let full = RecordBatch::try_from_iter([(
-        "n",
-        Arc::new(NullArray::new(64 * 1_048_576 + 1)) as arrow_array::ArrayRef,
-    )])
-    .expect("a batch of more values than a frame's");
     let named = RecordBatch::try_from_iter([
         ("n".repeat((64 << 10) + 1), Arc::new(NullArray::new(1)) as _),
         ("m".repeat(4 << 20), Arc::new(NullArray::new(1)) as _),
     ])
     .expect("a batch of long names");
-    for batch in [wide, long, large, full, named] {
+    for batch in [wide, long, large, named] {
         let (frame, read) = round_trip(batch);
         assert_eq!(read, [frame]);
     }
+}
+
+#[test]
+fn a_logged_batch_beyond_what_a_request_for_lowering_holds_is_refused() {
+    use arrow_array::{BinaryArray, NullArray};
+    // At 16 MiB of memory a request holds 4 MiB: as many rows and values, and bytes of a frame.
+    let limits = super::limits(16 << 20);
+    let request = 4 << 20;
+    let nulls = |rows: usize| {
+        let column = Arc::new(NullArray::new(rows)) as arrow_array::ArrayRef;
+        RecordBatch::try_from_iter([("n", column)]).expect("a batch")
+    };
+    let frame = |batch: RecordBatch| {
+        Frame::Batch(Batch {
+            segment: SegmentId(1),
+            table: 0,
+            ordinal: 0,
+            batch,
+        })
+        .encode()
+        .expect("the frame encodes")
+    };
+    super::decode(&frame(nulls(request)), limits).expect("as many rows as a request holds");
+    assert!(super::decode(&frame(nulls(request + 1)), limits).is_err());
+    let blob = |bytes: usize| {
+        let column = Arc::new(BinaryArray::from_iter_values([vec![7_u8; bytes]]));
+        RecordBatch::try_from_iter([("b", column as arrow_array::ArrayRef)]).expect("a batch")
+    };
+    super::decode(&frame(blob(request - (1 << 10))), limits).expect("a frame within a request");
+    assert!(super::decode(&frame(blob(request)), limits).is_err());
+}
+
+#[test]
+fn a_logged_batch_whose_rows_are_forged_is_refused_not_decoded_as_said() {
+    use arrow_array::NullArray;
+    let rows = 0x0151_5151_usize;
+    let column = Arc::new(NullArray::new(rows)) as arrow_array::ArrayRef;
+    let batch = RecordBatch::try_from_iter([("n", column)]).expect("a batch");
+    let logged = super::arrow::encode(&batch).expect("the batch encodes");
+    let said = i64::try_from(rows).expect("fits").to_le_bytes();
+    for forged in [-1_i64, i64::MAX, i64::MIN, 1 << 40] {
+        // The batch's length, its column's and its column's nulls, as a tamperer rewrites them.
+        let mut tampered = logged.clone();
+        let mut at = 0;
+        while let Some(found) = tampered[at..].windows(8).position(|window| window == said) {
+            tampered[at + found..at + found + 8].copy_from_slice(&forged.to_le_bytes());
+            at += found + 8;
+        }
+        let read = super::decode(
+            &batch_frame(&tampered, u64::from_le_bytes(forged.to_le_bytes())),
+            limits(),
+        );
+        assert!(read.is_err(), "{forged}");
+    }
+    // Its header's rows disagreeing with what its data holds.
+    let read = super::decode(&batch_frame(&logged, 1), limits());
+    assert!(read.is_err());
+    let rows = u64::try_from(rows).expect("fits");
+    super::decode(&batch_frame(&logged, rows), limits()).expect("as said");
 }
 
 #[test]
@@ -293,7 +400,10 @@ fn a_batch_whose_buffers_share_bytes_is_refused_whatever_its_size() {
     let values = Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])) as arrow_array::ArrayRef;
     let batch = RecordBatch::try_from_iter([("n", values)]).expect("a batch");
     let logged = super::arrow::encode(&batch).expect("the batch encodes");
-    assert_eq!(super::arrow::decode(&logged).expect("it decodes"), batch);
+    assert_eq!(
+        super::arrow::decode(&logged, limits()).expect("it decodes"),
+        batch
+    );
     // The values' buffer follows the validity's, 64 bytes into the body and 24 bytes long; here
     // it starts with it.
     let described: Vec<u8> = [64_i64, 24]
@@ -306,7 +416,7 @@ fn a_batch_whose_buffers_share_bytes_is_refused_whatever_its_size() {
         .expect("the values' buffer is described");
     let mut shared = logged;
     shared[at..at + 8].copy_from_slice(&0_i64.to_le_bytes());
-    assert!(super::arrow::decode(&shared).is_err());
+    assert!(super::arrow::decode(&shared, limits()).is_err());
 }
 
 #[test]
@@ -370,17 +480,22 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
     };
-    let frame = Frame::Commit(Box::new(meta.clone()))
+    let committing = Committing {
+        meta,
+        seals: 0,
+        phases: 0,
+    };
+    let frame = Frame::Commit(Box::new(committing.clone()))
         .encode()
         .expect("the frame encodes");
     // The cursor is base64 in its state value, and the value base64 in the frame: under twice
     // the cursor, where a number a byte took five times it.
     assert!(frame.len() < 2 * 300_000, "{} bytes", frame.len());
-    assert_eq!(super::commit(&meta).expect("the frame encodes"), frame);
-    let decoded: Vec<Frame> = Frames::new(&frame)
-        .map(|frame| frame.expect("the frame decodes").1)
-        .collect();
-    assert_eq!(decoded, [Frame::Commit(Box::new(meta))]);
+    assert_eq!(
+        super::commit(&committing.meta, 0, 0).expect("the frame encodes"),
+        frame
+    );
+    assert_eq!(decoded(&frame), Frame::Commit(Box::new(committing)));
 }
 
 /// The deepest a table's types may nest.
@@ -406,14 +521,8 @@ fn a_schema_frame_nested_to_the_limit_reads_back() {
             schema: nested_schema(limit(), nesting),
         });
         let bytes = frame.encode().expect("the frame encodes");
-        let read: Vec<_> = Frames::new(&bytes)
-            .map(|frame| {
-                frame
-                    .map(|(_, frame)| frame)
-                    .map_err(|error| error.to_string())
-            })
-            .collect();
-        assert_eq!(read, [Ok(frame)], "{nesting:?}");
+        let read = super::decode(&bytes, limits()).map_err(|error| error.to_string());
+        assert_eq!(read, Ok(frame), "{nesting:?}");
     }
 }
 
@@ -457,7 +566,7 @@ fn objects(value: &serde_json::Value, at: String, found: &mut Vec<String>) {
 fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
     for frame in metadata() {
         let bytes = frame.encode().expect("the frame encodes");
-        let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes[super::HEAD..]) else {
+        let Ok(payload) = serde_json::from_slice::<serde_json::Value>(&bytes[HEAD..]) else {
             continue;
         };
         let mut found = Vec::new();
@@ -472,7 +581,7 @@ fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
             let grown = serde_json::to_vec(&grown).expect("JSON encodes");
             let framed = super::framed(bytes[0], &grown).expect("a frame");
             assert!(
-                Frames::new(&framed).next().expect("a whole frame").is_err(),
+                super::decode(&framed, limits()).is_err(),
                 "{frame:?} with a field at {pointer:?}"
             );
         }
@@ -485,9 +594,10 @@ fn a_frame_lacking_any_member_it_writes_is_refused() {
     let mut frames = metadata();
     // Each member that may hold nothing, holding nothing.
     frames.push(Frame::Header(Header {
-        version: VERSION,
         pipeline: PipelineId::parse("orders").expect("a valid pipeline"),
         load: load(),
+        chunk: 0,
+        epoch: Epoch(1),
         opened: None,
     }));
     frames.push(Frame::Seal(Seal {
@@ -498,27 +608,40 @@ fn a_frame_lacking_any_member_it_writes_is_refused() {
         phase: 0,
         from: None,
         state: PartitionState::Done,
+        batches: 0,
+        rows: 0,
     }));
+    frames.push(Frame::End(End::default()));
     for frame in frames {
         let value = match &frame {
             Frame::Header(header) => serde_json::to_value(header),
             Frame::Seal(seal) => serde_json::to_value(seal),
             Frame::Begun(begun) => serde_json::to_value(begun),
             Frame::Schema(table) => serde_json::to_value(&table.table),
+            Frame::End(end) => serde_json::to_value(end),
+            Frame::Fence(fence) => serde_json::to_value(fence),
             _ => continue,
         }
         .expect("the frame serializes");
         match frame {
             Frame::Header(_) => every_member_required::<Header>(&value),
+            Frame::End(_) => every_member_required::<End>(&value),
+            Frame::Fence(_) => every_member_required::<Fence>(&value),
             Frame::Seal(_) => every_member_required::<Seal>(&value),
             Frame::Begun(_) => every_member_required::<BegunPhase>(&value),
             _ => every_member_required::<TableRef>(&value),
         }
     }
-    let head = super::BatchHeader {
+    let head = BatchHeader {
         segment: SegmentId(1),
         table: 0,
         ordinal: 3,
+        rows: 7,
     };
-    every_member_required::<super::BatchHeader>(&serde_json::to_value(head).expect("serializes"));
+    every_member_required::<BatchHeader>(&serde_json::to_value(head).expect("serializes"));
+    let commit = serde_json::json!({ "meta": metadata().into_iter().find_map(|frame| match frame {
+        Frame::Commit(commit) => Some(commit.meta),
+        _ => None,
+    }), "seals": 1, "phases": 0 });
+    every_member_required::<Committing>(&commit);
 }

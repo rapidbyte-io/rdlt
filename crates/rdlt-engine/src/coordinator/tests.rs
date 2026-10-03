@@ -37,7 +37,7 @@ use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
-use crate::wal::frame::{Frame, Frames};
+use crate::wal::frame::Frame;
 use crate::wal::memory::MemoryWal;
 use crate::wal::{LoadLog, WalStore};
 use crate::watch;
@@ -263,10 +263,7 @@ impl Setup {
         }));
         let tables = self.tables(session).await;
         let source = Arc::new(self.listener(acks, commits));
-        let wal = match &self.wal {
-            Some(store) => Some(started(Arc::clone(store)).await),
-            None => None,
-        };
+        let wal = self.wal.as_ref().map(|store| started(Arc::clone(store)));
         let lanes = lanes(&tables);
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::new(SystemEnv::new(pool)),
@@ -333,11 +330,15 @@ fn lanes(tables: &Arc<Tables>) -> Lanes {
 }
 
 /// A log of the coordinator's load in `store`, its writer running.
-async fn started(store: Arc<MemoryWal>) -> LoadLog {
+fn started(store: Arc<MemoryWal>) -> LoadLog {
     let store: Arc<dyn WalStore> = store;
-    let pipeline = rdlt_connector::PipelineId::parse("orders").unwrap();
-    let load = LoadId::from_parts(UNIX_EPOCH, 1);
-    let (log, writer) = LoadLog::start(store, pipeline, load, None).await.unwrap();
+    let owner = crate::wal::Owner {
+        pipeline: rdlt_connector::PipelineId::parse("orders").unwrap(),
+        load: LoadId::from_parts(UNIX_EPOCH, 1),
+        epoch: Epoch(1),
+        opened: None,
+    };
+    let (log, writer) = LoadLog::start(store, owner);
     tokio::spawn(writer);
     log
 }
@@ -1220,17 +1221,12 @@ async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it
     assert!(harness.acks.lock().is_empty());
     assert_eq!(harness.log.lock().committed.commits, 0);
     // The log holds the commit and no receipt: a replay commits it again.
-    let frames: Vec<Frame> = store
-        .appended
-        .lock()
-        .iter()
-        .flat_map(|appended| Frames::new(appended).map(|frame| frame.unwrap().1))
-        .collect();
+    let frames = store.published_frames();
     assert!(frames.iter().any(|frame| matches!(frame, Frame::Commit(_))));
     assert!(
-        !frames
+        frames
             .iter()
-            .any(|frame| matches!(frame, Frame::Committed(_)))
+            .all(|frame| !matches!(frame, Frame::End(end) if !end.received.is_empty()))
     );
 }
 
@@ -1378,8 +1374,10 @@ async fn a_source_that_cannot_read_again_hears_once_the_log_holds_its_commit() {
         let pipeline = rdlt_connector::PipelineId::parse("orders").unwrap();
         let kept = store.stored(&pipeline);
         if fail {
-            let synced: usize = kept.iter().map(|(_, stored)| stored.synced).sum();
-            assert!(synced > 0, "the commit's frame outlives the failed commit");
+            assert!(
+                !kept.is_empty(),
+                "the commit's chunk outlives the failed commit"
+            );
         } else {
             assert!(
                 kept.is_empty(),
@@ -1435,11 +1433,10 @@ async fn each_logged_seal_names_where_its_partition_stood_before_its_commit() {
     harness.end(1, false);
     task.await.unwrap().unwrap();
     let seals: Vec<_> = store
-        .appended
-        .lock()
-        .iter()
-        .filter_map(|frame| match Frames::new(frame).next() {
-            Some(Ok((_, Frame::Seal(seal)))) => Some((seal.segment.0, seal.from, seal.state)),
+        .published_frames()
+        .into_iter()
+        .filter_map(|frame| match frame {
+            Frame::Seal(seal) => Some((seal.segment.0, seal.from, seal.state)),
             _ => None,
         })
         .collect();
@@ -1487,7 +1484,7 @@ async fn a_source_that_cannot_read_again_hears_nothing_of_a_commit_its_log_faile
     forgetful.replayable = false;
     let mut setup = Setup::new(vec![forgetful], vec![partition("p0", false)]);
     let store = Arc::new(MemoryWal::default());
-    *store.unsyncable.lock() = true;
+    *store.unpublishable.lock() = true;
     setup.wal = Some(Arc::clone(&store));
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);

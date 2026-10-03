@@ -34,7 +34,7 @@ use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
-use crate::wal::{LoadLog, Positions};
+use crate::wal::{LoadLog, Owner, Positions};
 use crate::watch;
 
 pub(crate) use sequences::Keying;
@@ -233,7 +233,7 @@ async fn launch(
 ) -> Result<(), Error> {
     let mut scope = TaskScope::new(&CancellationToken::new());
     let lanes = start_lanes(context, &tables, &mut scope);
-    let wal = start_log(context, load_id, &opened.state, &planned, &mut scope).await?;
+    let wal = start_log(context, load_id, &opened, &planned, &mut scope);
     let ((progress, progress_feed), (barrier, barrier_feed)) =
         (mpsc::unbounded_channel(), watch::channel(0));
     let (stop_reads, latest) = (CancellationToken::new(), Arc::new(Latest::default()));
@@ -311,27 +311,30 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
 }
 
 /// The load's write-ahead log, started in `scope`, where the pipeline asks for one or a stream's
-/// source cannot read again what it acknowledged; `state` is what the attempt opened on.
-async fn start_log(
+/// source cannot read again what it acknowledged; `opened` is the session the attempt opened.
+fn start_log(
     context: &RunContext,
     load_id: LoadId,
-    state: &PipelineState,
+    opened: &Opened,
     planned: &[Planned],
     scope: &mut TaskScope<Error>,
-) -> Result<Option<LoadLog>, Error> {
-    let opened = state
-        .last_receipt
-        .as_ref()
-        .map(|receipt| (receipt.load_id, receipt.commit_seq));
+) -> Option<LoadLog> {
     let needed =
         context.plan.logs_ahead() || planned.iter().any(|stream| !stream.stream.replayable);
-    let Some(store) = context.env.wal().filter(|_| needed) else {
-        return Ok(None);
+    let store = context.env.wal().filter(|_| needed)?;
+    let owner = Owner {
+        pipeline: context.plan.pipeline().clone(),
+        load: load_id,
+        epoch: opened.epoch,
+        opened: opened
+            .state
+            .last_receipt
+            .as_ref()
+            .map(|receipt| (receipt.load_id, receipt.commit_seq)),
     };
-    let pipeline = context.plan.pipeline().clone();
-    let (log, task) = LoadLog::start(store, pipeline, load_id, opened).await?;
+    let (log, task) = LoadLog::start(store, owner);
     scope.spawn(task);
-    Ok(Some(log))
+    Some(log)
 }
 
 /// Starts a task per partition to read, and returns the streams and partitions as the

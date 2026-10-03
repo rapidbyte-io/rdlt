@@ -7,12 +7,12 @@ use rdlt_connector::{
     SchemaVersion, SegmentId, StreamName,
 };
 
-use super::{LoadLog, Sealed};
+use super::{LoadLog, Owner, Sealed};
 use crate::budget::MemoryBudget;
 use crate::compute::Inline;
 use crate::table::TableView;
 use crate::table::testing::view;
-use crate::wal::frame::{Frame, Frames};
+use crate::wal::frame::{self, Frame};
 use crate::wal::memory::MemoryWal;
 use crate::wal::store::WalStore;
 
@@ -47,12 +47,25 @@ fn frames(store: &MemoryWal) -> Vec<Frame> {
     store
         .stored(&pipeline())
         .iter()
-        .flat_map(|(_, stored)| {
-            Frames::new(&stored.bytes)
-                .map(|frame| frame.expect("the frame decodes").1)
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|(_, bytes)| frame::frames(bytes, frame::limits(1 << 30)).expect("it reads"))
         .collect()
+}
+
+/// The log of the load in `store`, and its writer's task.
+fn start(
+    store: &Arc<MemoryWal>,
+) -> (
+    LoadLog,
+    impl Future<Output = Result<(), crate::Error>> + Send + 'static,
+) {
+    let wal: Arc<dyn WalStore> = Arc::clone(store) as Arc<dyn WalStore>;
+    let owner = Owner {
+        pipeline: pipeline(),
+        load: load(),
+        epoch: Epoch(1),
+        opened: None,
+    };
+    LoadLog::start(wal, owner)
 }
 
 /// The view of `table` at `version`.
@@ -65,10 +78,7 @@ fn at(table: &TableView, version: u32) -> Arc<TableView> {
 #[tokio::test]
 async fn each_table_version_is_described_once_before_its_first_batch() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let budget = MemoryBudget::new(1 << 20);
     let (orders, items) = (view("orders"), view("items"));
     let written = async {
@@ -130,10 +140,7 @@ async fn each_table_version_is_described_once_before_its_first_batch() {
 #[tokio::test]
 async fn a_logged_load_reads_back_as_it_was_written() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let observed = Arc::clone(&store);
@@ -146,9 +153,11 @@ async fn a_logged_load_reads_back_as_it_was_written() {
         bytes: 24,
     };
     let written = async {
-        logged(&log, &budget, 0, &orders, SegmentId(1), &ids(0))
-            .await
-            .expect("the batch is logged");
+        for from in [0, 3] {
+            logged(&log, &budget, 0, &orders, SegmentId(1), &ids(from))
+                .await
+                .expect("the batch is logged");
+        }
         let sealed = vec![Sealed {
             segment: SegmentId(1),
             stream: StreamName::new("orders").expect("a valid stream"),
@@ -163,16 +172,23 @@ async fn a_logged_load_reads_back_as_it_was_written() {
             .expect("durable");
         let kinds: Vec<_> = frames(&observed).into_iter().skip(2).collect();
         let [
-            Frame::Batch(batch),
+            Frame::Batch(first),
+            Frame::Batch(second),
             Frame::Seal(seal),
             Frame::Commit(logged),
+            Frame::End(_),
         ] = &kinds[..]
         else {
-            panic!("a batch, its seal and the commit: {kinds:?}");
+            panic!("batches, a seal, the commit and the end: {kinds:?}");
         };
-        assert_eq!((batch.segment, &batch.batch), (SegmentId(1), &ids(0)));
+        assert_eq!((first.segment, &first.batch), (SegmentId(1), &ids(0)));
+        assert_eq!((second.segment, &second.batch), (SegmentId(1), &ids(3)));
         assert_eq!((seal.segment, &seal.state), (SegmentId(1), &state));
-        assert_eq!(**logged, meta(&[1]));
+        assert_eq!((seal.batches, seal.rows), (2, 6));
+        assert_eq!(
+            (logged.meta.clone(), logged.seals, logged.phases),
+            (meta(&[1]), 1, 0)
+        );
         log.committed(&receipt).await.expect("logged");
         // Closed with every commit received, the log is gone.
         log.close().await.expect("closed");
@@ -183,24 +199,26 @@ async fn a_logged_load_reads_back_as_it_was_written() {
 }
 
 #[tokio::test]
-async fn a_load_holds_its_log_until_it_ends() {
+async fn a_second_writer_of_one_log_is_fenced_at_its_first_commit() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(Arc::clone(&wal), pipeline(), load(), None)
-        .await
-        .expect("the log starts");
-    assert!(
-        LoadLog::start(Arc::clone(&wal), pipeline(), load(), None)
+    let (first, first_task) = start(&store);
+    let (second, second_task) = start(&store);
+    let budget = MemoryBudget::new(1 << 20);
+    let written = async {
+        first
+            .commit(&budget, Vec::new(), Vec::new(), &meta(&[]), 0)
             .await
-            .is_err(),
-        "a second writer of one log is refused"
-    );
-    let replayer = wal.claim(&pipeline(), load()).await.expect("claims");
-    assert!(replayer.is_none(), "a running load's log is not replayed");
-    drop(log);
-    task.await.expect("the writer ends");
-    let replayer = wal.claim(&pipeline(), load()).await.expect("claims");
-    assert!(replayer.is_some(), "an ended load's log is free");
+            .expect("durable");
+        let refused = second
+            .commit(&budget, Vec::new(), Vec::new(), &meta(&[]), 0)
+            .await
+            .expect_err("the chunk is taken");
+        assert_eq!(refused.code(), Some("wal_fenced"));
+        drop((first, second));
+    };
+    let (first_ended, second_ended, ()) = tokio::join!(first_task, second_task, written);
+    first_ended.expect("the writer ends");
+    second_ended.expect("the writer ends");
 }
 
 /// A seal of `segment` of partition `p0`, which cannot read again.
@@ -219,10 +237,7 @@ fn sealed_at(segment: u64) -> Sealed {
 #[tokio::test]
 async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segments_or_not() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let observed = Arc::clone(&store);
@@ -267,10 +282,7 @@ async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segme
 #[tokio::test]
 async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let observed = Arc::clone(&store);
     let written = async move {
         // A seal whose cursor makes its frame far larger than the commit's.
@@ -285,7 +297,7 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
             .expect("durable");
         let lengths: Vec<u64> = frames(&observed)
             .iter()
-            .skip(1)
+            .filter(|frame| matches!(frame, Frame::Seal(_) | Frame::Commit(_)))
             .map(|frame| frame.encode().expect("the frame encodes").len() as u64)
             .collect();
         let [seal, commit] = lengths[..] else {
@@ -316,10 +328,7 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
 #[tokio::test]
 async fn a_tables_schema_frame_is_charged_from_the_log_until_it_is_appended() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let budget = MemoryBudget::new(1 << 20);
     let orders = at(&view("orders"), 1);
     let written = async {
@@ -363,10 +372,7 @@ fn frame(budget: &MemoryBudget) -> rdlt_connector::Permit {
 #[tokio::test]
 async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_the_log_s_share() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let written = async move {
         // One that records state is charged for it before it is encoded, twice over, which is
         // more than its frame takes.
@@ -378,7 +384,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
                 value: vec![7; 9_000].into(),
             },
         )];
-        let begun = vec![crate::wal::frame::BegunPhase {
+        let begun = vec![frame::BegunPhase {
             stream: StreamName::new("orders").expect("a valid stream"),
             phase: 1,
             changes: vec![rdlt_connector::StateChange::Delete("d".repeat(5_000))],
@@ -457,10 +463,7 @@ async fn a_frame_keeps_what_it_takes_of_its_reservation_and_reserves_what_it_tak
 #[tokio::test]
 async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let described = Arc::clone(&log.tables);
@@ -499,6 +502,11 @@ async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow()
         logged(&log, &budget, 0, &at(&orders, 1), SegmentId(201), &ids(0))
             .await
             .expect("the batch is logged");
+        let mut next = meta(&[201]);
+        next.commit_seq = CommitSeq::FIRST.next();
+        log.commit(&budget, Vec::new(), Vec::new(), &next, 0)
+            .await
+            .expect("the commit is durable");
         drop(current);
         drop(log);
     };
@@ -517,10 +525,7 @@ async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow()
 #[tokio::test]
 async fn a_version_stays_described_while_any_view_of_it_lives() {
     let store = Arc::new(MemoryWal::default());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
-    let (log, task) = LoadLog::start(wal, pipeline(), load(), None)
-        .await
-        .expect("the log starts");
+    let (log, task) = start(&store);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let described = Arc::clone(&log.tables);
@@ -575,4 +580,37 @@ async fn a_version_stays_described_while_any_view_of_it_lives() {
         .count();
     // Once in each chunk that holds its batches, under one index.
     assert_eq!(schemas, 2);
+}
+
+#[tokio::test]
+async fn what_was_counted_of_a_segment_goes_with_its_seal_or_its_abandonment() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let written = async {
+        for segment in [1, 2] {
+            logged(&log, &budget, 0, &orders, SegmentId(segment), &ids(0))
+                .await
+                .expect("the batch is logged");
+        }
+        assert_eq!(log.counts.lock().len(), 2);
+        log.abandon(SegmentId(2)).await.expect("abandoned");
+        let sealed = vec![Sealed {
+            segment: SegmentId(1),
+            stream: StreamName::new("orders").expect("a valid stream"),
+            partition: PartitionId::parse("p0").expect("a valid partition"),
+            replayable: true,
+            phase: 0,
+            from: None,
+            state: PartitionState::Done,
+        }];
+        log.commit(&budget, sealed, Vec::new(), &meta(&[1]), 0)
+            .await
+            .expect("durable");
+        assert!(log.counts.lock().is_empty());
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
 }

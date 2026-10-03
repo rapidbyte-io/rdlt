@@ -1,12 +1,14 @@
 //! Replaying the write-ahead logs earlier loads left: each commit a log holds without its receipt
 //! is committed again, in a session of its own, before the attempt opens (spec §15.6).
 //!
-//! A log is replayed only once its load is gone, which its claim shows. Each commit stages again
-//! only the segments of partitions the destination still holds where the load left them, so a
-//! newer load that committed the same rows meanwhile never sees them twice.
+//! A log is replayed once a fence at its next chunk keeps its load, if it still runs, from
+//! publishing more. Each commit stages again only the segments of partitions the destination
+//! still holds where the load left them, so a newer load that committed the same rows meanwhile
+//! never sees them twice.
 
 mod decide;
 mod staged;
+mod taken;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
@@ -21,10 +23,12 @@ use crate::crash::crash_point;
 use crate::error::{Error, Side};
 use crate::report::AttemptLog;
 use crate::table::SharedSession;
+use crate::wal::frame;
 use crate::wal::scan::{self, Logged, Scanned};
 use crate::wal::{Positions, WalStore};
 use decide::decide;
 use staged::Staged;
+use taken::Taken;
 
 /// The session replay commits through, and where the destination stands as it goes.
 struct Replaying {
@@ -75,26 +79,36 @@ async fn replay_into(
     replaying: &mut Option<Replaying>,
 ) -> Result<(), Error> {
     let pipeline = context.plan.pipeline();
+    let limits = frame::limits(context.config.memory().get());
     for load in store.loads(pipeline).await.map_err(Error::from_wal)? {
-        // A load still running holds its log; it commits it itself, or leaves it to a later
-        // replay once it is gone.
-        let Some(claim) = store.claim(pipeline, load).await.map_err(Error::from_wal)? else {
-            continue;
+        let number = match taken::take(store, pipeline, load, limits.frame_bytes).await? {
+            Taken::Finished => None,
+            Taken::Fenced { number } => Some(number),
+            // A load still running commits its log itself, or leaves it to a later replay.
+            Taken::Running => continue,
         };
-        let scanned = scan::scan(store, pipeline, load).await?;
-        for logged in scanned.pending() {
-            let replaying = match replaying {
-                Some(replaying) => replaying,
-                None => replaying.insert(begin(context, load_id).await?),
-            };
-            let landed = replaying.commit(store, pipeline, &scanned, logged).await?;
-            log.lock().progressed |= landed;
+        if let Some(number) = number {
+            let scanned = scan::scan(store, pipeline, load, limits.frame_bytes).await?;
+            for logged in scanned.pending() {
+                let replaying = match replaying {
+                    Some(replaying) => replaying,
+                    None => replaying.insert(begin(context, load_id).await?),
+                };
+                let landed = replaying
+                    .commit(store, pipeline, &scanned, logged, limits)
+                    .await?;
+                log.lock().progressed |= landed;
+            }
+            // A replay that took the log over since is left to delete it.
+            if !taken::release(store, pipeline, load, number).await? {
+                continue;
+            }
+            crash_point!("engine.replay.released");
         }
         store
             .remove_log(pipeline, load)
             .await
             .map_err(Error::from_wal)?;
-        drop(claim);
     }
     Ok(())
 }
@@ -123,11 +137,12 @@ impl Replaying {
         pipeline: &PipelineId,
         scanned: &Scanned,
         logged: &Logged,
+        limits: rdlt_wire::Limits,
     ) -> Result<bool, Error> {
         let meta = &logged.meta;
         let opened = scanned.header.as_ref().and_then(|header| header.opened);
         let decision = decide(&self.positions, &self.resets, self.last, opened, logged);
-        self.stage(store, pipeline, scanned, &decision.staged)
+        self.stage(store, pipeline, scanned, &decision.staged, limits)
             .await?;
         let whole = decision.whole;
         let landed = !decision.staged.is_empty();
@@ -154,6 +169,7 @@ impl Replaying {
         pipeline: &PipelineId,
         scanned: &Scanned,
         segments: &SegmentSet,
+        limits: rdlt_wire::Limits,
     ) -> Result<(), Error> {
         let mut staged = Staged::new(self.writers);
         let mut created = BTreeSet::new();
@@ -163,7 +179,7 @@ impl Replaying {
                 if created.insert(located.table) {
                     self.create(scanned, located.table).await?;
                 }
-                let batch = scan::batch(store, pipeline, *located).await?;
+                let batch = scan::batch(store, pipeline, *located, limits).await?;
                 let open = || async {
                     self.session
                         .writer(table)
@@ -191,12 +207,12 @@ impl Replaying {
 }
 
 /// The log's table `index`, as its schema frame describes it.
-fn table(scanned: &Scanned, index: u32) -> Result<&crate::wal::frame::Table, Error> {
+fn table(scanned: &Scanned, index: u32) -> Result<&frame::Table, Error> {
     scanned.tables.get(&index).ok_or_else(|| {
         Error::wal(format!(
             "a logged batch names table {index}, which the log never describes"
         ))
-        .with_code("wal_unreadable")
+        .with_code(crate::limits::WAL_UNREADABLE)
     })
 }
 

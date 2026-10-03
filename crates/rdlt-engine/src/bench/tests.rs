@@ -128,7 +128,8 @@ fn a_sample_log_reads_back_with_its_one_commit_and_a_garbled_one_is_refused() {
     assert_eq!(super::scan_log(&log), Ok(1));
     // Garble the commit frame's payload, then make its checksum match, as a bug would.
     let mut garbled = log.clone();
-    let mut offset = 0;
+    // Past the chunk's preamble.
+    let mut offset = 14;
     let mut frames = Vec::new();
     while offset + 9 <= garbled.len() {
         let len = u32::from_le_bytes(
@@ -148,7 +149,11 @@ fn a_sample_log_reads_back_with_its_one_commit_and_a_garbled_one_is_refused() {
         .find(|(kind, _, _)| *kind == 5)
         .expect("a commit frame");
     garbled[at + 9] = b'!';
-    let crc = crc32c::crc32c(&garbled[at + 9..at + 9 + len]);
+    // The checksum covers the frame's kind and length too.
+    let crc = crc32c::crc32c_append(
+        crc32c::crc32c(&garbled[at..at + 5]),
+        &garbled[at + 9..at + 9 + len],
+    );
     garbled[at + 5..at + 9].copy_from_slice(&crc.to_le_bytes());
     let refused = super::scan_log(&garbled).expect_err("the commit does not decode");
     assert_eq!(refused.code, "wal_unreadable");

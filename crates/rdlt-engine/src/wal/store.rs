@@ -1,4 +1,8 @@
-//! Where write-ahead logs are kept: one log per load of a pipeline, in numbered chunks.
+//! Where write-ahead logs are kept: one log per load of a pipeline, in numbered chunks, each an
+//! object written whole.
+
+#[cfg(test)]
+pub(crate) mod conformance;
 
 use std::io;
 
@@ -14,43 +18,47 @@ pub struct Chunk {
     pub number: u64,
 }
 
-/// A held claim on a load's log; dropping it lets the log go.
-pub type Claim = Box<dyn std::any::Any + Send + Sync>;
+/// A chunk being written: no reader sees it until it is published, and once published it never
+/// changes.
+pub trait StagedChunk: Send + Sync {
+    /// Adds `bytes` to the end of the chunk.
+    fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>>;
 
-/// Keeps each load's write-ahead log as numbered chunks of frames.
+    /// Writes the chunk durably under its name where no chunk of that name exists, and is
+    /// answered once it is durable: where one exists, the error is
+    /// [`io::ErrorKind::AlreadyExists`] and the chunk there is unchanged.
+    ///
+    /// The name is taken by whoever publishes it first, which is how a log is fenced: a replay
+    /// publishes the chunk a writer would publish next, and the writer finds it taken.
+    fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>>;
+}
+
+/// Keeps each load's write-ahead log as numbered chunks, each an object written whole.
 ///
-/// A log is written by one load at a time: appends to one chunk, then that chunk made durable,
-/// then the next chunk. Reads are by range, so replaying a log never holds more than a frame.
-///
-/// A log has one claimant at a time: the load writing it, then whoever replays it once that load
-/// is gone. A claim outlives nothing that holds it, so a load whose process died leaves its log
-/// free for the next to replay.
+/// The operations are those an object store offers: a chunk is staged and published whole where
+/// its name is free, listed by its log, read by range, and deleted. Nothing is appended to a
+/// published chunk, renamed over another, or held locked. A crash loses what was staged and not
+/// published, and nothing else: a published chunk is whole, and a deletion that returned is
+/// durable.
 pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
-    /// A claim on `load`'s log of `pipeline`, or none where another holds it.
-    fn claim<'a>(
+    /// Begins chunk `chunk` of `pipeline`'s log, which no reader sees until it is published.
+    fn stage<'a>(
         &'a self,
         pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<Option<Claim>>>;
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>>;
 
-    /// Removes `load`'s log of `pipeline` whole: its chunks and what marks its claim.
-    fn remove_log<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        load: LoadId,
-    ) -> BoxFuture<'a, io::Result<()>>;
-
-    /// The loads of `pipeline` that have a log, or a claim's mark left behind.
+    /// The loads of `pipeline` with a published chunk, and perhaps some with only staged ones.
     fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>>;
 
-    /// The chunks of `load`'s log, in order, each with its length.
+    /// The published chunks of `load`'s log, by number, each with its length.
     fn chunks<'a>(
         &'a self,
         pipeline: &'a PipelineId,
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>>;
 
-    /// `len` bytes of chunk `chunk` of `load`'s log, from `offset`.
+    /// `len` bytes of the published chunk `chunk` from `offset`, fewer where the chunk ends first.
     fn read<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -59,23 +67,18 @@ pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
         len: u64,
     ) -> BoxFuture<'a, io::Result<Bytes>>;
 
-    /// Appends `bytes` to chunk `chunk` of `load`'s log, creating it where it is missing.
-    fn append<'a>(
-        &'a self,
-        pipeline: &'a PipelineId,
-        chunk: Chunk,
-        bytes: Bytes,
-    ) -> BoxFuture<'a, io::Result<()>>;
-
-    /// Makes everything appended to chunk `chunk` of `load`'s log durable; a chunk once synced is
-    /// finished, and appended to again only after a failure left it unknown.
-    fn sync<'a>(&'a self, pipeline: &'a PipelineId, chunk: Chunk) -> BoxFuture<'a, io::Result<()>>;
-
-    /// Removes chunk `chunk` of `load`'s log, durably, so no crash after it brings the chunk
-    /// back; the log goes with its last chunk.
+    /// Deletes the published chunk `chunk`, durably; one that is gone is no error.
     fn remove<'a>(
         &'a self,
         pipeline: &'a PipelineId,
         chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<()>>;
+
+    /// Deletes `load`'s log whole, durably: what it staged, then its chunks in the order of their
+    /// numbers, so a crash part way leaves its highest chunks.
+    fn remove_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>>;
 }

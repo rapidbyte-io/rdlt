@@ -119,8 +119,8 @@ async fn a_logged_load_publishes_every_row_once_and_leaves_no_log() {
         assert_eq!(published_ids(&name, "events"), ids(2, 30));
         let commits = usize::try_from(outcome.report.attempts[0].commits).expect("few commits");
         assert!(commits > 1, "{commits} commits");
-        // Each commit's frame and the closing one are made durable, after every batch's frame.
-        assert_eq!(counted.syncs(), commits + 1);
+        // Each commit's chunk and the closing one are published, after every batch's frame.
+        assert_eq!(counted.publishes(), commits + 1);
         assert!(counted.appends() > 2 * commits);
         let acked = script.acks.lock().clone();
         for partition in ["p0", "p1"] {
@@ -208,7 +208,7 @@ async fn a_load_that_needs_no_log_keeps_none_though_the_engine_has_a_store() {
         .await;
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!(published_ids("wal_unneeded", "events"), ids(2, 30));
-    assert_eq!((counted.appends(), counted.syncs()), (0, 0));
+    assert_eq!((counted.appends(), counted.publishes()), (0, 0));
 }
 
 #[tokio::test(start_paused = true)]

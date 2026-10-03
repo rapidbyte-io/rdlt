@@ -2,7 +2,7 @@
 //!
 //! The bytes are any at all, or a valid log cut short and garbled where the fuzzer says, its
 //! checksums made to match again where it says so, so garbled payloads reach the decoders. A log
-//! is read up to where it was torn, or refused as one the engine did not write.
+//! is read whole, or refused as one the engine did not write.
 
 #![forbid(unsafe_code)]
 #![no_main]
@@ -12,15 +12,16 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use libfuzzer_sys::fuzz_target;
 
-/// Makes each frame's checksum match its payload again, following its length as it now reads.
+/// Makes each frame's checksum, of its kind, length and payload, match again, following its
+/// length as it now reads, from past the chunk's preamble.
 fn rechecked(log: &mut [u8]) {
-    let mut offset = 0;
+    let mut offset = 14;
     while let Some(head) = log.get(offset..offset + 9) {
         let len = u32::from_le_bytes([head[1], head[2], head[3], head[4]]) as usize;
         let Some(end) = (offset + 9).checked_add(len).filter(|end| *end <= log.len()) else {
             return;
         };
-        let crc = crc32c::crc32c(&log[offset + 9..end]);
+        let crc = crc32c::crc32c_append(crc32c::crc32c(&log[offset..offset + 5]), &log[offset + 9..end]);
         log[offset + 5..offset + 9].copy_from_slice(&crc.to_le_bytes());
         offset = end;
     }
@@ -51,6 +52,10 @@ fuzz_target!(|input: (bool, bool, u16, Vec<(u16, u8)>, Vec<u8>)| {
         bytes
     };
     if let Err(refused) = rdlt_engine::bench::scan_log(&log) {
-        assert_eq!(refused.code, "wal_unreadable", "{}", refused.message);
+        assert!(
+            matches!(refused.code, "wal_unreadable" | "wal_foreign"),
+            "{}",
+            refused.message
+        );
     }
 });

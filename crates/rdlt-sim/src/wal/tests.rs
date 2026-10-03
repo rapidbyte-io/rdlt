@@ -18,45 +18,57 @@ fn chunk(number: u64) -> Chunk {
     }
 }
 
-#[tokio::test]
-async fn a_crash_keeps_what_was_durable_and_at_most_the_rest() {
-    for seed in 0..200 {
-        let wal = SimWal::default();
-        wal.append(&pipeline(), chunk(0), Bytes::from_static(b"durable"))
-            .await
-            .expect("appends");
-        wal.sync(&pipeline(), chunk(0)).await.expect("syncs");
-        wal.append(&pipeline(), chunk(0), Bytes::from_static(b" pending"))
-            .await
-            .expect("appends");
-        wal.crash(&pipeline(), &mut SplitMix64::new(seed));
-        let kept = wal
-            .read(&pipeline(), chunk(0), 0, 100)
-            .await
-            .expect("reads");
-        assert!(kept.starts_with(b"durable"), "seed {seed}: {kept:?}");
-        assert!(kept.len() <= b"durable pending".len());
-    }
+/// Stages `bytes` as `chunk` of `owner`'s log in `wal` and publishes it.
+async fn published(wal: &SimWal, owner: &PipelineId, chunk: Chunk, bytes: &'static [u8]) {
+    let mut staged = wal.stage(owner, chunk).await.expect("stages");
+    staged
+        .append(Bytes::from_static(bytes))
+        .await
+        .expect("appends");
+    staged.publish().await.expect("publishes");
 }
 
 #[tokio::test]
-async fn a_log_has_one_claimant_until_it_lets_go() {
+async fn a_crash_keeps_every_chunk_published_and_loses_every_one_staged() {
     let wal = SimWal::default();
-    let load = chunk(0).load;
-    let held = wal.claim(&pipeline(), load).await.expect("claims");
-    assert!(held.is_some());
-    assert!(
-        wal.claim(&pipeline(), load)
-            .await
-            .expect("claims")
-            .is_none()
+    let other = PipelineId::parse("users").expect("a valid pipeline");
+    published(&wal, &pipeline(), chunk(0), b"durable").await;
+    let mut lost = wal.stage(&pipeline(), chunk(1)).await.expect("stages");
+    lost.append(Bytes::from_static(b"staged"))
+        .await
+        .expect("appends");
+    let mut kept = wal.stage(&other, chunk(0)).await.expect("stages");
+    kept.append(Bytes::from_static(b"another's"))
+        .await
+        .expect("appends");
+    wal.crash(&pipeline());
+    assert!(lost.publish().await.is_err(), "staged before the crash");
+    kept.publish()
+        .await
+        .expect("another pipeline's worker runs on");
+    assert_eq!(
+        wal.chunks(&pipeline(), chunk(0).load).await.expect("lists"),
+        [(0, 7)]
     );
-    drop(held);
-    assert!(
-        wal.claim(&pipeline(), load)
-            .await
-            .expect("claims")
-            .is_some()
+    // What the restarted worker stages publishes.
+    published(&wal, &pipeline(), chunk(1), b"again").await;
+}
+
+#[tokio::test]
+async fn a_log_s_removal_goes_by_number_and_a_crash_part_way_leaves_the_highest() {
+    let wal = SimWal::default();
+    for number in [0, 1, 2] {
+        published(&wal, &pipeline(), chunk(number), b"chunk").await;
+    }
+    let orders = pipeline();
+    let mut removal = wal.remove_log(&orders, chunk(0).load);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    // The removal stops at its first yield, as a crash there leaves it.
+    assert!(removal.as_mut().poll(&mut context).is_pending());
+    drop(removal);
+    assert_eq!(
+        wal.chunks(&pipeline(), chunk(0).load).await.expect("lists"),
+        [(1, 5), (2, 5)]
     );
 }
 
@@ -66,12 +78,14 @@ async fn a_faulty_disk_fails_now_and_then_and_a_mended_one_never() {
     wal.set_faults(Some(SplitMix64::new(7)));
     let mut failed = 0;
     for _ in 0..1000 {
-        failed += usize::from(wal.sync(&pipeline(), chunk(0)).await.is_err());
+        failed += usize::from(wal.remove(&pipeline(), chunk(0)).await.is_err());
     }
     assert!((1..100).contains(&failed), "{failed} of 1000 failed");
     wal.set_faults(None);
     for _ in 0..100 {
-        wal.sync(&pipeline(), chunk(0)).await.expect("never fails");
+        wal.remove(&pipeline(), chunk(0))
+            .await
+            .expect("never fails");
     }
 }
 
@@ -79,9 +93,7 @@ async fn a_faulty_disk_fails_now_and_then_and_a_mended_one_never() {
 async fn it_holds_logs_until_every_one_is_removed() {
     let wal = SimWal::default();
     assert!(!wal.holds_logs());
-    wal.append(&pipeline(), chunk(0), Bytes::from_static(b"frame"))
-        .await
-        .expect("appends");
+    published(&wal, &pipeline(), chunk(0), b"frame").await;
     assert!(wal.holds_logs());
     wal.remove_log(&pipeline(), chunk(0).load)
         .await
@@ -90,36 +102,32 @@ async fn it_holds_logs_until_every_one_is_removed() {
 }
 
 #[tokio::test]
-async fn a_crash_leaves_every_other_pipeline_s_logs_as_they_were() {
-    let wal = SimWal::default();
-    let other = PipelineId::parse("users").expect("a valid pipeline");
-    for owner in [pipeline(), other.clone()] {
-        wal.append(&owner, chunk(0), Bytes::from_static(b"never synced"))
-            .await
-            .expect("appends");
-    }
-    for seed in 0..50 {
-        wal.crash(&pipeline(), &mut SplitMix64::new(seed));
-    }
-    let kept = wal.read(&other, chunk(0), 0, 100).await.expect("reads");
-    assert_eq!(&kept[..], b"never synced");
-}
-
-#[tokio::test]
-async fn a_faulty_disk_fails_a_removal_now_and_then_and_keeps_the_chunk() {
+async fn a_faulty_disk_fails_a_publish_or_a_removal_now_and_then_and_keeps_the_chunk() {
     let wal = SimWal::default();
     wal.set_faults(Some(SplitMix64::new(7)));
-    let mut failed = 0;
+    let (mut unpublished, mut unremoved) = (0, 0);
     for number in 0..1000 {
         let chunk = chunk(number);
-        wal.append(&pipeline(), chunk, Bytes::from_static(b"frame"))
+        let Ok(mut staged) = wal.stage(&pipeline(), chunk).await else {
+            continue;
+        };
+        staged
+            .append(Bytes::from_static(b"frame"))
             .await
-            .ok();
+            .expect("appends");
+        if staged.publish().await.is_err() {
+            unpublished += 1;
+            continue;
+        }
         if wal.remove(&pipeline(), chunk).await.is_err() {
-            failed += 1;
+            unremoved += 1;
             let kept = wal.chunks(&pipeline(), chunk.load).await.expect("lists");
             assert!(kept.iter().any(|(kept, _)| *kept == number));
         }
     }
-    assert!((1..100).contains(&failed), "{failed} of 1000 failed");
+    assert!(
+        (1..100).contains(&unpublished),
+        "{unpublished} of 1000 failed"
+    );
+    assert!((1..100).contains(&unremoved), "{unremoved} of 1000 failed");
 }
