@@ -71,13 +71,17 @@ sim seed="" seeds="1000" from="0":
 sim-shards seeds="100000" shards=`nproc 2>/dev/null || sysctl -n hw.ncpu` from="0":
     #!/usr/bin/env bash
     set -euo pipefail
+    seeds="{{ seeds }}" shards="{{ shards }}" from="{{ from }}"
+    [[ $seeds =~ ^[1-9][0-9]*$ ]] || { echo "seeds must be a positive integer" >&2; exit 2; }
+    [[ $shards =~ ^[1-9][0-9]*$ ]] || { echo "shards must be a positive integer" >&2; exit 2; }
+    [[ $from =~ ^(0|[1-9][0-9]*)$ ]] || { echo "from must be a seed" >&2; exit 2; }
     cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --no-run
     rm -rf target/sim-shards && mkdir -p target/sim-shards
-    per=$(( ({{ seeds }} + {{ shards }} - 1) / {{ shards }} ))
+    per=$(( (seeds + shards - 1) / shards ))
     pids=()
-    for shard in $(seq 0 $(( {{ shards }} - 1 ))); do
-        first=$(( {{ from }} + shard * per ))
-        count=$(( {{ from }} + {{ seeds }} - first ))
+    for shard in $(seq 0 $(( shards - 1 ))); do
+        first=$(( from + shard * per ))
+        count=$(( from + seeds - first ))
         (( count > per )) && count=$per
         (( count > 0 )) || break
         RDLT_SIM_SEED="" RDLT_SIM_SEEDS="$count" RDLT_SIM_SEEDS_FROM="$first" \
