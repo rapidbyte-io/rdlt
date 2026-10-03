@@ -641,7 +641,11 @@ mod found {
     use rdlt_testkit::drawn::{Encoding, Scalar, Shape};
     use serde_json::json;
 
-    use super::{batch, consumed, keyed, runs};
+    use std::sync::Arc;
+
+    use arrow_array::ArrayRef;
+
+    use super::{batch, consumed, decoded, keyed, runs};
 
     /// A fixed-size list of two run-end encoded JSON values: a list's value of null, of
     /// numbers, of objects and of arrays, behind keys of every type, and as runs.
@@ -684,13 +688,18 @@ mod found {
         let batch = batch(&drawn);
         let field = batch.schema().field(0).clone();
         let column = batch.column(0);
+        // The column decodes in each encoding, whole and row by row, so each is charged and
+        // checked rather than passed over as a column that fails where it is lowered.
+        let plain = std::iter::once(Arc::clone(column));
+        let encodings: Vec<ArrayRef> = plain.chain(keyed(column)).chain(runs(column)).collect();
         for native in [vec![TypeKind::Float32, TypeKind::Struct], Vec::new()] {
-            consumed(&field, column, &native);
-            for encoded in keyed(column).into_iter().chain(runs(column)) {
+            for encoded in &encodings {
                 let field = field.clone().with_data_type(encoded.data_type().clone());
-                consumed(&field, &encoded, &native);
-                for row in 0..encoded.len() {
-                    consumed(&field, &encoded.slice(row, 1), &native);
+                let rows = (0..encoded.len()).map(|row| encoded.slice(row, 1));
+                for part in std::iter::once(Arc::clone(encoded)).chain(rows) {
+                    let decoding = decoded(&part);
+                    assert!(decoding.is_ok(), "{}: {decoding:?}", part.data_type());
+                    consumed(&field, &part, &native);
                 }
             }
         }
