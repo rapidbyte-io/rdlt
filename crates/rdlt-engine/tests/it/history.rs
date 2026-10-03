@@ -282,10 +282,16 @@ async fn history_streams_the_run_cannot_keep_are_refused() {
     let text_time = keyed().declared(declared).change_time("v");
     let text_time = kept("text_time", text_time, memory("text_time").await).await;
     let normalized = kept("normalized_history", keyed(), memory("normalized").await).await;
+    let instantless = limited(memory("instantless").await, |capabilities| {
+        capabilities.types.remove(&rdlt_connector::TypeKind::Timestamp);
+        capabilities.types.remove(&rdlt_connector::TypeKind::Int64);
+    });
+    let instantless = kept("instantless", keyed(), instantless).await;
     for (outcome, code) in [
         (unsupported, "write_mode_unsupported"),
         (text_time, "change_time_invalid"),
         (normalized, "history_normalize_unsupported"),
+        (instantless, "history_validity_unsupported"),
     ] {
         let error = outcome.error.expect("the run fails");
         assert_eq!(
@@ -749,4 +755,48 @@ async fn a_version_is_hashed_by_the_values_it_holds_however_the_destination_stor
             "{store}"
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_storing_no_instant_stores_validity_as_microseconds() {
+    let store = "validity_numbers";
+    let at: ArrayRef = Arc::new(
+        arrow_array::TimestampMicrosecondArray::from(vec![-1_500_000, 2_000_000])
+            .with_timezone("UTC"),
+    );
+    let rows = batch(vec![
+        ("id", ints(&[1, 2])),
+        ("v", text(&["a", "b"])),
+        ("at", at),
+    ]);
+    let events = BatchStream::new("events", vec![rows])
+        .primary_key(&["id"])
+        .change_time("at");
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline(store, [stream("events").write(WriteMode::History)]),
+            batches(store, vec![events]).await,
+            Target::Sqlite.destination(store).await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let published = Target::Sqlite.published(store, "events");
+    let from = published[0]
+        .column_by_name("_rdlt_valid_from")
+        .expect("a history column");
+    assert_eq!(from.data_type(), &DataType::Int64);
+    let mut held: Vec<i64> = published
+        .iter()
+        .flat_map(|batch| {
+            let from = batch.column_by_name("_rdlt_valid_from").expect("a column");
+            from.as_primitive::<Int64Type>().values().to_vec()
+        })
+        .collect();
+    held.sort_unstable();
+    assert_eq!(held, [-1_500_000, 2_000_000]);
 }

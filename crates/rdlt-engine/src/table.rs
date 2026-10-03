@@ -82,7 +82,8 @@ impl TableView {
             })
             .collect();
         let logical = lower::logical_fields(&model, &resolver.meta);
-        let physical = lower::physical_fields(&logical, &nested, &resolver.capabilities);
+        let physical =
+            lower::physical_fields(&logical, &nested, (&resolver.meta, &resolver.capabilities));
         let created = created(table, &physical)?;
         let lowered = physical
             .iter()

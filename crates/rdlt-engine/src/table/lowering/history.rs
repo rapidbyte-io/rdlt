@@ -75,6 +75,10 @@ impl LoweringPlan {
             .enumerate()
             .map(|(index, (array, logical))| {
                 let lowered = view.physical[first + index].logical_type();
+                // Validity a destination stores as microseconds is the count the timestamp is.
+                if *lowered == rdlt_connector::LogicalType::Int64 {
+                    return arrow_cast::cast(array, &DataType::Int64).map_err(failed);
+                }
                 lower_array(array, logical, lowered).map_err(failed)
             })
             .collect()
