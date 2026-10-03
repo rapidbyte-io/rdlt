@@ -1131,6 +1131,13 @@ fn an_observation_refuses_records_that_are_not_objects_and_notes_floats_only_in_
             "{record}"
         );
     }
+    // A float that may be a rounded integer has the chunk observed exactly, which reads an
+    // integer beyond 38 digits as its digits.
+    let vast = "1".repeat(42);
+    assert_eq!(
+        observed_only(&format!("{{\"a\":1e30}}\n{vast}")).err(),
+        Some(super::ShredError::NotObject)
+    );
     assert!(!observed_only("{\"a\":1.5}").unwrap().json_floats);
     assert!(
         observed_only("{\"a\":1.5}\n{\"a\":\"x\"}")
@@ -1178,4 +1185,21 @@ fn a_chunk_built_again_where_it_needs_exact_numbers_but_was_not_planned_so_is_re
         super::again(&chunk(), &shape, false),
         Err(super::ShredError::Internal(_))
     ));
+}
+
+#[test]
+fn a_build_refuses_arrays_nested_past_the_limit_as_it_parses_them() {
+    let parse_once = |text: String| {
+        let roomy = ShredLimits {
+            admitted: 1 << 20,
+            ..limits()
+        };
+        let chunk = chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
+        parse(chunk, roomy, &roomy.beyond()).map(|parsed| parsed.record.is_some())
+    };
+    assert_eq!(parse_once(nested(MAX_NESTING_DEPTH, "[", "]")), Ok(true));
+    assert_eq!(
+        parse_once(nested(MAX_NESTING_DEPTH + 1, "[", "]")).err(),
+        Some(super::ShredError::TooDeep)
+    );
 }

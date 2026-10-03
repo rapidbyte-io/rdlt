@@ -234,3 +234,20 @@ fn integers_widen_through_every_whole_decimal_charged_the_wider_builders() {
         (i128::from(u64::MAX), -1 << 70)
     );
 }
+
+#[test]
+fn a_list_s_items_that_are_all_null_take_nothing_as_it_grows() {
+    let meter = Meter::new(u64::MAX);
+    let mut column =
+        Column::new(&Observed::Array(Box::new(Observed::Null), 0), 0, 1, &meter).unwrap();
+    let Column::List(list) = &mut column else {
+        panic!("a list column");
+    };
+    let made = meter.spent();
+    for _ in 0..20 {
+        let (item, _) = list.item(&meter).unwrap();
+        item.null(&meter).unwrap();
+    }
+    // Nulls of no type hold no buffer: doubling past the single item it was sized for is free.
+    assert_eq!(meter.spent(), made);
+}

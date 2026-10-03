@@ -35,6 +35,12 @@ fn rows_listed_are_read_as_ranges_of_the_consecutive_ones() {
 }
 
 #[test]
+fn every_row_below_the_length_is_one_range_and_none_is_none() {
+    assert_eq!(ranges(&Rows::All(3)), [(0, 3)]);
+    assert_eq!(ranges(&Rows::All(0)), []);
+}
+
+#[test]
 fn valid_rows_are_read_where_a_sliced_null_buffer_sets_them() {
     // Bits 1 and 3 of four, sliced from the first: the slice's rows 0 and 2.
     let nulls = NullBuffer::from(vec![false, true, false, true]).slice(1, 3);
@@ -44,6 +50,12 @@ fn valid_rows_are_read_where_a_sliced_null_buffer_sets_them() {
     let from_second = std::iter::once(1..3).collect();
     let later = Rows::Valid(Rc::new(Rows::Ranges(Rc::new(from_second))), nulls);
     assert_eq!(ranges(&later), [(2, 3)]);
+    // Sliced from the third bit, the rows from the second on read the fourth bit on.
+    let nulls =
+        NullBuffer::from(vec![true, false, false, true, true, false, true, false]).slice(2, 5);
+    let from_second = std::iter::once(1..4).collect();
+    let later = Rows::Valid(Rc::new(Rows::Ranges(Rc::new(from_second))), nulls);
+    assert_eq!(ranges(&later), [(1, 3)]);
 }
 
 #[test]
