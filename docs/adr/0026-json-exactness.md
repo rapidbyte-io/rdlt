@@ -45,11 +45,12 @@ process; H1b fixed it (ADR 0025).
     exact, and one that later takes such a batch stops being exact; nothing makes it exact again.
   - State records them with the schema, as `exact`; a record without them holds none, so a table
     created before this keeps taking floats as JSON text. Amended 2026-10-03 (ADR 0041): the
-    record always holds them, and a record of the earlier format is refused. Losing exactness changes the model but
-    not the table, so it advances the model's revision, which state compares, and not the schema's
-    version, which destinations see. It is decided under the table's lock, before any of the
-    rounding batch is written, and each commit records the table's current model, so no commit
-    records a column exact after a rounding batch was planned.
+    record always holds them, and a record of the earlier format is refused. Losing exactness
+    changes the model but not the table, so it advances the model's revision, which state
+    compares, and not the schema's version, which destinations see. It is decided under the
+    table's lock, before any of the rounding batch is written, and each commit records the
+    table's current model, so no commit records a column exact after a rounding batch was
+    planned.
   - A column of 64-bit floats takes a batch of exact integers cast, as it takes narrower floats.
     The conversion checks again, and refuses a batch whose integers a float would round as
     `value_unrepresentable`, so a plan used on other batches than it judged never rounds.
@@ -89,9 +90,10 @@ process; H1b fixed it (ADR 0025).
 
 ## Consequences
 
-- Tables created from now on take floats after exact integers in a `__float64` column; earlier
-  tables, whose state records no exact column, keep taking them as JSON text.
+- Tables take floats after exact integers in a `__float64` column. Amended 2026-10-03 (ADR 0041):
+  state of the earlier format is refused, so no table takes them as JSON text for want of
+  recorded exact columns.
 - A push holding an integer beyond 38 digits loads instead of failing.
-- State records carry exact columns only when a table has some, and older engines' records read as
-  having none.
+- State records always carry exact columns, none where a table has none; older engines' records
+  are refused (ADR 0041).
 - Spec §8.2's lattice table and JSON value inference are amended by this ADR.
