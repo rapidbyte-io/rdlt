@@ -853,3 +853,64 @@ async fn a_normalized_unit_that_drops_nothing_takes_no_pool_trips_per_part() {
          its four parts takes a trip of its own"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_array_under_a_key_no_table_can_be_named_after_follows_the_streams_policy() {
+    let with_policy = |policy| {
+        stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(policy),
+        )
+    };
+    let long = "k".repeat(300);
+    let documents = [
+        r#"{"id":1,"":[{"a":1}]}"#.to_owned(),
+        "{\"id\":1,\"a\\u0001b\":[{\"a\":1}]}".to_owned(),
+        format!("{{\"id\":1,\"{long}\":[{{\"a\":1}}]}}"),
+        r#"{"id":1,"o":{"":[1,2]}}"#.to_owned(),
+    ];
+    for (index, document) in documents.iter().enumerate() {
+        // On a stream's first load, and with its default policy, the array is refused, typed.
+        let store = format!("unnamable_{index}");
+        let outcome = load(
+            &store,
+            vec![BatchStream::json("events", &[document])],
+            vec![normalized("events")],
+        )
+        .await;
+        let error = outcome.error.expect("the array has no table");
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ErrorKind::Schema, Some("table_path_invalid")),
+            "{document}"
+        );
+        // A stream that discards the values or rows of schema changes loads without it.
+        for policy in [SchemaPolicy::DiscardValue, SchemaPolicy::DiscardRow] {
+            let store = format!("unnamable_{index}_{policy:?}").to_lowercase();
+            let outcome = load(
+                &store,
+                vec![BatchStream::json("events", &[document])],
+                vec![with_policy(policy)],
+            )
+            .await;
+            succeeded(&outcome);
+            let report = &outcome.report.streams["events"];
+            let rows = published_json(&store, "events").len();
+            if policy == SchemaPolicy::DiscardValue {
+                assert_eq!((rows, report.discarded_values > 0), (1, true), "{document}");
+            } else {
+                assert_eq!((rows, report.discarded_rows), (0, 1), "{document}");
+            }
+        }
+        let store = format!("unnamable_{index}_frozen");
+        let outcome = load(
+            &store,
+            vec![BatchStream::json("events", &[document])],
+            vec![with_policy(SchemaPolicy::Freeze)],
+        )
+        .await;
+        let error = outcome.error.expect("a frozen stream adds no table");
+        assert_eq!(error.code(), Some("schema_frozen"), "{document}");
+    }
+}
