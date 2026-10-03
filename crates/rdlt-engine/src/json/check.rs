@@ -245,7 +245,9 @@ fn named_keys<'a, K: ArrowDictionaryKeyType>(
         }
         return (Rows::Bits(Rc::new(bits.finish())), values);
     }
-    let mut listed: Vec<usize> = named.collect();
+    // A key a row at most, gathered in place: what `held` charges.
+    let mut listed: Vec<usize> = Vec::with_capacity(keys.len());
+    listed.extend(named);
     listed.sort_unstable();
     listed.dedup();
     (Rows::Listed(Rc::new(listed)), values)
