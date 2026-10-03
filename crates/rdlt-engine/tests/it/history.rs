@@ -834,6 +834,44 @@ async fn a_change_time_before_its_keys_latest_begins_at_the_latest() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn versions_begun_by_a_clock_that_steps_back_never_end_before_they_begin() {
+    each(Target::IN_PROCESS, |target| async move {
+        let store = "stepped_back";
+        for run in [["a", "b"], ["c", "d"]] {
+            let rows: Vec<RecordBatch> = run
+                .iter()
+                .map(|value| batch(vec![("id", ints(&[1])), ("v", text(&[*value]))]))
+                .collect();
+            let events = BatchStream::new("events", rows).primary_key(&["id"]);
+            // The clock steps back an hour on every reading.
+            let outcome = crate::support::stepping_engine(commit_every(1), -3_600_000)
+                .run(
+                    pipeline(store, [stream("events").write(WriteMode::History)]),
+                    batches(store, vec![events]).await,
+                    target.destination(store).await,
+                )
+                .await;
+            assert_eq!(
+                outcome.report.status,
+                RunStatus::Succeeded,
+                "{target:?}: {:?}",
+                outcome.error
+            );
+        }
+        let spans = spans_at(target, store, "events");
+        assert_eq!(spans.len(), 4, "{target:?}: {spans:?}");
+        for (value, from, to) in &spans {
+            let from = from.expect("every version begins");
+            assert!(
+                to.is_none_or(|to| to >= from),
+                "{target:?} {value}: {spans:?}"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_destination_storing_no_instant_stores_validity_as_microseconds() {
     let store = "validity_numbers";
     let at: ArrayRef = Arc::new(

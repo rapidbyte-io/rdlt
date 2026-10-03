@@ -371,8 +371,8 @@ fn schema_of(job: &PartitionJob, batch: &RecordBatch) -> Result<TableSchema, Err
 fn stamp(context: &PartitionContext, open: &mut OpenSegment, received: u64) -> Stamp {
     let stamp = Stamp {
         load_id: context.load_id,
-        loaded_at: context.loaded_at,
-        received_at: context.env.now(),
+        loaded_at: context.clock.started(),
+        received_at: context.clock.received(context.env.as_ref()),
         segment: open.id,
         first_row: open.received,
     };

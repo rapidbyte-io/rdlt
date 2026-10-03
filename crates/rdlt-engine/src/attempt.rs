@@ -28,7 +28,9 @@ use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
 use crate::naming::{Naming, recorded};
-use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob, Slots};
+use crate::partition::{
+    self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Slots,
+};
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
@@ -283,7 +285,7 @@ async fn launch(
         segments: Arc::new(AtomicU64::new(1)),
         buffer: context.config.partition_buffer(),
         load_id,
-        loaded_at: context.env.now(),
+        clock: Arc::new(LoadClock::new(context.env.now())),
         env: Arc::clone(&context.env),
         batch: *context.config.batch(),
         stop_wait: context.config.stop_wait(),

@@ -154,8 +154,11 @@ pub(super) fn history_columns(
     let valid_from: ArrayRef = if let Some(from) = from {
         begins(stream, from)?
     } else {
-        let since = received.duration_since(UNIX_EPOCH).unwrap_or_default();
-        let at = i64::try_from(since.as_micros()).unwrap_or(i64::MAX);
+        let at = micros_of(received).ok_or_else(|| {
+            Error::internal(format!(
+                "stream {stream}: the clock reads a time microseconds since the epoch cannot hold"
+            ))
+        })?;
         Arc::new(TimestampMicrosecondArray::from(vec![at; rows]).with_timezone("UTC"))
     };
     let valid_to = arrow_array::new_null_array(&micros, rows);
@@ -168,6 +171,20 @@ pub(super) fn history_columns(
         .map(|(row, hash)| hash.filter(|_| !deleting(row)))
         .collect();
     Ok([valid_from, valid_to, current, Arc::new(hashes)])
+}
+
+/// The microseconds since the epoch of `time`, before it negative, a time between two the
+/// earlier; `None` beyond what an `i64` holds.
+fn micros_of(time: SystemTime) -> Option<i64> {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(since) => i64::try_from(since.as_micros()).ok(),
+        Err(before) => {
+            let before = before.duration();
+            let part = u128::from(!before.subsec_nanos().is_multiple_of(1_000));
+            let micros = i64::try_from(before.as_micros() + part).ok()?;
+            Some(-micros)
+        }
+    }
 }
 
 /// When the version of each row whose change time `from` holds begins, in microseconds: a

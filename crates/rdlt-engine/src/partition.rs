@@ -2,6 +2,7 @@
 //! prepare it, and hand it to a lane.
 
 mod barriers;
+mod clock;
 mod coalesce;
 mod latest;
 mod progress;
@@ -14,7 +15,6 @@ mod write;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
 
 use rdlt_connector::cost::Rendering;
 use rdlt_connector::{
@@ -35,6 +35,7 @@ use crate::wal::LoadLog;
 use crate::watch;
 
 use barriers::Barriers;
+pub(crate) use clock::LoadClock;
 use coalesce::{Coalescer, Pushed};
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
@@ -104,8 +105,9 @@ pub(crate) struct PartitionContext {
     pub(crate) segments: Arc<AtomicU64>,
     pub(crate) buffer: NonZeroUsize,
     pub(crate) load_id: LoadId,
-    /// When the attempt started, which every row it loads carries.
-    pub(crate) loaded_at: SystemTime,
+    /// When the attempt started, which every row it loads carries, and when each batch is
+    /// received.
+    pub(crate) clock: Arc<LoadClock>,
     /// The clock the coalescer's deadlines follow, and the pool JSON is shredded on.
     pub(crate) env: Arc<dyn Env>,
     /// How pushes are coalesced and JSON is shredded.

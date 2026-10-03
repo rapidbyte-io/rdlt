@@ -108,3 +108,52 @@ async fn a_cursors_hold_shows_the_bytes_it_holds() {
     assert_eq!(format!("{held:?}"), "CursorHold(3)");
     assert_eq!(format!("{:?}", CursorHold::default()), "CursorHold(0)");
 }
+
+/// A clock reading what a list says, in turn, then its last reading.
+struct Readings(
+    parking_lot::Mutex<Vec<std::time::SystemTime>>,
+    crate::env::SystemEnv,
+);
+
+impl crate::env::Env for Readings {
+    fn now(&self) -> std::time::SystemTime {
+        let mut readings = self.0.lock();
+        if readings.len() > 1 {
+            readings.remove(0)
+        } else {
+            readings[0]
+        }
+    }
+
+    fn instant(&self) -> std::time::Instant {
+        self.1.instant()
+    }
+
+    fn sleep(&self, duration: std::time::Duration) -> crate::env::Sleep {
+        self.1.sleep(duration)
+    }
+
+    fn random(&self) -> u64 {
+        self.1.random()
+    }
+
+    fn compute(&self) -> &dyn crate::compute::ComputePool {
+        self.1.compute()
+    }
+}
+
+#[test]
+fn a_load_s_batches_are_received_in_order_whatever_the_clock_reads() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let at = |seconds: u64| UNIX_EPOCH + Duration::from_secs(seconds);
+    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
+    let readings = [at(5), at(20), at(10), at(30)];
+    let env = Readings(
+        parking_lot::Mutex::new(readings.to_vec()),
+        crate::env::SystemEnv::new(pool),
+    );
+    let clock = super::LoadClock::new(at(10));
+    let received: Vec<_> = (0..4).map(|_| clock.received(&env)).collect();
+    assert_eq!(received, [at(10), at(20), at(20), at(30)]);
+    assert_eq!(clock.started(), at(10));
+}
