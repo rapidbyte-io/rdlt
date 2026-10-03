@@ -215,6 +215,7 @@ impl Setup {
                 },
                 root: None,
                 columns: u64::MAX,
+                unwidened: std::collections::BTreeSet::new(),
             };
             let index = tables.add(resolver, &table(None), Model::default());
             if let (0, Some(schema)) = (index, &self.schema) {

@@ -98,6 +98,9 @@ pub(crate) struct Resolver {
     pub(crate) root: Option<RootKey>,
     /// Columns: the most the table may hold, its nested fields counted.
     pub(crate) columns: u64,
+    /// The columns whose widening in place the destination refused: a value they cannot hold
+    /// goes to a variant column instead.
+    pub(crate) unwidened: BTreeSet<ColumnKey>,
 }
 
 /// A batch's columns as they arrive: their types, and each column's path within its table.
@@ -174,6 +177,16 @@ impl Resolver {
             root,
             ..self.clone()
         })
+    }
+
+    /// The same resolver, widening none of `columns` in place.
+    pub(crate) fn unwidening(&self, columns: impl IntoIterator<Item = ColumnKey>) -> Self {
+        let mut unwidened = self.unwidened.clone();
+        unwidened.extend(columns);
+        Self {
+            unwidened,
+            ..self.clone()
+        }
     }
 
     /// The same resolver, appending a hash seeded with `salt` to every identifier it assigns.
@@ -305,6 +318,9 @@ impl Resolver {
         let widens = !column.hinted
             && joined == lattice
             && joined != LogicalType::Json
+            && !self
+                .unwidened
+                .contains(&ColumnKey::Source(column.path.clone()))
             && self.widens(&current, &joined, column.settings.nested);
         let cannot = |what: &str| format!("the column is {current} and {what} {}", column.logical);
         if column.is_key {
@@ -357,6 +373,7 @@ impl Resolver {
         let wider = current.join(column.logical);
         if wider != LogicalType::Json
             && wider.kind() == kind
+            && !self.unwidened.contains(&key(kind))
             && self.widens(&current, &wider, column.settings.nested)
         {
             // A variant's kind is its type's, so it never widens to 64-bit integers.

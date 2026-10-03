@@ -150,6 +150,7 @@ impl Planning<'_> {
             meta,
             root: None,
             columns: self.context.config.limits().schema_columns,
+            unwidened: BTreeSet::new(),
         };
         Ok((resolver, table, model))
     }

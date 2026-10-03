@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 use rdlt_connector::{
-    ConnectorError, Field, PipelineState, StateChange, TableChange, TablePath, TableRef, TableState,
+    ColumnKey, ConnectorError, Field, PipelineState, StateChange, TableChange, TablePath, TableRef,
+    TableState,
 };
 
 use super::model::Model;
@@ -278,11 +279,18 @@ impl Tables {
         let (mut resolver, mut resolution, mut retries) =
             (Cow::Borrowed(&slot.resolver), resolution, 0);
         let next = loop {
+            let widened = widened(&view.model, &resolution.changes);
             match self.evolve(table, &view, resolution, &resolver).await? {
                 Ok(next) => break next,
                 Err(error) if retries == CONFLICT_RETRIES => return Err(self.refused(table, error)),
+                // The refusal does not say which change it refused: a widen, whose column then
+                // keeps its type, before the names of new columns.
                 Err(_conflict) => {
-                    resolver = Cow::Owned(slot.resolver.hashing(retries as u64));
+                    resolver = Cow::Owned(if widened.is_empty() {
+                        resolver.hashing(retries as u64)
+                    } else {
+                        resolver.unwidening(widened)
+                    });
                     resolution = resolver.resolve(&view.model, incoming)?;
                     retries += 1;
                 }
@@ -399,6 +407,18 @@ impl Tables {
             self.release_records(*index, *revision);
         }
     }
+}
+
+/// The columns of `model` that `changes` widen in place.
+fn widened(model: &Model, changes: &[Change]) -> Vec<ColumnKey> {
+    changes
+        .iter()
+        .filter_map(|change| match change {
+            Change::Widen { column, .. } => model.names.owner(model.columns[*column].name()),
+            Change::Add { .. } => None,
+        })
+        .cloned()
+        .collect()
 }
 
 /// The identifiers `state` records for more than one table.

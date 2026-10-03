@@ -75,6 +75,7 @@ fn resolver(capabilities: Capabilities, policy: SchemaPolicy, nested: Nested) ->
         capabilities: Arc::new(capabilities),
         root: None,
         columns: u64::MAX,
+        unwidened: std::collections::BTreeSet::new(),
     }
 }
 

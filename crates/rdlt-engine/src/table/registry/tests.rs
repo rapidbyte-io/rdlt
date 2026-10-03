@@ -82,6 +82,7 @@ fn resolver() -> Resolver {
         },
         root: None,
         columns: u64::MAX,
+        unwidened: BTreeSet::new(),
     }
 }
 

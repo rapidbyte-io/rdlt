@@ -18,6 +18,7 @@ use rdlt_connector::{
 };
 
 mod limits;
+mod unwidened;
 
 use super::TableView;
 use super::convert::{convert, json};
@@ -62,6 +63,7 @@ fn resolver(capabilities: Capabilities, stream: StreamPlan, key: &[&str]) -> Res
         },
         root: None,
         columns: u64::MAX,
+        unwidened: BTreeSet::new(),
     }
 }
 
