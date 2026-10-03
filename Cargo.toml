@@ -69,6 +69,7 @@ hyper-util = { version = "0.1.21", default-features = false } # tokio's executor
 tokio-stream = { version = "0.1.19", default-features = false } # the streams a served read and write answer with
 tower = { version = "0.5.3", default-features = false } # adapting the gRPC service and the client's connector
 rayon = "1.12.0" # the compute pool for CPU-bound stages
+ryu = "1.0.23" # the shortest text of a float, which row identity encodes exactly
 rustls = { version = "0.23.45", default-features = false, features = [
   "ring",
   "std",
