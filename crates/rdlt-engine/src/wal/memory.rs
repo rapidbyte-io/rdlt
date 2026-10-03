@@ -18,7 +18,8 @@ pub(crate) struct Stored {
     pub(crate) synced: usize,
 }
 
-/// Chunks by pipeline and chunk; `failing` makes every call fail, `unsyncable` every sync.
+/// Chunks by pipeline and chunk; `failing` makes every call fail, `unsyncable` every sync and
+/// `unremovable` every removal of a chunk.
 #[derive(Debug, Default)]
 pub(crate) struct MemoryWal {
     pub(crate) chunks: Mutex<BTreeMap<(PipelineId, Chunk), Stored>>,
@@ -26,6 +27,7 @@ pub(crate) struct MemoryWal {
     /// Whether every call is interrupted, as a transient failure a retry may not meet.
     pub(crate) interrupted: Mutex<bool>,
     pub(crate) unsyncable: Mutex<bool>,
+    pub(crate) unremovable: Mutex<bool>,
     /// The logs claimed, each until its claim is dropped.
     pub(crate) claimed: Arc<Mutex<BTreeSet<(PipelineId, LoadId)>>>,
     /// Every append, in order, removed chunks' included.
@@ -201,8 +203,12 @@ impl WalStore for MemoryWal {
         pipeline: &'a PipelineId,
         chunk: Chunk,
     ) -> BoxFuture<'a, io::Result<()>> {
-        let removed = self.check().map(|()| {
+        let removed = self.check().and_then(|()| {
+            if *self.unremovable.lock() {
+                return Err(io::Error::other("the disk failed to remove a file"));
+            }
             self.chunks.lock().remove(&(pipeline.clone(), chunk));
+            Ok(())
         });
         ready(removed)
     }

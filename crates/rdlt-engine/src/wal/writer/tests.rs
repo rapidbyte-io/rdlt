@@ -1,4 +1,5 @@
 mod abandoned;
+mod carried;
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -261,7 +262,7 @@ async fn a_chunk_goes_once_every_segment_and_commit_in_it_is_committed() {
                 .collect()
         };
         send(&writer, table(0)).await;
-        // Segment 2's batch lands in chunk 0, but only commit 2, in chunk 1, covers it.
+        // Segment 2's batch lands in chunk 0, but only commit 2, logged after it, covers it.
         send(&writer, batch(1, 0)).await;
         send(&writer, batch(2, 0)).await;
         let (command, answer) = commit(1, &[1]);
@@ -272,7 +273,9 @@ async fn a_chunk_goes_once_every_segment_and_commit_in_it_is_committed() {
         let (command, answer) = commit(2, &[2, 3]);
         send(&writer, command).await;
         answer.await.expect("the writer answers").expect("durable");
-        assert_eq!(numbers(&observed), [0, 1], "chunk 0 holds segment 2");
+        // Segment 2 was open when commit 1's receipt settled the rest of chunk 0: its frame was
+        // carried into chunk 1, and chunk 0 went.
+        assert_eq!(numbers(&observed), [1], "chunk 1 holds segment 2");
         send(&writer, committed(2)).await;
         send(&writer, batch(4, 0)).await;
         let (command, answer) = commit(3, &[4]);

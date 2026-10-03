@@ -66,10 +66,11 @@ async fn a_commit_s_frame_follows_every_batch_of_its_segments_however_slow_the_d
 }
 
 /// The commits and the rows `store`'s appends logged, checking each batch was logged before the
-/// commit that took its segment, and none after.
+/// commit that took its segment, and none after; a batch carried out of an old chunk, the same
+/// frame appended again, counts once.
 fn logged_in_order(store: &MemoryWal) -> (usize, usize) {
     let (mut logged, mut committed) = (BTreeSet::new(), BTreeSet::new());
-    let (mut commits, mut rows) = (0, 0);
+    let (mut commits, mut rows, mut frames) = (0, 0, BTreeSet::new());
     for frame in store.appended.lock().iter() {
         match Frames::new(frame).next() {
             Some(Ok((_, Frame::Batch(batch)))) => {
@@ -79,7 +80,9 @@ fn logged_in_order(store: &MemoryWal) -> (usize, usize) {
                     batch.segment
                 );
                 logged.insert(batch.segment);
-                rows += batch.batch.num_rows();
+                if frames.insert(frame.clone()) {
+                    rows += batch.batch.num_rows();
+                }
             }
             Some(Ok((_, Frame::Commit(meta)))) => {
                 commits += 1;
