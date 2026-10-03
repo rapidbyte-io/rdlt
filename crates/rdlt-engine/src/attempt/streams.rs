@@ -65,7 +65,7 @@ impl Planning<'_> {
         if let Some(declared) = spec.schema() {
             let incoming = match &shape {
                 Some(shape) => {
-                    tables.declare_children(index, normalize::declared_arrays(declared, shape));
+                    tables.declare_children(index, normalize::declared_arrays(declared, shape))?;
                     normalize::root_columns(declared, shape)?
                 }
                 None => Incoming::declared(declared.clone()),
