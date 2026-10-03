@@ -30,7 +30,7 @@ use crate::table::convert::{convert, decoded, json, normalize, text};
 /// Counts what this crate's tests allocate, for those that hold a peak to a charge: each runs in
 /// a process of its own.
 #[global_allocator]
-static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
+pub(crate) static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
 
 /// What `column` expands to, as the engine charges it for a destination storing `native` kinds.
 fn expanded(column: &ArrayRef, native: &[TypeKind]) -> u64 {

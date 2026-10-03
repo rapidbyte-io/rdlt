@@ -55,8 +55,24 @@ async fn checked(
         return Ok(());
     }
     let batches = batches.to_vec();
+    let compute = context.env.compute();
+    let measured = batches.clone();
+    let measure = move || measured.iter().map(json::held_by_check).max();
+    let held = run_all(compute, [measure])
+        .await
+        .pop()
+        .flatten()
+        .unwrap_or(0);
+    // What the check holds beside the batches is reserved before it is held, and held with it.
+    let _reserved = match held {
+        0 => None,
+        bytes => {
+            let too_large = |large: TooLarge| checking_beyond_a_request(job, &large);
+            Some(reserving(job, context, bytes, too_large).await?)
+        }
+    };
     let check = move || batches.iter().try_for_each(json::check_batch);
-    let checked = run_all(context.env.compute(), [check]).await.pop();
+    let checked = run_all(compute, [check]).await.pop();
     let Some(Err(NotJson { column, error })) = checked else {
         return Ok(());
     };
@@ -103,6 +119,21 @@ async fn shredded(
         .zip(held)
         .map(|(batch, held)| (vec![batch], held))
         .collect())
+}
+
+/// The error for an Arrow push whose columns of JSON take more to check than one request may
+/// take of the budget.
+fn checking_beyond_a_request(job: &PartitionJob, large: &TooLarge) -> Error {
+    Error::new(
+        ErrorKind::Source,
+        format!(
+            "stream {}: checking the JSON values of a push takes {} bytes, more than the {} one \
+             request may take of the memory budget",
+            job.stream, large.asked, large.limit
+        ),
+    )
+    .with_code(JSON_EXCEEDS_BUDGET)
+    .with_stream(&job.stream)
 }
 
 /// The error for JSON pushes whose batches take more beyond what the pushes were admitted for
