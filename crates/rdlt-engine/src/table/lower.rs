@@ -1,6 +1,5 @@
 //! Lowering: how a destination stores each logical type, and the physical columns of a table.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
@@ -12,7 +11,6 @@ use rdlt_connector::{
 };
 
 use super::model::Model;
-use crate::error::Error;
 use crate::naming::Naming;
 use crate::policy::Nested;
 
@@ -85,11 +83,7 @@ pub(crate) enum LineageColumns {
 impl MetaNames {
     /// The metadata identifiers of a table under `naming`'s rules: a sequence column for a merge
     /// table, and the lineage columns it has.
-    pub(crate) fn assign(
-        naming: &Naming,
-        merge: bool,
-        lineage: LineageColumns,
-    ) -> Result<Self, Error> {
+    pub(crate) fn assign(naming: &Naming, merge: bool, lineage: LineageColumns) -> Self {
         Self::assign_changes(naming, merge, lineage, None)
     }
 
@@ -99,88 +93,42 @@ impl MetaNames {
         merge: bool,
         lineage: LineageColumns,
         layout: Option<ChangeLayout>,
-    ) -> Result<Self, Error> {
-        let mut taken = BTreeSet::new();
-        let mut name = |column: &str| -> Result<Arc<str>, Error> {
-            let name = naming.metadata(column, &taken)?;
-            taken.insert(name.clone());
-            Ok(name.into())
-        };
-        Ok(Self {
-            load_id: name(LOAD_ID_COLUMN)?,
-            loaded_at: name(LOADED_AT_COLUMN)?,
-            seq: (merge || layout.is_some())
-                .then(|| name(SEQ_COLUMN))
-                .transpose()?,
-            changes: match layout {
-                None => None,
-                Some(layout) => Some(ChangeNames {
-                    op: name(OP_COLUMN)?,
-                    unchanged: name(UNCHANGED_COLUMN)?,
-                    deleted_at: match layout {
-                        ChangeLayout::Merge { soft: true } => Some(name(DELETED_AT_COLUMN)?),
-                        _ => None,
-                    },
-                    stored: layout == ChangeLayout::Log,
-                }),
-            },
-            id: (lineage != LineageColumns::None)
-                .then(|| name(ID_COLUMN))
-                .transpose()?,
-            parent: match lineage {
-                LineageColumns::Child => Some([
-                    name(PARENT_ID_COLUMN)?,
-                    name(ROOT_ID_COLUMN)?,
-                    name(IDX_COLUMN)?,
-                ]),
-                _ => None,
-            },
+    ) -> Self {
+        let name = |column: &str| naming.metadata(column);
+        Self {
+            load_id: name(LOAD_ID_COLUMN),
+            loaded_at: name(LOADED_AT_COLUMN),
+            seq: (merge || layout.is_some()).then(|| name(SEQ_COLUMN)),
+            changes: layout.map(|layout| ChangeNames {
+                op: name(OP_COLUMN),
+                unchanged: name(UNCHANGED_COLUMN),
+                deleted_at: (layout == ChangeLayout::Merge { soft: true })
+                    .then(|| name(DELETED_AT_COLUMN)),
+                stored: layout == ChangeLayout::Log,
+            }),
+            id: (lineage != LineageColumns::None).then(|| name(ID_COLUMN)),
+            parent: (lineage == LineageColumns::Child).then(|| {
+                [
+                    name(PARENT_ID_COLUMN),
+                    name(ROOT_ID_COLUMN),
+                    name(IDX_COLUMN),
+                ]
+            }),
             history: None,
-        })
+        }
     }
 
     /// These names, with a history table's columns under `naming`'s rules, whose versions begin
     /// at the incoming `change_time` column, or when their batch arrived.
-    pub(crate) fn with_history(
-        mut self,
-        naming: &Naming,
-        change_time: Option<Arc<str>>,
-    ) -> Result<Self, Error> {
-        let mut taken: BTreeSet<String> = self.all().into_iter().map(ToOwned::to_owned).collect();
-        let mut name = |column: &str| -> Result<Arc<str>, Error> {
-            let name = naming.metadata(column, &taken)?;
-            taken.insert(name.clone());
-            Ok(name.into())
-        };
+    pub(crate) fn with_history(mut self, naming: &Naming, change_time: Option<Arc<str>>) -> Self {
         self.history = Some(HistoryNames {
-            valid_from: name(VALID_FROM_COLUMN)?,
-            valid_to: name(VALID_TO_COLUMN)?,
-            is_current: name(IS_CURRENT_COLUMN)?,
-            row_hash: name(ROW_HASH_COLUMN)?,
+            valid_from: naming.metadata(VALID_FROM_COLUMN),
+            valid_to: naming.metadata(VALID_TO_COLUMN),
+            is_current: naming.metadata(IS_CURRENT_COLUMN),
+            row_hash: naming.metadata(ROW_HASH_COLUMN),
             change_time,
         });
-        Ok(self)
-    }
-
-    /// Every metadata identifier, which source columns may not take.
-    pub(crate) fn all(&self) -> Vec<&str> {
-        let mut names = vec![self.load_id.as_ref(), self.loaded_at.as_ref()];
-        names.extend(self.seq.as_deref());
-        if let Some(changes) = &self.changes {
-            names.extend([changes.op.as_ref(), changes.unchanged.as_ref()]);
-            names.extend(changes.deleted_at.as_deref());
-        }
-        if let Some(history) = &self.history {
-            names.extend([
-                history.valid_from.as_ref(),
-                history.valid_to.as_ref(),
-                history.is_current.as_ref(),
-                history.row_hash.as_ref(),
-            ]);
-        }
-        names.extend(self.id.as_deref());
-        names.extend(self.parent.iter().flatten().map(AsRef::as_ref));
-        names
+        self
     }
 }
 

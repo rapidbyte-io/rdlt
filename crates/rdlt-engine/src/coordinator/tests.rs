@@ -219,7 +219,9 @@ impl Setup {
                 columns: u64::MAX,
                 unwidened: std::collections::BTreeSet::new(),
             };
-            let index = tables.add(resolver, &table(None), Model::default());
+            let index = tables
+                .add(resolver, &table(None), Model::default())
+                .unwrap();
             if let (0, Some(schema)) = (index, &self.schema) {
                 tables
                     .fit(index, &Incoming::declared(schema.clone()))

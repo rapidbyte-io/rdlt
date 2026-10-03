@@ -150,7 +150,7 @@ fn budgeted(
             generation: None,
             merge: None,
         };
-        all.add(resolver(&name), &table, Model::default());
+        all.add(resolver(&name), &table, Model::default()).unwrap();
     }
     let writers = crate::config::GrowthLimits::default().writers();
     Lanes::new(

@@ -185,21 +185,34 @@ impl Tables {
     }
 
     /// Adds the table `table` at its committed `model`; returns its index.
-    pub(crate) fn add(&self, resolver: Resolver, table: &TableRef, model: Model) -> usize {
+    ///
+    /// # Errors
+    ///
+    /// As [`TableView::new`].
+    pub(crate) fn add(
+        &self,
+        resolver: Resolver,
+        table: &TableRef,
+        model: Model,
+    ) -> Result<usize, Error> {
         self.add_normalized(resolver, table, model, None)
     }
 
     /// Adds the table `table` at its committed `model`, whose stream normalizes as `shape`, if
     /// it does; returns its index.
+    ///
+    /// # Errors
+    ///
+    /// As [`TableView::new`].
     pub(crate) fn add_normalized(
         &self,
         resolver: Resolver,
         table: &TableRef,
         model: Model,
         shape: Option<Shape>,
-    ) -> usize {
+    ) -> Result<usize, Error> {
         let recorded = model.revision;
-        let view = TableView::new(table, model, &resolver);
+        let view = TableView::new(table, model, &resolver)?;
         let mut slots = self.slots.write();
         slots.push(Arc::new(Slot {
             resolver: Mutex::new(Arc::new(resolver)),
@@ -210,7 +223,7 @@ impl Tables {
             shape: shape.map(Arc::new),
             records: Mutex::new(None),
         }));
-        slots.len() - 1
+        Ok(slots.len() - 1)
     }
 
     fn slot(&self, table: usize) -> Arc<Slot> {
@@ -332,7 +345,7 @@ impl Tables {
         resolution: Resolution,
         resolver: &Resolver,
     ) -> Result<Result<(Arc<TableView>, Vec<Route>), Conflict>, Error> {
-        let next = Arc::new(TableView::new(&view.table, resolution.model, resolver));
+        let next = Arc::new(TableView::new(&view.table, resolution.model, resolver)?);
         // What the commit will record of the change is reserved before the destination sees it.
         self.reserve_records(table, &next).await?;
         let changes = table_changes(view, &next, &resolution.changes);

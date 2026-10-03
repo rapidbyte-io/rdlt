@@ -66,7 +66,7 @@ impl Tables {
         if recorded.is_none() {
             self.admit_another(root, &parent.stream)?;
         }
-        let resolver = parent.child(root_key, owner)?;
+        let resolver = parent.child(root_key, owner);
         let model = Model::from_state(recorded)?;
         let table = TableRef {
             name: self.name(&table_path, &resolver.naming)?,
@@ -75,7 +75,7 @@ impl Tables {
             generation: base.generation,
             merge: None,
         };
-        let index = self.add(resolver, &table, model);
+        let index = self.add(resolver, &table, model)?;
         self.create_generation(index).await?;
         self.children.lock().insert(key, index);
         Ok(index)
