@@ -333,6 +333,49 @@ fn opened(bytes: &[u8]) -> Result<(u8, &[u8]), Error> {
     Ok((head[0], payload))
 }
 
+/// The kind of a batch's frame.
+pub(crate) const BATCH: u8 = 3;
+
+/// A frame's checksum, summed over its head and its payload as the payload is read a piece at a
+/// time.
+pub(crate) struct Summing {
+    expected: u32,
+    sum: u32,
+}
+
+impl Summing {
+    /// The checksum the frame whose head, its first [`HEAD`] bytes, is `head` says it has.
+    pub(crate) fn of(head: &[u8]) -> Option<Self> {
+        let (counted, expected) = (head.get(..5)?, head.get(5..HEAD)?);
+        Some(Self {
+            expected: u32::from_le_bytes([expected[0], expected[1], expected[2], expected[3]]),
+            sum: crc32c::crc32c(counted),
+        })
+    }
+
+    /// Adds the next `piece` of the payload.
+    pub(crate) fn add(&mut self, piece: &[u8]) {
+        self.sum = crc32c::crc32c_append(self.sum, piece);
+    }
+
+    /// Checks the sum of the whole payload against the checksum the head says.
+    pub(crate) fn check(&self) -> Result<(), Error> {
+        if self.sum != self.expected {
+            return Err(garbled(&"its checksum does not match"));
+        }
+        Ok(())
+    }
+}
+
+/// The header a batch frame's payload, starting with `start`, opens with.
+///
+/// # Errors
+///
+/// Where `start` does not hold the whole header, or it does not read.
+pub(crate) fn batch_header_in(start: &[u8]) -> Result<BatchHeader, Error> {
+    batch_header(start).map(|(header, _)| header)
+}
+
 /// A frame as a scan reads it: a batch's header, without its batch, or any other frame whole.
 pub(crate) enum Skimmed {
     Batch(BatchHeader),
@@ -359,26 +402,60 @@ pub(crate) fn skim(bytes: &[u8]) -> Result<Skimmed, Error> {
 ///
 /// As [`skim`], and where a batch's data does not hold together, passes `limits`, or holds other
 /// than the rows its header says.
-pub(crate) fn decode(bytes: &[u8], limits: rdlt_wire::Limits) -> Result<Frame, Error> {
+#[cfg(test)]
+pub(crate) fn decode(bytes: &Bytes, limits: rdlt_wire::Limits) -> Result<Frame, Error> {
     let (kind, payload) = opened(bytes)?;
     if kind != 3 {
         return parsed(kind, payload);
     }
-    let (header, end) = batch_header(payload)?;
-    let batch = arrow::decode(&payload[end..], limits)?;
-    if u64::try_from(batch.num_rows()).ok() != Some(header.rows) {
-        return Err(garbled(&format!(
-            "its batch holds {} rows, and its header says {}",
-            batch.num_rows(),
-            header.rows
-        )));
+    pending(bytes, limits)?.decode().map(Frame::Batch)
+}
+
+/// A batch frame read and measured, its batch not decoded yet.
+pub(crate) struct Pending {
+    pub(crate) header: BatchHeader,
+    batch: arrow::Measured,
+}
+
+impl Pending {
+    /// Bytes: what decoding the batch allocates.
+    pub(crate) fn held(&self) -> u64 {
+        self.batch.held()
     }
-    Ok(Frame::Batch(Batch {
-        segment: header.segment,
-        table: header.table,
-        ordinal: header.ordinal,
-        batch,
-    }))
+
+    /// The batch, which must hold the rows its header says.
+    pub(crate) fn decode(self) -> Result<Batch, Error> {
+        let batch = self.batch.decode()?;
+        if u64::try_from(batch.num_rows()).ok() != Some(self.header.rows) {
+            return Err(garbled(&format!(
+                "its batch holds {} rows, and its header says {}",
+                batch.num_rows(),
+                self.header.rows
+            )));
+        }
+        Ok(Batch {
+            segment: self.header.segment,
+            table: self.header.table,
+            ordinal: self.header.ordinal,
+            batch,
+        })
+    }
+}
+
+/// The batch frame `bytes` holds whole, checked and measured within `limits`, not decoded.
+///
+/// # Errors
+///
+/// Where the frame is not whole, its checksum does not match, it is no batch, or its data does
+/// not hold together or passes `limits`.
+pub(crate) fn pending(bytes: &Bytes, limits: rdlt_wire::Limits) -> Result<Pending, Error> {
+    let (kind, payload) = opened(bytes)?;
+    if kind != 3 {
+        return Err(garbled(&format!("a frame of kind {kind} is no batch")));
+    }
+    let (header, end) = batch_header(payload)?;
+    let batch = arrow::measured(bytes.slice(HEAD + end..), limits)?;
+    Ok(Pending { header, batch })
 }
 
 /// The header a batch frame's payload starts with, and where its batch begins.
@@ -422,6 +499,7 @@ fn parse<T: DeserializeOwned>(payload: &[u8]) -> Result<T, Error> {
 #[cfg(test)]
 pub(crate) fn frames(chunk: &[u8], limits: rdlt_wire::Limits) -> Result<Vec<Frame>, Error> {
     check_preamble(chunk)?;
+    let shared = Bytes::copy_from_slice(chunk);
     let mut frames = Vec::new();
     let mut offset = PREAMBLE;
     while offset < chunk.len() {
@@ -433,7 +511,7 @@ pub(crate) fn frames(chunk: &[u8], limits: rdlt_wire::Limits) -> Result<Vec<Fram
             .checked_add(len)
             .filter(|end| *end <= chunk.len())
             .ok_or_else(|| garbled(&"it ends inside a frame"))?;
-        frames.push(decode(&chunk[offset..end], limits)?);
+        frames.push(decode(&shared.slice(offset..end), limits)?);
         offset = end;
     }
     Ok(frames)

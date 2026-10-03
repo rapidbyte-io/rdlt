@@ -54,6 +54,22 @@ fn crossed(batch: &RecordBatch) -> (RecordBatch, Shape) {
     (batch.expect("the last frame is the batch"), shape)
 }
 
+proptest! {
+    /// What a frame is measured to hold decoded, before anything is copied, is what decoding it
+    /// holds, a dictionary's frame among them.
+    #[test]
+    fn a_frame_is_measured_as_its_decoding_holds_it(drawn in values::drawn()) {
+        let batch = batch(&drawn);
+        let (mut encoder, mut decoder) = (Encoder::default(), Decoder::new(Limits::default()));
+        decoder.schema(&encoder.schema(&batch.schema()).unwrap()).unwrap();
+        for frame in encoder.batch(&batch).unwrap() {
+            let measured = decoder.held(&frame).unwrap();
+            let (_, shape) = decoder.shaped(&frame).unwrap();
+            prop_assert_eq!(measured, shape.held_bytes);
+        }
+    }
+}
+
 /// What `array` and the columns nested in it declare, counted from the array itself: its values,
 /// and the bytes its views name in their data buffers.
 fn declared(array: &dyn Array) -> (u64, u64) {

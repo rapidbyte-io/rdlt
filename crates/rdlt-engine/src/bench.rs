@@ -99,7 +99,9 @@ pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
     let limits = frame::limits(crate::config::EngineConfig::default().memory().get());
     let scanned = ready(scan::scan(&store, &pipeline, load, limits.frame_bytes)).map_err(code)?;
     for located in scanned.batches.values().flatten() {
-        ready(scan::batch(&store, &pipeline, *located, limits)).map_err(code)?;
+        ready(scan::batch(&store, &pipeline, *located, limits))
+            .and_then(scan::Read::decode)
+            .map_err(code)?;
     }
     Ok(scanned.commits.len())
 }

@@ -194,12 +194,17 @@ impl Replaying {
                 if created.insert(located.table) {
                     self.create(scanned, located.table).await?;
                 }
-                // The frame is reserved before it is read, and what its batch holds before the
-                // frame's bytes go.
+                // The frame is reserved before it is read, and what decoding its batch allocates
+                // for its buffers before it is decoded; the frame's bytes go once it is, and what
+                // else the batch holds, beside its buffers, is reserved then.
                 let frame = staged.reserve(located.len).await?;
-                let batch = scan::batch(store, pipeline, *located, limits).await?;
-                let held = staged.reserve(Allocations::of(&batch).bytes()).await?;
+                let read = scan::batch(store, pipeline, *located, limits).await?;
+                let buffers = read.held();
+                let decoding = staged.reserve(buffers).await?;
+                let batch = read.decode()?;
                 drop(frame);
+                let rest = Allocations::of(&batch).bytes().saturating_sub(buffers);
+                let held = [decoding, staged.reserve(rest).await?];
                 let open = || async {
                     self.session
                         .writer(table)

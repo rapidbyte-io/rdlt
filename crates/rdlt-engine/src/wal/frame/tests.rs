@@ -1,4 +1,6 @@
 use std::sync::Arc;
+
+use bytes::Bytes;
 use std::time::UNIX_EPOCH;
 
 use arrow_array::RecordBatch;
@@ -40,7 +42,7 @@ fn commit_meta() -> CommitMeta {
         segments: [SegmentId(1), SegmentId(4)].into_iter().collect(),
         state_delta: vec![StateChange::Put(StateRecord {
             key: "k".to_owned(),
-            value: bytes::Bytes::from_static(b"\x00\xffvalue"),
+            value: Bytes::from_static(b"\x00\xffvalue"),
         })],
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
@@ -130,9 +132,14 @@ fn limits() -> rdlt_wire::Limits {
     super::limits(crate::config::EngineConfig::default().memory().get())
 }
 
+/// The frame `bytes` holds, read from bytes of its own.
+fn decode(bytes: &[u8], limits: rdlt_wire::Limits) -> Result<Frame, crate::Error> {
+    super::decode(&Bytes::copy_from_slice(bytes), limits)
+}
+
 /// The frame `bytes` holds, alone.
 fn decoded(bytes: &[u8]) -> Frame {
-    super::decode(bytes, limits()).expect("the frame decodes")
+    decode(bytes, limits()).expect("the frame decodes")
 }
 
 #[test]
@@ -159,7 +166,7 @@ fn a_seal_that_does_not_name_its_phase_is_refused() {
         .expect("the seal names its phase");
     let payload = serde_json::to_vec(&payload).expect("JSON encodes");
     let lacking = super::framed(bytes[0], &payload).expect("a frame");
-    assert!(super::decode(&lacking, limits()).is_err());
+    assert!(decode(&lacking, limits()).is_err());
 }
 
 proptest! {
@@ -209,7 +216,7 @@ fn a_chunk_s_frames_read_back_and_any_byte_changed_or_cut_is_refused() {
 #[test]
 fn a_frame_of_zeros_is_no_frame() {
     // An empty frame of kind 0 whose checksum is zero, as a region of zeros reads.
-    assert!(super::decode(&[0; HEAD], limits()).is_err());
+    assert!(decode(&[0; HEAD], limits()).is_err());
     let empty = super::framed(0, &[]).expect("a frame");
     assert_ne!(
         &empty[5..],
@@ -252,11 +259,11 @@ fn a_chunk_of_another_format_or_none_at_all_is_told_from_one_damaged() {
 #[test]
 fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error() {
     let frame = super::framed(2, b"not json").expect("a frame");
-    assert!(super::decode(&frame, limits()).is_err());
+    assert!(decode(&frame, limits()).is_err());
     // An unknown kind is refused too, and a closing frame that holds anything.
     for kind in [99, 7, 6] {
         let frame = super::framed(kind, b"{}").expect("a frame");
-        assert!(super::decode(&frame, limits()).is_err(), "kind {kind}");
+        assert!(decode(&frame, limits()).is_err(), "kind {kind}");
     }
 }
 
@@ -264,7 +271,7 @@ fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error(
 const GARBLED: &[u8] = include_bytes!("garbled_batch.ipc");
 
 /// A batch frame of segment 1 holding `arrow`, a batch of `rows` rows in the wire's framing.
-fn batch_frame(arrow: &[u8], rows: u64) -> bytes::Bytes {
+fn batch_frame(arrow: &[u8], rows: u64) -> Bytes {
     let header = serde_json::to_vec(&BatchHeader {
         segment: SegmentId(1),
         table: 0,
@@ -283,7 +290,7 @@ fn batch_frame(arrow: &[u8], rows: u64) -> bytes::Bytes {
 
 #[test]
 fn a_batch_whose_arrow_data_does_not_hold_together_is_an_error_not_a_panic() {
-    assert!(super::decode(&batch_frame(GARBLED, 1), limits()).is_err());
+    assert!(decode(&batch_frame(GARBLED, 1), limits()).is_err());
 }
 
 /// `batch` in a batch frame, and the frames the frame's bytes decode to.
@@ -364,14 +371,14 @@ fn a_logged_batch_beyond_what_a_request_for_lowering_holds_is_refused() {
         .encode()
         .expect("the frame encodes")
     };
-    super::decode(&frame(nulls(request)), limits).expect("as many rows as a request holds");
-    assert!(super::decode(&frame(nulls(request + 1)), limits).is_err());
+    decode(&frame(nulls(request)), limits).expect("as many rows as a request holds");
+    assert!(decode(&frame(nulls(request + 1)), limits).is_err());
     let blob = |bytes: usize| {
         let column = Arc::new(BinaryArray::from_iter_values([vec![7_u8; bytes]]));
         RecordBatch::try_from_iter([("b", column as arrow_array::ArrayRef)]).expect("a batch")
     };
-    super::decode(&frame(blob(request - (1 << 10))), limits).expect("a frame within a request");
-    assert!(super::decode(&frame(blob(request)), limits).is_err());
+    decode(&frame(blob(request - (1 << 10))), limits).expect("a frame within a request");
+    assert!(decode(&frame(blob(request)), limits).is_err());
 }
 
 #[test]
@@ -390,17 +397,17 @@ fn a_logged_batch_whose_rows_are_forged_is_refused_not_decoded_as_said() {
             tampered[at + found..at + found + 8].copy_from_slice(&forged.to_le_bytes());
             at += found + 8;
         }
-        let read = super::decode(
+        let read = decode(
             &batch_frame(&tampered, u64::from_le_bytes(forged.to_le_bytes())),
             limits(),
         );
         assert!(read.is_err(), "{forged}");
     }
     // Its header's rows disagreeing with what its data holds.
-    let read = super::decode(&batch_frame(&logged, 1), limits());
+    let read = decode(&batch_frame(&logged, 1), limits());
     assert!(read.is_err());
     let rows = u64::try_from(rows).expect("fits");
-    super::decode(&batch_frame(&logged, rows), limits()).expect("as said");
+    decode(&batch_frame(&logged, rows), limits()).expect("as said");
 }
 
 #[test]
@@ -410,7 +417,7 @@ fn a_batch_whose_buffers_share_bytes_is_refused_whatever_its_size() {
     let batch = RecordBatch::try_from_iter([("n", values)]).expect("a batch");
     let logged = super::arrow::encode(&batch).expect("the batch encodes");
     assert_eq!(
-        super::arrow::decode(&logged, limits()).expect("it decodes"),
+        super::arrow::decode(Bytes::from(logged.clone()), limits()).expect("it decodes"),
         batch
     );
     // The values' buffer follows the validity's, 64 bytes into the body and 24 bytes long; here
@@ -425,7 +432,7 @@ fn a_batch_whose_buffers_share_bytes_is_refused_whatever_its_size() {
         .expect("the values' buffer is described");
     let mut shared = logged;
     shared[at..at + 8].copy_from_slice(&0_i64.to_le_bytes());
-    assert!(super::arrow::decode(&shared, limits()).is_err());
+    assert!(super::arrow::decode(Bytes::from(shared), limits()).is_err());
 }
 
 #[test]
@@ -531,7 +538,7 @@ fn a_schema_frame_nested_to_the_limit_reads_back() {
             schema: nested_schema(limit(), nesting),
         });
         let bytes = frame.encode().expect("the frame encodes");
-        let read = super::decode(&bytes, limits()).map_err(|error| error.to_string());
+        let read = decode(&bytes, limits()).map_err(|error| error.to_string());
         assert_eq!(read, Ok(frame), "{nesting:?}");
     }
 }
@@ -591,7 +598,7 @@ fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
             let grown = serde_json::to_vec(&grown).expect("JSON encodes");
             let framed = super::framed(bytes[0], &grown).expect("a frame");
             assert!(
-                super::decode(&framed, limits()).is_err(),
+                decode(&framed, limits()).is_err(),
                 "{frame:?} with a field at {pointer:?}"
             );
         }
