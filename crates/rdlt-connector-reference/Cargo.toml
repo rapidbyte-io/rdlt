@@ -33,7 +33,6 @@ arrow-schema.workspace = true
 arrow-select.workspace = true
 base64.workspace = true
 bytes.workspace = true
-chrono.workspace = true
 flatbuffers.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true

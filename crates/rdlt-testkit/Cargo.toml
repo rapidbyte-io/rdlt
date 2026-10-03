@@ -13,7 +13,6 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
 arrow-schema.workspace = true
-chrono.workspace = true
 proptest.workspace = true
 rcgen.workspace = true
 rdlt-connector.workspace = true

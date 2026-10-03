@@ -617,23 +617,17 @@ fn a_stored_value_its_column_s_wider_type_holds_is_kept_exactly() {
         kept.as_primitive::<TimestampNanosecondType>().value(0),
         9_223_372_036_000_000_000
     );
-    // The least date a calendar holds, at midnight in a zone ahead of UTC, is an instant before
-    // any the calendar holds: seconds hold it all the same, in fixed zones and named ones.
-    let zones = [
-        ("UTC", 0),
-        ("-05:00", 5 * 3_600),
-        ("+00:01", -60),
-        ("+14:00", -14 * 3_600),
-        ("Asia/Kolkata", -21_208),
-    ];
-    for (zone, behind) in zones {
+    // A date, the least a calendar holds among them, is its midnight in UTC whatever zone shows
+    // its column's instants, fixed or named.
+    let zones = ["UTC", "-05:00", "+00:01", "+14:00", "Asia/Kolkata"];
+    for zone in zones {
         let stored: ArrayRef = Arc::new(Date32Array::from(vec![-96_465_292]));
         let to = DataType::Timestamp(TimeUnit::Second, Some(zone.into()));
         let kept = widened(stored, &to).expect("the value fits");
         assert_eq!(kept.data_type(), &to);
         assert_eq!(
             kept.as_primitive::<TimestampSecondType>().value(0),
-            -96_465_292 * 86_400 + behind,
+            -96_465_292 * 86_400,
             "{zone}"
         );
     }

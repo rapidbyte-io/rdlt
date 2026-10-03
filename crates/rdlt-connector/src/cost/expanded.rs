@@ -51,10 +51,6 @@ const REMEMBERED_BYTES: u64 = 64;
 /// together at most, so a measure against a small budget holds little beside it.
 const REMEMBERED_SHARE: u64 = 8;
 
-/// Slots: what converting a date, a time or an instant to another holds for each value while it
-/// runs.
-const TEMPORAL: u64 = 4;
-
 /// Values: how many are remembered whatever the limit, a few kilobytes of them.
 const REMEMBERED_LEAST: u64 = 64;
 
@@ -388,11 +384,6 @@ impl Meter {
             // A null of no type converts to a null of its column's, whatever that holds: a
             // struct's every field, a list's offset.
             (Some(stored), _) if *data_type == DataType::Null => null_slot(stored),
-            // A conversion between dates, times and instants holds each value as an optional
-            // 64-bit integer, twice, beside its input in the unit asked for and its result.
-            (Some(stored), Some(to)) if stored != data_type && stored.is_temporal() => {
-                TEMPORAL * to.slot
-            }
             (Some(stored), Some(to)) if stored != data_type => to.slot,
             // Bytes of a fixed width copied into bytes by offsets.
             (Some(DataType::Binary | DataType::Utf8), None) => own.slot,

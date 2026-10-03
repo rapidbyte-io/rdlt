@@ -17,7 +17,9 @@ use arrow_schema::{ArrowError, DataType, TimeUnit};
 use chrono::NaiveDateTime;
 use chrono::{Offset as _, TimeDelta, TimeZone as _};
 
-use super::{DAY, NANOS_PER_SECOND, fixed_offset, naive, nanos, raw};
+use rdlt_connector::instants::DAY;
+
+use super::{NANOS_PER_SECOND, fixed_offset, naive, nanos, raw};
 
 /// Each value of `array`, a boolean, number or temporal array, as text; nulls stay null.
 pub(crate) fn text(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {

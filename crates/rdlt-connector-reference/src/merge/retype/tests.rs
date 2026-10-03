@@ -18,7 +18,17 @@ use arrow_buffer::i256;
 use arrow_schema::{DataType, Field, Fields, TimeUnit};
 
 use super::super::refused::code;
-use super::{raw, retyped};
+use super::retyped;
+
+/// The values of `array`, a temporal column, as its type stores them.
+fn raw(array: &ArrayRef) -> Vec<Option<i64>> {
+    (0..array.len())
+        .map(|row| {
+            (!array.is_null(row))
+                .then(|| rdlt_connector::instants::stored(array.as_ref(), row).unwrap())
+        })
+        .collect()
+}
 
 const UNITS: [TimeUnit; 4] = [
     TimeUnit::Second,
@@ -56,17 +66,6 @@ fn temporal(kind: &DataType, value: i64) -> Option<ArrayRef> {
         _ => wide,
     };
     Some(arrow_cast::cast(&stored, kind).expect("integers are any temporal type's storage"))
-}
-
-/// Seconds the zone is ahead of UTC, for the fixed zones the tests place values in.
-fn ahead(zone: Option<&str>) -> i128 {
-    match zone {
-        None | Some("UTC") => 0,
-        Some("+05:30") => 19_800,
-        Some("-08:00") => -28_800,
-        Some("+0100") => 3_600,
-        Some(other) => panic!("{other} is no zone of the tests"),
-    }
 }
 
 /// Checks `retyped` of `value` from `from` to `to` against `expected`, the value `to` then holds:
@@ -129,13 +128,14 @@ fn every_unit_widening_is_exact_or_refused() {
 }
 
 #[test]
-fn a_wall_clock_time_or_a_date_is_placed_in_a_fixed_zone_exactly_or_refused() {
+fn a_wall_clock_time_or_a_date_keeps_its_instant_in_any_zone_exactly_or_refused() {
     let zones = [
         None,
         Some("UTC"),
         Some("+05:30"),
         Some("-08:00"),
-        Some("+0100"),
+        Some("Europe/Warsaw"),
+        Some("America/Sao_Paulo"),
     ];
     for zone in zones {
         let named = zone.map(Arc::<str>::from);
@@ -145,10 +145,7 @@ fn a_wall_clock_time_or_a_date_is_placed_in_a_fixed_zone_exactly_or_refused() {
                 let factor = per_second(to) / per_second(from);
                 for value in edges(factor) {
                     let scaled = i128::from(value) * factor;
-                    // The product itself must fit: the placing starts from it.
-                    let expected = i64::try_from(scaled)
-                        .ok()
-                        .map(|_| scaled - ahead(zone) * per_second(to));
+                    let expected = i64::try_from(scaled).ok().map(|_| scaled);
                     check(&DataType::Timestamp(from, None), &target, value, expected);
                 }
             }
@@ -157,10 +154,9 @@ fn a_wall_clock_time_or_a_date_is_placed_in_a_fixed_zone_exactly_or_refused() {
             let target = DataType::Timestamp(to, named.clone());
             let per_day = 86_400 * per_second(to);
             for days in edges(per_day) {
-                let local = i128::from(days) * per_day;
-                let expected = i64::try_from(local)
-                    .ok()
-                    .map(|_| local - ahead(zone) * per_second(to));
+                // A date is its midnight in UTC, whatever zone shows it.
+                let midnight = i128::from(days) * per_day;
+                let expected = i64::try_from(midnight).ok().map(|_| midnight);
                 check(&DataType::Date32, &target, days, expected);
             }
         }
@@ -177,41 +173,6 @@ fn an_instant_keeps_its_value_under_another_zone_and_is_no_wall_clock_time() {
     assert_eq!(raw(&relabelled), [Some(7_000), None]);
     let naive = DataType::Timestamp(TimeUnit::Millisecond, None);
     assert!(retyped(&stored, &naive).is_err());
-    // A zone no database of zones knows places nothing.
-    let nowhere = DataType::Timestamp(TimeUnit::Second, Some("Nowhere/Land".into()));
-    let wall: ArrayRef = Arc::new(TimestampSecondArray::from(vec![7]));
-    assert!(retyped(&wall, &nowhere).is_err());
-}
-
-#[test]
-fn a_wall_clock_time_in_a_named_zone_is_the_instant_it_names_there() {
-    let warsaw = |unit| DataType::Timestamp(unit, Some("Europe/Warsaw".into()));
-    // Winter, summer, a time the clocks skipped and one they repeated.
-    let placed = [
-        (1_705_320_000, 1_705_316_400),
-        (1_719_835_200, 1_719_828_000),
-        (1_711_852_200, 1_711_848_600),
-        (1_729_996_200, 1_729_989_000),
-    ];
-    for (local, instant) in placed {
-        let stored: ArrayRef = Arc::new(TimestampSecondArray::from(vec![local]));
-        let seconds = retyped(&stored, &warsaw(TimeUnit::Second)).unwrap();
-        assert_eq!(raw(&seconds), [Some(instant)], "{local}");
-        let nanos = retyped(&stored, &warsaw(TimeUnit::Nanosecond)).unwrap();
-        assert_eq!(raw(&nanos), [Some(instant * 1_000_000_000)], "{local}");
-    }
-    // A date is its midnight there.
-    let day: ArrayRef = Arc::new(Date32Array::from(vec![19_737]));
-    let midnight = retyped(&day, &warsaw(TimeUnit::Second)).unwrap();
-    assert_eq!(raw(&midnight), [Some(19_737 * 86_400 - 3_600)]);
-    // Beyond the years a calendar holds no named zone has an offset; a fixed one still does.
-    let far: ArrayRef = Arc::new(TimestampSecondArray::from(vec![i64::MAX / 2]));
-    assert!(retyped(&far, &warsaw(TimeUnit::Second)).is_err());
-    let fixed = DataType::Timestamp(TimeUnit::Second, Some("+05:30".into()));
-    assert_eq!(
-        raw(&retyped(&far, &fixed).unwrap()),
-        [Some(i64::MAX / 2 - 19_800)]
-    );
 }
 
 #[test]
@@ -623,10 +584,10 @@ fn a_refused_conversion_says_whether_the_types_or_a_value_refuse_it() {
         &nanos,
     );
     assert!(coarser.is_err());
-    let zoned = DataType::Timestamp(TimeUnit::Second, Some("Nowhere/Land".into()));
-    let small: ArrayRef = Arc::new(TimestampSecondArray::from(vec![1]));
-    let nowhere = retyped(&small, &zoned).unwrap_err();
-    assert_eq!(code(&nowhere), Some("type_unconvertible"));
+    let fine: ArrayRef = Arc::new(TimestampSecondArray::from(vec![1]));
+    let fine = retyped(&fine, &nanos).unwrap();
+    let rounded = retyped(&fine, &DataType::Timestamp(TimeUnit::Second, None)).unwrap_err();
+    assert_eq!(code(&rounded), Some("type_unconvertible"));
     // What the rows hold is checked against a schema before a column takes its type.
     let batch = arrow_array::RecordBatch::try_from_iter([("until", seconds), ("n", wide)]).unwrap();
     let schema = |until: DataType| {

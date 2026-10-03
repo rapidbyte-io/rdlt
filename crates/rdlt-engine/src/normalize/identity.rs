@@ -40,11 +40,12 @@ use arrow_array::{
 use arrow_buffer::NullBuffer;
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
+use rdlt_connector::instants;
 
 use super::as_list;
 use crate::json::{JsonError, Reader, Token, write_float, write_number};
 use crate::table::convert::decoded;
-use canonical::{Since, Stored, decimal_scale, temporal_tag};
+use canonical::{Stored, decimal_scale, temporal_tag};
 
 /// The ids of `batch`'s rows as roots: of the `key` columns' values in order, or of the whole row
 /// where there is no key.
@@ -200,9 +201,9 @@ enum Encoder {
     Object(Option<NullBuffer>, Vec<(String, Encoder)>),
     /// An array, and its items.
     Array(ListArray, Box<Encoder>),
-    /// Dates, timestamps, times of day or durations: their kind's tag, the values as their type
-    /// stores them, and how many nanoseconds they are since their origin.
-    Temporal(u8, ArrayRef, Stored, Since),
+    /// Dates, timestamps, times of day or durations: their kind's tag, and the values as their
+    /// type stores them, encoded as the nanoseconds they denote.
+    Temporal(u8, ArrayRef, Stored),
     /// Values of any other type, as their type and text.
     Other(ArrayRef, String),
 }
@@ -251,8 +252,7 @@ impl Encoder {
             }
             data_type if temporal_tag(data_type).is_some() => {
                 let tag = temporal_tag(data_type).expect("a temporal type");
-                let since = Since::of(data_type).expect("a temporal type");
-                Self::Temporal(tag, Arc::clone(array), stored()?, since)
+                Self::Temporal(tag, Arc::clone(array), stored()?)
             }
             DataType::Struct(_) => {
                 let object = array.as_struct();
@@ -341,10 +341,10 @@ impl Encoder {
                 out.push(NUMBER);
                 length(out, values.decimal(*scale, index).as_bytes());
             }
-            Self::Temporal(tag, _, values, since) => {
+            Self::Temporal(tag, array, values) => {
                 out.push(*tag);
-                let nanos = since.nanoseconds(values.value(index)).to_string();
-                length(out, nanos.as_bytes());
+                let nanos = instants::nanos(array.data_type(), values.value(index));
+                length(out, nanos.unwrap_or_default().to_string().as_bytes());
             }
             Self::Json(values) => json(values.value(index), out)
                 .map_err(|error| ArrowError::ExternalError(Box::new(error)))?,

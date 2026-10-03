@@ -914,3 +914,71 @@ async fn a_destination_storing_no_instant_stores_validity_as_microseconds() {
     held.sort_unstable();
     assert_eq!(held, [-1_500_000, 2_000_000]);
 }
+
+/// A batch of key `id` and the value `value` of `field`.
+fn keyed_value(id: i64, field: arrow_schema::Field, value: ArrayRef) -> RecordBatch {
+    let schema = arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("id", DataType::Int64, false),
+        field,
+    ]);
+    RecordBatch::try_new(Arc::new(schema), vec![ints(&[id]), value]).expect("a valid batch")
+}
+
+#[tokio::test(start_paused = true)]
+async fn widening_a_column_opens_no_version_of_an_unchanged_value() {
+    each(Target::IN_PROCESS, |target| async move {
+        let store = "widened_unchanged";
+        let date = || {
+            let field = arrow_schema::Field::new("d", DataType::Date32, true);
+            keyed_value(
+                1,
+                field,
+                Arc::new(arrow_array::Date32Array::from(vec![18_262])),
+            )
+        };
+        // Another key's instant widens `d` to timestamps New York shows, as its midnight there.
+        let zone = "America/New_York";
+        let zoned = DataType::Timestamp(TimeUnit::Second, Some(zone.into()));
+        let instant = arrow_array::TimestampSecondArray::from(vec![1_577_854_800]);
+        let other = keyed_value(
+            2,
+            arrow_schema::Field::new("d", zoned, true),
+            Arc::new(instant.with_timezone(zone)),
+        );
+        for rows in [date(), other, date()] {
+            let events = BatchStream::new("events", vec![rows]).primary_key(&["id"]);
+            let outcome = engine(commit_every(10))
+                .run(
+                    pipeline(store, [stream("events").write(WriteMode::History)]),
+                    batches(store, vec![events]).await,
+                    target.destination(store).await,
+                )
+                .await;
+            assert_eq!(
+                outcome.report.status,
+                RunStatus::Succeeded,
+                "{target:?}: {:?}",
+                outcome.error
+            );
+        }
+        let mut versions = Vec::new();
+        for batch in target.published(store, "events") {
+            let ids = arrow_cast::cast(batch.column_by_name("id").expect("ids"), &DataType::Int64)
+                .expect("integer ids");
+            let current = batch
+                .column_by_name("_rdlt_is_current")
+                .expect("currency")
+                .as_boolean()
+                .clone();
+            for row in 0..batch.num_rows() {
+                versions.push((
+                    ids.as_primitive::<Int64Type>().value(row),
+                    current.value(row),
+                ));
+            }
+        }
+        versions.sort_unstable();
+        assert_eq!(versions, [(1, true), (2, true)], "{target:?}");
+    })
+    .await;
+}

@@ -19,7 +19,7 @@ use arrow_array::{
 };
 use arrow_json::writer::{EncoderOptions, make_encoder};
 use arrow_schema::{ArrowError, DataType, FieldRef};
-use rdlt_connector::{Field, LogicalType};
+use rdlt_connector::{Field, LogicalType, instants};
 
 use super::temporal;
 use encoders::Extensions;
@@ -45,14 +45,11 @@ pub(crate) fn convert(
     refuse_rounding(array, from, to)?;
     match (from, to) {
         (_, LogicalType::Json) => json(array, from),
-        (LogicalType::Date, LogicalType::Timestamp(unit, zone)) => {
-            temporal::midnights(array, arrow_unit(*unit), zone.as_ref())
-        }
-        (LogicalType::Timestamp(_, None), LogicalType::Timestamp(unit, Some(zone))) => {
-            temporal::localized(array, arrow_unit(*unit), zone)
-        }
-        (LogicalType::Time(_), LogicalType::Time(unit)) => {
-            temporal::times(array, arrow_unit(*unit))
+        // Every temporal widening keeps each value the instant, time or duration it was.
+        (LogicalType::Date | LogicalType::Timestamp(..), LogicalType::Timestamp(..))
+        | (LogicalType::Time(_), LogicalType::Time(_))
+        | (LogicalType::Duration(_), LogicalType::Duration(_)) => {
+            instants::widened(array, &to.to_arrow())
         }
         // Nested dates stay wide until each meets its own target: a far `Date64` a `Date` column
         // refuses, JSON, text and timestamps hold.
@@ -90,17 +87,6 @@ pub(crate) fn convert(
             list(source.as_list::<i32>(), from_item, to_item)
         }
         _ => cast(array, &to.to_arrow()),
-    }
-}
-
-/// Arrow's name for `unit`.
-fn arrow_unit(unit: rdlt_connector::TimeUnit) -> arrow_schema::TimeUnit {
-    use rdlt_connector::TimeUnit as Unit;
-    match unit {
-        Unit::Second => arrow_schema::TimeUnit::Second,
-        Unit::Millisecond => arrow_schema::TimeUnit::Millisecond,
-        Unit::Microsecond => arrow_schema::TimeUnit::Microsecond,
-        Unit::Nanosecond => arrow_schema::TimeUnit::Nanosecond,
     }
 }
 

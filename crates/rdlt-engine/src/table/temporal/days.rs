@@ -4,23 +4,13 @@
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::Date64Type;
 use arrow_array::{
-    Array, ArrayRef, Date32Array, FixedSizeListArray, GenericListArray, OffsetSizeTrait,
-    StructArray,
+    Array, ArrayRef, FixedSizeListArray, GenericListArray, OffsetSizeTrait, StructArray,
 };
 use arrow_schema::{ArrowError, DataType, FieldRef};
+use rdlt_connector::instants;
 
 use super::super::convert::retyped;
-use super::{DAY, nanos, overflow, raw};
-
-/// Milliseconds in a day.
-const DAY_MILLIS: i64 = 86_400_000;
-
-/// The day the `Date64` value `millis` is within.
-pub(super) fn day_within(millis: i64) -> i64 {
-    millis.div_euclid(DAY_MILLIS)
-}
 
 /// `array` with every `Date64` in it, at any depth, a `Date32` of the day it is within.
 ///
@@ -73,17 +63,7 @@ pub(crate) fn dated(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
 
 /// `array`, `Date64`s, as the `Date32`s of the days they are within.
 fn days(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
-    let days = array.as_primitive::<Date64Type>().iter().map(|millis| {
-        millis
-            .map(|millis| {
-                let day = day_within(millis);
-                i32::try_from(day).map_err(|_| overflow(day))
-            })
-            .transpose()
-    });
-    Ok(Arc::new(Date32Array::from(
-        days.collect::<Result<Vec<_>, _>>()?,
-    )))
+    instants::widened(array, &DataType::Date32)
 }
 
 /// `array`, `list`, with its items' `Date64`s dated, its items' field `field`.
@@ -107,12 +87,13 @@ fn list<O: OffsetSizeTrait>(
 /// date its midnight in UTC, and an instant between two microseconds the earlier; `None` where
 /// an `i64` of microseconds cannot hold it.
 pub(crate) fn micros_at(array: &dyn Array, row: usize) -> Option<i64> {
-    let value = raw(array, row);
-    let nanos = match array.data_type() {
-        DataType::Date32 => i128::from(value) * DAY,
-        DataType::Date64 => i128::from(day_within(value)) * DAY,
-        DataType::Timestamp(unit, _) => nanos(value, *unit),
-        _ => return None,
-    };
+    if !matches!(
+        array.data_type(),
+        DataType::Date32 | DataType::Date64 | DataType::Timestamp(..)
+    ) {
+        return None;
+    }
+    let value = instants::stored(array, row)?;
+    let nanos = instants::nanos(array.data_type(), i128::from(value))?;
     i64::try_from(nanos.div_euclid(1_000)).ok()
 }

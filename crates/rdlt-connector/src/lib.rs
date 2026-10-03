@@ -78,6 +78,7 @@ mod emitter;
 mod error;
 mod factory;
 mod id;
+pub mod instants;
 pub mod limits;
 mod meta;
 #[cfg(test)]
