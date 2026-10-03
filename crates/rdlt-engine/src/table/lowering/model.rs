@@ -1,10 +1,13 @@
 //! A batch's model columns, converted to the types the table holds and lowered as it stores
 //! them.
 
+use std::sync::Arc;
+
 use arrow_array::{ArrayRef, RecordBatch, new_null_array};
 use rdlt_connector::{Field, LogicalType, StreamName};
 
 use super::split::Fitted;
+use super::unheld::Converted;
 use super::{LoweringPlan, Source, lower_array};
 use crate::error::Error;
 use crate::table::convert::convert;
@@ -19,6 +22,7 @@ impl LoweringPlan {
         &self,
         batch: &RecordBatch,
         fitted: &Fitted,
+        converted: &Converted,
     ) -> Result<Columns, Error> {
         let view = &self.view;
         let mut columns = Vec::with_capacity(view.physical.len());
@@ -32,7 +36,10 @@ impl LoweringPlan {
         {
             let converted = match source {
                 Source::Incoming(index, from) if !source.is_null() => {
-                    held_as(&self.stream, batch.column(*index), from, column)?
+                    match converted.iter().find(|(converted, _)| converted == index) {
+                        Some((_, converted)) => Arc::clone(converted),
+                        None => held_as(&self.stream, batch.column(*index), from, column)?,
+                    }
                 }
                 Source::Read(index) => {
                     let own = fitted.own(*index, column.logical_type());

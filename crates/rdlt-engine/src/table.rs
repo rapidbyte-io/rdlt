@@ -29,11 +29,11 @@ use crate::error::{Error, ErrorKind};
 pub(crate) use convert::normalize as plain;
 pub(crate) use exact::EXACT_IN_FLOAT;
 pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
-#[cfg(test)]
-pub(crate) use lowering::split_lowered;
 pub(crate) use lowering::{
     ChangeRows, LoweringPlan, Prepared, Stamp, data_ordinals, key_values, with_columns,
 };
+#[cfg(test)]
+pub(crate) use lowering::{Check, nulled_at, refused, split_lowered};
 pub(crate) use model::Model;
 pub(crate) use registry::{Admission, Tables, TablesDelta, shared};
 pub(crate) use resolve::{Incoming, Resolver, Settings};
