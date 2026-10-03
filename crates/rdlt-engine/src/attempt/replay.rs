@@ -101,9 +101,14 @@ async fn replay_into(
             // A load still running holds the pipeline: the attempt waits for it to end, as its
             // session would fence the load at the destination while its log takes rows on.
             Taken::Running => return Err(Error::wal_running(load)),
+            // Another replay removed the log since it was listed, having replayed it.
+            Taken::Gone => continue,
         };
         if let Some(number) = number {
-            let scanned = scan::scan(store, pipeline, load, limits.frame_bytes).await?;
+            let Some(scanned) = taken::scanned(store, pipeline, load, limits.frame_bytes).await?
+            else {
+                continue;
+            };
             for logged in scanned.pending() {
                 let replaying = match replaying {
                     Some(replaying) => replaying,

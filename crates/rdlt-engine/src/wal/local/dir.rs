@@ -178,6 +178,14 @@ impl Dir {
         Ok(Some(file))
     }
 
+    /// Renames the entry `name` to `to`, where no entry of that name exists: one that does is
+    /// refused with [`io::ErrorKind::AlreadyExists`], and nothing is replaced.
+    pub(super) fn rename_new(&self, name: &str, to: &str) -> io::Result<()> {
+        let flags = rustix::fs::RenameFlags::NOREPLACE;
+        rustix::fs::renameat_with(&self.file, name, &self.file, to, flags)?;
+        Ok(())
+    }
+
     /// Links the file `name` in as `to`, where no entry of that name exists: one that does is
     /// refused with [`io::ErrorKind::AlreadyExists`].
     pub(super) fn link(&self, name: &str, to: &str) -> io::Result<()> {

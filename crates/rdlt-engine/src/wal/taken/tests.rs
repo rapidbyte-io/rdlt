@@ -169,6 +169,33 @@ async fn a_disk_a_crashed_load_filled_is_freed_before_its_log_is_fenced() {
     assert_eq!(store.disk.staged(), 0);
 }
 
+#[tokio::test]
+async fn a_log_removed_as_it_is_read_is_gone_and_one_damaged_is_refused() {
+    let store = MemoryWal::default();
+    store.open(&pipeline(), load());
+    let mut written = store.stage(&pipeline(), chunk(0)).await.expect("stages");
+    written.append(Busy::written(0)).await.expect("appends");
+    written.publish().await.expect("publishes");
+    let mut damaged = store.stage(&pipeline(), chunk(1)).await.expect("stages");
+    damaged
+        .append(Bytes::from_static(b"no chunk"))
+        .await
+        .expect("appends");
+    damaged.publish().await.expect("publishes");
+    let Err(refused) = super::scanned(&store, &pipeline(), load(), 1 << 20).await else {
+        panic!("an open log that does not read");
+    };
+    assert_eq!(refused.code(), Some("wal_unreadable"));
+    store
+        .remove_log(&pipeline(), load())
+        .await
+        .expect("removes");
+    let gone = super::scanned(&store, &pipeline(), load(), 1 << 20)
+        .await
+        .expect("a log another replay removed");
+    assert!(gone.is_none());
+}
+
 fn chunk(number: u64) -> Chunk {
     Chunk {
         load: load(),
@@ -188,4 +215,131 @@ async fn a_fence_the_disk_has_no_room_for_leaves_nothing_staged() {
         .expect_err("no room for a fence");
     assert_eq!(refused.code(), Some("wal_storage_full"), "{refused}");
     assert_eq!(store.disk.stagings(), 0, "the fence's staging is gone");
+}
+
+#[tokio::test]
+async fn a_log_another_replay_removed_since_it_was_listed_is_gone_not_a_failure() {
+    let store = MemoryWal::default();
+    store.open(&pipeline(), load());
+    let mut written = store.stage(&pipeline(), chunk(0)).await.expect("stages");
+    written.append(Busy::written(0)).await.expect("appends");
+    written.publish().await.expect("publishes");
+    // Two replays listed the log; the first takes it and removes it.
+    assert_eq!(store.loads(&pipeline()).await.expect("lists"), [load()]);
+    let first = take(&store, &pipeline(), load(), 1 << 20)
+        .await
+        .expect("takes");
+    assert_eq!(first, Taken::Finished);
+    store
+        .remove_log(&pipeline(), load())
+        .await
+        .expect("removes");
+    let second = take(&store, &pipeline(), load(), 1 << 20)
+        .await
+        .expect("no failure");
+    assert_eq!(second, Taken::Gone);
+}
+
+/// A store in which a rival replay deletes every staging of the log just after it is begun.
+#[derive(Debug, Default)]
+struct Rival {
+    inner: MemoryWal,
+}
+
+impl WalStore for Rival {
+    fn open_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.open_log(pipeline, load)
+    }
+
+    fn stage<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<Box<dyn StagedChunk>>> {
+        Box::pin(async move {
+            let staged = self.inner.stage(pipeline, chunk).await?;
+            self.inner.remove_staged(pipeline, chunk.load).await?;
+            Ok(staged)
+        })
+    }
+
+    fn loads<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.inner.loads(pipeline)
+    }
+
+    fn leftovers<'a>(&'a self, pipeline: &'a PipelineId) -> BoxFuture<'a, io::Result<Vec<LoadId>>> {
+        self.inner.leftovers(pipeline)
+    }
+
+    fn chunks<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<Vec<(u64, u64)>>> {
+        self.inner.chunks(pipeline, load)
+    }
+
+    fn read<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+        offset: u64,
+        len: u64,
+    ) -> BoxFuture<'a, io::Result<Bytes>> {
+        self.inner.read(pipeline, chunk, offset, len)
+    }
+
+    fn remove_staged<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_staged(pipeline, load)
+    }
+
+    fn remove<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        chunk: Chunk,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove(pipeline, chunk)
+    }
+
+    fn remove_log<'a>(
+        &'a self,
+        pipeline: &'a PipelineId,
+        load: LoadId,
+    ) -> BoxFuture<'a, io::Result<()>> {
+        self.inner.remove_log(pipeline, load)
+    }
+}
+
+#[tokio::test]
+async fn a_fence_whose_staging_a_rival_deletes_is_tried_again_and_never_fails_untyped() {
+    let store = Rival::default();
+    store.inner.open(&pipeline(), load());
+    let mut written = store
+        .inner
+        .stage(&pipeline(), chunk(0))
+        .await
+        .expect("stages");
+    written.append(Busy::written(0)).await.expect("appends");
+    written.publish().await.expect("publishes");
+    let taken = take(&store, &pipeline(), load(), 1 << 20)
+        .await
+        .expect("no failure");
+    assert_eq!(
+        taken,
+        Taken::Running,
+        "a rival that never stops holds the log"
+    );
+    // A release whose staging a rival deletes leaves the log to the rival.
+    let released = super::release(&store, &pipeline(), load(), 3)
+        .await
+        .expect("no failure");
+    assert!(!released);
 }

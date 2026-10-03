@@ -169,6 +169,18 @@ impl Error {
         running
     }
 
+    /// The error for an attempt whose log another attempt's replay removed as it was being opened:
+    /// another attempt of the pipeline begins, and this one waits for it, retryably.
+    pub(crate) fn wal_opening_taken(load: rdlt_connector::LoadId) -> Self {
+        let mut taken = Self::wal(format!(
+            "another attempt of the pipeline removed the write-ahead log of load {load} as it \
+             was opened"
+        ))
+        .with_code(WAL_RUNNING);
+        taken.retryable = true;
+        taken
+    }
+
     /// Classifies a connector's `error` from `side`, keeping it as the cause.
     ///
     /// Configuration, credential and capability failures are [`ErrorKind::Config`]; a session a

@@ -634,3 +634,27 @@ async fn names_a_file_system_or_a_desktop_makes_beside_a_log_are_passed_over() {
     std::fs::write(dir.join("0.wal"), b"").expect("writes");
     assert!(stray(&wal.loads(&orders).await.expect_err("refused")));
 }
+
+#[tokio::test]
+async fn a_log_appears_open_or_not_at_all_and_an_open_a_crash_cut_is_a_leftover() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let (opened, cut) = (chunk(1, 0).load, chunk(2, 0).load);
+    wal.open_log(&orders, opened).await.expect("opens");
+    // What a crash leaves of an open half done: never a load's directory without its mark.
+    let dir = wal.pipeline_dir(&orders);
+    let half = dir.join(format!(".{}.opening", names::load(cut)));
+    std::fs::create_dir(&half).expect("creates");
+    set_mode(&half, 0o700);
+    assert_eq!(wal.loads(&orders).await.expect("lists"), [opened]);
+    assert_eq!(wal.leftovers(&orders).await.expect("lists"), [cut]);
+    wal.remove_log(&orders, cut).await.expect("removes");
+    assert!(!half.exists());
+    assert_eq!(wal.leftovers(&orders).await.expect("lists"), []);
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .expect("lists")
+        .map(|entry| entry.expect("an entry").file_name())
+        .collect();
+    assert_eq!(names, [std::ffi::OsString::from(names::load(opened))]);
+}

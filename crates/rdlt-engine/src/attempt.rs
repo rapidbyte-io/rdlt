@@ -98,10 +98,7 @@ pub(crate) async fn run(
         return logged_run(context, load_id, &log).await;
     };
     let pipeline = context.plan.pipeline();
-    store
-        .open_log(pipeline, load_id)
-        .await
-        .map_err(Error::from_wal)?;
+    crate::wal::taken::open_own(store.as_ref(), pipeline, load_id).await?;
     let ran = logged_run(context, load_id, &log).await;
     // A failed attempt that published nothing leaves no log behind: nothing of it is replayed.
     // The failure matters more than one of removing it, which a later replay retries.

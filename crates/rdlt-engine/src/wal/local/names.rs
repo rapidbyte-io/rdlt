@@ -63,6 +63,18 @@ pub(super) fn is_made_by_system(name: &OsStr) -> bool {
     name.as_encoded_bytes().first() == Some(&b'.')
 }
 
+/// The name of the directory `load`'s log is opened in before it takes its own name: begun with a
+/// dot, so no listing reads it as a log.
+pub(super) fn opening(load: LoadId) -> String {
+    format!(".{load}.opening")
+}
+
+/// The load whose log `name` is being opened in, as only [`opening`] writes it.
+pub(super) fn parse_opening(name: &OsStr) -> Option<LoadId> {
+    let load = name.to_str()?.strip_prefix('.')?.strip_suffix(".opening")?;
+    parse_load(OsStr::new(load))
+}
+
 /// The load `name` names, as only [`load`] writes it.
 pub(super) fn parse_load(name: &OsStr) -> Option<LoadId> {
     let name = name.to_str()?;

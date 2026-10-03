@@ -296,6 +296,9 @@ fn a_log_another_load_still_writes_is_waited_for_and_a_taken_one_is_not() {
     let running = Error::wal_running(load);
     assert_eq!(running.code(), Some("wal_running"));
     assert!(running.is_retryable(), "another attempt may end");
+    let raced = Error::wal_opening_taken(load);
+    assert_eq!(raced.code(), Some("wal_running"));
+    assert!(raced.is_retryable(), "another attempt begins");
     let fenced = Error::wal_fenced(load);
     assert_eq!(fenced.kind(), ErrorKind::Fenced);
     assert!(
