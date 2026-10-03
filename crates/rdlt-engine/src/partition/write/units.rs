@@ -101,21 +101,36 @@ async fn shredded(
     let compute = context.env.compute();
     let chunk_bytes = context.batch.chunk_bytes().get();
     let limits = ShredLimits::new(context.budget.limits().schema_columns);
-    // What observing may hold beyond what the pushes were admitted for, until what building
-    // takes is known and reserved.
-    let too_large = |large: TooLarge| beyond_a_request(job, &large);
-    let observing = reserving(job, context, limits.beyond_bytes(), too_large).await?;
-    let observed = shred::observe(compute, &pushes, chunk_bytes, limits)
-        .await
-        .map_err(failed)?;
-    let beyond = match observed.excess() {
-        0 => None,
-        excess => {
-            let too_large = |large: TooLarge| beyond_a_request(job, &large);
-            Some(reserving(job, context, excess, too_large).await?)
-        }
+    let observe = || async {
+        shred::observe(compute, &pushes, chunk_bytes, limits)
+            .await
+            .map_err(failed)
     };
-    drop(observing);
+    // What observing may hold beyond what the pushes were admitted for is reserved before it is
+    // held. Once what building takes is known, it is reserved without a wait while that is held;
+    // where it must wait, it waits holding nothing but the pushes, and they are observed again.
+    let too_large = |large: TooLarge| beyond_a_request(job, &large);
+    let mut observing = reserving(job, context, limits.beyond_bytes(), too_large).await?;
+    let mut observed = observe().await?;
+    let excess = observed.excess();
+    let beyond = if excess <= observing.bytes() {
+        observing.shrink(excess);
+        observing
+    } else if let Some(reserved) = context.budget.try_acquire_working(excess) {
+        drop(observing);
+        reserved
+    } else {
+        drop((observed, observing));
+        let too_large = |large: TooLarge| beyond_a_request(job, &large);
+        let reserved = reserving(job, context, excess, too_large).await?;
+        observed = observe().await?;
+        if observed.excess() > excess {
+            let detail = "observing the pushes again took more than it did before";
+            return Err(Error::internal(format!("stream {}: {detail}", job.stream)));
+        }
+        reserved
+    };
+    let beyond = (beyond.bytes() > 0).then_some(beyond);
     let batches = observed.build(compute).await.map_err(failed)?;
     drop(pushes);
     let held = held::shredded(permits, beyond, &batches);
