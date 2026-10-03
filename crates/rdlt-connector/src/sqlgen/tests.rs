@@ -1262,7 +1262,7 @@ fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
 }
 
 #[test]
-fn a_recorded_merge_key_keeps_a_change_stream_s_columns_and_earlier_records_read_as_before() {
+fn a_recorded_merge_key_keeps_a_change_stream_s_columns() {
     let (connection, planner) = database();
     let mine = pipeline("mine");
     let changes = crate::destination::ChangeColumns {
@@ -1287,16 +1287,6 @@ fn a_recorded_merge_key_keeps_a_change_stream_s_columns_and_earlier_records_read
         panic!("{row:?}")
     };
     assert_eq!(super::merge_key(key, seq).ok(), orders.merge);
-    // Keys recorded before change streams merged read as they did.
-    let plain = super::merge_key(r#"["id"]"#, "seq").unwrap();
-    assert_eq!(Some(plain), keyed("orders").merge);
-    let child = super::merge_key(
-        r#"{"columns":["rid"],"root":{"table":"roots","id":"id","seq":"seq"}}"#,
-        "seq",
-    )
-    .unwrap();
-    assert_eq!(child.root.map(|root| root.table), Some("roots".into()));
-    assert_eq!(child.changes, None);
 }
 
 #[test]

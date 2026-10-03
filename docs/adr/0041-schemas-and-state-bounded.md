@@ -43,9 +43,10 @@ one run to the next, broke both:
 - **Persisted forms are versioned and strict.** Every persisted struct refuses a field it does not
   know, and fields that defaulted for records written before them are required. State records
   are format 2 and the log's frames version 2; the files destination's manifests and catalog
-  versions carry a format, 1, checked on read. What an earlier build wrote is refused, as
-  `state_invalid`, `wal_unreadable`, `manifest_invalid` or `catalog_invalid`; nothing is
-  published, so nothing earlier needs reading. A stream or table name a later build refuses
+  versions, and the merge key a SQL destination's staged segment records, carry a format, 1,
+  checked on read. What an earlier build wrote is refused, as `state_invalid`,
+  `wal_unreadable`, `manifest_invalid`, `catalog_invalid` or an internal error for a staged
+  key; nothing is published, so nothing earlier needs reading. A stream or table name a later build refuses
   (ADR 0042) therefore never reaches the engine from state written before it.
 - **A table is never wider than a schema.** A change that would make a table's columns, every
   nested field counted, more than the schema columns `EngineConfig::limits` derives from the
