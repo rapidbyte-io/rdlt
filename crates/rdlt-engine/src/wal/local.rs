@@ -256,9 +256,11 @@ fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
     let Some(dir) = pipeline.dir(&name)? else {
         return Ok(());
     };
-    let (chunks, parts) = listed(&dir)?;
+    // Closed first, durably, then listed: a chunk linked in before the close is listed and goes,
+    // and one linked in after finds the log closed and goes itself.
     dir.remove_file(OsStr::new(names::OPEN))?;
     dir.sync()?;
+    let (chunks, parts) = listed(&dir)?;
     for part in parts {
         dir.remove_file(&part)?;
     }

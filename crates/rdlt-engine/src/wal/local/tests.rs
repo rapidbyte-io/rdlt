@@ -316,10 +316,16 @@ async fn a_name_the_store_never_writes_is_refused_not_read() {
     std::fs::hard_link(load_dir.join("00000000.wal"), load_dir.join("0.wal")).expect("links");
     let refused = wal.chunks(&orders, load).await.expect_err("refused");
     assert!(stray(&refused), "{refused}");
+    // A removal closes the log first, then refuses what it cannot remove: the log is left
+    // closed, for a later removal.
     assert!(stray(
         &wal.remove_log(&orders, load).await.expect_err("refused")
     ));
+    assert_eq!(wal.loads(&orders).await.expect("lists"), []);
+    assert_eq!(wal.leftovers(&orders).await.expect("lists"), [load]);
     std::fs::remove_file(load_dir.join("0.wal")).expect("removes");
+    std::fs::write(load_dir.join("open"), b"").expect("opens again by hand");
+    set_mode(&load_dir.join("open"), 0o600);
     // A directory where a chunk belongs.
     std::fs::create_dir(load_dir.join("00000001.wal")).expect("creates");
     assert!(not_private(
