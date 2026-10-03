@@ -190,3 +190,25 @@ fn an_entry_of_one_byte_holds_the_least_a_vector_of_bytes_allocates() {
         Ok(24 + 2 * 8)
     );
 }
+
+#[test]
+fn a_field_of_the_largest_number_a_key_holds_is_walked_and_one_beyond_refused() {
+    let catalog = response("Discover").unwrap();
+    // A varint field of the largest number, 2^29 - 1, which no form knows, and of one more.
+    let field = |number: u64| {
+        let mut bytes = Vec::new();
+        prost::encoding::encode_varint(number << 3, &mut bytes);
+        bytes.push(0x01);
+        bytes
+    };
+    let largest = u64::from(u32::MAX >> 3);
+    let taken = field(largest);
+    assert!(v1::Catalog::decode(taken.as_slice()).is_ok());
+    assert!(decoded(catalog, &taken, usize::MAX).is_ok());
+    let beyond = field(largest + 1);
+    assert!(v1::Catalog::decode(beyond.as_slice()).is_err());
+    assert_eq!(
+        decoded(catalog, &beyond, usize::MAX),
+        Err(Unscanned::Malformed)
+    );
+}
