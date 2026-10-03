@@ -56,6 +56,13 @@ pub(super) fn chunk(number: u64) -> String {
     format!("{number:08}.wal")
 }
 
+/// Whether `name` is one a file system or a desktop makes beside what it is shown, as NFS keeps
+/// a file removed while open (`.nfs…`) or a file browser its settings (`.DS_Store`): the store
+/// never writes a name that begins with a dot, so it never takes one for its own.
+pub(super) fn is_made_by_system(name: &OsStr) -> bool {
+    name.as_encoded_bytes().first() == Some(&b'.')
+}
+
 /// The load `name` names, as only [`load`] writes it.
 pub(super) fn parse_load(name: &OsStr) -> Option<LoadId> {
     let name = name.to_str()?;

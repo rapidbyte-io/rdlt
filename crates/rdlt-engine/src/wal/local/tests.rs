@@ -605,3 +605,26 @@ async fn a_link_on_the_way_to_the_base_is_followed_only_through_directories_that
     assert!(not_private(&refused), "{refused}");
     set_mode(&shared, 0o700);
 }
+
+#[tokio::test]
+async fn names_a_file_system_or_a_desktop_makes_beside_a_log_are_passed_over() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal = LocalWal::new(base.path());
+    let orders = pipeline("orders");
+    let load = chunk(1, 0).load;
+    published(&wal, &orders, chunk(1, 0), b"frame").await;
+    let dir = wal.pipeline_dir(&orders);
+    let load_dir = dir.join(names::load(load));
+    for made in [dir.join(".DS_Store"), load_dir.join(".nfs0000000000a1b2c3")] {
+        std::fs::write(&made, b"").expect("writes");
+        set_mode(&made, 0o600);
+    }
+    assert_eq!(wal.loads(&orders).await.expect("lists"), [load]);
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), [(0, 5)]);
+    wal.remove_log(&orders, load).await.expect("removes");
+    assert_eq!(wal.loads(&orders).await.expect("lists"), []);
+    assert_eq!(wal.leftovers(&orders).await.expect("lists"), []);
+    // A name the store could take for its own stays refused.
+    std::fs::write(dir.join("0.wal"), b"").expect("writes");
+    assert!(stray(&wal.loads(&orders).await.expect_err("refused")));
+}
