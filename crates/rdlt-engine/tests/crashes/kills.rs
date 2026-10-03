@@ -91,14 +91,20 @@ impl Watched {
 
     /// Waits until the run has told `count` reads and commits; whether it did.
     fn progressed(&self, count: u64) -> bool {
+        self.reached(count) == Reached::There
+    }
+
+    /// Waits until the run has told `count` reads and commits, ends, or tells nothing for long.
+    fn reached(&self, count: u64) -> Reached {
         let mut seen = 0;
         while seen < count {
             match self.lines.recv_timeout(ENDING * 6) {
                 Ok(line) => seen += u64::from(progress(&line)),
-                Err(_) => return false,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Reached::Ended(seen),
+                Err(mpsc::RecvTimeoutError::Timeout) => return Reached::Stalled,
             }
         }
-        true
+        Reached::There
     }
 
     /// Waits for the run to end: its exit and every line it told.
@@ -117,6 +123,17 @@ impl Drop for Watched {
             self.child.wait().ok();
         }
     }
+}
+
+/// How far a run got towards the read or commit it was to pause at.
+#[derive(Debug, PartialEq, Eq)]
+enum Reached {
+    /// It told that many reads and commits.
+    There,
+    /// It ended having told this many, fewer: a run's commits vary with timing.
+    Ended(u64),
+    /// It told nothing for longer than a run waits on anything.
+    Stalled,
 }
 
 /// Whether `line` tells a read begun or a commit landed.
@@ -181,9 +198,17 @@ fn converge(config: &Path) -> (bool, bool) {
     (false, orphaned)
 }
 
+/// How many times a draw is taken again, below what a run told, when the run it was to kill
+/// ended before it got there.
+const REDRAWS: u32 = 8;
+
 /// Kills the harness running `scenario` where it waits after a read or commit drawn among those a
 /// clean run tells, a drawn delay after it began to, for each of `draws` draws, then runs it
 /// again.
+///
+/// A run's commits vary with timing, so a run may end before the read or commit drawn: it must
+/// then have loaded every row once, and the draw is taken again among the reads and commits it
+/// told, so every draw kills a run.
 fn engine_killed(scenario: &Scenario, draws: u32) {
     let mut state = seed();
     let seed = state;
@@ -195,36 +220,75 @@ fn engine_killed(scenario: &Scenario, draws: u32) {
     );
     for draw_index in 0..draws {
         // Never after the last two, which a run may tell fewer of than the clean one did.
-        let point = 1 + draw(&mut state) % (told - 2);
-        // While one read or commit waits, the run's others go on.
-        let delay = Duration::from_millis(draw(&mut state) % 50);
-        let context = format!(
-            "{} seed {seed} draw {draw_index}, killed {delay:?} after read or commit {point}",
+        let mut within = told - 2;
+        let killed = (0..REDRAWS).any(|_| {
+            let point = 1 + draw(&mut state) % within;
+            // While one read or commit waits, the run's others go on.
+            let delay = Duration::from_millis(draw(&mut state) % 50);
+            let context = format!(
+                "{} seed {seed} draw {draw_index}, killed {delay:?} after read or commit {point}",
+                scenario.name
+            );
+            match killed_at(scenario, point, delay, &context) {
+                Ok(()) => true,
+                Err(reached) => {
+                    within = reached.saturating_sub(1).max(1);
+                    false
+                }
+            }
+        });
+        assert!(
+            killed,
+            "{} seed {seed} draw {draw_index}: {REDRAWS} runs in turn ended before their draw",
             scenario.name
         );
-        let dir = tempfile::tempdir().expect("a temporary directory");
-        let config = scenario.write_spawned(dir.path(), &json!({ "pause": point }));
-        let mut run = Watched::spawn(&config);
-        assert!(run.progressed(point), "{context}: the run never got there");
-        std::thread::sleep(delay);
-        let ended = run.child.try_wait().expect("the harness can be asked");
-        assert!(ended.is_none(), "{context}: the run ended before its kill");
-        run.child.kill().expect("the harness is killed");
-        let connectors = run.connectors();
-        run.ended();
-        assert!(
-            !orphans(&connectors),
-            "{context}: a connector outlived the killed run"
-        );
-        let config = scenario.write_spawned(dir.path(), &json!({}));
-        let (succeeded, orphaned) = converge(&config);
-        assert!(
-            succeeded,
-            "{context}: the pipeline never ran to its end again"
-        );
-        assert!(!orphaned, "{context}: a connector outlived a run");
-        scenario.verify(dir.path(), &context);
     }
+}
+
+/// Kills the harness running `scenario` where it waits after its `point`th read or commit,
+/// `delay` after it began to, then runs it again; or, where the run ends before it gets there
+/// having loaded every row once, the reads and commits it told.
+fn killed_at(scenario: &Scenario, point: u64, delay: Duration, context: &str) -> Result<(), u64> {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let config = scenario.write_spawned(dir.path(), &json!({ "pause": point }));
+    let mut run = Watched::spawn(&config);
+    match run.reached(point) {
+        Reached::There => {}
+        Reached::Ended(seen) => {
+            let connectors = run.connectors();
+            let (status, _) = run.ended();
+            assert!(
+                status.success(),
+                "{context}: the run ended {status} after {seen} reads and commits"
+            );
+            assert!(
+                !orphans(&connectors),
+                "{context}: a connector outlived the run"
+            );
+            scenario.verify(dir.path(), context);
+            return Err(seen);
+        }
+        Reached::Stalled => panic!("{context}: the run never got there"),
+    }
+    std::thread::sleep(delay);
+    let ended = run.child.try_wait().expect("the harness can be asked");
+    assert!(ended.is_none(), "{context}: the run ended before its kill");
+    run.child.kill().expect("the harness is killed");
+    let connectors = run.connectors();
+    run.ended();
+    assert!(
+        !orphans(&connectors),
+        "{context}: a connector outlived the killed run"
+    );
+    let config = scenario.write_spawned(dir.path(), &json!({}));
+    let (succeeded, orphaned) = converge(&config);
+    assert!(
+        succeeded,
+        "{context}: the pipeline never ran to its end again"
+    );
+    assert!(!orphaned, "{context}: a connector outlived a run");
+    scenario.verify(dir.path(), context);
+    Ok(())
 }
 
 /// Kills the spawned `victim` of the harness running `scenario` before each commit of `before`,
