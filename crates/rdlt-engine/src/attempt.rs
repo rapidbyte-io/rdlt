@@ -34,7 +34,7 @@ use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob,
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
-use crate::stored::Stored;
+use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
 use crate::wal::{LoadLog, Positions};
 use crate::watch;
@@ -147,7 +147,7 @@ async fn opened_run(
         capabilities,
     };
     let tables = Tables::new(Arc::clone(&opened.session))
-        .growing(*context.config.growth())
+        .growing(context.config.child_table_limit())
         .committed(&opened.state)?;
     let mut planned = Vec::with_capacity(context.plan.streams().len());
     for plan in context.plan.streams() {
@@ -185,7 +185,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         context.destination.open(&open).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
-    let stored = Stored::of(&state, context.config.growth().state_bytes().get());
+    let stored = Stored::of(&state, StateLimits::of(&context.config));
     let held = HeldState::of(&state);
     let state = match PipelineState::from_records(&state) {
         Ok(state) => state,

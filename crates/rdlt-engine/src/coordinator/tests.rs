@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
 use crate::compute::RayonPool;
-use crate::config::CommitPolicy;
+use crate::config::{CommitPolicy, EngineConfig};
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind};
 use crate::lane::Lanes;
@@ -289,7 +289,7 @@ impl Setup {
             wal,
             positions: crate::wal::Positions::default(),
             state: crate::coordinator::HeldState::default(),
-            stored: crate::stored::Stored::of(&[], 16 << 20),
+            stored: stored(),
             follow: false,
             replan: Duration::from_secs(60),
         });
@@ -399,6 +399,14 @@ fn schema() -> TableSchema {
         false,
     )])
     .unwrap()
+}
+
+/// Nothing stored, held to the default limits.
+fn stored() -> crate::stored::Stored {
+    crate::stored::Stored::of(
+        &[],
+        crate::stored::StateLimits::of(&EngineConfig::default()),
+    )
 }
 
 fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRun {

@@ -88,8 +88,8 @@ pub(crate) struct Tables {
     taken: Mutex<BTreeSet<String>>,
     /// Where the records of each table's change are reserved, if anywhere.
     charge: std::sync::OnceLock<records::Charge>,
-    /// What the tables may grow to.
-    growth: GrowthLimits,
+    /// Tables: the most child tables a stream's table may have.
+    children_limit: usize,
 }
 
 /// What a commit records about the tables, and the model revisions it records.
@@ -113,14 +113,17 @@ impl Tables {
             committed: BTreeMap::new(),
             taken: Mutex::new(BTreeSet::new()),
             charge: std::sync::OnceLock::new(),
-            growth: GrowthLimits::default(),
+            children_limit: GrowthLimits::default().child_tables().get(),
         }
     }
 
-    /// The same tables, each stream's table holding the child tables `limits` admit.
+    /// The same tables, each stream's table holding at most `children_limit` child tables.
     #[must_use]
-    pub(crate) fn growing(self, growth: GrowthLimits) -> Self {
-        Self { growth, ..self }
+    pub(crate) fn growing(self, children_limit: usize) -> Self {
+        Self {
+            children_limit,
+            ..self
+        }
     }
 
     /// The same tables, over the tables `state` records.

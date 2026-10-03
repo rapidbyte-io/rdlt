@@ -60,7 +60,7 @@ impl GrowthLimits {
 }
 
 impl Default for GrowthLimits {
-    /// 1,024 child tables a stream, 128 writers an attempt, and 16 MiB of state a message.
+    /// 1024 child tables a stream, 128 writers an attempt, and 16 MiB of state a message.
     fn default() -> Self {
         Self {
             child_tables: NonZeroUsize::new(1024).unwrap_or(NonZeroUsize::MIN),

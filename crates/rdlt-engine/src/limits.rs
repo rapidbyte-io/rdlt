@@ -101,6 +101,14 @@ pub(crate) const TABLE_COLUMNS_EXCEEDED: &str = "table_columns_exceeded";
 /// The code of the error for a child table beyond those a normalized stream may add.
 pub(crate) const CHILD_TABLES_EXCEEDED: &str = "child_tables_exceeded";
 
+/// The pipeline's stored state, as an open's answer carries it: at most a 16th of the budget, the
+/// share the state an attempt opens on is held within, about 2 MiB of the least budget.
+pub(crate) const STATE_SHARE: u64 = 16;
+
+/// Bytes: what the records of a child table of a few columns take in state, its schema and
+/// names, as the child tables a stream may have are derived from the stored state limit.
+pub(crate) const TABLE_RECORDS: u64 = 4 << 10;
+
 /// Bytes: what a message carrying a pipeline's state holds beside the records or positions it
 /// carries, at most: a session's handle and epoch, or a stream's namespace and name, each within
 /// the protocol's limit on a control string.
