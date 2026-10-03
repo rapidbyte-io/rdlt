@@ -203,6 +203,8 @@ impl Engine {
                 }
                 Taken::Fenced { .. } => {}
                 Taken::Running => return Err(Error::wal_running(load)),
+                // Another replay removed the log since it was listed, having replayed it.
+                Taken::Gone => continue,
             }
             let scanned =
                 crate::wal::scan::scan(store.as_ref(), pipeline, load, frame_bytes).await?;

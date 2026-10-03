@@ -136,16 +136,29 @@ fn is_open(dir: &Dir) -> io::Result<bool> {
     }
 }
 
-/// Opens `load`'s log in `place`: its directory created, durable in the pipeline's, then the
-/// file that marks it open, durable in it; a directory of the load already there, whatever it
-/// holds, is refused with [`io::ErrorKind::AlreadyExists`].
+/// Opens `load`'s log in `place`, so its directory is never seen without the mark of an open log.
+///
+/// A directory of a name no listing reads is made, with the file that marks it open in it, then
+/// renamed to the load's name where none has it, durably. A directory of the load already there
+/// is refused with [`io::ErrorKind::AlreadyExists`]; one a removal took as it was being opened,
+/// with [`io::ErrorKind::NotFound`].
 fn open_log(place: &Place, load: LoadId) -> io::Result<()> {
     let pipeline = place.base.dir()?.dir_created(&place.pipeline)?;
-    let name = names::load(load);
-    let dir = pipeline.dir_new(&name)?;
-    pipeline.sync()?;
-    drop(dir.create(names::OPEN)?);
-    dir.sync()
+    let (name, opening) = (names::load(load), names::opening(load));
+    if pipeline.status(OsStr::new(&name))?.is_some() {
+        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    }
+    let dir = pipeline.dir_new(&opening)?;
+    let renamed = dir
+        .create(names::OPEN)
+        .and_then(|_| dir.sync())
+        .and_then(|()| pipeline.rename_new(&opening, &name));
+    if let Err(error) = renamed {
+        // What was begun goes; a crash before this leaves it for a removal.
+        drop(remove_opening(&pipeline, load));
+        return Err(error);
+    }
+    pipeline.sync()
 }
 
 /// Runs `work` on tokio's blocking pool.
@@ -176,6 +189,13 @@ fn loads(place: &Place, open: bool) -> io::Result<Vec<LoadId>> {
     };
     let mut loads = Vec::new();
     for name in pipeline.names()? {
+        // An open a crash cut short is a leftover, never an open log.
+        if let Some(load) = names::parse_opening(&name) {
+            if !open {
+                loads.push(load);
+            }
+            continue;
+        }
         if names::is_made_by_system(&name) {
             continue;
         }
@@ -252,6 +272,7 @@ fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
     let Some(pipeline) = place.pipeline()? else {
         return Ok(());
     };
+    remove_opening(&pipeline, load)?;
     let name = names::load(load);
     let Some(dir) = pipeline.dir(&name)? else {
         return Ok(());
@@ -283,6 +304,17 @@ fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
         }
         removed => removed?,
     }
+    pipeline.sync()
+}
+
+/// Removes the directory `load`'s log was being opened in, where a crash left it.
+fn remove_opening(pipeline: &Dir, load: LoadId) -> io::Result<()> {
+    let opening = names::opening(load);
+    let Some(dir) = pipeline.dir(&opening)? else {
+        return Ok(());
+    };
+    dir.remove_file(OsStr::new(names::OPEN))?;
+    pipeline.remove_dir(&opening)?;
     pipeline.sync()
 }
 
