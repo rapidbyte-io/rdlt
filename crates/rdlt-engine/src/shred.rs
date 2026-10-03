@@ -423,7 +423,7 @@ const JOB_STACK: usize = 4_194_304;
 const JOB_SEGMENT: usize = 8_388_608;
 
 /// Runs `work`, one shredding job, with at least [`JOB_STACK`] of stack, whatever thread runs it.
-fn job<T>(work: impl FnOnce() -> T) -> T {
+pub(crate) fn job<T>(work: impl FnOnce() -> T) -> T {
     stacker::maybe_grow(JOB_STACK, JOB_SEGMENT, work)
 }
 

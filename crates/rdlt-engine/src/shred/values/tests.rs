@@ -183,3 +183,31 @@ fn a_value_the_shredder_refuses_or_that_repeats_a_key_fits_no_column() {
         assert_eq!(fit(&[Some(text)], &column), [false], "{text}");
     }
 }
+
+#[test]
+fn values_nested_to_the_limit_are_fitted_and_read_on_a_small_stack() {
+    let fitted = std::thread::Builder::new()
+        .stack_size(256 << 10)
+        .spawn(|| {
+            let mut fits = Vec::new();
+            for depth in [63_usize, 64, 65] {
+                let text = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+                let mut list = LogicalType::Int64;
+                for _ in 0..depth {
+                    list = LogicalType::List(Box::new(Field::new("item", list, true)));
+                }
+                let values = texts(&[Some(text.as_str())]);
+                let fit = fitting(&values, &list);
+                if fit.value(0) {
+                    read(&values, &fit).unwrap();
+                }
+                fits.push(fit.value(0));
+            }
+            fits
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    // The record counts as the first level: a value nests one level less than a record may.
+    assert_eq!(fitted, [true, false, false]);
+}
