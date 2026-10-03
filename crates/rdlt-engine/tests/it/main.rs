@@ -48,6 +48,7 @@ mod support;
 mod takeover;
 mod told;
 mod unbounded;
+mod unheld;
 mod wal;
 mod wal_changes;
 
