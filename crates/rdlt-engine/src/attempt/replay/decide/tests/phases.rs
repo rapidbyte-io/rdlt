@@ -75,6 +75,7 @@ fn snapshot() -> Positions {
         stream: stream(),
         partition: partition("s0"),
         state: PartitionState::Done,
+        load: load(1),
     };
     standing(&[StateChange::Put(done.to_record())])
 }
@@ -155,6 +156,7 @@ fn a_phase_begun_already_is_not_begun_again_where_its_partitions_reuse_the_old_i
         stream: stream(),
         partition: partition("s0"),
         state: at(3),
+        load: load(1),
     };
     begun.apply(&[StateChange::Put(reused.to_record())]);
     let decision = decide(&begun, &unreset(), Some((load(3), 1)), None, &crossing());

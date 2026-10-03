@@ -358,6 +358,7 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
         stream: StreamName::new("orders").expect("a valid stream"),
         partition: PartitionId::parse("p0").expect("a valid partition"),
         state: PartitionState::Cursor(cursor),
+        load: load(),
     };
     let meta = CommitMeta {
         load_id: load(),

@@ -140,7 +140,29 @@ impl Stored {
 
     /// Whether the state `delta` leaves fits its limit, or is no larger than what is stored.
     fn fits(&self, delta: &[StateChange]) -> bool {
-        self.after(delta) <= self.limits.stored || !self.grows(delta)
+        self.excess(delta) == 0
+    }
+
+    /// Bytes: by how much the state `delta` leaves passes what may stand, its limit or, where
+    /// state is past it already, what is stored.
+    fn excess(&self, delta: &[StateChange]) -> u64 {
+        let past = self.after(delta).saturating_sub(self.limits.stored);
+        past.min(self.growth(delta))
+    }
+
+    /// How many of the stored records at `keys`, deleted in order with `meta`, `meta` needs deleted
+    /// for the state it leaves to fit: none where it fits as it is, `None` where deleting every
+    /// one of them would not do.
+    pub(crate) fn relief(&self, meta: &CommitMeta, keys: &[&str]) -> Option<usize> {
+        let mut excess = self.excess(&meta.state_delta);
+        for (deleted, key) in keys.iter().enumerate() {
+            if excess == 0 {
+                return Some(deleted);
+            }
+            let freed = self.records.get(*key).copied().unwrap_or(0);
+            excess = excess.saturating_sub(freed);
+        }
+        (excess == 0).then_some(keys.len())
     }
 
     /// Bytes: what the stored records take once `delta` lands.
@@ -153,8 +175,9 @@ impl Stored {
             })
     }
 
-    /// Whether `delta` leaves the records other than the receipt taking more than they take.
-    fn grows(&self, delta: &[StateChange]) -> bool {
+    /// Bytes: by how much `delta` leaves the records other than the receipt taking more than
+    /// they take.
+    fn growth(&self, delta: &[StateChange]) -> u64 {
         let receipt = StateKey::Receipt.encode();
         let (more, less) = changed(delta)
             .into_iter()
@@ -166,7 +189,7 @@ impl Stored {
                     less.saturating_add(before.saturating_sub(bytes)),
                 )
             });
-        more > less
+        more.saturating_sub(less)
     }
 }
 

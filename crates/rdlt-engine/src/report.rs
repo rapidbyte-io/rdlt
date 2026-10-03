@@ -6,7 +6,7 @@ mod tests;
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use rdlt_connector::{CommitSeq, LoadId, PipelineId, Receipt, StreamName};
+use rdlt_connector::{CommitSeq, LoadId, PartitionId, PipelineId, Receipt, StreamName};
 use serde::Serialize;
 
 use crate::error::{Error, ErrorKind, ErrorReport};
@@ -105,6 +105,10 @@ pub struct StreamReport {
     /// Reads of the stream's partitions that started again from their earliest, where the
     /// source's retention had dropped where they would resume.
     pub retention_resets: u64,
+    /// Partitions read to their end whose done markers commits deleted to keep stored state
+    /// within its limit, the earliest recorded first: a plan that names one again reads it
+    /// again from its beginning.
+    pub forgotten: Vec<PartitionId>,
 }
 
 /// How an attempt that did not fail ended.
@@ -197,6 +201,8 @@ pub(crate) struct AttemptLog {
     pub(crate) behind: BTreeMap<StreamName, u64>,
     /// Each stream's reads that started again from their earliest after a retention loss.
     pub(crate) retention_resets: BTreeMap<StreamName, u64>,
+    /// The partitions whose done markers each stream's commits forgot to make room in state.
+    pub(crate) forgotten: BTreeMap<StreamName, Vec<PartitionId>>,
 }
 
 /// A finished attempt.
@@ -240,6 +246,13 @@ impl Report {
         let bytes = total(self.bytes, committed.bytes)?;
         for (stream, behind) in &attempt.log.behind {
             self.streams.entry(stream.to_string()).or_default().behind = Some(*behind);
+        }
+        for (stream, forgotten) in &attempt.log.forgotten {
+            self.streams
+                .entry(stream.to_string())
+                .or_default()
+                .forgotten
+                .extend(forgotten.iter().cloned());
         }
         for (stream, resets) in &attempt.log.retention_resets {
             self.streams

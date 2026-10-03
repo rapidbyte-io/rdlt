@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
+use std::time::{Duration, UNIX_EPOCH};
+
 use rdlt_connector::{
-    Cursor, PartitionId, PartitionState, PipelineState, StateChange, StateEntry, StateKey,
+    Cursor, LoadId, PartitionId, PartitionState, PipelineState, StateChange, StateEntry, StateKey,
     StreamName, StreamState,
 };
 
@@ -19,12 +21,22 @@ fn at(next: u64) -> PartitionState {
     PartitionState::Cursor(Cursor::encode(1, &next).expect("a cursor"))
 }
 
+fn load(seconds: u64) -> LoadId {
+    LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(seconds), 1)
+}
+
 fn put(name: &str, id: &str, state: PartitionState) -> StateChange {
+    recorded(name, id, state, 1)
+}
+
+/// The change recording `id` of stream `name` at `state`, by load `seconds`.
+fn recorded(name: &str, id: &str, state: PartitionState, seconds: u64) -> StateChange {
     StateChange::Put(
         StateEntry::Partition {
             stream: stream(name),
             partition: partition(id),
             state,
+            load: load(seconds),
         }
         .to_record(),
     )
@@ -116,4 +128,53 @@ fn phases_follow_the_state_they_start_from_and_the_commits_after_it() {
     )]);
     assert_eq!(positions.phase(&stream("orders")), 0);
     assert_eq!(positions.phase(&stream("users")), 1);
+}
+
+#[test]
+fn done_partitions_are_listed_the_earliest_recorded_first_as_commits_move_them() {
+    let mut state = PipelineState::default();
+    for (id, seconds) in [("old", 1), ("cursor", 2)] {
+        let position = if id == "old" {
+            PartitionState::Done
+        } else {
+            at(1)
+        };
+        state
+            .apply(&recorded("orders", id, position, seconds))
+            .expect("applies");
+    }
+    let mut positions = Positions::of(&state);
+    positions.apply(&[
+        recorded("orders", "newest", PartitionState::Done, 9),
+        recorded("events", "middle", PartitionState::Done, 5),
+        recorded("orders", "cursor", PartitionState::Done, 7),
+    ]);
+    let done = |positions: &Positions| -> Vec<(LoadId, String)> {
+        positions
+            .done()
+            .into_iter()
+            .map(|(load, _, id)| (load, id.to_string()))
+            .collect()
+    };
+    assert_eq!(
+        done(&positions),
+        [
+            (load(1), "old".to_owned()),
+            (load(5), "middle".to_owned()),
+            (load(7), "cursor".to_owned()),
+            (load(9), "newest".to_owned()),
+        ]
+    );
+    let gone = StateKey::Partition(stream("events"), partition("middle")).encode();
+    positions.apply(&[
+        StateChange::Delete(gone),
+        recorded("orders", "old", at(2), 10),
+    ]);
+    assert_eq!(
+        done(&positions),
+        [
+            (load(7), "cursor".to_owned()),
+            (load(9), "newest".to_owned())
+        ]
+    );
 }

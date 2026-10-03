@@ -72,6 +72,8 @@ fn position(id: &str, next: u64) -> StateChange {
             stream: stream(),
             partition: partition(id),
             state: at(next),
+            // As load 2's commit records it.
+            load: load(2),
         }
         .to_record(),
     )

@@ -419,6 +419,7 @@ fn stream(write: WriteMode, cycle: Option<Cycle>, partitions: usize) -> StreamRu
         stopped: false,
         phases: None,
         sequences: None,
+        named: std::collections::BTreeSet::new(),
         replayable: true,
     }
 }
@@ -437,6 +438,7 @@ fn position(id: &str, state: PartitionState) -> StateChange {
         stream: name(),
         partition: PartitionId::parse(id).unwrap(),
         state,
+        load: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     StateChange::Put(entry.to_record())
 }

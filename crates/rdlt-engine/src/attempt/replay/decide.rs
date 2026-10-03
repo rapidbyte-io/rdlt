@@ -117,6 +117,7 @@ pub(super) fn decide(
                 stream,
                 partition,
                 state,
+                load: meta.load_id,
             };
             StateChange::Put(entry.to_record())
         }))

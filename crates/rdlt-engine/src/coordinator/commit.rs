@@ -45,7 +45,7 @@ impl Coordinator {
         crash_point!("engine.flush.before");
         self.parts.lanes.flush().await?;
         crash_point!("engine.flush.after");
-        let meta = CommitMeta {
+        let mut meta = CommitMeta {
             load_id: self.parts.load_id,
             commit_seq: self.seq,
             epoch: self.parts.epoch,
@@ -55,6 +55,7 @@ impl Coordinator {
             child_tables: self.parts.tables.child_tables(),
             drop_tables: Vec::new(),
         };
+        let forgotten = self.relieve(&mut meta, &tables.born);
         if self
             .log_commit(&meta, &tables, collected.sealed, begun)
             .await?
@@ -68,6 +69,7 @@ impl Coordinator {
         crash_point!("engine.complete.after", !completing.is_empty());
         self.parts.tables.recorded(&tables.revisions);
         self.record(receipt, streams, &completing)?;
+        self.forgot(forgotten);
         self.record_positions(&collected.positions);
         self.landed(&collected.positions, progressed);
         crash_point!("engine.ack.before");

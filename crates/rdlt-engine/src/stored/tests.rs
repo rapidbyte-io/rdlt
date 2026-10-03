@@ -242,3 +242,36 @@ fn state_past_the_limit_only_with_new_child_tables_is_refused_for_them() {
     let commit = meta(vec![StateChange::Put(record("child", 100))]);
     full.admit(&commit, &born).unwrap();
 }
+
+#[test]
+fn a_commit_past_the_limit_is_relieved_by_the_fewest_records_deleted_in_order() {
+    let records = [record("a", 300), record("b", 300), record("c", 300)];
+    let stored = Stored::of(&records, limits(1200, ROOM));
+    let total = stored.total();
+    let bytes = |key: &str| record_bytes(&record(key, 300));
+    // A commit that fits needs nothing deleted.
+    let fits = meta(vec![StateChange::Put(record("d", 10))]);
+    assert_eq!(stored.relief(&fits, &["a", "b", "c"]), Some(0));
+    // One that passes the limit by a byte more than one record takes needs two.
+    let past = 1200 - total + bytes("a") + 1;
+    let grown = meta(vec![StateChange::Put(StateRecord {
+        key: "d".to_owned(),
+        value: Bytes::from(vec![7; usize::try_from(past).unwrap()]),
+    })]);
+    let over = stored.after(&grown.state_delta) - 1200;
+    assert!(
+        over > bytes("a") && over <= bytes("a") + bytes("b"),
+        "{over}"
+    );
+    assert_eq!(stored.relief(&grown, &["a", "b", "c"]), Some(2));
+    // Records it does not store free nothing, and too few records relieve nothing.
+    assert_eq!(stored.relief(&grown, &["x", "a"]), None);
+    assert_eq!(stored.relief(&grown, &[]), None);
+    let mut relieved = grown.clone();
+    for key in ["a", "b"] {
+        relieved
+            .state_delta
+            .push(StateChange::Delete(key.to_owned()));
+    }
+    stored.admit_all(&relieved).unwrap();
+}

@@ -28,6 +28,11 @@ fn cursor(offset: u64) -> PartitionState {
     PartitionState::Cursor(Cursor::encode(1, &offset).unwrap())
 }
 
+/// The load of number `n`, loads of greater numbers later.
+fn load(n: u64) -> LoadId {
+    LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(n), u128::from(n))
+}
+
 fn receipt() -> Receipt {
     Receipt {
         load_id: LoadId::from_parts(UNIX_EPOCH + Duration::from_secs(10), 7),
@@ -51,6 +56,10 @@ fn sample_state() -> PipelineState {
         .partitions
         .insert(partition("p1"), PartitionState::Done);
     orders.generation = Some(GenerationId(2));
+    for (id, number) in [("p0", 5), ("p1", 3)] {
+        let position = (stream("orders"), partition(id));
+        state.recorded_by.insert(position, load(number));
+    }
     orders.completed = vec![GenerationId(0), GenerationId(1)];
     state.resets.insert(stream("orders"), Epoch(3));
     let mut names = NameMap::default();
@@ -271,6 +280,7 @@ fn keys_in_a_non_canonical_form_are_malformed() {
         stream: stream("s"),
         partition: partition("p"),
         state: cursor(5),
+        load: load(1),
     };
     let canonical = entry.to_record();
     // The stream's members in another order.
@@ -328,6 +338,7 @@ fn applying_changes_puts_and_deletes_entries() {
         stream: stream("orders"),
         partition: partition("p0"),
         state: cursor(5),
+        load: load(2),
     };
     state.apply(&StateChange::Put(put.to_record())).unwrap();
     assert_eq!(
@@ -416,6 +427,24 @@ fn partition_states() -> impl Strategy<Value = PartitionState> {
     prop_oneof![Just(PartitionState::Done), any::<u64>().prop_map(cursor)]
 }
 
+/// Records each of `state`'s positions as recorded by a load of its own, from load `first` on.
+fn recorded(state: &mut PipelineState, first: u64) {
+    let positions: Vec<(StreamName, PartitionId)> = state
+        .streams
+        .iter()
+        .flat_map(|(name, stream)| {
+            stream
+                .partitions
+                .keys()
+                .map(|id| (name.clone(), id.clone()))
+        })
+        .collect();
+    for (offset, position) in (0_u64..).zip(positions) {
+        let number = (first % (1 << 40)).wrapping_add(offset);
+        state.recorded_by.insert(position, load(number));
+    }
+}
+
 fn states() -> impl Strategy<Value = PipelineState> {
     let streams = proptest::collection::btree_map(
         prop_oneof![Just("a"), Just("b"), Just("c.d")],
@@ -459,10 +488,12 @@ fn states() -> impl Strategy<Value = PipelineState> {
                 .map(|(name, epoch)| (stream(name), Epoch(epoch)))
                 .collect(),
             last_receipt: with_receipt.then(receipt),
+            recorded_by: std::collections::BTreeMap::new(),
         })
-        .prop_flat_map(|state| (Just(state), tables()))
-        .prop_map(|(mut state, tables)| {
+        .prop_flat_map(|state| (Just(state), tables(), any::<u64>()))
+        .prop_map(|(mut state, tables, first)| {
             state.tables = tables;
+            recorded(&mut state, first);
             state
         })
 }

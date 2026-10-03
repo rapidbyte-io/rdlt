@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commit::Receipt;
 use crate::cursor::Cursor;
-use crate::id::{Epoch, GenerationId, PartitionId, SchemaVersion, StreamName, TablePath};
+use crate::id::{Epoch, GenerationId, LoadId, PartitionId, SchemaVersion, StreamName, TablePath};
 use crate::schema::{ColumnPath, TableSchema};
 
 pub use error::StateError;
@@ -79,6 +79,8 @@ pub enum StateEntry {
         partition: PartitionId,
         /// Where it stands.
         state: PartitionState,
+        /// The load whose commit recorded it there.
+        load: LoadId,
     },
     /// A stream's full read in progress; a replace stream fills the read's generation.
     Generation {
@@ -314,6 +316,8 @@ pub struct PipelineState {
     pub resets: BTreeMap<StreamName, Epoch>,
     /// The last commit's receipt.
     pub last_receipt: Option<Receipt>,
+    /// The load whose commit recorded each partition's position, by stream and partition.
+    pub recorded_by: BTreeMap<(StreamName, PartitionId), LoadId>,
 }
 
 impl PipelineState {
@@ -332,6 +336,28 @@ impl PipelineState {
         Ok(state)
     }
 
+    /// The entries of `stream`'s partitions, named `name`; a position no load is known to have
+    /// recorded, as in a state built by hand, records as the earliest load's.
+    fn positions<'a>(
+        &'a self,
+        name: &'a StreamName,
+        stream: &'a StreamState,
+    ) -> impl Iterator<Item = StateEntry> + 'a {
+        stream.partitions.iter().map(move |(partition, state)| {
+            let load = self
+                .recorded_by
+                .get(&(name.clone(), partition.clone()))
+                .copied()
+                .unwrap_or_else(|| LoadId::from_parts(std::time::UNIX_EPOCH, 0));
+            StateEntry::Partition {
+                stream: name.clone(),
+                partition: partition.clone(),
+                state: state.clone(),
+                load,
+            }
+        })
+    }
+
     /// The records that store this state.
     pub fn to_records(&self) -> Vec<StateRecord> {
         let mut entries = vec![StateEntry::Epoch(self.epoch)];
@@ -340,13 +366,7 @@ impl PipelineState {
                 stream: name.clone(),
                 phase: stream.phase,
             });
-            for (partition, state) in &stream.partitions {
-                entries.push(StateEntry::Partition {
-                    stream: name.clone(),
-                    partition: partition.clone(),
-                    state: state.clone(),
-                });
-            }
+            entries.extend(self.positions(name, stream));
             if let Some(generation) = stream.generation {
                 entries.push(StateEntry::Generation {
                     stream: name.clone(),
@@ -394,12 +414,11 @@ impl PipelineState {
                 stream,
                 partition,
                 state,
+                load,
             } => {
-                self.streams
-                    .entry(stream)
-                    .or_default()
-                    .partitions
-                    .insert(partition, state);
+                let positions = &mut self.streams.entry(stream.clone()).or_default().partitions;
+                positions.insert(partition.clone(), state);
+                self.recorded_by.insert((stream, partition), load);
             }
             StateEntry::Generation { stream, generation } => {
                 self.streams.entry(stream).or_default().generation = Some(generation);
@@ -454,6 +473,8 @@ impl PipelineState {
                 }
             }
             StateKey::Partition(stream, partition) => {
+                self.recorded_by
+                    .remove(&(stream.clone(), partition.clone()));
                 if let Some(state) = self.streams.get_mut(stream) {
                     state.partitions.remove(partition);
                 }

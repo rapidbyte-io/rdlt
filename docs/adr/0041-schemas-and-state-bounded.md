@@ -113,12 +113,17 @@ one run to the next, broke both:
   the limit, stored before the memory was lowered or by a replayed commit logged under a larger
   one, takes a commit that does not grow it, the receipt left out of that measure since every
   commit replaces it and its numbers gain digits, so a pipeline whose limit fell keeps loading.
-- **A plan never forgets a position.** A partition a plan omits keeps its entry, running or
-  `Done`: a plan may omit a partition for a moment, a listing that failed in part, and a
-  partition planned again without its entry is read again from its beginning, its rows twice.
-  Entries leave state only as before, with a new full read's cycle, a change stream's new phase,
-  or a reset, so a source whose partition ids keep changing grows its state until a commit is
-  refused as `state_bytes_exceeded`; a reset of the stream is the remedy (ADR 0031, ADR 0033).
+- **A plan never forgets a position; state pressure forgets done markers.** A partition a plan
+  omits keeps its entry, running or `Done`: a plan may omit a partition for a moment, a listing
+  that failed in part, and a partition planned again without its entry is read again from its
+  beginning, its rows twice. A partition read to its end is recorded `Done`, which holds no
+  cursor, and a plan naming it reads nothing from it. Each partition entry records the load
+  whose commit wrote it. A commit that would otherwise be refused as `state_bytes_exceeded`
+  deletes with it as few done markers as it needs, of partitions the latest plans of the
+  attempt's streams do not name, the earliest recorded first; the run report lists each, by
+  stream, as `forgotten`, since a plan that names one again reads it again from its beginning.
+  A partition that is not done is never forgotten: where state still does not fit, the commit
+  is refused, and raising the budget or resetting the stream is the remedy (ADR 0031, ADR 0033).
 - **A widen the destination refuses is routed aside.** The engine applies a change one table
   change a call, so a `schema_conflict` names the change it refused. A refused widen keeps its
   column as it is for the rest of the attempt, the column's own and no other: values it cannot
@@ -139,10 +144,11 @@ Rejected:
   format.
 - **Routing a table's columns to JSON beyond its width**: values of one column would change where
   they go in the middle of a stream, without a word.
-- **Forgetting the positions of partitions a plan omits**, at an attempt's first plan, or only
-  those `Done`: a plan may omit a partition for a moment, a listing that failed in part, and a
-  partition named again without its entry is read from its beginning, its rows twice. Keeping an
-  entry for some number of plans would make the count state, written by every plan.
+- **Forgetting the positions of partitions a plan omits**, at an attempt's first plan, or the done
+  ones whether or not state is pressed: a plan may omit a partition for a moment, a listing that
+  failed in part, and a partition named again without its entry is read from its beginning, its
+  rows twice. Keeping an entry for some number of plans would make the count state, written by
+  every plan. Forgetting a cursor under pressure was rejected for the same reason.
 
 ## Consequences
 
@@ -162,8 +168,11 @@ Rejected:
   cursor limit is derived for the partitions read at once, not for those state records: about a
   hundred partitions each holding a cursor as long as a cursor may be reach the limit, at the
   defaults and at the least memory alike.
-- A source whose partition ids keep changing grows its state with each new one until a commit is
-  refused as `state_bytes_exceeded`; a reset of its stream clears the entries.
+- A source whose partitions keep being created and read to their end stays within its state
+  limit: its oldest done markers go as new ones need room, each named in the report. One whose
+  partitions keep being created and end at a cursor, as the files source's do since it
+  checkpoints after its last push, keeps every cursor and stops at `state_bytes_exceeded` until
+  its stream is reset.
 - `LocalWal` makes a chunk's removal durable with a sync of the load's directory.
 - The simulation holds one to three writers open in a quarter of its worlds, drawn apart from
   the rest of the seed, so lanes close writers, and its faulty disk fails a chunk's removal as it

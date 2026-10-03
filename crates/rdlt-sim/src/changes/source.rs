@@ -375,6 +375,7 @@ fn committed_position(
                 stream: named,
                 partition: id,
                 state: PartitionState::Cursor(cursor),
+                ..
             } if &named == stream && &id == partition => cursor.decode::<Position>(1).ok(),
             _ => None,
         })

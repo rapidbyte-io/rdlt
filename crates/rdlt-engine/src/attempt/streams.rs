@@ -203,6 +203,7 @@ fn planned(
             stopped: false,
             phases,
             sequences: None,
+            named: partitioned.named,
             replayable: true,
         },
         on_demand,
@@ -398,6 +399,8 @@ struct Partitioned {
     begun: Option<Begun>,
     /// The partitions to read, each from its committed position or its start.
     partitions: Vec<(Partition, Option<Cursor>)>,
+    /// Every partition the plan names, those it leaves unread among them.
+    named: BTreeSet<PartitionId>,
 }
 
 /// The partitions of `plan`'s stream still to read, with their committed cursors; a plan
@@ -412,6 +415,11 @@ async fn partitions(
 ) -> Result<Partitioned, Error> {
     let name = plan.name();
     let planned = plan_of(context.source.as_ref(), name, state).await?;
+    let named = planned
+        .partitions
+        .iter()
+        .map(|partition| partition.id().clone())
+        .collect();
     if let Some(phase) = planned.phase.filter(|phase| *phase != state.phase) {
         if plan.read_mode() != ReadMode::Cdc {
             return Err(Error::new(
@@ -438,6 +446,7 @@ async fn partitions(
             committed: BTreeMap::new(),
             begun: Some(begun),
             partitions,
+            named,
         });
     }
     let partitions = planned
@@ -454,5 +463,6 @@ async fn partitions(
         committed: state.partitions.clone(),
         begun: None,
         partitions,
+        named,
     })
 }
