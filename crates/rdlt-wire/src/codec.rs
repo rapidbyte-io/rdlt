@@ -97,8 +97,10 @@ impl Encoder {
             &mut self.tracker,
             &self.options,
         );
-        // Read back as its receiver reads it, verified as deep as the schema nests.
-        let message = measure::verified(Frame::Schema, &encoded.ipc_message, nesting(schema))?;
+        // Read back as its receiver reads it, verified exactly as deep as the schema nests.
+        let depth = usize::try_from(nesting(schema)).unwrap_or(usize::MAX);
+        let tables = depth.saturating_add(SCHEMA_TABLES);
+        let message = measure::verified(Frame::Schema, &encoded.ipc_message, tables)?;
         let read = message
             .header_as_schema()
             .ok_or_else(|| measure::unexpected(Frame::Schema, &message))?;
@@ -179,6 +181,10 @@ fn twice_keyed(data_type: &DataType) -> bool {
         _ => false,
     }
 }
+
+/// Tables a schema message nests beside one a level of its fields: the message and its schema
+/// above the top level, and below the deepest field its dictionary's encoding and key type.
+const SCHEMA_TABLES: usize = 4;
 
 /// How deep `schema`'s fields nest, counting a top-level field as the first level, as the
 /// nesting limit counts them.
