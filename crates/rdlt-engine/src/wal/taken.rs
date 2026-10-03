@@ -110,10 +110,11 @@ async fn fence(
         .stage(pipeline, chunk)
         .await
         .map_err(Error::from_wal)?;
-    staged
-        .append(Bytes::from(bytes))
-        .await
-        .map_err(Error::from_wal)?;
+    if let Err(error) = staged.append(Bytes::from(bytes)).await {
+        // A fence that failed to write gives back what it staged.
+        drop(staged.discard().await);
+        return Err(Error::from_wal(error));
+    }
     match staged.publish().await {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
