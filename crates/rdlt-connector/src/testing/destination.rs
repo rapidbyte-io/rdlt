@@ -24,6 +24,8 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 
 pub use clauses::DESTINATION_CLAUSES;
+#[cfg(test)]
+pub(in crate::testing) use names::simply_folded;
 pub use read::read_back_integers;
 
 use super::{

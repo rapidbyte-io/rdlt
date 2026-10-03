@@ -1,5 +1,8 @@
 //! `D-NAMES`: identifiers at the edges of the destination's own rules.
 
+mod apart;
+#[cfg(test)]
+pub(in crate::testing) use apart::simply_folded;
 #[cfg(test)]
 mod tests;
 
@@ -18,18 +21,6 @@ use crate::types::{Field, LogicalType};
 
 /// The shortest identifiers the clause fits its names in.
 pub(super) const SHORTEST: u16 = 32;
-
-/// Pairs of names that compare alike under some equality wider than a destination may declare.
-///
-/// They are alike by ASCII case, by Unicode's case folding, by Unicode normalization and by
-/// compatibility. The clause writes each pair the declared rules keep apart, and needs both read
-/// back.
-const APART: [(&str, &str); 4] = [
-    ("Kept", "kept"),
-    ("stra\u{df}e", "strasse"),
-    ("\u{e9}t\u{e9}", "e\u{301}te\u{301}"),
-    ("\u{fb01}x", "fix"),
-];
 
 impl Bench<'_> {
     /// Creates a table whose identifier, and a column's, are as long as the destination allows,
@@ -95,8 +86,9 @@ impl Bench<'_> {
 }
 
 /// The clause's column names, folded as `rules` fold: an id, one as long as `rules` allow, one
-/// beyond ASCII when any character is allowed, and one in mixed case when case is kept; none
-/// when `rules` reserve every form of one.
+/// beyond ASCII when any character is allowed, one in mixed case when case is kept, and the
+/// pairs `rules` keep apart that a wider equality makes alike; none when `rules` reserve every
+/// form of one.
 fn names(rules: &IdentifierRules) -> Option<Vec<String>> {
     let longest = usize::from(rules.max_len.get());
     // Folded once: a destination declares as many reserved words as it likes.
@@ -116,12 +108,9 @@ fn names(rules: &IdentifierRules) -> Option<Vec<String>> {
     if rules.case == IdentifierCase::Preserve {
         names.push(unreserved("MixedCase".to_owned())?);
     }
-    for (one, other) in APART {
-        let (one, other) = (folded(rules, one), folded(rules, other));
-        let ascii = |name: &str| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-        let admitted = rules.chars == IdentifierChars::Any || (ascii(&one) && ascii(&other));
+    for (one, other) in apart::apart(rules, longest) {
         let free = |name: &String| !reserved.contains(name) && !names.contains(name);
-        if one != other && admitted && free(&one) && free(&other) {
+        if free(&one) && free(&other) {
             names.extend([one, other]);
         }
     }

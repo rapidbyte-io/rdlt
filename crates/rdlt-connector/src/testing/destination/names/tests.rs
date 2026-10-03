@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 
+use super::apart::{apart, pieces};
 use super::{names, padded, unreserved};
 use crate::capabilities::{IdentifierCase, IdentifierChars, IdentifierRules};
 
@@ -25,23 +26,80 @@ fn the_names_follow_the_destinations_rules() {
         names(&rules(IdentifierCase::Upper, IdentifierChars::AsciiWord)).unwrap(),
         ["ID".to_owned(), long("LONG_").replace('g', "G")]
     );
+    let kept = names(&rules(IdentifierCase::Preserve, IdentifierChars::Any)).unwrap();
     assert_eq!(
-        names(&rules(IdentifierCase::Preserve, IdentifierChars::Any)).unwrap(),
+        kept[..4],
         [
             "id".to_owned(),
             long("long_"),
             "données_名前".to_owned(),
             "MixedCase".to_owned(),
-            "Kept".to_owned(),
-            "kept".to_owned(),
-            "stra\u{df}e".to_owned(),
-            "strasse".to_owned(),
-            "\u{e9}t\u{e9}".to_owned(),
-            "e\u{301}te\u{301}".to_owned(),
-            "\u{fb01}x".to_owned(),
-            "fix".to_owned(),
         ]
     );
+    let distinct: BTreeSet<&String> = kept.iter().collect();
+    assert_eq!(distinct.len(), kept.len());
+    assert!(kept.iter().all(|name| name.len() <= 40), "{kept:?}");
+}
+
+#[test]
+fn every_pair_a_wider_equality_makes_alike_is_written_where_the_rules_keep_it_apart() {
+    let pieces = |case, chars| {
+        let [cased, folding, normalized] = pieces(&rules(case, chars));
+        (cased, folding, normalized)
+    };
+    let pair = |one: &str, other: &str| (one.to_owned(), other.to_owned());
+    let (cased, folding, normalized) = pieces(IdentifierCase::Preserve, IdentifierChars::Any);
+    for wanted in [
+        pair("K", "k"),
+        pair("k", "\u{212a}"),
+        pair("I", "ı"),
+        pair("i\u{307}", "İ"),
+    ] {
+        assert!(cased.contains(&wanted), "{wanted:?}");
+    }
+    for wanted in [
+        pair("s", "ſ"),
+        pair("ς", "σ"),
+        pair("ss", "ß"),
+        pair("i", "ı"),
+        pair("fi", "ﬁ"),
+    ] {
+        assert!(folding.contains(&wanted), "{wanted:?}");
+    }
+    for wanted in [
+        pair("\u{e9}", "e\u{301}"),
+        pair("K", "\u{212a}"),
+        pair("\u{c5}", "\u{212b}"),
+    ] {
+        assert!(normalized.contains(&wanted), "{wanted:?}");
+    }
+    // Folded to lower case, a pair lower case makes alike is the rules' own, and not written.
+    let (cased, folding, normalized) = pieces(IdentifierCase::Lower, IdentifierChars::Any);
+    let all: Vec<_> = cased.iter().chain(&folding).chain(&normalized).collect();
+    assert!(all.iter().all(|(one, other)| one != other));
+    assert!(!all.contains(&&pair("k", "k")) && all.contains(&&pair("s", "ſ")));
+    assert!(all.contains(&&pair("ss", "ß")) && all.contains(&&pair("σ", "ς")));
+    // Only ASCII word characters: no pair a wider equality makes alike is left.
+    let (cased, folding, normalized) = pieces(IdentifierCase::Preserve, IdentifierChars::AsciiWord);
+    assert_eq!(folding.len() + normalized.len(), 0);
+    assert_eq!(cased.len(), 26);
+}
+
+#[test]
+fn pieces_gather_into_names_no_longer_than_the_longest() {
+    let rules = rules(IdentifierCase::Preserve, IdentifierChars::Any);
+    let pieces: usize = pieces(&rules).iter().map(Vec::len).sum();
+    let names = apart(&rules, 32);
+    assert!(
+        names.len() * 2 < pieces,
+        "{} names of {pieces} pieces",
+        names.len()
+    );
+    for (one, other) in &names {
+        assert!(one.len() <= 32 && other.len() <= 32, "{one} {other}");
+        assert_ne!(one, other);
+        assert_eq!(one.split('_').next(), other.split('_').next());
+    }
 }
 
 #[test]
