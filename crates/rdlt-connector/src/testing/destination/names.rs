@@ -19,11 +19,24 @@ use crate::types::{Field, LogicalType};
 /// The shortest identifiers the clause fits its names in.
 pub(super) const SHORTEST: u16 = 32;
 
+/// Pairs of names that compare alike under some equality wider than a destination may declare.
+///
+/// They are alike by ASCII case, by Unicode's case folding, by Unicode normalization and by
+/// compatibility. The clause writes each pair the declared rules keep apart, and needs both read
+/// back.
+const APART: [(&str, &str); 4] = [
+    ("Kept", "kept"),
+    ("stra\u{df}e", "strasse"),
+    ("\u{e9}t\u{e9}", "e\u{301}te\u{301}"),
+    ("\u{fb01}x", "fix"),
+];
+
 impl Bench<'_> {
     /// Creates a table whose identifier, and a column's, are as long as the destination allows,
-    /// with a column named in letters beyond ASCII when it allows any character, and one in mixed
-    /// case when it keeps case, each folded as its rules fold; stages three rows, commits them,
-    /// and reads every column back under its name.
+    /// with a column named in letters beyond ASCII when it allows any character, one in mixed
+    /// case when it keeps case, and pairs of columns whose names compare alike only under an
+    /// equality its rules do not declare, each folded as its rules fold; stages three rows,
+    /// commits them, and reads every column back under its name.
     pub(super) async fn names_are_kept(&self) -> Result<(), Violation> {
         let rules = &self.destination.capabilities().identifiers;
         let longest = usize::from(rules.max_len.get());
@@ -102,6 +115,15 @@ fn names(rules: &IdentifierRules) -> Option<Vec<String>> {
     }
     if rules.case == IdentifierCase::Preserve {
         names.push(unreserved("MixedCase".to_owned())?);
+    }
+    for (one, other) in APART {
+        let (one, other) = (folded(rules, one), folded(rules, other));
+        let ascii = |name: &str| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        let admitted = rules.chars == IdentifierChars::Any || (ascii(&one) && ascii(&other));
+        let free = |name: &String| !reserved.contains(name) && !names.contains(name);
+        if one != other && admitted && free(&one) && free(&other) {
+            names.extend([one, other]);
+        }
     }
     Some(names)
 }

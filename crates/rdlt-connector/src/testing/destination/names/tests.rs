@@ -31,7 +31,15 @@ fn the_names_follow_the_destinations_rules() {
             "id".to_owned(),
             long("long_"),
             "données_名前".to_owned(),
-            "MixedCase".to_owned()
+            "MixedCase".to_owned(),
+            "Kept".to_owned(),
+            "kept".to_owned(),
+            "stra\u{df}e".to_owned(),
+            "strasse".to_owned(),
+            "\u{e9}t\u{e9}".to_owned(),
+            "e\u{301}te\u{301}".to_owned(),
+            "\u{fb01}x".to_owned(),
+            "fix".to_owned(),
         ]
     );
 }

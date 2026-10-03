@@ -686,6 +686,9 @@ struct VaultConfig {
     finish_one_generation: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
     fold_names: bool,
+    /// Publishes one column of those whose names differ only in ASCII case, though it declares
+    /// it keeps case.
+    merge_cased_names: bool,
     /// Keeps only the staging of the table's writer that wrote last, of all its writers.
     lose_lanes: bool,
     /// Fails its check, though sessions open.
@@ -1426,6 +1429,11 @@ impl VaultWriter {
                 }
             }
         }
+        let batch = if self.config.merge_cased_names {
+            merged_cased_names(&batch)
+        } else {
+            batch
+        };
         if !self.config.fold_names {
             return batch;
         }
@@ -1723,6 +1731,26 @@ fn blanked_names(batch: &RecordBatch) -> RecordBatch {
     RecordBatch::try_new(schema, columns).expect("nulls fit a nullable column")
 }
 
+/// `batch` keeping, of columns whose names differ only in ASCII case, the first.
+fn merged_cased_names(batch: &RecordBatch) -> RecordBatch {
+    let schema = batch.schema();
+    let mut seen: Vec<String> = Vec::new();
+    let (fields, columns): (Vec<_>, Vec<_>) = schema
+        .fields()
+        .iter()
+        .zip(batch.columns())
+        .filter(|(field, _)| {
+            let folded = field.name().to_ascii_lowercase();
+            let first = !seen.contains(&folded);
+            seen.push(folded);
+            first
+        })
+        .map(|(field, column)| (field.as_ref().clone(), Arc::clone(column)))
+        .unzip();
+    let schema = Arc::new(arrow_schema::Schema::new(fields));
+    RecordBatch::try_new(schema, columns).expect("a subset of the batch's columns")
+}
+
 struct VaultProbe(SharedVault);
 
 impl Probe for VaultProbe {
@@ -1801,6 +1829,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("history_trusts_times", &["D-HIST"]),
     ("static_epoch", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
+    ("merge_cased_names", &["D-NAMES"]),
     ("refuse_check", &["D-CHECK"]),
     ("lose_lanes", &["D-LANES"]),
     ("keep_dropped", &["D-DROP"]),
