@@ -274,10 +274,11 @@ fn each(
             if let Some(fault) = context.fault() {
                 return Err(fault);
             }
+            // A tripped parse is observed next, which finds again whether it must be exact.
             if context.meter.tripped() {
                 return Ok(Appended {
                     tripped: true,
-                    imprecise: exact || context.imprecise(),
+                    imprecise: false,
                 });
             }
             // The fast parse refuses an integer beyond a float's range as it refuses invalid JSON;
@@ -397,6 +398,8 @@ fn again(
     shape: &Shape,
     exact: bool,
 ) -> Result<Vec<arrow_array::ArrayRef>, ShredError> {
+    #[cfg(test)]
+    tests::BUILT_AGAIN.with(|built| built.set(built.get() + 1));
     let unbuilt = |what: &str| ShredError::Internal(format!("building a chunk again: {what}"));
     let context = Context::new(Meter::reserved(), Columns::new(u64::MAX));
     let mut record =

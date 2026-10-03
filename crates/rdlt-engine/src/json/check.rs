@@ -112,21 +112,15 @@ fn walk(field: &Field, encoded: bool, array: &dyn Array, rows: &Rows<'_>) -> Res
     match array.data_type() {
         DataType::Utf8 if json => {
             let texts = array.as_string::<i32>();
-            checked(rows, texts.len(), |row| {
-                texts.is_valid(row).then(|| texts.value(row))
-            })
+            checked(rows, |row| texts.is_valid(row).then(|| texts.value(row)))
         }
         DataType::LargeUtf8 if json => {
             let texts = array.as_string::<i64>();
-            checked(rows, texts.len(), |row| {
-                texts.is_valid(row).then(|| texts.value(row))
-            })
+            checked(rows, |row| texts.is_valid(row).then(|| texts.value(row)))
         }
         DataType::Utf8View if json => {
             let texts = array.as_string_view();
-            checked(rows, texts.len(), |row| {
-                texts.is_valid(row).then(|| texts.value(row))
-            })
+            checked(rows, |row| texts.is_valid(row).then(|| texts.value(row)))
         }
         DataType::Dictionary(key, _) => keyed(field, json, array, key, rows),
         DataType::RunEndEncoded(ends, _) => {
@@ -206,24 +200,16 @@ fn nested(array: &dyn Array, valid: Rows<'_>) -> Result<(), JsonError> {
         DataType::FixedSizeList(item, _) => {
             let list = array.as_fixed_size_list();
             let size = list.value_length().as_usize();
-            let named = Rows::Fixed(
-                Rc::new(valid.clone()),
-                list.value_offset(0).as_usize(),
-                size,
-            );
+            let named = Rows::Fixed(Rc::new(valid.clone()), size);
             items(item, list.values().as_ref(), &named)
         }
         _ => Ok(()),
     }
 }
 
-/// Checks the text `text` gives for each row, of `len`, that `rows` names, where it gives one.
-fn checked<'a>(
-    rows: &Rows<'_>,
-    len: usize,
-    text: impl Fn(usize) -> Option<&'a str>,
-) -> Result<(), JsonError> {
-    for row in rows.ranges().flatten().take_while(|row| *row < len) {
+/// Checks the text `text` gives for each row `rows` names, where it gives one.
+fn checked<'a>(rows: &Rows<'_>, text: impl Fn(usize) -> Option<&'a str>) -> Result<(), JsonError> {
+    for row in rows.ranges().flatten() {
         if let Some(text) = text(row) {
             check(text)?;
         }

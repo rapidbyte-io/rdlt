@@ -145,3 +145,11 @@ fn a_record_built_against_a_shape_presizes_every_column() {
         fixed + (3 * 8 + 1) + (3 * 4 + 1 + 4) + (7 * 16 + 1)
     );
 }
+
+#[test]
+fn a_column_of_booleans_is_charged_two_bits_a_row() {
+    let meter = Meter::new(u64::MAX);
+    Column::new(&Observed::Bool, 0, 100, &meter).unwrap();
+    // A value's bit and a validity bit for each of the hundred rows.
+    assert_eq!(meter.spent(), BUILDER + 25);
+}

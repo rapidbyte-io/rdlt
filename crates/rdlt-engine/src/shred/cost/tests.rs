@@ -120,3 +120,75 @@ fn a_shape_sized_for_a_chunk_takes_the_items_its_lists_held() {
     };
     assert!(matches!(object.get("m"), Some(Observed::Array(_, 1))));
 }
+
+/// A shape of a leaf, an object of a leaf and a list of leaves, each a column of integers.
+fn every_node() -> Shape {
+    let int = Observed::Int { exact: true };
+    let mut object = Shape::default();
+    object.push("x".into(), int.clone());
+    let mut shape = Shape::default();
+    shape.push("a".into(), int.clone());
+    shape.push("o".into(), Observed::Object(object));
+    shape.push("l".into(), Observed::Array(Box::new(int), 5));
+    shape
+}
+
+#[test]
+fn a_batch_s_columns_are_charged_their_arrays_but_for_those_already_built() {
+    use crate::shred::meter::{ARRAY, RECORD};
+    let shape = every_node();
+    // `a`, `x`, `l` and its items an array each, `o` a struct's.
+    assert_eq!(super::arrays(&shape, None), 4 * ARRAY + RECORD);
+    assert_eq!(super::arrays(&shape, Some(&shape)), 0);
+    let mut built = Shape::default();
+    built.push("a".into(), Observed::Int { exact: true });
+    assert_eq!(super::arrays(&shape, Some(&built)), 3 * ARRAY + RECORD);
+}
+
+#[test]
+fn a_shape_is_charged_an_entry_a_column_and_a_shape_an_object() {
+    use crate::shred::meter::{KEY, Meter, OBJECT_SHAPE};
+    let keys = ["a", "o", "x", "l"].map(Meter::key).iter().sum::<u64>();
+    // The list's items are an entry of their own, nameless.
+    assert_eq!(super::shape(&every_node()), keys + OBJECT_SHAPE + KEY);
+}
+
+#[test]
+fn a_list_in_an_object_is_reckoned_for_the_items_the_chunk_held() {
+    let list = |items| {
+        let mut object = Shape::default();
+        object.push(
+            "l".into(),
+            Observed::Array(Box::new(Observed::Int { exact: true }), items),
+        );
+        let mut shape = Shape::default();
+        shape.push("o".into(), Observed::Object(object));
+        shape
+    };
+    // Two rows: the struct's validity; the list's three offsets and validity; five integers and
+    // their validity.
+    let size = built(&list(0), &list(5), 2);
+    assert_eq!((size.cells, size.bytes), (5, 1 + (3 * 4 + 1) + (5 * 8 + 1)));
+}
+
+#[test]
+fn fitting_a_struct_reckons_the_fields_it_lacks() {
+    let object = |fields: &[&str]| {
+        let mut object = Shape::default();
+        for field in fields {
+            object.push((*field).into(), Observed::Int { exact: true });
+        }
+        let mut shape = Shape::default();
+        shape.push("o".into(), Observed::Object(object));
+        shape
+    };
+    // Four rows of `b`, nulls built: a value and a validity bit each.
+    assert_eq!(fitted(&object(&["a", "b"]), &object(&["a"]), 4), 4 * 8 + 1);
+}
+
+#[test]
+fn a_list_of_text_holds_text() {
+    let mut shape = Shape::default();
+    shape.push("l".into(), Observed::Array(Box::new(Observed::Text), 1));
+    assert!(holds_text(&shape));
+}

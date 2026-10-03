@@ -30,3 +30,17 @@ fn columns_are_counted_to_their_limit_and_refused_one_past_it() {
     assert_eq!(columns.add(), Err(ShredError::TooManyColumns(3, 2)));
     assert_eq!(columns.add(), Err(ShredError::TooManyColumns(3, 2)));
 }
+
+#[test]
+fn an_observation_takes_past_its_room_only_what_the_room_lacks() {
+    let beyond = super::Beyond::new(1_000);
+    let meter = Meter::observing(100, &beyond);
+    // A hundred within the room and fifty beyond it; then all that is left beyond.
+    assert_eq!(meter.charge(150), Ok(()));
+    assert_eq!(meter.spent(), 150);
+    assert_eq!(meter.charge(950), Ok(()));
+    assert_eq!(meter.spent(), 1_100);
+    assert_eq!(meter.charge(1), Err(Over));
+    assert_eq!(meter.beyond_limit(), 1_000);
+    assert_eq!(beyond.limit(), 1_000);
+}
