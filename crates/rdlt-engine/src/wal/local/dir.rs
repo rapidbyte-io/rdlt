@@ -55,6 +55,9 @@ const PRIVATE: u32 = 0o077;
 /// Permission bits neither a group nor others may hold on the base: none may write it.
 const BASE: u32 = 0o022;
 
+/// The bit that keeps whoever may write a directory from removing what others own in it.
+const STICKY: u32 = 0o1000;
+
 /// What a directory entry is, links never followed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -106,6 +109,7 @@ impl Dir {
         let base = Self::resolved(path)?;
         let metadata = base.file.metadata()?;
         owned(metadata.uid(), metadata.mode(), BASE, &base.path)?;
+        above(path)?;
         Ok(base)
     }
 
@@ -116,6 +120,18 @@ impl Dir {
             file: File::from(fd),
             path: path.to_owned(),
         })
+    }
+
+    /// Checks the base, held open, again: it must still be linked where it was reached, which
+    /// a base removed is not, refused as [`io::ErrorKind::NotFound`], and still be this user's
+    /// and writable by no other.
+    pub(super) fn base_again(&self) -> io::Result<()> {
+        let metadata = self.file.metadata()?;
+        if metadata.nlink() == 0 {
+            let removed = format!("{} was removed", self.path.display());
+            return Err(io::Error::new(io::ErrorKind::NotFound, removed));
+        }
+        owned(metadata.uid(), metadata.mode(), BASE, &self.path)
     }
 
     /// Where `name` in the directory is, for messages.
@@ -304,6 +320,34 @@ pub(super) fn owned(owner: u32, mode: u32, reach: u32, path: &Path) -> io::Resul
         why,
     }
     .into())
+}
+
+/// Checks every directory above the base at `path`, as written and as resolved: each must belong
+/// to this user or to root, and none but its owner may write it unless it is sticky, so no other
+/// user can move the base, or a link on the way to it, or put another in its place.
+fn above(path: &Path) -> io::Result<()> {
+    let (written, resolved) = (std::path::absolute(path)?, std::fs::canonicalize(path)?);
+    let me = rustix::process::geteuid().as_raw();
+    let ancestors = written
+        .ancestors()
+        .skip(1)
+        .chain(resolved.ancestors().skip(1));
+    for ancestor in ancestors {
+        let metadata = std::fs::metadata(ancestor)?;
+        let why = if metadata.uid() != me && metadata.uid() != 0 {
+            "another user owns a directory above it"
+        } else if metadata.mode() & BASE != 0 && metadata.mode() & STICKY == 0 {
+            "others may write a directory above it"
+        } else {
+            continue;
+        };
+        return Err(Refusal::NotPrivate {
+            path: ancestor.to_owned(),
+            why,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// `removed`, a name gone counted as removed.

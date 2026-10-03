@@ -28,15 +28,40 @@ use super::store::{Chunk, StagedChunk, WalStore};
 /// synced after, so a chunk published is whole and durable, and a crash loses only what was
 /// staged.
 ///
-/// The base is resolved as given, created where missing, and must belong to the user the engine
-/// runs as and be writable by no other. Everything below it is reached one name at a time,
+/// The base is resolved as given the first time it is used, created where missing, and must
+/// belong to the user the engine runs as and be writable by no other; every directory above it
+/// must belong to that user or to root and be writable by no other, unless it is sticky. The
+/// store keeps the base open from then on, so a base removed or replaced under it is never made
+/// again or followed. Everything below it is reached one name at a time,
 /// never through a link, and must be that user's alone: directories 0700, files 0600, on the
 /// base's file system. Each is checked whenever it is opened, so a log is never read, written or
 /// removed through what another user could reach. A name the store never writes, in a directory
 /// it keeps a log's files in, is refused, never read.
 #[derive(Debug)]
 pub struct LocalWal {
-    base: PathBuf,
+    base: Arc<Base>,
+}
+
+/// Where a store's logs are: the base as the embedder named it, and the base open, once it
+/// was first used.
+#[derive(Debug)]
+struct Base {
+    path: PathBuf,
+    open: Mutex<Option<Arc<Dir>>>,
+}
+
+impl Base {
+    /// The base open: resolved and checked the first time, the same directory every time after.
+    fn dir(&self) -> io::Result<Arc<Dir>> {
+        let mut open = self.open.lock();
+        if let Some(dir) = &*open {
+            dir.base_again()?;
+            return Ok(Arc::clone(dir));
+        }
+        let dir = Arc::new(Dir::base(&self.path)?);
+        *open = Some(Arc::clone(&dir));
+        Ok(dir)
+    }
 }
 
 /// How many names a staging tries before it gives up: each is new to the process, and only a
@@ -49,19 +74,24 @@ static STAGINGS: AtomicU32 = AtomicU32::new(0);
 impl LocalWal {
     /// Logs under `base`, as `.rdlt` is by default.
     pub fn new(base: impl Into<PathBuf>) -> Self {
-        Self { base: base.into() }
+        Self {
+            base: Arc::new(Base {
+                path: base.into(),
+                open: Mutex::new(None),
+            }),
+        }
     }
 
     /// The directory of `pipeline`'s logs, whose name no other pipeline's takes, a file system
     /// that folds case included: `p.` and the id where it holds no upper-case letter, `x.` and
     /// the id in lower-case base32 otherwise.
     pub fn pipeline_dir(&self, pipeline: &PipelineId) -> PathBuf {
-        self.base.join(names::pipeline(pipeline))
+        self.base.path.join(names::pipeline(pipeline))
     }
 
     fn place(&self, pipeline: &PipelineId) -> Place {
         Place {
-            base: self.base.clone(),
+            base: Arc::clone(&self.base),
             pipeline: names::pipeline(pipeline),
         }
     }
@@ -70,14 +100,14 @@ impl LocalWal {
 /// Where a pipeline's logs are: the base and the name of the pipeline's directory in it.
 #[derive(Clone, Debug)]
 struct Place {
-    base: PathBuf,
+    base: Arc<Base>,
     pipeline: String,
 }
 
 impl Place {
     /// The pipeline's directory, where it exists.
     fn pipeline(&self) -> io::Result<Option<Dir>> {
-        Dir::base(&self.base)?.dir(&self.pipeline)
+        self.base.dir()?.dir(&self.pipeline)
     }
 
     /// `load`'s directory, where it exists.
@@ -118,7 +148,7 @@ fn is_open(dir: &Dir) -> io::Result<bool> {
 /// file that marks it open, durable in it; a directory of the load already there, whatever it
 /// holds, is refused with [`io::ErrorKind::AlreadyExists`].
 fn open_log(place: &Place, load: LoadId) -> io::Result<()> {
-    let pipeline = Dir::base(&place.base)?.dir_created(&place.pipeline)?;
+    let pipeline = place.base.dir()?.dir_created(&place.pipeline)?;
     let name = names::load(load);
     let dir = pipeline.dir_new(&name)?;
     pipeline.sync()?;
