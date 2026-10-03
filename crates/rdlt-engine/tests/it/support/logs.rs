@@ -107,3 +107,58 @@ impl WalStore for Counted {
         self.local.remove_log(pipeline, load)
     }
 }
+
+/// Rewrites every chunk of the logs under `base`, each frame's payload as `rewrite` says of its
+/// kind, its checksum made to match again, as whoever can write the logs' directory can.
+pub(crate) fn rewritten(
+    base: &std::path::Path,
+    rewrite: &dyn Fn(u8, &mut serde_json::Value),
+) -> usize {
+    let mut chunks = 0;
+    for entry in std::fs::read_dir(base).expect("a directory") {
+        let path = entry.expect("an entry").path();
+        if path.is_dir() {
+            chunks += rewritten(&path, rewrite);
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("wal") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).expect("a chunk");
+        let mut out = bytes[..14].to_vec();
+        let mut at = 14;
+        while at + 9 <= bytes.len() {
+            let kind = bytes[at];
+            let len = usize::try_from(u32::from_le_bytes(
+                bytes[at + 1..at + 5].try_into().expect("four bytes"),
+            ))
+            .expect("a length");
+            let mut payload = bytes[at + 9..at + 9 + len].to_vec();
+            if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                rewrite(kind, &mut value);
+                payload = serde_json::to_vec(&value).expect("JSON encodes");
+            }
+            let len = u32::try_from(payload.len())
+                .expect("a short payload")
+                .to_le_bytes();
+            let mut head = vec![kind];
+            head.extend_from_slice(&len);
+            let check = crc32c::crc32c_append(crc32c::crc32c(&head), &payload);
+            out.extend_from_slice(&head);
+            out.extend_from_slice(&check.to_le_bytes());
+            out.extend_from_slice(&payload);
+            at += 9 + len_of(&bytes[at..]);
+        }
+        std::fs::write(&path, out).expect("the rewritten chunk");
+        chunks += 1;
+    }
+    chunks
+}
+
+/// The length of the payload of the frame `bytes` starts with.
+fn len_of(bytes: &[u8]) -> usize {
+    usize::try_from(u32::from_le_bytes(
+        bytes[1..5].try_into().expect("four bytes"),
+    ))
+    .expect("a length")
+}

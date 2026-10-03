@@ -256,6 +256,49 @@ fn a_partial_replay_commits_only_what_it_staged_and_the_positions_it_moves() {
     );
 }
 
+/// A child table of a merge table, as a commit names one.
+fn child() -> rdlt_connector::ChildTable {
+    rdlt_connector::ChildTable {
+        table: "orders__items".into(),
+        merge: rdlt_connector::MergeKey {
+            columns: vec!["_rdlt_root_id".into()],
+            seq: "_rdlt_seq".into(),
+            root: None,
+            changes: None,
+            history: None,
+        },
+    }
+}
+
+#[test]
+fn a_replay_staging_nothing_names_no_child_table_and_no_replay_drops_one() {
+    let mut logged = logged();
+    logged.meta.child_tables = vec![child()];
+    logged.meta.drop_tables = vec![rdlt_connector::DroppedTable {
+        path: rdlt_connector::TablePath::new(["gone"]).expect("a valid path"),
+        name: "gone".into(),
+    }];
+    // The commit landed long ago and its partitions moved on: it stages nothing.
+    let mut moved_on = standing(40, 9);
+    moved_on.set(stream(), partition("p2"), at(5));
+    let landed = decide(&moved_on, &unreset(), Some((load(3), 1)), None, &logged);
+    assert!(landed.staged.is_empty());
+    let replayed = landed.replayed(&logged.meta, Epoch(9));
+    assert_eq!(replayed.child_tables, []);
+    assert_eq!(replayed.drop_tables, []);
+    // One that stages its rows again names its children, whose rows follow its roots'.
+    let staging = decide(
+        &standing(10, 5),
+        &unreset(),
+        Some((load(2), 1)),
+        None,
+        &logged,
+    );
+    let replayed = staging.replayed(&logged.meta, Epoch(9));
+    assert_eq!(replayed.child_tables, [child()]);
+    assert_eq!(replayed.drop_tables, []);
+}
+
 #[test]
 fn seals_of_a_stream_reset_after_their_session_opened_never_apply() {
     // A reset at epoch 5 cleared the stream's positions: p2's first seal, from nowhere, would

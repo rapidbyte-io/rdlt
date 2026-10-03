@@ -6,6 +6,7 @@
 //! still holds where the load left them, so a newer load that committed the same rows meanwhile
 //! never sees them twice.
 
+mod checked;
 mod decide;
 mod staged;
 mod taken;
@@ -140,6 +141,7 @@ impl Replaying {
         limits: rdlt_wire::Limits,
     ) -> Result<bool, Error> {
         let meta = &logged.meta;
+        checked::checked(logged, self.epoch, pipeline)?;
         let opened = scanned.header.as_ref().and_then(|header| header.opened);
         let decision = decide(&self.positions, &self.resets, self.last, opened, logged);
         self.stage(store, pipeline, scanned, &decision.staged, limits)

@@ -30,18 +30,29 @@ impl Decision {
     ///
     /// Where another load committed since, only the partitions the commit still moves change,
     /// and no generation swaps in: the rest of its state is older than the destination's.
+    ///
+    /// A replay drops no table. Child tables follow the root rows a commit publishes, so a commit
+    /// that stages nothing names none: one that landed long ago changes nothing again.
     pub(super) fn replayed(self, meta: &CommitMeta, epoch: Epoch) -> CommitMeta {
         let (state_delta, finish_generations) = if self.whole {
             (meta.state_delta.clone(), meta.finish_generations.clone())
         } else {
             (self.moved, Vec::new())
         };
+        let child_tables = if self.staged.is_empty() {
+            Vec::new()
+        } else {
+            meta.child_tables.clone()
+        };
         CommitMeta {
+            load_id: meta.load_id,
+            commit_seq: meta.commit_seq,
             epoch,
             segments: self.staged,
             state_delta,
             finish_generations,
-            ..meta.clone()
+            child_tables,
+            drop_tables: Vec::new(),
         }
     }
 }
