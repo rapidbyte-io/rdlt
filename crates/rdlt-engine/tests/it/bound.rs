@@ -244,3 +244,54 @@ async fn a_logged_load_replayed_and_read_by_sixteen_partitions_stays_within_the_
     );
     assert!(outcome.report.peak_memory > 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_row_whose_items_normalize_past_a_request_fails_unsplit_within_the_bound() {
+    // One row of eight million flags: a megabyte pushed, eight million child rows each with its
+    // lineage, far more than a request may take.
+    let steps: Steps = Arc::new(|step| {
+        (step < 1).then(|| {
+            let items = 8 << 20;
+            let flags =
+                arrow_array::BooleanArray::new(arrow_buffer::BooleanBuffer::new_unset(items), None);
+            let list = ListArray::new(
+                Arc::new(Field::new("item", DataType::Boolean, true)),
+                OffsetBuffer::from_lengths([items]),
+                Arc::new(flags),
+                None,
+            );
+            Step::Batch(batch(Arc::new(list)))
+        })
+    });
+    let config = commit_every(1_000_000_000).memory(BUDGET).lanes(1);
+    let source = making("bound_flags", steps).await;
+    let run = engine(config).run(
+        pipeline("bound_flags", [normalized("events")]),
+        source,
+        null().await,
+    );
+    let (peak, outcome) = measured(run).await;
+    let error = outcome.error.expect("the row takes more than a request");
+    assert_eq!(error.code(), Some("row_exceeds_budget"), "{error:?}");
+    assert!(peak <= bound(), "the heap held {peak} bytes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn list_views_naming_shared_items_normalize_within_the_bound() {
+    // Five hundred rows each naming the same four thousand flags: two million child rows from a
+    // few kilobytes pushed.
+    let steps: Steps = Arc::new(|step| {
+        (step < 1).then(|| {
+            let views = arrow_array::ListViewArray::new(
+                Arc::new(Field::new("item", DataType::Boolean, true)),
+                arrow_buffer::ScalarBuffer::from(vec![0_i32; 500]),
+                arrow_buffer::ScalarBuffer::from(vec![4_000_i32; 500]),
+                Arc::new(arrow_array::BooleanArray::from(vec![true; 4_000])),
+                None,
+            );
+            Step::Batch(batch(Arc::new(views)))
+        })
+    });
+    let (peak, outcome) = normalizing("bound_views", steps).await;
+    within(&outcome, 500 + 500 * 4_000, peak, bound());
+}
