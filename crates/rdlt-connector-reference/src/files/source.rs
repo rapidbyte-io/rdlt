@@ -27,7 +27,7 @@ use crate::rooted::{Dir, Kind, Limit, Limited};
 pub struct FilesSourceConfig {
     /// The directory holding the streams.
     pub root: PathBuf,
-    /// Records per push of a JSON lines file; a checkpoint follows each push.
+    /// Records per push of a JSON lines file; a checkpoint follows each push but a file's last.
     #[serde(default = "default_batch_rows")]
     pub batch_rows: NonZeroUsize,
     /// Bytes: the longest line of a JSON lines file the source reads, its line ending apart; a
@@ -63,8 +63,12 @@ const LINE_ENDING: u64 = 2;
 /// Names starting with `.` or `_`, names that are no stream or partition name, and whatever is
 /// no regular file or directory (a link, a pipe, a device) are skipped. A JSON lines file's
 /// records are pushed as JSON, as they are written, for the engine to type; an Arrow file's
-/// batches are pushed as written. Every push is followed by a checkpoint, so a read resumes
-/// after the last committed push.
+/// batches are pushed as written. Every push but a file's last is followed by a checkpoint, so a
+/// read resumes after the last committed push. A read that does not follow ends at the file's
+/// end with no checkpoint after its last push, so the partition is done: a run retrying its
+/// cycle reads the file no more, and state keeps no cursor of it. Streams are read in full, so
+/// the next cycle reads every file it lists from its start, what was appended included. A
+/// following read checkpoints its last push too, and a later read resumes there.
 ///
 /// The root and every stream's directory must belong to the user the source runs as and be
 /// writable by no other: a directory another user owns is refused even where this user may
@@ -273,33 +277,47 @@ impl ReadStream<FilesSource> for FileStream {
         };
         let (root, dir) = (Arc::clone(&source.root), self.dir.clone());
         let (file, format, limits) = (file.clone(), *format, source.limits);
-        let mut pushes = blocking(move || {
+        let pushes = blocking(move || {
             Pushes::open(&root, dir.as_deref(), &file, format, cursor.read, limits)
         })
         .await?;
         let mut read = cursor.read;
-        loop {
-            let (next, push) = blocking(move || {
-                let mut pushes = pushes;
-                let push = pushes.next()?;
-                Ok((pushes, push))
-            })
-            .await?;
-            pushes = next;
-            match push {
-                None => return Ok(()),
-                Some(Pushed::Json(json, records)) => {
+        let (mut pushes, mut push) = next(pushes).await?;
+        while let Some(pushed) = push {
+            // A barrier waiting before a push is answered where the read stands, so the file's
+            // last push still needs no checkpoint after it.
+            if out.checkpoint_due() {
+                out.checkpoint(&Position { read }).await?;
+            }
+            match pushed {
+                Pushed::Json(json, records) => {
                     read += records;
                     out.json(json).await?;
                 }
-                Some(Pushed::Arrow(batch)) => {
+                Pushed::Arrow(batch) => {
                     read += 1;
                     out.batch(batch).await?;
                 }
             }
-            out.checkpoint(&Position { read }).await?;
+            (pushes, push) = next(pushes).await?;
+            // A read that does not follow ends the file's partition done at its last push: no
+            // checkpoint follows it, so no later read starts there, and state keeps no cursor.
+            if push.is_some() || out.follows() {
+                out.checkpoint(&Position { read }).await?;
+            }
         }
+        Ok(())
     }
+}
+
+/// `pushes` and the push it reads next, if any is left.
+async fn next(pushes: Pushes) -> Result<(Pushes, Option<Pushed>)> {
+    blocking(move || {
+        let mut pushes = pushes;
+        let push = pushes.next()?;
+        Ok((pushes, push))
+    })
+    .await
 }
 
 /// The code of an error for a cursor that stands beyond what its file holds.

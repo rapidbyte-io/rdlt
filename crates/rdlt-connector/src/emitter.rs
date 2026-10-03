@@ -129,6 +129,9 @@ impl<C: Serialize> Emitter<C> {
     }
 
     /// Seals everything pushed since the last checkpoint; a restart resumes from `cursor`.
+    ///
+    /// A read that finishes its partition sends none after its last push, so the partition is
+    /// recorded done ([`ReadStream::read`](crate::ReadStream::read)).
     pub async fn checkpoint(&mut self, cursor: &C) -> Result<()> {
         let cursor = Cursor::encode(self.cursor_version, cursor)?;
         let limit = self.sink.limits().cursor_bytes;

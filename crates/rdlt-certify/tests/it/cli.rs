@@ -64,7 +64,7 @@ fn code(output: &Output) -> Option<i32> {
     output.status.code()
 }
 
-const USERS: &str = r#"{"streams": {"users": [{"id": 1}, {"id": 2}]}}"#;
+const USERS: &str = r#"{"streams": {"users": [{"id": 1}, {"id": 2}]}, "page_size": 1}"#;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connector_seen_to_keep_every_clause_exits_zero_and_reports_as_json() {

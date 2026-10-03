@@ -47,7 +47,10 @@
 //!     async fn read(&self, source: &Numbers, _: &Partition, next: u64, out: &mut Emitter<u64>) -> Result<()> {
 //!         for n in next..source.rows {
 //!             out.rows(&[serde_json::json!({ "n": n })]).await?;
-//!             out.checkpoint(&(n + 1)).await?;
+//!             // No checkpoint after the last row: the partition is finished, and recorded done.
+//!             if n + 1 < source.rows {
+//!                 out.checkpoint(&(n + 1)).await?;
+//!             }
 //!         }
 //!         Ok(())
 //!     }

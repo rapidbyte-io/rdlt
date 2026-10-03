@@ -69,7 +69,7 @@ async fn a_listening_connector_is_certified_over_mutual_tls() {
     let pki = Pki::new("ca");
     let (_connector, endpoint) = listening(&pki).await;
     let target = target(&pki, &endpoint);
-    let config = json!({ "streams": { "users": [{"id": 1}, {"id": 2}] } });
+    let config = json!({ "streams": { "users": [{"id": 1}, {"id": 2}] }, "page_size": 1 });
     let source = certify_source(&target, config).await;
     // Two rows end before a kill lands.
     assert_eq!(crate::unobserved(&source), ["K-SOURCE"], "{source}");

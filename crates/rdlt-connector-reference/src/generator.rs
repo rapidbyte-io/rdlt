@@ -37,7 +37,7 @@ pub struct GeneratedStream {
     #[serde(default = "one")]
     pub partitions: u64,
     /// Rows per pushed batch, at most the rows one batch may hold; a checkpoint follows each
-    /// batch.
+    /// batch but a partition's last.
     #[serde(default = "hundred")]
     pub batch_rows: u64,
 }
@@ -52,8 +52,8 @@ fn hundred() -> u64 {
 
 /// Generates rows `(id, value, name)` where `value` is a seeded hash of `id`.
 ///
-/// Partitioned, with on-demand checkpoints after every batch; the same seed always yields the
-/// same data.
+/// Partitioned, with on-demand checkpoints after every batch but a partition's last, so a read
+/// that does not follow ends its partition done; the same seed always yields the same data.
 #[derive(Debug)]
 pub struct GeneratorSource {
     seed: u64,
@@ -179,6 +179,11 @@ impl ReadStream<GeneratorSource> for Generated {
             return Err(ConnectorError::data(message).with_code("cursor_invalid"));
         }
         while next < self.0.rows {
+            // A barrier waiting before a batch is answered where the read stands, so the
+            // partition's last batch still needs no checkpoint after it.
+            if out.checkpoint_due() {
+                out.checkpoint(&NextRow { next: Some(next) }).await?;
+            }
             let ids: Vec<u64> = (next..self.0.rows)
                 .step_by(usize::try_from(stride).unwrap_or(usize::MAX))
                 .take(usize::try_from(self.0.batch_rows).unwrap_or(usize::MAX))
@@ -188,7 +193,10 @@ impl ReadStream<GeneratorSource> for Generated {
                 .last()
                 .map_or(self.0.rows, |last| last.saturating_add(stride));
             out.batch(batch(source.seed, &ids)?).await?;
-            out.checkpoint(&NextRow { next: Some(next) }).await?;
+            // A read that does not follow ends its partition done at its last batch.
+            if next < self.0.rows || out.follows() {
+                out.checkpoint(&NextRow { next: Some(next) }).await?;
+            }
         }
         Ok(())
     }

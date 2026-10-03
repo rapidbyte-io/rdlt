@@ -169,10 +169,16 @@ Rejected:
   hundred partitions each holding a cursor as long as a cursor may be reach the limit, at the
   defaults and at the least memory alike.
 - A source whose partitions keep being created and read to their end stays within its state
-  limit: its oldest done markers go as new ones need room, each named in the report. One whose
-  partitions keep being created and end at a cursor, as the files source's do since it
-  checkpoints after its last push, keeps every cursor and stops at `state_bytes_exceeded` until
-  its stream is reset.
+  limit: its oldest done markers go as new ones need room, each named in the report. A source
+  says a partition is finished by ending its read with data after its last checkpoint; the
+  engine never infers it from a cursor. The reference files, memory and generator sources end a
+  read that does not follow so, answering a barrier pending before the last push ahead of it;
+  a following read keeps its cursor. They read in full, so each cycle also clears the one
+  before. The change source's snapshot partitions say they are done in their own cursors, and
+  their entries go with their phase; the log's partitions never end. One whose partitions keep
+  being created and end at a cursor in an incremental stream keeps every cursor and stops at
+  `state_bytes_exceeded` until its stream is reset. Certification does not check that finished
+  partitions end done: a read that ends at a checkpoint is also how a polled table is read.
 - `LocalWal` makes a chunk's removal durable with a sync of the load's directory.
 - The simulation holds one to three writers open in a quarter of its worlds, drawn apart from
   the rest of the seed, so lanes close writers, and its faulty disk fails a chunk's removal as it
