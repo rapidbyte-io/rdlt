@@ -6,14 +6,13 @@
 //! newer load that committed the same rows meanwhile never sees them twice.
 
 mod decide;
+mod staged;
 
-use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use rdlt_connector::{
-    DestinationWriter, Epoch, LoadId, PipelineId, SegmentSet, StreamName, TableChange,
-};
+use rdlt_connector::{Epoch, LoadId, PipelineId, SegmentSet, StreamName, TableChange};
 
 use parking_lot::Mutex;
 
@@ -25,6 +24,7 @@ use crate::table::SharedSession;
 use crate::wal::scan::{self, Logged, Scanned};
 use crate::wal::{Positions, WalStore};
 use decide::decide;
+use staged::Staged;
 
 /// The session replay commits through, and where the destination stands as it goes.
 struct Replaying {
@@ -35,6 +35,8 @@ struct Replaying {
     resets: BTreeMap<StreamName, Epoch>,
     /// The last commit the destination received.
     last: Option<(LoadId, u64)>,
+    /// The most destination writers held open at once.
+    writers: NonZeroUsize,
 }
 
 /// Replays every log of the pipeline whose load is gone, then removes it; a session opens only
@@ -109,6 +111,7 @@ async fn begin(context: &RunContext, load_id: LoadId) -> Result<Replaying, Error
             .map(|receipt| (receipt.load_id, receipt.commit_seq.get())),
         session: opened.session,
         epoch: opened.epoch,
+        writers: context.config.growth().writers(),
     })
 }
 
@@ -142,7 +145,9 @@ impl Replaying {
         Ok(landed)
     }
 
-    /// Stages `segments`' batch frames again, each table created first, as its schema frame says.
+    /// Stages `segments`' batch frames again, in the order they were logged, each table created
+    /// first as its schema frame says, through at most as many writers at once as an attempt
+    /// holds open.
     async fn stage(
         &self,
         store: &dyn WalStore,
@@ -150,43 +155,30 @@ impl Replaying {
         scanned: &Scanned,
         segments: &SegmentSet,
     ) -> Result<(), Error> {
-        let mut writers: BTreeMap<u32, Box<dyn DestinationWriter>> = BTreeMap::new();
+        let mut staged = Staged::new(self.writers);
+        let mut created = BTreeSet::new();
         for segment in segments.iter() {
             for located in scanned.batches.get(&segment).into_iter().flatten() {
-                let writer = match writers.entry(located.table) {
-                    Entry::Occupied(writer) => writer.into_mut(),
-                    Entry::Vacant(vacant) => {
-                        vacant.insert(self.writer(scanned, located.table).await?)
-                    }
-                };
+                let table = &table(scanned, located.table)?.table;
+                if created.insert(located.table) {
+                    self.create(scanned, located.table).await?;
+                }
                 let batch = scan::batch(store, pipeline, *located).await?;
-                writer
-                    .write(segment, batch)
-                    .await
-                    .map_err(|error| failed("staging a replayed batch", error))?;
+                let open = || async {
+                    self.session
+                        .writer(table)
+                        .await?
+                        .map_err(|error| failed("opening a replayed table's writer", error))
+                };
+                staged.write(table, open, segment, batch).await?;
             }
         }
-        for writer in writers.values_mut() {
-            writer
-                .flush()
-                .await
-                .map_err(|error| failed("staging replayed batches", error))?;
-        }
-        Ok(())
+        staged.flush().await
     }
 
-    /// A writer of the log's table `index`, created first where it is missing.
-    async fn writer(
-        &self,
-        scanned: &Scanned,
-        index: u32,
-    ) -> Result<Box<dyn DestinationWriter>, Error> {
-        let table = scanned.tables.get(&index).ok_or_else(|| {
-            Error::wal(format!(
-                "a logged batch names table {index}, which the log never describes"
-            ))
-            .with_code("wal_unreadable")
-        })?;
+    /// Creates the log's table `index` where it is missing.
+    async fn create(&self, scanned: &Scanned, index: u32) -> Result<(), Error> {
+        let table = table(scanned, index)?;
         let create = TableChange::Create {
             table: table.table.clone(),
             schema: table.schema.clone(),
@@ -194,12 +186,18 @@ impl Replaying {
         self.session
             .apply_schema(&[create])
             .await?
-            .map_err(|error| failed("creating a replayed table", error))?;
-        self.session
-            .writer(&table.table)
-            .await?
-            .map_err(|error| failed("opening a replayed table's writer", error))
+            .map_err(|error| failed("creating a replayed table", error))
     }
+}
+
+/// The log's table `index`, as its schema frame describes it.
+fn table(scanned: &Scanned, index: u32) -> Result<&crate::wal::frame::Table, Error> {
+    scanned.tables.get(&index).ok_or_else(|| {
+        Error::wal(format!(
+            "a logged batch names table {index}, which the log never describes"
+        ))
+        .with_code("wal_unreadable")
+    })
 }
 
 fn failed(what: &str, error: rdlt_connector::ConnectorError) -> Error {
