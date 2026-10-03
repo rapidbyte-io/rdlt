@@ -284,3 +284,83 @@ pub(crate) async fn drops_only_the_rows_carrying_a_change_among_rows_sharing_a_k
         "{target:?}: the kept row keeps its children"
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn every_destination_takes_a_normalized_stream_through_one_writer_open() {
+    each(
+        Target::IN_PROCESS,
+        takes_a_normalized_stream_through_one_writer_open,
+    )
+    .await;
+}
+
+/// `values`, sorted as text.
+fn sorted(mut values: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    values.sort_by_key(ToString::to_string);
+    values
+}
+
+/// The values of `column` in `rows`, sorted as text.
+fn values(rows: &[serde_json::Value], column: &str) -> Vec<serde_json::Value> {
+    sorted(rows.iter().map(|row| row[column].clone()).collect())
+}
+
+pub(crate) async fn takes_a_normalized_stream_through_one_writer_open(target: Target) {
+    // Every push writes the stream's table and its two child tables, so one writer open closes
+    // one of them for each other it writes.
+    let pushes: Vec<String> = (0..20)
+        .map(|push| {
+            json!({ "id": push % 5, "n": push, "items": [{ "sku": format!("s{push}") }], "tags": [push] })
+                .to_string()
+        })
+        .collect();
+    let pushes: Vec<&str> = pushes.iter().map(String::as_str).collect();
+    for (store, plan) in [
+        ("one_writer_append", normalized("events")),
+        ("one_writer_merge", merged("events")),
+    ] {
+        let growth = rdlt_engine::GrowthLimits::new(1024, 1, 16 << 20).expect("valid limits");
+        let config = commit_every(7).lanes(1).growth(growth);
+        let source = batches(
+            &target.name(store),
+            vec![BatchStream::json("events", &pushes)],
+        )
+        .await;
+        let outcome = engine(config)
+            .run(
+                pipeline(store, [plan]),
+                source,
+                target.destination(store).await,
+            )
+            .await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{target:?}: {:?}",
+            outcome.error
+        );
+        let (kept, from): (usize, i64) = if store.ends_with("merge") {
+            (5, 15)
+        } else {
+            (20, 0)
+        };
+        let numbers = sorted((from..20).map(|push| json!(push)).collect());
+        let skus = sorted((from..20).map(|push| json!(format!("s{push}"))).collect());
+        assert_eq!(target.rows(store, "events"), kept, "{target:?} {store}");
+        assert_eq!(
+            values(&target.json(store, "events"), "n"),
+            numbers,
+            "{target:?} {store}"
+        );
+        assert_eq!(
+            values(&target.json(store, "events__items"), "sku"),
+            skus,
+            "{target:?} {store}"
+        );
+        assert_eq!(
+            values(&target.json(store, "events__tags"), "value"),
+            numbers,
+            "{target:?} {store}"
+        );
+    }
+}
