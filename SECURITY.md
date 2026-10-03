@@ -266,7 +266,8 @@ in forms its readers read back (ADR 0041):
   (`schema_version_exhausted`).
 - Stored state is held to what an open's answer can carry and a 16th of the budget, and a
   commit's request to a message carrying state: a commit beyond either is refused before it is
-  logged or acknowledged (`state_bytes_exceeded`). A plan never forgets a partition's
+  logged or acknowledged (`state_bytes_exceeded`), unless state was past the limit already and
+  the commit does not grow it. A plan never forgets a partition's
   position; a reset of the stream does.
 - State that records two tables under one identifier is refused (`state_invalid`); a reset never
   drops such a table.
