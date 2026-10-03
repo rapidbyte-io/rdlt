@@ -283,6 +283,13 @@ impl WalStore for LocalWal {
         })
     }
 
+    /// Removes `chunk`'s file, and its load's directory with the last.
+    ///
+    /// A directory still holding chunks holds the chunk the load writes, and is synced: the
+    /// removal is durable before anything logged after it, frames carried out of the removed
+    /// chunk among them, so a crash never finds the chunk beside its copies. The last chunk's
+    /// removal is not synced in the pipeline's directory: every commit such a chunk holds has
+    /// its receipt, so a log a crash brings back replays nothing.
     fn remove<'a>(
         &'a self,
         pipeline: &'a PipelineId,
@@ -296,9 +303,7 @@ impl WalStore for LocalWal {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
-            // The load's directory goes with its last chunk; one still holding chunks stays,
-            // the removal durable before anything logged after it, frames carried out of the
-            // chunk among them.
+            // The load's directory goes with its last chunk; one still holding chunks is synced.
             match path.parent().map(std::fs::remove_dir) {
                 Some(Err(error)) if error.kind() != io::ErrorKind::NotFound => {
                     let dir = path.parent().unwrap_or(Path::new("."));
