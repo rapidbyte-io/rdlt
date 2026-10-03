@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
@@ -20,8 +20,18 @@ use crate::plan::{DeleteMode, OnTruncate, WriteMode};
 /// every other takes seconds.
 const MANY: usize = rdlt_connector::limits::MAX_PLAN_PARTITIONS;
 
-/// Work on `MANY` partitions done in time linear in them takes well under this.
+/// Work on `MANY` partitions done in time linear in them takes well under this much of a
+/// thread's CPU time.
 const LINEAR: Duration = Duration::from_secs(2);
+
+/// The CPU time this thread has spent, which the work measured takes whatever else the machine
+/// runs: other processes lengthen its wall-clock time, not this.
+fn cpu() -> Duration {
+    let spent = rustix::time::clock_gettime(rustix::time::ClockId::ThreadCPUTime);
+    let seconds = u64::try_from(spent.tv_sec).expect("a thread's time is positive");
+    let nanos = u32::try_from(spent.tv_nsec).expect("nanoseconds below a second");
+    Duration::new(seconds, nanos)
+}
 
 /// A source whose next plan names the partitions `plans` holds next.
 struct Planning {
@@ -106,9 +116,9 @@ async fn phased(plans: Vec<Vec<String>>, follow: bool) -> Coordinator {
 async fn begun_with_many() -> Coordinator {
     let mut coordinator = phased(Vec::new(), false).await;
     let plan = PartitionPlan::new(ids(MANY).iter().map(|id| partition(id)).collect()).phase(1);
-    let started = Instant::now();
+    let started = cpu();
     coordinator.begin(0, 1, plan).unwrap();
-    let elapsed = started.elapsed();
+    let elapsed = cpu().saturating_sub(started);
     assert!(elapsed < LINEAR, "beginning took {elapsed:?}");
     assert_eq!(coordinator.parts.partitions.len(), MANY);
     coordinator
@@ -123,7 +133,7 @@ async fn beginning_a_phase_of_many_partitions_takes_linear_time() {
 #[tokio::test]
 async fn the_lag_of_many_partitions_is_kept_and_forgotten_in_linear_time() {
     let mut coordinator = begun_with_many().await;
-    let started = Instant::now();
+    let started = cpu();
     for index in 0..MANY {
         coordinator.behind(index, 2);
     }
@@ -136,7 +146,7 @@ async fn the_lag_of_many_partitions_is_kept_and_forgotten_in_linear_time() {
         .map(|id| PartitionId::parse(id).unwrap())
         .collect();
     coordinator.forget_lag(0, Some(&forgotten));
-    let elapsed = started.elapsed();
+    let elapsed = cpu().saturating_sub(started);
     assert!(elapsed < LINEAR, "keeping lag took {elapsed:?}");
     assert_eq!(coordinator.parts.log.lock().behind.get(&name()), None);
 }
@@ -147,7 +157,7 @@ async fn positions_of_many_partitions_are_recorded_and_weighed_in_linear_time() 
     let positions: BTreeMap<usize, PartitionState> = (0..MANY)
         .map(|index| (index, PartitionState::Cursor(cursor(1))))
         .collect();
-    let started = Instant::now();
+    let started = cpu();
     coordinator.record_positions(&positions);
     coordinator.landed(&positions, false);
     // Recorded again where they stand, the positions move nothing.
@@ -164,7 +174,7 @@ async fn positions_of_many_partitions_are_recorded_and_weighed_in_linear_time() 
         held: Vec::new(),
     };
     assert!(!coordinator.progresses(&collected, &delta));
-    let elapsed = started.elapsed();
+    let elapsed = cpu().saturating_sub(started);
     assert!(elapsed < LINEAR, "recording positions took {elapsed:?}");
     let phases = coordinator.parts.streams[0].phases.as_ref().unwrap();
     assert_eq!(phases.committed.len(), MANY);
@@ -173,7 +183,7 @@ async fn positions_of_many_partitions_are_recorded_and_weighed_in_linear_time() 
 #[tokio::test]
 async fn ending_many_partitions_is_counted_in_linear_time() {
     let mut coordinator = begun_with_many().await;
-    let started = Instant::now();
+    let started = cpu();
     for index in 0..MANY {
         assert!(!coordinator.all_ended());
         coordinator.observe(Progress::Ended {
@@ -182,7 +192,7 @@ async fn ending_many_partitions_is_counted_in_linear_time() {
         });
     }
     assert!(coordinator.all_ended());
-    let elapsed = started.elapsed();
+    let elapsed = cpu().saturating_sub(started);
     assert!(elapsed < LINEAR, "ending took {elapsed:?}");
 }
 

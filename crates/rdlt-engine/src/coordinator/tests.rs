@@ -4,6 +4,8 @@
 )]
 
 mod lag;
+// Linear time is measured as a thread's CPU time, which only Unix offers.
+#[cfg(unix)]
 mod scale;
 mod seals;
 mod state;
