@@ -3,21 +3,30 @@
 //!
 //! Only the values rows name are read, each once, whatever names it: a dictionary's value its
 //! keys name, a run's value, a list's or a list view's items, a struct's fields where the struct
-//! is not null. Nothing is decoded or copied.
+//! is not null. Nothing is decoded or copied, and nothing is held a row: which rows are named is
+//! read as ranges, each level mapping its parent's. Only a dictionary's named values and a list
+//! view naming its items out of order are held, as [`held`] says, before they are read.
+
+use std::rc::Rc;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    Int8Type, Int16Type, Int32Type, Int64Type, RunEndIndexType, UInt8Type, UInt16Type, UInt32Type,
-    UInt64Type,
+    ArrowDictionaryKeyType, Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type,
+    UInt32Type, UInt64Type,
 };
-use arrow_array::{Array, OffsetSizeTrait, RecordBatch};
-use arrow_buffer::ArrowNativeType;
+use arrow_array::{Array, RecordBatch};
+use arrow_buffer::{ArrowNativeType, BooleanBufferBuilder};
 use arrow_schema::{DataType, Field, Schema};
 
 use super::{JsonError, check};
+use rows::{Ends, Offsets, Rows, Views};
 
+mod held;
+mod rows;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use held::held;
 
 /// The Arrow field metadata key naming an extension type, and the JSON extension's name.
 const EXTENSION_NAME: &str = "ARROW:extension:name";
@@ -41,8 +50,7 @@ pub(crate) fn check_batch(batch: &RecordBatch) -> Result<(), NotJson> {
         if !field_holds_json(field) {
             continue;
         }
-        let rows = vec![true; column.len()];
-        walk(field, false, column.as_ref(), &rows).map_err(|error| NotJson {
+        walk(field, false, column.as_ref(), &Rows::All(column.len())).map_err(|error| NotJson {
             column: field.name().clone(),
             error,
         })?;
@@ -95,21 +103,61 @@ fn children(data_type: &DataType) -> Vec<&Field> {
 
 /// Checks the values of `array`, of `field`, at the rows `rows` names: as JSON where the field,
 /// or the encoded column it is the values of, is one of JSON (`encoded`).
-fn walk(field: &Field, encoded: bool, array: &dyn Array, rows: &[bool]) -> Result<(), JsonError> {
+fn walk(field: &Field, encoded: bool, array: &dyn Array, rows: &Rows<'_>) -> Result<(), JsonError> {
     let json = encoded || is_json(field);
-    let named = |row: usize| rows[row] && array.is_valid(row);
+    let valid = || match array.nulls() {
+        Some(nulls) => Rows::Valid(Rc::new(rows.clone()), nulls.clone()),
+        None => rows.clone(),
+    };
     match array.data_type() {
-        DataType::Utf8 if json => texts(array.as_string::<i32>().iter(), rows),
-        DataType::LargeUtf8 if json => texts(array.as_string::<i64>().iter(), rows),
-        DataType::Utf8View if json => texts(array.as_string_view().iter(), rows),
+        DataType::Utf8 if json => {
+            let texts = array.as_string::<i32>();
+            checked(rows, texts.len(), |row| {
+                texts.is_valid(row).then(|| texts.value(row))
+            })
+        }
+        DataType::LargeUtf8 if json => {
+            let texts = array.as_string::<i64>();
+            checked(rows, texts.len(), |row| {
+                texts.is_valid(row).then(|| texts.value(row))
+            })
+        }
+        DataType::Utf8View if json => {
+            let texts = array.as_string_view();
+            checked(rows, texts.len(), |row| {
+                texts.is_valid(row).then(|| texts.value(row))
+            })
+        }
         DataType::Dictionary(key, _) => keyed(field, json, array, key, rows),
-        DataType::RunEndEncoded(ends, _) => match ends.data_type() {
-            DataType::Int16 => runs::<Int16Type>(field, json, array, rows),
-            DataType::Int32 => runs::<Int32Type>(field, json, array, rows),
-            _ => runs::<Int64Type>(field, json, array, rows),
-        },
+        DataType::RunEndEncoded(ends, _) => {
+            let ends = match ends.data_type() {
+                DataType::Int16 => Ends::I16(array.as_run::<Int16Type>().run_ends()),
+                DataType::Int32 => Ends::I32(array.as_run::<Int32Type>().run_ends()),
+                _ => Ends::I64(array.as_run::<Int64Type>().run_ends()),
+            };
+            let values = match ends {
+                Ends::I16(_) => array.as_run::<Int16Type>().values(),
+                Ends::I32(_) => array.as_run::<Int32Type>().values(),
+                Ends::I64(_) => array.as_run::<Int64Type>().values(),
+            };
+            let runs = Rows::Runs(Rc::new(rows.clone()), ends);
+            walk(
+                field,
+                json,
+                values.as_ref(),
+                &Rows::Clamped(Rc::new(runs), values.len()),
+            )
+        }
+        _ => nested(array, valid()),
+    }
+}
+
+/// Checks the values a struct, a list, a map or a list view `array` holds at its `valid` rows,
+/// those a batch's rows name and it does not hold null.
+fn nested(array: &dyn Array, valid: Rows<'_>) -> Result<(), JsonError> {
+    match array.data_type() {
         DataType::Struct(fields) => {
-            let within: Vec<bool> = (0..array.len()).map(named).collect();
+            let within = valid;
             let columns = array.as_struct().columns();
             for (field, column) in fields.iter().zip(columns) {
                 if field_holds_json(field) {
@@ -118,33 +166,65 @@ fn walk(field: &Field, encoded: bool, array: &dyn Array, rows: &[bool]) -> Resul
             }
             Ok(())
         }
-        DataType::List(item) => listed(item, array.as_list::<i32>().offsets(), array, rows),
-        DataType::LargeList(item) => listed(item, array.as_list::<i64>().offsets(), array, rows),
+        DataType::List(item) => {
+            let list = array.as_list::<i32>();
+            let named = Rows::Items(Rc::new(valid.clone()), Offsets::Small(list.offsets()));
+            items(item, list.values().as_ref(), &named)
+        }
+        DataType::LargeList(item) => {
+            let list = array.as_list::<i64>();
+            let named = Rows::Items(Rc::new(valid.clone()), Offsets::Large(list.offsets()));
+            items(item, list.values().as_ref(), &named)
+        }
         DataType::Map(item, _) => {
             let map = array.as_map();
-            let entries: &dyn Array = map.entries();
-            items(item, entries, ranges(map.offsets(), array, rows))
+            let named = Rows::Items(Rc::new(valid.clone()), Offsets::Small(map.offsets()));
+            items(item, map.entries(), &named)
         }
-        DataType::ListView(item) => viewed::<i32>(item, array, rows),
-        DataType::LargeListView(item) => viewed::<i64>(item, array, rows),
+        DataType::ListView(item) => {
+            let views = array.as_list_view::<i32>();
+            let spans = Views::Small(views.offsets(), views.sizes());
+            viewed(
+                item,
+                views.values().as_ref(),
+                spans,
+                array.len(),
+                valid.clone(),
+            )
+        }
+        DataType::LargeListView(item) => {
+            let views = array.as_list_view::<i64>();
+            let spans = Views::Large(views.offsets(), views.sizes());
+            viewed(
+                item,
+                views.values().as_ref(),
+                spans,
+                array.len(),
+                valid.clone(),
+            )
+        }
         DataType::FixedSizeList(item, _) => {
             let list = array.as_fixed_size_list();
             let size = list.value_length().as_usize();
-            let named = (0..array.len()).filter(|row| named(*row));
-            let spans = named.map(|row| {
-                let first = list.value_offset(row).as_usize();
-                first..first + size
-            });
-            items(item, list.values().as_ref(), spans.collect())
+            let named = Rows::Fixed(
+                Rc::new(valid.clone()),
+                list.value_offset(0).as_usize(),
+                size,
+            );
+            items(item, list.values().as_ref(), &named)
         }
         _ => Ok(()),
     }
 }
 
-/// Checks the texts `rows` names among `texts`.
-fn texts<'a>(texts: impl Iterator<Item = Option<&'a str>>, rows: &[bool]) -> Result<(), JsonError> {
-    for (text, named) in texts.zip(rows) {
-        if let (Some(text), true) = (text, *named) {
+/// Checks the text `text` gives for each row, of `len`, that `rows` names, where it gives one.
+fn checked<'a>(
+    rows: &Rows<'_>,
+    len: usize,
+    text: impl Fn(usize) -> Option<&'a str>,
+) -> Result<(), JsonError> {
+    for row in rows.ranges().flatten().take_while(|row| *row < len) {
+        if let Some(text) = text(row) {
             check(text)?;
         }
     }
@@ -157,9 +237,9 @@ fn keyed(
     json: bool,
     array: &dyn Array,
     key: &DataType,
-    rows: &[bool],
+    rows: &Rows<'_>,
 ) -> Result<(), JsonError> {
-    let (keys, values) = match key {
+    let (named, values) = match key {
         DataType::Int8 => named_keys::<Int8Type>(array, rows),
         DataType::Int16 => named_keys::<Int16Type>(array, rows),
         DataType::Int32 => named_keys::<Int32Type>(array, rows),
@@ -169,115 +249,83 @@ fn keyed(
         DataType::UInt32 => named_keys::<UInt32Type>(array, rows),
         _ => named_keys::<UInt64Type>(array, rows),
     };
-    walk(field, json, values, &keys)
-}
-
-/// Which values of the dictionary array `array` its valid keys at `rows` name, and its values.
-fn named_keys<'a, K: arrow_array::types::ArrowDictionaryKeyType>(
-    array: &'a dyn Array,
-    rows: &[bool],
-) -> (Vec<bool>, &'a dyn Array) {
-    let dictionary = array.as_dictionary::<K>();
-    let values = dictionary.values().as_ref();
-    let mut named = vec![false; values.len()];
-    for (key, row) in dictionary.keys().iter().zip(rows) {
-        if let (Some(key), true) = (key, *row)
-            && let Some(slot) = named.get_mut(key.as_usize())
-        {
-            *slot = true;
-        }
-    }
-    (named, values)
-}
-
-/// Checks the values of a run-end encoded array that its runs hold at `rows`, each once.
-fn runs<R: RunEndIndexType>(
-    field: &Field,
-    json: bool,
-    array: &dyn Array,
-    rows: &[bool],
-) -> Result<(), JsonError>
-where
-    R::Native: ArrowNativeType,
-{
-    let runs = array.as_run::<R>();
-    let values = runs.values().as_ref();
-    let mut named = vec![false; values.len()];
-    for (row, _) in rows.iter().enumerate().filter(|(_, named)| **named) {
-        if let Some(slot) = named.get_mut(runs.get_physical_index(row)) {
-            *slot = true;
-        }
-    }
     walk(field, json, values, &named)
 }
 
-/// Checks the items of a list of `item` that its rows at `rows` hold, between `offsets`.
-fn listed<O: OffsetSizeTrait>(
-    item: &Field,
-    offsets: &[O],
-    array: &dyn Array,
-    rows: &[bool],
-) -> Result<(), JsonError> {
-    let values = match array.data_type() {
-        DataType::LargeList(_) => array.as_list::<i64>().values().as_ref(),
-        _ => array.as_list::<i32>().values().as_ref(),
-    };
-    items(item, values, ranges(offsets, array, rows))
+/// Which values of the dictionary array `array` its valid keys at `rows` name, and its values:
+/// a bit a value where that is no more than a byte a key, else the keys named, sorted.
+fn named_keys<'a, K: ArrowDictionaryKeyType>(
+    array: &'a dyn Array,
+    rows: &Rows<'_>,
+) -> (Rows<'a>, &'a dyn Array) {
+    let dictionary = array.as_dictionary::<K>();
+    let values = dictionary.values().as_ref();
+    let keys = dictionary.keys();
+    let named = rows
+        .ranges()
+        .flatten()
+        .filter(|row| keys.is_valid(*row))
+        .map(|row| keys.value(row).as_usize())
+        .filter(|key| *key < values.len());
+    if held::bitmapped(values.len(), keys.len()) {
+        let mut bits = BooleanBufferBuilder::new(values.len());
+        bits.append_n(values.len(), false);
+        for key in named {
+            bits.set_bit(key, true);
+        }
+        return (Rows::Bits(Rc::new(bits.finish())), values);
+    }
+    let mut listed: Vec<usize> = named.collect();
+    listed.sort_unstable();
+    listed.dedup();
+    (Rows::Listed(Rc::new(listed)), values)
 }
 
-/// The ranges of items between `offsets` that the valid rows of `array` at `rows` hold.
-fn ranges<O: ArrowNativeType>(
-    offsets: &[O],
-    array: &dyn Array,
-    rows: &[bool],
-) -> Vec<std::ops::Range<usize>> {
-    (0..array.len())
-        .filter(|row| rows[*row] && array.is_valid(*row))
-        .map(|row| offsets[row].as_usize()..offsets[row + 1].as_usize())
-        .collect()
-}
-
-/// Checks the items a list view of `item` names at its valid rows `rows` names, each once.
-fn viewed<O: OffsetSizeTrait>(
-    item: &Field,
-    array: &dyn Array,
-    rows: &[bool],
-) -> Result<(), JsonError> {
-    let views = array.as_list_view::<O>();
-    let spans = (0..array.len())
-        .filter(|row| rows[*row] && array.is_valid(*row))
-        .map(|row| {
-            let first = views.offsets()[row].as_usize();
-            first..first + views.sizes()[row].as_usize()
-        });
-    items(item, views.values().as_ref(), spans.collect())
-}
-
-/// Checks the items of `values`, of `item`, in `spans`, each once however many spans name it.
-fn items(
+/// Checks the items of a list view of `item` that its `named` rows of `len` name, each once:
+/// read as a list's where its rows name them in order, else gathered and ordered first.
+fn viewed(
     item: &Field,
     values: &dyn Array,
-    spans: Vec<std::ops::Range<usize>>,
+    views: Views<'_>,
+    len: usize,
+    named: Rows<'_>,
 ) -> Result<(), JsonError> {
     if !field_holds_json(item) {
         return Ok(());
     }
-    // How many spans open less how many close before each item: an item is named where more
-    // have opened, so spans naming the same items cost one step each, not one an item.
-    let mut opened = vec![0_i64; values.len() + 1];
-    for span in spans {
-        let end = span.end.min(values.len());
-        let start = span.start.min(end);
-        opened[start] += 1;
-        opened[end] -= 1;
+    if views.ordered(len) {
+        return items(item, values, &Rows::Viewed(Rc::new(named), views));
     }
-    let mut open = 0;
-    let named: Vec<bool> = opened[..values.len()]
-        .iter()
-        .map(|change| {
-            open += change;
-            open > 0
-        })
-        .collect();
-    walk(item, false, values, &named)
+    // A span a row at most, gathered in place: what `held` charges.
+    let mut spans: Vec<std::ops::Range<usize>> = Vec::with_capacity(len);
+    spans.extend(
+        named
+            .ranges()
+            .flatten()
+            .map(|row| views.span(row))
+            .filter(|span| !span.is_empty()),
+    );
+    spans.sort_unstable_by_key(|span| span.start);
+    let mut kept: usize = 0;
+    for at in 0..spans.len() {
+        let span = spans[at].clone();
+        match kept.checked_sub(1).map(|last| &mut spans[last]) {
+            Some(last) if span.start <= last.end => last.end = last.end.max(span.end),
+            _ => {
+                spans[kept] = span;
+                kept += 1;
+            }
+        }
+    }
+    spans.truncate(kept);
+    items(item, values, &Rows::Ranges(Rc::new(spans)))
+}
+
+/// Checks the items of `values`, of `item`, that `named` names.
+fn items(item: &Field, values: &dyn Array, named: &Rows<'_>) -> Result<(), JsonError> {
+    if !field_holds_json(item) {
+        return Ok(());
+    }
+    let within = Rows::Clamped(Rc::new(named.clone()), values.len());
+    walk(item, false, values, &within)
 }

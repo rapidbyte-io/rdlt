@@ -314,3 +314,107 @@ fn json_nested_past_the_limit_is_refused() {
         Err(JsonError::TooDeep)
     );
 }
+
+/// What checking `batch` allocates at its peak, beside what was allocated before.
+fn check_peak(batch: &RecordBatch) -> (Result<(), NotJson>, u64) {
+    let heap = &crate::cost::tests::HEAP;
+    heap.reset_peak_usage();
+    let before = heap.current_usage();
+    let checked = check_batch(batch);
+    let peak = heap.peak_usage().saturating_sub(before);
+    (checked, u64::try_from(peak).unwrap())
+}
+
+/// One row of a list of `items` items, `values` naming them, a column of JSON.
+fn one_long_list(items: i32, values: ArrayRef) -> RecordBatch {
+    let item = json(Field::new("item", values.data_type().clone(), true));
+    let list = ListArray::new(
+        Arc::new(item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, items])),
+        values,
+        None,
+    );
+    let field = Field::new("c", list.data_type().clone(), true);
+    RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![Arc::new(list)]).unwrap()
+}
+
+#[test]
+fn checking_runs_allocates_by_what_the_batch_holds_not_by_its_items() {
+    const ITEMS: i32 = 60 << 20;
+    let one: ArrayRef = Arc::new(StringArray::from(vec!["1"]));
+    let ends = PrimitiveArray::<Int32Type>::from(vec![ITEMS]);
+    let runs: ArrayRef = Arc::new(RunArray::<Int32Type>::try_new(&ends, &one).unwrap());
+    let batch = one_long_list(ITEMS, runs);
+    let (checked, peak) = check_peak(&batch);
+    assert_eq!(checked, Ok(()));
+    let held = u64::try_from(batch.get_array_memory_size()).unwrap();
+    assert!(
+        peak <= 64 << 10,
+        "a batch of {held} bytes checked with {peak} bytes"
+    );
+}
+
+#[test]
+fn checking_keys_allocates_by_the_values_they_name_not_by_the_keys() {
+    let one: ArrayRef = Arc::new(StringArray::from(vec!["1"]));
+    // A key a byte: the keys are the batch, and the check holds no more than a bit a value.
+    let keys = PrimitiveArray::<Int8Type>::from(vec![0_i8; 16 << 20]);
+    let keyed: ArrayRef = Arc::new(DictionaryArray::try_new(keys, one).unwrap());
+    let batch = one_long_list(16 << 20, keyed);
+    let (checked, peak) = check_peak(&batch);
+    assert_eq!(checked, Ok(()));
+    let held = u64::try_from(batch.get_array_memory_size()).unwrap();
+    assert!(
+        peak <= 64 << 10,
+        "a batch of {held} bytes checked with {peak} bytes"
+    );
+}
+
+/// One row of a list view of JSON naming `values` through `views`, each `(offset, size)`.
+fn one_view(views: &[(i32, i32)], values: ArrayRef) -> RecordBatch {
+    let item = json(Field::new("item", values.data_type().clone(), true));
+    let list = ListViewArray::new(
+        Arc::new(item),
+        ScalarBuffer::from(views.iter().map(|(offset, _)| *offset).collect::<Vec<_>>()),
+        ScalarBuffer::from(views.iter().map(|(_, size)| *size).collect::<Vec<_>>()),
+        values,
+        None,
+    );
+    let field = Field::new("c", list.data_type().clone(), true);
+    RecordBatch::try_new(Arc::new(Schema::new(vec![field])), vec![Arc::new(list)]).unwrap()
+}
+
+#[test]
+fn what_checking_holds_beside_a_batch_is_no_more_than_its_charge() {
+    const ROWS: i32 = 1 << 20;
+    let texts = |count: i32| -> ArrayRef {
+        Arc::new(StringArray::from_iter_values(
+            (0..count).map(|value| value.to_string()),
+        ))
+    };
+    // Views in row order hold nothing; views out of order are gathered, a span a row.
+    let ordered: Vec<(i32, i32)> = (0..ROWS).map(|row| (row, 1)).collect();
+    let reversed: Vec<(i32, i32)> = (0..ROWS).map(|row| (ROWS - 1 - row, 1)).collect();
+    // A dictionary of few values, held as a bit a value; one of many values that few keys name,
+    // held as the keys.
+    let few = PrimitiveArray::<Int32Type>::from_iter_values((0..ROWS).map(|row| row % 64));
+    let few: ArrayRef = Arc::new(DictionaryArray::try_new(few, texts(64)).unwrap());
+    let sparse = PrimitiveArray::<Int32Type>::from_iter_values((0..16).map(|key| key << 16));
+    let sparse: ArrayRef = Arc::new(DictionaryArray::try_new(sparse, texts(ROWS)).unwrap());
+    let batches = [
+        (one_view(&ordered, texts(ROWS)), false),
+        (one_view(&reversed, texts(ROWS)), true),
+        (one_long_list(ROWS, few), true),
+        (one_long_list(16, sparse), true),
+    ];
+    for (batch, holds) in batches {
+        let charged = super::held(&batch);
+        let (checked, peak) = check_peak(&batch);
+        assert_eq!(checked, Ok(()));
+        assert_eq!(charged > 0, holds, "charged {charged} bytes");
+        assert!(
+            peak <= charged + (16 << 10),
+            "charged {charged} bytes, held {peak}"
+        );
+    }
+}

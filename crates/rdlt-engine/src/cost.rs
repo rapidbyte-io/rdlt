@@ -2,7 +2,7 @@
 //! checkpoint by its cursor's bytes, and what the read keeps beside its events.
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::fmt;
 use std::sync::Arc;
