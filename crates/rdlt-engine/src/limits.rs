@@ -101,6 +101,15 @@ pub(crate) const TABLE_COLUMNS_EXCEEDED: &str = "table_columns_exceeded";
 /// The code of the error for a child table beyond those a normalized stream may add.
 pub(crate) const CHILD_TABLES_EXCEEDED: &str = "child_tables_exceeded";
 
+/// Bytes: what a message carrying a pipeline's state holds beside the records or positions it
+/// carries, at most: a session's handle and epoch, or a stream's namespace and name, each within
+/// the protocol's limit on a control string.
+pub(crate) const STATE_ENVELOPE: u64 = 256 << 10;
+
+/// The code of the error for a commit that would leave more state, or send a larger request,
+/// than a message carrying state may take.
+pub(crate) const STATE_BYTES_EXCEEDED: &str = "state_bytes_exceeded";
+
 /// The code of the error for a change to a table whose schema version is the last one counts.
 pub(crate) const SCHEMA_VERSION_EXHAUSTED: &str = "schema_version_exhausted";
 

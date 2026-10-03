@@ -34,6 +34,7 @@ use crate::partition::{self, ChangeMode, Latest, PartitionContext, PartitionJob,
 use crate::plan::PipelinePlan;
 use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
+use crate::stored::Stored;
 use crate::table::{SharedSession, Tables};
 use crate::wal::{LoadLog, Positions};
 use crate::watch;
@@ -78,6 +79,8 @@ struct Opened {
     state: PipelineState,
     /// What the state the open answered holds decoded.
     held: HeldState,
+    /// What the state's records take as an open's answer carries them.
+    stored: Stored,
 }
 
 /// Runs one attempt under `load_id`, recording its commits in `log` as they land.
@@ -182,6 +185,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         context.destination.open(&open).await.map_err(|error| {
             Error::connector(Side::Destination, "opening the destination", error)
         })?;
+    let stored = Stored::of(&state, context.config.growth().state_bytes().get());
     let held = HeldState::of(&state);
     let state = match PipelineState::from_records(&state) {
         Ok(state) => state,
@@ -199,6 +203,7 @@ async fn open(context: &RunContext, load_id: LoadId) -> Result<Opened, Error> {
         epoch,
         state,
         held,
+        stored,
     })
 }
 
@@ -285,6 +290,7 @@ async fn launch(
         wal,
         positions: Positions::of(&opened.state),
         state: opened.held,
+        stored: opened.stored,
         follow: context.plan.until().follows(),
         replan: context.config.replan(),
     });

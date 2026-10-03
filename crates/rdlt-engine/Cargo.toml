@@ -30,7 +30,7 @@ getrandom.workspace = true
 memchr.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
-rdlt-connector.workspace = true
+rdlt-connector = { workspace = true, features = ["wire"] }
 rdlt-wire.workspace = true
 schemars = { workspace = true, optional = true }
 serde.workspace = true
