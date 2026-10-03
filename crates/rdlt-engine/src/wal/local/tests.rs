@@ -580,3 +580,28 @@ async fn a_directory_above_the_base_swapped_once_it_was_passed_is_refused_all_th
     let refused = listed.expect_err("the directory the base was opened under is refused");
     assert!(not_private(&refused), "{refused}");
 }
+
+#[tokio::test]
+async fn a_link_on_the_way_to_the_base_is_followed_only_through_directories_that_pass() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let orders = pipeline("orders");
+    // A link in a private directory, to a private directory, is followed.
+    let own = base.path().join("own");
+    std::fs::create_dir(&own).expect("creates");
+    std::os::unix::fs::symlink(&own, base.path().join("to_own")).expect("links");
+    let wal = LocalWal::new(base.path().join("to_own").join("wal"));
+    wal.loads(&orders).await.expect("lists");
+    assert!(own.join("wal").is_dir());
+    // A link whose target passes through a directory others may write is not, though the link
+    // itself is in a private one and the directory it ends at lies in private ones: whoever may
+    // write that directory may point the next resolution elsewhere.
+    let shared = base.path().join("shared");
+    std::fs::create_dir(&shared).expect("creates");
+    std::os::unix::fs::symlink(&own, shared.join("hop")).expect("links");
+    set_mode(&shared, 0o777);
+    std::os::unix::fs::symlink(shared.join("hop"), base.path().join("to_shared")).expect("links");
+    let wal = LocalWal::new(base.path().join("to_shared").join("wal"));
+    let refused = wal.loads(&orders).await.expect_err("refused");
+    assert!(not_private(&refused), "{refused}");
+    set_mode(&shared, 0o700);
+}
