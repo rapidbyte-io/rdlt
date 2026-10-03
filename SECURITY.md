@@ -187,7 +187,8 @@ are (ADR 0042):
   would hold, within a bound of their own; a message that cannot be counted is refused, and a
   served connection holds the messages still arriving within a window, reading no more until it
   has room; what decoding a remote connector's answers holds is charged to the run's memory
-  budget before it is decoded, within limits the budget derives; catalogs, plans and identifier
+  budget before it is decoded, within limits the budget derives, and the engine commits no
+  state an open could not answer; catalogs, plans and identifier
   rules are bounded in count and checked in linear time;
 - stream names, partition ids, table paths and destination identifiers refuse characters that
   hide or reorder text, and an error's code must be a token that is none of the host's own;
