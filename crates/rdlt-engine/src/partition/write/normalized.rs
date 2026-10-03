@@ -24,7 +24,7 @@ use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
 use crate::limits::MIN_PIECE;
 use crate::normalize::{self, Dropped, Part, Pruned, Shape};
-use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp, check_key_values};
+use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp, key_values, with_columns};
 
 /// Lowers `units` of a stream that normalizes as `shape` into its table and child tables, and
 /// queues them on their lanes.
@@ -433,15 +433,17 @@ fn split(stream: &StreamName, parts: &[RecordBatch], shape: &Shape) -> Result<Ve
         |error: ArrowError| normalize::identity::unread(stream, "normalizing a batch", &error);
     let batch = arrow_select::concat::concat_batches(&parts[0].schema(), parts).map_err(failed)?;
     // A row is identified by its key, so every row must hold one, and one that equals itself.
+    let mut columns = batch.columns().to_vec();
     for column in &shape.key {
-        let Some(values) = batch.column_by_name(column) else {
+        let Some(index) = batch.schema().index_of(column).ok() else {
             let detail = format!("stream {stream}: a batch has no key column {column}");
             return Err(Error::schema(detail)
                 .with_code("merge_key_missing")
                 .with_stream(stream));
         };
-        check_key_values(stream, column, values, &|_| true)?;
+        columns[index] = key_values(stream, column, batch.column(index), &|_| true)?;
     }
+    let batch = with_columns(&batch, columns).map_err(failed)?;
     normalize::normalize(&batch, shape).map_err(failed)
 }
 

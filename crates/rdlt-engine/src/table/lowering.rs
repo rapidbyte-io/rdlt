@@ -9,6 +9,7 @@ mod costs;
 mod differential;
 mod history;
 mod kept;
+mod keys;
 mod merge;
 mod model;
 mod prepared;
@@ -36,8 +37,9 @@ use crate::policy::SchemaPolicy;
 pub(crate) use changes::{ChangeRows, data_ordinals};
 use constants::Constants;
 use kept::{discard_rows, kept_by};
-pub(crate) use merge::check_key_values;
-use merge::{check_key, positions, sequence};
+use keys::keyed;
+pub(crate) use keys::{key_values, with_columns};
+use merge::{positions, sequence};
 pub(crate) use prepared::Prepared;
 use split::{Fitted, Splits};
 
@@ -222,7 +224,7 @@ impl LoweringPlan {
             });
         }
         let discarded_values = self.discarded_values(&batch, &fitted) + nulled;
-        check_key(stream, view, &batch, &self.sources, changes.as_ref())?;
+        let batch = keyed(stream, view, batch, &self.sources, changes.as_ref())?;
         let rows = batch.num_rows();
         let (mut columns, held) = self.model_columns(&batch, &fitted)?;
         columns.extend(self.constants(stamp, rows).map_err(failed)?);

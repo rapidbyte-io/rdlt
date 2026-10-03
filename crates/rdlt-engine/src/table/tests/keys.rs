@@ -174,3 +174,96 @@ fn a_change_flagging_its_key_unchanged_is_refused_before_any_destination_sees_it
         Some("merge_key_unchanged")
     );
 }
+
+/// The key column of `batch` as a merge table keyed by `id` stores it, the batch prepared.
+fn prepared_key(batch: &RecordBatch) -> ArrayRef {
+    let resolver = resolver(capabilities(), plan(), &["id"]);
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let model = created(&resolver, &[("v", LogicalType::Utf8)]);
+    let resolution = resolver.resolve(&model, &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
+    let prepared = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+        .prepare(batch, None, &stamp(), None)
+        .unwrap();
+    Arc::clone(prepared.batch.column_by_name("id").unwrap())
+}
+
+/// The signs of the zeros `array` holds at any depth, in order: whether each is negative.
+fn zero_signs(array: &dyn Array) -> Vec<bool> {
+    use arrow_array::cast::AsArray;
+    match array.data_type() {
+        DataType::Float16 | DataType::Float32 | DataType::Float64 => {
+            let wide = arrow_cast::cast(array, &DataType::Float64).unwrap();
+            wide.as_primitive::<arrow_array::types::Float64Type>()
+                .values()
+                .iter()
+                .filter(|value| **value == 0.0)
+                .map(|value| value.is_sign_negative())
+                .collect()
+        }
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .flat_map(|column| zero_signs(column.as_ref()))
+            .collect(),
+        DataType::List(_) => zero_signs(array.as_list::<i32>().values().as_ref()),
+        // A nested key a destination stores as JSON: each number zero in its text.
+        DataType::Utf8 => array
+            .as_string::<i32>()
+            .iter()
+            .flatten()
+            .flat_map(|text| {
+                let numbers = text.split(|c: char| !(c == '-' || c == '.' || c.is_ascii_digit()));
+                numbers
+                    .filter(|number| number.parse::<f64>().is_ok_and(|value| value == 0.0))
+                    .map(|number| number.starts_with('-'))
+                    .collect::<Vec<_>>()
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn a_negative_zero_key_is_stored_as_zero_in_any_float_width_and_encoding() {
+    let float64: ArrayRef = Arc::new(Float64Array::from(vec![1.5, -0.0, 2.5]));
+    let float32: ArrayRef = Arc::new(Float32Array::from(vec![1.5, -0.0, 2.5]));
+    let float16 = arrow_cast::cast(&float32, &DataType::Float16).unwrap();
+    for float in [float64, float32, float16] {
+        for encoded in encodings(&float) {
+            let kind = encoded.data_type().to_string();
+            let stored = prepared_key(&keyed(encoded));
+            assert_eq!(zero_signs(stored.as_ref()), [false], "{kind}");
+        }
+    }
+}
+
+#[test]
+fn a_negative_zero_within_a_nested_key_is_stored_as_zero() {
+    let inner: ArrayRef = Arc::new(Float64Array::from(vec![1.0, -0.0]));
+    let fields =
+        arrow_schema::Fields::from(vec![arrow_schema::Field::new("x", DataType::Float64, true)]);
+    let within_struct: ArrayRef =
+        Arc::new(StructArray::try_new(fields, vec![Arc::clone(&inner)], None).unwrap());
+    let within_list: ArrayRef = Arc::new(arrow_array::ListArray::new(
+        Arc::new(arrow_schema::Field::new("item", DataType::Float64, true)),
+        arrow_buffer::OffsetBuffer::from_lengths([1, 1]),
+        inner,
+        None,
+    ));
+    for key in [within_struct, within_list] {
+        let kind = key.data_type().to_string();
+        let stored = prepared_key(&keyed(key));
+        assert_eq!(zero_signs(stored.as_ref()), [false], "{kind}");
+    }
+}
+
+#[test]
+fn a_batch_rebuilt_around_its_keys_keeps_its_rows_with_no_column() {
+    let empty = arrow_schema::Schema::empty();
+    let options = arrow_array::RecordBatchOptions::new().with_row_count(Some(3));
+    let rows = RecordBatch::try_new_with_options(Arc::new(empty), Vec::new(), &options).unwrap();
+    let rebuilt = crate::table::with_columns(&rows, Vec::new()).unwrap();
+    assert_eq!(rebuilt.num_rows(), 3);
+}

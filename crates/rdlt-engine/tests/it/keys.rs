@@ -3,10 +3,14 @@
 
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray;
+use arrow_array::types::{Float64Type, Int64Type};
 use arrow_array::{
-    ArrayRef, BinaryArray, FixedSizeBinaryArray, Float64Array, Int8Array, Int64Array, RecordBatch,
-    StringArray,
+    ArrayRef, BinaryArray, FixedSizeBinaryArray, Float64Array, Int8Array, Int64Array, ListArray,
+    RecordBatch, StringArray,
 };
+use arrow_buffer::OffsetBuffer;
+use arrow_schema::{DataType, Field};
 use rdlt_connector::{ChangeOp, OP_COLUMN, Push, ReadMode, SEQ_COLUMN, UNCHANGED_COLUMN};
 use rdlt_engine::{ErrorKind, Nested, RunOutcome, RunStatus, SchemaSettings, WriteMode};
 
@@ -135,6 +139,94 @@ async fn a_change_flagging_its_key_unchanged_is_refused_before_the_destination_s
             )
             .await;
         refused(&outcome, "merge_key_unchanged");
+    })
+    .await;
+}
+
+/// A row keyed by the float `id`, holding `items` and the text `v`.
+fn keyed_items(id: f64, items: &[i64], v: &str) -> RecordBatch {
+    let list: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(Field::new("item", DataType::Int64, true)),
+        OffsetBuffer::from_lengths([items.len()]),
+        Arc::new(Int64Array::from(items.to_vec())),
+        None,
+    ));
+    RecordBatch::try_from_iter([
+        ("id", Arc::new(Float64Array::from(vec![id])) as ArrayRef),
+        ("v", Arc::new(StringArray::from(vec![v])) as ArrayRef),
+        ("items", list),
+    ])
+    .expect("a batch")
+}
+
+/// The column `name` of `batches`, as `to`.
+fn column_of(batches: &[RecordBatch], name: &str, to: &DataType) -> Vec<ArrayRef> {
+    batches
+        .iter()
+        .map(|batch| arrow_cast::cast(batch.column_by_name(name).expect("the column"), to))
+        .collect::<Result<_, _>>()
+        .expect("castable")
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_negative_zero_key_is_the_key_zero_for_every_destination_and_keyed_mode() {
+    each(Target::IN_PROCESS, |target| async move {
+        let modes = [
+            ("merge", WriteMode::Merge, false),
+            ("normalized", WriteMode::Merge, true),
+            ("history", WriteMode::History, false),
+        ];
+        for (mode, write, normalized) in modes {
+            let store = format!("negative_zero_{mode}");
+            let runs = [keyed_items(0.0, &[1, 2], "a"), keyed_items(-0.0, &[3], "b")];
+            for rows in runs {
+                let source = batches(&store, vec![BatchStream::new("events", vec![rows])]).await;
+                let mut plan = stream("events").write(write).key(["id"]);
+                if normalized {
+                    plan = plan.schema(SchemaSettings::new().nested(Nested::normalize()));
+                }
+                let outcome = engine(commit_every(10))
+                    .run(
+                        pipeline(&store, [plan]),
+                        source,
+                        target.destination(&store).await,
+                    )
+                    .await;
+                assert_eq!(
+                    outcome.report.status,
+                    RunStatus::Succeeded,
+                    "{target:?} {mode}: {:?}",
+                    outcome.error
+                );
+            }
+            let roots = target.published(&store, "events");
+            let ids = column_of(&roots, "id", &DataType::Float64);
+            let signs: Vec<bool> = ids
+                .iter()
+                .flat_map(|ids| {
+                    let ids = ids.as_primitive::<Float64Type>().clone();
+                    ids.values()
+                        .iter()
+                        .map(|id| id.is_sign_negative())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let versions = if mode == "history" { 2 } else { 1 };
+            assert_eq!(signs, vec![false; versions], "{target:?} {mode}");
+            if normalized {
+                let items = target.published(&store, "events__items");
+                let mut values: Vec<i64> = column_of(&items, "value", &DataType::Int64)
+                    .iter()
+                    .flat_map(|values| values.as_primitive::<Int64Type>().values().to_vec())
+                    .collect();
+                values.sort_unstable();
+                assert_eq!(
+                    values,
+                    [3],
+                    "{target:?}: the key's children are its latest row's"
+                );
+            }
+        }
     })
     .await;
 }
