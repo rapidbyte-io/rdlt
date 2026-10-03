@@ -336,6 +336,57 @@ async fn rows_a_load_logged_before_its_stream_was_reset_never_land_after_it() {
     assert!(acknowledged > 0);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_log_whose_epochs_were_forged_past_a_reset_is_refused_not_replayed() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let mut events = ScriptStream::new("events", 2, 20, 5);
+    events.replayable = false;
+    events.final_checkpoint = false;
+    events.rows[1].store(0, Ordering::SeqCst);
+    let (script, source) = Script::new(vec![events]).connect("reset_forged").await;
+    let plan = pipeline(
+        "reset-forged",
+        [stream("events").read(ReadMode::Incremental)],
+    )
+    .with_wal(true);
+    let run = |destination| {
+        logging_engine(retrying(1), Arc::clone(&wal)).run(
+            plan.clone(),
+            Arc::clone(&source),
+            destination,
+        )
+    };
+    let loaded = run(memory("reset_forged").await).await;
+    assert_eq!(loaded.report.status, RunStatus::Succeeded);
+    script.streams[0].rows[1].store(10, Ordering::SeqCst);
+    let logged = run(failing(memory("reset_forged").await, Step::Commit)).await;
+    assert_eq!(logged.report.status, RunStatus::Failed);
+    engine(commit_every(16))
+        .reset(
+            "reset-forged",
+            &["events"],
+            ResetScope::Positions,
+            generator(&[("other", 1, 1, 1)]).await,
+            memory("reset_forged").await,
+        )
+        .await
+        .expect("the reset commits");
+    // Whoever can write the logs' directory says the load's session opened after the reset.
+    let forged = crate::support::logs::rewritten(base.path(), &|kind, value| match kind {
+        1 => value["epoch"] = json!(u64::MAX),
+        5 => value["meta"]["epoch"] = json!(u64::MAX),
+        _ => {}
+    });
+    assert!(forged > 0, "the failed load left a log");
+    let after = run(memory("reset_forged").await).await;
+    assert_eq!(after.report.status, RunStatus::Failed);
+    let error = after.error.expect("the replay is refused");
+    assert_eq!(error.code(), Some("wal_unreadable"), "{error:?}");
+    let expected: Vec<i64> = (0..20).map(|offset| id(0, offset)).collect();
+    assert_eq!(published_ids("reset_forged", "events"), expected);
+}
+
 #[tokio::test]
 async fn a_stream_whose_source_cannot_read_again_is_not_reset() {
     let mut events = ScriptStream::new("events", 1, 10, 5);

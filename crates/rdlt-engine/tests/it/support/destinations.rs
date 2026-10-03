@@ -33,6 +33,8 @@ struct NullConfig {
 struct Null {
     buffers: bool,
     stalls: bool,
+    /// The epoch the last open set: each open sets a newer one, as every destination does.
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 /// A destination that discards every batch.
@@ -72,6 +74,7 @@ impl DestinationConnector for Null {
         Ok(Self {
             buffers: config.buffers,
             stalls: config.stalls,
+            epoch: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -86,7 +89,9 @@ impl DestinationConnector for Null {
                 buffers: self.buffers,
                 stalls: self.stalls,
             },
-            epoch: rdlt_connector::Epoch(1),
+            epoch: rdlt_connector::Epoch(
+                self.epoch.fetch_add(1, Ordering::SeqCst).saturating_add(1),
+            ),
             state: Vec::new(),
         })
     }
