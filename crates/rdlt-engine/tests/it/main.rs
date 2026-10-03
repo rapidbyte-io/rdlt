@@ -34,7 +34,9 @@ mod recorded;
 mod replanning;
 mod reset;
 mod schema;
+
 mod signals;
+mod stored;
 mod support;
 mod told;
 mod unbounded;

@@ -40,6 +40,7 @@ use crate::lane::Lanes;
 use crate::partition::{Latest, Progress};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
+use crate::stored::Stored;
 use crate::table::Tables;
 use crate::wal::{LoadLog, Positions};
 use crate::watch;
@@ -181,6 +182,8 @@ pub(crate) struct CoordinatorParts {
     pub(crate) positions: Positions,
     /// What the committed state holds decoded, through the commits that landed.
     pub(crate) state: HeldState,
+    /// What the destination's stored state takes, through the commits that landed.
+    pub(crate) stored: Stored,
     /// Whether the run follows its source: it reads until stopped, and plans its streams again
     /// every `replan`.
     pub(crate) follow: bool,
@@ -423,6 +426,7 @@ impl Coordinator {
             .await?
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
         crash_point!("engine.commit.after");
+        self.parts.stored.apply(&meta.state_delta);
         if let Some(log) = &self.parts.wal {
             log.committed(&receipt).await?;
             self.parts.positions.apply(&meta.state_delta);

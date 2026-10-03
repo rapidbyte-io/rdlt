@@ -97,7 +97,7 @@ fn an_attempt_reads_as_many_partitions_at_once_as_a_plan_may_name_and_no_more() 
 
 #[test]
 fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
-    let growth = crate::config::GrowthLimits::new(1, 3).unwrap();
+    let growth = crate::config::GrowthLimits::new(1, 3, 1 << 20).unwrap();
     let config = EngineConfig::builder()
         .lanes(5)
         .growth(growth)

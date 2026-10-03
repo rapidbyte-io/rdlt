@@ -48,6 +48,7 @@ mod report;
 mod run;
 mod scope;
 mod shred;
+mod stored;
 mod table;
 mod wal;
 mod watch;

@@ -5,6 +5,7 @@
 //! [`Invalid`] when a required field is missing, an enum holds a value this end does not know, or
 //! a value breaks the type's rules.
 
+mod carried;
 mod catalog;
 mod destination;
 mod error;
@@ -17,6 +18,7 @@ mod types;
 
 use std::error::Error as StdError;
 
+pub use carried::{commit_bytes, record_bytes};
 #[cfg(feature = "serve")]
 pub(crate) use destination::load_id;
 pub use error::{HOST_CODES, INVALID_CODE};

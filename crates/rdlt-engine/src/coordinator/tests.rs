@@ -288,6 +288,7 @@ impl Setup {
             wal,
             positions: crate::wal::Positions::default(),
             state: crate::coordinator::HeldState::default(),
+            stored: crate::stored::Stored::of(&[], 16 << 20),
             follow: false,
             replan: Duration::from_secs(60),
         });

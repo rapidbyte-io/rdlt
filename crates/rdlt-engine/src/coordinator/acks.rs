@@ -14,10 +14,15 @@ use crate::wal::Sealed;
 use crate::wal::frame::BegunPhase;
 
 impl Coordinator {
-    /// Where the load keeps a log, logs the commit `meta` of `sealed`, beginning the phases
-    /// `begun`: whether it did.
+    /// Admits the commit `meta` of `sealed`, beginning the phases `begun`, and where the load
+    /// keeps a log, logs it: whether it did.
     ///
     /// What the commit records of tables, `prepaid` bytes, was reserved as each table changed.
+    ///
+    /// # Errors
+    ///
+    /// `state_bytes_exceeded` where the commit's request, or the state it leaves, would pass
+    /// what a message carrying state may take; the log's failure.
     pub(super) async fn log_commit(
         &self,
         meta: &CommitMeta,
@@ -25,6 +30,9 @@ impl Coordinator {
         sealed: Vec<Sealed>,
         begun: Vec<BegunPhase>,
     ) -> Result<bool, Error> {
+        // A commit no message could carry, or whose state no open could, is refused before
+        // anything of it is durable or acknowledged.
+        self.parts.stored.admit(meta)?;
         let Some(log) = &self.parts.wal else {
             return Ok(false);
         };
