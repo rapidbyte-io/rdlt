@@ -1,5 +1,6 @@
 //! Pipeline state and how it is stored: as keyed records the destination keeps opaque.
 
+mod applied;
 mod error;
 mod key;
 mod names;
@@ -142,6 +143,9 @@ pub enum StateEntry {
     },
     /// The last commit's receipt.
     Receipt(Receipt),
+    /// The first load whose commit reached the pipeline at this destination, which names the
+    /// destination to the loads after it.
+    Origin(LoadId),
 }
 
 /// Who made the `_rdlt_seq` values a table's rows hold, which says whether a later load may
@@ -182,6 +186,7 @@ impl StateEntry {
             Self::Names { table, .. } => StateKey::Names(table.clone()),
             Self::Sequences { table, .. } => StateKey::Sequences(table.clone()),
             Self::Receipt(_) => StateKey::Receipt,
+            Self::Origin(_) => StateKey::Origin,
         }
     }
 
@@ -319,6 +324,8 @@ pub struct PipelineState {
     pub last_receipt: Option<Receipt>,
     /// The load whose commit recorded each partition's position, by stream and partition.
     pub recorded_by: BTreeMap<(StreamName, PartitionId), LoadId>,
+    /// The first load whose commit reached the pipeline at this destination, once one did.
+    pub origin: Option<LoadId>,
 }
 
 impl PipelineState {
@@ -393,6 +400,9 @@ impl PipelineState {
         if let Some(receipt) = &self.last_receipt {
             entries.push(StateEntry::Receipt(receipt.clone()));
         }
+        if let Some(origin) = self.origin {
+            entries.push(StateEntry::Origin(origin));
+        }
         entries.iter().map(StateEntry::to_record).collect()
     }
 
@@ -403,117 +413,5 @@ impl PipelineState {
             StateChange::Delete(key) => self.delete(&StateKey::parse(key)?),
         }
         Ok(())
-    }
-
-    fn put(&mut self, entry: StateEntry) {
-        match entry {
-            StateEntry::Epoch(epoch) => self.epoch = epoch,
-            StateEntry::Phase { stream, phase } => {
-                self.streams.entry(stream).or_default().phase = phase;
-            }
-            StateEntry::Partition {
-                stream,
-                partition,
-                state,
-                load,
-            } => {
-                let positions = &mut self.streams.entry(stream.clone()).or_default().partitions;
-                positions.insert(partition.clone(), state);
-                self.recorded_by.insert((stream, partition), load);
-            }
-            StateEntry::Generation { stream, generation } => {
-                self.streams.entry(stream).or_default().generation = Some(generation);
-            }
-            StateEntry::Completed {
-                stream,
-                generations,
-            } => {
-                self.streams.entry(stream).or_default().completed = generations;
-            }
-            StateEntry::Reset { stream, epoch } => {
-                self.resets.insert(stream, epoch);
-            }
-            StateEntry::Schema {
-                table,
-                version,
-                schema,
-                exact,
-            } => {
-                let state = self.tables.entry(table).or_default();
-                (state.schema, state.exact) = (Some((version, schema)), exact);
-            }
-            StateEntry::Names {
-                table,
-                physical,
-                names,
-            } => {
-                let state = self.tables.entry(table).or_default();
-                (state.physical, state.names) = (Some(physical), names);
-            }
-            StateEntry::Sequences {
-                table,
-                sequences,
-                history,
-                key,
-                change_time,
-            } => {
-                let state = self.tables.entry(table).or_default();
-                (state.sequences, state.history) = (Some(sequences), history);
-                (state.key, state.change_time) = (key, change_time);
-            }
-            StateEntry::Receipt(receipt) => self.last_receipt = Some(receipt),
-        }
-    }
-
-    fn delete(&mut self, key: &StateKey) {
-        match key {
-            StateKey::Epoch => self.epoch = Epoch::default(),
-            StateKey::Phase(stream) => {
-                if let Some(state) = self.streams.get_mut(stream) {
-                    state.phase = 0;
-                }
-            }
-            StateKey::Partition(stream, partition) => {
-                self.recorded_by
-                    .remove(&(stream.clone(), partition.clone()));
-                if let Some(state) = self.streams.get_mut(stream) {
-                    state.partitions.remove(partition);
-                }
-            }
-            StateKey::Generation(stream) => {
-                if let Some(state) = self.streams.get_mut(stream) {
-                    state.generation = None;
-                }
-            }
-            StateKey::Completed(stream) => {
-                if let Some(state) = self.streams.get_mut(stream) {
-                    state.completed.clear();
-                }
-            }
-            StateKey::Reset(stream) => {
-                self.resets.remove(stream);
-            }
-            StateKey::Schema(table) => {
-                if let Some(state) = self.tables.get_mut(table) {
-                    state.schema = None;
-                    state.exact.clear();
-                }
-            }
-            StateKey::Names(table) => {
-                if let Some(state) = self.tables.get_mut(table) {
-                    state.physical = None;
-                    state.names = NameMap::default();
-                }
-            }
-            StateKey::Sequences(table) => {
-                if let Some(state) = self.tables.get_mut(table) {
-                    state.sequences = None;
-                    state.history = false;
-                    state.key.clear();
-                    state.change_time = None;
-                }
-            }
-            StateKey::Receipt => self.last_receipt = None,
-        }
     }
 }

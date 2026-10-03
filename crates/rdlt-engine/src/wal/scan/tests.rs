@@ -112,6 +112,7 @@ fn owner() -> Owner {
         load: load(),
         epoch: Epoch(1),
         opened: Some((LoadId::from_parts(UNIX_EPOCH, 1), CommitSeq::FIRST)),
+        origin: load(),
     }
 }
 

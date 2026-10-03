@@ -340,6 +340,7 @@ fn started(store: Arc<MemoryWal>) -> LoadLog {
         load: LoadId::from_parts(UNIX_EPOCH, 1),
         epoch: Epoch(1),
         opened: None,
+        origin: LoadId::from_parts(UNIX_EPOCH, 1),
     };
     let (log, writer) = LoadLog::start(store, owner, std::num::NonZeroU64::MAX);
     tokio::spawn(writer);
@@ -449,14 +450,31 @@ fn position(id: &str, state: PartitionState) -> StateChange {
     StateChange::Put(entry.to_record())
 }
 
-/// `delta` without the receipt entry every commit ends with.
+/// `delta` without the receipt entry every commit ends with, and the origin a first commit
+/// records.
 fn without_receipt(delta: &[StateChange]) -> Vec<StateChange> {
-    let receipt = StateKey::Receipt.encode();
+    let ours = [StateKey::Receipt.encode(), StateKey::Origin.encode()];
     delta
         .iter()
-        .filter(|change| !matches!(change, StateChange::Put(record) if record.key == receipt))
+        .filter(|change| !matches!(change, StateChange::Put(record) if ours.contains(&record.key)))
         .cloned()
         .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_load_s_first_commit_names_it_to_a_destination_no_commit_reached_yet() {
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .start()
+    .await;
+    harness.seal(0, 1, 0, PartitionState::Done, None);
+    harness.end(0, false);
+    task.await.unwrap().unwrap();
+    let commits = harness.commits.lock();
+    let origin = StateEntry::Origin(LoadId::from_parts(UNIX_EPOCH, 1)).to_record();
+    assert!(commits[0].state_delta.contains(&StateChange::Put(origin)));
 }
 
 /// Waits until `condition` holds, failing the test after ten minutes of paused time.

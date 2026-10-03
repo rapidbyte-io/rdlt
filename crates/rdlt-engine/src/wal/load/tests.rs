@@ -66,6 +66,7 @@ fn start(
         load: load(),
         epoch: Epoch(1),
         opened: None,
+        origin: load(),
     };
     LoadLog::start(wal, owner, std::num::NonZeroU64::MAX)
 }
@@ -594,6 +595,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         load: load(),
         epoch: Epoch(1),
         opened: None,
+        origin: load(),
     };
     let limit = 4_000;
     let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap());
@@ -630,6 +632,7 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
         load: load(),
         epoch: Epoch(1),
         opened: None,
+        origin: load(),
     };
     let limit = 80_000;
     let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap());

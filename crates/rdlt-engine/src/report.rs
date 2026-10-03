@@ -228,6 +228,9 @@ pub(crate) struct AttemptLog {
     pub(crate) pending: Option<CommitRecord>,
     /// The receipt state recorded when the attempt opened, naming the last commit that landed.
     pub(crate) opened: Option<(LoadId, CommitSeq)>,
+    /// The first load whose commit reached the pipeline at the destination, as the attempt
+    /// opened; none where none had, so the attempt's first commit records its own.
+    pub(crate) origin: Option<LoadId>,
     /// How many records each stream's reads were last behind their source's newest.
     pub(crate) behind: BTreeMap<StreamName, u64>,
     /// Each stream's reads that started again from their earliest after a retention loss.

@@ -22,6 +22,7 @@ fn header(number: u64, epoch: u64) -> Frame {
         chunk: number,
         epoch: Epoch(epoch),
         opened: None,
+        origin: load(),
     })
 }
 

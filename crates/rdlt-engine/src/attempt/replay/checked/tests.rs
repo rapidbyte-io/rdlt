@@ -129,3 +129,43 @@ fn a_commit_recording_what_its_frames_do_not_back_is_refused() {
         assert_eq!(refused.code(), Some("wal_unreadable"), "{case}");
     }
 }
+
+#[test]
+fn a_commit_names_only_its_own_load_as_the_destination_s_first() {
+    let own = StateChange::Put(StateEntry::Origin(load()).to_record());
+    let mut delta = honest();
+    delta.push(own);
+    checked(&logged(delta), Epoch(9), &pipeline()).expect("its own load");
+    let other = LoadId::from_parts(UNIX_EPOCH, 7);
+    let mut delta = honest();
+    delta.push(StateChange::Put(StateEntry::Origin(other).to_record()));
+    let refused = checked(&logged(delta), Epoch(9), &pipeline()).expect_err("another's");
+    assert_eq!(refused.code(), Some("wal_unreadable"));
+    let mut delta = honest();
+    delta.push(StateChange::Delete(
+        rdlt_connector::StateKey::Origin.encode(),
+    ));
+    assert!(checked(&logged(delta), Epoch(9), &pipeline()).is_err());
+}
+
+#[test]
+fn a_log_is_replayed_only_into_the_destination_it_was_written_for() {
+    let header = |origin| crate::wal::frame::Header {
+        pipeline: pipeline(),
+        load: load(),
+        chunk: 0,
+        epoch: Epoch(1),
+        opened: None,
+        origin,
+    };
+    let first = LoadId::from_parts(UNIX_EPOCH, 1);
+    // The destination's first load named, or the log's own where no load committed there.
+    super::bound(Some(&header(first)), Some(first), load(), &pipeline()).expect("its own");
+    super::bound(Some(&header(load())), None, load(), &pipeline()).expect("the first");
+    for (named, origin) in [(first, None), (load(), Some(first)), (first, Some(load()))] {
+        let refused = super::bound(Some(&header(named)), origin, load(), &pipeline())
+            .expect_err("another destination's");
+        assert_eq!(refused.code(), Some("wal_foreign"), "{named} {origin:?}");
+    }
+    assert!(super::bound(None, None, load(), &pipeline()).is_err());
+}

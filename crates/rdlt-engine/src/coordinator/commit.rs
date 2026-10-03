@@ -85,6 +85,12 @@ impl Coordinator {
         streams: &BTreeMap<StreamName, StreamReport>,
         delta: &mut Vec<StateChange>,
     ) {
+        // A destination no commit of the pipeline reached yet learns the load whose commit
+        // reaches it first, which names it to the logs of the loads after.
+        if self.seq == rdlt_connector::CommitSeq::FIRST && self.parts.log.lock().origin.is_none() {
+            let origin = StateEntry::Origin(self.parts.load_id);
+            delta.push(StateChange::Put(origin.to_record()));
+        }
         let marker = self.marker(streams);
         delta.push(StateChange::Put(
             StateEntry::Receipt(marker.clone()).to_record(),

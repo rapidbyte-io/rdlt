@@ -149,11 +149,15 @@ async fn opened_run(
     opened: Opened,
     log: &Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
-    log.lock().opened = opened
-        .state
-        .last_receipt
-        .as_ref()
-        .map(|receipt| (receipt.load_id, receipt.commit_seq));
+    {
+        let mut log = log.lock();
+        log.opened = opened
+            .state
+            .last_receipt
+            .as_ref()
+            .map(|receipt| (receipt.load_id, receipt.commit_seq));
+        log.origin = opened.state.origin;
+    }
     let catalog = context
         .source
         .discover()
@@ -370,6 +374,7 @@ fn start_log(
             .last_receipt
             .as_ref()
             .map(|receipt| (receipt.load_id, receipt.commit_seq)),
+        origin: opened.state.origin.unwrap_or(load_id),
     };
     let (log, task) = LoadLog::start(store, owner, context.config.growth().log_bytes());
     scope.spawn(task);

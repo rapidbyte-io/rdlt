@@ -272,10 +272,14 @@ fn note(scanned: &mut Scanned, opened: Opened, chunk: Chunk, of: Of<'_>) -> Resu
 fn headed(scanned: &mut Scanned, first: First, number: u64, of: Of<'_>) -> Result<(), Error> {
     match first {
         First::Header(header) => match &scanned.header {
-            Some(known) if (known.epoch, known.opened) != (header.epoch, header.opened) => Err(of
-                .unreadable(format!(
+            Some(known)
+                if (known.epoch, known.opened, known.origin)
+                    != (header.epoch, header.opened, header.origin) =>
+            {
+                Err(of.unreadable(format!(
                     "chunk {number} was written by another session than the chunks before it"
-                ))),
+                )))
+            }
             Some(_) => Ok(()),
             None => {
                 scanned.header = Some(header);

@@ -323,3 +323,58 @@ async fn a_disk_a_crashed_load_filled_is_freed_by_the_next_replay_before_it_writ
     assert_eq!(store.loads(&pipeline_id).await.expect("lists"), []);
     assert_eq!(store.staged(), 0);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_log_written_for_one_destination_is_never_replayed_into_another() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let plan = pipeline("wal-bound", [stream("events").read(ReadMode::Incremental)]);
+    // One pipeline, its logs in one place, run into two destinations from sources of their own.
+    let mut sources = Vec::new();
+    for destination in ["wal_bound_one", "wal_bound_two"] {
+        let mut events = ScriptStream::new("events", 1, 10, 5);
+        events.replayable = false;
+        let (script, source) = Script::new(vec![events]).connect(destination).await;
+        let loaded = logging_engine(commit_every(10), Arc::clone(&store))
+            .run(plan.clone(), Arc::clone(&source), memory(destination).await)
+            .await;
+        assert_eq!(
+            loaded.report.status,
+            RunStatus::Succeeded,
+            "{:?}",
+            loaded.error
+        );
+        sources.push((script, source));
+    }
+    // A load into the first fails to commit what its source was told of: its log holds it.
+    let (script, source) = &sources[0];
+    script.streams[0].grow(10);
+    let failed = logging_engine(retrying(1), Arc::clone(&store))
+        .run(
+            plan.clone(),
+            Arc::clone(source),
+            failing(memory("wal_bound_one").await, Step::Commit),
+        )
+        .await;
+    assert_eq!(failed.report.status, RunStatus::Failed);
+    // The second destination's run refuses the log; the first's lands it.
+    let refused = logging_engine(retrying(1), Arc::clone(&store))
+        .run(
+            plan.clone(),
+            Arc::clone(&sources[1].1),
+            memory("wal_bound_two").await,
+        )
+        .await;
+    let error = refused.error.expect("another destination's log");
+    assert_eq!(error.code(), Some("wal_foreign"), "{error}");
+    let landed = logging_engine(retrying(1), Arc::clone(&store))
+        .run(plan, Arc::clone(source), memory("wal_bound_one").await)
+        .await;
+    assert_eq!(
+        landed.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        landed.error
+    );
+    assert_eq!(published_ids("wal_bound_one", "events"), ids(1, 20));
+}
