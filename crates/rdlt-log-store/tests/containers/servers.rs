@@ -1,6 +1,6 @@
 //! S3 servers in containers, each image named by its digest, with a bucket made in each.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use object_store::aws::{AwsAuthorizer, AwsCredential};
@@ -10,6 +10,7 @@ use rdlt_engine::{SystemClock, WalStore};
 use rdlt_host::{SecretFault, SecretReference, SecretResolver};
 use rdlt_log_store::{LogStoreConfig, LogStoreError};
 use serde_json::{Value, json};
+use testcontainers::bollard::models::{HostConfig, PortBinding};
 use testcontainers::core::{IntoContainerPort as _, WaitFor};
 use testcontainers::runners::AsyncRunner as _;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt as _};
@@ -34,7 +35,7 @@ pub(crate) enum Server {
 
 /// A server running in its container, removed when it is dropped.
 pub(crate) struct Running {
-    _container: ContainerAsync<GenericImage>,
+    container: ContainerAsync<GenericImage>,
     /// Where it answers: `http://127.0.0.1:<port>`.
     pub(crate) endpoint: String,
 }
@@ -67,7 +68,12 @@ impl Server {
         rustls::crypto::ring::default_provider()
             .install_default()
             .ok();
-        let container = self.image().start().await.expect("the server starts");
+        let container = self
+            .image()
+            .with_host_config_modifier(on_loopback)
+            .start()
+            .await
+            .expect("the server starts");
         let port = container
             .get_host_port_ipv4(9000.tcp())
             .await
@@ -75,9 +81,43 @@ impl Server {
         let endpoint = format!("http://127.0.0.1:{port}");
         made(&endpoint).await;
         Running {
-            _container: container,
+            container,
             endpoint,
         }
+    }
+}
+
+/// Publishes the server's port on the loopback address alone, out of reach of other machines.
+fn on_loopback(config: &mut HostConfig) {
+    let binding = PortBinding {
+        host_ip: Some("127.0.0.1".to_owned()),
+        host_port: None,
+    };
+    config.publish_all_ports = Some(false);
+    config.port_bindings = Some(HashMap::from([(
+        "9000/tcp".to_owned(),
+        Some(vec![binding]),
+    )]));
+}
+
+impl Running {
+    /// The host addresses its ports are published on, as Docker reports them.
+    pub(crate) async fn published_on(&self) -> Vec<String> {
+        let docker = testcontainers::bollard::Docker::connect_with_defaults().expect("Docker");
+        let inspected = docker
+            .inspect_container(self.container.id(), None)
+            .await
+            .expect("the container is inspected");
+        let ports = inspected
+            .network_settings
+            .and_then(|settings| settings.ports)
+            .unwrap_or_default();
+        ports
+            .into_values()
+            .flatten()
+            .flatten()
+            .map(|binding| binding.host_ip.unwrap_or_default())
+            .collect()
     }
 }
 
