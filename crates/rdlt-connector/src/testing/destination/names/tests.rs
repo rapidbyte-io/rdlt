@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 
-use super::apart::{apart, pieces};
+use super::apart::{alike, apart, pieces};
 use super::{names, padded, unreserved};
 use crate::capabilities::{IdentifierCase, IdentifierChars, IdentifierRules};
 
@@ -189,4 +189,16 @@ fn a_pair_is_written_only_where_neither_name_is_reserved() {
         "{names:?}"
     );
     assert!(names.contains(&pairs[1].0) && names.contains(&pairs[1].1));
+}
+
+#[test]
+fn a_pair_is_alike_under_exactly_the_equalities_that_join_it() {
+    let pair = |one: &str, other: &str| (one.to_owned(), other.to_owned());
+    // ASCII case, lower case, simple folding, full folding: a bit each, from the least.
+    assert_eq!(alike(&pair("K", "k")), 0b1111);
+    assert_eq!(alike(&pair("\u{212a}", "k")), 0b1110);
+    assert_eq!(alike(&pair("\u{17f}", "s")), 0b1100);
+    assert_eq!(alike(&pair("\u{df}", "ss")), 0b1000);
+    assert_eq!(alike(&pair("\u{130}", "i\u{307}")), 0b1010);
+    assert_eq!(alike(&pair("a", "b")), 0);
 }

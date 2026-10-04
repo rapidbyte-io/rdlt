@@ -53,7 +53,7 @@ pub(super) fn apart(rules: &IdentifierRules, longest: usize) -> Vec<Pair> {
 
 /// Which equalities make the two sides of `pair` alike, a bit each: ASCII case, the lower case
 /// the declared rules fold by, Unicode's simple case folding and its full case folding.
-fn alike((one, other): &Pair) -> u8 {
+pub(super) fn alike((one, other): &Pair) -> u8 {
     [
         one.eq_ignore_ascii_case(other),
         one.to_lowercase() == other.to_lowercase(),
