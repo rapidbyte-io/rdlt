@@ -23,6 +23,7 @@ mod config;
 mod credentials;
 mod error;
 pub mod limits;
+mod refusing;
 mod s3;
 
 pub use config::{LogStoreConfig, S3Config};

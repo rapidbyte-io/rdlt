@@ -9,11 +9,13 @@ use super::SecretCredentials;
 use crate::config::References;
 use crate::limits::CREDENTIALS_FRESH;
 
-/// Resolves every name to itself and the times it was asked, refusing `refused`.
+/// Resolves every name to itself and the times it was asked, refusing `refused`, and failing
+/// every request once `failing` is set.
 #[derive(Debug, Default)]
 struct Counting {
     asked: AtomicUsize,
     refused: Option<&'static str>,
+    failing: std::sync::atomic::AtomicBool,
 }
 
 impl SecretResolver for Counting {
@@ -23,9 +25,13 @@ impl SecretResolver for Counting {
     ) -> BoxFuture<'a, Result<Secret<String>, SecretFault>> {
         let asked = self.asked.fetch_add(1, Ordering::SeqCst);
         let refused = self.refused == Some(reference.name.as_str());
+        let failing = self.failing.load(Ordering::SeqCst);
         Box::pin(async move {
             if refused {
                 return Err(SecretFault::Refused);
+            }
+            if failing {
+                return Err(SecretFault::Missing);
             }
             Ok(Secret::new(format!("{}-{asked}", reference.name)))
         })
@@ -97,4 +103,23 @@ async fn a_credential_the_operator_lets_no_configuration_reach_is_refused_naming
         .await
         .expect_err("nothing resolves");
     assert!(matches!(error, object_store::Error::Unauthenticated { .. }));
+}
+
+#[tokio::test(start_paused = true)]
+async fn credentials_that_fail_to_resolve_again_are_used_as_held_and_resolved_at_the_next_ask() {
+    let secrets = Arc::new(Counting::default());
+    let credentials = SecretCredentials::new(references(false), Arc::clone(&secrets) as _);
+    let first = credentials.fresh().await.expect("resolves");
+    tokio::time::advance(CREDENTIALS_FRESH).await;
+    secrets.failing.store(true, Ordering::SeqCst);
+    let held = credentials.fresh().await.expect("those held");
+    assert!(Arc::ptr_eq(&first, &held));
+    let asked = secrets.asked.load(Ordering::SeqCst);
+    secrets.failing.store(false, Ordering::SeqCst);
+    let again = credentials.fresh().await.expect("resolves again");
+    assert!(
+        !Arc::ptr_eq(&first, &again),
+        "resolved again at once, not after another wait"
+    );
+    assert!(secrets.asked.load(Ordering::SeqCst) > asked);
 }

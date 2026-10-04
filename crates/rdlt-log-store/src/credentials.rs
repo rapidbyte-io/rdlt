@@ -41,11 +41,14 @@ impl SecretCredentials {
         }
     }
 
-    /// The credentials, resolved where none are held or those held have aged.
+    /// The credentials, resolved where none are held or those held have aged; where resolving
+    /// them again fails, as a file mid-rotation may, those held are used and resolved again at
+    /// the next request.
     ///
     /// # Errors
     ///
-    /// [`LogStoreError::Secret`] naming the field whose reference did not resolve.
+    /// [`LogStoreError::Secret`] naming the field whose reference did not resolve, where no
+    /// credentials are held.
     pub(crate) async fn fresh(&self) -> Result<Arc<AwsCredential>, LogStoreError> {
         let mut held = self.held.lock().await;
         if let Some((credential, at)) = &*held
@@ -53,20 +56,32 @@ impl SecretCredentials {
         {
             return Ok(Arc::clone(credential));
         }
+        match self.resolve().await {
+            Ok(credential) => {
+                *held = Some((Arc::clone(&credential), Instant::now()));
+                Ok(credential)
+            }
+            Err(error) => match &*held {
+                Some((credential, _)) => Ok(Arc::clone(credential)),
+                None => Err(error),
+            },
+        }
+    }
+
+    /// The credentials, resolved from their references.
+    async fn resolve(&self) -> Result<Arc<AwsCredential>, LogStoreError> {
         let references = &self.references;
         let token = match &references.token {
             Some(token) => Some(self.resolved("session_token", token).await?),
             None => None,
         };
-        let credential = Arc::new(AwsCredential {
+        Ok(Arc::new(AwsCredential {
             key_id: self.resolved("access_key_id", &references.key_id).await?,
             secret_key: self
                 .resolved("secret_access_key", &references.secret_key)
                 .await?,
             token,
-        });
-        *held = Some((Arc::clone(&credential), Instant::now()));
-        Ok(credential)
+        }))
     }
 
     async fn resolved(
