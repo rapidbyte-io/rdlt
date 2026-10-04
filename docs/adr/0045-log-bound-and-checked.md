@@ -1,7 +1,8 @@
 # ADR 0045: A write-ahead log that is bound, private, checked and charged
 
 Status: accepted, 2026-10-03. Amended 2026-10-04 (ADR 0051): `ObjectStoreWal` keeps logs in S3
-and stores that answer as it does, under this contract.
+and stores that answer as it does, under this contract; a batch the log cannot hold waits for a
+commit to free room, and what a store stages in memory is charged to the budget.
 
 ## Context
 
@@ -162,9 +163,19 @@ lowering may take, logged under more memory than replays it, is refused as
 ### Disk is bounded, and a full disk is retried
 
 - `GrowthLimits::log_bytes`, 4 GiB by default, is what a load's log may hold on disk, the staged
-  chunk included. At half of it a commit is due, and again at each eighth more; a batch whose
-  frame would pass it fails its write as `log_bytes_exceeded` before its source hears of it, and
-  a carry of an open segment's frames that would pass it is left undone, the old chunks kept.
+  chunk included. At half of it a commit is due, and again at each eighth more; a carry of an
+  open segment's frames that would pass it is left undone, the old chunks kept.
+- A batch whose frame would pass it waits, and a commit is due at once: the commit publishes
+  what was staged, and the chunks it no longer needs are deleted two publishes on, freeing room.
+  While a commit can free room, a batch waits too where what is staged and not yet published
+  would pass a third of the bound, so two chunks published always leave room for the next. A
+  batch is refused, `log_bytes_exceeded`, before its source hears of it, only where no commit
+  can free any room: no checkpoint was sealed since the last commit took the seals, and none is
+  under way. A wait ends with the attempt's deadlines, and the frame it holds stays reserved
+  from the memory budget.
+- What a store stages in memory beside the log, a part for `ObjectStoreWal`
+  (`WalStore::staging_bytes`), is reserved from the budget's share for logs when a load's log
+  starts; a store staging more than half that share is refused (`wal_staging_exceeds_budget`).
 - A failed write fails every batch after it at once and discards what its chunk staged. A full
   disk or quota is `wal_storage_full` and retryable. Where opening its own log finds the disk
   full, the next attempt removes what removals a crash cut short left and deletes what every load
@@ -245,6 +256,12 @@ draw is then taken again among the reads and commits that run told, so every dra
   reached names no store, so two stores' first loads may each begin; the first commit to land
   names its store, and the other's next attempt is refused. Moving a pipeline's logs keeps its
   store's identity file with them.
+- **A full log waits for a commit rather than failing.** A source that checkpoints, sending more
+  than the log holds between commits, loaded until it failed `log_bytes_exceeded`, which no
+  retry mends. A batch now waits for its commit; one whose source never checkpoints is refused,
+  since no commit could free room for it. Cost: while a commit is under way, a batch that would
+  leave more than a third of the bound unpublished waits for it, so a load whose batches are
+  large beside its log commits more often.
 - **A staged file's name is told apart by process id and a counter.** Two processes of different
   process namespaces may take one name once a staging was deleted; a publish compares the file it
   linked with the file it holds, by device and inode, and refuses another's.

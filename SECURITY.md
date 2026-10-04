@@ -308,7 +308,9 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
   first, dropping no table. A replay that fails keeps the log for the next attempt.
 - What replay reads and decodes is reserved from the memory budget before it is held
   (`replay_exceeds_budget`). A load's log holds at most `GrowthLimits::log_bytes` on disk, 4 GiB
-  by default (`log_bytes_exceeded`). A full disk is retried (`wal_storage_full`): a failed write
+  by default: a batch that would pass it waits for a commit to free room, and is refused
+  (`log_bytes_exceeded`) only where no checkpoint since the last commit lets one free any. What a
+  store stages in memory is reserved from the budget (`wal_staging_exceeds_budget`). A full disk is retried (`wal_storage_full`): a failed write
   gives back what it staged, and the next attempt deletes what a crashed load staged, which
   needs no room, before it needs a directory's block and a few hundred bytes of its own.
 - A load opens its log before it reads any other. A replay or a reset fences a running load by
@@ -321,14 +323,18 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
 
 - A log in an object store (ADR 0051) lies beneath a prefix of plain segments
   (`wal_prefix_invalid`), and a name it never writes is refused there too (`wal_stray`). The
-  store is probed before a log is kept in it: one that takes a second create of one name, lists
-  no fresh object, takes no upload in parts or keeps what it says it deleted is refused
-  (`wal_storage_unsupported`), so no log runs unfenced. Its credentials are secret references
+  store is probed before a log is kept in it: one that takes two of creates of one name racing,
+  keeps no metadata, lists no fresh object, takes no upload in parts or keeps what it says it
+  deleted is refused (`wal_storage_unsupported`), so no log runs unfenced. Each create's object
+  bears a random token, read back only where an attempt's answer was lost, so two publishes of
+  the same bytes never both succeed. What a log costs, deletions and listings among it, is
+  bounded by its live chunks, and a listing past 65,536 objects is refused. Its credentials are secret references
   the operator's resolver alone resolves, never literals, never shown; it is reached over TLS
   checked against the system's trusted roots, with no redirect or proxy, and in plain HTTP only
   at a loopback IP address. Every request has a deadline and a bounded number of attempts
   (`wal_storage_unavailable`, retryable); a refusal of the credentials is final
-  (`wal_storage_denied`). Whoever may write the bucket's prefix holds the log's authority, as
+  (`wal_storage_denied`), as are a failed TLS handshake and a status saying the request is wrong
+  (`wal_storage_refused`). Whoever may write the bucket's prefix holds the log's authority, as
   whoever may write a local base does: grant it to the engine's credentials alone.
 
 A log is not signed: whoever can write as the engine's user holds its authority already. A log
