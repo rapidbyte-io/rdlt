@@ -216,6 +216,23 @@ fn pieces_gather_whole_into_names_each_within_the_longest() {
         gathered(&prefix, &pieces, 4),
         [pair("0_ab", "0_AB"), pair("1_c", "1_C")]
     );
+    // Either side alone decides that a name is full, or that a piece still fits.
+    assert_eq!(
+        gathered(&prefix, &[pair("aa", "A"), pair("b", "B")], 4),
+        [pair("0_aa", "0_A"), pair("1_b", "1_B")]
+    );
+    assert_eq!(
+        gathered(&prefix, &[pair("A", "aa"), pair("B", "b")], 4),
+        [pair("0_A", "0_aa"), pair("1_B", "1_b")]
+    );
+    assert_eq!(
+        gathered(&prefix, &[pair("a", "A"), pair("bb", "B")], 5),
+        [pair("0_abb", "0_AB")]
+    );
+    assert_eq!(
+        gathered(&prefix, &[pair("A", "a"), pair("B", "bb")], 5),
+        [pair("0_AB", "0_abb")]
+    );
     // A piece no name of the longest holds, on either side, is left out, and nothing is empty.
     assert_eq!(gathered(&prefix, &pieces, 2), []);
     assert_eq!(gathered(&prefix, &[pair("a", "AA")], 3), []);
