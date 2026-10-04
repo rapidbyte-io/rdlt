@@ -633,6 +633,22 @@ fn every_float_reads_back_from_json_lines_as_the_value_written() {
 }
 
 #[test]
+fn a_32_bit_float_read_back_once_its_column_widened_is_the_value_written() {
+    let mut singles: Vec<Option<f32>> = SINGLES.iter().copied().map(Some).collect();
+    singles.push(None);
+    let y: ArrayRef = Arc::new(Float32Array::from(singles));
+    let batch = RecordBatch::try_from_iter_with_nullable([("y", Arc::clone(&y), true)]).unwrap();
+    let (_root, dir) = scratch();
+    FileFormat::Jsonl
+        .write(&dir, "rows.jsonl", std::slice::from_ref(&batch))
+        .unwrap();
+    let wide = Arc::new(Schema::new(vec![Field::new("y", DataType::Float64, true)]));
+    let read = joined(&FileFormat::Jsonl.read(&dir, "rows.jsonl", &wide).unwrap());
+    let widened = arrow_cast::cast(&y, &DataType::Float64).unwrap();
+    assert_eq!(bits(read.column(0)), bits(&widened));
+}
+
+#[test]
 fn a_float_that_is_no_number_is_named_in_json_lines_wherever_it_nests() {
     // Named in the file, so no reader takes one for a missing value.
     let (root, dir) = scratch();
