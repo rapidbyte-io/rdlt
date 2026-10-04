@@ -1,16 +1,16 @@
+mod served;
+
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rdlt_connector::{BoxFuture, Secret};
 use rdlt_engine::SystemClock;
 use rdlt_host::{SecretFault, SecretReference, SecretResolver, Secrets};
-use rustls::pki_types::pem::PemObject as _;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use serde_json::json;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 
-use crate::{LogStoreConfig, LogStoreErrorKind};
+use self::served::{Answer, serve};
+use super::{Connector, open_through};
+use crate::{LogStoreConfig, LogStoreError, LogStoreErrorKind, S3Config};
 
 /// Resolves every reference to its name.
 #[derive(Debug)]
@@ -25,24 +25,45 @@ impl SecretResolver for Named {
     }
 }
 
-fn reaching(endpoint: &str) -> LogStoreConfig {
+fn reaching(endpoint: &str, path_style: bool) -> LogStoreConfig {
     LogStoreConfig::parse(&json!({ "s3": {
         "bucket": "rdlt-logs",
         "prefix": "pipelines/logs",
         "region": "us-east-1",
         "endpoint": endpoint,
-        "path_style": true,
+        "path_style": path_style,
         "access_key_id": "${secret:id}",
         "secret_access_key": "${secret:key}",
     }}))
     .expect("parses")
 }
 
+fn s3(config: &LogStoreConfig) -> &S3Config {
+    match config {
+        LogStoreConfig::S3(config) => config,
+        LogStoreConfig::Local { .. } => panic!("an S3 configuration"),
+    }
+}
+
+/// Opens logs at `endpoint` through `connector`, the store named `host` reached on `served`.
+async fn opened_through(config: &LogStoreConfig, connector: Connector) -> LogStoreError {
+    let config = s3(config);
+    let checked = config.checked().expect("valid");
+    let opened = open_through(
+        config,
+        checked,
+        (Arc::new(Named), Arc::new(SystemClock)),
+        connector,
+    )
+    .await;
+    opened.expect_err("the store fails or refuses")
+}
+
 #[tokio::test]
 async fn a_refused_secret_is_reported_before_the_store_is_asked_anything() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
     let endpoint = format!("http://{}", listener.local_addr().expect("an address"));
-    let error = reaching(&endpoint)
+    let error = reaching(&endpoint, true)
         .open(Arc::new(Secrets::new()), Arc::new(SystemClock))
         .await
         .expect_err("refused");
@@ -55,92 +76,84 @@ async fn a_refused_secret_is_reported_before_the_store_is_asked_anything() {
 
 #[tokio::test]
 async fn a_store_on_a_loopback_address_is_reached_without_tls_in_the_bucket_s_path() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let endpoint = format!("http://{}", listener.local_addr().expect("an address"));
-    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let heard = Arc::clone(&requests);
-    let server = tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                return;
-            };
-            let mut request = vec![0; 4096];
-            let read = stream.read(&mut request).await.unwrap_or(0);
-            let line = String::from_utf8_lossy(&request[..read]);
-            heard
-                .lock()
-                .expect("not poisoned")
-                .push(line.lines().next().unwrap_or("").to_owned());
-            let answer =
-                b"HTTP/1.1 503 Slow Down\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
-            stream.write_all(answer).await.ok();
-        }
-    });
-    let error = reaching(&endpoint)
+    let served = serve(None, Answer::Busy).await;
+    let endpoint = format!("http://{}", served.address);
+    let error = reaching(&endpoint, true)
         .open(Arc::new(Named), Arc::new(SystemClock))
         .await
         .expect_err("the store fails every attempt");
-    server.abort();
     assert_eq!(error.code(), "wal_storage_unavailable");
     assert!(error.is_retryable());
-    let heard = requests.lock().expect("not poisoned").clone();
-    // The probe's create, then the deletion of its markers, each tried five times by the log
-    // and never again by the client; the bucket in each path.
-    let puts = heard
-        .iter()
-        .filter(|line| line.starts_with("PUT /rdlt-logs/pipelines/logs/probe/"));
-    assert_eq!(puts.count(), 5, "{heard:?}");
+    let heard = served.heard();
+    // Four creates racing, each tried five times by the log and never again by the client.
+    let probe = "PUT /rdlt-logs/pipelines/logs/probe/";
+    let puts = heard.iter().filter(|(line, _)| line.starts_with(probe));
+    assert_eq!(puts.count(), 20, "{heard:?}");
     assert!(
-        heard.iter().all(|line| line.contains(" /rdlt-logs")),
+        heard.iter().all(|(line, _)| line.contains(" /rdlt-logs")),
         "{heard:?}"
     );
 }
 
 #[tokio::test]
-async fn a_store_whose_certificate_no_trusted_root_signs_is_never_spoken_to() {
-    let pki = rdlt_testkit::tls::Pki::new("untrusted");
-    let files = pki.server("store", &["127.0.0.1"]);
-    let chain: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&files.cert)
-        .expect("reads")
-        .collect::<Result<_, _>>()
-        .expect("certificates");
-    let key = PrivateKeyDer::from_pem_file(&files.key).expect("a key");
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let tls = rustls::ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .expect("TLS versions")
-        .with_no_client_auth()
-        .with_single_cert(chain, key)
-        .expect("a server configuration");
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
-    let endpoint = format!("https://{}", listener.local_addr().expect("an address"));
-    let (failed, completed) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-    let counts = (Arc::clone(&failed), Arc::clone(&completed));
-    let server = tokio::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            match acceptor.accept(stream).await {
-                Ok(_) => counts.1.fetch_add(1, Ordering::SeqCst),
-                Err(_) => counts.0.fetch_add(1, Ordering::SeqCst),
-            };
-        }
-    });
-    let error = reaching(&endpoint)
+async fn a_request_the_store_takes_as_malformed_is_refused_for_good_and_not_tried_again() {
+    let served = serve(None, Answer::Malformed).await;
+    let endpoint = format!("http://{}", served.address);
+    let error = reaching(&endpoint, true)
         .open(Arc::new(Named), Arc::new(SystemClock))
         .await
         .expect_err("refused");
-    server.abort();
-    assert_eq!(error.kind(), LogStoreErrorKind::Store);
-    assert_eq!(
-        completed.load(Ordering::SeqCst),
-        0,
-        "no handshake completed"
-    );
-    assert!(
-        failed.load(Ordering::SeqCst) > 0,
-        "the client refused the certificate"
-    );
+    assert_eq!(error.code(), "wal_storage_refused");
+    assert!(!error.is_retryable());
+    let heard = served.heard();
+    let creates = heard.iter().filter(|(line, _)| line.starts_with("PUT "));
+    assert_eq!(creates.count(), 4, "each racing create once: {heard:?}");
+}
+
+#[tokio::test]
+async fn a_store_whose_certificate_no_trusted_root_signs_is_refused_for_good() {
+    let pki = rdlt_testkit::tls::Pki::new("untrusted");
+    let served = serve(Some(pki.server("store", &["127.0.0.1"])), Answer::Busy).await;
+    let endpoint = format!("https://{}", served.address);
+    let error = reaching(&endpoint, true)
+        .open(Arc::new(Named), Arc::new(SystemClock))
+        .await
+        .expect_err("refused");
+    assert_eq!(error.code(), "wal_storage_refused");
+    assert!(!error.is_retryable());
+    let (completed, failed) = (&served.completed, &served.failed);
+    assert_eq!(completed.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(failed.load(std::sync::atomic::Ordering::SeqCst) > 0);
+}
+
+#[tokio::test]
+async fn a_trusted_store_is_reached_over_tls_at_the_bucket_s_host_and_one_named_otherwise_is_not() {
+    let pki = rdlt_testkit::tls::Pki::new("trusted");
+    let roots = || {
+        use rustls::pki_types::pem::PemObject as _;
+        vec![rustls::pki_types::CertificateDer::from_pem_file(pki.ca()).expect("the CA")]
+    };
+    for (named, reached) in [("rdlt-logs.store.test", true), ("other.test", false)] {
+        let served = serve(Some(pki.server(named, &[named])), Answer::Busy).await;
+        let endpoint = format!("https://store.test:{}", served.address.port());
+        let host = ("rdlt-logs.store.test".to_owned(), served.address);
+        let connector = Connector::trusting(roots(), vec![host]);
+        let error = opened_through(&reaching(&endpoint, false), connector).await;
+        let heard = served.heard();
+        if reached {
+            assert_eq!(error.code(), "wal_storage_unavailable", "{error:?}");
+            let host = format!("rdlt-logs.store.test:{}", served.address.port());
+            assert!(!heard.is_empty());
+            for (line, said) in &heard {
+                assert_eq!(said.as_deref(), Some(host.as_str()), "{line}");
+                assert!(
+                    !line.contains("rdlt-logs/"),
+                    "the bucket is in the host: {line}"
+                );
+            }
+        } else {
+            assert_eq!(error.code(), "wal_storage_refused", "{error:?}");
+            assert_eq!(heard, Vec::new());
+        }
+    }
 }

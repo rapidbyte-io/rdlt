@@ -46,6 +46,9 @@ pub struct S3Config {
     pub region: String,
     /// The store's address, where it is not AWS's: `https://host[:port]`, or `http://` to a
     /// loopback address given as an IP address, as a store on the same machine is reached.
+    ///
+    /// Unless `path_style`, requests go to the bucket's host beneath it, `<bucket>.host`, which
+    /// an IP address has none of.
     #[serde(default)]
     pub endpoint: Option<String>,
     /// Whether the bucket is named in the request's path, as stores other than AWS's often
@@ -130,7 +133,10 @@ impl S3Config {
         if self.region.is_empty() || self.region.len() > 64 || !self.region.chars().all(plain) {
             return Err(refused("region", "is not a region's name"));
         }
-        let endpoint = self.endpoint.as_deref().map(endpoint).transpose()?;
+        let endpoint = match self.endpoint.as_deref() {
+            Some(text) => Some(hosting(endpoint(text)?, &self.bucket, self.path_style)?),
+            None => None,
+        };
         let reference = |field, text: &str| {
             SecretReference::parse(text).map_err(|_| refused(field, "is not one secret reference"))
         };
@@ -207,6 +213,35 @@ fn endpoint(text: &str) -> Result<Endpoint, LogStoreError> {
         url: text.trim_end_matches('/').to_owned(),
         plaintext,
     })
+}
+
+/// Where requests to the bucket `bucket` at `endpoint` go: the endpoint, the bucket in each
+/// request's path where `path_style`, otherwise the bucket's host beneath the endpoint's.
+fn hosting(
+    mut endpoint: Endpoint,
+    bucket: &str,
+    path_style: bool,
+) -> Result<Endpoint, LogStoreError> {
+    if path_style {
+        return Ok(endpoint);
+    }
+    let mut url =
+        Url::parse(&endpoint.url).map_err(|_| refused("endpoint", "is not an address"))?;
+    let host = match url.host() {
+        Some(url::Host::Domain(host)) => format!("{bucket}.{host}"),
+        _ => {
+            return Err(refused(
+                "endpoint",
+                "is an IP address, which names no bucket's host: ask for path style",
+            ));
+        }
+    };
+    url.set_host(Some(&host))
+        .map_err(|_| refused("endpoint", "is not an address"))?;
+    url.as_str()
+        .trim_end_matches('/')
+        .clone_into(&mut endpoint.url);
+    Ok(endpoint)
 }
 
 #[cfg(test)]

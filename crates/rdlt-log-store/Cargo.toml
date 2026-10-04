@@ -10,6 +10,9 @@ publish = false
 
 [dependencies]
 async-trait.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+http.workspace = true
 object_store = { workspace = true, features = ["aws-base", "reqwest", "ring"] }
 rdlt-connector.workspace = true
 rdlt-engine = { workspace = true, features = ["object-store"] }
@@ -26,7 +29,6 @@ url.workspace = true
 [dev-dependencies]
 arrow-array.workspace = true
 fail = { workspace = true, features = ["failpoints"] }
-http.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-engine = { workspace = true, features = ["conformance", "failpoints", "object-store"] }
 rdlt-testkit.workspace = true

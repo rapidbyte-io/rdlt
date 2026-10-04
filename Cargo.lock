@@ -3160,7 +3160,9 @@ version = "0.0.0"
 dependencies = [
  "arrow-array",
  "async-trait",
+ "bytes",
  "fail",
+ "futures-util",
  "http",
  "object_store",
  "rdlt-connector",

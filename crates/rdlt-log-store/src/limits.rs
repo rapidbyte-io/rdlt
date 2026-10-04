@@ -14,3 +14,7 @@ pub const PART_BYTES_LEAST: u64 = 5 << 20;
 
 /// Bytes: the longest part of an upload S3 takes, 5 GiB.
 pub const PART_BYTES_MOST: u64 = 5 << 30;
+
+/// Bytes: what is read of the body of a store's refusal, to tell one that passes from one that
+/// does not.
+pub const REFUSAL_BYTES: usize = 4 << 10;

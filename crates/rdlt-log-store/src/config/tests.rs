@@ -151,10 +151,22 @@ fn every_field_a_bucket_cannot_take_is_named_and_its_value_never_shown() {
 #[test]
 fn only_an_endpoint_at_a_loopback_ip_address_is_reached_without_tls() {
     for (changes, plaintext) in [
-        (json!({ "endpoint": "http://127.0.0.1:9000" }), true),
-        (json!({ "endpoint": "http://127.8.0.1" }), true),
-        (json!({ "endpoint": "http://[::1]:9000" }), true),
-        (json!({ "endpoint": "https://10.0.0.1:9000/" }), false),
+        (
+            json!({ "endpoint": "http://127.0.0.1:9000", "path_style": true }),
+            true,
+        ),
+        (
+            json!({ "endpoint": "http://127.8.0.1", "path_style": true }),
+            true,
+        ),
+        (
+            json!({ "endpoint": "http://[::1]:9000", "path_style": true }),
+            true,
+        ),
+        (
+            json!({ "endpoint": "https://10.0.0.1:9000/", "path_style": true }),
+            false,
+        ),
         (json!({ "part_bytes": 5 << 20 }), false),
         (json!({ "part_bytes": 5_u64 << 30 }), false),
         (json!({ "bucket": "a.b-c9" }), false),
@@ -178,4 +190,25 @@ async fn a_local_configuration_opens_its_directory() {
     let pipeline = rdlt_connector::PipelineId::parse("local").expect("a valid pipeline");
     assert_eq!(store.loads(&pipeline).await.expect("lists"), []);
     assert!(store.chunk_bytes().is_none());
+}
+
+#[test]
+fn a_bucket_not_named_in_the_path_is_named_in_the_endpoint_s_host() {
+    for (changes, url) in [
+        (
+            json!({ "endpoint": "https://s3.example.com:9000" }),
+            "https://rdlt-logs.s3.example.com:9000",
+        ),
+        (
+            json!({ "endpoint": "https://nyc3.digitaloceanspaces.com/" }),
+            "https://rdlt-logs.nyc3.digitaloceanspaces.com",
+        ),
+        (
+            json!({ "endpoint": "https://s3.example.com:9000", "path_style": true }),
+            "https://s3.example.com:9000",
+        ),
+    ] {
+        let checked = parsed(&s3(&changes)).checked().expect("valid");
+        assert_eq!(checked.endpoint.expect("an endpoint").url, url, "{changes}");
+    }
 }
