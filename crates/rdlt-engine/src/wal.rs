@@ -26,9 +26,3 @@ pub(crate) use object::code as object_code;
 pub use object::{ObjectStoreOptions, ObjectStoreWal, StoreRefusal, WalObjects};
 pub(crate) use positions::Positions;
 pub use store::{Chunk, StagedChunk, WalStore};
-
-/// The code of what an object-store log refused, which `error` carries, where it carries one.
-#[cfg(not(feature = "object-store"))]
-pub(crate) fn object_code(_: &std::io::Error) -> Option<&'static str> {
-    None
-}
