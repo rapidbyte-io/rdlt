@@ -112,7 +112,7 @@ impl Dir {
         let fd = match rustix::fs::openat(&self.file, name, flags, Mode::empty()) {
             Ok(fd) => fd,
             Err(rustix::io::Errno::NOENT) => return Ok(None),
-            Err(rustix::io::Errno::NOTDIR | rustix::io::Errno::LOOP | rustix::io::Errno::MLINK) => {
+            Err(errno) if is_not_a_directory(errno) => {
                 return Err(self.refused(name, "it is not a directory"));
             }
             Err(error) => return Err(error.into()),
@@ -169,7 +169,7 @@ impl Dir {
         let file = match rustix::fs::openat(&self.file, name, flags, Mode::empty()) {
             Ok(fd) => File::from(fd),
             Err(rustix::io::Errno::NOENT) => return Ok(None),
-            Err(rustix::io::Errno::LOOP | rustix::io::Errno::MLINK) => {
+            Err(errno) if is_link(errno) => {
                 return Err(self.refused(name, "it is a link"));
             }
             Err(error) => return Err(error.into()),
@@ -306,6 +306,18 @@ pub(super) fn owned(owner: u32, mode: u32, reach: u32, path: &Path) -> io::Resul
         why,
     }
     .into())
+}
+
+/// Whether `errno`, answering an open that follows no link, says the name is a link: Linux
+/// answers `ELOOP`, FreeBSD `EMLINK`.
+pub(super) fn is_link(errno: rustix::io::Errno) -> bool {
+    matches!(errno, rustix::io::Errno::LOOP | rustix::io::Errno::MLINK)
+}
+
+/// Whether `errno`, answering a directory's open that follows no link, says the name is a link
+/// or anything else but a directory.
+pub(super) fn is_not_a_directory(errno: rustix::io::Errno) -> bool {
+    is_link(errno) || errno == rustix::io::Errno::NOTDIR
 }
 
 /// `removed`, a name gone counted as removed.
