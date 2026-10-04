@@ -18,6 +18,7 @@ rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
 rdlt-host = { path = "crates/rdlt-host", version = "0.0.0" }                               # connectors out of process
+rdlt-log-store = { path = "crates/rdlt-log-store", version = "0.0.0" }                     # where a pipeline keeps its write-ahead logs: a directory or an S3 bucket
 rdlt-testkit = { path = "crates/rdlt-testkit" }                                            # drawn data and the value model, for tests and rdlt-sim
 rdlt-wire = { path = "crates/rdlt-wire", version = "0.0.0" }                               # the wire protocol: messages, the Arrow codec and limits
 
@@ -58,6 +59,9 @@ futures-util = { version = "0.3.34", default-features = false, features = [
   "std",
 ] } # reading an object store's listings and bodies as they stream
 object_store = { version = "0.14.2", default-features = false } # write-ahead logs on S3 and compatible stores
+reqwest = { version = "0.13.5", default-features = false } # the HTTP client the S3 log store's requests go through
+rustls-platform-verifier = "0.7.0" # the system's trusted roots, for the S3 log store's TLS
+url = "2.5.8" # parsing the S3 log store's endpoint
 command-fds = { version = "0.3.3", default-features = false } # a spawned connector's socket at file descriptor 3
 rustix = { version = "1.1.5", default-features = false, features = [
   "std",

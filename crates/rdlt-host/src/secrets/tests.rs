@@ -715,3 +715,34 @@ fn the_resolvers_list_every_directory_they_read_secrets_from() {
     assert!(EnvSecrets::prefixed("RDLT_").directories().is_empty());
     assert!(vault().directories().is_empty());
 }
+
+#[test]
+fn a_text_that_is_one_reference_and_nothing_else_parses_as_it() {
+    let named = |kind, name: &str| SecretReference {
+        kind,
+        name: name.to_owned(),
+    };
+    for (text, reference) in [
+        ("${env:S3_KEY}", named(SecretKind::Env, "S3_KEY")),
+        (
+            "${file:/run/secrets/s3}",
+            named(SecretKind::File, "/run/secrets/s3"),
+        ),
+        ("${secret:s3.key}", named(SecretKind::Named, "s3.key")),
+    ] {
+        assert_eq!(SecretReference::parse(text), Ok(reference), "{text}");
+    }
+    for (text, fault) in [
+        ("AKIAEXAMPLE", ReferenceFault::NotOne),
+        ("", ReferenceFault::NotOne),
+        ("key-${env:S3_KEY}", ReferenceFault::NotOne),
+        ("${env:S3_KEY}${env:OTHER}", ReferenceFault::NotOne),
+        ("${env:S3_KEY} ", ReferenceFault::NotOne),
+        ("$${env:S3_KEY}", ReferenceFault::NotOne),
+        ("${env:S3_KEY", ReferenceFault::Unclosed),
+        ("${vault:S3_KEY}", ReferenceFault::Kind),
+        ("${env:}", ReferenceFault::Name),
+    ] {
+        assert_eq!(SecretReference::parse(text), Err(fault), "{text}");
+    }
+}

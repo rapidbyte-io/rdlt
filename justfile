@@ -5,7 +5,7 @@ nightly := "nightly-2026-09-20"
 # The crates mutation testing mutates, and the crates whose tests may catch a mutant: the
 # protocol's served end is tested from the host, where a client exists, and the reference
 # connectors from the engine and certification too
-mutated := "--package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --package rdlt-connector-reference --test-package rdlt-engine --test-package rdlt-connector --test-package rdlt-adopt --test-package rdlt-wire --test-package rdlt-host --test-package rdlt-certify --test-package rdlt-connector-reference"
+mutated := "--package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --package rdlt-connector-reference --package rdlt-log-store --test-package rdlt-engine --test-package rdlt-connector --test-package rdlt-adopt --test-package rdlt-wire --test-package rdlt-host --test-package rdlt-certify --test-package rdlt-connector-reference --test-package rdlt-log-store"
 
 # List the recipes
 default:
@@ -150,16 +150,16 @@ mutants-diff base="origin/main" jobs="4":
     # A function rather than an associative array, which the bash macOS ships lacks.
     catching() {
         case "$1" in
-            rdlt-connector) echo "rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host rdlt-certify" ;;
+            rdlt-connector) echo "rdlt-connector rdlt-connector-reference rdlt-engine rdlt-host rdlt-certify rdlt-log-store" ;;
             rdlt-adopt) echo "rdlt-adopt rdlt-host" ;;
             rdlt-connector-reference) echo "rdlt-connector-reference rdlt-engine" ;;
             rdlt-wire) echo "rdlt-wire rdlt-host" ;;
-            rdlt-host) echo "rdlt-host rdlt-certify" ;;
+            rdlt-host) echo "rdlt-host rdlt-certify rdlt-log-store" ;;
             *) echo "$1" ;;
         esac
     }
     failed=0
-    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify; do
+    for crate in rdlt-engine rdlt-connector rdlt-adopt rdlt-connector-reference rdlt-wire rdlt-host rdlt-certify rdlt-log-store; do
         grep -q "^+++ b/crates/$crate/" target/mutants.diff || continue
         tests=()
         for package in $(catching "$crate"); do tests+=(--test-package "$package"); done
