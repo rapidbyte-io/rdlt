@@ -33,14 +33,16 @@ alone (ADR 0045).
 | `prefix` | What every key begins with: segments of `A-Za-z0-9._-` joined by `/`, at most 512 bytes. Give each environment its own. |
 | `region` | The bucket's region; `us-east-1` for most other stores. |
 | `endpoint` | The store's address, where it is not AWS's: `https://host[:port]`. Plain `http://` is taken only to a loopback IP address, as `http://127.0.0.1:9000`, never to a name. |
-| `path_style` | `true` to name the bucket in the request's path, as most stores other than AWS's ask. |
-| `access_key_id`, `secret_access_key`, `session_token` | Each one secret reference, `${env:NAME}`, `${file:/absolute/path}` or `${secret:name}`, resolved by the resolver the operator gives the host, and again every five minutes. A key written in the configuration itself is refused. |
-| `part_bytes` | Bytes of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 8 MiB by default. |
+| `path_style` | `true` to name the bucket in the request's path, as most stores other than AWS's ask. Otherwise a custom endpoint's host is the bucket's, `https://<bucket>.<host>`, and an endpoint at an IP address is refused. |
+| `access_key_id`, `secret_access_key`, `session_token` | Each one secret reference, `${env:NAME}`, `${file:/absolute/path}` or `${secret:name}`, resolved by the resolver the operator gives the host, and again every five minutes; a refresh that fails keeps the keys held and tries again at the next request. A key written in the configuration itself is refused. |
+| `part_bytes` | Bytes of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 8 MiB by default. Each running load holds a part in memory, reserved from the engine's memory budget: a part larger than half the budget's share for logs is refused (`wal_staging_exceeds_budget`). |
 
 The store is reached over TLS 1.2 or 1.3, checked against the system's trusted roots: a store
 whose certificate a private authority signs needs that authority among them. No redirect is
 followed and no proxy used, and no credential is taken from the environment, a profile or the
-instance's metadata.
+instance's metadata. A request no retry can mend stops the run at once, `wal_storage_refused`:
+a certificate no trusted root signs, or a status saying the request itself is wrong, as a 400
+other than a timeout or an expired token.
 
 ### What the bucket must allow
 
@@ -49,24 +51,30 @@ The credentials need, beneath the prefix: `s3:PutObject`, `s3:GetObject`, `s3:De
 a missing object as forbidden, and the probe refuses the store (`wal_storage_denied`).
 
 Give the bucket a lifecycle rule that ends incomplete multipart uploads after a day: an upload a
-crash interrupts leaves parts that no listing shows, and that are billed, until it is ended.
+running process gives up it aborts itself, but one a crash interrupts leaves parts that no
+listing shows, and that are billed, until the rule ends it.
 
 Whoever may write beneath the prefix holds the log's authority, as whoever may write a local base
 does: grant it to the engine's credentials alone.
 
 ### The probe
 
-Opening the store probes it before any log is kept there: an object created, then created again,
-which must be refused; listed, which must show it; an upload in parts made and read back; both
-deleted, then found missing. A store that fails is refused, `wal_storage_unsupported`, and no log
-runs on it unfenced.
+Opening the store probes it before any log is kept there:
+
+- three rounds of four creates of a fresh name racing, of which exactly one must be taken;
+- a marker created, its metadata read back, and listed, which must show it;
+- an upload in parts made and read back;
+- everything it made deleted, then each found missing.
+
+A store that fails is refused, `wal_storage_unsupported`, and no log runs on it unfenced. The
+probe is a sample: a store must take only one of creates racing every time, and keep the
+metadata a create gives its object, which the probe checks while it looks and cannot prove.
 
 | Store | Observed |
 |---|---|
 | AWS S3 | Conditional create (`If-None-Match: *`) since 2024, and listings are strongly consistent. |
 | MinIO | Passes, in the tests (a build of `RELEASE.2026-08-04`). |
 | RustFS | Passes, in the tests. It refuses a range ending past a signed 64-bit length, which the log never asks for. |
-| Versity S3 gateway | Passes the probe (`versity/versitygw`, posix backend). |
 | A store without conditional create | Refused by the probe. |
 
 GCS and Azure Blob are not supported.
@@ -77,9 +85,12 @@ GCS and Azure Blob are not supported.
 |---|---|
 | A commit | A HEAD of the log's mark, a PUT of its chunk, a HEAD of the mark again; for a chunk past a part, a multipart upload's beginning, its parts and its completion as well. |
 | Each commit's horizon | A LIST of the pipeline's open logs. |
-| A chunk no longer needed | A PUT of its mark, a LIST of its log and a DELETE, two for one uploaded in parts. |
+| A chunk no longer needed | A DELETE, two for one uploaded in parts, and a GET of its head where the process never read it. |
 | Opening a log, removing it | A LIST and a PUT; a DELETE, a LIST and a DELETE an object. |
-| A replay | A LIST of each log and two HEADs past its newest chunk, and a GET for each 64 KiB a frame is read in. |
+| A replay | A LIST of each log, and a GET for each 64 KiB a frame is read in. |
+
+A log's objects are its live chunks alone, so what it costs never grows with how many it held. A
+log's directory listing more than 65,536 objects is unreadable (`wal_unreadable`).
 
 A commit's chunk is durable once its PUT is acknowledged, tens of milliseconds on S3 for a small
 chunk, longer as it grows; its source hears of the commit after that. A request is tried up to five
@@ -87,5 +98,9 @@ times, each attempt within 30 seconds and a second more a MiB it moves, with a r
 to 5 seconds between attempts; one that never succeeds fails the attempt retryably
 (`wal_storage_unavailable`).
 
-A staged chunk is held in memory up to a part, 8 MiB by default, beside the engine's memory
-budget, one a running load.
+A staged chunk is held in memory up to a part, 8 MiB by default, reserved from the engine's
+memory budget, one a running load.
+
+A source that sends more than its log holds between commits waits for a commit to free room,
+and a commit is due at once; a source that never checkpoints, so that no commit can free any,
+fails `log_bytes_exceeded`.
