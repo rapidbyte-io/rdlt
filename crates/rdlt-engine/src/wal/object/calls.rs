@@ -19,6 +19,7 @@ use object_store::{
 use super::fault::{self, Answer, ObjectFault};
 use super::{ObjectStoreOptions, WalObjects};
 use crate::env::Clock;
+use crate::limits::OBJECT_PARTS;
 
 /// Bytes in a MiB, which a request's deadline grows by.
 const MIB: u64 = 1 << 20;
@@ -77,9 +78,11 @@ impl Calls {
         }
     }
 
-    /// How long an attempt moving `bytes` may take.
+    /// How long an attempt moving `bytes` may take, no object holding more than a chunk does.
     pub(super) fn deadline(&self, bytes: u64) -> Duration {
-        let mibs = u32::try_from(bytes.div_ceil(MIB)).unwrap_or(u32::MAX);
+        let part = u64::try_from(self.options.part_bytes.get()).unwrap_or(u64::MAX);
+        let moved = bytes.min(part.saturating_mul(OBJECT_PARTS));
+        let mibs = u32::try_from(moved.div_ceil(MIB)).unwrap_or(u32::MAX);
         let options = &self.options;
         options
             .request
