@@ -121,9 +121,12 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   floating-point numbers do: a negative zero in a key column, at any depth and in any encoding,
   becomes the zero it equals before rows are identified, compacted or seen by a destination,
   the only value a key column is changed in.
-- **A declared array is taken as given only while its table is created**, or where state records
-  its table; after that a new one is a change its column's policy decides: a frozen stream
-  refuses it when planned (`schema_frozen`), one that discards drops its rows.
+- **A declared array is taken as given only while its stream's table is created**, or where
+  state records its table; after that a new one is a change its column's policy decides: a
+  frozen stream refuses it when planned (`schema_frozen`), one that discards drops its rows. A
+  declared schema creates the child table of each array it holds within depth with the stream's
+  table, as it creates the table's columns, so state records the table though no row has
+  brought an item yet; an array deeper than the stream normalizes is stored whole and has none.
 - **A commit removes the staging of the segments the load abandoned since the last one**
   (`CommitMeta::abandoned`, field 10 of the wire's commit message), which is never among those it
   publishes; a replayed commit abandons nothing, its load's staging being gone with its session.
