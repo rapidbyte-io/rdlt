@@ -1,6 +1,22 @@
 [profile.default]
 slow-timeout = { period = "30s", terminate-after = 4 }
 leak-timeout = "500ms"
+# The S3 log store's tests on servers in containers need Docker: `just containers` runs them.
+default-filter = "not (package(rdlt-log-store) & binary(containers))"
+
+# Two containers at most at once: each of these tests starts a server of its own.
+[test-groups]
+containers = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = "package(rdlt-log-store) & binary(containers)"
+test-group = "containers"
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+[[profile.ci.overrides]]
+filter = "package(rdlt-log-store) & binary(containers)"
+test-group = "containers"
+slow-timeout = { period = "120s", terminate-after = 8 }
 
 [profile.ci]
 fail-fast = false
@@ -45,7 +61,7 @@ leak-timeout = "500ms"
 fail-fast = { max-fail = 1, terminate = "immediate" }
 # The failpoint sweep and the kill matrix take minutes, and catch nothing the unit and integration
 # tests do not first: they run in the test job, never against each mutant.
-default-filter = "not (package(rdlt-engine) & binary(crashes))"
+default-filter = "not (package(rdlt-engine) & binary(crashes)) & not (package(rdlt-log-store) & binary(containers))"
 
 # The placement matrix runs on the real clock, and a scenario sleeps for seconds; the host's process
 # tests spawn connectors, each within seconds.

@@ -138,6 +138,9 @@ rusqlite = { version = "0.40.2", default-features = false, features = [
   "limits",
 ] } # the reference SQL destination, and running sqlgen's statements in its tests
 tempfile = "3.27.0" # temporary directories in tests
+testcontainers = { version = "0.28.0", default-features = false, features = [
+  "watchdog",
+] } # S3 servers in containers, for the S3 log store's tests, removed even when a test is stopped
 toml = "1.1.6" # xtask reads the tool lockfile
 walkdir = "2.5.0" # xtask walks the source tree
 

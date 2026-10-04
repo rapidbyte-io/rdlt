@@ -106,6 +106,11 @@ crashes seed="":
     cargo build --package rdlt-engine --features failpoints --examples
     RDLT_KILL_SEED="{{ seed }}" cargo nextest run --package rdlt-engine --features failpoints --test crashes
 
+# Run the S3 log store's tests on S3 servers in containers, which need Docker: its contract, its
+# probe, and loads killed as they commit; two containers at most at once
+containers *args:
+    cargo nextest run --package rdlt-log-store --all-features --ignore-default-filter -E 'binary(containers)' {{ args }}
+
 # Run the simulation on many threads and the real clock, where races the paused single thread
 # never meets can happen; its failures name their seed but do not replay exactly
 stress seeds="20":
