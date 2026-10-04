@@ -90,11 +90,15 @@ fn an_attempt_s_deadline_grows_by_the_mib_it_moves() {
     assert_eq!(calls.deadline(1), Duration::from_secs(32));
     assert_eq!(calls.deadline(1 << 20), Duration::from_secs(32));
     assert_eq!(calls.deadline((1 << 20) + 1), Duration::from_secs(34));
-    let most = Duration::from_secs(30) + Duration::from_secs(2) * u32::MAX;
+    // No object holds more than a chunk of ten thousand parts, here of a MiB each.
+    let most = Duration::from_secs(30) + Duration::from_secs(2) * 10_000;
+    assert_eq!(calls.deadline(u64::MAX), most);
+    assert_eq!(calls.deadline(10_000 << 20), most);
+    assert_eq!(calls.deadline((10_000 << 20) + 1), most);
+    assert_eq!(calls.deadline((9_999 << 20) + 1), most);
     assert_eq!(
-        calls.deadline(u64::MAX),
-        most,
-        "a length past u32::MAX MiB counts as that"
+        calls.deadline(9_999 << 20),
+        Duration::from_secs(30 + 2 * 9_999)
     );
 }
 
