@@ -181,7 +181,7 @@ impl Calls {
         let most = range.end - range.start;
         self.call(key, most, || async {
             let options = GetOptions {
-                range: Some(GetRange::Bounded(range.clone())),
+                range: Some(asked(&range)),
                 ..GetOptions::default()
             };
             match self.objects.get_opts(key, options).await {
@@ -281,6 +281,16 @@ impl Calls {
     pub(super) async fn abort(&self, key: &Path, id: &MultipartId) {
         let aborted = self.call(key, 0, || self.objects.abort_multipart(key, id));
         drop(aborted.await);
+    }
+}
+
+/// The range a read of `range` asks for: to the object's end where `range` ends past what a
+/// signed 64-bit length holds, which some S3 servers refuse to read as a number.
+fn asked(range: &Range<u64>) -> GetRange {
+    if i64::try_from(range.end).is_ok() {
+        GetRange::Bounded(range.clone())
+    } else {
+        GetRange::Offset(range.start)
     }
 }
 
