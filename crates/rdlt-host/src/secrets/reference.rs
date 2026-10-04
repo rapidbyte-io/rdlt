@@ -24,6 +24,25 @@ pub enum ReferenceFault {
     /// Its name is empty, too long, or holds a control character.
     #[error("has no usable name")]
     Name,
+    /// The text is not one reference and nothing else, where one is asked for.
+    #[error("is not one reference and nothing else")]
+    NotOne,
+}
+
+impl SecretReference {
+    /// The reference `text` is, where it is one reference and nothing else: a value only a
+    /// resolver may give, such as a credential, never written in a configuration itself.
+    ///
+    /// # Errors
+    ///
+    /// [`ReferenceFault::NotOne`] for text that holds no reference, more than one, or anything
+    /// beside it; the fault of a malformed reference otherwise.
+    pub fn parse(text: &str) -> Result<Self, ReferenceFault> {
+        match pieces(text)?.as_slice() {
+            [Piece::Reference(reference)] => Ok(reference.clone()),
+            _ => Err(ReferenceFault::NotOne),
+        }
+    }
 }
 
 /// A piece of a text value: text as it is, or a reference to resolve.

@@ -25,6 +25,9 @@ exceptions = [
   { crate = "ar_archive_writer", allow = ["Apache-2.0 WITH LLVM-exception"] },
   # Fuzzing only: libFuzzer's own license, which the fuzz targets link.
   { crate = "libfuzzer-sys", allow = ["NCSA"] },
+  # Built only for wasm32, which rdlt does not target: the roots rustls-platform-verifier carries
+  # there, Mozilla's list under its data license.
+  { crate = "webpki-root-certs", allow = ["CDLA-Permissive-2.0"] },
 ]
 
 [bans]

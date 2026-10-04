@@ -110,6 +110,7 @@ pub use commit::{
     ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentRange, SegmentSet,
     UnorderedRanges,
 };
+pub use config::parse as parse_config;
 pub use cursor::Cursor;
 pub use destination::{
     ChangeColumns, Deletion, Destination, DestinationConnector, DestinationFactory,

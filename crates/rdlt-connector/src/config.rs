@@ -12,9 +12,14 @@ use crate::error::{ConnectorError, Result};
 /// Bytes: bounds the field path a configuration error names.
 const PATH_BYTES: usize = 256;
 
-/// Deserializes a connector's configuration; errors name the offending field, say what is wrong
-/// with it and what kind of value it holds, never the value, and carry code `config_invalid`.
-pub(crate) fn parse<C: DeserializeOwned>(config: &serde_json::Value) -> Result<C> {
+/// Deserializes a configuration, a connector's or the host's; errors name the offending field,
+/// say what is wrong with it and what kind of value it holds, never the value, and carry code
+/// `config_invalid`.
+///
+/// # Errors
+///
+/// A [`ConnectorError`] of kind `Config` for a document that is not a `C`.
+pub fn parse<C: DeserializeOwned>(config: &serde_json::Value) -> Result<C> {
     serde_path_to_error::deserialize(config).map_err(|error| {
         let path = crate::text::shown(error.path(), PATH_BYTES);
         let fault = Fault::of(&error.inner().to_string());
