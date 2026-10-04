@@ -16,7 +16,7 @@ use rdlt_connector::{LoadId, PipelineId};
 use rdlt_testkit::objects::{Call, Fault, Faulty, Plan, faultless};
 
 use super::{ObjectStoreOptions, ObjectStoreWal};
-use crate::env::SystemClock;
+use crate::env::{Clock, Sleep};
 use crate::error::Error;
 use crate::wal::Chunk;
 
@@ -31,10 +31,35 @@ fn options(part: usize) -> ObjectStoreOptions {
     ObjectStoreOptions::default().with_part_bytes(part)
 }
 
-/// A log in `objects` beneath `logs`, with `options`.
+/// A clock that sleeps on tokio's clock and draws from a fixed seed, so every run of a test that
+/// races requests under faults takes the same course.
+#[derive(Debug, Default)]
+struct Seeded(parking_lot::Mutex<u64>);
+
+impl Clock for Seeded {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the tests' clock is tokio's paused one"
+    )]
+    fn sleep(&self, duration: Duration) -> Sleep {
+        Box::pin(tokio::time::sleep(duration))
+    }
+
+    fn random(&self) -> u64 {
+        // SplitMix64.
+        let mut state = self.0.lock();
+        *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut drawn = *state;
+        drawn = (drawn ^ (drawn >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        drawn = (drawn ^ (drawn >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        drawn ^ (drawn >> 31)
+    }
+}
+
+/// A log in `objects` beneath `logs`, with `options`, on a [`Seeded`] clock.
 async fn opened(objects: &Arc<Faulty<InMemory>>, options: ObjectStoreOptions) -> ObjectStoreWal {
     let objects = Arc::clone(objects);
-    ObjectStoreWal::open(objects, "logs", Arc::new(SystemClock), options)
+    ObjectStoreWal::open(objects, "logs", Arc::new(Seeded::default()), options)
         .await
         .expect("the store is probed")
 }
