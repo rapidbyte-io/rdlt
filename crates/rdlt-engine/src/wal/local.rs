@@ -55,7 +55,7 @@ impl Base {
     fn dir(&self) -> io::Result<Arc<Dir>> {
         let mut open = self.open.lock();
         if let Some(dir) = &*open {
-            dir.base_again()?;
+            dir.base_again(&self.path)?;
             return Ok(Arc::clone(dir));
         }
         let dir = Arc::new(Dir::base(&self.path)?);
