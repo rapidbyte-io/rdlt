@@ -464,3 +464,83 @@ async fn a_pipeline_s_destination_takes_logs_from_one_store_only() {
     );
     assert_eq!(published_ids("wal_stores", "events"), ids(1, 20));
 }
+
+/// Loads `rows` rows of one partition, a checkpoint every batch of twenty and a commit every
+/// `every` rows, through a log of `log_bytes`, with `engine`; the run's outcome.
+async fn checkpointing(
+    name: &str,
+    (rows, every): (u64, u64),
+    log_bytes: u64,
+    engine: impl FnOnce(
+        rdlt_engine::EngineConfigBuilder,
+        Arc<dyn WalStore>,
+    ) -> crate::support::TestEngine,
+) -> RunOutcome {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let mut events = ScriptStream::new("events", 1, rows, 20);
+    events.replayable = false;
+    let (_, source) = Script::new(vec![events]).connect(name).await;
+    let growth = GrowthLimits::default()
+        .with_log_bytes(log_bytes)
+        .expect("a valid limit");
+    let plan = pipeline(
+        &name.replace('_', "-"),
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let outcome = engine(commit_every(every).growth(growth), store)
+        .run(plan, source, memory(name).await)
+        .await;
+    if outcome.report.status == RunStatus::Succeeded {
+        assert_eq!(published_ids(name, "events"), ids(1, rows), "{name}");
+    }
+    outcome
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_source_that_checkpoints_loads_through_a_full_log_whatever_it_sends() {
+    for (rows, log_bytes) in [(400, 16 << 10), (4_000, 256 << 10), (40_000, 1 << 20)] {
+        let name = format!("wal_backpressed_{rows}");
+        let outcome = checkpointing(&name, (rows, 2_000), log_bytes, logging_engine).await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{rows}: {:?}",
+            outcome.error
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_source_that_checkpoints_loads_through_a_full_log_on_the_real_clock() {
+    const ROWS: u64 = 10_000;
+    let engine = |config, store| crate::support::pooled_logging_engine(config, 2, store);
+    let outcome = checkpointing("wal_backpressed_real", (ROWS, 20), 256 << 10, engine).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_waiting_for_room_in_the_log_brings_its_commit_at_once() {
+    // No policy makes a commit due, and a barrier would wait an hour for a partition that does
+    // not answer: only the batch waiting for room asks for the commits, and is not waited for.
+    let never = rdlt_engine::CommitPolicy::new(None, Some(u64::MAX), None).expect("a policy");
+    let engine = |config: rdlt_engine::EngineConfigBuilder, store| {
+        let config = config
+            .commit(never)
+            .barrier_wait(std::time::Duration::from_secs(3_600));
+        logging_engine(config, store)
+    };
+    let outcome = checkpointing("wal_rung", (4_000, 2_000), 16 << 10, engine).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    assert!(outcome.report.commits > 1, "{:?}", outcome.report);
+}

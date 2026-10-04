@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use rdlt_connector::Checkpointing;
 use rdlt_engine::{CommitPolicy, EngineConfig, GrowthLimits, RetryPolicy};
 
 use crate::rng::SplitMix64;
@@ -57,14 +58,35 @@ pub(super) fn config(
 /// The growth limits of an engine of the world `seed`, drawn apart from the world, so every other
 /// draw of the seed is as it was: in a quarter of worlds one to three destination writers open at
 /// once, so lanes close the writers they wrote longest ago, and the defaults elsewhere.
-pub(super) fn growth(seed: Seed) -> GrowthLimits {
+///
+/// Where `workload` keeps logs and every stream checkpoints as it reads, half its worlds' logs
+/// hold 128 KiB to 1 MiB, less than many of their loads send: batches wait for commits to free
+/// room.
+pub(super) fn growth(seed: Seed, workload: Option<&Workload>) -> GrowthLimits {
     let mut rng = SplitMix64::new(seed.value().rotate_left(29));
     let defaults = GrowthLimits::default();
-    if !rng.chance(250) {
-        return defaults;
+    let growth = if rng.chance(250) {
+        let writers = to_usize(1 + rng.below(3));
+        GrowthLimits::new(defaults.child_tables().get(), writers)
+            .expect("the drawn limits are valid")
+    } else {
+        defaults
+    };
+    let natural = |workload: &Workload| {
+        workload.features.wal
+            && workload
+                .streams
+                .iter()
+                .all(|stream| stream.checkpointing == Checkpointing::Natural)
+    };
+    let mut drawn = SplitMix64::new(seed.value().rotate_left(41));
+    if workload.is_some_and(natural) && drawn.chance(500) {
+        let bytes = (128 << 10) << drawn.below(4);
+        return growth
+            .with_log_bytes(bytes)
+            .expect("a log holds some bytes");
     }
-    let writers = to_usize(1 + rng.below(3));
-    GrowthLimits::new(defaults.child_tables().get(), writers).expect("the drawn limits are valid")
+    growth
 }
 
 /// How many partitions of `workload`'s streams never end.
@@ -78,8 +100,14 @@ pub(super) fn endless(workload: &Workload) -> usize {
 }
 
 /// How hard the source of the world `seed`, of `workload`, presses on the budget of an engine of
-/// `config`, drawn apart from the world, so every other draw of the seed is as it was.
-pub(super) fn pressed(seed: Seed, config: &EngineConfig, workload: &Workload) -> Pressure {
+/// `config`, drawn apart from the world, so every other draw of the seed is as it was; where the
+/// engine keeps a `small_log`, its cursors carry no padding.
+pub(super) fn pressed(
+    seed: Seed,
+    config: &EngineConfig,
+    workload: &Workload,
+    small_log: bool,
+) -> Pressure {
     let mut rng = SplitMix64::new(seed.value().rotate_left(17));
     let cursors = config.memory().get() / 64;
     let partitions = workload
@@ -87,7 +115,18 @@ pub(super) fn pressed(seed: Seed, config: &EngineConfig, workload: &Workload) ->
         .iter()
         .map(|stream| stream.partitions.len());
     let partitions = u64::try_from(partitions.sum::<usize>()).unwrap_or(u64::MAX);
-    Pressure::draw(&mut rng, &config.limits(), cursors, partitions)
+    let pressure = Pressure::draw(&mut rng, &config.limits(), cursors, partitions);
+    // A cursor is recorded twice over in its seal's frame, and a small log holds no more than a
+    // few seals of cursors as long as a budget allows: there cursors carry their offsets alone.
+    if small_log {
+        return Pressure { pad: 0, ..pressure };
+    }
+    pressure
+}
+
+/// Whether an engine of `config` keeps a log smaller than the default.
+pub(super) fn small_log(config: &EngineConfig) -> bool {
+    config.growth().log_bytes() < GrowthLimits::default().log_bytes()
 }
 
 fn to_usize(value: u64) -> usize {

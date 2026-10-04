@@ -91,11 +91,15 @@ pub(crate) struct Shared {
     pub(crate) held: AtomicU64,
     /// Bytes: what the log may hold on disk; a carry that would take it past is left undone.
     pub(crate) limit: AtomicU64,
+    /// Bytes: the batch frames counted in `held` that no published chunk holds yet.
+    pub(crate) unpublished: AtomicU64,
     /// The first failure, which every later batch and command is answered with.
     pub(crate) failed: parking_lot::Mutex<Option<Error>>,
     /// The oldest commit a replay of the log may repeat: one waiting for its receipt, or whose
     /// receipt no published chunk records yet; none where there is none.
     pub(crate) oldest: parking_lot::Mutex<Option<CommitSeq>>,
+    /// Rung once the log holds less, or has failed: a batch waiting for room looks again.
+    pub(crate) room: tokio::sync::Notify,
 }
 
 impl Default for Shared {
@@ -103,8 +107,10 @@ impl Default for Shared {
         Self {
             held: AtomicU64::new(0),
             limit: AtomicU64::new(u64::MAX),
+            unpublished: AtomicU64::new(0),
             failed: parking_lot::Mutex::default(),
             oldest: parking_lot::Mutex::default(),
+            room: tokio::sync::Notify::new(),
         }
     }
 }
@@ -199,6 +205,8 @@ impl Settled {
 struct Written {
     /// Bytes: what was written to it.
     len: u64,
+    /// Bytes: what its batch frames, those sent to it rather than carried, take.
+    sent: u64,
     /// Where each table's schema frame lies in it.
     schemas: BTreeMap<u32, Span>,
     /// The segments with frames in it.
@@ -333,6 +341,7 @@ impl Log {
         let mut failed = self.shared.failed.lock();
         if let (Err(error), None) = (result, &*failed) {
             *failed = Some(Error::wal_failed_before(error));
+            self.shared.room.notify_waiters();
         }
     }
 
@@ -434,6 +443,7 @@ impl Log {
         // Counted on disk once it was sent.
         let span = self.written_out(frame).await?;
         let current = self.current();
+        current.sent += span.len;
         current.segments.insert(segment);
         current.batches.push(Logged {
             segment,

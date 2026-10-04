@@ -308,6 +308,9 @@ impl Coordinator {
                         timer = self.commit_now().await?;
                     }
                 }
+                // A batch that finds the log full waits for a commit, which is then due; every
+                // progress sent before it, its seals among them, is seen first.
+                () = log_full(self.parts.wal.as_ref()) => timer = self.commit_now().await?,
             }
         }
         Ok(())
@@ -482,4 +485,12 @@ impl Coordinator {
 
 fn cancelled() -> Error {
     Error::cancelled("the attempt was cancelled")
+}
+
+/// Completes once a batch finds `log` full and waits for a commit; never where there is none.
+async fn log_full(log: Option<&LoadLog>) {
+    match log {
+        Some(log) => log.full().await,
+        None => std::future::pending().await,
+    }
 }

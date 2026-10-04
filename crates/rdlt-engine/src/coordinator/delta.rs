@@ -44,6 +44,9 @@ impl Coordinator {
         // The commit takes every seal; rows not sealed by now it passes by, until they are.
         self.due.committing();
         let seals = self.sealed.take();
+        if let Some(log) = &self.parts.wal {
+            log.took(seals.len());
+        }
         self.sealing.clear();
         if self.parts.wal.is_some() {
             collected.sealed = self.logged(&seals, begun);
