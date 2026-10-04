@@ -2413,6 +2413,8 @@ dependencies = [
  "arrow-cast",
  "arrow-schema",
  "bytes",
+ "futures-util",
+ "object_store",
  "parking_lot",
  "rdlt-connector",
  "rdlt-engine",

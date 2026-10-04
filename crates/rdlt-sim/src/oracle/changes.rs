@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rdlt_connector::{PartitionState, PipelineId, ReadMode, StateEntry, StreamName};
-use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WalStore, WriteMode};
+use rdlt_engine::{DeleteMode, Engine, PipelinePlan, StreamPlan, WriteMode};
 use rdlt_testkit::canon::Canon;
 
 use super::config::{config, growth};
@@ -51,7 +51,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     );
     let features = world.workload.features;
     env.perturb(features.perturb);
-    env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
+    world.keep_logs(&env, seed).await;
     let engine = Engine::new(config(&mut rng, false, 0, growth(seed)), env);
     let plan = plan(&world.changes.streams).with_wal(features.wal);
     for round in 0..ROUNDS {
@@ -159,7 +159,7 @@ async fn converge(
                 );
             }
         }
-        if executed.iter().all(|executed| executed.succeeded) && !world.wal.holds_logs() {
+        if executed.iter().all(|executed| executed.succeeded) && !world.holds_logs().await {
             return;
         }
         assert!(runs < 32, "seed {seed}: round {round} did not converge");

@@ -14,9 +14,11 @@ arrow-buffer.workspace = true
 arrow-cast.workspace = true
 arrow-schema.workspace = true
 bytes.workspace = true
+futures-util.workspace = true
+object_store.workspace = true
 parking_lot.workspace = true
 rdlt-connector = { workspace = true, features = ["serve"] }
-rdlt-engine.workspace = true
+rdlt-engine = { workspace = true, features = ["object-store"] }
 rdlt-host.workspace = true
 rdlt-testkit.workspace = true
 rdlt-wire = { workspace = true, features = ["tls"] }

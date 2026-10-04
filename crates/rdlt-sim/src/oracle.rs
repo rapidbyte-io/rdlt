@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{Engine, PipelinePlan, Report, StreamPlan, Until, WalStore};
+use rdlt_engine::{Engine, PipelinePlan, Report, StreamPlan, Until};
 
 use crate::destination::{committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
@@ -74,7 +74,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     let name = format!("oracle-{seed}");
     let world = World::register(&name, &mut rng);
     env.perturb(world.workload.features.perturb);
-    env.keep_logs(Arc::clone(&world.wal) as Arc<dyn WalStore>);
+    world.keep_logs(&env, seed).await;
     let streaming = world.workload.features.streaming;
     let config = config(&mut rng, streaming, endless(&world.workload), growth(seed));
     let (limits, budget) = (config.limits(), config.memory().get());
@@ -164,7 +164,7 @@ impl Simulation {
         }
         while succeeded.contains(&false)
             || reads_in_progress(&self.world)
-            || self.world.wal.holds_logs()
+            || self.world.holds_logs().await
         {
             let faulty = runs < FAULTY_RUNS;
             self.world.set_faulty(faulty && features.faults);
