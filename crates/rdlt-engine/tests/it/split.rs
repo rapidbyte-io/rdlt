@@ -353,3 +353,53 @@ async fn json_null_is_a_null_of_any_column() {
         ]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_row_dropped_for_its_json_and_one_for_a_value_no_column_holds_each_go_alone() {
+    use arrow_array::Date64Array;
+    const DAY: i64 = 86_400_000;
+    let json = Field::new("amount", DataType::Utf8, true)
+        .with_metadata([("ARROW:extension:name".to_owned(), "arrow.json".to_owned())].into());
+    let fields = |amount: Field| {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            amount,
+            Field::new("d", DataType::Date64, true),
+        ]))
+    };
+    let first = RecordBatch::try_new(
+        fields(Field::new("amount", DataType::Int64, true)),
+        vec![
+            Arc::new(Int64Array::from(vec![0])),
+            Arc::new(Int64Array::from(vec![7])),
+            Arc::new(Date64Array::from(vec![DAY])),
+        ],
+    )
+    .expect("a batch");
+    // Row 2's amount is no integer, and row 3's date no date holds.
+    let second = RecordBatch::try_new(
+        fields(json),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["8", "\"x\"", "9", "10"])),
+            Arc::new(Date64Array::from(vec![DAY, DAY, i64::MAX, DAY])),
+        ],
+    )
+    .expect("a batch");
+    let settings = SchemaSettings::default().policy(SchemaPolicy::DiscardRow);
+    let store = "split_beside_unheld";
+    let outcome = load(store, settings, Sent::Batch(first), Sent::Batch(second)).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let mut ids: Vec<i64> = published_json(store, "events")
+        .iter()
+        .map(|row| row["id"].as_i64().expect("every row has an id"))
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, [0, 1, 4]);
+    assert_eq!(outcome.report.streams["events"].discarded_rows, 2);
+}
