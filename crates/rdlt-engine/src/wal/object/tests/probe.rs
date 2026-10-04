@@ -118,3 +118,33 @@ async fn a_store_that_does_what_a_log_needs_is_left_as_it_was() {
     .expect("the probe passes");
     assert_eq!(keys(&objects).await, Vec::<String>::new());
 }
+
+#[tokio::test]
+async fn a_store_that_keeps_no_metadata_is_refused() {
+    let (code, retryable, left) = refused(always(Fault::Bare, creates), options(1 << 20)).await;
+    assert_eq!(code.as_deref(), Some("wal_storage_unsupported"));
+    assert!(!retryable);
+    assert_eq!(left, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_store_that_takes_two_of_creates_racing_is_refused() {
+    // The third create of each round takes the name over the first, as a store checking before
+    // it writes may let it.
+    let mut seen = 0_u32;
+    let plan: Plan = Box::new(move |call| {
+        if !creates(call) {
+            return Fault::None;
+        }
+        seen += 1;
+        if seen % 4 == 3 {
+            Fault::Overwrite
+        } else {
+            Fault::None
+        }
+    });
+    let (code, retryable, left) = refused(plan, options(1 << 20)).await;
+    assert_eq!(code.as_deref(), Some("wal_storage_unsupported"));
+    assert!(!retryable);
+    assert_eq!(left, Vec::<String>::new());
+}

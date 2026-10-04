@@ -9,17 +9,39 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
-use futures_util::{StreamExt as _, TryStreamExt as _};
+use futures_util::StreamExt as _;
 use object_store::multipart::PartId;
 use object_store::path::Path;
 use object_store::{
-    GetOptions, GetRange, MultipartId, ObjectMeta, ObjectStoreExt as _, PutMode, PutPayload,
+    Attribute, Attributes, GetOptions, GetRange, MultipartId, ObjectMeta, ObjectStoreExt as _,
+    PutMode, PutOptions, PutPayload,
 };
 
-use super::fault::{self, Answer, ObjectFault};
+use super::fault::{self, Answer, Ask, ObjectFault};
 use super::{ObjectStoreOptions, WalObjects};
 use crate::env::Clock;
-use crate::limits::OBJECT_PARTS;
+use crate::limits::{OBJECT_LISTED, OBJECT_PARTS};
+
+/// How a request's tries go: each within `deadline`, read as `ask`, and whether one ended with
+/// its outcome unknown.
+pub(super) struct Tries {
+    deadline: Duration,
+    ask: Ask,
+    unsure: bool,
+}
+
+impl Tries {
+    fn new(deadline: Duration, ask: Ask) -> Self {
+        Self {
+            deadline,
+            ask,
+            unsure: false,
+        }
+    }
+}
+
+/// Objects S3 answers a page of a listing with at most.
+const LISTED_PAGE: usize = 1_000;
 
 /// Bytes in a MiB, which a request's deadline grows by.
 const MIB: u64 = 1 << 20;
@@ -39,13 +61,23 @@ impl Calls {
     ///
     /// # Errors
     ///
-    /// The store's answer where it is final: [`io::ErrorKind::NotFound`],
-    /// [`io::ErrorKind::AlreadyExists`], or an [`ObjectFault`]; [`ObjectFault::Unavailable`]
-    /// once every attempt failed.
-    pub(super) async fn call<T, F, Fut>(
+    /// The store's answer where it is final: [`io::ErrorKind::NotFound`], or an
+    /// [`ObjectFault`]; [`ObjectFault::Unavailable`] once every attempt failed.
+    pub(super) async fn call<T, F, Fut>(&self, key: &Path, bytes: u64, attempt: F) -> io::Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = object_store::Result<T>>,
+    {
+        let mut tries = Tries::new(self.deadline(bytes), Ask::Other);
+        self.tried(key, &mut tries, attempt).await
+    }
+
+    /// What `attempt` answers at `key`, tried as `tries` say; `tries` notes whether an attempt
+    /// ended with its outcome unknown.
+    pub(super) async fn tried<T, F, Fut>(
         &self,
         key: &Path,
-        bytes: u64,
+        tries: &mut Tries,
         mut attempt: F,
     ) -> io::Result<T>
     where
@@ -54,21 +86,21 @@ impl Calls {
     {
         let mut failed = 0_u32;
         loop {
-            let deadline = self.deadline(bytes);
             let answered = tokio::select! {
                 biased;
                 // An answer ready as the deadline passes is taken.
                 answered = attempt() => Some(answered),
-                () = self.clock.sleep(deadline) => None,
+                () = self.clock.sleep(tries.deadline) => None,
             };
             let last = match answered {
                 Some(Ok(value)) => return Ok(value),
-                Some(Err(error)) => match fault::answer(key.as_ref(), error) {
+                Some(Err(error)) => match fault::answer(key.as_ref(), error, tries.ask) {
                     Answer::Final(error) => return Err(error),
                     Answer::Transient(error) => Some(error),
                 },
                 None => None,
             };
+            tries.unsure = true;
             failed += 1;
             if failed >= self.options.attempts.get() {
                 let key = key.to_string();
@@ -104,12 +136,12 @@ impl Calls {
         Duration::from_nanos(self.clock.random() % nanos.saturating_add(1))
     }
 
-    /// Creates `key` holding `payload` where no object of the name exists.
+    /// Creates `key` holding `payload` where no object of the name exists, marked with a token
+    /// of its own.
     ///
-    /// A name found taken is read back: an object holding `payload` is this create's own, made by
-    /// an attempt whose answer was lost, or by another that wrote the same bytes; one holding
-    /// anything else is another's. A name answered taken and found empty, as a store answers two
-    /// creates racing, is created again.
+    /// A name answered taken is another's, unless an attempt before ended with its outcome
+    /// unknown: then the object's token is read, and one bearing this create's is its own, made
+    /// by that attempt; a name found empty, as a store answers creates racing, is created again.
     ///
     /// # Errors
     ///
@@ -117,21 +149,27 @@ impl Calls {
     /// [`Calls::call`].
     pub(super) async fn create(&self, key: &Path, payload: PutPayload) -> io::Result<()> {
         let bytes = u64::try_from(payload.content_length()).unwrap_or(u64::MAX);
+        let token = format!("{:016x}{:016x}", self.clock.random(), self.clock.random());
+        let mut tries = Tries::new(self.deadline(bytes), Ask::Create);
         let mut raced = 0_u32;
         loop {
             let created = self
-                .call(key, bytes, || {
-                    let mode = PutMode::Create.into();
-                    self.objects.put_opts(key, payload.clone(), mode)
+                .tried(key, &mut tries, || {
+                    let options = PutOptions {
+                        mode: PutMode::Create,
+                        attributes: Attributes::from_iter([(token_name(), token.clone())]),
+                        ..PutOptions::default()
+                    };
+                    self.objects.put_opts(key, payload.clone(), options)
                 })
                 .await;
-            let taken = match created {
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => error,
+            let refusal = match created {
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists && tries.unsure => error,
                 created => return created.map(drop),
             };
-            match self.holds(key, &payload).await {
-                Ok(true) => return Ok(()),
-                Ok(false) => return Err(taken),
+            match self.token(key).await {
+                Ok(held) if held.as_deref() == Some(token.as_str()) => return Ok(()),
+                Ok(_) => return Err(refusal),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
@@ -144,34 +182,19 @@ impl Calls {
         }
     }
 
-    /// Puts `payload` at `key`, replacing what is there: for a mark whose every put is alike.
-    pub(super) async fn put(&self, key: &Path, payload: PutPayload) -> io::Result<()> {
-        let bytes = u64::try_from(payload.content_length()).unwrap_or(u64::MAX);
-        self.call(key, bytes, || self.objects.put(key, payload.clone()))
-            .await
-            .map(drop)
-    }
-
-    /// Whether `key` holds `payload`, read no further than the first byte that differs.
-    async fn holds(&self, key: &Path, payload: &PutPayload) -> io::Result<bool> {
-        let bytes = u64::try_from(payload.content_length()).unwrap_or(u64::MAX);
-        self.call(key, bytes, || async {
-            let got = self.objects.get_opts(key, GetOptions::default()).await?;
-            if got.meta.size != bytes {
-                return Ok(false);
-            }
-            let mut stream = got.into_stream();
-            let mut expected = payload.iter().flat_map(|part| part.iter().copied());
-            while let Some(read) = stream.next().await {
-                for byte in read? {
-                    if expected.next() != Some(byte) {
-                        return Ok(false);
-                    }
-                }
-            }
-            Ok(expected.next().is_none())
-        })
-        .await
+    /// The token the create that made `key` marked it with; none where it bears none.
+    pub(super) async fn token(&self, key: &Path) -> io::Result<Option<String>> {
+        let options = || GetOptions {
+            head: true,
+            ..GetOptions::default()
+        };
+        let got = self
+            .call(key, 0, || self.objects.get_opts(key, options()))
+            .await?;
+        Ok(got
+            .attributes
+            .get(&token_name())
+            .map(|value| value.to_string()))
     }
 
     /// The bytes of `key` in `range`, fewer where the object ends first: none where `range`
@@ -217,17 +240,50 @@ impl Calls {
         }
     }
 
-    /// Every object beneath `dir`.
+    /// Every object beneath `dir`, at most [`OBJECT_LISTED`], each page within a request's
+    /// deadline, the listing within as many as its pages may be.
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectFault::Crowded`] beyond [`OBJECT_LISTED`], and as [`Calls::call`].
     pub(super) async fn list(&self, dir: &Path) -> io::Result<Vec<ObjectMeta>> {
-        self.call(dir, 0, || self.objects.list(Some(dir)).try_collect())
-            .await
+        let page = self.deadline(0);
+        let pages = u32::try_from(OBJECT_LISTED / LISTED_PAGE + 1).unwrap_or(u32::MAX);
+        let mut tries = Tries::new(page.saturating_mul(pages), Ask::Other);
+        self.tried(dir, &mut tries, || async {
+            let mut stream = self.objects.list(Some(dir));
+            let mut listed = Vec::new();
+            loop {
+                let next = tokio::select! {
+                    biased;
+                    // A page ready as its deadline passes is taken.
+                    next = stream.next() => next,
+                    () = self.clock.sleep(page) => return Err(late(dir)),
+                };
+                let Some(meta) = next else {
+                    return Ok(Ok(listed));
+                };
+                if listed.len() >= OBJECT_LISTED {
+                    return Ok(Err(crowded(dir)));
+                }
+                listed.push(meta?);
+            }
+        })
+        .await?
     }
 
-    /// The directories directly beneath `dir`.
+    /// The directories directly beneath `dir`, at most [`OBJECT_LISTED`].
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectFault::Crowded`] beyond [`OBJECT_LISTED`], and as [`Calls::call`].
     pub(super) async fn dirs(&self, dir: &Path) -> io::Result<Vec<Path>> {
         let listed = self
             .call(dir, 0, || self.objects.list_with_delimiter(Some(dir)))
             .await?;
+        if listed.common_prefixes.len() > OBJECT_LISTED {
+            return Err(crowded(dir));
+        }
         Ok(listed.common_prefixes)
     }
 
@@ -303,6 +359,28 @@ fn asked(range: &Range<u64>) -> GetRange {
     } else {
         GetRange::Offset(range.start)
     }
+}
+
+/// The metadata naming the token of the create that made an object.
+fn token_name() -> Attribute {
+    Attribute::Metadata("rdlt-token".into())
+}
+
+/// The failure of a page of a listing of `dir` that did not come within its deadline.
+fn late(dir: &Path) -> object_store::Error {
+    object_store::Error::Generic {
+        store: "log",
+        source: format!("a page of the listing of {dir} did not come within its deadline").into(),
+    }
+}
+
+/// The refusal of a listing of `dir` past [`OBJECT_LISTED`].
+fn crowded(dir: &Path) -> io::Error {
+    ObjectFault::Crowded {
+        dir: dir.to_string(),
+        most: OBJECT_LISTED,
+    }
+    .into()
 }
 
 /// The error for an object found missing.

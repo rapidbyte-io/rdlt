@@ -166,15 +166,9 @@ async fn removing_a_chunk_in_parts_deletes_its_head_and_its_body() {
             .expect("publishes");
     }
     wal.remove(&orders, chunk(1, 0)).await.expect("removes");
-    // Only its mark is left, so its number stays known.
     let left = keys(&objects).await;
-    let named = |key: &String| parse_name(key.rsplit('/').next().unwrap_or_default());
-    let of_zero: Vec<_> = left
-        .iter()
-        .filter_map(named)
-        .filter(|name| name.number() == 0)
-        .collect();
-    assert_eq!(of_zero, [Name::Gone(0)], "{left:?}");
+    let of_zero = left.iter().filter(|key| key.contains("/00000000."));
+    assert_eq!(of_zero.count(), 0, "{left:?}");
     assert_eq!(
         wal.chunks(&orders, chunk(1, 0).load).await.expect("lists"),
         [(1, 17)]

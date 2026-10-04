@@ -195,9 +195,10 @@ async fn a_put_whose_answer_was_lost_is_known_as_its_own() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_create_answered_as_raced_by_one_that_did_not_land_is_made_again() {
+async fn a_create_answered_taken_at_once_is_another_s_and_after_an_unknown_attempt_is_read_back() {
     let objects = objects(faultless());
     let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("taken");
     let mut raced = true;
     objects.plan(Box::new(move |call| {
         if call.op == (Op::Put { create: true }) && std::mem::take(&mut raced) {
@@ -206,19 +207,33 @@ async fn a_create_answered_as_raced_by_one_that_did_not_land_is_made_again() {
             Fault::None
         }
     }));
-    let orders = pipeline("raced");
-    wal.open_log(&orders, chunk(1, 0).load)
+    let refused = wal
+        .open_log(&orders, chunk(1, 0).load)
         .await
-        .expect("opens");
-    assert_eq!(wal.loads(&orders).await.expect("lists"), [chunk(1, 0).load]);
+        .expect_err("taken");
+    assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists);
+    // An attempt that fails first leaves its outcome unknown: a name then answered taken is read
+    // back, and found empty, is created again.
+    let mut answers = vec![Fault::Fail, Fault::Raced].into_iter();
+    objects.plan(Box::new(move |call| match call.op {
+        Op::Put { create: true } => answers.next().unwrap_or(Fault::None),
+        _ => Fault::None,
+    }));
+    wal.open_log(&orders, chunk(2, 0).load)
+        .await
+        .expect("made again");
+    assert_eq!(wal.loads(&orders).await.expect("lists"), [chunk(2, 0).load]);
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_create_raced_on_every_attempt_is_unavailable() {
+async fn a_create_raced_on_every_attempt_after_an_unknown_one_is_unavailable() {
     let objects = objects(faultless());
     let wal = opened(&objects, tries(3, Duration::from_secs(1))).await;
-    objects.plan(always(Fault::Raced, |call| {
-        call.op == Op::Put { create: true }
+    let mut first = true;
+    objects.plan(Box::new(move |call| match call.op {
+        Op::Put { create: true } if std::mem::take(&mut first) => Fault::Fail,
+        Op::Put { create: true } => Fault::Raced,
+        _ => Fault::None,
     }));
     let refused = wal
         .open_log(&pipeline("raced"), chunk(1, 0).load)
@@ -335,4 +350,80 @@ async fn a_read_to_the_end_of_a_chunk_asks_for_the_rest_of_it_however_long_it_is
             GetRange::Offset(1),
         ]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_listing_whose_page_never_comes_is_given_up_at_a_page_s_deadline() {
+    let objects = objects(faultless());
+    let deadline = Duration::from_secs(10);
+    let wal = opened(
+        &objects,
+        tries(2, deadline).with_backoff(Duration::ZERO, Duration::ZERO),
+    )
+    .await;
+    objects.plan(always(Fault::Hang, |call| call.op == Op::List));
+    let env = crate::env::SystemEnv::new(
+        crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).expect("a pool"),
+    );
+    let start = crate::env::Env::instant(&env);
+    let refused = wal
+        .chunks(&pipeline("paged"), chunk(1, 0).load)
+        .await
+        .expect_err("never listed");
+    let elapsed = crate::env::Env::instant(&env) - start;
+    assert_eq!(
+        elapsed,
+        deadline * 2,
+        "two attempts, each a page's deadline"
+    );
+    assert_eq!(
+        judged(refused),
+        (Some("wal_storage_unavailable".to_owned()), true)
+    );
+}
+
+#[tokio::test]
+async fn a_log_s_directory_holding_more_than_a_listing_holds_is_unreadable() {
+    use object_store::{ObjectStoreExt as _, PutPayload};
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("crowded");
+    let load = chunk(1, 0).load;
+    for number in 0..=crate::limits::OBJECT_LISTED {
+        let key = format!("logs/p.crowded/logs/{load}/{number:08}.wal").into();
+        objects
+            .inner()
+            .put(&key, PutPayload::from_static(b"x"))
+            .await
+            .expect("puts");
+    }
+    let refused = wal.chunks(&orders, load).await.expect_err("crowded");
+    assert_eq!(judged(refused), (Some("wal_unreadable".to_owned()), false));
+    let key = format!("logs/p.crowded/logs/{load}/00000000.wal").into();
+    objects.inner().delete(&key).await.expect("deletes");
+    assert_eq!(
+        wal.chunks(&orders, load).await.expect("lists").len(),
+        crate::limits::OBJECT_LISTED
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_create_that_lands_after_its_attempt_gave_up_is_known_as_its_own() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, tries(3, Duration::from_secs(1))).await;
+    let orders = pipeline("late");
+    let mut late = true;
+    // The first create lands half a second after it was made, while its attempt waits out its
+    // deadline of a second: the next attempt finds the name taken, by its own.
+    objects.plan(Box::new(move |call| {
+        if call.op == (Op::Put { create: true }) && std::mem::take(&mut late) {
+            Fault::Late(Duration::from_millis(500))
+        } else {
+            Fault::None
+        }
+    }));
+    wal.open_log(&orders, chunk(1, 0).load)
+        .await
+        .expect("its own mark");
+    assert_eq!(wal.loads(&orders).await.expect("lists"), [chunk(1, 0).load]);
 }

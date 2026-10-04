@@ -138,38 +138,12 @@ impl Shared {
         pipeline: &PipelineId,
         load: LoadId,
     ) -> io::Result<Vec<(u64, u64)>> {
-        let (mut heads, mut gone) = (BTreeMap::new(), BTreeSet::new());
-        let mut highest = None;
+        let mut heads = BTreeMap::new();
         for (name, meta) in self.listed(pipeline, load).await? {
-            match name {
-                Name::Head(number) => drop(heads.insert(number, meta.size)),
-                Name::Gone(number) => drop(gone.insert(number)),
-                Name::Body(..) => continue,
+            if let Name::Head(number) = name {
+                heads.insert(number, meta.size);
             }
-            highest = highest.max(Some(name.number()));
         }
-        // A listing may miss what was written last: each number after the highest known, a
-        // chunk's or a deleted chunk's mark, is asked for until neither is there.
-        loop {
-            let at = Chunk {
-                load,
-                number: highest.map_or(0, |highest: u64| highest + 1),
-            };
-            if let Some(meta) = self.calls.head(&self.keys.head(pipeline, at)).await? {
-                heads.insert(at.number, meta.size);
-            } else if self
-                .calls
-                .head(&self.keys.gone(pipeline, at))
-                .await?
-                .is_some()
-            {
-                gone.insert(at.number);
-            } else {
-                break;
-            }
-            highest = Some(at.number);
-        }
-        heads.retain(|number, _| !gone.contains(number));
         let mut chunks = Vec::with_capacity(heads.len());
         for (number, size) in heads {
             let chunk = Chunk { load, number };
@@ -224,18 +198,21 @@ impl Shared {
     }
 
     pub(super) async fn remove(&self, pipeline: &PipelineId, chunk: Chunk) -> io::Result<()> {
-        // Its mark first, so its number stays known to a listing that misses what came after.
-        let gone = self.keys.gone(pipeline, chunk);
-        self.calls.put(&gone, PutPayload::new()).await?;
-        let listed = self.listed(pipeline, chunk.load).await?;
+        // Its head names its body, so a removal lists nothing: its cost is the chunk's alone.
+        let kind = match self.heads.kind(pipeline, chunk) {
+            Some(kind) => Some(kind),
+            None => match self.classify(pipeline, chunk).await {
+                Ok(kind) => Some(kind),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error),
+            },
+        };
         self.heads.forget(pipeline, chunk);
-        // The head goes next: a chunk is gone once its head is, whatever of its body is left.
-        let head = self.keys.head(pipeline, chunk);
-        self.calls.delete(&head).await?;
-        for (name, meta) in listed {
-            if matches!(name, Name::Body(number, _) if number == chunk.number) {
-                self.calls.delete(&meta.location).await?;
-            }
+        // The head goes first: a chunk is gone once its head is, whatever of its body is left.
+        self.calls.delete(&self.keys.head(pipeline, chunk)).await?;
+        if let Some(Kind::Parts(reference)) = kind {
+            let body = self.keys.body(pipeline, chunk, reference.token);
+            self.calls.delete(&body).await?;
         }
         Ok(())
     }

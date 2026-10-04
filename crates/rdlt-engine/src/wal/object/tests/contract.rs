@@ -22,13 +22,8 @@ fn deletes(call: &Call) -> bool {
 
 #[tokio::test(start_paused = true)]
 async fn the_contract_holds_under_every_fault_a_retry_meets() {
-    let faults = [
-        Fault::Fail,
-        Fault::Slow(3),
-        Fault::Hang,
-        Fault::Raced,
-        Fault::Answerless,
-    ];
+    let faults = [Fault::Fail, Fault::Slow(3), Fault::Hang, Fault::Answerless];
+    // A name answered taken at once is another's, which the contract's own races test.
     for part in [1 << 20, 4] {
         for fault in faults {
             let objects = objects(faultless());
