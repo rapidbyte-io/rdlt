@@ -6,6 +6,8 @@ use rdlt_connector::{
 };
 
 use super::checked;
+use crate::wal::frame::{BegunPhase, Seal};
+use crate::wal::scan::Logged;
 
 /// Checks as replay does, of a log kept in store [`store`].
 fn checked_in(
@@ -19,8 +21,6 @@ fn checked_in(
 fn store() -> LoadId {
     LoadId::from_parts(UNIX_EPOCH, 40)
 }
-use crate::wal::frame::{BegunPhase, Seal};
-use crate::wal::scan::Logged;
 
 fn pipeline() -> rdlt_connector::PipelineId {
     rdlt_connector::PipelineId::parse("orders").expect("a valid pipeline")
