@@ -37,6 +37,10 @@ pub(super) struct Flaws {
     pub(super) drop_hash: bool,
     /// Begins a version when its change says, though its key held a later instant.
     pub(super) trust_times: bool,
+    /// Begins a version no earlier than its key's versions began, whenever they ended.
+    pub(super) clamp_by_starts: bool,
+    /// Begins a version no earlier than its key's versions ended, whenever they began.
+    pub(super) clamp_by_ends: bool,
 }
 
 /// One history table's merge: its key and history columns, and the flaws it has.
@@ -212,10 +216,14 @@ impl Versioning<'_> {
         if self.flaws.trust_times {
             return says.1;
         }
+        let (starts, ends) = (!self.flaws.clamp_by_ends, !self.flaws.clamp_by_starts);
         let held = stored
             .iter()
             .filter(|version| self.key_of(version) == key)
-            .flat_map(|version| [Self::instant(version, from), Self::instant(version, to)])
+            .flat_map(|version| {
+                let start = Self::instant(version, from).filter(|_| starts);
+                [start, Self::instant(version, to).filter(|_| ends)]
+            })
             .flatten();
         held.fold(says, |latest, instant| {
             if instant.0 > latest.0 {
