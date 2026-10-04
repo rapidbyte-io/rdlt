@@ -31,6 +31,8 @@ mod lowering;
 mod merge;
 mod normalize;
 mod normalized;
+#[cfg(feature = "object-store")]
+mod objects;
 mod owned;
 mod phases;
 mod placement;

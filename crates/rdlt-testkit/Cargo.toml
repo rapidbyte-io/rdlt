@@ -13,12 +13,17 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
 arrow-schema.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+object_store.workspace = true
+parking_lot.workspace = true
 proptest.workspace = true
 rcgen.workspace = true
 rdlt-connector.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true

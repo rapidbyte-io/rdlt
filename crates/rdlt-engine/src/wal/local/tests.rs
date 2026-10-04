@@ -8,7 +8,7 @@ use rdlt_connector::{LoadId, PipelineId};
 
 use super::dir::{Refusal, SYNCED, owned};
 use super::{LocalWal, names};
-use crate::wal::store::conformance;
+use crate::conformance;
 use crate::wal::{Chunk, WalStore};
 
 fn pipeline(name: &str) -> PipelineId {

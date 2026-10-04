@@ -129,7 +129,9 @@ impl Error {
                 crate::wal::Refusal::NotPrivate { .. } => WAL_NOT_PRIVATE,
                 crate::wal::Refusal::Stray { .. } => WAL_STRAY,
             });
-        let code = refused.or(full.then_some(WAL_STORAGE_FULL));
+        let code = refused
+            .or_else(|| crate::wal::object_code(&error))
+            .or(full.then_some(WAL_STORAGE_FULL));
         let mut wal = Self::wal(format!("the write-ahead log failed: {error}"));
         wal.retryable = transient;
         wal.code = code.map(Arc::from);
