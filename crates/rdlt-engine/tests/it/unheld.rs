@@ -290,3 +290,23 @@ async fn a_value_under_a_null_row_is_no_value_and_refuses_nothing() {
         loaded(&outcome, 3, (0, 0));
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_change_time_refused_on_either_count_is_discarded() {
+    // Row 2's time no date holds; row 3 holds no time at all.
+    let at: ArrayRef = Arc::new(Date64Array::from(vec![
+        Some(10 * DAY),
+        Some(i64::MAX),
+        None,
+    ]));
+    let rows = batch(vec![
+        ("id", ints(&[1, 2, 3])),
+        ("v", text(&["a", "b", "c"])),
+        ("at", at),
+    ]);
+    let events = BatchStream::new("events", vec![rows])
+        .primary_key(&["id"])
+        .change_time("at");
+    let plan = following("at", SchemaPolicy::DiscardValue).write(WriteMode::History);
+    loaded(&ran("either_change_time", plan, events).await, 3, (0, 2));
+}
