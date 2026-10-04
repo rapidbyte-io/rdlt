@@ -72,10 +72,11 @@ impl Staged {
             .await
             .map_err(|denied| match denied {
                 Denied::Exhausted(exhausted) => Error::memory(exhausted),
-                Denied::TooLarge(large) => Error::wal(format!(
-                    "a logged batch takes more than the memory budget lets a replay hold: {large}"
-                ))
-                .with_code(REPLAY_EXCEEDS_BUDGET),
+                Denied::TooLarge(large) => Error::wal(
+                    "a logged batch takes more than the memory budget lets a replay hold",
+                )
+                .with_code(REPLAY_EXCEEDS_BUDGET)
+                .with_source(large),
             })
     }
 

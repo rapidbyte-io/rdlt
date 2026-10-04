@@ -203,6 +203,12 @@ async fn a_logged_batch_beyond_what_a_request_may_take_is_refused() {
         .await
         .expect_err("beyond a request");
     assert_eq!(error.code(), Some("replay_exceeds_budget"));
+    // What the budget refused is kept as the cause, not only told.
+    let cause = std::error::Error::source(&error).expect("a cause");
+    assert!(
+        cause.downcast_ref::<crate::budget::TooLarge>().is_some(),
+        "{cause}"
+    );
     drop(
         staged
             .reserve((1 << 20) / 4)
