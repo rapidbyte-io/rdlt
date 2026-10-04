@@ -176,3 +176,17 @@ fn a_name_is_lengthened_no_further_than_identifiers_go() {
     every.reserved.pop_last();
     assert_eq!(names(&every).unwrap()[3].len(), 32);
 }
+
+#[test]
+fn a_pair_is_written_only_where_neither_name_is_reserved() {
+    let mut reserving = rules(IdentifierCase::Preserve, IdentifierChars::Any);
+    let pairs = apart(&reserving, 40);
+    let (one, other) = pairs[0].clone();
+    reserving.reserved = [one.clone()].into();
+    let names = names(&reserving).unwrap();
+    assert!(
+        !names.contains(&one) && !names.contains(&other),
+        "{names:?}"
+    );
+    assert!(names.contains(&pairs[1].0) && names.contains(&pairs[1].1));
+}
