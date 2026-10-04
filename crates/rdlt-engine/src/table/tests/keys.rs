@@ -267,3 +267,40 @@ fn a_batch_rebuilt_around_its_keys_keeps_its_rows_with_no_column() {
     let rebuilt = crate::table::with_columns(&rows, Vec::new()).unwrap();
     assert_eq!(rebuilt.num_rows(), 3);
 }
+
+#[test]
+fn a_key_holding_nan_within_a_list_is_refused_where_a_row_names_it() {
+    let item = Arc::new(arrow_schema::Field::new("item", DataType::Float64, true));
+    let items: ArrayRef = Arc::new(Float64Array::from(vec![1.0, f64::NAN, 2.0]));
+    let list = |offsets: Vec<i32>, nulls: Option<Vec<bool>>| -> ArrayRef {
+        Arc::new(arrow_array::ListArray::new(
+            Arc::clone(&item),
+            arrow_buffer::OffsetBuffer::new(offsets.into()),
+            Arc::clone(&items),
+            nulls.map(Into::into),
+        ))
+    };
+    let large: ArrayRef = Arc::new(arrow_array::LargeListArray::new(
+        Arc::clone(&item),
+        arrow_buffer::OffsetBuffer::new(vec![0_i64, 1, 3].into()),
+        Arc::clone(&items),
+        None,
+    ));
+    let fixed: ArrayRef = Arc::new(arrow_array::FixedSizeListArray::new(
+        Arc::clone(&item),
+        1,
+        Arc::clone(&items),
+        None,
+    ));
+    for key in [list(vec![0, 1, 3], None), large, fixed] {
+        let kind = key.data_type().to_string();
+        assert_eq!(
+            refusal(&keyed(key), None).as_deref(),
+            Some("merge_key_nan"),
+            "{kind}"
+        );
+    }
+    // A NaN no row names, beyond the rows' items, refuses nothing.
+    let unnamed = list(vec![0, 1], None);
+    assert_eq!(refusal(&keyed(unnamed), None), None);
+}
