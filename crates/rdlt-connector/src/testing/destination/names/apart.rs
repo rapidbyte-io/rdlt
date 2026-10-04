@@ -139,9 +139,8 @@ fn mappings(last: u32) -> (Vec<Pair>, Vec<Pair>) {
         if full == own {
             continue;
         }
-        for other in simple_class(c)
-            .filter(|other| *other != c && *other <= char::from_u32(last).unwrap_or(c))
-        {
+        // A character alike with itself, or one the rules do not admit, is dropped as kept.
+        for other in simple_class(c) {
             cased.insert(ordered(own.clone(), other.to_string()));
         }
         if full.chars().count() > 1 {
@@ -165,7 +164,11 @@ fn ordered(one: String, other: String) -> Pair {
 
 /// `pairs`, each side gathered into names of at most `longest` bytes behind the `prefix` of the
 /// name's place, so no two names of the clause are alike.
-fn gathered(prefix: &dyn Fn(usize) -> String, pairs: &[Pair], longest: usize) -> Vec<Pair> {
+pub(super) fn gathered(
+    prefix: &dyn Fn(usize) -> String,
+    pairs: &[Pair],
+    longest: usize,
+) -> Vec<Pair> {
     let mut names = Vec::new();
     let (mut one, mut other) = (prefix(0), prefix(0));
     let mut held = 0;
