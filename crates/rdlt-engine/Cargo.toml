@@ -12,6 +12,10 @@ repository.workspace = true
 bench = ["dep:arrow-ipc", "dep:schemars"]
 # Crash points at every durability step, for the failpoint sweep; never in a release.
 failpoints = ["dep:fail", "fail/failpoints"]
+# Write-ahead logs kept in an object store (`ObjectStoreWal`).
+object-store = ["dep:futures-util", "dep:object_store"]
+# The write-ahead log store's contract as tests another crate runs; not a public API.
+conformance = []
 
 [dependencies]
 arrow-array.workspace = true
@@ -27,8 +31,10 @@ bytes.workspace = true
 crc32c.workspace = true
 chrono.workspace = true
 fail = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 getrandom.workspace = true
 memchr.workspace = true
+object_store = { workspace = true, optional = true }
 parking_lot.workspace = true
 rayon.workspace = true
 rdlt-connector = { workspace = true, features = ["wire"] }
@@ -51,6 +57,7 @@ rustix = { workspace = true, features = ["process", "time"] }
 
 [dev-dependencies]
 criterion.workspace = true
+object_store.workspace = true
 peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-connector = { workspace = true, features = ["serve", "testing"] }

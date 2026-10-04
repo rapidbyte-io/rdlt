@@ -185,3 +185,68 @@ pub(crate) const LOG_BYTES_EXCEEDED: &str = "log_bytes_exceeded";
 /// write gives back what its chunk staged, and the next attempt deletes what a crashed load
 /// staged before it needs room of its own: its log's directory and its fences.
 pub(crate) const WAL_STORAGE_FULL: &str = "wal_storage_full";
+
+/// The code of the error for a write-ahead log kept in an object store that does not do what the
+/// log needs of it: refuse a second create of one name, list an object once it is written,
+/// take an upload of several parts, or answer that a deleted object is not found.
+#[cfg(feature = "object-store")]
+pub(crate) const WAL_STORAGE_UNSUPPORTED: &str = "wal_storage_unsupported";
+
+/// The code of the error for a write-ahead log's object store that refused the engine's
+/// credentials or what they may do: not retryable, as its operator grants what they may.
+#[cfg(feature = "object-store")]
+pub(crate) const WAL_STORAGE_DENIED: &str = "wal_storage_denied";
+
+/// The code of the error for a write-ahead log's object store that failed or did not answer
+/// every attempt of a request: retryable, as the next attempt of the run may find it well.
+#[cfg(feature = "object-store")]
+pub(crate) const WAL_STORAGE_UNAVAILABLE: &str = "wal_storage_unavailable";
+
+/// The code of the error for an object store's log prefix that is empty, too long, or holds an
+/// empty, `.` or `..` segment or a character beyond `[A-Za-z0-9._-]` and `/` between segments.
+#[cfg(feature = "object-store")]
+pub(crate) const WAL_PREFIX_INVALID: &str = "wal_prefix_invalid";
+
+/// Bytes: the longest prefix an object store's logs are kept under.
+#[cfg(feature = "object-store")]
+pub(crate) const WAL_PREFIX_BYTES: usize = 512;
+
+/// Bytes: what an object-store log's staged chunk holds in memory before it uploads a part of
+/// it, by default 8 MiB: a chunk this long or shorter is published by one request, a longer one
+/// is uploaded in parts of this length, each at least the 5 MiB S3 takes, and published by a
+/// request naming them, so a staging never holds much more than a part.
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_PART_BYTES: usize = 8 << 20;
+
+/// The most parts an upload may take, S3's limit: a chunk holds at most this many parts.
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_PARTS: u64 = 10_000;
+
+/// How many times an object store's request is tried before its failure is reported, by default.
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_ATTEMPTS: u32 = 5;
+
+/// The longest wait before the first retry of an object store's request, by default; each
+/// retry after waits a random time up to twice the longest its predecessor might, up to
+/// [`OBJECT_BACKOFF_MOST`].
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_BACKOFF: Duration = Duration::from_millis(100);
+
+/// The longest wait before any retry of an object store's request, by default.
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_BACKOFF_MOST: Duration = Duration::from_secs(5);
+
+/// How long an object store's request that moves no data may take before it is given up, by
+/// default; one that moves data is given [`OBJECT_REQUEST_PER_MIB`] more for each MiB.
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_REQUEST: Duration = Duration::from_secs(30);
+
+/// How much longer an object store's request may take for each MiB it moves, by default: a
+/// transfer no slower than a MiB a second ends within its deadline.
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_REQUEST_PER_MIB: Duration = Duration::from_secs(1);
+
+/// Chunks whose kind, inline or uploaded in parts, an object-store log remembers, so a chunk's
+/// reads after its first ask for no more than its bytes.
+#[cfg(feature = "object-store")]
+pub(crate) const OBJECT_HEADS: usize = 4_096;

@@ -1,5 +1,5 @@
-//! What every [`WalStore`] does, as tests any store runs: the memory and the local store here, an
-//! object store as it is built.
+//! What every [`WalStore`] does, as tests any store runs: the memory, local and object stores
+//! here, and an object store on a real server in another crate's tests.
 
 use std::io;
 use std::time::UNIX_EPOCH;
@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 use bytes::Bytes;
 use rdlt_connector::{LoadId, PipelineId};
 
-use super::{Chunk, WalStore};
+use crate::wal::{Chunk, WalStore};
 
 fn pipeline(name: &str) -> PipelineId {
     PipelineId::parse(name).expect("a valid pipeline")
@@ -44,7 +44,11 @@ async fn published(
 }
 
 /// Runs every check of the contract on `store`, which must hold nothing yet.
-pub(crate) async fn conforms(store: &dyn WalStore) {
+///
+/// # Panics
+///
+/// Panics, naming what it found, where the store breaks the contract.
+pub async fn conforms(store: &dyn WalStore) {
     a_chunk_is_staged_only_in_a_log_opened_once(store).await;
     no_chunk_is_published_once_its_log_is_removed(store).await;
     what_was_staged_and_deleted_is_never_published(store).await;
@@ -138,7 +142,11 @@ async fn what_was_staged_and_deleted_is_never_published(store: &dyn WalStore) {
 /// Publishes run alongside the removal of their log: each is refused, or goes with the log; none
 /// is left behind it, as a store that asked whether the log is open before it created the chunk
 /// would leave one.
-pub(crate) async fn a_publish_racing_a_removal_is_never_left_behind(store: &dyn WalStore) {
+///
+/// # Panics
+///
+/// Panics where a publish is left behind its log's removal.
+pub async fn a_publish_racing_a_removal_is_never_left_behind(store: &dyn WalStore) {
     let orders = pipeline("racing");
     for round in 0..16 {
         let load = chunk(100 + round, 0).load;

@@ -31,6 +31,8 @@ pub mod bench;
 mod budget;
 mod compute;
 mod config;
+#[cfg(any(test, feature = "conformance"))]
+pub mod conformance;
 mod coordinator;
 mod cost;
 mod crash;
@@ -68,3 +70,5 @@ pub use report::{
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
 pub use wal::{Chunk, LocalWal, StagedChunk, WalStore};
+#[cfg(feature = "object-store")]
+pub use wal::{ObjectStoreOptions, ObjectStoreWal, WalObjects};

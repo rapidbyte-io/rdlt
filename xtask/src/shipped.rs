@@ -25,7 +25,7 @@ const SHIPPED: &[(&str, &[&str])] = &[(
 const SURFACES: &[(&str, &[&str])] = &[
     ("rdlt-connector", &["certify", "testing"]),
     ("rdlt-connector-reference", &["certify", "test-connectors"]),
-    ("rdlt-engine", &["bench", "failpoints"]),
+    ("rdlt-engine", &["bench", "conformance", "failpoints"]),
 ];
 
 /// A way a shipped build carries what it must not.

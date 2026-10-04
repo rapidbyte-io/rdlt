@@ -5,7 +5,8 @@ use bytes::Bytes;
 use rdlt_connector::{BoxFuture, LoadId, PipelineId};
 
 use super::MemoryWal;
-use crate::wal::store::{Chunk, StagedChunk, WalStore, conformance};
+use crate::conformance;
+use crate::wal::store::{Chunk, StagedChunk, WalStore};
 
 #[tokio::test]
 async fn a_log_in_memory_keeps_the_store_s_contract() {

@@ -6,6 +6,8 @@ pub(crate) mod load;
 mod local;
 #[cfg(any(test, feature = "bench"))]
 pub(crate) mod memory;
+#[cfg(feature = "object-store")]
+mod object;
 mod positions;
 pub(crate) mod scan;
 mod store;
@@ -18,5 +20,15 @@ mod tests;
 pub(crate) use load::{LoadLog, Owner, Sealed};
 pub use local::LocalWal;
 pub(crate) use local::Refusal;
+#[cfg(feature = "object-store")]
+pub(crate) use object::code as object_code;
+#[cfg(feature = "object-store")]
+pub use object::{ObjectStoreOptions, ObjectStoreWal, WalObjects};
 pub(crate) use positions::Positions;
 pub use store::{Chunk, StagedChunk, WalStore};
+
+/// The code of what an object-store log refused, which `error` carries, where it carries one.
+#[cfg(not(feature = "object-store"))]
+pub(crate) fn object_code(_: &std::io::Error) -> Option<&'static str> {
+    None
+}

@@ -1,9 +1,6 @@
 //! Where write-ahead logs are kept: one log per load of a pipeline, in numbered chunks, each an
 //! object written whole.
 
-#[cfg(test)]
-pub(crate) mod conformance;
-
 use std::io;
 use std::num::NonZeroU64;
 
