@@ -44,7 +44,6 @@ impl LoweringPlan {
             match refused(batch.column(*index), from, column.logical_type())? {
                 Check::Converted(converted) => checked.converted.push((*index, converted)),
                 Check::Refused(rows) => unheld.push((*index, rows)),
-                Check::Failed => {}
             }
         }
         if let Some(index) = self.change_time().filter(|index| following(*index))
@@ -135,10 +134,9 @@ pub(crate) fn nulled_at(array: &ArrayRef, rows: &BooleanArray) -> Result<ArrayRe
 pub(crate) enum Check {
     /// Every value converted, to this.
     Converted(ArrayRef),
-    /// The rows holding a value the column cannot hold, each refused alone.
+    /// The rows holding a value the column cannot hold, each refused alone; where none is, the
+    /// column refused whole is refused with its batch as it is lowered.
     Refused(BooleanArray),
-    /// The column failed whole, though no row alone is refused: lowering refuses it.
-    Failed,
 }
 
 /// The rows `one` or `other` names.
@@ -163,11 +161,7 @@ pub(crate) fn refused(
     let rows: BooleanArray = (0..array.len())
         .map(|row| Some(array.is_valid(row) && convert(&array.slice(row, 1), from, to).is_err()))
         .collect();
-    Ok(if rows.true_count() > 0 {
-        Check::Refused(rows)
-    } else {
-        Check::Failed
-    })
+    Ok(Check::Refused(rows))
 }
 
 /// Which rows of `times`, a change time, no version can begin at: a null, or a time an `i64` of
