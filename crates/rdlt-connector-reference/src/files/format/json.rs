@@ -63,8 +63,12 @@ impl Encoder for Keyed<'_> {
     }
 }
 
-/// Writes a finite float as the shortest text that reads back as it, and one that is not finite
-/// as a JSON string of its name: `NaN`, `Infinity` or `-Infinity`.
+/// Writes a finite float as the shortest text that reads back as the 64-bit float it is or widens
+/// to, as the engine writes floats into JSON, and one that is not finite as a JSON string of its
+/// name: `NaN`, `Infinity` or `-Infinity`.
+///
+/// A 32-bit float's own shortest text names another 64-bit float: read back once its column
+/// widened, it would be another value.
 struct Floats<'a, T: arrow_array::ArrowPrimitiveType>(&'a arrow_array::PrimitiveArray<T>);
 
 /// A float as JSON text.
@@ -89,7 +93,8 @@ macro_rules! written {
             }
 
             fn text(self, out: &mut Vec<u8>) {
-                serde_json::to_writer(out, &self).expect("a finite float writes to a vector");
+                let wide = f64::from(self);
+                serde_json::to_writer(out, &wide).expect("a finite float writes to a vector");
             }
         }
     };
