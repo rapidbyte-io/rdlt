@@ -378,7 +378,12 @@ fn start_log(
             .map(|receipt| (receipt.load_id, receipt.commit_seq)),
         origin: opened.state.origin.unwrap_or(load_id),
     };
-    let (log, task) = LoadLog::start(store, owner, context.config.growth().log_bytes());
+    // A store's largest chunk bounds the log too: a chunk holds at most what the log does.
+    let log_bytes = context.config.growth().log_bytes();
+    let bound = store
+        .chunk_bytes()
+        .map_or(log_bytes, |most| most.min(log_bytes));
+    let (log, task) = LoadLog::start(store, owner, bound);
     scope.spawn(task);
     Some(log)
 }
