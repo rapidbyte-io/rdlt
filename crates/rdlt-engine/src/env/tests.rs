@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rdlt_connector::LoadId;
 
-use super::{Env, Sleep, SystemEnv};
+use super::{Clock, Env, Sleep, SystemClock, SystemEnv};
 use crate::compute::{ComputePool, RayonPool};
 use crate::wal::{LocalWal, WalStore};
 
@@ -96,4 +96,17 @@ async fn system_env_runs_compute_jobs_on_its_pool() {
     )
     .await;
     assert!(threads[0].as_deref().unwrap().starts_with("rdlt-compute-"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_system_clock_sleeps_on_the_runtime_clock() {
+    let env = system_env();
+    let start = env.instant();
+    SystemClock.sleep(Duration::from_hours(1)).await;
+    assert!(env.instant() - start >= Duration::from_hours(1));
+}
+
+#[test]
+fn the_system_clock_s_random_values_differ() {
+    assert_ne!(SystemClock.random(), SystemClock.random());
 }

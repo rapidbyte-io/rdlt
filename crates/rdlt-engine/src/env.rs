@@ -14,10 +14,23 @@ use rdlt_connector::LoadId;
 use crate::compute::ComputePool;
 use crate::wal::WalStore;
 
-pub use system::SystemEnv;
+pub use system::{SystemClock, SystemEnv};
 
 /// A future that completes after a duration measured on an [`Env`]'s clock.
 pub type Sleep = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// The time and randomness a write-ahead log store's own retries take: an [`Env`] holds its
+/// store, so the store is given a clock of its own.
+///
+/// Production code uses [`SystemClock`]; deterministic simulation substitutes a virtual clock and
+/// a seeded random source.
+pub trait Clock: std::fmt::Debug + Send + Sync + 'static {
+    /// Completes after `duration` on this clock.
+    fn sleep(&self, duration: Duration) -> Sleep;
+
+    /// A uniformly distributed random value.
+    fn random(&self) -> u64;
+}
 
 /// Every source of nondeterminism the engine may use, and where it keeps write-ahead logs.
 ///
