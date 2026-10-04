@@ -214,3 +214,38 @@ fn a_date64_beyond_a_date32_s_days_is_refused_as_a_date() {
         assert!(refused.is_err(), "{row}");
     }
 }
+
+#[test]
+fn a_date64_within_any_list_is_the_day_it_is_within() {
+    use rdlt_connector::{Field, LogicalType};
+    // A millisecond before the epoch is within the day before it.
+    let millis: ArrayRef = Arc::new(arrow_array::Date64Array::from(vec![-1, 86_400_001]));
+    let item = Arc::new(arrow_schema::Field::new("item", DataType::Date64, true));
+    let lists: [ArrayRef; 3] = [
+        Arc::new(arrow_array::ListArray::new(
+            Arc::clone(&item),
+            arrow_buffer::OffsetBuffer::from_lengths([2]),
+            Arc::clone(&millis),
+            None,
+        )),
+        Arc::new(arrow_array::LargeListArray::new(
+            Arc::clone(&item),
+            arrow_buffer::OffsetBuffer::from_lengths([2]),
+            Arc::clone(&millis),
+            None,
+        )),
+        Arc::new(arrow_array::FixedSizeListArray::new(item, 2, millis, None)),
+    ];
+    let logical = LogicalType::List(Box::new(Field::new("item", LogicalType::Date, true)));
+    for list in lists {
+        let kind = list.data_type().to_string();
+        let held = crate::table::convert::convert(&list, &logical, &logical).unwrap();
+        let days = held
+            .as_list::<i32>()
+            .values()
+            .as_primitive::<Date32Type>()
+            .values()
+            .to_vec();
+        assert_eq!(days, [-1, 1], "{kind}");
+    }
+}
