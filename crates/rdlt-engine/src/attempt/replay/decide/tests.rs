@@ -232,6 +232,21 @@ fn a_whole_replay_commits_the_logged_commit_under_the_replaying_epoch() {
 }
 
 #[test]
+fn a_replay_abandons_nothing_though_its_load_abandoned_segments() {
+    // The segments the load abandoned went with its session's staging.
+    let mut logged = logged();
+    logged.meta.abandoned = segments(&[7, 8]);
+    for (standing, last) in [
+        (standing(10, 5), Some((load(2), 1))),
+        (standing(20, 5), None),
+    ] {
+        let decision = decide(&standing, &unreset(), last, None, &logged);
+        let replayed = decision.replayed(&logged.meta, Epoch(9));
+        assert!(replayed.abandoned.is_empty(), "{replayed:?}");
+    }
+}
+
+#[test]
 fn a_partial_replay_commits_only_what_it_staged_and_the_positions_it_moves() {
     let mut logged = logged();
     logged.meta.finish_generations = vec![(
