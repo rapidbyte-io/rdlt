@@ -11,7 +11,7 @@ use futures_util::{StreamExt as _, TryStreamExt as _};
 use object_store::multipart::{MultipartStore, PartId};
 use object_store::path::Path;
 use object_store::{
-    CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartId, MultipartUpload,
+    CopyOptions, Error, GetOptions, GetRange, GetResult, ListResult, MultipartId, MultipartUpload,
     ObjectMeta, ObjectStore, ObjectStoreExt as _, PutMode, PutMultipartOptions, PutOptions,
     PutPayload, PutResult, Result,
 };
@@ -91,6 +91,8 @@ pub struct Faulty<S> {
 struct State {
     plan: Plan,
     calls: Vec<Call>,
+    /// The range of each read, in order: none where the whole object was asked for.
+    ranges: Vec<Option<GetRange>>,
     /// Every object written, in order, the newest last.
     written: Vec<String>,
 }
@@ -127,6 +129,7 @@ impl<S: ObjectStore> Faulty<S> {
         let state = State {
             plan,
             calls: Vec::new(),
+            ranges: Vec::new(),
             written: Vec::new(),
         };
         Self {
@@ -143,6 +146,11 @@ impl<S: ObjectStore> Faulty<S> {
     /// Every request made, in order.
     pub fn calls(&self) -> Vec<Call> {
         self.state.lock().calls.clone()
+    }
+
+    /// The range of each read made, in order: none where the whole object was asked for.
+    pub fn ranges(&self) -> Vec<Option<GetRange>> {
+        self.state.lock().ranges.clone()
     }
 
     /// The store the requests go to.
@@ -258,6 +266,7 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
 
     async fn get_opts(&self, key: &Path, options: GetOptions) -> Result<GetResult> {
         let fault = self.decide(Op::Get, key);
+        self.state.lock().ranges.push(options.range.clone());
         faulted(fault, key, false, self.inner.get_opts(key, options)).await
     }
 

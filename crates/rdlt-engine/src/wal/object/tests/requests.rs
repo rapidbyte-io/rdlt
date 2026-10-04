@@ -286,3 +286,49 @@ async fn a_read_answered_with_more_than_was_asked_is_refused() {
         io::ErrorKind::InvalidData
     );
 }
+
+#[tokio::test]
+async fn a_read_to_the_end_of_a_chunk_asks_for_the_rest_of_it_however_long_it_is() {
+    use object_store::GetRange;
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("rest");
+    let at = chunk(1, 0);
+    wal.open_log(&orders, at.load).await.expect("opens");
+    let mut staged = wal.stage(&orders, at).await.expect("stages");
+    staged
+        .append(Bytes::from_static(b"0123456789"))
+        .await
+        .expect("appends");
+    staged.publish().await.expect("publishes");
+    let before = objects.ranges().len();
+    // A range ending past what a signed 64-bit length holds is one some S3 servers refuse.
+    let read = wal.read(&orders, at, 2, u64::MAX - 2).await.expect("reads");
+    assert_eq!(&read[..], b"23456789");
+    let read = wal.read(&orders, at, 2, 3).await.expect("reads");
+    assert_eq!(&read[..], b"234");
+    let edge = wal
+        .read(&orders, at, 1, i64::MAX as u64 - 1)
+        .await
+        .expect("reads");
+    assert_eq!(&edge[..], b"123456789");
+    let past = wal
+        .read(&orders, at, 1, i64::MAX as u64)
+        .await
+        .expect("reads");
+    assert_eq!(&past[..], b"123456789");
+    let ranges: Vec<_> = objects.ranges()[before..]
+        .iter()
+        .flatten()
+        .cloned()
+        .collect();
+    assert_eq!(
+        ranges[ranges.len() - 4..],
+        [
+            GetRange::Offset(2),
+            GetRange::Bounded(2..5),
+            GetRange::Bounded(1..i64::MAX as u64),
+            GetRange::Offset(1),
+        ]
+    );
+}
