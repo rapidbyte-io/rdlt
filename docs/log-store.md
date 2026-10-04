@@ -77,9 +77,9 @@ GCS and Azure Blob are not supported.
 |---|---|
 | A commit | A HEAD of the log's mark, a PUT of its chunk, a HEAD of the mark again; for a chunk past a part, a multipart upload's beginning, its parts and its completion as well. |
 | Each commit's horizon | A LIST of the pipeline's open logs. |
-| A chunk no longer needed | A LIST of its log and a DELETE, two for one uploaded in parts. |
+| A chunk no longer needed | A PUT of its mark, a LIST of its log and a DELETE, two for one uploaded in parts. |
 | Opening a log, removing it | A LIST and a PUT; a DELETE, a LIST and a DELETE an object. |
-| A replay | A LIST of each log and a GET for each 64 KiB a frame is read in. |
+| A replay | A LIST of each log and two HEADs past its newest chunk, and a GET for each 64 KiB a frame is read in. |
 
 A commit's chunk is durable once its PUT is acknowledged, tens of milliseconds on S3 for a small
 chunk, longer as it grows; its source hears of the commit after that. A request is tried up to five

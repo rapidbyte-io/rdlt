@@ -144,6 +144,14 @@ impl Calls {
         }
     }
 
+    /// Puts `payload` at `key`, replacing what is there: for a mark whose every put is alike.
+    pub(super) async fn put(&self, key: &Path, payload: PutPayload) -> io::Result<()> {
+        let bytes = u64::try_from(payload.content_length()).unwrap_or(u64::MAX);
+        self.call(key, bytes, || self.objects.put(key, payload.clone()))
+            .await
+            .map(drop)
+    }
+
     /// Whether `key` holds `payload`, read no further than the first byte that differs.
     async fn holds(&self, key: &Path, payload: &PutPayload) -> io::Result<bool> {
         let bytes = u64::try_from(payload.content_length()).unwrap_or(u64::MAX);

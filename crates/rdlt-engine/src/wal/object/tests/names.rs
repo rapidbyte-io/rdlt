@@ -93,12 +93,16 @@ fn a_chunk_s_names_read_back_only_as_written() {
     let token = 0xabc_u128;
     let body = format!("00000007.{token:032x}.body");
     assert_eq!(parse_name(&body), Some(Name::Body(7, token)));
+    assert_eq!(parse_name("00000007.gone"), Some(Name::Gone(7)));
     for stray in [
         "7.wal",
         "0000007.wal",
         "+0000007.wal",
         "00000007.WAL",
         "00000007.wal.tmp",
+        "7.gone",
+        "00000007.GONE",
+        "0000000x.gone",
         "0000000a.wal",
         "00000007.abc.body",
         "00000007.0000000000000000000000000000ABC.body",
@@ -168,4 +172,39 @@ async fn a_store_s_identity_is_its_first_proposal_and_unreadable_where_damaged()
     let wal = opened(&damaged, options(1 << 20)).await;
     let refused = wal.identity(two).await.expect_err("damaged");
     assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+}
+
+#[tokio::test]
+async fn a_listing_that_misses_the_newest_chunk_finds_it_however_many_were_deleted_before() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("stale");
+    let load = chunk(1, 0).load;
+    wal.open_log(&orders, load).await.expect("opens");
+    for number in 0..4 {
+        let mut staged = wal.stage(&orders, chunk(1, number)).await.expect("stages");
+        staged
+            .append(bytes::Bytes::from_static(b"chunk"))
+            .await
+            .expect("appends");
+        staged.publish().await.expect("publishes");
+    }
+    for number in 0..3 {
+        wal.remove(&orders, chunk(1, number))
+            .await
+            .expect("removes");
+    }
+    // Every listing of the log misses the newest object written in it.
+    objects.plan(Box::new(|call| {
+        if call.op == rdlt_testkit::objects::Op::List && call.key.contains("/logs/") {
+            rdlt_testkit::objects::Fault::Stale
+        } else {
+            rdlt_testkit::objects::Fault::None
+        }
+    }));
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), [(3, 5)]);
+    // A chunk deleted is never listed, whatever the listing misses.
+    objects.plan(faultless());
+    wal.remove(&orders, chunk(1, 3)).await.expect("removes");
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), []);
 }

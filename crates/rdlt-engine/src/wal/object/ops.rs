@@ -138,22 +138,38 @@ impl Shared {
         pipeline: &PipelineId,
         load: LoadId,
     ) -> io::Result<Vec<(u64, u64)>> {
-        let mut heads: BTreeMap<u64, u64> = BTreeMap::new();
+        let (mut heads, mut gone) = (BTreeMap::new(), BTreeSet::new());
+        let mut highest = None;
         for (name, meta) in self.listed(pipeline, load).await? {
-            if let Name::Head(number) = name {
-                heads.insert(number, meta.size);
+            match name {
+                Name::Head(number) => drop(heads.insert(number, meta.size)),
+                Name::Gone(number) => drop(gone.insert(number)),
+                Name::Body(..) => continue,
             }
+            highest = highest.max(Some(name.number()));
         }
-        // A listing may miss the newest chunk, just published: each number after the highest
-        // listed is asked for until one is missing.
+        // A listing may miss what was written last: each number after the highest known, a
+        // chunk's or a deleted chunk's mark, is asked for until neither is there.
         loop {
-            let number = heads.last_key_value().map_or(0, |(highest, _)| highest + 1);
-            let head = self.keys.head(pipeline, Chunk { load, number });
-            let Some(meta) = self.calls.head(&head).await? else {
-                break;
+            let at = Chunk {
+                load,
+                number: highest.map_or(0, |highest: u64| highest + 1),
             };
-            heads.insert(number, meta.size);
+            if let Some(meta) = self.calls.head(&self.keys.head(pipeline, at)).await? {
+                heads.insert(at.number, meta.size);
+            } else if self
+                .calls
+                .head(&self.keys.gone(pipeline, at))
+                .await?
+                .is_some()
+            {
+                gone.insert(at.number);
+            } else {
+                break;
+            }
+            highest = Some(at.number);
         }
+        heads.retain(|number, _| !gone.contains(number));
         let mut chunks = Vec::with_capacity(heads.len());
         for (number, size) in heads {
             let chunk = Chunk { load, number };
@@ -208,9 +224,12 @@ impl Shared {
     }
 
     pub(super) async fn remove(&self, pipeline: &PipelineId, chunk: Chunk) -> io::Result<()> {
+        // Its mark first, so its number stays known to a listing that misses what came after.
+        let gone = self.keys.gone(pipeline, chunk);
+        self.calls.put(&gone, PutPayload::new()).await?;
         let listed = self.listed(pipeline, chunk.load).await?;
         self.heads.forget(pipeline, chunk);
-        // The head goes first: a chunk is gone once its head is, whatever of its body is left.
+        // The head goes next: a chunk is gone once its head is, whatever of its body is left.
         let head = self.keys.head(pipeline, chunk);
         self.calls.delete(&head).await?;
         for (name, meta) in listed {

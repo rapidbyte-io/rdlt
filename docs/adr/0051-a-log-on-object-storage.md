@@ -21,8 +21,9 @@ to another machine and replay what the first left.
 - Beneath a prefix of one or more segments of `[A-Za-z0-9._-]`, at most 512 bytes, none empty,
   `.` or `..` (`wal_prefix_invalid`): `store` names the store; `probe/` holds the probe's markers;
   each pipeline's objects lie beneath `p.<pipeline>/`, its open logs' marks in `open/<load>` and
-  each load's chunks in `logs/<load>/`, a chunk's head `<number:08>.wal` and the bodies of chunks
-  uploaded in parts `<number:08>.<token:032x>.body`. A name the store never writes is refused,
+  each load's chunks in `logs/<load>/`, a chunk's head `<number:08>.wal`, the bodies of chunks
+  uploaded in parts `<number:08>.<token:032x>.body`, and the marks of chunks deleted
+  `<number:08>.gone`. A name the store never writes is refused,
   never read (`wal_stray`).
 - A log is opened by creating its mark where none of the name exists, holding a random token; a
   load whose `logs/<load>/` holds anything is refused, as one whose removal left something.
@@ -44,8 +45,10 @@ to another machine and replay what the first left.
   number by creating it.
 - Leftovers are the loads whose `logs/` directory holds anything and whose mark does not exist,
   listed in that order, so a log opened between the two listings is never taken for one.
-- A chunk listing is completed by asking for the number after the highest listed until one is
-  missing, so a listing that misses the newest chunk, just published, still finds it.
+- Deleting a chunk puts a mark under its number first, then deletes its head and body. A chunk
+  listing is completed by asking for each number after the highest it knows, a chunk's or a
+  mark's, until neither is there, and lists no chunk whose mark is there: a listing that misses
+  what was written last still finds the newest chunk, however many before it were deleted.
 - A read is a ranged GET whose body is read no further than the length asked
   (`InvalidData` beyond it); a range ending past `i64::MAX` asks for everything from its offset,
   which every S3 server takes; one starting at or past the object's end answers empty after a
@@ -115,7 +118,7 @@ second create of one name, nor on one whose listing misses a fresh object.
 - **Listings must be consistent.** S3, GCS, Azure Blob and MinIO list an object once it is
   written. A store built on listing cannot make a missed open mark safe: two attempts would
   miss each other's logs. The probe refuses a store whose listing misses a fresh object; a chunk
-  listing that misses the newest chunk is completed. Cost if wrong: an eventually consistent
+  listing that misses what was written last is completed. Cost if wrong: an eventually consistent
   store that passes the probe could let concurrent attempts both run.
 - **Parts, not one put of a whole chunk.** `object_store` takes a put's whole body in memory, and
   a chunk can be as large as the log, 4 GiB by default, which the memory budget does not hold.
@@ -141,8 +144,8 @@ second create of one name, nor on one whose listing misses a fresh object.
 
 - An embedder chooses a pipeline's log store in configuration; the local store is unchanged.
 - A log on S3 costs, each commit, a HEAD of its mark, a PUT of its chunk and a HEAD of the mark
-  again; a chunk past 8 MiB adds a multipart upload; deleting a chunk no longer needed is a LIST
-  and a DELETE. Opening a log is a LIST and a PUT, removing it a DELETE, a LIST and a DELETE an
+  again; a chunk past 8 MiB adds a multipart upload; deleting a chunk no longer needed is a PUT of
+  its mark, a LIST and a DELETE; a listing of a log's chunks asks for two more objects. Opening a log is a LIST and a PUT, removing it a DELETE, a LIST and a DELETE an
   object; every commit lists the open marks once, for its horizon. A commit waits for its PUT
   to be acknowledged, tens of milliseconds on S3.
 - A bucket needs a rule ending unfinished uploads, and credentials that may list the bucket, or

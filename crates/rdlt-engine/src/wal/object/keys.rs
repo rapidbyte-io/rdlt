@@ -14,7 +14,7 @@ use crate::wal::Chunk;
 /// Beneath it, `store` names the store, `probe/` holds the startup probe's markers, and each
 /// pipeline's objects are beneath `p.<pipeline>/`: its open logs' marks in `open/`, named by
 /// load, and each load's chunks in `logs/<load>/`, `<number:08>.wal` and the parts' bodies
-/// `<number:08>.<token:032x>.body`.
+/// `<number:08>.<token:032x>.body`, and the marks of chunks deleted, `<number:08>.gone`.
 #[derive(Clone, Debug)]
 pub(super) struct Keys {
     prefix: Path,
@@ -27,6 +27,17 @@ pub(super) enum Name {
     Head(u64),
     /// A body uploaded for chunk `number`, `token` telling it from others.
     Body(u64, u128),
+    /// The mark that chunk `number` was deleted, kept so the number stays known.
+    Gone(u64),
+}
+
+impl Name {
+    /// The chunk's number it names.
+    pub(super) fn number(self) -> u64 {
+        match self {
+            Self::Head(number) | Self::Body(number, _) | Self::Gone(number) => number,
+        }
+    }
 }
 
 impl Keys {
@@ -104,6 +115,12 @@ impl Keys {
         self.log(pipeline, chunk.load).join(name)
     }
 
+    /// The mark that `chunk` of `pipeline`'s log was deleted.
+    pub(super) fn gone(&self, pipeline: &PipelineId, chunk: Chunk) -> Path {
+        let name = format!("{:08}.gone", chunk.number);
+        self.log(pipeline, chunk.load).join(name)
+    }
+
     /// A body of `chunk` of `pipeline`'s log, `token` telling it from others.
     pub(super) fn body(&self, pipeline: &PipelineId, chunk: Chunk, token: u128) -> Path {
         let name = format!("{:08}.{token:032x}.body", chunk.number);
@@ -126,7 +143,8 @@ pub(super) fn parse_load(name: &str) -> Option<LoadId> {
     (load.to_string() == name).then_some(load)
 }
 
-/// What `name` names in a log's directory, as only [`Keys::head`] and [`Keys::body`] write it.
+/// What `name` names in a log's directory, as only [`Keys::head`], [`Keys::body`] and
+/// [`Keys::gone`] write it.
 pub(super) fn parse_name(name: &str) -> Option<Name> {
     let digits = |text: &str, radix: u32| {
         !text.is_empty()
@@ -134,9 +152,14 @@ pub(super) fn parse_name(name: &str) -> Option<Name> {
                 .chars()
                 .all(|c| c.is_digit(radix) && !c.is_ascii_uppercase())
     };
-    if let Some(number) = name.strip_suffix(".wal") {
-        let parsed: u64 = number.parse().ok().filter(|_| digits(number, 10))?;
-        return (format!("{parsed:08}") == number).then_some(Name::Head(parsed));
+    for (suffix, named) in [
+        (".wal", Name::Head as fn(u64) -> Name),
+        (".gone", Name::Gone),
+    ] {
+        if let Some(number) = name.strip_suffix(suffix) {
+            let parsed: u64 = number.parse().ok().filter(|_| digits(number, 10))?;
+            return (format!("{parsed:08}") == number).then(|| named(parsed));
+        }
     }
     let (number, token) = name.strip_suffix(".body")?.split_once('.')?;
     if !digits(number, 10) || !digits(token, 16) {
