@@ -69,7 +69,7 @@ fn start(
         opened: None,
         origin: load(),
     };
-    LoadLog::start(wal, owner, std::num::NonZeroU64::MAX)
+    LoadLog::start(wal, owner, std::num::NonZeroU64::MAX, None)
 }
 
 /// The view of `table` at `version`.
@@ -599,7 +599,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         origin: load(),
     };
     let limit = 4_000;
-    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap());
+    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap(), None);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let written = async {
@@ -636,7 +636,7 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
         origin: load(),
     };
     let limit = 80_000;
-    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap());
+    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap(), None);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let written = async {

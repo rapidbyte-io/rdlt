@@ -13,7 +13,8 @@ use crate::support::logs::Counted;
 use crate::support::memory_wal::Memory;
 use crate::support::script::{Script, ScriptStream, id};
 use crate::support::{
-    commit_every, engine, logging_engine, memory, pipeline, published_ids, retrying, stream,
+    commit_every, engine, logging_engine, memory, memory as memory_destination, pipeline,
+    published_ids, retrying, stream,
 };
 
 /// The ids `partitions` partitions of `rows` rows each hold, in order.
@@ -543,4 +544,47 @@ async fn a_batch_waiting_for_room_in_the_log_brings_its_commit_at_once() {
         outcome.error
     );
     assert!(outcome.report.commits > 1, "{:?}", outcome.report);
+}
+
+#[tokio::test(start_paused = true)]
+async fn what_a_store_stages_in_memory_is_charged_to_the_budget_and_bounded_by_it() {
+    let memory = 64_u64 << 20;
+    let log_share = memory / 16;
+    for (staging, refused) in [(log_share / 2, false), (log_share / 2 + 1, true)] {
+        let name = format!("wal_staging_{refused}");
+        let store = Arc::new(Memory::staging(staging));
+        let mut events = ScriptStream::new("events", 1, 40, 20);
+        events.replayable = false;
+        let (_, source) = Script::new(vec![events]).connect(&name).await;
+        let plan = pipeline(
+            &name.replace('_', "-"),
+            [stream("events").read(ReadMode::Incremental)],
+        );
+        let config = commit_every(20).memory(memory);
+        let outcome = logging_engine(config, Arc::clone(&store) as Arc<dyn WalStore>)
+            .run(plan, source, memory_destination(&name).await)
+            .await;
+        if refused {
+            let error = outcome.error.expect("refused");
+            assert_eq!(
+                error.code(),
+                Some("wal_staging_exceeds_budget"),
+                "{error:?}"
+            );
+            assert_eq!(error.kind(), ErrorKind::Config);
+            assert_eq!(published_ids(&name, "events"), Vec::<i64>::new());
+        } else {
+            assert_eq!(
+                outcome.report.status,
+                RunStatus::Succeeded,
+                "{:?}",
+                outcome.error
+            );
+            assert!(
+                outcome.report.peak_memory >= staging,
+                "{:?}",
+                outcome.report
+            );
+        }
+    }
 }

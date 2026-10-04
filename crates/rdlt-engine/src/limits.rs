@@ -173,6 +173,10 @@ pub(crate) const WAL_FOREIGN: &str = "wal_foreign";
 /// take of the memory budget: the log was written under more memory than replays it.
 pub(crate) const REPLAY_EXCEEDS_BUDGET: &str = "replay_exceeds_budget";
 
+/// The code of the error for a write-ahead log store that stages more in memory than half the
+/// budget's share for the log, which the log's seal and commit frames need beside it.
+pub(crate) const WAL_STAGING_EXCEEDS_BUDGET: &str = "wal_staging_exceeds_budget";
+
 /// Bytes: what a load's write-ahead log holds on disk at most by default, 4 GiB: four commits'
 /// worth at the default policy's byte threshold.
 pub(crate) const LOG_BYTES: u64 = 4 << 30;

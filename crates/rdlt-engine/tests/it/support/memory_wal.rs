@@ -27,6 +27,8 @@ struct Held {
     identity: Option<LoadId>,
     /// Bytes a chunk may hold at most, where the store says so; a staging past it is refused.
     chunk_bytes: Option<NonZeroU64>,
+    /// Bytes the store says a staging holds in memory.
+    staging_bytes: u64,
 }
 
 /// Bytes: what an open log takes of the disk before it holds anything, as a directory's block.
@@ -73,6 +75,17 @@ impl Memory {
     pub(crate) fn chunked(bytes: NonZeroU64) -> Self {
         let held = Held {
             chunk_bytes: Some(bytes),
+            ..Held::default()
+        };
+        Self {
+            held: Arc::new(Mutex::new(held)),
+        }
+    }
+
+    /// Logs whose stagings the store says hold `bytes` in memory.
+    pub(crate) fn staging(bytes: u64) -> Self {
+        let held = Held {
+            staging_bytes: bytes,
             ..Held::default()
         };
         Self {
@@ -146,6 +159,10 @@ impl StagedChunk for Staged {
 impl WalStore for Memory {
     fn chunk_bytes(&self) -> Option<NonZeroU64> {
         self.held.lock().chunk_bytes
+    }
+
+    fn staging_bytes(&self) -> u64 {
+        self.held.lock().staging_bytes
     }
 
     fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {

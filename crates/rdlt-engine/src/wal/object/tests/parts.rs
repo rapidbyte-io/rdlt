@@ -280,6 +280,7 @@ async fn a_chunk_holds_as_many_parts_as_an_upload_may_and_the_engine_is_told_hal
     let wal = opened(&objects, options(1)).await;
     // Half for the batches the engine's bound counts, half for the frames it does not.
     assert_eq!(wal.chunk_bytes().map(std::num::NonZero::get), Some(5_000));
+    assert_eq!(wal.staging_bytes(), 1, "a part, held until it is uploaded");
     let orders = pipeline("bounded");
     wal.open_log(&orders, chunk(1, 0).load)
         .await

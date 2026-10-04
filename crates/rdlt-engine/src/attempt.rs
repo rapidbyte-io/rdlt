@@ -21,12 +21,13 @@ use rdlt_connector::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::budget::MemoryBudget;
+use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::config::EngineConfig;
 use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun, launcher};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
+use crate::limits::WAL_STAGING_EXCEEDS_BUDGET;
 use crate::naming::{Naming, recorded};
 use crate::partition::{
     self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Slots,
@@ -266,7 +267,7 @@ async fn launch(
 ) -> Result<(), Error> {
     let mut scope = TaskScope::new(&CancellationToken::new());
     let lanes = start_lanes(context, &tables, &mut scope);
-    let wal = start_log(context, load_id, &opened, &planned, &mut scope);
+    let wal = start_log(context, load_id, &opened, &planned, &mut scope).await?;
     let ((progress, progress_feed), (barrier, barrier_feed)) =
         (mpsc::unbounded_channel(), watch::channel(0));
     let (stop_reads, latest) = (CancellationToken::new(), Arc::new(Latest::default()));
@@ -347,16 +348,23 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
 /// source cannot read again what it acknowledged; `opened` is the session the attempt opened.
 ///
 /// The log opened for a load that needs none is removed in `scope`.
-fn start_log(
+///
+/// # Errors
+///
+/// `wal_staging_exceeds_budget` where the store stages more in memory than half the budget's
+/// share for the log, which the log's frames need beside it.
+async fn start_log(
     context: &RunContext,
     load_id: LoadId,
     opened: &Opened,
     planned: &[Planned],
     scope: &mut TaskScope<Error>,
-) -> Option<LoadLog> {
+) -> Result<Option<LoadLog>, Error> {
     let needed =
         context.plan.logs_ahead() || planned.iter().any(|stream| !stream.stream.replayable);
-    let store = context.env.wal()?;
+    let Some(store) = context.env.wal() else {
+        return Ok(None);
+    };
     if !needed {
         let pipeline = context.plan.pipeline().clone();
         scope.spawn(async move {
@@ -365,8 +373,9 @@ fn start_log(
                 .await
                 .map_err(Error::from_wal)
         });
-        return None;
+        return Ok(None);
     }
+    let staging = staged(&context.budget, store.staging_bytes()).await?;
     let owner = Owner {
         pipeline: context.plan.pipeline().clone(),
         load: load_id,
@@ -383,9 +392,40 @@ fn start_log(
     let bound = store
         .chunk_bytes()
         .map_or(log_bytes, |most| most.min(log_bytes));
-    let (log, task) = LoadLog::start(store, owner, bound);
+    let (log, task) = LoadLog::start(store, owner, bound, staging);
     scope.spawn(task);
-    Some(log)
+    Ok(Some(log))
+}
+
+/// What a store's stagings hold in memory, `bytes`, reserved from `budget`'s share for the log
+/// for as long as the log is written; none where they hold nothing.
+///
+/// # Errors
+///
+/// `wal_staging_exceeds_budget` for more than half the share, which the log's seal and commit
+/// frames need beside it.
+async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Option<Reservation>, Error> {
+    if bytes == 0 {
+        return Ok(None);
+    }
+    let most = budget.shares().log / 2;
+    if bytes > most {
+        return Err(Error::config(format!(
+            "the write-ahead log's store stages {bytes} bytes in memory, more than the {most} \
+             the memory budget lets it: a larger budget, or smaller parts, let it run"
+        ))
+        .with_code(WAL_STAGING_EXCEEDS_BUDGET));
+    }
+    budget
+        .acquire_log(bytes)
+        .await
+        .map(Some)
+        .map_err(|denied| match denied {
+            Denied::Exhausted(exhausted) => Error::memory(exhausted),
+            Denied::TooLarge(large) => {
+                Error::config(large.to_string()).with_code(WAL_STAGING_EXCEEDS_BUDGET)
+            }
+        })
 }
 
 /// Starts a task per partition to read, and returns the streams and partitions as the

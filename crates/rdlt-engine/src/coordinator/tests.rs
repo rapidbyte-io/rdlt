@@ -344,7 +344,7 @@ fn started(store: Arc<MemoryWal>) -> LoadLog {
         opened: None,
         origin: LoadId::from_parts(UNIX_EPOCH, 1),
     };
-    let (log, writer) = LoadLog::start(store, owner, std::num::NonZeroU64::MAX);
+    let (log, writer) = LoadLog::start(store, owner, std::num::NonZeroU64::MAX, None);
     tokio::spawn(writer);
     log
 }
