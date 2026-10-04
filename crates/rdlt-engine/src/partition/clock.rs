@@ -29,11 +29,8 @@ impl LoadClock {
 
     /// When a batch is received now, by `env`'s clock.
     pub(crate) fn received(&self, env: &dyn Env) -> SystemTime {
-        let now = env.now();
         let mut latest = self.latest.lock();
-        if now > *latest {
-            *latest = now;
-        }
+        *latest = (*latest).max(env.now());
         *latest
     }
 }
