@@ -18,7 +18,10 @@ use tokio::sync::Notify;
 
 use crate::changes::ChangeWorkload;
 use crate::destination::Store;
+use crate::env::SimEnv;
+use crate::objects::ObjectLogs;
 use crate::rng::SplitMix64;
+use crate::seed::Seed;
 use crate::swarm::Features;
 use crate::wal::SimWal;
 use crate::workload::Workload;
@@ -79,6 +82,8 @@ pub struct World {
     violations: Mutex<Vec<String>>,
     /// Where the engine keeps its write-ahead logs, which outlive runs as a disk does.
     pub(crate) wal: Arc<SimWal>,
+    /// Where the engine keeps them instead, in a world that keeps them in an object store.
+    objects: Mutex<Option<Arc<ObjectLogs>>>,
     /// The furthest offset acknowledged to each partition of a stream that cannot read again,
     /// by stream and partition: what it no longer holds.
     pub(crate) acknowledged: Mutex<BTreeMap<(String, String), u64>>,
@@ -147,6 +152,9 @@ impl Pressure {
     }
 }
 
+/// What the object store's draws mix into the disk's and the seed: "objects" in ASCII.
+const OBJECTS: u64 = 0x006f_626a_6563_7473;
+
 static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mutex::default);
 
 impl World {
@@ -164,6 +172,7 @@ impl World {
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
             wal: Arc::default(),
+            objects: Mutex::default(),
             acknowledged: Mutex::default(),
             reset: Mutex::default(),
             reports: Reports::default(),
@@ -216,6 +225,7 @@ impl World {
             store: Mutex::new(Store::default()),
             violations: Mutex::new(Vec::new()),
             wal: Arc::default(),
+            objects: Mutex::default(),
             acknowledged: Mutex::default(),
             reset: Mutex::default(),
             reports: Reports::default(),
@@ -282,7 +292,39 @@ impl World {
         // Drawn only where logs are kept, so every other seed's faults fall as they did.
         let logged = faulty && self.workload.features.wal;
         let draws = logged.then(|| SplitMix64::new(self.rng.lock().next_u64()));
+        if let Some(objects) = &*self.objects.lock() {
+            // The object store's draws are the disk's, mixed apart.
+            let draws = draws
+                .clone()
+                .map(|mut rng| SplitMix64::new(rng.next_u64() ^ OBJECTS));
+            objects.set_faults(draws);
+        }
         self.wal.set_faults(draws);
+    }
+
+    /// Gives `env` the world's write-ahead logs: in an object store where the world keeps them
+    /// there, its options drawn from `seed` apart from every other draw, else in the simulation's
+    /// own store.
+    pub(crate) async fn keep_logs(&self, env: &SimEnv, seed: Seed) {
+        let features = self.workload.features;
+        if features.wal && features.objects {
+            let drawn = SplitMix64::new(seed.value() ^ OBJECTS);
+            *self.objects.lock() = Some(Arc::new(ObjectLogs::open(drawn).await));
+        }
+        let logs = match &*self.objects.lock() {
+            Some(objects) => Arc::clone(&objects.wal) as Arc<dyn rdlt_engine::WalStore>,
+            None => Arc::clone(&self.wal) as _,
+        };
+        env.keep_logs(logs);
+    }
+
+    /// Whether the logs hold any log: an open one, or what a removal left.
+    pub(crate) async fn holds_logs(&self) -> bool {
+        let objects = self.objects.lock().clone();
+        match objects {
+            Some(objects) => objects.holds_logs().await,
+            None => self.wal.holds_logs(),
+        }
     }
 
     /// Crashes the worker running `pipeline`: every chunk its logs staged and did not publish is

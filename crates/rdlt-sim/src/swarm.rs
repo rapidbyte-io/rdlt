@@ -18,6 +18,9 @@ const STREAMING: u64 = 0x7374_7265_616d;
 /// What resetting's draw mixes into the seed's generator: "reset" in ASCII.
 pub(crate) const RESET: u64 = 0x0072_6573_6574;
 
+/// What the object store's draw mixes into the seed's generator: "objstore" in ASCII.
+const OBJECT_STORE: u64 = 0x6f62_6a73_746f_7265;
+
 /// Which of the simulation's features one seed exercises.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -64,6 +67,10 @@ pub struct Features {
     /// Pipelines that keep write-ahead logs, whose incremental and change streams, every other
     /// one, cannot read again what they acknowledged; crashes tear the logs' unsynced tails.
     pub wal: bool,
+    /// Logs kept in an object store in memory through the engine's `ObjectStoreWal`, whose
+    /// requests fail, stall, race, lose their answers and list stale with the faults, rather
+    /// than in the simulation's own store; it changes nothing where no log is kept.
+    pub objects: bool,
     /// Incremental streams whose rows arrive as simulated time passes, which runs follow for a
     /// while before a run reads them to their end; every other one's partitions never end, and
     /// the rest are read again as they grow.
@@ -92,27 +99,31 @@ impl Features {
         perturb: true,
         network: true,
         wal: true,
+        objects: true,
         streaming: true,
         reset: true,
     };
 
     /// The features one seed exercises: every feature one time in eight, else each on or off by
-    /// a coin, drift more often than not, and the network, the write-ahead log, streaming and
-    /// resetting one time in four each.
+    /// a coin, drift more often than not, the network, the write-ahead log, streaming and
+    /// resetting one time in four each, and the log's object store one time in two.
     ///
-    /// The network, the log, streaming and resetting are drawn apart from the rest, from the
-    /// value the next draw takes but without taking it, so a seed's workload is the same over
-    /// either transport, logged or not, streamed or not, reset or not.
+    /// The network, the log and its store, streaming and resetting are drawn apart from the rest,
+    /// from the value the next draw takes but without taking it, so a seed's workload is the
+    /// same over either transport, logged or not and in either store, streamed or not, reset or
+    /// not.
     pub fn draw(rng: &mut SplitMix64) -> Self {
         let next = rng.clone().next_u64();
         let network = SplitMix64::new(next ^ NETWORK).chance(250);
         let wal = SplitMix64::new(next ^ WAL).chance(250);
         let streaming = SplitMix64::new(next ^ STREAMING).chance(250);
         let reset = SplitMix64::new(next ^ RESET).chance(250);
+        let objects = SplitMix64::new(next ^ OBJECT_STORE).chance(500);
         if rng.chance(125) {
             return Self {
                 network,
                 wal,
+                objects,
                 streaming,
                 reset,
                 ..Self::ALL
@@ -135,6 +146,7 @@ impl Features {
             perturb: rng.chance(500),
             network,
             wal,
+            objects,
             streaming,
             reset,
         }

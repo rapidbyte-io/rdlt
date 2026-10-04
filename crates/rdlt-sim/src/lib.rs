@@ -29,6 +29,7 @@ mod changes;
 mod destination;
 mod env;
 mod network;
+mod objects;
 mod oracle;
 mod rng;
 mod seed;

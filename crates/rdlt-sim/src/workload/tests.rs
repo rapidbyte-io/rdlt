@@ -498,6 +498,7 @@ const NONE: Features = Features {
     perturb: false,
     network: false,
     wal: false,
+    objects: false,
     streaming: false,
     reset: false,
 };
