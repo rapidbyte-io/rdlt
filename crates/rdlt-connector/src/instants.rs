@@ -97,11 +97,12 @@ pub fn widened(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> 
     if !widens(from, to) {
         return Err(unwidened());
     }
-    // A unit of each type, in nanoseconds: what one of its values counts.
-    let unit = |data_type: &DataType| nanos(data_type, 1).filter(|unit| *unit > 0);
-    let per = unit(to).ok_or_else(unwidened)?;
-    if unit(from) == Some(per) && width(from) == width(to) {
-        // The same count in the same storage, under another zone: the buffers as they are.
+    // A unit of `to`, in nanoseconds: what one of its values counts.
+    let per = nanos(to, 1).ok_or_else(unwidened)?;
+    if let (DataType::Timestamp(unit, _), DataType::Timestamp(wider, _)) = (from, to)
+        && unit == wider
+    {
+        // The same count in the same unit, under another zone: the buffers as they are.
         let data = array
             .to_data()
             .into_builder()
@@ -114,7 +115,8 @@ pub fn widened(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> 
         let nanos = value
             .and_then(|value| nanos(from, value))
             .ok_or_else(unwidened)?;
-        if nanos % per != 0 {
+        // No widening ends in a `Date64`, whose unit counts no whole nanosecond: none is divided by.
+        if nanos.checked_rem(per) != Some(0) {
             return Err(ArrowError::CastError(format!(
                 "{nanos} ns is no whole number of a {to}'s units"
             )));
@@ -122,14 +124,6 @@ pub fn widened(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> 
         Ok(nanos / per)
     };
     built(array.as_ref(), to, count)
-}
-
-/// Bytes a value of the temporal `data_type` is stored in.
-fn width(data_type: &DataType) -> usize {
-    match data_type {
-        DataType::Date32 | DataType::Time32(_) => 4,
-        _ => 8,
-    }
 }
 
 /// Whether `data_type` is a temporal type: a date, a time of day, a timestamp or a duration.
