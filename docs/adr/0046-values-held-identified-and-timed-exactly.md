@@ -66,17 +66,29 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   renders a zoned instant only where chrono holds the instant and its time in the zone at an
   offset of whole minutes, and times of day never: the engine renders the rest exactly, in UTC.
   A Date64 is the day it is within everywhere, a struct's and a list's included, and one a
-  Date32 cannot hold is refused.
+  Date32 cannot hold is refused. A change time becomes microseconds by a checked conversion of
+  the engine's own: a date's midnight, and an instant between two microseconds the earlier. A
+  decimal beyond its declared precision is no value of its type and is refused.
 - **Every temporal widening goes through one conversion, `rdlt_connector::instants`.** It says
   what each temporal value denotes, and widens keeping each value the instant, time of day or
   duration it was: a date is its midnight in UTC in a timestamp column of any zone, as a change
   time is, and a timestamp's count from the epoch never moves under a zone, a zoned instant
   never becoming a wall-clock time. The engine's conversions, identity, change times, the
   reference destinations and the test oracle all use it, and the zone arithmetic each kept is
-  gone. A property test holds every widening the type lattice makes, every temporal type, unit
-  and zone and every numeric and decimal pair, to the same value, row id and history hash. A change time becomes microseconds by a checked conversion of
-  the engine's own: a date's midnight, and an instant between two microseconds the earlier. A
-  decimal beyond its declared precision is no value of its type and is refused.
+  gone.
+- **A widening keeps every value, wherever it is held.** The files destination writes every
+  float into JSON lines as the shortest text of the 64-bit float it is or widens to, as the
+  engine writes floats into JSON: a line written before its column widened reads back the
+  value it held. Three tests hold the rule, over every temporal type, unit and zone and every
+  numeric and decimal type, for every pair the lattice joins:
+  - a property test of the engine: each value's widening is the same value, its row id and
+    history hash the same;
+  - a test of each in-process destination, memory, SQLite and the files destination's JSON
+    lines and Arrow files: what a column held reads back as the same value once the column
+    widened, in place or into a variant;
+  - `D-SCHEMA`, which widens a column of each pair of kinds a destination declares it stores
+    and widens in place, holding the narrower type's edges, and requires every value back
+    exactly.
 - **A value its column cannot hold follows the column's schema policy, row by row.** The
   policies that decide a value that would change the schema decide one no type of the column
   holds, and a change time no version can begin at: Evolve and Freeze refuse the batch with a
@@ -120,9 +132,12 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   upper-case mappings and no further fold. A destination whose identifiers compare alike more
   widely declares narrower characters, and `D-NAMES` writes pairs of names the declared rules
   keep apart though they compare alike by ASCII case, case folding, normalization or
-  compatibility, and requires both back: every character Unicode's case mappings or case
-  folding change beside what they make of it, gathered into names by the equalities that make
-  them alike, so a destination comparing by any one of them meets a pair alike. SQLite already refuses a name holding an ASCII
+  compatibility, and requires both back: every character Unicode's simple or full case folding
+  makes alike with another beside it, gathered into names by the equalities that make them
+  alike, so a destination comparing by any one of them meets a pair alike. The foldings are
+  read from one source each pinned by the lockfile, `regex-syntax` for the simple folding of
+  Unicode 16.0 and `unicase` for the full, so the clause is the same whatever Unicode the
+  toolchain knows. SQLite already refuses a name holding an ASCII
   upper-case letter and resolves every name without case before use (ADR 0049), so its owner
   and clash checks compare names as SQLite does.
 
