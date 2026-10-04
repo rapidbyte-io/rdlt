@@ -348,13 +348,22 @@ fn decided(
 }
 
 /// `instants`, timestamps or the integers they count, as `to`, the other: each value the same
-/// count of its unit.
+/// count of its unit, in the same buffers; refused where `to` stores its values otherwise.
 fn counted_as(instants: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
-    let options = arrow_cast::CastOptions {
-        safe: false,
-        ..arrow_cast::CastOptions::default()
-    };
-    arrow_cast::cast_with_options(instants, to, &options)
+    let counts =
+        |data_type: &DataType| matches!(data_type, DataType::Int64 | DataType::Timestamp(..));
+    if !counts(instants.data_type()) || !counts(to) {
+        return Err(ArrowError::CastError(format!(
+            "{} is no count of {to}'s units",
+            instants.data_type()
+        )));
+    }
+    let data = instants
+        .to_data()
+        .into_builder()
+        .data_type(to.clone())
+        .build()?;
+    Ok(arrow_array::make_array(data))
 }
 
 /// The versions as batches of the columns they hold: a version the merge left is its published

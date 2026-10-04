@@ -762,3 +762,22 @@ fn a_key_opened_again_after_a_delete_begins_no_earlier_than_its_deletion() {
         assert_eq!((opened.4, opened.6), (20, true), "{published:?}");
     }
 }
+
+#[test]
+fn validity_is_counted_as_timestamps_or_integers_and_nothing_else() {
+    use arrow_array::{Int32Array, Int64Array, TimestampMicrosecondArray};
+    let micros: ArrayRef =
+        Arc::new(TimestampMicrosecondArray::from(vec![Some(-7), None]).with_timezone("UTC"));
+    let counted = super::counted_as(&micros, &DataType::Int64).unwrap();
+    let back = super::counted_as(&counted, micros.data_type()).unwrap();
+    assert_eq!(back.as_ref(), micros.as_ref());
+    assert_eq!(
+        counted.as_ref(),
+        &Int64Array::from(vec![Some(-7), None]) as &dyn Array
+    );
+    // Integers of another width, and text, count no instants.
+    assert!(super::counted_as(&counted, &DataType::Int32).is_err());
+    let narrow: ArrayRef = Arc::new(Int32Array::from(vec![1]));
+    assert!(super::counted_as(&narrow, &DataType::Int64).is_err());
+    assert!(super::counted_as(&counted, &DataType::Utf8).is_err());
+}
