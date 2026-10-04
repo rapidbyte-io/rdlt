@@ -103,3 +103,56 @@ fn a_decimal_beyond_its_declared_precision_is_refused_by_every_conversion() {
         }
     }
 }
+
+/// `values` in the other nestings a decimal may arrive in: a large list's items, a fixed-size
+/// list's and a map's values.
+fn other_nestings(values: &ArrayRef) -> Vec<ArrayRef> {
+    let item = Arc::new(ArrowField::new("item", values.data_type().clone(), true));
+    let large: ArrayRef = Arc::new(
+        arrow_array::LargeListArray::try_new(
+            Arc::clone(&item),
+            OffsetBuffer::from_lengths([2]),
+            Arc::clone(values),
+            None,
+        )
+        .unwrap(),
+    );
+    let fixed: ArrayRef = Arc::new(
+        arrow_array::FixedSizeListArray::try_new(item, 2, Arc::clone(values), None).unwrap(),
+    );
+    let entries = Fields::from(vec![
+        ArrowField::new("key", DataType::Utf8, false),
+        ArrowField::new("value", values.data_type().clone(), true),
+    ]);
+    let keys: ArrayRef = Arc::new(arrow_array::StringArray::from(vec!["a", "b"]));
+    let entries = StructArray::try_new(entries, vec![keys, Arc::clone(values)], None).unwrap();
+    let field = Arc::new(ArrowField::new(
+        "entries",
+        entries.data_type().clone(),
+        false,
+    ));
+    let map: ArrayRef = Arc::new(
+        arrow_array::MapArray::try_new(
+            field,
+            OffsetBuffer::from_lengths([2]),
+            entries,
+            None,
+            false,
+        )
+        .unwrap(),
+    );
+    vec![large, fixed, map]
+}
+
+#[test]
+fn a_decimal_beyond_its_precision_is_refused_in_every_nesting() {
+    for values in beyond() {
+        for arrived in other_nestings(&values) {
+            let kind = arrived.data_type().to_string();
+            let field = ArrowField::new("c", arrived.data_type().clone(), true);
+            let field = Field::from_arrow(&field).expect("a logical type");
+            let logical = field.logical_type();
+            assert!(convert(&arrived, logical, logical).is_err(), "{kind}");
+        }
+    }
+}
