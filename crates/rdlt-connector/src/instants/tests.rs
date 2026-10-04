@@ -63,3 +63,13 @@ fn a_widening_never_moves_an_instant_and_refuses_what_it_would_round_or_drop() {
     assert!(widened(&late, &DataType::Time32(TimeUnit::Millisecond)).is_err());
     assert!(widened(&late, &DataType::Date32).is_err());
 }
+
+#[test]
+fn a_timestamp_that_only_takes_a_zone_keeps_its_buffer() {
+    let naive: ArrayRef = Arc::new(TimestampSecondArray::from(vec![Some(7), None]));
+    let zoned = DataType::Timestamp(TimeUnit::Second, Some("UTC".into()));
+    let widened = widened(&naive, &zoned).unwrap();
+    assert_eq!(widened.data_type(), &zoned);
+    let buffer = |array: &ArrayRef| array.to_data().buffers()[0].as_ptr();
+    assert_eq!(buffer(&widened), buffer(&naive));
+}
