@@ -99,11 +99,6 @@ impl ObjectStoreOptions {
         self.request_per_mib = per_mib;
         self
     }
-
-    /// Bytes: the length of a part, and the longest chunk published by one request.
-    pub fn part_bytes(&self) -> NonZeroUsize {
-        self.part_bytes
-    }
 }
 
 /// Write-ahead logs in an object store, beneath a prefix.
@@ -143,7 +138,11 @@ impl Shared {
     /// A random token, telling one object of a name apart from another.
     fn token(&self) -> u128 {
         let clock = &self.calls.clock;
-        (u128::from(clock.random()) << 64) | u128::from(clock.random())
+        let mut token = [0; 16];
+        let (high, low) = token.split_at_mut(8);
+        high.copy_from_slice(&clock.random().to_be_bytes());
+        low.copy_from_slice(&clock.random().to_be_bytes());
+        u128::from_be_bytes(token)
     }
 
     /// Bytes: the longest chunk, every part of it at most a part long.
