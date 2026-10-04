@@ -131,6 +131,8 @@ struct Shared {
     heads: Heads,
     /// Each staging not yet published, discarded or deleted: its log.
     stagings: Mutex<BTreeMap<u64, (PipelineId, LoadId)>>,
+    /// Uploads that stagings dropped mid-way began, which the store's next request gives up.
+    abandoned: Mutex<Vec<(object_store::path::Path, object_store::MultipartId)>>,
     next: AtomicU64,
     /// The store's identity, once it was asked for.
     identity: Mutex<Option<LoadId>>,
@@ -154,6 +156,15 @@ impl Shared {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.stagings.lock().insert(id, (pipeline.clone(), load));
         id
+    }
+
+    /// Gives up every upload a staging dropped mid-way began, as far as each request's attempts
+    /// get: a store keeps their parts, unseen, until something ends them.
+    async fn reclaim(&self) {
+        let abandoned = std::mem::take(&mut *self.abandoned.lock());
+        for (key, id) in abandoned {
+            self.calls.abort(&key, &id).await;
+        }
     }
 
     /// Ends staging `id`: whether it was still staged, its log's stagings not deleted since.
@@ -191,6 +202,7 @@ impl ObjectStoreWal {
             keys: Keys::parse(prefix)?,
             heads: Heads::default(),
             stagings: Mutex::default(),
+            abandoned: Mutex::default(),
             next: AtomicU64::new(0),
             identity: Mutex::default(),
         };
