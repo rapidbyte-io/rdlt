@@ -96,6 +96,28 @@ jobs:
         env:
           RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
 
+  # The S3 log store's tests on S3 servers in containers, RustFS and MinIO, each image pinned by
+  # its digest: the runner's Docker starts two at most at once, and removes each as its test ends.
+  containers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
+          cache_key_prefix: mise-v2-test
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: just containers --profile ci
+
   # The simulation's hundred thousand seeds, the gate every change to the engine passes, run as
   # twenty shards side by side, each well within its time limit; `sim` passes once every shard has.
   sim-shard:
