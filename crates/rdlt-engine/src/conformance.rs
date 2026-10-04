@@ -245,6 +245,19 @@ async fn the_first_of_two_chunks_of_one_name_published_is_kept(store: &dyn WalSt
     assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
     let read = store.read(&orders, at, 0, 100).await.expect("reads");
     assert_eq!(&read[..], b"fence");
+    // Two fences of one tail are alike, byte for byte: the second is refused all the same.
+    let alike = chunk(1, 5);
+    let mut first = store.stage(&orders, alike).await.expect("stages");
+    let mut second = store.stage(&orders, alike).await.expect("stages");
+    for staged in [&mut first, &mut second] {
+        staged
+            .append(Bytes::from_static(b"fence"))
+            .await
+            .expect("appends");
+    }
+    first.publish().await.expect("publishes first");
+    let refused = second.publish().await.expect_err("the name is taken");
+    assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists, "{refused}");
 }
 
 async fn chunks_and_loads_list_in_order_whatever_order_they_came_in(store: &dyn WalStore) {

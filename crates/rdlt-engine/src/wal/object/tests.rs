@@ -1,4 +1,5 @@
 mod contract;
+mod costs;
 mod names;
 mod parts;
 mod probe;

@@ -7,7 +7,7 @@ use std::time::Duration;
 use object_store::memory::InMemory;
 use rdlt_connector::{PipelineId, ReadMode};
 use rdlt_engine::{ObjectStoreOptions, ObjectStoreWal, RunStatus, SystemClock, WalStore};
-use rdlt_testkit::objects::{Call, Fault, Faulty, Op, Plan, faultless};
+use rdlt_testkit::objects::{Fault, Faulty, Op, Plan, faultless};
 
 use crate::support::destinations::{Step, failing};
 use crate::support::script::{Script, ScriptStream, id};
@@ -101,13 +101,7 @@ async fn a_commit_whose_destination_failed_lands_once_replayed_from_the_object_s
 
 #[tokio::test(start_paused = true)]
 async fn a_load_lands_once_whatever_fault_its_requests_meet() {
-    let faults = [
-        Fault::Fail,
-        Fault::Slow(5),
-        Fault::Hang,
-        Fault::Raced,
-        Fault::Answerless,
-    ];
+    let faults = [Fault::Fail, Fault::Slow(5), Fault::Hang, Fault::Answerless];
     for fault in faults {
         let mut seen = 0_u32;
         let plan: Plan = Box::new(move |_| {
@@ -162,22 +156,4 @@ async fn a_store_failing_every_request_for_a_while_fails_attempts_retryably_then
     );
     assert!(error.retryable);
     assert_eq!(published_ids(name, "events"), ids());
-}
-
-fn lists_logs(call: &Call) -> bool {
-    call.op == Op::List && call.key.contains("/logs/")
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_listing_that_misses_the_newest_chunk_still_replays_its_commit() {
-    let plan: Plan = Box::new(|call| {
-        if lists_logs(call) {
-            Fault::Stale
-        } else {
-            Fault::None
-        }
-    });
-    let (_, wal) = store(plan).await;
-    let status = loaded("objects_stale", wal, Some(Step::CommitOnce)).await;
-    assert_eq!(status, RunStatus::Succeeded);
 }

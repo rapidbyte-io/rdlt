@@ -3,7 +3,9 @@
 
 use std::io;
 
-use crate::limits::{WAL_STORAGE_DENIED, WAL_STORAGE_UNAVAILABLE, WAL_STORAGE_UNSUPPORTED};
+use crate::limits::{
+    WAL_STORAGE_DENIED, WAL_STORAGE_UNAVAILABLE, WAL_STORAGE_UNSUPPORTED, WAL_UNREADABLE,
+};
 
 /// Why an object-store log refused or gave up a request, carried by the [`io::Error`] it fails
 /// with.
@@ -27,6 +29,14 @@ pub(crate) enum ObjectFault {
         #[source]
         source: object_store::Error,
     },
+    /// A listing of `dir` held more objects than a log keeps there.
+    #[error("the listing of {dir} holds more than {most} objects")]
+    Crowded {
+        /// The directory listed.
+        dir: String,
+        /// Objects a listing holds at most.
+        most: usize,
+    },
     /// Every attempt of a request at `key` failed or ran past its deadline.
     #[error("the object store failed every attempt at {key}")]
     Unavailable {
@@ -44,9 +54,19 @@ impl From<ObjectFault> for io::Error {
             ObjectFault::Unsupported { .. } => io::ErrorKind::Unsupported,
             ObjectFault::Denied { .. } => io::ErrorKind::PermissionDenied,
             ObjectFault::Unavailable { .. } => io::ErrorKind::TimedOut,
+            ObjectFault::Crowded { .. } => io::ErrorKind::InvalidData,
         };
         Self::new(kind, fault)
     }
+}
+
+/// What a request asks, which decides what a name taken means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Ask {
+    /// A create where no object of the name exists: a name taken is its answer.
+    Create,
+    /// Anything else: a conflict a store answers it with passes, as S3's does.
+    Other,
 }
 
 /// What an attempt's answer means.
@@ -58,14 +78,16 @@ pub(super) enum Answer {
     Transient(object_store::Error),
 }
 
-/// What `error`, the store's answer at `key`, means to the log.
-pub(super) fn answer(key: &str, error: object_store::Error) -> Answer {
+/// What `error`, the store's answer at `key` to `ask`, means to the log.
+pub(super) fn answer(key: &str, error: object_store::Error, ask: Ask) -> Answer {
     use object_store::Error as Store;
     match error {
         Store::NotFound { .. } => Answer::Final(io::Error::new(io::ErrorKind::NotFound, error)),
         // A store answers a create of a name taken with a failed precondition, or with no
         // change, as S3 compatible stores may.
-        Store::AlreadyExists { .. } | Store::Precondition { .. } | Store::NotModified { .. } => {
+        Store::AlreadyExists { .. } | Store::Precondition { .. } | Store::NotModified { .. }
+            if ask == Ask::Create =>
+        {
             Answer::Final(io::Error::new(io::ErrorKind::AlreadyExists, error))
         }
         Store::PermissionDenied { .. } | Store::Unauthenticated { .. } => Answer::Final(
@@ -95,5 +117,6 @@ pub(crate) fn code(error: &io::Error) -> Option<&'static str> {
         ObjectFault::Unsupported { .. } => WAL_STORAGE_UNSUPPORTED,
         ObjectFault::Denied { .. } => WAL_STORAGE_DENIED,
         ObjectFault::Unavailable { .. } => WAL_STORAGE_UNAVAILABLE,
+        ObjectFault::Crowded { .. } => WAL_UNREADABLE,
     })
 }
