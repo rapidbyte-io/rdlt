@@ -15,7 +15,9 @@ use rdlt_host::{ConnectorRef, Provider as _, Remote};
 use rdlt_testkit::tls::Pki;
 use tokio::sync::oneshot;
 
-use crate::network::{identity, listening, port, scripted, stop};
+use nix::sys::signal::Signal;
+
+use crate::network::{identity, listening, port, scripted, signal, stop};
 
 /// Checks `source` until it passes, which it must within 10 s, while every failure is transient:
 /// the loss being noticed, or the connector not yet listening again.
@@ -103,12 +105,20 @@ async fn a_stopping_connector_finishes_calls_in_flight_and_frees_its_address() {
         async move { source.check().await }
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // Held still as it is told to stop, it frees its address only once it runs again: what
+    // listens next waits for the address to be freed rather than racing the connector to it.
+    signal(&connector, Signal::SIGSTOP);
     stop(&connector);
+    let resumed = async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        signal(&connector, Signal::SIGCONT);
+    };
+    tokio::join!(freed(&address), resumed);
     // Another connector listens at the address while the stopping one drains.
     let (_again, _) =
-        tokio::time::timeout(Duration::from_secs(1), listening(&pki, &server, &address))
+        tokio::time::timeout(Duration::from_secs(10), listening(&pki, &server, &address))
             .await
-            .expect("the address is free while the stopping connector drains");
+            .expect("another connector listens at the address");
     assert!(
         connector.try_wait().expect("its status reads").is_none(),
         "it drained before the other listened"
@@ -122,6 +132,24 @@ async fn a_stopping_connector_finishes_calls_in_flight_and_frees_its_address() {
         .expect("it stops")
         .expect("its status reads");
     assert!(status.success(), "{status}");
+}
+
+/// Waits until `address` is free to listen at, which it must be within 1 s.
+async fn freed(address: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match tokio::net::TcpListener::bind(address).await {
+            Ok(_) => return,
+            Err(error) => {
+                assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse, "{error}");
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the address is never freed: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    }
 }
 
 /// The memory source, under another spec, noting whether it was ever configured.

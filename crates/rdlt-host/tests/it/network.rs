@@ -56,13 +56,32 @@ pub(crate) async fn listening(pki: &Pki, server: &Files, address: &str) -> (Chil
         .lines()
         .next_line()
         .await
-        .expect("its output reads")
-        .expect("it announces its address");
-    let address = line
-        .strip_prefix("listening on ")
-        .expect("the announcement names the address")
-        .to_owned();
+        .expect("its output reads");
+    let announced = line
+        .as_deref()
+        .and_then(|line| line.strip_prefix("listening on "));
+    let Some(address) = announced.map(str::to_owned) else {
+        let ended = unannounced(&mut child).await;
+        panic!("it announces its address, but its output began {line:?}; {ended}");
+    };
     (child, address)
+}
+
+/// How `child`, which announced no address, ended: its status and its standard error, each
+/// awaited for 10 s at most.
+async fn unannounced(child: &mut Child) -> String {
+    let patience = Duration::from_secs(10);
+    let status = tokio::time::timeout(patience, child.wait()).await;
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        tokio::time::timeout(patience, pipe.read_to_end(&mut stderr))
+            .await
+            .ok();
+    }
+    format!(
+        "it ended {status:?} with standard error {:?}",
+        String::from_utf8_lossy(&stderr)
+    )
 }
 
 pub(crate) fn scripted(endpoint: &str) -> ConnectorRef {
@@ -250,15 +269,16 @@ async fn peers_that_never_handshake_do_not_keep_a_host_out() {
 
 /// Asks the listening `connector` to stop, as its operator would.
 pub(crate) fn stop(connector: &Child) {
+    signal(connector, nix::sys::signal::Signal::SIGTERM);
+}
+
+/// Sends `connector` `signal`.
+pub(crate) fn signal(connector: &Child, signal: nix::sys::signal::Signal) {
     let pid = connector
         .id()
         .and_then(|pid| i32::try_from(pid).ok())
         .expect("a process id");
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(pid),
-        nix::sys::signal::Signal::SIGTERM,
-    )
-    .expect("the signal is sent");
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), signal).expect("the signal is sent");
 }
 
 #[tokio::test]
