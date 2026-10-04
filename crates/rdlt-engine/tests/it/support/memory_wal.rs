@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -24,6 +25,8 @@ struct Held {
     capacity: Option<usize>,
     /// Its identity, once it was asked for.
     identity: Option<LoadId>,
+    /// Bytes a chunk may hold at most, where the store says so; a staging past it is refused.
+    chunk_bytes: Option<NonZeroU64>,
 }
 
 /// Bytes: what an open log takes of the disk before it holds anything, as a directory's block.
@@ -66,6 +69,17 @@ impl Memory {
         }
     }
 
+    /// Logs whose chunks hold `bytes` at most, as the store says.
+    pub(crate) fn chunked(bytes: NonZeroU64) -> Self {
+        let held = Held {
+            chunk_bytes: Some(bytes),
+            ..Held::default()
+        };
+        Self {
+            held: Arc::new(Mutex::new(held)),
+        }
+    }
+
     /// Bytes the stagings not yet published or deleted hold.
     pub(crate) fn staged(&self) -> usize {
         self.held.lock().staged()
@@ -86,8 +100,16 @@ impl StagedChunk for Staged {
     fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>> {
         let mut held = self.held.lock();
         let full = held.full(bytes.len());
+        let most = held.chunk_bytes;
         let appended = match held.staged.get_mut(&self.id) {
             _ if full => Err(io::Error::from(io::ErrorKind::StorageFull)),
+            Some((_, staged))
+                if most.is_some_and(|most| {
+                    u64::try_from(staged.len() + bytes.len()).unwrap_or(u64::MAX) > most.get()
+                }) =>
+            {
+                Err(io::Error::from(io::ErrorKind::FileTooLarge))
+            }
             Some((_, staged)) => {
                 staged.extend_from_slice(&bytes);
                 Ok(())
@@ -122,6 +144,10 @@ impl StagedChunk for Staged {
 }
 
 impl WalStore for Memory {
+    fn chunk_bytes(&self) -> Option<NonZeroU64> {
+        self.held.lock().chunk_bytes
+    }
+
     fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
         ready(Ok(*self.held.lock().identity.get_or_insert(proposed)))
     }

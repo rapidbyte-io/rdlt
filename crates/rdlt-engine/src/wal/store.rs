@@ -5,6 +5,7 @@
 pub(crate) mod conformance;
 
 use std::io;
+use std::num::NonZeroU64;
 
 use bytes::Bytes;
 use rdlt_connector::{BoxFuture, LoadId, PipelineId};
@@ -55,6 +56,13 @@ pub trait StagedChunk: Send + Sync {
 /// A log is open from [`WalStore::open_log`] until [`WalStore::remove_log`] begins, and never
 /// again: only while it is open is a chunk of it published and the log listed.
 pub trait WalStore: std::fmt::Debug + Send + Sync + 'static {
+    /// Bytes: the most a chunk of this store may hold, which bounds a load's log as
+    /// [`GrowthLimits::log_bytes`](crate::GrowthLimits::log_bytes) does, the lower of the two
+    /// applying; none where a chunk is bounded only by that.
+    fn chunk_bytes(&self) -> Option<NonZeroU64> {
+        None
+    }
+
     /// The store's identity, durable: the first caller's `proposed`, which every later call, of
     /// any process, answers with.
     fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>>;
