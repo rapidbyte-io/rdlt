@@ -71,4 +71,4 @@ pub use report::{
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
 pub use wal::{Chunk, LocalWal, StagedChunk, WalStore};
 #[cfg(feature = "object-store")]
-pub use wal::{ObjectStoreOptions, ObjectStoreWal, WalObjects};
+pub use wal::{ObjectStoreOptions, ObjectStoreWal, StoreRefusal, WalObjects};
