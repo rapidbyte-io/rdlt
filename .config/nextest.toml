@@ -32,6 +32,12 @@ slow-timeout = { period = "120s", terminate-after = 8 }
 # Mutation testing: every engine and contract test takes well under a second, so one still running
 # after ten seconds is hung on the mutant. Terminating it fails the test, which catches the mutant.
 [profile.mutants]
+# Each of cargo-mutants' jobs runs tests of its own, by default a thread per core: four jobs on
+# sixteen cores ran sixty-four tests at once, and tests that pass unmutated outran the timeouts
+# below, counting mutants no assertion caught as caught. Four threads a job keep
+# `just mutants-diff`'s four jobs at sixteen tests on sixteen cores, and leave the nightly's two
+# jobs on four-core runners with the thread per core the default gives there.
+test-threads = 4
 slow-timeout = { period = "5s", terminate-after = 2 }
 leak-timeout = "500ms"
 # A mutant is caught by its first failing test: the tests still running then, which a mutant can
@@ -75,4 +81,11 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 # each syncing them: three seconds alone, and as the reference connectors' tests beside others.
 [[profile.mutants.overrides]]
 filter = "package(rdlt-engine) & test(/keeps_few_files_however_many_commits_append$/)"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# The engine's tests of a table that changes with every push load and replay hundreds of schema
+# versions through a spawned destination: up to eight seconds alone, more beside other mutants'
+# tests. They wait long enough that only a hang times out.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-engine) & test(/through_a_served_destination$/)"
 slow-timeout = { period = "30s", terminate-after = 2 }
