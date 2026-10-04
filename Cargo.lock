@@ -2076,6 +2076,7 @@ dependencies = [
  "rdlt-connector-macros",
  "rdlt-wire",
  "regex",
+ "regex-syntax",
  "rusqlite",
  "schemars",
  "serde",
@@ -2089,6 +2090,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tower",
+ "unicase",
  "uuid",
  "zeroize",
 ]
