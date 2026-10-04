@@ -727,3 +727,43 @@ async fn a_store_s_identity_is_its_first_and_kept_in_its_base() {
     assert_eq!(again, first, "another process of the same base");
     assert_eq!(mode(&base.path().join("store")), 0o600);
 }
+
+#[test]
+fn every_way_a_kernel_answers_a_link_opened_without_following_reads_as_a_link() {
+    use super::dir::{is_link, is_not_a_directory};
+    use rustix::io::Errno;
+    // Linux answers `ELOOP`, FreeBSD `EMLINK`, and a directory open of a file `ENOTDIR`.
+    for errno in [Errno::LOOP, Errno::MLINK] {
+        assert!(is_link(errno), "{errno:?}");
+        assert!(is_not_a_directory(errno), "{errno:?}");
+    }
+    assert!(!is_link(Errno::NOTDIR));
+    assert!(is_not_a_directory(Errno::NOTDIR));
+    for errno in [Errno::NOENT, Errno::ACCESS, Errno::EXIST] {
+        assert!(!is_link(errno) && !is_not_a_directory(errno), "{errno:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_directory_on_the_way_to_the_base_the_user_cannot_open_fails_as_it_is() {
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let locked = base.path().join("locked");
+    std::fs::create_dir(&locked).expect("creates");
+    set_mode(&locked, 0o000);
+    let wal = LocalWal::new(locked.join("wal"));
+    let failed = wal
+        .loads(&pipeline("orders"))
+        .await
+        .expect_err("it cannot be opened");
+    set_mode(&locked, 0o700);
+    // Not a link, nor anything else the walk reads as one: the kernel's answer, as it is.
+    assert!(refusal(&failed).is_none(), "{failed}");
+    assert_eq!(
+        failed.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{failed}"
+    );
+}

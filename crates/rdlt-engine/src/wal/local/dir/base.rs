@@ -114,7 +114,7 @@ impl Dir {
                 }
                 rustix::fs::openat(&self.file, name, flags, Mode::empty())
             }
-            Err(rustix::io::Errno::LOOP | rustix::io::Errno::NOTDIR) => {
+            Err(errno) if super::is_not_a_directory(errno) => {
                 return Err(io::Error::from_raw_os_error(LINKED));
             }
             opened => opened,
