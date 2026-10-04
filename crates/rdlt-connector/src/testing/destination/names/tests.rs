@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 
-use super::apart::{alike, apart, pieces};
+use super::apart::{alike, apart, gathered, pieces};
 use super::{names, padded, unreserved};
 use crate::capabilities::{IdentifierCase, IdentifierChars, IdentifierRules};
 
@@ -201,4 +201,20 @@ fn a_pair_is_alike_under_exactly_the_equalities_that_join_it() {
     assert_eq!(alike(&pair("\u{df}", "ss")), 0b1000);
     assert_eq!(alike(&pair("\u{130}", "i\u{307}")), 0b1010);
     assert_eq!(alike(&pair("a", "b")), 0);
+}
+
+#[test]
+fn pieces_gather_whole_into_names_each_within_the_longest() {
+    let pair = |one: &str, other: &str| (one.to_owned(), other.to_owned());
+    let prefix = |place: usize| format!("{place}_");
+    let pieces = [pair("a", "A"), pair("b", "B"), pair("c", "C")];
+    assert_eq!(gathered(&prefix, &pieces, 5), [pair("0_abc", "0_ABC")]);
+    assert_eq!(
+        gathered(&prefix, &pieces, 4),
+        [pair("0_ab", "0_AB"), pair("1_c", "1_C")]
+    );
+    // A piece no name of the longest holds, on either side, is left out, and nothing is empty.
+    assert_eq!(gathered(&prefix, &pieces, 2), []);
+    assert_eq!(gathered(&prefix, &[pair("a", "AA")], 3), []);
+    assert_eq!(gathered(&prefix, &[], 9), []);
 }
