@@ -35,7 +35,7 @@ const NORMALIZED: [(&str, &str); 6] = [
 /// each pair normalization or compatibility makes alike is a pair of names of its own.
 pub(super) fn apart(rules: &IdentifierRules, longest: usize) -> Vec<Pair> {
     let [cased, case_folded, normalized] = pieces(rules);
-    let mut kinds: BTreeMap<u8, Vec<Pair>> = BTreeMap::new();
+    let mut kinds: BTreeMap<[bool; 4], Vec<Pair>> = BTreeMap::new();
     for pair in cased.into_iter().chain(case_folded) {
         kinds.entry(alike(&pair)).or_default().push(pair);
     }
@@ -51,18 +51,15 @@ pub(super) fn apart(rules: &IdentifierRules, longest: usize) -> Vec<Pair> {
     names
 }
 
-/// Which equalities make the two sides of `pair` alike, a bit each: ASCII case, the lower case
-/// the declared rules fold by, Unicode's simple case folding and its full case folding.
-pub(super) fn alike((one, other): &Pair) -> u8 {
+/// Which equalities make the two sides of `pair` alike: ASCII case, the lower case the declared
+/// rules fold by, Unicode's simple case folding and its full case folding, in that order.
+pub(super) fn alike((one, other): &Pair) -> [bool; 4] {
     [
         one.eq_ignore_ascii_case(other),
         one.to_lowercase() == other.to_lowercase(),
         simply_folded(one) == simply_folded(other),
         fully_folded(one) == fully_folded(other),
     ]
-    .into_iter()
-    .enumerate()
-    .fold(0, |bits, (bit, alike)| bits | (u8::from(alike) << bit))
 }
 
 /// The characters Unicode's simple case folding makes alike with `c`, `c` among them, as
