@@ -110,6 +110,19 @@ fn nothing_beneath_a_null_row_is_held_at_any_depth() {
     }
     // An array with nothing beneath a null row is itself.
     let fields = Fields::from(vec![Field::new("x", DataType::Int64, false)]);
-    let plain: ArrayRef = Arc::new(StructArray::try_new(fields, vec![values], None).unwrap());
+    let plain: ArrayRef =
+        Arc::new(StructArray::try_new(fields, vec![Arc::clone(&values)], None).unwrap());
     assert!(Arc::ptr_eq(&unhidden(&plain).unwrap(), &plain));
+    // A list whose null rows span no item is itself too.
+    let item = Arc::new(Field::new("item", DataType::Int64, false));
+    let spanning_none: ArrayRef = Arc::new(ListArray::new(
+        item,
+        OffsetBuffer::from_lengths([2, 0, 1]),
+        values,
+        middle_null(),
+    ));
+    assert!(Arc::ptr_eq(
+        &unhidden(&spanning_none).unwrap(),
+        &spanning_none
+    ));
 }

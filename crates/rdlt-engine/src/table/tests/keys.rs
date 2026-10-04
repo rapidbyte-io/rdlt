@@ -252,7 +252,18 @@ fn a_negative_zero_within_a_nested_key_is_stored_as_zero() {
         inner,
         None,
     ));
-    for key in [within_struct, within_list] {
+    let mut map = arrow_array::builder::MapBuilder::new(
+        None,
+        arrow_array::builder::StringBuilder::new(),
+        arrow_array::builder::Float64Builder::new(),
+    );
+    for value in [1.0, -0.0] {
+        map.keys().append_value("k");
+        map.values().append_value(value);
+        map.append(true).unwrap();
+    }
+    let within_map: ArrayRef = Arc::new(map.finish());
+    for key in [within_struct, within_list, within_map] {
         let kind = key.data_type().to_string();
         let stored = prepared_key(&keyed(key));
         assert_eq!(zero_signs(stored.as_ref()), [false], "{kind}");
