@@ -81,8 +81,8 @@ seeded change workload, through faults, crashes, racing runs and changes sent ag
 The SQLite destination refuses a batch holding a float that is no number, or negative zero, which
 SQLite does not keep as they are (`float_unstorable`).
 A source that forgets what it acknowledged, as a message queue does, loads exactly once through a
-write-ahead log: each load logs its batches and commits to a local directory, the source hears once
-a commit's frame is durable, and the next attempt commits again whatever the destination missed,
+write-ahead log: each load logs its batches and commits to a local directory or an S3 bucket
+(`rdlt-log-store`), the source hears once a commit's frame is durable, and the next attempt commits again whatever the destination missed,
 leaving to newer loads the partitions they moved since. A change stream's move from its snapshot
 to its changes is logged too, so a replication slot that forgets what it acknowledged loads its
 snapshot and changes exactly once. The simulation crashes loads mid-write and tears their logs,

@@ -1,6 +1,7 @@
 # ADR 0045: A write-ahead log that is bound, private, checked and charged
 
-Status: accepted, 2026-10-03.
+Status: accepted, 2026-10-03. Amended 2026-10-04 (ADR 0051): `ObjectStoreWal` keeps logs in S3
+and stores that answer as it does, under this contract.
 
 ## Context
 
