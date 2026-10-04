@@ -26,6 +26,7 @@ pub(super) async fn stage(
     pipeline: &PipelineId,
     chunk: Chunk,
 ) -> io::Result<Box<dyn StagedChunk>> {
+    shared.reclaim().await;
     let mark = shared.keys.mark(pipeline, chunk.load);
     if shared.calls.head(&mark).await?.is_none() {
         return Err(missing());
@@ -218,6 +219,7 @@ impl Shared {
     }
 
     pub(super) async fn remove_log(&self, pipeline: &PipelineId, load: LoadId) -> io::Result<()> {
+        self.reclaim().await;
         // Closed first: a publish that asks after this finds it closed and deletes its own
         // head, and one that asked before is listed below.
         self.calls.delete(&self.keys.mark(pipeline, load)).await?;

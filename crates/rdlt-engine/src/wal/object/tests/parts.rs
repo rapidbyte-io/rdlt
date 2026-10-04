@@ -210,6 +210,12 @@ async fn a_staging_given_up_or_deleted_gives_up_its_upload() {
     let discarded = staged(&wal, &orders, chunk(1, 0), LONG).await;
     discarded.discard().await.expect("discards");
     assert_eq!(ops(&objects).last(), Some(&Op::Abort));
+    // Given up once: a staging ended is no upload to give up again.
+    wal.loads(&orders).await.expect("lists");
+    let aborts = ops(&objects).iter().filter(|op| **op == Op::Abort).count();
+    wal.stage(&orders, chunk(1, 1)).await.expect("stages");
+    let again = ops(&objects).iter().filter(|op| **op == Op::Abort).count();
+    assert_eq!(again, aborts);
     let deleted = staged(&wal, &orders, chunk(1, 0), LONG).await;
     wal.remove_staged(&orders, chunk(1, 0).load)
         .await
@@ -319,4 +325,25 @@ async fn a_staging_given_up_where_the_store_never_answers_ends_at_its_deadlines(
         ops(&objects).iter().filter(|op| **op == Op::Abort).count(),
         2
     );
+}
+
+#[tokio::test]
+async fn an_upload_a_dropped_staging_began_is_given_up_by_the_store_s_next_request() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(4)).await;
+    let orders = pipeline("dropped");
+    // A staging dropped mid-way, as an attempt cancelled while it appends is.
+    let dropped = staged(&wal, &orders, chunk(1, 0), LONG).await;
+    let begun = objects
+        .calls()
+        .into_iter()
+        .rfind(|call| call.op == Op::Begin)
+        .expect("an upload began");
+    drop(dropped);
+    wal.stage(&orders, chunk(1, 1)).await.expect("stages");
+    let aborted = objects
+        .calls()
+        .into_iter()
+        .any(|call| call.op == Op::Abort && call.key == begun.key);
+    assert!(aborted, "{:?}", objects.calls());
 }

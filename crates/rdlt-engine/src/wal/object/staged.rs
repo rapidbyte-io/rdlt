@@ -130,7 +130,7 @@ impl Staged {
     async fn publish_now(mut self) -> io::Result<()> {
         // A staging its log's stagings were deleted since is never published.
         if !self.shared.unstage(self.id) {
-            if let Some(upload) = &self.upload {
+            if let Some(upload) = self.upload.take() {
                 self.shared.calls.abort(&upload.key, &upload.id).await;
             }
             return Err(missing());
@@ -191,10 +191,10 @@ impl StagedChunk for Staged {
         Box::pin(self.publish_now())
     }
 
-    fn discard(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
+    fn discard(mut self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
         Box::pin(async move {
             self.shared.unstage(self.id);
-            if let Some(upload) = &self.upload {
+            if let Some(upload) = self.upload.take() {
                 self.shared.calls.abort(&upload.key, &upload.id).await;
             }
             Ok(())
@@ -205,5 +205,9 @@ impl StagedChunk for Staged {
 impl Drop for Staged {
     fn drop(&mut self) {
         self.shared.unstage(self.id);
+        // An upload no publish or discard ended is given up by the store's next request.
+        if let Some(upload) = self.upload.take() {
+            self.shared.abandoned.lock().push((upload.key, upload.id));
+        }
     }
 }
