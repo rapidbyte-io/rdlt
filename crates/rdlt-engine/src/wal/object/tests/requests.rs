@@ -427,3 +427,55 @@ async fn a_create_that_lands_after_its_attempt_gave_up_is_known_as_its_own() {
         .expect("its own mark");
     assert_eq!(wal.loads(&orders).await.expect("lists"), [chunk(1, 0).load]);
 }
+
+#[test]
+fn a_refusal_among_an_answer_s_sources_is_reported_for_good_however_deep() {
+    use super::super::fault::{Answer, Ask, answer};
+    use crate::wal::object::StoreRefusal;
+    let refusal = || StoreRefusal::new("a certificate no trusted root signs", None);
+    let held = io::Error::new(io::ErrorKind::InvalidData, refusal());
+    let nested = io::Error::other(io::Error::new(io::ErrorKind::InvalidData, refusal()));
+    let causes: [Box<dyn std::error::Error + Send + Sync>; 4] = [
+        Box::new(nested),
+        Box::new(refusal()),
+        Box::new(object_store::Error::Generic {
+            store: "inner",
+            source: Box::new(refusal()),
+        }),
+        Box::new(held),
+    ];
+    for cause in causes {
+        let error = object_store::Error::Generic {
+            store: "S3",
+            source: cause,
+        };
+        let Answer::Final(refused) = answer("logs/x", error, Ask::Other) else {
+            panic!("tried again");
+        };
+        assert_eq!(
+            judged(refused),
+            (Some("wal_storage_refused".to_owned()), false)
+        );
+    }
+    let failed = object_store::Error::Generic {
+        store: "S3",
+        source: Box::new(io::Error::other("reset")),
+    };
+    assert!(matches!(
+        answer("logs/x", failed, Ask::Other),
+        Answer::Transient(_)
+    ));
+    // A conflict answers a create, and passes anything else.
+    let conflict = || object_store::Error::AlreadyExists {
+        path: "logs/x".to_owned(),
+        source: "409".into(),
+    };
+    assert!(matches!(
+        answer("logs/x", conflict(), Ask::Create),
+        Answer::Final(_)
+    ));
+    assert!(matches!(
+        answer("logs/x", conflict(), Ask::Other),
+        Answer::Transient(_)
+    ));
+}

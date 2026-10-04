@@ -24,6 +24,7 @@ use parking_lot::Mutex;
 use rdlt_connector::{BoxFuture, LoadId, PipelineId};
 
 use self::calls::Calls;
+pub use self::fault::StoreRefusal;
 pub(crate) use self::fault::code;
 use self::head::Heads;
 use self::keys::Keys;

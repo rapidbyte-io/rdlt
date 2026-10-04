@@ -201,6 +201,12 @@ pub(crate) const WAL_STORAGE_UNSUPPORTED: &str = "wal_storage_unsupported";
 #[cfg(feature = "object-store")]
 pub(crate) const WAL_STORAGE_DENIED: &str = "wal_storage_denied";
 
+/// The code of the error for a write-ahead log's object store whose client refused a request
+/// for good, as a certificate no trusted root signs or a request the store answers as
+/// malformed: not retryable, as its configuration decides it.
+#[cfg(feature = "object-store")]
+pub(crate) const WAL_STORAGE_REFUSED: &str = "wal_storage_refused";
+
 /// The code of the error for a write-ahead log's object store that failed or did not answer
 /// every attempt of a request: retryable, as the next attempt of the run may find it well.
 #[cfg(feature = "object-store")]
