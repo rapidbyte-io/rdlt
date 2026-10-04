@@ -148,3 +148,24 @@ async fn a_store_that_takes_two_of_creates_racing_is_refused() {
     assert!(!retryable);
     assert_eq!(left, Vec::<String>::new());
 }
+
+#[tokio::test]
+async fn the_probe_asks_nothing_beyond_its_own_directory() {
+    let objects = objects(faultless());
+    ObjectStoreWal::open(
+        Arc::clone(&objects) as _,
+        "logs",
+        Arc::new(SystemClock),
+        options(1 << 20),
+    )
+    .await
+    .expect("probed");
+    let calls = objects.calls();
+    assert!(calls.iter().any(lists), "{calls:?}");
+    for call in &calls {
+        assert!(
+            call.key == "logs/probe" || call.key.starts_with("logs/probe/"),
+            "{call:?}"
+        );
+    }
+}

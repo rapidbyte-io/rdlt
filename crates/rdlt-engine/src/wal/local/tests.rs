@@ -92,6 +92,13 @@ proptest! {
 }
 
 #[test]
+fn a_local_log_holds_nothing_it_stages_in_memory_and_bounds_no_chunk_of_its_own() {
+    let wal = LocalWal::new("/base");
+    assert_eq!(wal.staging_bytes(), 0, "a staging is written to its file");
+    assert_eq!(wal.chunk_bytes(), None);
+}
+
+#[test]
 fn pipelines_whose_names_fold_alike_keep_directories_of_their_own() {
     let wal = LocalWal::new("/base");
     let folded = [

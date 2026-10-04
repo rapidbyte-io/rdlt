@@ -84,6 +84,9 @@ pub enum Fault {
     /// anything, as a request a client gave up on lands late: a put's or a deletion's; any other
     /// request is never answered nor done.
     Late(std::time::Duration),
+    /// A listing whose objects come this long apart, as from a store sending its pages slowly;
+    /// any other request is done.
+    Drip(std::time::Duration),
 }
 
 /// A request that lands late: a put, or a deletion.
@@ -106,7 +109,8 @@ struct State {
     /// Requests that land late: when, and what they do.
     late: Vec<(tokio::time::Instant, Landing)>,
     calls: Vec<Call>,
-    /// The range of each read, in order: none where the whole object was asked for.
+    /// The range of each read of an object's bytes, in order: none where the whole object was
+    /// asked for.
     ranges: Vec<Option<GetRange>>,
     /// Every object written, in order, the newest last.
     written: Vec<String>,
@@ -164,7 +168,8 @@ impl<S: ObjectStore> Faulty<S> {
         self.state.lock().calls.clone()
     }
 
-    /// The range of each read made, in order: none where the whole object was asked for.
+    /// The range of each read of an object's bytes, in order, none where the whole object was
+    /// asked for; a look at what the store says of an object reads none.
     pub fn ranges(&self) -> Vec<Option<GetRange>> {
         self.state.lock().ranges.clone()
     }
@@ -244,7 +249,12 @@ async fn faulted<T>(
     action: impl Future<Output = Result<T>>,
 ) -> Result<T> {
     match fault {
-        Fault::None | Fault::Stale | Fault::Overwrite | Fault::Ignored | Fault::Bare => {
+        Fault::None
+        | Fault::Stale
+        | Fault::Overwrite
+        | Fault::Ignored
+        | Fault::Bare
+        | Fault::Drip(_) => {
             action.await
         }
         Fault::Denied => Err(Error::PermissionDenied {
@@ -321,7 +331,9 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
     async fn get_opts(&self, key: &Path, options: GetOptions) -> Result<GetResult> {
         self.land().await;
         let fault = self.decide(Op::Get, key);
-        self.state.lock().ranges.push(options.range.clone());
+        if !options.head {
+            self.state.lock().ranges.push(options.range.clone());
+        }
         faulted(fault, key, false, self.inner.get_opts(key, options)).await
     }
 
@@ -365,7 +377,16 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
             }
             Ok::<_, Error>(stream::iter(listed.into_iter().map(Ok)))
         };
-        stream::once(listed).try_flatten().boxed()
+        let listed = stream::once(listed).try_flatten();
+        match fault {
+            Fault::Drip(each) => listed
+                .then(move |meta| async move {
+                    tokio::time::sleep(each).await;
+                    meta
+                })
+                .boxed(),
+            _ => listed.boxed(),
+        }
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
