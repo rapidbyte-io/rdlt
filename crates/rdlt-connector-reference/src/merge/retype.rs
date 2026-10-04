@@ -32,16 +32,11 @@ pub(super) fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, Arrow
             retyped(&checked(array, values.data_type())?, to)
         }
         // Temporal values widen as the engine widens them: each the instant, time or duration
-        // it was.
-        _ if instants::is_temporal(from) && instants::is_temporal(to) => {
-            if !instants::widens(from, to) {
-                return Err(inexact(from, to));
-            }
-            instants::widened(array, to).map_err(|error| {
-                let message = format!("a value of {from} does not fit {to}");
-                caused(VALUE_UNHOLDABLE, message, error)
-            })
-        }
+        // it was; no other conversion of one keeps every value.
+        _ if instants::widens(from, to) => instants::widened(array, to).map_err(|error| {
+            let message = format!("a value of {from} does not fit {to}");
+            caused(VALUE_UNHOLDABLE, message, error)
+        }),
         (DataType::Struct(_), DataType::Struct(fields)) => structs(array.as_struct(), fields),
         (DataType::List(_), DataType::List(item)) => lists(array.as_list::<i32>(), item),
         (

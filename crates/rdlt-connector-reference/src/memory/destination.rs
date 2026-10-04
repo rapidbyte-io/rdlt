@@ -123,16 +123,15 @@ impl Store {
         let plans = self.plans(pipeline, epoch, meta)?;
         let (mut rows, mut bytes) = (0, 0);
         for table in self.tables.values_mut() {
-            let published: Vec<_> = staged_in(table, pipeline, epoch, &meta.segments)
+            // What the session staged in a segment the load abandoned is never published: it
+            // goes as what the commit publishes does.
+            let done: Vec<_> = staged_in(table, pipeline, epoch, &meta.segments)
+                .chain(staged_in(table, pipeline, epoch, &meta.abandoned))
                 .map(|(key, _)| key.clone())
                 .collect();
-            for key in published {
+            for key in done {
                 table.staged.remove(&key);
             }
-            // What the session staged in a segment the load abandoned is never published.
-            table.staged.retain(|(staged, at, segment), _| {
-                staged != pipeline || *at != epoch || !meta.abandoned.contains(*segment)
-            });
         }
         for (name, staged, merged) in plans {
             let table = self.tables.entry(name).or_default();
