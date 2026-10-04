@@ -334,3 +334,42 @@ fn a_key_holding_nan_within_a_list_is_refused_where_a_row_names_it() {
     let unnamed = list(vec![0, 1], None);
     assert_eq!(refusal(&keyed(unnamed), None), None);
 }
+
+#[test]
+fn a_key_holding_nan_is_refused_in_the_fixed_size_list_row_or_map_that_names_it() {
+    let item = Arc::new(arrow_schema::Field::new("item", DataType::Float64, true));
+    let fixed = |items: Vec<f64>| -> ArrayRef {
+        let items: ArrayRef = Arc::new(Float64Array::from(items));
+        Arc::new(arrow_array::FixedSizeListArray::new(
+            Arc::clone(&item),
+            2,
+            items,
+            None,
+        ))
+    };
+    // The second row's items hold the NaN: refused where that row names a key.
+    let second = || vec![1.0, 2.0, f64::NAN, 3.0];
+    assert_eq!(
+        refusal(&keyed(fixed(second())), None).as_deref(),
+        Some("merge_key_nan")
+    );
+    // A truncate names no key, so the NaN its row holds refuses nothing.
+    let truncated = ChangeRows {
+        op: Int8Array::from(vec![ChangeOp::Insert.code(), ChangeOp::Truncate.code()]),
+        seq: BinaryArray::from_iter_values([[0_u8; 16], [1_u8; 16]]),
+        unchanged: None,
+    };
+    assert_eq!(refusal(&keyed(fixed(second())), Some(&truncated)), None);
+    let mut map = arrow_array::builder::MapBuilder::new(
+        None,
+        arrow_array::builder::StringBuilder::new(),
+        arrow_array::builder::Float64Builder::new(),
+    );
+    for value in [1.0, f64::NAN] {
+        map.keys().append_value("k");
+        map.values().append_value(value);
+        map.append(true).unwrap();
+    }
+    let map: ArrayRef = Arc::new(map.finish());
+    assert_eq!(refusal(&keyed(map), None).as_deref(), Some("merge_key_nan"));
+}
