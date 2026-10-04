@@ -1,6 +1,9 @@
 //! `D-SCHEMA`'s widenings: every pair of kinds a destination widens in place, at the edges of
 //! the narrower type, read back as the values they were.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -11,6 +14,7 @@ use arrow_schema::DataType;
 
 use super::{Bench, commit, meta};
 use crate::OpenedSession;
+use crate::capabilities::Capabilities;
 use crate::commit::CommitMeta;
 use crate::destination::TableChange;
 use crate::id::{CommitSeq, SegmentId};
@@ -32,13 +36,11 @@ impl Bench<'_> {
         opened: &mut OpenedSession,
         seq: CommitSeq,
     ) -> Result<CommitSeq, Violation> {
-        let capabilities = self.destination.capabilities();
-        let stored = |(from, to): &&(TypeKind, TypeKind)| {
-            capabilities.types.contains(from) && capabilities.types.contains(to)
-        };
-        let declared = capabilities.schema_changes.widenings.iter().filter(stored);
         let mut seq = seq;
-        for (place, (from, to)) in declared.filter_map(|pair| typed(*pair)).enumerate() {
+        // Each widening's rows in a segment of their own, after those the clause wrote before.
+        let segments = (100..).map(SegmentId);
+        let widenings = checked(self.destination.capabilities());
+        for (place, ((from, to), segment)) in widenings.into_iter().zip(segments).enumerate() {
             seq = seq.next();
             let table = self.other_table(&format!("widened_{place}"));
             let create = TableChange::Create {
@@ -51,7 +53,6 @@ impl Bench<'_> {
             let mut writer = bounded_call("writer", opened.session.writer(&table)).await?;
             let rows = RecordBatch::try_from_iter([("v", Arc::clone(&values))])
                 .expect("the certification batch is valid");
-            let segment = SegmentId(100 + u64::try_from(place).unwrap_or(0));
             bounded_call("write", writer.write(segment, rows)).await?;
             bounded_call("flush", writer.flush()).await?;
             let widen = TableChange::Widen {
@@ -88,6 +89,16 @@ impl Bench<'_> {
     }
 }
 
+/// The pairs of types the clause widens for a destination of `capabilities`: one of each pair of
+/// kinds it declares it stores and widens in place.
+fn checked(capabilities: &Capabilities) -> Vec<(LogicalType, LogicalType)> {
+    let stored = |(from, to): &&(TypeKind, TypeKind)| {
+        capabilities.types.contains(from) && capabilities.types.contains(to)
+    };
+    let declared = capabilities.schema_changes.widenings.iter().filter(stored);
+    declared.filter_map(|pair| typed(*pair)).collect()
+}
+
 /// A pair of types of the kinds `(from, to)` the lattice widens one to the other, the wider in
 /// a zone and units its narrower type's values could move by; none for nested kinds, whose
 /// fields widen as these do.
@@ -112,7 +123,7 @@ fn typed((from, to): (TypeKind, TypeKind)) -> Option<(LogicalType, LogicalType)>
         ),
         (K::Timestamp, K::Timestamp) => (
             LogicalType::Timestamp(TimeUnit::Second, None),
-            LogicalType::Timestamp(TimeUnit::Millisecond, Some("+05:30".into())),
+            LogicalType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
         ),
         (K::Time, K::Time) => (
             LogicalType::Time(TimeUnit::Second),
