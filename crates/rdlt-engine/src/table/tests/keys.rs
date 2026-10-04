@@ -208,6 +208,8 @@ fn zero_signs(array: &dyn Array) -> Vec<bool> {
             .flat_map(|column| zero_signs(column.as_ref()))
             .collect(),
         DataType::List(_) => zero_signs(array.as_list::<i32>().values().as_ref()),
+        DataType::LargeList(_) => zero_signs(array.as_list::<i64>().values().as_ref()),
+        DataType::FixedSizeList(..) => zero_signs(array.as_fixed_size_list().values().as_ref()),
         // A nested key a destination stores as JSON: each number zero in its text.
         DataType::Utf8 => array
             .as_string::<i32>()
@@ -263,7 +265,24 @@ fn a_negative_zero_within_a_nested_key_is_stored_as_zero() {
         map.append(true).unwrap();
     }
     let within_map: ArrayRef = Arc::new(map.finish());
-    for key in [within_struct, within_list, within_map] {
+    let item = Arc::new(arrow_schema::Field::new("item", DataType::Float64, true));
+    let negative: ArrayRef = Arc::new(Float64Array::from(vec![1.0, -0.0]));
+    let within_large: ArrayRef = Arc::new(arrow_array::LargeListArray::new(
+        Arc::clone(&item),
+        arrow_buffer::OffsetBuffer::from_lengths([1, 1]),
+        Arc::clone(&negative),
+        None,
+    ));
+    let within_fixed: ArrayRef = Arc::new(arrow_array::FixedSizeListArray::new(
+        item, 1, negative, None,
+    ));
+    for key in [
+        within_struct,
+        within_list,
+        within_map,
+        within_large,
+        within_fixed,
+    ] {
         let kind = key.data_type().to_string();
         let stored = prepared_key(&keyed(key));
         assert_eq!(zero_signs(stored.as_ref()), [false], "{kind}");
