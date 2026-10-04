@@ -388,7 +388,9 @@ fn synced_under(base: &Path, from: usize) -> Vec<std::path::PathBuf> {
 #[tokio::test]
 async fn a_chunk_s_name_is_durable_once_published_and_its_deletion_once_deleted() {
     let base = tempfile::tempdir().expect("a temporary directory");
-    let wal = LocalWal::new(base.path().join("wal"));
+    // Where the temporary directory lies behind a link (macOS), syncs are made by its real path.
+    let root = base.path().canonicalize().expect("a real path");
+    let wal = LocalWal::new(root.join("wal"));
     let orders = pipeline("orders");
     let load_dir = wal
         .pipeline_dir(&orders)
@@ -402,7 +404,7 @@ async fn a_chunk_s_name_is_durable_once_published_and_its_deletion_once_deleted(
     let from = SYNCED.lock().len();
     staged.publish().await.expect("publishes");
     assert_eq!(
-        synced_under(base.path(), from),
+        synced_under(root.as_path(), from),
         std::slice::from_ref(&load_dir)
     );
     for number in [1, 2] {
@@ -411,7 +413,7 @@ async fn a_chunk_s_name_is_durable_once_published_and_its_deletion_once_deleted(
     let from = SYNCED.lock().len();
     wal.remove(&orders, chunk(1, 0)).await.expect("removes");
     assert_eq!(
-        synced_under(base.path(), from),
+        synced_under(root.as_path(), from),
         std::slice::from_ref(&load_dir)
     );
     // A log is closed durably first, then its files go, then its directory.
@@ -420,7 +422,7 @@ async fn a_chunk_s_name_is_durable_once_published_and_its_deletion_once_deleted(
         .await
         .expect("removes");
     assert_eq!(
-        synced_under(base.path(), from),
+        synced_under(root.as_path(), from),
         [load_dir.clone(), load_dir, wal.pipeline_dir(&orders)]
     );
 }
@@ -428,18 +430,20 @@ async fn a_chunk_s_name_is_durable_once_published_and_its_deletion_once_deleted(
 #[test]
 fn a_base_missing_is_created_private_with_its_parents_each_durable() {
     let base = tempfile::tempdir().expect("a temporary directory");
-    let deep = base.path().join("a").join("b");
+    // Where the temporary directory lies behind a link (macOS), syncs are made by its real path.
+    let root = base.path().canonicalize().expect("a real path");
+    let deep = root.join("a").join("b");
     let from = SYNCED.lock().len();
     super::dir::Dir::base(&deep).expect("creates");
     assert_eq!(
-        synced_under(base.path(), from),
-        [base.path().to_owned(), base.path().join("a")]
+        synced_under(root.as_path(), from),
+        [root.clone(), root.join("a")]
     );
     assert_eq!(mode(&deep), 0o700);
     let from = SYNCED.lock().len();
     super::dir::Dir::base(&deep).expect("opens");
     assert!(
-        synced_under(base.path(), from).is_empty(),
+        synced_under(root.as_path(), from).is_empty(),
         "nothing was created"
     );
 }
