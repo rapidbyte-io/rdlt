@@ -224,11 +224,15 @@ fn nulls(column: &ArrayRef, keyed: &dyn Fn(usize) -> bool) -> bool {
         .any(|row| keyed(row) && nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)))
 }
 
-/// Which rows of `array`, holding only what its rows name, hold a NaN at any depth.
+/// Which rows of `array`, decoded, hold a NaN at any depth.
+///
+/// Decoding leaves nothing beneath a null row, so only a float's own validity is read.
 fn nans(array: &dyn Array) -> Vec<bool> {
-    let valid = |row: usize| array.is_valid(row);
-    let floats =
-        |nan: &dyn Fn(usize) -> bool| (0..array.len()).map(|row| valid(row) && nan(row)).collect();
+    let floats = |nan: &dyn Fn(usize) -> bool| {
+        (0..array.len())
+            .map(|row| array.is_valid(row) && nan(row))
+            .collect()
+    };
     match array.data_type() {
         DataType::Float16 => floats(&|row| array.as_primitive::<Float16Type>().value(row).is_nan()),
         DataType::Float32 => floats(&|row| array.as_primitive::<Float32Type>().value(row).is_nan()),
@@ -237,55 +241,49 @@ fn nans(array: &dyn Array) -> Vec<bool> {
             let mut rows = vec![false; array.len()];
             for column in array.as_struct().columns() {
                 for (row, nan) in nans(column.as_ref()).into_iter().enumerate() {
-                    rows[row] |= nan && valid(row);
+                    rows[row] |= nan;
                 }
             }
             rows
         }
         DataType::List(_) => items(
-            array,
             array.as_list::<i32>().offsets(),
             array.as_list::<i32>().values(),
         ),
         DataType::LargeList(_) => items(
-            array,
             array.as_list::<i64>().offsets(),
             array.as_list::<i64>().values(),
         ),
         DataType::Map(..) => {
             let map = array.as_map();
             let entries: ArrayRef = Arc::new(map.entries().clone());
-            items(array, map.offsets(), &entries)
+            items(map.offsets(), &entries)
         }
         DataType::FixedSizeList(_, size) => {
             let list = array.as_fixed_size_list();
             let size = usize::try_from(*size).unwrap_or(0);
             let held = nans(list.values().as_ref());
             (0..array.len())
-                .map(|row| valid(row) && held.iter().skip(row * size).take(size).any(|nan| *nan))
+                .map(|row| held.iter().skip(row * size).take(size).any(|nan| *nan))
                 .collect()
         }
         _ => vec![false; array.len()],
     }
 }
 
-/// Which rows of `array`, a list whose items are `values` and whose rows `offsets` bound, hold
-/// an item holding a NaN.
+/// Which rows of a list, whose items are `values` and whose rows `offsets` bound, hold an item
+/// holding a NaN.
 fn items<O: OffsetSizeTrait>(
-    array: &dyn Array,
     offsets: &arrow_buffer::OffsetBuffer<O>,
     values: &ArrayRef,
 ) -> Vec<bool> {
     let held = nans(values.as_ref());
     offsets
         .windows(2)
-        .enumerate()
-        .map(|(row, bounds)| {
+        .map(|bounds| {
             let (start, end) = (bounds[0].as_usize(), bounds[1].as_usize());
-            array.is_valid(row)
-                && held
-                    .get(start..end)
-                    .is_some_and(|items| items.contains(&true))
+            held.get(start..end)
+                .is_some_and(|items| items.contains(&true))
         })
         .collect()
 }
