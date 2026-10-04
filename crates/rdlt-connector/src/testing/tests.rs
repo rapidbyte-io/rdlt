@@ -682,6 +682,10 @@ struct VaultConfig {
     keep_abandoned: bool,
     /// Begins versions when their changes say, however late.
     history_trusts_times: bool,
+    /// Begins versions no earlier than their key's versions began, whenever they ended.
+    history_clamps_by_starts: bool,
+    /// Begins versions no earlier than their key's versions ended, whenever they began.
+    history_clamps_by_ends: bool,
     /// Swaps in only the first generation a commit finishes.
     finish_one_generation: bool,
     /// Publishes its columns under lower-case names, though it declares it keeps case.
@@ -1620,6 +1624,8 @@ impl VaultConfig {
             spare_commit: self.history_truncate_spares_commit,
             drop_hash: self.history_drops_hash,
             trust_times: self.history_trusts_times,
+            clamp_by_starts: self.history_clamps_by_starts,
+            clamp_by_ends: self.history_clamps_by_ends,
         }
     }
 
@@ -1892,6 +1898,8 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("history_truncate_spares_commit", &["D-HIST"]),
     ("history_drops_hash", &["D-HIST"]),
     ("history_trusts_times", &["D-HIST"]),
+    ("history_clamps_by_starts", &["D-HIST"]),
+    ("history_clamps_by_ends", &["D-HIST"]),
     ("static_epoch", &["D-EPOCH"]),
     ("fold_names", &["D-NAMES"]),
     ("merge_cased_names", &["D-NAMES"]),
