@@ -412,6 +412,9 @@ async fn a_column_set_to_json_in_a_normalized_stream_stays_whole() {
     );
 }
 
+/// A table's data columns by name.
+type Columns = &'static [&'static str];
+
 #[tokio::test(start_paused = true)]
 async fn a_declared_schema_creates_a_normalized_streams_columns_before_any_row() {
     let fields = |fields: Vec<RdltField>| LogicalType::Struct(Fields::new(fields).unwrap());
@@ -434,28 +437,39 @@ async fn a_declared_schema_creates_a_normalized_streams_columns_before_any_row()
         ),
     ])
     .unwrap();
-    let cases: [(&str, u8, &[&str]); 3] = [
-        ("declared_deep", 8, &["id", "meta__a", "meta__b__c"]),
-        ("declared_shallow", 1, &["id", "meta__a", "meta__b"]),
-        ("declared_whole", 0, &["id", "meta", "items"]),
+    let cases: [(&str, u8, Columns, Option<Columns>); 3] = [
+        (
+            "declared_deep",
+            8,
+            &["id", "meta__a", "meta__b__c"],
+            Some(&["sku"]),
+        ),
+        (
+            "declared_shallow",
+            1,
+            &["id", "meta__a", "meta__b"],
+            Some(&["value"]),
+        ),
+        ("declared_whole", 0, &["id", "meta", "items"], None),
     ];
-    for (store, max_depth, expected) in cases {
+    let data = |schema: TableSchema| -> Vec<String> {
+        schema
+            .fields()
+            .iter()
+            .map(|field| field.name().to_owned())
+            .filter(|name| !name.starts_with("_rdlt_"))
+            .collect()
+    };
+    for (store, max_depth, expected, items) in cases {
         let plan =
             stream("events").schema(SchemaSettings::new().nested(Nested::Normalize { max_depth }));
         let source = BatchStream::json("events", &[]).declared(declared.clone());
         succeeded(&load(store, vec![source], vec![plan]).await);
         let created = schema(store, "events").expect("the table is created");
-        let columns: Vec<&str> = created
-            .fields()
-            .iter()
-            .map(RdltField::name)
-            .filter(|name| !name.starts_with("_rdlt_"))
-            .collect();
-        assert_eq!(columns, expected, "{store}");
-        assert!(
-            schema(store, "events__items").is_none(),
-            "arrays wait for rows"
-        );
+        assert_eq!(data(created), expected, "{store}");
+        let child = schema(store, "events__items").map(data);
+        let items = items.map(|items| items.iter().map(|item| (*item).to_owned()).collect());
+        assert_eq!(child, items, "{store}: an array within depth has its table");
     }
 }
 
@@ -970,4 +984,67 @@ async fn a_declared_schema_gaining_an_array_follows_the_policy_once_its_table_ex
     let second = BatchStream::json("events", &[r#"{"id":2,"items":[2]}"#]).declared(declared(true));
     succeeded(&load(store, vec![second], vec![plan(SchemaPolicy::Freeze)]).await);
     assert_eq!(published_json(store, "events__items").len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_declared_array_has_its_table_from_the_start_though_no_row_holds_an_item() {
+    let list = |item: LogicalType| LogicalType::List(Box::new(RdltField::new("item", item, true)));
+    let declared = TableSchema::new(vec![
+        RdltField::new("id", LogicalType::Int64, false),
+        RdltField::new("items", list(LogicalType::Int64), true),
+    ])
+    .unwrap();
+    let plan = |policy| {
+        stream("events").schema(
+            SchemaSettings::new()
+                .nested(Nested::normalize())
+                .policy(policy),
+        )
+    };
+    for (store, policy) in [
+        ("empty_frozen", SchemaPolicy::Freeze),
+        ("empty_discarded", SchemaPolicy::DiscardValue),
+        ("empty_dropped", SchemaPolicy::DiscardRow),
+        ("empty_evolving", SchemaPolicy::Evolve),
+    ] {
+        let first = BatchStream::json("events", &[r#"{"id":1}"#, r#"{"id":2,"items":[]}"#])
+            .declared(declared.clone());
+        succeeded(&load(store, vec![first], vec![plan(policy)]).await);
+        assert!(schema(store, "events__items").is_some(), "{store}");
+        let second =
+            BatchStream::json("events", &[r#"{"id":3,"items":[7,8]}"#]).declared(declared.clone());
+        let outcome = load(store, vec![second], vec![plan(policy)]).await;
+        succeeded(&outcome);
+        assert_eq!(published_json(store, "events__items").len(), 2, "{store}");
+        assert_eq!(
+            outcome.report.streams["events"].discarded_values, 0,
+            "{store}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_declared_array_deeper_than_the_stream_normalizes_is_no_table_of_its_own() {
+    let tags = LogicalType::List(Box::new(RdltField::new("item", LogicalType::Int64, true)));
+    let meta = LogicalType::Struct(Fields::new(vec![RdltField::new("tags", tags, true)]).unwrap());
+    let declared = TableSchema::new(vec![
+        RdltField::new("id", LogicalType::Int64, false),
+        RdltField::new("meta", meta, true),
+    ])
+    .unwrap();
+    let plan = stream("events").schema(
+        SchemaSettings::new()
+            .nested(Nested::Normalize { max_depth: 1 })
+            .policy(SchemaPolicy::Freeze),
+    );
+    let store = "declared_deep_frozen";
+    for row in [
+        r#"{"id":1,"meta":{"tags":[1]}}"#,
+        r#"{"id":2,"meta":{"tags":[2,3]}}"#,
+    ] {
+        let rows = BatchStream::json("events", &[row]).declared(declared.clone());
+        succeeded(&load(store, vec![rows], vec![plan.clone()]).await);
+    }
+    assert!(schema(store, "events__meta__tags").is_none());
+    assert_eq!(published_json(store, "events").len(), 2);
 }
