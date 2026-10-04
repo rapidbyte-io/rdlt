@@ -73,6 +73,8 @@ leaves open, and one it words otherwise.
   cycle never writes swaps in empty.
 - **Declared schemas.** A normalized stream's declared schema creates the columns of its own table
   that it holds, objects flattened; child tables are created by their first rows.
+  - Amended 2026-10-05 (ADR 0046): it creates the child table of each array it holds within
+    depth too, with the columns the array's rows bring, so state records it before any row does.
 - **Reports.** A stream's reported rows count the rows of its child tables too; reports stay per
   stream.
 - **Not yet.** Normalizing a stream that merges, or whose effective policy or a column's drops
