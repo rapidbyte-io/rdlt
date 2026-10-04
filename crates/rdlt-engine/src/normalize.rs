@@ -6,6 +6,7 @@
 //! whole, and its table stores it as `Json`.
 
 mod cascade;
+pub(crate) mod declared;
 #[cfg(test)]
 mod encodings;
 pub(crate) mod identity;
@@ -25,10 +26,7 @@ use arrow_array::{
 };
 use arrow_buffer::NullBuffer;
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef, Schema};
-use rdlt_connector::{ColumnPath, Field, LogicalType, TableSchema};
-
-use crate::error::Error;
-use crate::table::Incoming;
+use rdlt_connector::ColumnPath;
 
 pub(crate) use cascade::{Dropped, Pruned};
 
@@ -210,103 +208,6 @@ impl Table {
             batch,
             lineage,
         })
-    }
-}
-
-/// The columns of a normalized stream's own table that a declared `schema` holds: objects within
-/// depth flatten into their fields, and arrays within depth, whose child tables their first rows
-/// create, are left out.
-pub(crate) fn root_columns(schema: &TableSchema, shape: &Shape) -> Result<Incoming, Error> {
-    let mut columns = Vec::new();
-    for field in schema.fields().iter() {
-        let path = vec![Arc::from(field.name())];
-        if shape.whole.contains(field.name()) {
-            columns.push((path, field.clone()));
-        } else {
-            flatten(path, field, 1, shape.max_depth, &mut columns);
-        }
-    }
-    let paths: Vec<ColumnPath> = columns
-        .iter()
-        .map(|(path, _)| {
-            ColumnPath::new(path.clone()).map_err(|error| Error::internal(error.to_string()))
-        })
-        .collect::<Result<_, _>>()?;
-    let fields = columns
-        .into_iter()
-        .zip(&paths)
-        .map(|((_, field), path)| {
-            Field::new(
-                name(path),
-                field.logical_type().clone(),
-                field.is_nullable(),
-            )
-        })
-        .collect();
-    let schema = TableSchema::new(fields).map_err(|error| Error::internal(error.to_string()))?;
-    Ok(Incoming::of(schema, paths, &[]))
-}
-
-/// The paths below the stream's table of the arrays `schema`'s rows hold, which normalizing makes
-/// child tables of: each array's, then those of the arrays its items hold.
-///
-/// Arrays deeper than the shape's depth stay whole and never have rows of their own, so listing
-/// them too changes nothing.
-pub(crate) fn declared_arrays(schema: &TableSchema, shape: &Shape) -> Vec<Vec<Arc<str>>> {
-    let mut arrays = Vec::new();
-    for field in schema.fields().iter() {
-        if !shape.whole.contains(field.name()) {
-            arrays_within(
-                vec![Arc::from(field.name())],
-                field.logical_type(),
-                &mut arrays,
-            );
-        }
-    }
-    arrays
-}
-
-/// Collects the paths of the arrays a value of `logical` at `path` holds, itself included.
-fn arrays_within(path: Vec<Arc<str>>, logical: &LogicalType, arrays: &mut Vec<Vec<Arc<str>>>) {
-    match logical {
-        LogicalType::Struct(fields) => {
-            for inner in fields.iter() {
-                let mut inner_path = path.clone();
-                inner_path.push(Arc::from(inner.name()));
-                arrays_within(inner_path, inner.logical_type(), arrays);
-            }
-        }
-        LogicalType::List(item) => {
-            arrays.push(path.clone());
-            let mut items = path;
-            if !matches!(item.logical_type(), LogicalType::Struct(_)) {
-                items.push(Arc::from(VALUE));
-            }
-            arrays_within(items, item.logical_type(), arrays);
-        }
-        _ => {}
-    }
-}
-
-/// Collects the columns `field`, at `path` with values at `depth`, flattens into.
-fn flatten(
-    path: Vec<Arc<str>>,
-    field: &Field,
-    depth: u8,
-    max_depth: u8,
-    columns: &mut Vec<(Vec<Arc<str>>, Field)>,
-) {
-    match field.logical_type() {
-        LogicalType::Struct(fields) if depth <= max_depth => {
-            for inner in fields.iter() {
-                let mut inner_path = path.clone();
-                inner_path.push(Arc::from(inner.name()));
-                let inner = Field::new(inner.name(), inner.logical_type().clone(), true);
-                flatten(inner_path, &inner, depth + 1, max_depth, columns);
-            }
-        }
-        LogicalType::List(_) if depth <= max_depth => {}
-        _ => columns.push((path, field.clone())),
     }
 }
 

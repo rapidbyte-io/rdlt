@@ -62,11 +62,13 @@ impl Planning<'_> {
         let sequences = sequences::to_record(plan, recorded, &key, spec.change_time())?
             .map(|keying| (table.path.clone(), keying));
         let index = tables.add_normalized(resolver, &table, model, shape.clone())?;
+        let mut children = Vec::new();
         if let Some(declared) = spec.schema() {
             let incoming = match &shape {
                 Some(shape) => {
-                    tables.declare_children(index, normalize::declared_arrays(declared, shape))?;
-                    normalize::root_columns(declared, shape)?
+                    let made = normalize::declared::children(declared, shape)?;
+                    children = tables.declared_children(index, made)?;
+                    normalize::declared::root_columns(declared, shape)?
                 }
                 None => Incoming::declared(declared.clone()),
             };
@@ -74,6 +76,10 @@ impl Planning<'_> {
         }
         tables.create_generation(index).await?;
         tables.add_meta_columns(index).await?;
+        for (path, incoming) in children {
+            let child = tables.child(index, &path).await?;
+            tables.fit(child, &incoming).await?;
+        }
         for child in tables.recorded_children(index) {
             tables.child(index, &child).await?;
         }
