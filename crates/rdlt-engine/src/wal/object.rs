@@ -220,6 +220,11 @@ impl WalStore for ObjectStoreWal {
         NonZeroU64::new(self.shared.chunk_most() / 2)
     }
 
+    /// A part: a staging uploads each part as it fills.
+    fn staging_bytes(&self) -> u64 {
+        u64::try_from(self.shared.calls.options.part_bytes.get()).unwrap_or(u64::MAX)
+    }
+
     fn identity(&self, proposed: LoadId) -> BoxFuture<'_, io::Result<LoadId>> {
         Box::pin(self.shared.identity(proposed))
     }

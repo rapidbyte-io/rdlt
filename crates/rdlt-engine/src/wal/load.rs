@@ -63,6 +63,8 @@ pub(crate) struct LoadLog {
     disk: Arc<Disk>,
     /// What decides whether a batch that finds the log full waits for room or is refused.
     pressure: Arc<room::Pressure>,
+    /// What the store's stagings hold in memory, charged to the budget while the log is written.
+    _staging: Arc<Option<Reservation>>,
 }
 
 /// What a load's log may hold on disk, and when it makes a commit due.
@@ -97,6 +99,7 @@ impl LoadLog {
         store: Arc<dyn WalStore>,
         owner: Owner,
         limit: NonZeroU64,
+        staging: Option<Reservation>,
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
@@ -114,6 +117,7 @@ impl LoadLog {
             counts: Arc::default(),
             disk: Arc::new(disk),
             pressure: Arc::default(),
+            _staging: Arc::new(staging),
         };
         (log, task)
     }
