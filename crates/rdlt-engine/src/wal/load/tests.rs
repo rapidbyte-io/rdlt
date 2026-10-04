@@ -729,3 +729,57 @@ async fn what_was_counted_of_a_segment_goes_with_its_seal_or_its_abandonment() {
     let (ended, ()) = tokio::join!(task, written);
     ended.expect("the writer ends");
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() {
+    let store = Arc::new(MemoryWal::default());
+    store.open(&pipeline(), load());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let owner = Owner {
+        pipeline: pipeline(),
+        load: load(),
+        epoch: Epoch(1),
+        opened: None,
+        origin: load(),
+    };
+    let limit = std::num::NonZeroU64::new(4_000).unwrap();
+    let (log, task) = LoadLog::start(wal, owner, limit, None);
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let written = async {
+        // A checkpoint a commit took leaves nothing for the next commit to free.
+        log.checkpointed();
+        log.took(1);
+        let mut segment = 0;
+        while logged(&log, &budget, 0, &orders, SegmentId(segment), &ids(0))
+            .await
+            .is_ok()
+        {
+            segment += 1;
+        }
+        // A commit under way may free room: the next batch waits for it, and once it ended
+        // having freed none, with no checkpoint left to take, the batch is refused.
+        assert!(!log.waits(), "a batch refused waits for nothing");
+        let committing = log.committing();
+        let batch = ids(0);
+        let waiting = logged(&log, &budget, 0, &orders, SegmentId(segment), &batch);
+        let ended = async {
+            while !log.waits() {
+                tokio::task::yield_now().await;
+            }
+            drop(committing);
+        };
+        let (refused, ()) = tokio::join!(waiting, ended);
+        let error = refused.expect_err("no room");
+        assert_eq!(error.code(), Some("log_bytes_exceeded"));
+        assert!(!log.waits());
+        drop(log);
+    };
+    let deadline =
+        crate::env::Clock::sleep(&crate::env::SystemClock, std::time::Duration::from_secs(60));
+    tokio::select! {
+        biased;
+        (ended, ()) = async { tokio::join!(task, written) } => ended.expect("the writer ends"),
+        () = deadline => panic!("a batch waits for a commit that cannot free room"),
+    }
+}

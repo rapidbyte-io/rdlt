@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use object_store::memory::InMemory;
+use object_store::{ObjectStoreExt as _, PutPayload};
 use parking_lot::Mutex;
 use rdlt_testkit::objects::{Call, Fault, Op, faultless};
 
@@ -219,9 +220,15 @@ async fn a_create_answered_taken_at_once_is_another_s_and_after_an_unknown_attem
         Op::Put { create: true } => answers.next().unwrap_or(Fault::None),
         _ => Fault::None,
     }));
+    let reads = objects.ranges().len();
     wal.open_log(&orders, chunk(2, 0).load)
         .await
         .expect("made again");
+    assert_eq!(
+        objects.ranges().len(),
+        reads,
+        "a read back looks, reading no bytes"
+    );
     assert_eq!(wal.loads(&orders).await.expect("lists"), [chunk(2, 0).load]);
 }
 
@@ -242,6 +249,51 @@ async fn a_create_raced_on_every_attempt_after_an_unknown_one_is_unavailable() {
     assert_eq!(
         judged(refused),
         (Some("wal_storage_unavailable".to_owned()), true)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_create_whose_read_back_is_refused_reports_the_refusal_and_creates_nothing_more() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let mut answers = vec![Fault::Fail, Fault::Raced].into_iter();
+    objects.plan(Box::new(move |call| match call.op {
+        Op::Put { create: true } => answers.next().unwrap_or(Fault::None),
+        Op::Get => Fault::Denied,
+        _ => Fault::None,
+    }));
+    let before = objects.calls().len();
+    let refused = wal
+        .open_log(&pipeline("unread"), chunk(1, 0).load)
+        .await
+        .expect_err("refused");
+    assert_eq!(
+        judged(refused),
+        (Some("wal_storage_denied".to_owned()), false)
+    );
+    let creates = objects.calls()[before..]
+        .iter()
+        .filter(|call| call.op == (Op::Put { create: true }))
+        .count();
+    assert_eq!(creates, 2, "the attempt failed and the one answered taken");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_staging_whose_look_at_its_log_is_refused_reports_the_refusal_not_a_closed_log() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("looked");
+    wal.open_log(&orders, chunk(1, 0).load)
+        .await
+        .expect("opens");
+    objects.plan(always(Fault::Denied, |call| call.op == Op::Get));
+    let Err(refused) = wal.stage(&orders, chunk(1, 0)).await else {
+        panic!("staged unseen")
+    };
+    assert_ne!(refused.kind(), io::ErrorKind::NotFound);
+    assert_eq!(
+        judged(refused),
+        (Some("wal_storage_denied".to_owned()), false)
     );
 }
 
@@ -350,6 +402,37 @@ async fn a_read_to_the_end_of_a_chunk_asks_for_the_rest_of_it_however_long_it_is
             GetRange::Offset(1),
         ]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_listing_steady_but_slow_is_given_up_past_the_deadline_of_its_pages_in_all() {
+    // Each object comes within a page's deadline; a listing may take 66 pages' deadlines, as
+    // many as its most objects fill and one more.
+    let page = Duration::from_secs(1);
+    for (marks, listed) in [(131_u128, true), (140, false)] {
+        let objects = objects(faultless());
+        let wal = opened(&objects, tries(1, page)).await;
+        let orders = pipeline("steady");
+        for load in 0..marks {
+            let mark = wal.shared.keys.mark(&orders, chunk(load + 1, 0).load);
+            objects
+                .inner()
+                .put(&mark, PutPayload::from_static(b""))
+                .await
+                .expect("puts");
+        }
+        objects.plan(always(Fault::Drip(page / 2), |call| call.op == Op::List));
+        let loads = wal.loads(&orders).await;
+        if listed {
+            assert_eq!(loads.expect("listed in time").len(), 131);
+        } else {
+            let refused = loads.expect_err("past its pages' deadline");
+            assert_eq!(
+                judged(refused),
+                (Some("wal_storage_unavailable".to_owned()), true)
+            );
+        }
+    }
 }
 
 #[tokio::test(start_paused = true)]

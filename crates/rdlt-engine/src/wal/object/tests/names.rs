@@ -5,9 +5,9 @@ use std::io;
 use std::sync::Arc;
 
 use object_store::{ObjectStoreExt as _, PutPayload};
-use rdlt_testkit::objects::faultless;
+use rdlt_testkit::objects::{Fault, Op, faultless};
 
-use super::{chunk, judged, keys, objects, opened, options, pipeline};
+use super::{always, chunk, judged, keys, objects, opened, options, pipeline};
 use crate::env::SystemClock;
 use crate::wal::WalStore;
 use crate::wal::object::ObjectStoreWal;
@@ -169,4 +169,41 @@ async fn a_store_s_identity_is_its_first_proposal_and_unreadable_where_damaged()
     let wal = opened(&damaged, options(1 << 20)).await;
     let refused = wal.identity(two).await.expect_err("damaged");
     assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+}
+
+#[tokio::test]
+async fn stores_naming_themselves_at_once_both_take_the_first_create_s_identity() {
+    let shared = objects(faultless());
+    let first = opened(&shared, options(1 << 20)).await;
+    let second = opened(&shared, options(1 << 20)).await;
+    // Both find no identity, and both create one: the second is answered taken, and reads it.
+    shared.plan(always(Fault::Slow(4), |call| {
+        call.op == (Op::Put { create: true })
+    }));
+    let (one, two) = (chunk(1, 0).load, chunk(2, 0).load);
+    let (named, read) = tokio::join!(first.identity(one), second.identity(two));
+    assert_eq!(named.expect("names"), one);
+    assert_eq!(read.expect("reads"), one);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_store_refused_a_look_at_its_identity_or_its_making_reports_the_refusal() {
+    let proposed = chunk(1, 0).load;
+    for refused in [Op::Get, Op::Put { create: true }] {
+        let objects = objects(faultless());
+        let wal = opened(&objects, options(1 << 20)).await;
+        objects.plan(Box::new(move |call| {
+            if call.op == refused {
+                Fault::Denied
+            } else {
+                Fault::None
+            }
+        }));
+        let error = wal.identity(proposed).await.expect_err("refused");
+        assert_eq!(
+            judged(error),
+            (Some("wal_storage_denied".to_owned()), false),
+            "{refused:?}"
+        );
+    }
 }

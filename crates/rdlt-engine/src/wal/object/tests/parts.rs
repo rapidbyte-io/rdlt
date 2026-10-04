@@ -110,6 +110,35 @@ async fn a_chunk_longer_than_a_part_is_uploaded_in_parts_and_read_back_whole_and
 }
 
 #[tokio::test]
+async fn a_chunk_in_parts_is_read_and_removed_whole_by_a_store_that_never_staged_it() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(4)).await;
+    let orders = pipeline("another");
+    let at = chunk(1, 0);
+    staged(&wal, &orders, at, LONG)
+        .await
+        .publish()
+        .await
+        .expect("publishes");
+    // Another process's store knows the chunk only by its head.
+    let other = opened(&objects, options(4)).await;
+    assert_eq!(
+        other.chunks(&orders, at.load).await.expect("lists"),
+        [(0, 17)]
+    );
+    assert_eq!(
+        &other.read(&orders, at, 0, 17).await.expect("reads")[..],
+        LONG
+    );
+    other.remove(&orders, at).await.expect("removes");
+    let left = keys(&objects).await;
+    assert!(
+        !left.iter().any(|key| key.contains("/logs/")),
+        "head and body are gone: {left:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_chunk_of_a_part_or_less_is_published_by_one_put() {
     let objects = objects(faultless());
     let wal = opened(&objects, options(4)).await;
@@ -272,6 +301,39 @@ async fn a_completion_that_fails_where_no_body_of_its_length_is_fails() {
         "a body of another length is not this upload's"
     );
     assert!(calls.complete(&key, &id, Vec::new(), 3).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_part_is_eight_mib_by_default_and_a_chunk_that_long_is_published_by_one_put() {
+    let objects = objects(faultless());
+    let default = super::ObjectStoreOptions::default();
+    let wal = super::super::ObjectStoreWal::open(
+        Arc::clone(&objects) as _,
+        "logs",
+        Arc::new(SystemClock),
+        default,
+    )
+    .await
+    .expect("the store is probed");
+    let part = 8 << 20;
+    assert_eq!(wal.staging_bytes(), part);
+    assert_eq!(
+        wal.chunk_bytes().map(std::num::NonZero::get),
+        Some(part * 5_000)
+    );
+    let orders = pipeline("default");
+    wal.open_log(&orders, chunk(1, 0).load)
+        .await
+        .expect("opens");
+    let before = objects.calls().len();
+    let mut staged = wal.stage(&orders, chunk(1, 0)).await.expect("stages");
+    let long = usize::try_from(part).expect("a length");
+    staged
+        .append(Bytes::from(vec![7; long]))
+        .await
+        .expect("appends");
+    staged.publish().await.expect("publishes");
+    assert!(!ops(&objects)[before..].contains(&Op::Begin));
 }
 
 #[tokio::test]

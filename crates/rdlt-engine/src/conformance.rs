@@ -226,7 +226,13 @@ async fn a_published_chunk_is_whole_read_by_range_and_never_replaced(store: &dyn
     assert_eq!(&read[..], b"first chunk", "the chunk is unchanged");
 }
 
-async fn the_first_of_two_chunks_of_one_name_published_is_kept(store: &dyn WalStore) {
+/// Two chunks of one name are staged and published: the first is kept and the second refused,
+/// also where both hold the same bytes, as two fences of one tail do.
+///
+/// # Panics
+///
+/// Panics where the second is published, or the first is not kept.
+pub async fn the_first_of_two_chunks_of_one_name_published_is_kept(store: &dyn WalStore) {
     let orders = pipeline("raced");
     let at = chunk(1, 4);
     opened(store, &orders, at.load).await;
