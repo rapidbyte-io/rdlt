@@ -17,6 +17,7 @@ mod owned;
 mod read;
 mod rows;
 mod tables;
+mod widenings;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

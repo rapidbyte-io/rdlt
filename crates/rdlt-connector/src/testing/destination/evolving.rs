@@ -75,7 +75,8 @@ impl Bench<'_> {
         expect_rows(&self.rows_of(&other).await?, &[2])
     }
 
-    /// Adds a column and widens one, each applied twice, with rows committed before and after.
+    /// Adds a column and widens one, each applied twice, with rows committed before and after,
+    /// and widens a column of each pair of kinds the destination widens in place.
     pub(super) async fn schema_changes_apply(&self) -> Result<(), Violation> {
         let changes = self.destination.capabilities().schema_changes.clone();
         let mut opened = self.staged(self.destination, 1, &[1]).await?;
@@ -90,8 +91,10 @@ impl Bench<'_> {
             self.add_column(&mut opened, seq).await?;
         }
         if changes.widens(TypeKind::Int32, TypeKind::Int64) {
-            self.widen_column(&mut opened, seq.next()).await?;
+            seq = seq.next();
+            self.widen_column(&mut opened, seq).await?;
         }
+        self.widenings_keep_every_value(&mut opened, seq).await?;
         Ok(())
     }
 
@@ -298,9 +301,7 @@ pub(super) fn inapplicable(destination: &dyn Destination, id: &str) -> Option<&'
         }
         "D-SCHEMA"
             if !capabilities.schema_changes.add_column
-                && !capabilities
-                    .schema_changes
-                    .widens(TypeKind::Int32, TypeKind::Int64) =>
+                && capabilities.schema_changes.widenings.is_empty() =>
         {
             Some("the destination declares no schema change the clause checks")
         }

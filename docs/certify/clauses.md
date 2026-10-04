@@ -75,7 +75,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 | `D-STATE` | committed state records are returned by the next open | — |
 | `D-DISCARD` | segments staged by an earlier session, or that a commit abandons, are never published | — |
 | `D-REPLACE` | a replace generation stays hidden until the commit that finishes it swaps it in | the destination cannot replace |
-| `D-SCHEMA` | every declared schema change applies, and applying it again changes nothing | the destination adds no column and widens no 32-bit integer |
+| `D-SCHEMA` | every declared schema change applies, and applying it again changes nothing; a column of each kind the destination stores and widens in place reads back every value it held, exactly | the destination adds no column and widens no type in place |
 | `D-MERGE` | a merge keeps one row per key: the newest commit's, and within a commit the greatest sequence's; a change stream's change applies only past the sequence of the row its key holds | the destination cannot merge |
 | `D-DELETE` | a change stream's delete removes its key's row, or marks it deleted and keeps its values; no change sequenced before a hard delete, even of a key no row held, brings the row back in any later session, until the table is replaced whole | the destination merges no change stream, or neither removes nor marks deleted rows |
 | `D-PARTIAL` | a change stream's update keeps the published value of each column it flags unchanged | the destination merges no change stream, or takes no partial update |
