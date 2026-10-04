@@ -164,7 +164,7 @@ impl Session for SimSession {
                     self.pipeline, self.epoch
                 )));
             }
-            let key = (meta.load_id, meta.commit_seq);
+            let key = (self.pipeline.clone(), meta.load_id, meta.commit_seq);
             if let Some(receipt) = store.receipts.get(&key) {
                 return Ok(receipt.clone());
             }
@@ -179,9 +179,13 @@ impl Session for SimSession {
                 rows: published.iter().map(|(_, rows)| rows.len() as u64).sum(),
                 bytes: 0,
             };
-            // Receipts of the commits the engine never repeats are forgotten, this commit's kept.
+            // The pipeline's receipts of the commits the engine never repeats are forgotten, this
+            // commit's kept, and every other pipeline's.
             if let Some(horizon) = &meta.horizon {
-                store.receipts.retain(|key, _| horizon.keeps(key.0, key.1));
+                let pipeline = &self.pipeline;
+                store
+                    .receipts
+                    .retain(|(of, load, seq), _| of != pipeline || horizon.keeps(*load, *seq));
             }
             store.receipts.insert(key, receipt.clone());
             receipt

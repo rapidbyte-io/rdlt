@@ -616,6 +616,8 @@ struct VaultConfig {
     forget_receipts: bool,
     /// Forgets the receipt of the commit a horizon names, with those of the commits before it.
     forget_at_horizon: bool,
+    /// Forgets the receipts before a horizon of every pipeline's, not the committing one's alone.
+    forget_others: bool,
     publish_all: bool,
     /// Publishes, for each segment a commit lists, one it staged and the commit does not list.
     publish_other: bool,
@@ -742,7 +744,7 @@ struct VaultConfig {
 struct VaultStore {
     epochs: BTreeMap<PipelineId, u64>,
     state: BTreeMap<PipelineId, BTreeMap<String, StateRecord>>,
-    receipts: BTreeMap<(LoadId, CommitSeq), Receipt>,
+    receipts: BTreeMap<(PipelineId, LoadId, CommitSeq), Receipt>,
     staged: BTreeMap<(PipelineId, SegmentId), Vec<Staged>>,
     published: BTreeMap<String, Vec<RecordBatch>>,
     /// Committed rows of replace generations, by table and generation.
@@ -1314,7 +1316,7 @@ impl Session for VaultSession {
             };
             return Err(error);
         }
-        let key = (meta.load_id, meta.commit_seq);
+        let key = (self.pipeline.clone(), meta.load_id, meta.commit_seq);
         let recall = !self.config.republish && !self.config.forget_receipts;
         if let Some(receipt) = store.receipts.get(&key).filter(|_| recall) {
             return Ok(receipt.clone());
@@ -1341,10 +1343,12 @@ impl Session for VaultSession {
             bytes: 0,
         };
         if let Some(horizon) = &meta.horizon {
-            let past = self.config.forget_at_horizon;
-            store.receipts.retain(|key, _| {
-                horizon.keeps(key.0, key.1)
-                    && !(past && *key == (horizon.load_id, horizon.commit_seq))
+            let (past, others) = (self.config.forget_at_horizon, self.config.forget_others);
+            let pipeline = &self.pipeline;
+            store.receipts.retain(|(of, load, seq), _| {
+                (of != pipeline && !others)
+                    || horizon.keeps(*load, *seq)
+                        && !(past && (*load, *seq) == (horizon.load_id, horizon.commit_seq))
             });
         }
         store.receipts.insert(key, receipt.clone());
@@ -1802,6 +1806,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("wrong_fence_kind", &["D-FENCE"]),
     ("forget_receipts", &["D-IDEMPOTENT"]),
     ("forget_at_horizon", &["D-IDEMPOTENT"]),
+    ("forget_others", &["D-IDEMPOTENT"]),
     ("publish_all", &["D-COMMIT"]),
     (
         "blank_names",

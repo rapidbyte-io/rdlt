@@ -253,8 +253,18 @@ impl Bench<'_> {
         destination: &dyn Destination,
         load: u8,
     ) -> Result<OpenedSession, Violation> {
+        self.open_as(destination, self.pipeline(), load).await
+    }
+
+    /// Opens a session of `pipeline` on `destination`, for load `load`.
+    async fn open_as(
+        &self,
+        destination: &dyn Destination,
+        pipeline: PipelineId,
+        load: u8,
+    ) -> Result<OpenedSession, Violation> {
         let context = OpenContext {
-            pipeline: self.pipeline(),
+            pipeline,
             load_id: self.load_id(load),
         };
         bounded("open", destination.open(&context))
