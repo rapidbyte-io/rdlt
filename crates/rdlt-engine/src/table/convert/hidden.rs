@@ -95,7 +95,7 @@ fn spanned<O: OffsetSizeTrait>(
     offsets: &OffsetBuffer<O>,
     nulls: Option<&NullBuffer>,
 ) -> Option<(OffsetBuffer<O>, UInt64Array)> {
-    let nulls = nulls.filter(|nulls| nulls.null_count() > 0)?;
+    let nulls = nulls?;
     let span = |row: usize| offsets[row].as_usize()..offsets[row + 1].as_usize();
     let rows = offsets.len().saturating_sub(1);
     if !(0..rows).any(|row| nulls.is_null(row) && !span(row).is_empty()) {
@@ -116,7 +116,7 @@ fn spanned<O: OffsetSizeTrait>(
 /// `array` null wherever `nulls` says, beside its own nulls; `array` itself where that adds none
 /// or its type keeps no nulls of its own.
 fn masked(array: &ArrayRef, nulls: Option<&NullBuffer>) -> Result<ArrayRef, ArrowError> {
-    let Some(nulls) = nulls.filter(|nulls| nulls.null_count() > 0) else {
+    let Some(nulls) = nulls else {
         return Ok(Arc::clone(array));
     };
     if matches!(array.data_type(), DataType::Null | DataType::Union(..)) {
