@@ -319,6 +319,18 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
   and recorded by the pipeline's first commit there, and an engine with another store is refused
   (`wal_store_other`) before it reads anything.
 
+- A log in an object store (ADR 0051) lies beneath a prefix of plain segments
+  (`wal_prefix_invalid`), and a name it never writes is refused there too (`wal_stray`). The
+  store is probed before a log is kept in it: one that takes a second create of one name, lists
+  no fresh object, takes no upload in parts or keeps what it says it deleted is refused
+  (`wal_storage_unsupported`), so no log runs unfenced. Its credentials are secret references
+  the operator's resolver alone resolves, never literals, never shown; it is reached over TLS
+  checked against the system's trusted roots, with no redirect or proxy, and in plain HTTP only
+  at a loopback IP address. Every request has a deadline and a bounded number of attempts
+  (`wal_storage_unavailable`, retryable); a refusal of the credentials is final
+  (`wal_storage_denied`). Whoever may write the bucket's prefix holds the log's authority, as
+  whoever may write a local base does: grant it to the engine's credentials alone.
+
 A log is not signed: whoever can write as the engine's user holds its authority already. A log
 that cannot be read stops its pipeline's runs until an operator removes it, since setting it
 aside would drop rows its source was told were committed.
