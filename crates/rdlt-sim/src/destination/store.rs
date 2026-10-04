@@ -20,7 +20,8 @@ use crate::world::World;
 #[derive(Debug, Default)]
 pub(crate) struct Store {
     pub(super) pipelines: BTreeMap<PipelineId, PipelineStore>,
-    pub(super) receipts: BTreeMap<(LoadId, CommitSeq), Receipt>,
+    /// Each commit's receipt, by its pipeline and the commit.
+    pub(super) receipts: BTreeMap<(PipelineId, LoadId, CommitSeq), Receipt>,
     /// Staged rows, by the pipeline whose session staged them and their segment.
     pub(super) staged: BTreeMap<(PipelineId, SegmentId), Vec<Staged>>,
     pub(super) names: BTreeMap<TablePath, String>,

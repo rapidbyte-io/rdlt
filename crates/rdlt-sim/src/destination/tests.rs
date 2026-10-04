@@ -268,6 +268,25 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
             };
             let receipt = first.session.commit(&meta).await.unwrap();
             assert_eq!(receipt.rows, 1, "the first pipeline's staged row publishes");
+            // The second pipeline's commit declares a horizon past the first's commit: the
+            // first's receipt is its own, and stays.
+            let past = rdlt_connector::Horizon {
+                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 9),
+                commit_seq: CommitSeq::FIRST,
+            };
+            let theirs = CommitMeta {
+                load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 9),
+                epoch: second.epoch,
+                segments: SegmentSet::new(),
+                horizon: Some(past),
+                ..meta.clone()
+            };
+            second.session.commit(&theirs).await.unwrap();
+            let again = first.session.commit(&meta).await.unwrap();
+            assert_eq!(
+                again, receipt,
+                "the first pipeline's receipt answers it again"
+            );
         }
     });
     World::unregister(name);
