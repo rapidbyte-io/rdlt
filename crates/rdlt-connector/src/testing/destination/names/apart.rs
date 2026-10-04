@@ -4,6 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
+use regex_syntax::hir::{ClassUnicode, ClassUnicodeRange};
+use unicase::UniCase;
+
 use super::folded;
 use crate::capabilities::{IdentifierChars, IdentifierRules};
 use crate::text::deceives;
@@ -48,40 +51,43 @@ pub(super) fn apart(rules: &IdentifierRules, longest: usize) -> Vec<Pair> {
     names
 }
 
-/// Which equalities make the two sides of `pair` alike, a bit each: ASCII case, Unicode's lower
-/// case, its simple case folding and its full case folding.
+/// Which equalities make the two sides of `pair` alike, a bit each: ASCII case, the lower case
+/// the declared rules fold by, Unicode's simple case folding and its full case folding.
 fn alike((one, other): &Pair) -> u8 {
-    let full = |text: &str| -> String {
-        text.chars()
-            .flat_map(char::to_uppercase)
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
     [
         one.eq_ignore_ascii_case(other),
         one.to_lowercase() == other.to_lowercase(),
         simply_folded(one) == simply_folded(other),
-        full(one) == full(other),
+        fully_folded(one) == fully_folded(other),
     ]
     .into_iter()
     .enumerate()
     .fold(0, |bits, (bit, alike)| bits | (u8::from(alike) << bit))
 }
 
-/// `name` under Unicode's simple case folding: each character's upper case in lower case, where
-/// both are one character.
+/// The characters Unicode's simple case folding makes alike with `c`, `c` among them, as
+/// `regex-syntax` holds them: the folding of Unicode 16.0, whatever Unicode the toolchain knows.
+fn simple_class(c: char) -> impl Iterator<Item = char> {
+    let mut class = ClassUnicode::new([ClassUnicodeRange::new(c, c)]);
+    class.case_fold_simple();
+    let ranges: Vec<(char, char)> = class
+        .iter()
+        .map(|range| (range.start(), range.end()))
+        .collect();
+    ranges.into_iter().flat_map(|(start, end)| start..=end)
+}
+
+/// `name` under Unicode's simple case folding: each character as the least of those the folding
+/// makes alike with it.
 pub(in crate::testing) fn simply_folded(name: &str) -> String {
-    let single = |chars: &mut dyn Iterator<Item = char>| {
-        let first = chars.next()?;
-        chars.next().is_none().then_some(first)
-    };
     name.chars()
-        .map(|c| {
-            let upper = single(&mut c.to_uppercase());
-            let lower = upper.and_then(|upper| single(&mut upper.to_lowercase()));
-            lower.unwrap_or(c)
-        })
+        .map(|c| simple_class(c).min().unwrap_or(c))
         .collect()
+}
+
+/// `name` under Unicode's full case folding, as `unicase` holds it.
+fn fully_folded(name: &str) -> String {
+    UniCase::unicode(name).to_folded_case()
 }
 
 /// The pieces of names `rules` keep apart that a wider equality makes alike, as `rules` fold
@@ -108,9 +114,9 @@ pub(super) fn pieces(rules: &IdentifierRules) -> [Vec<Pair>; 3] {
     [kept(cased), kept(case_folded), kept(normalized.to_vec())]
 }
 
-/// Every character Unicode maps to another case beside each it maps to, and every character
-/// whose case folding, its upper case in lower case, is not its lower case beside that folding:
-/// among the characters `chars` admits, found once.
+/// Every character Unicode's simple case folding makes alike with another beside each such
+/// other, and every character whose full case folding is more than one character beside that
+/// folding: among the characters `chars` admits, found once.
 fn mapped(chars: IdentifierChars) -> (Vec<Pair>, Vec<Pair>) {
     static ASCII: OnceLock<(Vec<Pair>, Vec<Pair>)> = OnceLock::new();
     static ANY: OnceLock<(Vec<Pair>, Vec<Pair>)> = OnceLock::new();
@@ -122,20 +128,24 @@ fn mapped(chars: IdentifierChars) -> (Vec<Pair>, Vec<Pair>) {
 }
 
 /// What [`mapped`] finds, every character up to `last` looked at.
+///
+/// A character alike with another under the simple folding folds to something else under the
+/// full one, or another folds to it: each such class is met from one that folds.
 fn mappings(last: u32) -> (Vec<Pair>, Vec<Pair>) {
     let (mut cased, mut case_folded) = (BTreeSet::new(), BTreeSet::new());
     for c in (0..=last).filter_map(char::from_u32) {
         let own = c.to_string();
-        let lower: String = c.to_lowercase().collect();
-        let upper: String = c.to_uppercase().collect();
-        let folding: String = upper.chars().flat_map(char::to_lowercase).collect();
-        for other in [&lower, &upper] {
-            if *other != own {
-                cased.insert(ordered(own.clone(), other.clone()));
-            }
+        let full = fully_folded(&own);
+        if full == own {
+            continue;
         }
-        if folding != lower && folding != own {
-            case_folded.insert(ordered(own, folding));
+        for other in simple_class(c)
+            .filter(|other| *other != c && *other <= char::from_u32(last).unwrap_or(c))
+        {
+            cased.insert(ordered(own.clone(), other.to_string()));
+        }
+        if full.chars().count() > 1 {
+            case_folded.insert(ordered(own, full));
         }
     }
     (

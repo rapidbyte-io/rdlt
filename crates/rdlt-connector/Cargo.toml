@@ -14,7 +14,7 @@ macros = ["dep:rdlt-connector-macros"]
 # stands, each a factory of its own and a call of the protocol. A connector's own binary leaves
 # them out.
 certify = []
-testing = ["dep:arrow-cast", "certify"]
+testing = ["dep:arrow-cast", "dep:regex-syntax", "dep:unicase", "certify"]
 wire = []
 serve = [
   "wire",
@@ -46,6 +46,7 @@ base64.workspace = true
 bytes.workspace = true
 rdlt-connector-macros = { workspace = true, optional = true }
 rdlt-wire.workspace = true
+regex-syntax = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true, features = ["http2", "server"] }
 hyper-util = { workspace = true, optional = true, features = ["tokio", "service"] }
@@ -61,6 +62,7 @@ subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
+unicase = { workspace = true, optional = true }
 uuid.workspace = true
 zeroize.workspace = true
 

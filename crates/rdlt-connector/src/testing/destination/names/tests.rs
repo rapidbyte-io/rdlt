@@ -49,20 +49,26 @@ fn every_pair_a_wider_equality_makes_alike_is_written_where_the_rules_keep_it_ap
     };
     let pair = |one: &str, other: &str| (one.to_owned(), other.to_owned());
     let (cased, folding, normalized) = pieces(IdentifierCase::Preserve, IdentifierChars::Any);
+    // Simple case folding, as Unicode 16.0 has it: dotless i folds to no other letter.
     for wanted in [
         pair("K", "k"),
         pair("k", "\u{212a}"),
-        pair("I", "ı"),
-        pair("i\u{307}", "İ"),
+        pair("s", "\u{17f}"),
+        pair("\u{3c2}", "\u{3c3}"),
+        pair("\u{1f80}", "\u{1f88}"),
     ] {
         assert!(cased.contains(&wanted), "{wanted:?}");
     }
+    assert!(
+        !cased
+            .iter()
+            .any(|(one, other)| one == "\u{131}" || other == "\u{131}")
+    );
+    // Full case folding, into more than one character.
     for wanted in [
-        pair("s", "ſ"),
-        pair("ς", "σ"),
-        pair("ss", "ß"),
-        pair("i", "ı"),
-        pair("fi", "ﬁ"),
+        pair("ss", "\u{df}"),
+        pair("i\u{307}", "\u{130}"),
+        pair("fi", "\u{fb01}"),
     ] {
         assert!(folding.contains(&wanted), "{wanted:?}");
     }
@@ -77,8 +83,8 @@ fn every_pair_a_wider_equality_makes_alike_is_written_where_the_rules_keep_it_ap
     let (cased, folding, normalized) = pieces(IdentifierCase::Lower, IdentifierChars::Any);
     let all: Vec<_> = cased.iter().chain(&folding).chain(&normalized).collect();
     assert!(all.iter().all(|(one, other)| one != other));
-    assert!(!all.contains(&&pair("k", "k")) && all.contains(&&pair("s", "ſ")));
-    assert!(all.contains(&&pair("ss", "ß")) && all.contains(&&pair("σ", "ς")));
+    assert!(!all.contains(&&pair("k", "k")) && all.contains(&&pair("s", "\u{17f}")));
+    assert!(all.contains(&&pair("ss", "\u{df}")) && all.contains(&&pair("\u{3c2}", "\u{3c3}")));
     // Only ASCII word characters: no pair a wider equality makes alike is left.
     let (cased, folding, normalized) = pieces(IdentifierCase::Preserve, IdentifierChars::AsciiWord);
     assert_eq!(folding.len() + normalized.len(), 0);

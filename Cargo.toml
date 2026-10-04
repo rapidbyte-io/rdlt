@@ -101,6 +101,11 @@ tokio-util = { version = "0.7.19", default-features = false } # CancellationToke
 xxhash-rust = { version = "0.8.18", features = [
   "xxh3",
 ] } # hashes that tell colliding identifiers apart
+regex-syntax = { version = "0.8.11", default-features = false, features = [
+  "std",
+  "unicode-case",
+] } # Unicode 16.0's simple case folding, which certification's identifier pairs follow
+unicase = "2.9.0" # Unicode's full case folding, which certification's identifier pairs follow
 
 # Tooling and tests
 anyhow = "1.0.104" # error reporting at xtask's command-line entry point
