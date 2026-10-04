@@ -1,5 +1,5 @@
 //! A world's write-ahead logs kept in an object store in memory, through the engine's
-//! [`ObjectStoreWal`], whose requests fail, stall, race, lose their answers and list stale as the
+//! [`ObjectStoreWal`], whose requests fail, stall, race, lose their answers and land late as the
 //! seed draws.
 
 #[cfg(test)]
@@ -34,7 +34,8 @@ pub(crate) struct ObjectLogs {
     faults: Arc<Mutex<Option<SplitMix64>>>,
 }
 
-/// The store's clock: the simulation's paused one, and draws of its own.
+/// The store's clock: the simulation's paused one, its sleeps a little longer now and then, as
+/// [`crate::SimEnv`]'s are when perturbed, and draws of its own.
 #[derive(Debug)]
 struct SimClock {
     rng: Mutex<SplitMix64>,
@@ -42,7 +43,13 @@ struct SimClock {
 
 impl Clock for SimClock {
     fn sleep(&self, duration: Duration) -> Sleep {
-        Box::pin(tokio::time::sleep(duration))
+        // Up to a tenth of the sleep and a millisecond more, one sleep in four.
+        let jitter = {
+            let mut rng = self.rng.lock();
+            let most = u64::try_from(duration.as_micros() / 10).unwrap_or(u64::MAX) + 1_000;
+            if rng.chance(250) { rng.below(most) } else { 0 }
+        };
+        Box::pin(tokio::time::sleep(duration + Duration::from_micros(jitter)))
     }
 
     fn random(&self) -> u64 {
@@ -117,10 +124,12 @@ fn plan(faults: Arc<Mutex<Option<SplitMix64>>>) -> Plan {
     })
 }
 
-/// A fault `call` may meet, drawn from `rng`: a listing of a log's chunks may miss the newest,
-/// but no listing of the open logs does, which the store requires of its listings.
+/// A fault `call` may meet, drawn from `rng`: no listing misses an object, which the store
+/// requires of its listings, but a put or a deletion may land up to twenty seconds after its
+/// client gave up on it.
 fn fault(call: &Call, rng: &mut SplitMix64) -> Fault {
     let slow = Fault::Slow(u32::try_from(1 + rng.below(8)).unwrap_or(1));
+    let late = Fault::Late(Duration::from_millis(1 + rng.below(20_000)));
     let choices = match call.op {
         Op::Put { create: true } => vec![
             Fault::Fail,
@@ -128,10 +137,9 @@ fn fault(call: &Call, rng: &mut SplitMix64) -> Fault {
             Fault::Hang,
             Fault::Raced,
             Fault::Answerless,
+            late,
         ],
-        Op::List if call.key.contains("/logs/") => {
-            vec![Fault::Fail, slow, Fault::Hang, Fault::Stale]
-        }
+        Op::Delete => vec![Fault::Fail, slow, Fault::Hang, Fault::Answerless, late],
         Op::List | Op::Abort => vec![Fault::Fail, slow, Fault::Hang],
         _ => vec![Fault::Fail, slow, Fault::Hang, Fault::Answerless],
     };
