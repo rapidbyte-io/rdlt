@@ -501,6 +501,29 @@ async fn a_base_is_resolved_once_and_never_made_again_once_it_is_gone() {
 }
 
 #[tokio::test]
+async fn a_base_another_directory_took_the_place_of_is_refused() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let path = base.path().join("wal");
+    let wal = LocalWal::new(&path);
+    let orders = pipeline("orders");
+    published(&wal, &orders, chunk(1, 0), b"frame").await;
+    // The base is moved aside, still whole, and a private directory made where it was.
+    std::fs::rename(&path, base.path().join("aside")).expect("moves");
+    std::fs::create_dir(&path).expect("creates");
+    set_mode(&path, 0o700);
+    let refused = wal
+        .loads(&orders)
+        .await
+        .expect_err("not the base it opened");
+    assert!(not_private(&refused), "{refused}");
+    assert!(
+        wal.open_log(&orders, chunk(2, 0).load).await.is_err(),
+        "nothing is logged where no reader looks"
+    );
+    assert_eq!(std::fs::read_dir(&path).expect("lists").count(), 0);
+}
+
+#[tokio::test]
 async fn a_base_under_a_directory_others_may_write_is_refused_unless_it_is_sticky() {
     let base = tempfile::tempdir().expect("a temporary directory");
     let shared = base.path().join("shared");

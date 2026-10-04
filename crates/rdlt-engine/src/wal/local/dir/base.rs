@@ -34,6 +34,13 @@ pub(in crate::wal::local) fn link_followed(mode: u32, owner: u32, me: u32) -> bo
     mode & BASE == 0 || owner == me || owner == 0
 }
 
+/// Whether a walk to a base makes the directories missing on the way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Making {
+    Missing,
+    Nothing,
+}
+
 /// The names of `path`'s components, `..` among them, in order.
 fn names(path: &Path) -> VecDeque<OsString> {
     path.components()
@@ -56,16 +63,48 @@ impl Dir {
     /// at most [`LINKS`] of them. The base must belong to this user and be writable by no other,
     /// and every directory it lies in, walked up from it, must pass too.
     pub(in crate::wal::local) fn base(path: &Path) -> io::Result<Self> {
+        let dir = Self::walked(path, Making::Missing)?;
+        #[cfg(test)]
+        if let Some(hook) = &*OPENED.lock() {
+            hook(path);
+        }
+        let metadata = dir.file.metadata()?;
+        owned(metadata.uid(), metadata.mode(), BASE, &dir.path)?;
+        dir.parents()?;
+        Ok(dir)
+    }
+
+    /// Checks the base, held open, again: the walk to `path`, the same and as checked, making
+    /// nothing, must reach this very directory, still this user's and writable by no other.
+    ///
+    /// A base gone is refused as [`io::ErrorKind::NotFound`], one another directory took the
+    /// place of as not this user's alone.
+    pub(in crate::wal::local) fn base_again(&self, path: &Path) -> io::Result<()> {
+        let reached = Self::walked(path, Making::Nothing)?;
+        let (held, there) = (self.file.metadata()?, reached.file.metadata()?);
+        if (held.dev(), held.ino()) != (there.dev(), there.ino()) {
+            return Err(Refusal::NotPrivate {
+                path: path.to_owned(),
+                why: "another directory took the place of the base",
+            }
+            .into());
+        }
+        owned(held.uid(), held.mode(), BASE, &self.path)
+    }
+
+    /// The directory at `path`, walked to from the root as [`Dir::base`] says, making the
+    /// directories missing on the way where `making` says so.
+    fn walked(path: &Path, making: Making) -> io::Result<Self> {
         let mut ahead: VecDeque<OsString> = names(&std::path::absolute(path)?);
         let mut dir = Self::at_root()?;
         let mut links = 0;
         while let Some(name) = ahead.pop_front() {
             if name == ".." {
-                dir = dir.step(&name)?;
+                dir = dir.step(&name, making)?;
                 continue;
             }
             dir.passes()?;
-            match dir.step(&name) {
+            match dir.step(&name, making) {
                 Err(error) if error.raw_os_error() == Some(LINKED) => {
                     links += 1;
                     dir.link_trusted(&name)?;
@@ -80,13 +119,6 @@ impl Dir {
                 stepped => dir = stepped?,
             }
         }
-        #[cfg(test)]
-        if let Some(hook) = &*OPENED.lock() {
-            hook(path);
-        }
-        let metadata = dir.file.metadata()?;
-        owned(metadata.uid(), metadata.mode(), BASE, &dir.path)?;
-        dir.parents()?;
         Ok(dir)
     }
 
@@ -101,12 +133,12 @@ impl Dir {
     }
 
     /// The directory `name` in this one, opened from it without following a link: created
-    /// private and durable here where missing; a link, or anything but a directory, is answered
-    /// with the error [`LINKED`] for the caller to look at.
-    fn step(&self, name: &OsStr) -> io::Result<Self> {
+    /// private and durable here where missing and `making` says so; a link, or anything but a
+    /// directory, is answered with the error [`LINKED`] for the caller to look at.
+    fn step(&self, name: &OsStr, making: Making) -> io::Result<Self> {
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | BENEATH;
         let opened = match rustix::fs::openat(&self.file, name, flags, Mode::empty()) {
-            Err(rustix::io::Errno::NOENT) => {
+            Err(rustix::io::Errno::NOENT) if making == Making::Missing => {
                 match rustix::fs::mkdirat(&self.file, name, Mode::RWXU) {
                     Ok(()) => self.sync()?,
                     Err(rustix::io::Errno::EXIST) => {}
@@ -171,7 +203,7 @@ impl Dir {
     /// Checks every directory the base lies in, each opened from the directory below it, up to
     /// the root: as the base is, not as its path was written.
     fn parents(&self) -> io::Result<()> {
-        let mut dir = self.step(OsStr::new(".."))?;
+        let mut dir = self.step(OsStr::new(".."), Making::Nothing)?;
         let mut below = self.file.metadata()?;
         loop {
             let metadata = dir.file.metadata()?;
@@ -180,7 +212,7 @@ impl Dir {
             }
             dir.passes()?;
             below = metadata;
-            dir = dir.step(OsStr::new(".."))?;
+            dir = dir.step(OsStr::new(".."), Making::Nothing)?;
         }
     }
 }

@@ -88,18 +88,6 @@ pub(super) struct Dir {
 }
 
 impl Dir {
-    /// Checks the base, held open, again: it must still be linked where it was reached, which
-    /// a base removed is not, refused as [`io::ErrorKind::NotFound`], and still be this user's
-    /// and writable by no other.
-    pub(super) fn base_again(&self) -> io::Result<()> {
-        let metadata = self.file.metadata()?;
-        if metadata.nlink() == 0 {
-            let removed = format!("{} was removed", self.path.display());
-            return Err(io::Error::new(io::ErrorKind::NotFound, removed));
-        }
-        owned(metadata.uid(), metadata.mode(), BASE, &self.path)
-    }
-
     /// Where `name` in the directory is, for messages.
     pub(super) fn at(&self, name: impl AsRef<OsStr>) -> PathBuf {
         self.path.join(name.as_ref())
