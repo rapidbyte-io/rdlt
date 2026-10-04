@@ -52,7 +52,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let features = world.workload.features;
     env.perturb(features.perturb);
     world.keep_logs(&env, seed).await;
-    let engine = Engine::new(config(&mut rng, false, 0, growth(seed)), env);
+    let engine = Engine::new(config(&mut rng, false, 0, growth(seed, None)), env);
     let plan = plan(&world.changes.streams).with_wal(features.wal);
     for round in 0..ROUNDS {
         world.set_phase(round);

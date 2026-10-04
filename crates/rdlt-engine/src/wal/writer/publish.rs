@@ -37,6 +37,14 @@ impl Log {
         crash_point!("engine.wal.sync.before");
         staged.publish().await.map_err(|error| self.lost(error))?;
         crash_point!("engine.wal.sync.after");
+        let sent = self.current().sent;
+        // The update only lowers the count, so it never fails.
+        self.shared
+            .unpublished
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+                Some(held.saturating_sub(sent))
+            })
+            .ok();
         self.chunk += 1;
         self.forget(&live).await
     }
@@ -67,6 +75,7 @@ impl Log {
         self.settled.forget_unwritten(&self.written);
         self.unrecorded.clear();
         self.note_oldest();
+        self.shared.room.notify_waiters();
         Ok(())
     }
 
@@ -104,6 +113,7 @@ impl Log {
             .await
             .map_err(Error::from_wal)?;
         self.shared.held.store(0, Ordering::Relaxed);
+        self.shared.room.notify_waiters();
         crash_point!("engine.wal.removed");
         Ok(())
     }

@@ -10,6 +10,7 @@ use crate::crash::crash_point;
 use crate::error::Error;
 use crate::partition::CursorHold;
 use crate::report::{CommitRecord, StreamReport};
+use crate::wal::LoadLog;
 
 impl Coordinator {
     /// Commits every sealed segment with the state that goes with it, then acknowledges the
@@ -17,6 +18,8 @@ impl Coordinator {
     ///
     /// Commits nothing when there is nothing to publish or record.
     pub(super) async fn commit(&mut self) -> Result<(), Error> {
+        // A batch waiting for room in the log waits for this commit to end.
+        let _committing = self.parts.wal.as_ref().map(LoadLog::committing);
         // A new phase's stale entries go before its partitions' positions, which may reuse ids;
         // the log records its partitions' seals from where the phase starts them.
         let begun = self.phase_delta();

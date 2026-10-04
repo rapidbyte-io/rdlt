@@ -180,6 +180,9 @@ async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), E
             // A cursor the read ended at waits for its commit as a checkpoint's does.
             let held = CursorHold::reserve(&context.budget, &context.cancel, &state).await;
             let seal = ingested.open.seal(job.index, state, None, held?);
+            if let Some(log) = &context.wal {
+                log.checkpointed();
+            }
             context.report(Progress::Sealed(seal))?;
         }
         None => abandon(job.index, &ingested.open, context).await?,
@@ -491,6 +494,9 @@ fn seal_segment(
     }
     // The position it carries is newer than a waiting seal's of no rows, which it replaces.
     seal.answers = seal.answers.max(context.latest.superseded(partition));
+    if let Some(log) = &context.wal {
+        log.checkpointed();
+    }
     context.report(Progress::Sealed(seal))
 }
 

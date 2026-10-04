@@ -31,7 +31,7 @@ use crate::swarm::Features;
 use crate::workload::{Level, PHASES, Relaxed, Row, Workload};
 use crate::world::World;
 pub use changes::check_changes;
-use config::{config, endless, growth, pressed};
+use config::{config, endless, growth, pressed, small_log};
 use expected::Discards;
 pub use pressure::Checked;
 use pressure::explained;
@@ -76,9 +76,10 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     env.perturb(world.workload.features.perturb);
     world.keep_logs(&env, seed).await;
     let streaming = world.workload.features.streaming;
-    let config = config(&mut rng, streaming, endless(&world.workload), growth(seed));
+    let growth = growth(seed, Some(&world.workload));
+    let config = config(&mut rng, streaming, endless(&world.workload), growth);
     let (limits, budget) = (config.limits(), config.memory().get());
-    world.press(pressed(seed, &config, &world.workload));
+    world.press(pressed(seed, &config, &world.workload, small_log(&config)));
     let engine = Engine::new(config, env);
     let placing = net.map(|net| Placing::new(net, &network::options(&mut rng, limits)));
     let mut simulation = Simulation {
