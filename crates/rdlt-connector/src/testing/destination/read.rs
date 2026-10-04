@@ -111,6 +111,14 @@ pub fn read_back_integers(batches: Vec<RecordBatch>, name: &str) -> Result<Vec<i
 #[derive(Clone, Copy)]
 pub(super) struct Read<'a>(&'a RecordBatch);
 
+impl<'a> Read<'a> {
+    /// The column `name` as the destination read it back; none where the batch has no such
+    /// column.
+    pub(super) fn stored(self, name: &str) -> Option<&'a ArrayRef> {
+        self.0.column_by_name(name)
+    }
+}
+
 impl Read<'_> {
     /// How many rows the batch holds.
     pub(super) fn rows(self) -> usize {

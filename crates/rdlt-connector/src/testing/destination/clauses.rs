@@ -48,8 +48,10 @@ pub const DESTINATION_CLAUSES: &[Clause] = &[
     },
     Clause {
         id: "D-SCHEMA",
-        statement: "every declared schema change applies, and applying it again changes nothing",
-        unless: "the destination adds no column and widens no 32-bit integer",
+        statement: "every declared schema change applies, and applying it again changes \
+                    nothing; a column of each kind the destination stores and widens in place \
+                    reads back every value it held, exactly",
+        unless: "the destination adds no column and widens no type in place",
     },
     Clause {
         id: "D-MERGE",

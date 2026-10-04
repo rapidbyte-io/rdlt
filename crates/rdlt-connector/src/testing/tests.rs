@@ -748,6 +748,9 @@ struct VaultConfig {
     swap_others: bool,
     /// Lets a session a newer one fenced claim a table no pipeline owns.
     stale_claims: bool,
+    /// Widens a column by reading what it held back from its text, as the narrower type writes
+    /// it, as the wider type.
+    widen_through_text: bool,
 }
 
 #[derive(Default)]
@@ -1273,6 +1276,11 @@ impl Session for VaultSession {
             TableChange::Widen { .. } if self.config.refuse_widening => {
                 return Err(ConnectorError::data("columns never widen here"));
             }
+            TableChange::Widen {
+                table, column, to, ..
+            } if self.config.widen_through_text => {
+                widened_through_text(&mut store, table, column, to);
+            }
             _ => {}
         }
         Ok(())
@@ -1743,6 +1751,51 @@ fn blanked_names(batch: &RecordBatch) -> RecordBatch {
     RecordBatch::try_new(schema, columns).expect("nulls fit a nullable column")
 }
 
+/// Rewrites what `store` holds of `table`'s column `column` as `to`, read from its text.
+fn widened_through_text(store: &mut VaultStore, table: &TableRef, column: &str, to: &LogicalType) {
+    let through = |batch: &RecordBatch| through_text(batch, column, &to.to_arrow());
+    for published in store
+        .published
+        .get_mut(table.name.as_ref())
+        .into_iter()
+        .flatten()
+    {
+        *published = through(published);
+    }
+    for staged in store.staged.values_mut().flatten() {
+        if staged.table == table.name.as_ref() {
+            staged.batch = through(&staged.batch);
+        }
+    }
+}
+
+/// `batch` with its column `name`, if it has one, read as `to` from its text.
+fn through_text(batch: &RecordBatch, name: &str, to: &DataType) -> RecordBatch {
+    let Some(index) = batch.schema().index_of(name).ok() else {
+        return batch.clone();
+    };
+    let text = arrow_cast::cast(batch.column(index), &DataType::Utf8);
+    let Ok(widened) = text.and_then(|text| arrow_cast::cast(&text, to)) else {
+        return batch.clone();
+    };
+    let mut columns = batch.columns().to_vec();
+    columns[index] = widened;
+    let fields: Vec<_> = batch
+        .schema()
+        .fields()
+        .iter()
+        .zip(&columns)
+        .map(|(field, column)| {
+            field
+                .as_ref()
+                .clone()
+                .with_data_type(column.data_type().clone())
+        })
+        .collect();
+    let schema = Arc::new(arrow_schema::Schema::new(fields));
+    RecordBatch::try_new(schema, columns).expect("the same rows")
+}
+
 /// `batch` keeping, of columns whose names `fold` makes alike, the first.
 fn merged_names(batch: &RecordBatch, fold: fn(&str) -> String) -> RecordBatch {
     let schema = batch.schema();
@@ -1843,6 +1896,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("fold_names", &["D-NAMES"]),
     ("merge_cased_names", &["D-NAMES"]),
     ("fold_simply", &["D-NAMES"]),
+    ("widen_through_text", &["D-SCHEMA"]),
     ("refuse_check", &["D-CHECK"]),
     ("lose_lanes", &["D-LANES"]),
     ("keep_dropped", &["D-DROP"]),
