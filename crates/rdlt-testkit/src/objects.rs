@@ -77,6 +77,19 @@ pub enum Fault {
     Overwrite,
     /// A deletion answered as done, and not done; any other request is done.
     Ignored,
+    /// A put done without the metadata it was given, as a store that keeps none; any other
+    /// request is done.
+    Bare,
+    /// Never answered, and done once this long has passed, when the store is next asked
+    /// anything, as a request a client gave up on lands late: a put's or a deletion's; any other
+    /// request is never answered nor done.
+    Late(std::time::Duration),
+}
+
+/// A request that lands late: a put, or a deletion.
+enum Landing {
+    Put(Path, PutPayload, PutOptions),
+    Delete(Path),
 }
 
 /// What decides each request's fault, in the order the requests come.
@@ -90,6 +103,8 @@ pub struct Faulty<S> {
 
 struct State {
     plan: Plan,
+    /// Requests that land late: when, and what they do.
+    late: Vec<(tokio::time::Instant, Landing)>,
     calls: Vec<Call>,
     /// The range of each read, in order: none where the whole object was asked for.
     ranges: Vec<Option<GetRange>>,
@@ -128,6 +143,7 @@ impl<S: ObjectStore> Faulty<S> {
     pub fn new(inner: S, plan: Plan) -> Self {
         let state = State {
             plan,
+            late: Vec::new(),
             calls: Vec::new(),
             ranges: Vec::new(),
             written: Vec::new(),
@@ -169,6 +185,33 @@ impl<S: ObjectStore> Faulty<S> {
         fault
     }
 
+    /// Keeps `landing` to land once `after` has passed, and never answers.
+    async fn later<T>(&self, after: std::time::Duration, landing: Landing) -> Result<T> {
+        let at = tokio::time::Instant::now() + after;
+        self.state.lock().late.push((at, landing));
+        std::future::pending().await
+    }
+
+    /// Lands every late request whose time has come, in the order they were made.
+    async fn land(&self) {
+        let now = tokio::time::Instant::now();
+        let due: Vec<Landing> = {
+            let mut state = self.state.lock();
+            let due = state.late.extract_if(.., |(at, _)| *at <= now);
+            due.map(|(_, landing)| landing).collect()
+        };
+        for landing in due {
+            match landing {
+                Landing::Put(key, payload, opts) => {
+                    if self.inner.put_opts(&key, payload, opts).await.is_ok() {
+                        self.wrote(&key);
+                    }
+                }
+                Landing::Delete(key) => drop(self.inner.delete(&key).await),
+            }
+        }
+    }
+
     fn wrote(&self, key: &Path) {
         self.state.lock().written.push(key.to_string());
     }
@@ -201,7 +244,9 @@ async fn faulted<T>(
     action: impl Future<Output = Result<T>>,
 ) -> Result<T> {
     match fault {
-        Fault::None | Fault::Stale | Fault::Overwrite | Fault::Ignored => action.await,
+        Fault::None | Fault::Stale | Fault::Overwrite | Fault::Ignored | Fault::Bare => {
+            action.await
+        }
         Fault::Denied => Err(Error::PermissionDenied {
             path: key.to_string(),
             source: "the credentials may not".into(),
@@ -217,7 +262,7 @@ async fn faulted<T>(
             }
             action.await
         }
-        Fault::Hang => std::future::pending().await,
+        Fault::Hang | Fault::Late(_) => std::future::pending().await,
         Fault::Raced if create => Err(Error::AlreadyExists {
             path: key.to_string(),
             source: "a racing create".into(),
@@ -238,15 +283,24 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
+        self.land().await;
         let create = matches!(opts.mode, PutMode::Create);
         let fault = self.decide(Op::Put { create }, key);
-        let opts = if fault == Fault::Overwrite {
-            PutOptions {
+        if let Fault::Late(after) = fault {
+            return self
+                .later(after, Landing::Put(key.clone(), payload, opts))
+                .await;
+        }
+        let opts = match fault {
+            Fault::Overwrite => PutOptions {
                 mode: PutMode::Overwrite,
                 ..opts
-            }
-        } else {
-            opts
+            },
+            Fault::Bare => PutOptions {
+                attributes: object_store::Attributes::new(),
+                ..opts
+            },
+            _ => opts,
         };
         let put = faulted(fault, key, create, async {
             let put = self.inner.put_opts(key, payload, opts).await?;
@@ -265,6 +319,7 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
     }
 
     async fn get_opts(&self, key: &Path, options: GetOptions) -> Result<GetResult> {
+        self.land().await;
         let fault = self.decide(Op::Get, key);
         self.state.lock().ranges.push(options.range.clone());
         faulted(fault, key, false, self.inner.get_opts(key, options)).await
@@ -280,7 +335,11 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
                 let this = this.clone();
                 async move {
                     let location = location?;
+                    this.land().await;
                     let fault = this.decide(Op::Delete, &location);
+                    if let Fault::Late(after) = fault {
+                        return this.later(after, Landing::Delete(location)).await;
+                    }
                     if fault != Fault::Ignored {
                         let deleted = this.inner.delete(&location);
                         faulted(fault, &location, false, deleted).await?;
@@ -296,6 +355,7 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
         let fault = self.decide(Op::List, &dir);
         let this = self.clone();
         let listed = async move {
+            this.land().await;
             let listing = this.inner.list(Some(&dir)).try_collect::<Vec<_>>();
             let mut listed = faulted(fault, &dir, false, listing).await?;
             if fault == Fault::Stale
@@ -309,6 +369,7 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+        self.land().await;
         let dir = prefix.cloned().unwrap_or_default();
         let fault = self.decide(Op::List, &dir);
         faulted(fault, &dir, false, self.inner.list_with_delimiter(prefix)).await
@@ -322,6 +383,7 @@ impl<S: ObjectStore> ObjectStore for Faulty<S> {
 #[async_trait]
 impl<S: ObjectStore + MultipartStore> MultipartStore for Faulty<S> {
     async fn create_multipart(&self, key: &Path) -> Result<MultipartId> {
+        self.land().await;
         let fault = self.decide(Op::Begin, key);
         faulted(fault, key, false, self.inner.create_multipart(key)).await
     }
@@ -333,6 +395,7 @@ impl<S: ObjectStore + MultipartStore> MultipartStore for Faulty<S> {
         index: usize,
         payload: PutPayload,
     ) -> Result<PartId> {
+        self.land().await;
         let fault = self.decide(Op::Part, key);
         let part = self.inner.put_part(key, id, index, payload);
         faulted(fault, key, false, part).await
@@ -344,6 +407,7 @@ impl<S: ObjectStore + MultipartStore> MultipartStore for Faulty<S> {
         id: &MultipartId,
         parts: Vec<PartId>,
     ) -> Result<PutResult> {
+        self.land().await;
         let fault = self.decide(Op::Complete, key);
         let completed = faulted(fault, key, false, async {
             let completed = self.inner.complete_multipart(key, id, parts).await?;
@@ -354,6 +418,7 @@ impl<S: ObjectStore + MultipartStore> MultipartStore for Faulty<S> {
     }
 
     async fn abort_multipart(&self, key: &Path, id: &MultipartId) -> Result<()> {
+        self.land().await;
         let fault = self.decide(Op::Abort, key);
         faulted(fault, key, false, self.inner.abort_multipart(key, id)).await
     }

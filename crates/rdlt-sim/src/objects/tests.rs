@@ -8,27 +8,33 @@ use super::{ObjectLogs, fault};
 use crate::rng::SplitMix64;
 
 #[test]
-fn no_listing_of_the_open_logs_is_ever_stale() {
+fn no_listing_misses_an_object_and_puts_and_deletions_land_late() {
     let mut rng = SplitMix64::new(7);
-    let marks = Call {
-        op: Op::List,
-        key: "logs/p.orders/open".to_owned(),
+    let call = |op: Op, key: &str| Call {
+        op,
+        key: key.to_owned(),
     };
-    let chunks = Call {
-        op: Op::List,
-        key: "logs/p.orders/logs/0190".to_owned(),
-    };
-    let drawn: Vec<Fault> = (0..400).map(|_| fault(&marks, &mut rng)).collect();
-    assert!(!drawn.contains(&Fault::Stale));
-    let drawn: Vec<Fault> = (0..400).map(|_| fault(&chunks, &mut rng)).collect();
-    assert!(drawn.contains(&Fault::Stale));
-    let creates = Call {
-        op: Op::Put { create: true },
-        key: "logs/p.orders/open/x".to_owned(),
-    };
-    let drawn: Vec<Fault> = (0..400).map(|_| fault(&creates, &mut rng)).collect();
-    for expected in [Fault::Fail, Fault::Hang, Fault::Raced, Fault::Answerless] {
-        assert!(drawn.contains(&expected), "{expected:?}");
+    for listing in [
+        call(Op::List, "logs/p.orders/open"),
+        call(Op::List, "logs/p.orders/logs/0190"),
+    ] {
+        let drawn: Vec<Fault> = (0..400).map(|_| fault(&listing, &mut rng)).collect();
+        assert!(!drawn.contains(&Fault::Stale), "{listing:?}");
+    }
+    let creates = call(Op::Put { create: true }, "logs/p.orders/open/x");
+    let deletes = call(Op::Delete, "logs/p.orders/open/x");
+    for (asked, expected) in [
+        (
+            &creates,
+            vec![Fault::Fail, Fault::Hang, Fault::Raced, Fault::Answerless],
+        ),
+        (&deletes, vec![Fault::Fail, Fault::Hang, Fault::Answerless]),
+    ] {
+        let drawn: Vec<Fault> = (0..400).map(|_| fault(asked, &mut rng)).collect();
+        for fault in expected {
+            assert!(drawn.contains(&fault), "{fault:?}");
+        }
+        assert!(drawn.iter().any(|fault| matches!(fault, Fault::Late(_))));
     }
 }
 
