@@ -730,6 +730,35 @@ async fn what_was_counted_of_a_segment_goes_with_its_seal_or_its_abandonment() {
     ended.expect("the writer ends");
 }
 
+#[tokio::test]
+async fn a_batch_counts_as_unpublished_until_its_chunk_is_published() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    let budget = MemoryBudget::new(1 << 20);
+    let orders = view("orders");
+    let shared = Arc::clone(log.writer.shared());
+    let unpublished = || {
+        shared
+            .unpublished
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let written = async {
+        for from in [0, 3] {
+            logged(&log, &budget, 0, &orders, SegmentId(1), &ids(from))
+                .await
+                .expect("the batch is logged");
+        }
+        assert!(unpublished() > 0, "the batches wait for their chunk");
+        log.commit(&budget, vec![sealed_at(1)], Vec::new(), &meta(&[1]), 0)
+            .await
+            .expect("durable");
+        assert_eq!(unpublished(), 0, "the chunk holding them is published");
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() {
     let store = Arc::new(MemoryWal::default());
