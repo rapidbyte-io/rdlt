@@ -12,8 +12,8 @@ use crate::error::Error;
 
 impl Log {
     /// Ends the chunk staged with what a replay needs, publishes it, moves on to the next, and
-    /// deletes every earlier chunk the end did not name: the bytes those held.
-    pub(super) async fn publish(&mut self) -> Result<u64, Error> {
+    /// deletes every earlier chunk the end did not name.
+    pub(super) async fn publish(&mut self) -> Result<(), Error> {
         let live: Vec<u64> = self
             .written
             .iter()
@@ -40,21 +40,20 @@ impl Log {
         staged.publish().await.map_err(|error| self.lost(error))?;
         crash_point!("engine.wal.sync.after");
         self.chunk += 1;
-        let freed = self.forget(&live).await?;
+        self.forget(&live).await?;
         self.note_room();
-        Ok(freed)
+        Ok(())
     }
 
     /// Deletes every chunk before the chunk published last that `live` does not name; every
-    /// receipt is recorded now, or its commit's chunk gone: the bytes those held.
-    async fn forget(&mut self, live: &[u64]) -> Result<u64, Error> {
+    /// receipt is recorded now, or its commit's chunk gone.
+    async fn forget(&mut self, live: &[u64]) -> Result<(), Error> {
         let gone: Vec<u64> = self
             .written
             .keys()
             .filter(|number| **number < self.chunk - 1 && !live.contains(number))
             .copied()
             .collect();
-        let mut freed = 0_u64;
         for number in gone {
             let chunk = Chunk {
                 load: self.owner.load,
@@ -66,14 +65,13 @@ impl Log {
                 .map_err(Error::from_wal)?;
             if let Some(written) = self.forgotten(number) {
                 self.shared.release(written.len);
-                freed = freed.saturating_add(written.len);
             }
             crash_point!("engine.wal.remove");
         }
         self.unrecorded.clear();
         self.note_oldest();
         self.shared.room.notify_waiters();
-        Ok(freed)
+        Ok(())
     }
 
     /// Whether a replay needs `written`, a published chunk: a segment in it is neither settled

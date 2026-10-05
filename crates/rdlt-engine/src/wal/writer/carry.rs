@@ -58,19 +58,19 @@ impl Log {
 
     /// Carries the frames of the open segments of the old chunks, the oldest first, each the log
     /// has room to copy beside those before it and the frames that end the chunks it writes, and
-    /// each that keeps the chunk it goes to within what a chunk holds: what an earlier publish
-    /// freed where publishing the chunk then frees more than the relief writes, with `unneeded`
-    /// bytes of chunks no replay needs freed however the carry goes; none otherwise.
+    /// each that keeps the chunk it goes to within what a chunk holds: whether publishing the
+    /// chunk then frees more than the relief writes, with `unneeded` bytes of chunks no replay
+    /// needs freed however the carry goes.
     ///
     /// The copies go to the chunk staged where it takes them; where it holds batch frames and
     /// takes none, it is published first and they go to the next.
-    pub(super) async fn carry_to_free(&mut self, unneeded: u64) -> Result<Option<u64>, Error> {
+    pub(super) async fn carry_to_free(&mut self, unneeded: u64) -> Result<bool, Error> {
         let limit = self.shared.limit.load(Ordering::SeqCst);
         let held = self.shared.held.load(Ordering::SeqCst);
-        // A relief ends the chunks it writes alone: it frees more than it writes, so the room
-        // the next chunk needs is there after it as before.
+        // The copies keep the room every frame keeps, for ending the chunk staged and one more.
         let (ending, next) = self.ending()?;
-        let room = limit.saturating_sub(held).saturating_sub(ending);
+        let closing = ending.saturating_add(next);
+        let room = limit.saturating_sub(held).saturating_sub(closing);
         let most = self.most();
         let staged = self.written.get(&self.chunk);
         let len = staged.map_or(0, |written| written.len);
@@ -80,7 +80,7 @@ impl Log {
         });
         let mut first = false;
         if chosen.numbers.is_empty() && batched {
-            let fresh = self.chosen(room.saturating_sub(next), |copied, copy| {
+            let fresh = self.chosen(room, |copied, copy| {
                 copied == 0 || next.saturating_add(copied).saturating_add(copy) <= most
             });
             first = !fresh.numbers.is_empty();
@@ -88,30 +88,25 @@ impl Log {
                 chosen = fresh;
             }
         }
-        let ends = if first {
-            ending.saturating_add(next)
-        } else {
-            ending
-        };
+        let ends = if first { closing } else { ending };
         let gained = chosen.gained.saturating_add(unneeded);
         // With nothing to copy it needs no room, where a commit larger than any before took the
         // log past what it may hold.
         if gained <= chosen.copied.saturating_add(ends)
-            || chosen.copied > 0 && !self.shared.reserve(chosen.copied, ends)
+            || chosen.copied > 0 && !self.shared.reserve(chosen.copied, closing)
         {
-            return Ok(None);
+            return Ok(false);
         }
-        let mut freed = 0;
         if first {
             self.append(Frame::Relieved.encode()?).await?;
-            freed = self.publish().await?;
+            self.publish().await?;
         }
         let mut wrote = 0_u64;
         for number in chosen.numbers {
             wrote = wrote.saturating_add(self.carry_chunk(number).await?);
         }
         self.shared.release(chosen.copied.saturating_sub(wrote));
-        Ok(Some(freed))
+        Ok(true)
     }
 
     /// The old chunks to carry, the oldest first, each whose copy fits `room` beside those before

@@ -152,7 +152,6 @@ impl Log {
             settled: Settled::default(),
             sealing: false,
             held_back: VecDeque::new(),
-            wrote: 0,
             last: None,
             spare: 0,
         };
@@ -186,8 +185,6 @@ struct Log {
     /// The commands that came while the chunk staged held seals, handled in turn once their
     /// commit is published.
     held_back: VecDeque<Command>,
-    /// Bytes: what the writer has appended to its chunks.
-    wrote: u64,
     /// The last commit written, which the next follows.
     last: Option<CommitSeq>,
     /// Bytes: what the batch being written counted for the writer's own frames and they have

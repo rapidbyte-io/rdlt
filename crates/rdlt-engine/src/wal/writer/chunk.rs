@@ -189,7 +189,6 @@ impl Log {
             return Err(Error::from_wal(error));
         }
         self.current().len += len;
-        self.wrote = self.wrote.saturating_add(len);
         Ok(())
     }
 

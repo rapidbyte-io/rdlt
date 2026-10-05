@@ -79,7 +79,7 @@ async fn a_chunk_holding_a_commit_s_seals_takes_no_other_frame_before_the_commit
         log.send(table(0)).await;
         log.batch(1, 0).await;
         // Segment 1's seal goes out; segment 2's batch, a receipt and an abandonment come
-        // before the commit's frame.
+        // before segment 4's seal and the commit's frame.
         log.seal(1).await;
         log.batch(2, 0).await;
         log.committed(9).await;
@@ -87,11 +87,19 @@ async fn a_chunk_holding_a_commit_s_seals_takes_no_other_frame_before_the_commit
             segment: rdlt_connector::SegmentId(3),
         })
         .await;
+        log.seal(4).await;
         log.commit(1, &[]).await.expect("durable");
         log.commit(2, &[2]).await.expect("durable");
         let commit = format!("commit of {:?}", segments(&[]));
-        let first = ["header 0", "schema 0", "batch 1 of 0", "seal 1", &commit];
-        assert_eq!(kinds(&observed, 0)[..5], first.map(str::to_owned));
+        let first = [
+            "header 0",
+            "schema 0",
+            "batch 1 of 0",
+            "seal 1",
+            "seal 4",
+            &commit,
+        ];
+        assert_eq!(kinds(&observed, 0)[..6], first.map(str::to_owned));
         assert_eq!(kinds(&observed, 1)[2], "batch 2 of 0");
     })
     .await
