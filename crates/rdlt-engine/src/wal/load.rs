@@ -1,6 +1,7 @@
 //! A load's write-ahead log as its attempt writes it: the tables it describes, the batches its
 //! partitions write, and its commits, each made durable before the destination sees it.
 
+mod commit;
 mod room;
 #[cfg(test)]
 mod tests;
@@ -12,10 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use arrow_array::RecordBatch;
-use bytes::Bytes;
 use rdlt_connector::{
-    CommitMeta, CommitSeq, GenerationId, PartitionId, PartitionState, Permit, Receipt,
-    SchemaVersion, SegmentId, StreamName,
+    CommitSeq, GenerationId, PartitionId, PartitionState, Permit, Receipt, SchemaVersion,
+    SegmentId, StreamName,
 };
 use tokio::sync::{Mutex, oneshot};
 
@@ -264,103 +264,6 @@ impl LoadLog {
         Ok((index, schema))
     }
 
-    /// Logs `sealed`, then the phases `begun` that `meta`'s commit begins with it and the commit,
-    /// and returns once the commit's frame is durable; `budget` holds each frame's bytes until
-    /// it is appended.
-    ///
-    /// The phase frames go in the commit's chunk with it, which is written whole.
-    pub(crate) async fn commit(
-        &self,
-        budget: &MemoryBudget,
-        sealed: Vec<Sealed>,
-        begun: Vec<frame::BegunPhase>,
-        meta: &CommitMeta,
-        prepaid: u64,
-    ) -> Result<(), Error> {
-        self.retire().await?;
-        // The commit settles every segment it sealed, those it publishes nothing of included, so
-        // its receipt lets their chunks go.
-        let mut segments = meta.segments.clone();
-        for seal in &sealed {
-            segments.insert(seal.segment);
-        }
-        let seals = u32::try_from(sealed.len())
-            .map_err(|_| Error::internal("a commit takes more seals than a frame counts"))?;
-        let phases = u32::try_from(begun.len())
-            .map_err(|_| Error::internal("a commit begins more phases than a frame counts"))?;
-        // Each frame is counted on disk, then sent, so it holds its memory no longer than its
-        // write; the commit counts as large as all its frames together.
-        let mut whole = 0_u64;
-        for seal in sealed {
-            let (command, frame) = self.seal(budget, seal).await?;
-            whole = whole.saturating_add(frame);
-            self.admit_commit(frame, whole).await?;
-            self.writer.send(command).await?;
-        }
-        // Reserved before they are encoded for what they take at most, but what they record of
-        // tables, which each table's change reserved.
-        let held = reserved(budget, commit_bytes(&begun, meta).saturating_sub(prepaid)).await?;
-        let mut frames = Vec::new();
-        for begun in begun {
-            frames.extend_from_slice(&Frame::Begun(begun).encode()?);
-        }
-        frames.extend_from_slice(&frame::commit(meta, seals, phases)?);
-        let frame = frames
-            .len()
-            .saturating_sub(usize::try_from(prepaid).unwrap_or(usize::MAX));
-        let held = settled(budget, held, frame).await?;
-        let held = Box::new(held);
-        let frame = count(frames.len());
-        self.admit_commit(frame, whole.saturating_add(frame))
-            .await?;
-        let (durable, answer) = oneshot::channel();
-        self.writer
-            .send(Command::Commit {
-                seq: meta.commit_seq,
-                segments,
-                frame: Bytes::from(frames),
-                held,
-                durable,
-            })
-            .await?;
-        answer
-            .await
-            .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
-    }
-
-    /// The command logging `seal` with the batch frames and rows logged of its segment, and the
-    /// bytes of its frame; `budget` holds the frame's bytes until it is written.
-    async fn seal(&self, budget: &MemoryBudget, seal: Sealed) -> Result<(Command, u64), Error> {
-        let segment = seal.segment;
-        let counted = self.counts.lock().remove(&segment).unwrap_or_default();
-        // Reserved before it is encoded for the cursors it records, each written twice over in
-        // base64, and for the frame as it is once it exists.
-        let cursors = [seal.from.as_ref(), Some(&seal.state)];
-        let cursors = cursors.into_iter().flatten().map(recorded);
-        let bytes = cursors.fold(FRAMED, u64::saturating_add);
-        let held = reserved(budget, bytes).await?;
-        let frame = Frame::Seal(frame::Seal {
-            segment,
-            stream: seal.stream,
-            partition: seal.partition,
-            replayable: seal.replayable,
-            phase: seal.phase,
-            from: seal.from,
-            state: seal.state,
-            batches: counted.batches,
-            rows: counted.rows,
-        })
-        .encode()?;
-        let held = settled(budget, held, frame.len()).await?;
-        let bytes = count(frame.len());
-        let command = Command::Seal {
-            segment,
-            frame,
-            held: Box::new(held),
-        };
-        Ok((command, bytes))
-    }
-
     /// Tells the writer to forget the schema frames of table versions all of whose views are gone.
     ///
     /// A batch is logged while its view is held, and its view is noted before its frame is
@@ -414,14 +317,6 @@ impl LoadLog {
     }
 }
 
-/// Bytes: about what `state` takes in a frame that records it.
-fn recorded(state: &PartitionState) -> u64 {
-    match state {
-        PartitionState::Cursor(cursor) => RECORDED.saturating_mul(count(cursor.bytes().len())),
-        PartitionState::Done => 0,
-    }
-}
-
 /// Reserves `bytes` of the log's share of `budget` for a frame about to be encoded, as much as
 /// the frame takes at most.
 ///
@@ -444,40 +339,6 @@ async fn reserved(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Erro
 /// Bytes: what a frame takes beside the records it holds, at most: its head, its kind and the
 /// names and numbers it carries.
 const FRAMED: u64 = 4 << 10;
-
-/// Bytes: what a record of state takes in a frame beside its key and value, at most.
-const PER_RECORD: u64 = 64;
-
-/// Bytes: the most the frames of the commit `meta` and of the phases `begun` with it take: each
-/// record's key and value written twice over, what a record and a frame take beside, and the
-/// segments, generations and tables the commit names.
-fn commit_bytes(begun: &[frame::BegunPhase], meta: &CommitMeta) -> u64 {
-    let changes = begun.iter().flat_map(|begun| &begun.changes);
-    let record = |change: &rdlt_connector::StateChange| match change {
-        rdlt_connector::StateChange::Put(record) => {
-            count(record.key.len().saturating_add(record.value.len()))
-        }
-        rdlt_connector::StateChange::Delete(key) => count(key.len()),
-    };
-    let records = changes.chain(&meta.state_delta).map(|change| {
-        RECORDED
-            .saturating_mul(record(change))
-            .saturating_add(PER_RECORD)
-    });
-    let named = [
-        meta.finish_generations.len(),
-        meta.child_tables.len(),
-        meta.drop_tables.len(),
-    ];
-    let named = named.into_iter().map(count);
-    let named = named.fold(meta.segments.len(), u64::saturating_add);
-    let named = named.saturating_mul(NAMED);
-    let frames = count(begun.len()).saturating_add(1).saturating_mul(FRAMED);
-    records.fold(named.saturating_add(frames), u64::saturating_add)
-}
-
-/// Bytes: the most a segment, a generation or a table a commit names takes in its frame.
-const NAMED: u64 = 1 << 10;
 
 /// Bytes: the most a table's schema frame takes: its schema written twice over, as its fields
 /// with their names take, and a frame beside.
