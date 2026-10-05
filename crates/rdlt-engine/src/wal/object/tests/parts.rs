@@ -164,6 +164,42 @@ async fn a_whole_chunk_s_length_is_listed_without_reading_it_unless_a_reference_
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_head_whose_create_was_given_up_and_landed_still_names_its_body() {
+    let objects = objects(faultless());
+    let once = std::num::NonZeroU32::new(1).expect("not zero");
+    let wal = opened(
+        &objects,
+        options(4)
+            .with_attempts(once)
+            .with_deadline(Duration::from_secs(1), Duration::ZERO),
+    )
+    .await;
+    let orders = pipeline("landed");
+    let at = chunk(1, 0);
+    let staging = staged(&wal, &orders, at, LONG).await;
+    // The head's create lands after its only attempt gave up: whether it landed is unknown.
+    objects.plan(always(Fault::Late(Duration::from_secs(2)), |call| {
+        call.op == (Op::Put { create: true })
+    }));
+    let unknown = staging.publish().await.expect_err("given up");
+    assert!(judged(unknown).1, "retryable");
+    tokio::time::advance(Duration::from_secs(3)).await;
+    objects.plan(faultless());
+    let other = opened(&objects, options(4)).await;
+    assert_eq!(
+        other.chunks(&orders, at.load).await.expect("lists"),
+        [(0, 17)]
+    );
+    assert_eq!(
+        &other
+            .read(&orders, at, 0, 17)
+            .await
+            .expect("reads its body")[..],
+        LONG
+    );
+}
+
 #[tokio::test]
 async fn a_chunk_of_a_part_or_less_is_published_by_one_put() {
     let objects = objects(faultless());

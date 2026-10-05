@@ -538,6 +538,33 @@ async fn a_deletion_answered_as_finding_nothing_is_done() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_deletion_refused_is_reported_and_leaves_the_chunk() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("kept");
+    let at = chunk(1, 0);
+    wal.open_log(&orders, at.load).await.expect("opens");
+    let mut staged = wal.stage(&orders, at).await.expect("stages");
+    staged
+        .append(Bytes::from_static(b"kept"))
+        .await
+        .expect("appends");
+    staged.publish().await.expect("publishes");
+    objects.plan(always(Fault::Denied, |call| call.op == Op::Delete));
+    let refused = wal.remove(&orders, at).await.expect_err("refused");
+    assert_eq!(
+        judged(refused),
+        (Some("wal_storage_denied".to_owned()), false)
+    );
+    objects.plan(faultless());
+    assert_eq!(
+        wal.chunks(&orders, at.load).await.expect("lists"),
+        [(0, 4)],
+        "the chunk is still listed"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_removal_refused_a_look_at_the_chunk_s_head_reports_the_refusal() {
     let objects = objects(faultless());
     let wal = opened(&objects, options(1 << 20)).await;
