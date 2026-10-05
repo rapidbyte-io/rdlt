@@ -783,6 +783,7 @@ async fn a_slow_first_commit_beside_a_partition_committing_every_batch_loads_thr
     );
 }
 
+#[cfg(feature = "object-store")]
 #[tokio::test(start_paused = true)]
 async fn frames_larger_than_the_log_s_memory_are_carried_a_piece_at_a_time() {
     // A budget whose share for logs, beside a store's part, holds less than one batch frame: a
