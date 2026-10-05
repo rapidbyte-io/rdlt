@@ -53,6 +53,9 @@ pub(crate) enum Frame {
     Commit(Box<Committing>),
     /// The load stopped appending: no chunk follows.
     Closed,
+    /// The chunk was published between commits to let the log hold less: it holds batch frames
+    /// carried into it, and its end the receipts that arrived, but no commit.
+    Relieved,
     /// The last frame of every chunk: what of the log is still needed.
     End(End),
     /// The first frame of a chunk a replay published to take the log over.
@@ -194,6 +197,7 @@ impl Frame {
             Self::Begun(_) => 8,
             Self::End(_) => 9,
             Self::Fence(_) => 10,
+            Self::Relieved => 11,
         }
     }
 
@@ -208,7 +212,7 @@ impl Frame {
             Self::Commit(commit) => {
                 return self::commit(&commit.meta, commit.seals, commit.phases);
             }
-            Self::Closed => Vec::new(),
+            Self::Closed | Self::Relieved => Vec::new(),
             Self::End(end) => json(end)?,
             Self::Fence(fence) => json(fence)?,
         };
@@ -486,6 +490,7 @@ fn parsed(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
         8 => parse(payload).map(Frame::Begun),
         9 => parse(payload).map(Frame::End),
         10 => parse(payload).map(Frame::Fence),
+        11 if payload.is_empty() => Ok(Frame::Relieved),
         other => Err(garbled(&format!("no frame is of kind {other}"))),
     }
 }

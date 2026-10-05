@@ -55,6 +55,44 @@ impl Log {
         Ok(())
     }
 
+    /// Carries the frames of the open segments of the old chunks that hold frames of settled
+    /// segments too, the oldest first, each the log has room to copy beside those before it:
+    /// whether it carried any, whose chunks the next publish frees.
+    pub(super) async fn carry_to_free(&mut self) -> Result<bool, Error> {
+        let held = self.shared.held.load(Ordering::Relaxed);
+        let limit = self.shared.limit.load(Ordering::Relaxed);
+        let mut copies = 0_u64;
+        let mut chosen = Vec::new();
+        for number in self.carriable() {
+            let written = &self.written[&number];
+            let open = written.open;
+            let settled = written
+                .batches
+                .iter()
+                .map(|logged| logged.span.len)
+                .fold(0, u64::saturating_add)
+                .saturating_sub(open);
+            if settled == 0 {
+                continue;
+            }
+            let schemas = written
+                .schemas
+                .values()
+                .map(|span| span.len)
+                .fold(0, u64::saturating_add);
+            let more = copies.saturating_add(open).saturating_add(schemas);
+            if held.saturating_add(more) > limit {
+                continue;
+            }
+            copies = more;
+            chosen.push(number);
+        }
+        for number in &chosen {
+            self.carry_chunk(*number).await?;
+        }
+        Ok(!chosen.is_empty())
+    }
+
     /// The old chunks not carried yet whose commits all have receipts and whose segments are
     /// each settled or open: no commit waiting for its receipt takes one.
     fn carriable(&self) -> Vec<u64> {
@@ -110,12 +148,14 @@ impl Log {
             let frame = self.read(from, logged.span).await?;
             let span = self.append(frame).await?;
             let current = self.current();
+            current.open += span.len;
             current.segments.insert(logged.segment);
             current.batches.push(Logged { span, ..logged });
         }
         if let Some(written) = self.written.get_mut(&number) {
             written.carried = true;
         }
+        self.refresh_copies();
         Ok(())
     }
 

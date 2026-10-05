@@ -175,13 +175,16 @@ impl Reading<'_> {
             return Err(shapeless(&format!("says it is chunk {at}")));
         }
         let closes = |read: &Read| match &read.frame {
-            Skimmed::Other(frame) => matches!(**frame, Frame::Commit(_) | Frame::Closed),
+            Skimmed::Other(frame) => {
+                matches!(**frame, Frame::Commit(_) | Frame::Closed | Frame::Relieved)
+            }
             Skimmed::Batch(_) => false,
         };
-        // Seals and phases go with the commit that follows them: a closing chunk holds none.
-        let closing = frames.last().is_some_and(
-            |read| matches!(&read.frame, Skimmed::Other(frame) if matches!(**frame, Frame::Closed)),
-        );
+        // Seals and phases go with the commit that follows them: a closing or relieved chunk
+        // holds none.
+        let closing = frames.last().is_some_and(|read| {
+            matches!(&read.frame, Skimmed::Other(frame) if matches!(**frame, Frame::Closed | Frame::Relieved))
+        });
         let shaped = match &first {
             First::Fence(_) => frames.is_empty(),
             First::Header(_) => {

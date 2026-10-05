@@ -101,6 +101,8 @@ to 5 seconds between attempts; one that never succeeds fails the attempt retryab
 A staged chunk is held in memory up to a part, 8 MiB by default, reserved from the engine's
 memory budget, one a running load.
 
-A source that sends more than its log holds between commits waits for a commit to free room,
-and a commit is due at once; a source that never checkpoints, so that no commit can free any,
-fails `log_bytes_exceeded`.
+A source that sends more than its log holds between commits loads through it: a batch that finds
+the log full has it publish a chunk that lets go of what was committed, waits for a commit where
+one can free room, and a commit is due at once. A load fails `log_bytes_exceeded` only where the
+frames its partitions have sent and not yet checkpointed fill its log, as a source that never
+checkpoints does: give such a load a larger `log_bytes`.

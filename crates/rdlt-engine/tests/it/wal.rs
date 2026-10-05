@@ -588,3 +588,96 @@ async fn what_a_store_stages_in_memory_is_charged_to_the_budget_and_bounded_by_i
         }
     }
 }
+
+/// Loads `rows` rows of each of `partitions` partitions, a checkpoint every `every` batches of
+/// twenty and a commit every `commit` rows, through a log of `log_bytes`, with `engine`; the
+/// run's outcome.
+async fn partitioned(
+    name: &str,
+    (partitions, every, commit): (usize, u64, u64),
+    rows: u64,
+    log_bytes: u64,
+    engine: impl FnOnce(
+        rdlt_engine::EngineConfigBuilder,
+        Arc<dyn WalStore>,
+    ) -> crate::support::TestEngine,
+) -> RunOutcome {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let mut events = ScriptStream::new("events", partitions, rows, 20);
+    events.replayable = false;
+    events.checkpoint_every = every;
+    let (_, source) = Script::new(vec![events]).connect(name).await;
+    let growth = GrowthLimits::default()
+        .with_log_bytes(log_bytes)
+        .expect("a valid limit");
+    let plan = pipeline(
+        &name.replace('_', "-"),
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let outcome = engine(commit_every(commit).growth(growth), store)
+        .run(plan, source, memory(name).await)
+        .await;
+    if outcome.report.status == RunStatus::Succeeded {
+        assert_eq!(
+            published_ids(name, "events"),
+            ids(partitions, rows),
+            "{name}"
+        );
+    }
+    outcome
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_partition_whose_checkpoints_lie_nearly_a_log_apart_loads_through_it() {
+    // Batches of twenty rows take some 600 bytes in the log: 28 between checkpoints fill most
+    // of 16 KiB, and nothing but its own checkpoint commits them.
+    for every in [8, 16, 24, 28] {
+        let name = format!("wal_gap_{every}");
+        let shape = (1, every, 1_000_000);
+        let outcome = partitioned(&name, shape, 4_000, 16 << 10, logging_engine).await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{every}: {:?}",
+            outcome.error
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn several_partitions_load_through_a_log_their_open_frames_fit() {
+    for (partitions, every, log_bytes) in [
+        (2, 1, 64 << 10),
+        (4, 3, 64 << 10),
+        (8, 3, 64 << 10),
+        (4, 1, 16 << 10),
+        (16, 1, 32 << 10),
+    ] {
+        let name = format!("wal_partitions_{partitions}_{every}_{log_bytes}");
+        let shape = (partitions, every, 1_000);
+        let outcome = partitioned(&name, shape, 800, log_bytes, logging_engine).await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{name}: {:?}",
+            outcome.error
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn several_partitions_load_through_a_log_their_open_frames_fit_on_the_real_clock() {
+    let engine = |config, store| crate::support::pooled_logging_engine(config, 2, store);
+    for (partitions, every, log_bytes) in [(4, 3, 64 << 10), (8, 1, 64 << 10), (4, 1, 16 << 10)] {
+        let name = format!("wal_partitions_real_{partitions}_{every}_{log_bytes}");
+        let shape = (partitions, every, 20);
+        let outcome = partitioned(&name, shape, 800, log_bytes, engine).await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{name}: {:?}",
+            outcome.error
+        );
+    }
+}

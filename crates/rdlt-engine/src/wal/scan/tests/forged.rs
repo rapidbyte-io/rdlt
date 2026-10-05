@@ -134,6 +134,28 @@ async fn a_chunk_shaped_as_a_load_writes_one_reads_back() {
 }
 
 #[tokio::test]
+async fn a_chunk_published_between_commits_reads_back_for_the_commit_after_it() {
+    // A table and a batch carried into it, and no seal or commit: the commit of the chunk after
+    // it names it, and takes its batch.
+    let relieved = vec![
+        header(0, 1),
+        table(0, 1),
+        batch(1, 0),
+        Frame::Relieved,
+        end(&[], &[]),
+    ];
+    let committed = vec![
+        header(1, 1),
+        seal(1, 1, 2),
+        commit(1, &[1], 1),
+        end(&[0], &[]),
+    ];
+    let chunks = vec![(0, relieved.clone()), (1, committed)];
+    assert_eq!(scanned(chunks).await.expect("it reads"), 1);
+    assert_eq!(scanned(vec![(0, relieved)]).await.expect("it reads"), 0);
+}
+
+#[tokio::test]
 async fn a_chunk_not_shaped_as_a_load_writes_one_is_refused() {
     let without_end = whole()[..5].to_vec();
     let mut end_first = whole();
@@ -156,6 +178,11 @@ async fn a_chunk_not_shaped_as_a_load_writes_one_is_refused() {
         ("two headers", two_headers),
         ("the number of another chunk", replaced(0, &[header(3, 1)])),
         ("seals no commit follows", replaced(4, &[Frame::Closed])),
+        ("seals a relief follows", replaced(4, &[Frame::Relieved])),
+        (
+            "a relief beside a commit",
+            replaced(4, &[commit(1, &[1], 1), Frame::Relieved]),
+        ),
         ("a fence holding frames", {
             let fence = Frame::Fence(Fence {
                 pipeline: pipeline(),
