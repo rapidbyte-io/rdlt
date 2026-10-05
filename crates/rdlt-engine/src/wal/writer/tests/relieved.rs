@@ -245,20 +245,23 @@ async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() 
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         // Chunk 0 holds a batch of segment 1 beside five of segment 2, chunk 1 one of segment 3
-        // beside three of segment 4: more open than settled once 1 and 3 settle, so no carry
-        // follows their receipts.
+        // beside three of segment 4, chunk 2 one of segment 6 beside three of segment 7: more
+        // open than settled once 1, 3 and 6 settle, so no carry follows their receipts.
         log.batch(1, 0).await;
         for _ in 0..5 {
             log.batch(2, 0).await;
         }
         log.commit(1, &[1]).await.expect("durable");
-        log.batch(3, 0).await;
-        for _ in 0..3 {
-            log.batch(4, 0).await;
+        for (number, settled, open) in [(2, 3, 4), (3, 6, 7)] {
+            log.batch(settled, 0).await;
+            for _ in 0..3 {
+                log.batch(open, 0).await;
+            }
+            log.commit(number, &[settled]).await.expect("durable");
         }
-        log.commit(2, &[3]).await.expect("durable");
-        log.committed(1).await;
-        log.committed(2).await;
+        for number in 1..=3 {
+            log.committed(number).await;
+        }
         let sized = |kind: fn(&Frame) -> bool| {
             let frame = frames(&observed)[1]
                 .1
@@ -270,8 +273,9 @@ async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() 
         };
         let frame = sized(|frame| matches!(frame, Frame::Batch(_)));
         let schema = sized(|frame| matches!(frame, Frame::Schema(_)));
-        // A chunk holds both chunks' open frames and a thousand bytes more, but not the chunk
-        // staged filled with segment 5's frames beside either.
+        // A chunk holds the open frames of chunks 0 and 1 and a thousand bytes more, but not
+        // those of chunk 2 beside them, nor the chunk staged filled with segment 5's frames
+        // beside any.
         let most = 8 * frame + 2 * schema + 1_000;
         let shared = Arc::clone(log.writer.shared());
         shared.limit.store(8 * most, Ordering::SeqCst);
@@ -285,8 +289,9 @@ async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() 
         relieve(&log).await;
         let held = numbers(&observed);
         assert!(!held.contains(&0) && !held.contains(&1), "{held:?}");
-        // The chunk staged is published first, and both chunks' open frames go to the next.
-        assert_eq!(batches_of(&observed, 3), [2, 2, 2, 2, 2, 4, 4, 4]);
+        // The chunk staged is published first, and the open frames of chunks 0 and 1 go to the
+        // next.
+        assert_eq!(batches_of(&observed, 4), [2, 2, 2, 2, 2, 4, 4, 4]);
         let fives = held
             .iter()
             .flat_map(|number| batches_of(&observed, *number))
