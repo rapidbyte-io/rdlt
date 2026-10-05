@@ -1,6 +1,9 @@
 //! The tables a normalized stream's declared schema makes before anything is read: its own
 //! table's columns, and each child table with the columns its rows bring.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use rdlt_connector::{ColumnPath, Field, LogicalType, TableSchema};
