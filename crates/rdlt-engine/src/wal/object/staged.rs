@@ -83,12 +83,11 @@ impl Staged {
         while bytes > 0
             && let Some(first) = self.held.front_mut()
         {
-            if first.len() > bytes {
-                taken.push(first.split_to(bytes));
-                bytes = 0;
-            } else {
-                bytes -= first.len();
-                taken.extend(self.held.pop_front());
+            let piece = first.split_to(bytes.min(first.len()));
+            bytes -= piece.len();
+            taken.push(piece);
+            if first.is_empty() {
+                self.held.pop_front();
             }
         }
         self.holding = self.held.iter().map(Bytes::len).sum();

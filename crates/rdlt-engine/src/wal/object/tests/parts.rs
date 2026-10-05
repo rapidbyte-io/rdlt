@@ -139,6 +139,32 @@ async fn a_chunk_in_parts_is_read_and_removed_whole_by_a_store_that_never_staged
 }
 
 #[tokio::test]
+async fn a_whole_chunk_s_length_is_listed_without_reading_it_unless_a_reference_s_length() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(4)).await;
+    let orders = pipeline("listed");
+    staged(&wal, &orders, chunk(1, 0), b"abc")
+        .await
+        .publish()
+        .await
+        .expect("publishes");
+    let other = opened(&objects, options(4)).await;
+    let reads = objects.ranges().len();
+    assert_eq!(
+        other
+            .chunks(&orders, chunk(1, 0).load)
+            .await
+            .expect("lists"),
+        [(0, 3)]
+    );
+    assert_eq!(
+        objects.ranges().len(),
+        reads,
+        "nothing of the chunk was read"
+    );
+}
+
+#[tokio::test]
 async fn a_chunk_of_a_part_or_less_is_published_by_one_put() {
     let objects = objects(faultless());
     let wal = opened(&objects, options(4)).await;

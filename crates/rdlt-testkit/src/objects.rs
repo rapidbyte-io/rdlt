@@ -70,6 +70,9 @@ pub enum Fault {
     Stale,
     /// Refused as the credentials may not do it.
     Denied,
+    /// Answered as finding no such object, nothing done, as some stores answer a deletion of one
+    /// already gone.
+    Missing,
     /// Refused as a request the store does not implement.
     Unsupported,
     /// A create done as a put that replaces what holds the name, as a store that ignores the
@@ -254,9 +257,11 @@ async fn faulted<T>(
         | Fault::Overwrite
         | Fault::Ignored
         | Fault::Bare
-        | Fault::Drip(_) => {
-            action.await
-        }
+        | Fault::Drip(_) => action.await,
+        Fault::Missing => Err(Error::NotFound {
+            path: key.to_string(),
+            source: "no such object".into(),
+        }),
         Fault::Denied => Err(Error::PermissionDenied {
             path: key.to_string(),
             source: "the credentials may not".into(),
