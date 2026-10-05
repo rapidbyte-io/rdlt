@@ -19,8 +19,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::frame::{self, Frame, Header};
 use super::store::{Chunk, StagedChunk, WalStore};
+use crate::budget::MemoryBudget;
 use crate::crash::crash_point;
 use crate::error::Error;
+use crate::limits::LOG_PARTS;
 
 /// Frames queued for the writer before a sender waits: a batch's frame holds its whole batch.
 const QUEUED: usize = 16;
@@ -48,11 +50,13 @@ pub(crate) enum Command {
         held: Permit,
     },
     /// A batch frame of `segment`, for the table at `table`, and the memory it holds until it
-    /// is written.
+    /// is written; `schema` bytes were counted beside it for the table's schema frame, which the
+    /// chunk staged may hold already.
     Batch {
         segment: SegmentId,
         table: u32,
         frame: Bytes,
+        schema: u64,
         held: Permit,
     },
     /// A seal frame of `segment`, and the memory it holds until it is written.
@@ -92,17 +96,18 @@ pub(crate) enum Command {
 /// What a load's writer and its senders share: what the log holds on disk, and its first
 /// failure.
 pub(crate) struct Shared {
-    /// Bytes: what the log holds on disk, its chunks published and the chunk staged; a batch
-    /// frame counted once it is sent, every other frame once it is written.
+    /// Bytes: what the log holds on disk, its chunks published and the chunk staged, and what was
+    /// counted for frames not yet written; it never passes `limit`.
     pub(crate) held: AtomicU64,
-    /// Bytes: what the log may hold on disk; a carry that would take it past is left undone.
+    /// Bytes: what the log may hold on disk.
     pub(crate) limit: AtomicU64,
-    /// Bytes: the batch frames counted in `held` that the writer has not written yet.
-    pub(crate) unwritten: AtomicU64,
-    /// Bytes: the most the batch frames of open segments take in one chunk that holds frames of
-    /// another segment too, which a carry copies before it frees what that chunk holds of the
-    /// other: a log with that much room can free its chunks one at a time.
-    pub(crate) copied: AtomicU64,
+    /// Bytes: what the writer needs to end the chunk staged, or a chunk it stages to free room:
+    /// a header, an end naming every chunk and commit the log holds, and a closing frame.
+    pub(crate) closing: AtomicU64,
+    /// Bytes: the most a commit of the load wrote, its seal, phase and commit frames, and at
+    /// least an eighth of `limit`, which a batch keeps room for, so the commit its checkpoint
+    /// brings can be written.
+    pub(crate) committed: AtomicU64,
     /// The first failure, which every later batch and command is answered with.
     pub(crate) failed: parking_lot::Mutex<Option<Error>>,
     /// The oldest commit a replay of the log may repeat: one waiting for its receipt, or whose
@@ -117,8 +122,8 @@ impl Default for Shared {
         Self {
             held: AtomicU64::new(0),
             limit: AtomicU64::new(u64::MAX),
-            unwritten: AtomicU64::new(0),
-            copied: AtomicU64::new(0),
+            closing: AtomicU64::new(0),
+            committed: AtomicU64::new(0),
             failed: parking_lot::Mutex::default(),
             oldest: parking_lot::Mutex::default(),
             room: tokio::sync::Notify::new(),
@@ -134,6 +139,56 @@ impl Shared {
             None => Ok(()),
         }
     }
+
+    /// Counts `bytes` against what the log may hold where it holds them with `beside` bytes to
+    /// spare: whether it did.
+    pub(crate) fn reserve(&self, bytes: u64, beside: u64) -> bool {
+        let limit = self.limit.load(Ordering::SeqCst);
+        self.held
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+                let held = held.checked_add(bytes)?;
+                (held.saturating_add(beside) <= limit).then_some(held)
+            })
+            .is_ok()
+    }
+
+    /// Gives back `bytes` counted for frames never written.
+    pub(crate) fn release(&self, bytes: u64) {
+        // The update only lowers the count, so it never fails.
+        self.held
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
+                Some(held.saturating_sub(bytes))
+            })
+            .ok();
+    }
+
+    /// Bytes: the room every reservation of the log's frames keeps: what ends the chunk staged,
+    /// and beside it what each of `kept` names.
+    pub(crate) fn kept(&self, kept: Kept) -> u64 {
+        let closing = self.closing.load(Ordering::SeqCst);
+        // A carry may copy an eighth of the log, so it can gather many small chunks into one.
+        let carry = self.limit.load(Ordering::SeqCst) / LOG_PARTS;
+        let committed = self.committed.load(Ordering::SeqCst);
+        match kept {
+            Kept::Closing => closing,
+            Kept::Commit => closing.saturating_add(committed),
+            Kept::Carry => closing.saturating_add(carry),
+            Kept::All => closing.saturating_add(carry).saturating_add(committed),
+        }
+    }
+}
+
+/// What a reservation keeps room for beside what ends the chunk staged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kept {
+    /// Nothing more.
+    Closing,
+    /// The frames of a commit as large as the largest yet.
+    Commit,
+    /// A carry of one chunk.
+    Carry,
+    /// Both.
+    All,
 }
 
 /// The sending end of a load's writer.
@@ -146,9 +201,12 @@ pub(crate) struct WalWriter {
 impl WalWriter {
     /// The writer of `owner`'s log in `store`, and the task that writes it, for the caller's
     /// scope to run; the task ends once every sender is dropped or the log is closed.
+    ///
+    /// What it reads back of the log to carry is held in `budget`'s share for logs.
     pub(crate) fn start(
         store: Arc<dyn WalStore>,
         owner: Owner,
+        budget: MemoryBudget,
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
@@ -159,6 +217,7 @@ impl WalWriter {
             shared: Arc::clone(&shared),
             store,
             owner,
+            budget,
             chunk: 0,
             staged: None,
             tables: BTreeMap::new(),
@@ -168,8 +227,10 @@ impl WalWriter {
             unrecorded: BTreeSet::new(),
             settled: Settled::default(),
             sealing: false,
-            copied: 0,
+            last: None,
         };
+        let mut log = log;
+        log.note_room();
         (Self { commands, shared }, log.run(receiver))
     }
 
@@ -252,6 +313,8 @@ struct Logged {
 struct Log {
     store: Arc<dyn WalStore>,
     owner: Owner,
+    /// What frames read back to carry are held in while they are copied.
+    budget: MemoryBudget,
     /// The number of the chunk staged, or staged next.
     chunk: u64,
     staged: Option<Box<dyn StagedChunk>>,
@@ -268,8 +331,8 @@ struct Log {
     /// Whether the chunk staged holds seals, which go with the commit that follows them: it is
     /// published by that commit alone.
     sealing: bool,
-    /// Bytes: the most a carry of a chunk published copies, as [`Shared::copied`] counts.
-    copied: u64,
+    /// The last commit written, which the next follows.
+    last: Option<CommitSeq>,
     /// What the log holds on disk, and its first failure: after a failed write, what the log
     /// holds is unknown, and no later frame may be trusted to follow it.
     shared: Arc<Shared>,
@@ -307,9 +370,10 @@ impl Log {
                 segment,
                 table,
                 frame,
+                schema,
                 held,
             } => {
-                let result = self.batch(segment, table, frame).await;
+                let result = self.batch(segment, table, frame, schema).await;
                 drop(held);
                 self.note(&result);
             }
@@ -338,7 +402,7 @@ impl Log {
             }
             Command::Abandon { segment } => {
                 self.settled.settle([segment]);
-                self.refresh_copies();
+                self.note_room();
             }
             Command::Retire { tables } => {
                 for table in tables {
@@ -357,13 +421,13 @@ impl Log {
         }
     }
 
-    /// Writes `frame`, the seal frame of `segment`, which the commit that follows takes.
+    /// Writes `frame`, the seal frame of `segment`, counted with its commit, which takes it.
     async fn seal(&mut self, segment: SegmentId, frame: Bytes) {
-        let result = self.append(frame).await.map(drop);
+        let result = self.written_out(frame).await.map(drop);
         self.note(&result);
         self.sealing = true;
         self.current().segments.insert(segment);
-        self.note_copies();
+        self.note_room();
     }
 
     /// Keeps the first failure, and answers with `result`.
@@ -390,16 +454,20 @@ impl Log {
         self.written.entry(self.chunk).or_default()
     }
 
-    /// Writes `frame` to the chunk staged, as [`Log::written`] does, counting it on disk.
+    /// Writes `frame`, one of the writer's own, to the chunk staged, as [`Log::written_out`]
+    /// does, counting it first: it comes out of the room every other frame keeps for it.
     async fn append(&mut self, frame: Bytes) -> Result<Span, Error> {
-        self.shared
-            .held
-            .fetch_add(count(frame.len()), Ordering::Relaxed);
+        self.take(count(frame.len()));
         self.written_out(frame).await
     }
 
-    /// Writes `frame` to the chunk staged, staging it with its preamble and header where it is
-    /// the first: where it lies there.
+    /// Counts `bytes` of the writer's own frames, out of the room every other frame keeps.
+    fn take(&self, bytes: u64) {
+        self.shared.held.fetch_add(bytes, Ordering::SeqCst);
+    }
+
+    /// Writes `frame`, whose bytes were counted already, to the chunk staged, staging it with
+    /// its preamble and header where it is the first: where it lies there.
     async fn written_out(&mut self, frame: Bytes) -> Result<Span, Error> {
         self.failure()?;
         let chunk = Chunk {
@@ -413,9 +481,9 @@ impl Log {
                 .await
                 .map_err(|error| self.lost(error))?;
             let mut head = frame::preamble().to_vec();
-            head.extend_from_slice(&self.header()?);
+            head.extend_from_slice(&self.header(self.chunk)?);
             let len = count(head.len());
-            self.shared.held.fetch_add(len, Ordering::Relaxed);
+            self.take(len);
             if let Err(error) = staged.append(Bytes::from(head)).await {
                 drop(staged.discard().await);
                 return Err(Error::from_wal(error));
@@ -452,12 +520,12 @@ impl Log {
         }
     }
 
-    /// The header frame of the chunk staged.
-    fn header(&self) -> Result<Bytes, Error> {
+    /// The header frame of chunk `chunk`.
+    fn header(&self, chunk: u64) -> Result<Bytes, Error> {
         Frame::Header(Header {
             pipeline: self.owner.pipeline.clone(),
             load: self.owner.load,
-            chunk: self.chunk,
+            chunk,
             epoch: self.owner.epoch,
             opened: self.owner.opened,
             origin: self.owner.origin,
@@ -465,28 +533,29 @@ impl Log {
         .encode()
     }
 
-    async fn batch(&mut self, segment: SegmentId, table: u32, frame: Bytes) -> Result<(), Error> {
-        if !self.current().schemas.contains_key(&table) {
-            let schema = self.tables.get(&table).cloned().ok_or_else(|| {
+    /// Writes `frame`, a batch frame of `segment` for the table at `table`, counted with
+    /// `schema` bytes beside it for the table's schema frame, written first where the chunk
+    /// staged lacks it and given back otherwise.
+    async fn batch(
+        &mut self,
+        segment: SegmentId,
+        table: u32,
+        frame: Bytes,
+        schema: u64,
+    ) -> Result<(), Error> {
+        if self.current().schemas.contains_key(&table) {
+            self.shared.release(schema);
+        } else {
+            let frame = self.tables.get(&table).cloned().ok_or_else(|| {
                 Error::internal(format!(
                     "a batch of table {table}, whose schema was never sent"
                 ))
             })?;
-            self.describe(table, schema).await?;
+            self.describe(table, frame).await?;
             // Written once, the frame is the writer's to keep for the chunks after.
             drop(self.describing.remove(&table));
         }
-        // Counted on disk once it was sent.
-        let len = count(frame.len());
-        let written = self.written_out(frame).await;
-        // The update only lowers the count, so it never fails.
-        self.shared
-            .unwritten
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |unwritten| {
-                Some(unwritten.saturating_sub(len))
-            })
-            .ok();
-        let span = written?;
+        let span = self.written_out(frame).await?;
         let current = self.current();
         current.open += span.len;
         current.segments.insert(segment);
@@ -495,13 +564,13 @@ impl Log {
             table,
             span,
         });
-        self.note_copies();
+        self.note_room();
         Ok(())
     }
 
-    /// Writes `frame`, the schema frame of `table`, to the chunk staged.
+    /// Writes `frame`, the schema frame of `table`, counted already, to the chunk staged.
     async fn describe(&mut self, table: u32, frame: Bytes) -> Result<(), Error> {
-        let span = self.append(frame).await?;
+        let span = self.written_out(frame).await?;
         self.current().schemas.insert(table, span);
         Ok(())
     }
@@ -514,7 +583,8 @@ impl Log {
         segments: SegmentSet,
         frame: Bytes,
     ) -> Result<(), Error> {
-        self.append(frame).await?;
+        self.written_out(frame).await?;
+        self.last = Some(seq);
         self.current().commits.insert(seq);
         self.publish().await?;
         self.sealing = false;
@@ -539,9 +609,9 @@ impl Log {
             self.unrecorded.insert(seq);
             self.note_oldest();
         }
-        self.refresh_copies();
+        self.note_room();
         self.carry().await?;
-        self.refresh_copies();
+        self.note_room();
         Ok(())
     }
 }

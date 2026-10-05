@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::{Notify, oneshot};
 
+use super::super::writer::Kept;
 use super::{Command, LoadLog, count};
 use crate::error::Error;
 use crate::limits::LOG_BYTES_EXCEEDED;
@@ -92,18 +93,20 @@ impl LoadLog {
         self.pressure.waiting.load(Ordering::SeqCst) > 0
     }
 
-    /// Counts `bytes` of a batch frame on disk, once the log may hold them beside room for the
-    /// copies a carry makes.
+    /// Counts `bytes` of a batch frame, and its table's schema frame, on disk once the log holds
+    /// them beside the room it keeps: what ends its chunk, what a carry copies, and the frames of
+    /// a commit as large as the largest yet, and at least an eighth of the log each.
     ///
-    /// A batch finding no room first has the writer publish its chunk between commits where that
+    /// A batch finding no room first has the writer publish chunks between commits while that
     /// frees any; then, while a checkpoint waits for a commit or a commit is under way, it rings
-    /// for a commit and waits for the room it frees.
+    /// for a commit and waits for the room it frees. Where no commit can free room, it takes the
+    /// carry's room, as it may be what brings its partition's next checkpoint.
     ///
     /// # Errors
     ///
-    /// `log_bytes_exceeded` where the log has no room for the batch, publishing its chunk frees
-    /// none, and no commit can: no checkpoint was sealed since the last commit took them, and
-    /// none is under way.
+    /// `log_bytes_exceeded` where the log has no room for the batch beside what ends its chunk
+    /// and a commit, publishing chunks frees none, and no commit can: no checkpoint was sealed
+    /// since the last commit took them, and none is under way.
     pub(super) async fn admit(&self, bytes: u64) -> Result<(), Error> {
         let shared = self.writer.shared();
         loop {
@@ -112,7 +115,7 @@ impl LoadLog {
             tokio::pin!(room);
             room.as_mut().enable();
             shared.failure()?;
-            if self.reserve(bytes, true) {
+            if shared.reserve(bytes, shared.kept(Kept::All)) {
                 return Ok(());
             }
             // Looked at before the relief: a commit that ended since queued its receipt before
@@ -120,22 +123,14 @@ impl LoadLog {
             let freeing = self.freeing();
             self.relieve().await?;
             // The writer answered once it wrote every frame sent before and freed what it could.
-            if self.reserve(bytes, true) {
+            if shared.reserve(bytes, shared.kept(Kept::All)) {
                 return Ok(());
             }
             if !(freeing || self.freeing()) {
-                // No commit can free room: the batch takes what room is left, as it may be what
-                // brings its partition's next checkpoint.
-                if self.reserve(bytes, false) {
+                if shared.reserve(bytes, shared.kept(Kept::Commit)) {
                     return Ok(());
                 }
-                let limit = self.disk.limit;
-                return Err(Error::wal(format!(
-                    "the load's write-ahead log would hold more than {limit} bytes, what its \
-                     partitions have not sealed fills it, and no checkpoint since its last \
-                     commit lets a commit free any of it"
-                ))
-                .with_code(LOG_BYTES_EXCEEDED));
+                return Err(full(self.disk.limit));
             }
             let pressure = &self.pressure;
             pressure.waiting.fetch_add(1, Ordering::SeqCst);
@@ -143,6 +138,26 @@ impl LoadLog {
             pressure.full.notify_one();
             room.await;
         }
+    }
+
+    /// Counts `bytes` of one of a commit's seal, phase and commit frames on disk, of the `whole`
+    /// commit's so far, where the log holds them beside the room it keeps, first having it
+    /// publish chunks between commits while that frees any: the commit frees what it seals, so
+    /// it may take the carry's room, and a commit larger than all that room is counted all the
+    /// same, taking the log past what it may hold by its own frames until a later relief frees
+    /// what it settles.
+    pub(super) async fn admit_commit(&self, bytes: u64, whole: u64) -> Result<(), Error> {
+        let shared = self.writer.shared();
+        shared.failure()?;
+        shared.committed.fetch_max(whole, Ordering::SeqCst);
+        if shared.reserve(bytes, shared.kept(Kept::Carry)) {
+            return Ok(());
+        }
+        self.relieve().await?;
+        if !shared.reserve(bytes, shared.kept(Kept::Closing)) {
+            shared.held.fetch_add(bytes, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     /// Whether a commit can free room: a checkpoint was sealed that no commit has taken, or a
@@ -160,41 +175,13 @@ impl LoadLog {
             .await
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
     }
+}
 
-    /// Counts `bytes` of a batch frame on disk where the log holds them, `beside` room for the
-    /// most a carry of a chunk copies and the frame itself once more where asked: whether it did.
-    ///
-    /// Frames counted and not yet written may come to be copied too, so they are kept room for
-    /// as well.
-    fn reserve(&self, bytes: u64, beside: bool) -> bool {
-        let shared = self.writer.shared();
-        let limit = self.disk.limit;
-        let unwritten = shared.unwritten.fetch_add(bytes, Ordering::SeqCst);
-        let beside = if beside {
-            shared
-                .copied
-                .load(Ordering::SeqCst)
-                .saturating_add(unwritten)
-                .saturating_add(bytes)
-        } else {
-            0
-        };
-        let counted = shared
-            .held
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
-                let held = held.checked_add(bytes)?;
-                (held.saturating_add(beside) <= limit).then_some(held)
-            })
-            .is_ok();
-        if !counted {
-            // The update only lowers the count, so it never fails.
-            shared
-                .unwritten
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |unwritten| {
-                    Some(unwritten.saturating_sub(bytes))
-                })
-                .ok();
-        }
-        counted
-    }
+/// The refusal of a frame a log of `limit` bytes has no room for.
+fn full(limit: u64) -> Error {
+    Error::wal(format!(
+        "the load's write-ahead log would hold more than {limit} bytes, what its partitions have \
+         not sealed fills it, and no checkpoint since its last commit lets a commit free any of it"
+    ))
+    .with_code(LOG_BYTES_EXCEEDED)
 }

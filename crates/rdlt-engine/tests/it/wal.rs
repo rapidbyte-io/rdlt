@@ -681,3 +681,76 @@ async fn several_partitions_load_through_a_log_their_open_frames_fit_on_the_real
         );
     }
 }
+
+/// Loads a stream whose one partition checkpoints every `every` batches beside one whose
+/// partition checkpoints every batch, both of `rows` rows in batches of one row written as
+/// they come, so each commit's chunk holds a small frame of each, through a log of `log_bytes`
+/// with `engine`; the run's outcome.
+async fn slow_beside_fast(
+    name: &str,
+    (every, rows): (u64, u64),
+    log_bytes: u64,
+    engine: impl FnOnce(
+        rdlt_engine::EngineConfigBuilder,
+        Arc<dyn WalStore>,
+    ) -> crate::support::TestEngine,
+) -> RunOutcome {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let mut slow = ScriptStream::new("slow", 1, rows, 1);
+    slow.replayable = false;
+    slow.checkpoint_every = every;
+    let mut fast = ScriptStream::new("fast", 1, rows, 1);
+    fast.replayable = false;
+    let (_, source) = Script::new(vec![slow, fast]).connect(name).await;
+    let growth = GrowthLimits::default()
+        .with_log_bytes(log_bytes)
+        .expect("a valid limit");
+    let plan = pipeline(
+        &name.replace('_', "-"),
+        [
+            stream("slow").read(ReadMode::Incremental),
+            stream("fast").read(ReadMode::Incremental),
+        ],
+    );
+    // One row a frame, written at once.
+    let batch = rdlt_engine::BatchPolicy::new(1 << 20, 1, std::time::Duration::from_millis(1), 16)
+        .expect("a valid policy");
+    let config = commit_every(1).growth(growth).batch(batch);
+    let outcome = engine(config, store)
+        .run(plan, source, memory(name).await)
+        .await;
+    if outcome.report.status == RunStatus::Succeeded {
+        assert_eq!(published_ids(name, "slow"), ids(1, rows), "{name}");
+        assert_eq!(published_ids(name, "fast"), ids(1, rows), "{name}");
+    }
+    outcome
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_partition_beside_one_committing_every_batch_loads_through_a_log_of_small_frames() {
+    // A frame of one row takes some 1,700 bytes, about what a commit's frames take: 8 of them
+    // are under half of 32 KiB.
+    for every in [3, 8] {
+        let name = format!("wal_slow_{every}");
+        let outcome = slow_beside_fast(&name, (every, 100), 32 << 10, logging_engine).await;
+        assert_eq!(
+            outcome.report.status,
+            RunStatus::Succeeded,
+            "{every}: {:?}",
+            outcome.error
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_partition_beside_one_committing_every_batch_loads_on_the_real_clock() {
+    let engine = |config, store| crate::support::pooled_logging_engine(config, 2, store);
+    let outcome = slow_beside_fast("wal_slow_real", (8, 100), 32 << 10, engine).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+}

@@ -107,6 +107,13 @@ memory budget, one a running load.
 
 A source that sends more than its log holds between commits loads through it: a batch that finds
 the log full has it publish a chunk that lets go of what was committed, waits for a commit where
-one can free room, and a commit is due at once. A load fails `log_bytes_exceeded` only where the
-frames its partitions have sent and not yet checkpointed fill its log, as a source that never
-checkpoints does: give such a load a larger `log_bytes`.
+one can free room, and a commit is due at once. A load whose partitions' frames sent and not yet
+checkpointed, beside one commit's frames, take at most three quarters of `log_bytes` loads
+through it; the rest of the log is kept for gathering chunks, for commits and for what ends a
+chunk. A load fails `log_bytes_exceeded` where the frames its partitions have sent and not yet
+checkpointed fill its log, as a source that never checkpoints does: give such a load a larger
+`log_bytes`, at least four thirds of what its partitions send between checkpoints.
+
+A log never holds more than `log_bytes`, but where a commit is larger than the room kept for one,
+an eighth of `log_bytes` or the largest commit before it, and the carry's eighth: it is written
+all the same, and the log holds more by that commit's frames until the next relief.

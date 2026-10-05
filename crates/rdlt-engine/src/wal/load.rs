@@ -26,7 +26,7 @@ use super::writer::{Command, WalWriter};
 use crate::budget::{Denied, MemoryBudget, Reservation};
 use crate::compute::{ComputePool, run_all};
 use crate::error::Error;
-use crate::limits::{LOG_FRAME_EXCEEDS_BUDGET, RECORDED};
+use crate::limits::{LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS, RECORDED};
 use crate::table::TableView;
 
 /// A table as a load's log tells its versions apart: its index in the attempt, its schema version
@@ -87,25 +87,37 @@ struct Counted {
 /// takes.
 #[derive(Default)]
 struct Described {
-    indexes: BTreeMap<TableKey, (u32, Vec<Weak<TableView>>)>,
+    indexes: BTreeMap<TableKey, Version>,
     next: u32,
+}
+
+/// A table version the log describes: its index, the bytes of its schema frame, and the views
+/// of it that may still log a batch.
+struct Version {
+    index: u32,
+    schema: u64,
+    views: Vec<Weak<TableView>>,
 }
 
 impl LoadLog {
     /// The log of `owner`'s load in `store`, holding at most `limit` bytes on disk, and the task
     /// writing it, for the attempt's scope to run until every clone is dropped or the log is
-    /// closed.
+    /// closed; what it reads back to carry is held in `budget`.
     pub(crate) fn start(
         store: Arc<dyn WalStore>,
         owner: Owner,
-        limit: NonZeroU64,
+        (limit, budget): (NonZeroU64, MemoryBudget),
         staging: Option<Reservation>,
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
     ) {
-        let (writer, task) = WalWriter::start(store, owner);
-        writer.shared().limit.store(limit.get(), Ordering::Relaxed);
+        let (writer, task) = WalWriter::start(store, owner, budget);
+        writer.shared().limit.store(limit.get(), Ordering::SeqCst);
+        writer
+            .shared()
+            .committed
+            .store(limit.get() / LOG_PARTS, Ordering::SeqCst);
         let disk = Disk {
             limit: limit.get(),
             due: AtomicU64::new(limit.get() / 2),
@@ -163,7 +175,7 @@ impl LoadLog {
     ) -> Result<(), Error> {
         // A failed write fails the batches after it at once, not only the next commit.
         self.writer.shared().failure()?;
-        let index = self.describe(budget, table, view).await?;
+        let (index, schema) = self.describe(budget, table, view).await?;
         {
             let mut counts = self.counts.lock();
             let counted = counts.entry(segment).or_default();
@@ -185,28 +197,31 @@ impl LoadLog {
         if let Some(reserved) = held.downcast_mut::<Reservation>() {
             reserved.shrink(count(frame.len()));
         }
-        self.admit(count(frame.len())).await?;
+        // Counted with its table's schema frame, which the chunk it lands in may lack.
+        self.admit(count(frame.len()).saturating_add(schema))
+            .await?;
         self.writer
             .send(Command::Batch {
                 segment,
                 table: index,
                 frame,
+                schema,
                 held,
             })
             .await
     }
 
     /// The index of `view` of the attempt's table `table` in the log, its schema frame sent first
-    /// where it has none.
+    /// where it has none, and the bytes of that frame.
     async fn describe(
         &self,
         budget: &MemoryBudget,
         table: usize,
         view: &Arc<TableView>,
-    ) -> Result<u32, Error> {
+    ) -> Result<(u32, u64), Error> {
         let key = (table, view.table.version, view.table.generation);
         let mut tables = self.tables.lock().await;
-        if let Some((index, views)) = tables.indexes.get_mut(&key) {
+        if let Some(version) = tables.indexes.get_mut(&key) {
             // Each view of the version keeps it described: one that only rounds a column has
             // the version of the view before it.
             let known = |known: &Weak<TableView>| {
@@ -214,10 +229,10 @@ impl LoadLog {
                     .upgrade()
                     .is_some_and(|alive| Arc::ptr_eq(&alive, view))
             };
-            if !views.iter().any(known) {
-                views.push(Arc::downgrade(view));
+            if !version.views.iter().any(known) {
+                version.views.push(Arc::downgrade(view));
             }
-            return Ok(*index);
+            return Ok((version.index, version.schema));
         }
         let index = tables.next;
         tables.next = index
@@ -232,14 +247,19 @@ impl LoadLog {
             schema,
         })
         .encode()?;
+        let schema = count(frame.len());
         let held = Box::new(settled(budget, held, frame.len()).await?);
         self.writer
             .send(Command::Table { index, frame, held })
             .await?;
-        tables
-            .indexes
-            .insert(key, (index, vec![Arc::downgrade(view)]));
-        Ok(index)
+        let views = vec![Arc::downgrade(view)];
+        let version = Version {
+            index,
+            schema,
+            views,
+        };
+        tables.indexes.insert(key, version);
+        Ok((index, schema))
     }
 
     /// Logs `sealed`, then the phases `begun` that `meta`'s commit begins with it and the commit,
@@ -266,8 +286,14 @@ impl LoadLog {
             .map_err(|_| Error::internal("a commit takes more seals than a frame counts"))?;
         let phases = u32::try_from(begun.len())
             .map_err(|_| Error::internal("a commit begins more phases than a frame counts"))?;
+        // Each frame is counted on disk, then sent, so it holds its memory no longer than its
+        // write; the commit counts as large as all its frames together.
+        let mut whole = 0_u64;
         for seal in sealed {
-            self.seal(budget, seal).await?;
+            let (command, frame) = self.seal(budget, seal).await?;
+            whole = whole.saturating_add(frame);
+            self.admit_commit(frame, whole).await?;
+            self.writer.send(command).await?;
         }
         // Reserved before they are encoded for what they take at most, but what they record of
         // tables, which each table's change reserved.
@@ -282,6 +308,9 @@ impl LoadLog {
             .saturating_sub(usize::try_from(prepaid).unwrap_or(usize::MAX));
         let held = settled(budget, held, frame).await?;
         let held = Box::new(held);
+        let frame = count(frames.len());
+        self.admit_commit(frame, whole.saturating_add(frame))
+            .await?;
         let (durable, answer) = oneshot::channel();
         self.writer
             .send(Command::Commit {
@@ -297,9 +326,9 @@ impl LoadLog {
             .map_err(|_| Error::wal("the write-ahead log's writer stopped"))?
     }
 
-    /// Logs `seal` with the batch frames and rows logged of its segment; `budget` holds the
-    /// frame's bytes until it is written.
-    async fn seal(&self, budget: &MemoryBudget, seal: Sealed) -> Result<(), Error> {
+    /// The command logging `seal` with the batch frames and rows logged of its segment, and the
+    /// bytes of its frame; `budget` holds the frame's bytes until it is written.
+    async fn seal(&self, budget: &MemoryBudget, seal: Sealed) -> Result<(Command, u64), Error> {
         let segment = seal.segment;
         let counted = self.counts.lock().remove(&segment).unwrap_or_default();
         // Reserved before it is encoded for the cursors it records, each written twice over in
@@ -321,12 +350,13 @@ impl LoadLog {
         })
         .encode()?;
         let held = settled(budget, held, frame.len()).await?;
-        let seal = Command::Seal {
+        let bytes = count(frame.len());
+        let command = Command::Seal {
             segment,
             frame,
             held: Box::new(held),
         };
-        self.writer.send(seal).await
+        Ok((command, bytes))
     }
 
     /// Tells the writer to forget the schema frames of table versions all of whose views are gone.
@@ -340,13 +370,13 @@ impl LoadLog {
         let gone: Vec<TableKey> = described
             .indexes
             .iter()
-            .filter(|(_, (_, views))| views.iter().all(|view| view.strong_count() == 0))
+            .filter(|(_, version)| version.views.iter().all(|view| view.strong_count() == 0))
             .map(|(key, _)| *key)
             .collect();
         let tables: Vec<u32> = gone
             .iter()
             .filter_map(|key| described.indexes.remove(key))
-            .map(|(index, _)| index)
+            .map(|version| version.index)
             .collect();
         if tables.is_empty() {
             return Ok(());

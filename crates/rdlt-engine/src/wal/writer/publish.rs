@@ -10,8 +10,8 @@ use crate::error::Error;
 
 impl Log {
     /// Ends the chunk staged with what a replay needs, publishes it, moves on to the next, and
-    /// deletes every earlier chunk the end did not name.
-    pub(super) async fn publish(&mut self) -> Result<(), Error> {
+    /// deletes every earlier chunk the end did not name: the bytes those held.
+    pub(super) async fn publish(&mut self) -> Result<u64, Error> {
         let live: Vec<u64> = self
             .written
             .iter()
@@ -38,20 +38,21 @@ impl Log {
         staged.publish().await.map_err(|error| self.lost(error))?;
         crash_point!("engine.wal.sync.after");
         self.chunk += 1;
-        self.forget(&live).await?;
-        self.refresh_copies();
-        Ok(())
+        let freed = self.forget(&live).await?;
+        self.note_room();
+        Ok(freed)
     }
 
     /// Deletes every chunk before the chunk published last that `live` does not name; every
-    /// receipt is recorded now, or its commit's chunk gone.
-    async fn forget(&mut self, live: &[u64]) -> Result<(), Error> {
+    /// receipt is recorded now, or its commit's chunk gone: the bytes those held.
+    async fn forget(&mut self, live: &[u64]) -> Result<u64, Error> {
         let gone: Vec<u64> = self
             .written
             .keys()
             .filter(|number| **number < self.chunk - 1 && !live.contains(number))
             .copied()
             .collect();
+        let mut freed = 0_u64;
         for number in gone {
             let chunk = Chunk {
                 load: self.owner.load,
@@ -62,7 +63,8 @@ impl Log {
                 .await
                 .map_err(Error::from_wal)?;
             if let Some(written) = self.written.remove(&number) {
-                self.shared.held.fetch_sub(written.len, Ordering::Relaxed);
+                self.shared.release(written.len);
+                freed = freed.saturating_add(written.len);
             }
             crash_point!("engine.wal.remove");
         }
@@ -70,7 +72,7 @@ impl Log {
         self.unrecorded.clear();
         self.note_oldest();
         self.shared.room.notify_waiters();
-        Ok(())
+        Ok(freed)
     }
 
     /// Whether a replay needs `written`, a published chunk: a segment in it is neither settled

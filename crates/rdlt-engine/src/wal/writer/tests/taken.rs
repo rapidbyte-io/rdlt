@@ -1,7 +1,6 @@
 //! A load that stalls while another attempt takes its log over, replays it and removes it: once
 //! it wakes it never publishes or answers a commit again, and nothing of it is left to replay.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::super::super::local::LocalWal;
@@ -47,12 +46,9 @@ async fn stalled(store: Arc<dyn WalStore>, open: bool) {
         .open_log(&pipeline(), load())
         .await
         .expect("the log opens");
-    let (writer, task) = WalWriter::start(Arc::clone(&store), owner());
-    let mut log = Driving {
-        writer,
-        logged: BTreeMap::new(),
-        ordinal: 0,
-    };
+    let budget = crate::budget::MemoryBudget::new(1 << 20);
+    let (writer, task) = WalWriter::start(Arc::clone(&store), owner(), budget);
+    let mut log = Driving::new(writer);
     let replayer = Arc::clone(&store);
     let drive = async move {
         log.send(table(0)).await;
