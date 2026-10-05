@@ -90,7 +90,11 @@ GCS and Azure Blob are not supported.
 | A replay | A LIST of each log, and a GET for each 64 KiB a frame is read in. |
 
 A log's objects are its live chunks alone, so what it costs never grows with how many it held. A
-log's directory listing more than 65,536 objects is unreadable (`wal_unreadable`).
+log's directory listing more than 65,536 objects is unreadable (`wal_unreadable`). Each chunk's
+end names the live chunks before it, two bytes at least each, so a log keeps at most about the
+square root of its `log_bytes` in chunks, 65,536 at the default 4 GiB, and a part's body beside
+each chunk longer than a part: a `log_bytes` far past 4 GiB can let a log of many small chunks
+pass the listing's limit.
 
 A commit's chunk is durable once its PUT is acknowledged, tens of milliseconds on S3 for a small
 chunk, longer as it grows; its source hears of the commit after that. A request is tried up to five

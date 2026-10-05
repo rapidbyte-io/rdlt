@@ -256,9 +256,12 @@ pub(crate) const OBJECT_REQUEST: Duration = Duration::from_secs(30);
 #[cfg(feature = "object-store")]
 pub(crate) const OBJECT_REQUEST_PER_MIB: Duration = Duration::from_secs(1);
 
-/// Objects a listing of an object-store log's directory holds at most: a log keeps a few chunks
-/// at a time, each a head and at most a body, so a directory holding more is refused as
-/// `wal_unreadable`, which an operator clears, rather than held in memory.
+/// Objects a listing of an object-store log's directory holds at most: a directory holding more
+/// is refused as `wal_unreadable`, which an operator clears, rather than held in memory.
+///
+/// Each chunk's end names the live chunks before it, two bytes at least each, so a log keeps at
+/// most about the square root of its bound in chunks, each a head and at most a body: 65,536 at
+/// the default bound of 4 GiB.
 #[cfg(feature = "object-store")]
 pub(crate) const OBJECT_LISTED: usize = 65_536;
 

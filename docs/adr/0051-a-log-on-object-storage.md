@@ -55,7 +55,11 @@ to another machine and replay what the first left.
   chunks are one listing of its directory, which holds its live chunks alone.
 - A listing is read a page at a time, each page within an attempt's deadline, and holds at most
   65,536 objects: a log's directory holding more is unreadable (`wal_unreadable`), as a store
-  that keeps what it was told it deleted would make it.
+  that keeps what it was told it deleted would make it. Each chunk's end names the live chunks
+  before it, two bytes at least each, so n live chunks hold n(n-1) bytes of ends and a log keeps
+  at most about the square root of its `log_bytes` in chunks: 65,536 at the default 4 GiB, with
+  a body beside each chunk longer than a part. A `log_bytes` far past that can let a log of many
+  small chunks pass the limit, as the operator documentation says.
 - A read is a ranged GET whose body is read no further than the length asked
   (`InvalidData` beyond it); a range ending past `i64::MAX` asks for everything from its offset,
   which every S3 server takes; one starting at or past the object's end answers empty after a
