@@ -792,18 +792,27 @@ async fn a_batch_waiting_for_room_takes_it_before_batches_that_come_after_it() {
     let writer = tokio::spawn(task);
     let shared = Arc::clone(log.writer.shared());
     let kept = shared.kept(crate::wal::writer::Kept::All);
-    let (first, later) = (40_000, 20_000);
-    // The log has room for neither, and a commit can free some.
+    let (first, second, later) = (40_000, 20_000, 10_000);
+    // The log has room for none, and a commit can free some.
     assert!(shared.reserve(limit.get() - kept - 1_000, 0));
     log.checkpointed();
-    let waiting = {
+    let queued = |bytes| {
         let log = log.clone();
-        tokio::spawn(async move { log.admit(first).await })
+        tokio::spawn(async move { log.admit(bytes).await })
     };
-    while !log.waits() {
+    let first_waits = queued(first);
+    while log.in_line() < 1 {
         tokio::task::yield_now().await;
     }
-    // Room frees for either alone, not both: a batch that comes now waits behind the first.
+    let second_waits = queued(second);
+    for _ in 0..1_000 {
+        if log.in_line() == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    // Room frees for the first and the batch that comes now, not for those in line: it waits
+    // behind both.
     shared.release(first + 5_000);
     shared.room.notify_waiters();
     {
@@ -811,16 +820,20 @@ async fn a_batch_waiting_for_room_takes_it_before_batches_that_come_after_it() {
         tokio::pin!(came);
         tokio::select! {
             biased;
-            admitted = &mut came => panic!("taken before the batch waiting: {admitted:?}"),
+            admitted = &mut came => panic!("taken before the batches waiting: {admitted:?}"),
             () = std::future::ready(()) => {}
         }
-        waiting
+        first_waits
             .await
             .expect("the first ends")
             .expect("the first takes the room");
-        shared.release(later + 5_000);
+        shared.release(second + later + 10_000);
         shared.room.notify_waiters();
-        came.await.expect("the later takes what frees after");
+        second_waits
+            .await
+            .expect("the second ends")
+            .expect("the second takes what frees after");
+        came.await.expect("the later takes what is left");
     }
     drop(log);
     writer.await.expect("the writer ends").expect("ends well");
