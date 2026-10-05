@@ -10,7 +10,7 @@ use super::super::super::frame::Frame;
 use super::super::super::memory::MemoryWal;
 use super::super::super::scan::scan;
 use super::super::Command;
-use super::{Driving, chunks, drive, frames, load, numbers, pipeline, table};
+use super::{Driving, chunks, drive, driven, frames, load, numbers, pipeline, table};
 
 /// Has the writer publish chunks between commits while each frees anything.
 async fn relieve(log: &Driving) {
@@ -127,17 +127,18 @@ async fn a_relief_carries_open_frames_out_of_the_chunks_it_has_room_to_copy() {
     let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
-        // Chunk 0 holds a batch of segment 1 beside three of segment 2, chunk 1 one of segment
-        // 3 beside two of segment 4: each holds more open than settled once 1 and 3 settle, so
+        // Chunk 0 holds a batch of segment 1 beside five of segment 2; chunk 1 one of segment 3
+        // beside three of segment 4. Each holds more open than settled once 1 and 3 settle, so
         // no carry follows their receipts.
         log.batch(1, 0).await;
-        for _ in 0..3 {
+        for _ in 0..5 {
             log.batch(2, 0).await;
         }
         log.commit(1, &[1]).await.expect("durable");
         log.batch(3, 0).await;
-        log.batch(4, 0).await;
-        log.batch(4, 0).await;
+        for _ in 0..3 {
+            log.batch(4, 0).await;
+        }
         log.commit(2, &[3]).await.expect("durable");
         log.committed(1).await;
         log.committed(2).await;
@@ -145,62 +146,90 @@ async fn a_relief_carries_open_frames_out_of_the_chunks_it_has_room_to_copy() {
         log.committed(3).await;
         assert_eq!(numbers(&observed), [0, 1, 2]);
         let shared = Arc::clone(log.writer.shared());
-        let frame = frames(&observed)[1].1.iter().find_map(|frame| match frame {
-            Frame::Batch(_) => Some(frame.encode().expect("encodes").len()),
-            _ => None,
-        });
-        let frame = u64::try_from(frame.expect("a batch")).expect("a length");
-        let schema = frames(&observed)[1].1.iter().find_map(|frame| match frame {
-            Frame::Schema(_) => Some(frame.encode().expect("encodes").len()),
-            _ => None,
-        });
-        let schema = u64::try_from(schema.expect("a schema")).expect("a length");
+        let sized = |kind: fn(&Frame) -> bool| {
+            let frame = frames(&observed)[1]
+                .1
+                .iter()
+                .find(|frame| kind(frame))
+                .cloned();
+            let frame = frame.expect("a frame").encode().expect("encodes");
+            u64::try_from(frame.len()).expect("a length")
+        };
+        let frame = sized(|frame| matches!(frame, Frame::Batch(_)));
+        let schema = sized(|frame| matches!(frame, Frame::Schema(_)));
+        let closing = shared.closing.load(Ordering::SeqCst);
+        assert!(2 * frame > closing, "a frame of {frame} beside {closing}");
         // No room to copy either chunk's open frames: only chunk 2, which the receipt of its
         // commit settles, goes.
         let held = shared.held.load(Ordering::SeqCst);
         shared.limit.store(held + frame, Ordering::SeqCst);
         relieve(&log).await;
         assert_eq!(numbers(&observed), [0, 1, 3]);
-        // Room to copy chunk 1's two open frames and its schema exactly, but not chunk 0's
-        // three: once chunk 1 went, the room it freed copies chunk 0's.
+        // Room to copy chunk 1's three open frames and its schema, but not chunk 0's five: once
+        // chunk 1 went, the room it freed copies chunk 0's.
         let held = shared.held.load(Ordering::SeqCst);
+        let closing = shared.closing.load(Ordering::SeqCst);
         shared
             .limit
-            .store(held + 2 * frame + schema, Ordering::SeqCst);
+            .store(held + 3 * frame + schema + closing, Ordering::SeqCst);
         relieve(&log).await;
         assert_eq!(
             numbers(&observed),
             [4, 5],
             "chunks 0 and 1 went, their open frames carried"
         );
-        assert_eq!(batches_of(&observed, 4), [4, 4]);
-        assert_eq!(batches_of(&observed, 5), [2, 2, 2]);
+        assert_eq!(batches_of(&observed, 4), [4, 4, 4]);
+        assert_eq!(batches_of(&observed, 5), [2, 2, 2, 2, 2]);
     })
     .await
     .expect("the writer ends");
 }
 
 #[tokio::test]
-async fn a_chunk_whose_open_frames_were_carried_needs_no_copy_of_them() {
+async fn a_relief_carries_nothing_its_reads_have_no_memory_for() {
+    for (budget, carried) in [(16 * 64, false), (1 << 20, true)] {
+        let store = Arc::new(MemoryWal::default());
+        let observed = Arc::clone(&store);
+        let budget = crate::budget::MemoryBudget::new(budget);
+        driven(Arc::clone(&store), budget, |mut log| async move {
+            log.send(table(0)).await;
+            // Chunk 0's open frames, beside a settled one, are worth carrying where they can
+            // be read.
+            log.batch(1, 0).await;
+            log.batch(2, 0).await;
+            log.commit(1, &[1]).await.expect("durable");
+            log.commit(2, &[]).await.expect("durable");
+            log.committed(1).await;
+            log.committed(2).await;
+            relieve(&log).await;
+            assert_eq!(
+                !numbers(&observed).contains(&0),
+                carried,
+                "{:?}",
+                numbers(&observed)
+            );
+        })
+        .await
+        .expect("the writer ends");
+    }
+}
+
+#[tokio::test]
+async fn a_relief_with_nothing_to_copy_frees_a_log_a_commit_took_past_its_bound() {
     let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
         log.send(table(0)).await;
         log.batch(1, 0).await;
-        log.batch(1, 0).await;
-        log.batch(2, 0).await;
         log.commit(1, &[1]).await.expect("durable");
-        let shared = Arc::clone(log.writer.shared());
-        assert!(
-            shared.copied.load(Ordering::SeqCst) > 0,
-            "two open segments share chunk 0"
-        );
-        // Its receipt settles segment 1, and segment 2's frame is carried into the chunk
-        // staged; a seal there keeps the relief from publishing, so it only answers.
         log.committed(1).await;
-        log.seal(2).await;
+        // A commit larger than the room kept for it took the log past what it may hold.
+        let shared = Arc::clone(log.writer.shared());
+        let held = shared.held.load(Ordering::SeqCst);
+        shared.limit.store(held - 1, Ordering::SeqCst);
         relieve(&log).await;
-        assert_eq!(shared.copied.load(Ordering::SeqCst), 0);
-        log.commit(2, &[2]).await.expect("durable");
+        assert!(!numbers(&observed).contains(&0), "chunk 0 went");
+        assert!(shared.held.load(Ordering::SeqCst) < held);
     })
     .await
     .expect("the writer ends");

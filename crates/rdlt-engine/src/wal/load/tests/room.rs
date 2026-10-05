@@ -1,12 +1,14 @@
-//! Room in a full log: partitions whose segments span many chunks, and checkpoints far apart,
-//! load through a log that holds what they leave unsealed.
+//! Room in a full log: partitions whose segments span many chunks, checkpoints far apart, small
+//! batches beside large commits, load through a log that holds what they leave unsealed, and the
+//! log never holds more than it may.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
 
-use rdlt_connector::{CommitSeq, SegmentId};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+use rdlt_connector::{CommitSeq, SegmentId, StateChange, StateRecord};
 
-use super::{ids, load, logged, meta, pipeline, receipt, sealed_at};
+use super::{load, logged, meta, pipeline, receipt, sealed_at};
 use crate::budget::MemoryBudget;
 use crate::table::testing::view;
 use crate::wal::frame::{self, Frame};
@@ -14,50 +16,116 @@ use crate::wal::load::{LoadLog, Owner};
 use crate::wal::memory::MemoryWal;
 use crate::wal::store::WalStore;
 
-/// Bytes: what the frame of one of the tests' batches takes.
-fn frame_bytes() -> u64 {
-    let batch = frame::Batch {
-        segment: SegmentId(u64::MAX),
-        table: 0,
-        ordinal: u64::MAX,
-        batch: ids(0),
-    };
-    let frame = Frame::Batch(batch).encode().expect("encodes");
-    u64::try_from(frame.len()).expect("a length")
+/// A load as the tests drive one.
+#[derive(Clone, Debug)]
+struct Load {
+    /// Each partition's batches between its checkpoints.
+    gaps: Vec<u64>,
+    /// The rows of each batch.
+    rows: usize,
+    /// Bytes each commit records of state beside its segments.
+    recorded: usize,
+    /// Batches the first segment of each partition but the first is short of its gap, times
+    /// its index.
+    stagger: u64,
+}
+
+impl Load {
+    fn new(gaps: &[u64]) -> Self {
+        Self {
+            gaps: gaps.to_vec(),
+            rows: 3,
+            recorded: 0,
+            stagger: 1,
+        }
+    }
+
+    /// A batch of the load's rows, its ids from `from`.
+    fn batch(&self, from: i64) -> RecordBatch {
+        let count = i64::try_from(self.rows).expect("few rows");
+        let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(from..from + count));
+        RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch")
+    }
+
+    /// Bytes: what the frame of one of the load's batches takes.
+    fn frame(&self) -> u64 {
+        let batch = frame::Batch {
+            segment: SegmentId(u64::MAX),
+            table: 0,
+            ordinal: u64::MAX,
+            batch: self.batch(i64::MAX - 1_000),
+        };
+        length(Frame::Batch(batch).encode().expect("encodes").len())
+    }
+
+    /// The commit of `segment` as `seq`, recording the load's bytes of state.
+    fn commit(&self, segment: u64, seq: CommitSeq) -> rdlt_connector::CommitMeta {
+        let mut commit = meta(&[segment]);
+        commit.commit_seq = seq;
+        if self.recorded > 0 {
+            commit.state_delta = vec![StateChange::Put(StateRecord {
+                key: "k".to_owned(),
+                value: vec![7; self.recorded].into(),
+            })];
+        }
+        commit
+    }
+
+    /// Bytes: what one of the load's commits writes, its seal and its commit frame.
+    fn committed(&self) -> u64 {
+        let commit = self.commit(u64::MAX, CommitSeq::FIRST);
+        let frame = frame::commit(&commit, 1, 0).expect("encodes");
+        // A seal frame of the tests takes well under a KiB.
+        length(frame.len()) + 1_024
+    }
+
+    /// Bytes: the most the load's partitions hold of frames they have not sealed.
+    fn open(&self) -> u64 {
+        self.gaps.iter().sum::<u64>() * self.frame()
+    }
+}
+
+fn length(bytes: usize) -> u64 {
+    u64::try_from(bytes).expect("a length")
 }
 
 /// Seals `segment` and commits it as `seq`, its receipt following, as a coordinator does.
 async fn sealed(
     log: &LoadLog,
     budget: &MemoryBudget,
-    segment: u64,
-    seq: CommitSeq,
+    commit: &rdlt_connector::CommitMeta,
 ) -> Result<(), crate::Error> {
     log.checkpointed();
     let committing = log.committing();
     log.took(1);
-    let mut commit = meta(&[segment]);
-    commit.commit_seq = seq;
-    log.commit(budget, vec![sealed_at(segment)], Vec::new(), &commit, 0)
+    let segment = commit.segments.iter().next().expect("a segment").0;
+    log.commit(budget, vec![sealed_at(segment)], Vec::new(), commit, 0)
         .await?;
-    log.committed(&receipt(seq)).await?;
+    log.committed(&receipt(commit.commit_seq)).await?;
     drop(committing);
     Ok(())
 }
 
-/// Logs the batches of `partitions` partitions in turn, each sealing its segment after `every`
-/// of them, the first segment of each partition begun `stagger` batches after the partition's
-/// before it,
-/// through a log of `limit` bytes, a commit taking each seal and its receipt following, until
-/// `seals` seals: the error a batch was refused with.
-async fn interleaved(
+/// Bytes: what `store` holds of the load's log.
+fn stored(store: &MemoryWal) -> u64 {
+    store
+        .stored(&pipeline())
+        .iter()
+        .map(|(_, bytes)| length(bytes.len()))
+        .sum()
+}
+
+/// The log of the tests' load in `store`, of `limit` bytes, and its writer's task.
+fn started(
+    store: &Arc<MemoryWal>,
     limit: u64,
-    (partitions, every, stagger): (u64, u64, u64),
-    seals: u64,
-) -> Result<(), crate::Error> {
-    let store = Arc::new(MemoryWal::default());
+    budget: &MemoryBudget,
+) -> (
+    LoadLog,
+    impl Future<Output = Result<(), crate::Error>> + Send + 'static,
+) {
     store.open(&pipeline(), load());
-    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let wal: Arc<dyn WalStore> = Arc::clone(store) as Arc<dyn WalStore>;
     let owner = Owner {
         pipeline: pipeline(),
         load: load(),
@@ -65,36 +133,63 @@ async fn interleaved(
         opened: None,
         origin: load(),
     };
-    let limit = NonZeroU64::new(limit).expect("a limit");
-    let (log, task) = LoadLog::start(wal, owner, limit, None);
+    let bound = NonZeroU64::new(limit).expect("a limit");
+    LoadLog::start(wal, owner, (bound, budget.clone()), None)
+}
+
+/// Checks neither what `log` counts nor what `store` holds passes `most` bytes.
+fn bounded(store: &MemoryWal, log: &LoadLog, most: u64) {
+    assert!(log.held() <= most, "{} counted of {most}", log.held());
+    assert!(stored(store) <= most, "{} stored of {most}", stored(store));
+}
+
+/// Logs `load`'s partitions' batches in turn, each sealing its segment after its gap, through a
+/// log of `limit` bytes, a commit taking each seal and its receipt following, until the first
+/// partition has sealed `rounds` segments: the error a batch or commit was refused with.
+///
+/// After every step neither what the log counts nor what its store holds passes `limit`, but by
+/// the frames of a commit larger than a quarter of it, and what ends a chunk.
+async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::Error> {
+    let store = Arc::new(MemoryWal::default());
     let budget = MemoryBudget::new(64 << 20);
+    let (log, task) = started(&store, limit, &budget);
     let orders = view("orders");
+    let past = if load.committed() > limit / 4 {
+        load.committed() + 2_048
+    } else {
+        0
+    };
+    let bounded = |log: &LoadLog| bounded(&store, log, limit + past);
     let written = async {
+        let partitions = u64::try_from(load.gaps.len()).expect("few partitions");
         // Each partition's segment and the batches logged of it.
         let mut open: Vec<(u64, u64)> = (0..partitions)
-            .map(|partition| (partition, partition * stagger % every))
+            .map(|partition| (partition, partition * load.stagger % load.gaps[0]))
             .collect();
-        let mut next = partitions;
-        let mut seq = CommitSeq::FIRST;
-        let mut sealings = 0;
+        let (mut next, mut seq, mut sealings, mut from) = (partitions, CommitSeq::FIRST, 0, 0);
         let result = 'load: loop {
-            for slot in &mut open {
+            for (index, (slot, gap)) in open.iter_mut().zip(&load.gaps).enumerate() {
                 let segment = SegmentId(slot.0);
-                if let Err(error) = logged(&log, &budget, 0, &orders, segment, &ids(0)).await {
+                let batch = load.batch(from);
+                from += 1_000;
+                if let Err(error) = logged(&log, &budget, 0, &orders, segment, &batch).await {
                     break 'load Err(error);
                 }
+                bounded(&log);
                 slot.1 += 1;
-                if slot.1 < every {
+                if slot.1 < *gap {
                     continue;
                 }
-                if let Err(error) = sealed(&log, &budget, slot.0, seq).await {
+                let commit = load.commit(slot.0, seq);
+                if let Err(error) = sealed(&log, &budget, &commit).await {
                     break 'load Err(error);
                 }
+                bounded(&log);
                 seq = seq.next();
                 *slot = (next, 0);
                 next += 1;
-                sealings += 1;
-                if sealings == seals {
+                sealings += u64::from(index == 0);
+                if sealings == rounds {
                     break 'load Ok(());
                 }
             }
@@ -107,49 +202,84 @@ async fn interleaved(
     result
 }
 
-/// Frames: the room a log keeps beside the open frames its partitions hold, in frames of the
-/// tests' batches: a chunk's header and end, a seal, a commit, and a batch's frame twice over.
-const BESIDE: u64 = 8;
-
-#[tokio::test]
-async fn partitions_whose_segments_span_many_chunks_load_through_a_log_their_open_frames_fit() {
-    let frame = frame_bytes();
-    for (partitions, every) in [(4, 3), (8, 3), (4, 6), (16, 2)] {
-        let limit = (partitions * every + BESIDE) * frame;
-        let loaded = interleaved(limit, (partitions, every, 1), 80).await;
-        assert!(
-            loaded.is_ok(),
-            "{partitions} partitions sealing every {every}: {loaded:?}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn a_partition_whose_checkpoints_lie_nearly_a_log_apart_loads_through_it() {
-    let frame = frame_bytes();
-    let frames = 40;
-    for every in 1..=frames - BESIDE {
-        let loaded = interleaved(frames * frame, (1, every, 0), 6).await;
-        assert!(loaded.is_ok(), "every {every}: {loaded:?}");
-    }
-    // A segment that alone passes the log is refused, before its partition hears of it.
-    let refused = interleaved(frames * frame, (1, 2 * frames, 0), 1).await;
-    let refused = refused.expect_err("refused");
-    assert_eq!(refused.code(), Some("log_bytes_exceeded"));
-    assert!(!refused.is_retryable());
-}
-
-#[tokio::test]
-async fn a_load_whose_partitions_checkpoint_within_its_log_always_completes() {
-    let frame = frame_bytes();
-    for partitions in 1..=8 {
-        for every in 1..=6 {
-            for stagger in 0..every {
-                let limit = (partitions * every + BESIDE) * frame;
-                let shape = (partitions, every, stagger);
-                let loaded = interleaved(limit, shape, 3 * partitions).await;
-                assert!(loaded.is_ok(), "{shape:?}: {loaded:?}");
+/// The loads the tests drive, each partition's gap but the first's: one partition alone, one
+/// beside others committing after every batch, several of unequal gaps; small batches beside
+/// large commits and large batches beside small ones; partitions begun in step or apart.
+fn loads() -> Vec<Load> {
+    let mut loads = Vec::new();
+    for others in [&[][..], &[1], &[1, 1, 1, 1], &[2, 3], &[5, 1]] {
+        for (rows, recorded) in [(1, 0), (3, 1_500), (3, 3_000), (40, 0)] {
+            for stagger in [0, 1, 3] {
+                let mut gaps = vec![1];
+                gaps.extend_from_slice(others);
+                loads.push(Load {
+                    gaps,
+                    rows,
+                    recorded,
+                    stagger,
+                });
             }
         }
+    }
+    loads
+}
+
+/// The first partition's gap at which `load`'s partitions hold at most `share` of a log of
+/// `limit` bytes unsealed, beside a commit's frames.
+fn gap(load: &Load, limit: u64, share: (u64, u64)) -> u64 {
+    let others: u64 = load.gaps[1..].iter().sum();
+    let room = (limit * share.0 / share.1).saturating_sub(load.committed());
+    (room / load.frame()).saturating_sub(others).max(1)
+}
+
+#[tokio::test]
+async fn a_load_whose_partitions_hold_three_quarters_of_its_log_unsealed_completes() {
+    for mut load in loads() {
+        let limit = 60 * load.frame();
+        load.gaps[0] = gap(&load, limit, (3, 4));
+        assert!(load.open() + load.committed() <= limit * 3 / 4, "{load:?}");
+        let loaded = interleaved(limit, &load, 3).await;
+        assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_load_whose_partitions_hold_more_unsealed_than_its_log_is_refused_for_good() {
+    for mut load in loads() {
+        let limit = 40 * load.frame();
+        load.gaps[0] = 2 * limit / load.frame();
+        let refused = interleaved(limit, &load, 1).await.expect_err("refused");
+        assert_eq!(refused.code(), Some("log_bytes_exceeded"), "{load:?}");
+        assert!(!refused.is_retryable());
+    }
+}
+
+#[tokio::test]
+async fn a_partition_beside_one_committing_every_batch_loads_three_quarters_of_a_large_log() {
+    // Each commit's chunk holds one frame of each partition: the first's open frames are spread
+    // over as many chunks as it has, which carries gather.
+    let mut load = Load::new(&[1, 1]);
+    let limit = 1_000 * load.frame();
+    load.gaps[0] = gap(&load, limit, (3, 4));
+    let loaded = interleaved(limit, &load, 2).await;
+    assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
+}
+
+#[tokio::test]
+async fn a_partition_beside_one_committing_every_batch_in_a_small_log_of_large_commits_loads() {
+    // Each commit's chunk holds a frame of each partition beside commit frames twice as large:
+    // gathering the first's open frames out of them takes room a commit alone does not leave.
+    for stagger in [0, 1] {
+        let mut load = Load {
+            gaps: vec![1, 1],
+            rows: 3,
+            recorded: 1_000,
+            stagger,
+        };
+        let limit = 24 * load.frame();
+        load.gaps[0] = gap(&load, limit, (3, 4));
+        assert!(load.gaps[0] > 10, "{load:?}");
+        let loaded = interleaved(limit, &load, 3).await;
+        assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
     }
 }

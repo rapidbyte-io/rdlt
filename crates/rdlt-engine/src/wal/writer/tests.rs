@@ -20,6 +20,7 @@ use super::super::frame::{Batch, Committing, End, Frame, Seal, Table};
 use super::super::memory::MemoryWal;
 use super::super::store::WalStore;
 use super::{Command, Owner, WalWriter};
+use crate::budget::MemoryBudget;
 use crate::error::{Error, ErrorKind};
 
 fn pipeline() -> PipelineId {
@@ -42,6 +43,11 @@ fn owner() -> Owner {
 
 fn encoded(frame: &Frame) -> Bytes {
     frame.encode().expect("the frame encodes")
+}
+
+/// Bytes: what `frame` takes.
+fn length(frame: &Bytes) -> u64 {
+    u64::try_from(frame.len()).expect("a length")
 }
 
 fn table(index: u32) -> Command {
@@ -81,11 +87,31 @@ struct Driving {
     logged: BTreeMap<u64, u64>,
     /// The ordinal the next batch takes.
     ordinal: u64,
+    /// The bytes of each table's schema frame, by index.
+    schemas: parking_lot::Mutex<BTreeMap<u32, u64>>,
 }
 
 impl Driving {
+    fn new(writer: WalWriter) -> Self {
+        Self {
+            writer,
+            logged: BTreeMap::new(),
+            ordinal: 0,
+            schemas: parking_lot::Mutex::default(),
+        }
+    }
+
     async fn send(&self, command: Command) {
+        if let Command::Table { index, frame, .. } = &command {
+            self.schemas.lock().insert(*index, length(frame));
+        }
         self.writer.send(command).await.expect("the writer runs");
+    }
+
+    /// Counts `bytes` of frames on disk, as a load's log does before it sends them.
+    fn count(&self, bytes: u64) {
+        let held = &self.writer.shared().held;
+        held.fetch_add(bytes, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Logs a batch of one row of `segment` for the table at `table`.
@@ -105,20 +131,15 @@ impl Driving {
         }));
         self.ordinal += 1;
         *self.logged.entry(segment).or_default() += 1;
-        // Counted on disk as a load's log counts a batch it admits.
-        let shared = self.writer.shared();
-        let len = u64::try_from(frame.len()).expect("a length");
-        shared
-            .held
-            .fetch_add(len, std::sync::atomic::Ordering::SeqCst);
-        shared
-            .unwritten
-            .fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+        // Counted with its table's schema frame, as a load's log counts a batch it admits.
+        let schema = self.schemas.lock().get(&table).copied().unwrap_or(0);
+        self.count(length(&frame) + schema);
         let segment = SegmentId(segment);
         self.send(Command::Batch {
             segment,
             table,
             frame,
+            schema,
             held: Box::new(()),
         })
         .await;
@@ -138,9 +159,11 @@ impl Driving {
             batches: logged,
             rows: logged,
         });
+        let frame = encoded(&seal);
+        self.count(length(&frame));
         self.send(Command::Seal {
             segment: SegmentId(segment),
-            frame: encoded(&seal),
+            frame,
             held: Box::new(()),
         })
         .await;
@@ -170,10 +193,12 @@ impl Driving {
             phases: 0,
         };
         let (durable, answer) = oneshot::channel();
+        let frame = encoded(&Frame::Commit(Box::new(committing)));
+        self.count(length(&frame));
         self.send(Command::Commit {
             seq: seq(number),
             segments: segments(ids),
-            frame: encoded(&Frame::Commit(Box::new(committing))),
+            frame,
             held: Box::new(()),
             durable,
         })
@@ -243,15 +268,20 @@ where
     F: FnOnce(Driving) -> Fut,
     Fut: Future<Output = ()>,
 {
+    driven(store, MemoryBudget::new(1 << 20), drive).await
+}
+
+/// Runs a writer of `store` holding what it reads back in `budget` while `drive` sends it
+/// commands, until both end.
+async fn driven<F, Fut>(store: Arc<MemoryWal>, budget: MemoryBudget, drive: F) -> Result<(), Error>
+where
+    F: FnOnce(Driving) -> Fut,
+    Fut: Future<Output = ()>,
+{
     store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = store;
-    let (writer, task) = WalWriter::start(wal, owner());
-    let driving = Driving {
-        writer,
-        logged: BTreeMap::new(),
-        ordinal: 0,
-    };
-    let (ended, ()) = tokio::join!(task, drive(driving));
+    let (writer, task) = WalWriter::start(wal, owner(), budget);
+    let (ended, ()) = tokio::join!(task, drive(Driving::new(writer)));
     ended
 }
 
@@ -590,7 +620,7 @@ async fn a_retired_table_s_schema_frame_is_kept_no_more() {
 #[tokio::test]
 async fn a_retired_table_never_written_releases_what_its_frame_held() {
     let store = Arc::new(MemoryWal::default());
-    let budget = crate::budget::MemoryBudget::new(1 << 20);
+    let budget = MemoryBudget::new(1 << 20);
     let observed = budget.clone();
     drive(Arc::clone(&store), |mut log| async move {
         let Command::Table { index, frame, .. } = table(0) else {

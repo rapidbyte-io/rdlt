@@ -82,7 +82,13 @@ fn start(
         opened: None,
         origin: load(),
     };
-    LoadLog::start(wal, owner, std::num::NonZeroU64::MAX, None)
+    let budget = MemoryBudget::new(1 << 20);
+    LoadLog::start(
+        wal,
+        owner,
+        (std::num::NonZeroU64::MAX, budget.clone()),
+        None,
+    )
 }
 
 /// The view of `table` at `version`.
@@ -444,6 +450,30 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
     ended.expect("the writer ends");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_commit_s_seals_hold_the_log_s_share_of_memory_one_after_another() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    // The log's share holds what one seal is reserved before it is encoded, and a few seals
+    // beside it, not all eight.
+    let budget = MemoryBudget::new(16 * (4_096 + 512));
+    let written = async {
+        let sealed: Vec<Sealed> = (1..=8).map(sealed_at).collect();
+        let commit = meta(&[]);
+        let committed = log.commit(&budget, sealed, Vec::new(), &commit, 0);
+        let deadline =
+            crate::env::Clock::sleep(&crate::env::SystemClock, std::time::Duration::from_secs(60));
+        tokio::select! {
+            biased;
+            committed = committed => committed.expect("durable"),
+            () = deadline => panic!("a commit's seals wait for room only their writes free"),
+        }
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
 #[tokio::test]
 async fn a_frame_keeps_what_it_takes_of_its_reservation_and_reserves_what_it_takes_beyond() {
     let budget = MemoryBudget::new(1 << 20);
@@ -512,7 +542,7 @@ async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow()
             .await
             .indexes
             .values()
-            .map(|(index, _)| *index)
+            .map(|version| version.index)
             .collect();
         assert_eq!(left, [199]);
         // A batch of a forgotten version is described again, under an index of its own.
@@ -568,7 +598,7 @@ async fn a_version_stays_described_while_any_view_of_it_lives() {
             .await
             .indexes
             .values()
-            .map(|(index, _)| *index)
+            .map(|version| version.index)
             .collect();
         assert_eq!(left, [0]);
         logged(&log, &budget, 0, &second, SegmentId(3), &ids(0))
@@ -580,7 +610,7 @@ async fn a_version_stays_described_while_any_view_of_it_lives() {
             .await
             .indexes
             .values()
-            .map(|(_, views)| views.len())
+            .map(|version| version.views.len())
             .collect();
         assert_eq!(views, [2]);
         log.commit(&budget, Vec::new(), Vec::new(), &meta(&[3]), 0)
@@ -612,8 +642,9 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         origin: load(),
     };
     let limit = 4_000;
-    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap(), None);
     let budget = MemoryBudget::new(1 << 20);
+    let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
+    let (log, task) = LoadLog::start(wal, owner, (limit_bytes, budget.clone()), None);
     let orders = view("orders");
     let written = async {
         let mut refused = None;
@@ -630,9 +661,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         assert_eq!(error.code(), Some("log_bytes_exceeded"));
         assert!(!error.is_retryable());
         assert!(log.held() <= limit);
-        // Every frame counted was written, and the refused one counted nowhere.
-        let unwritten = &log.writer.shared().unwritten;
-        assert_eq!(unwritten.load(std::sync::atomic::Ordering::SeqCst), 0);
+
         drop(log);
     };
     let (ended, ()) = tokio::join!(task, written);
@@ -652,8 +681,9 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
         origin: load(),
     };
     let limit = 80_000;
-    let (log, task) = LoadLog::start(wal, owner, std::num::NonZeroU64::new(limit).unwrap(), None);
     let budget = MemoryBudget::new(1 << 20);
+    let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
+    let (log, task) = LoadLog::start(wal, owner, (limit_bytes, budget.clone()), None);
     let orders = view("orders");
     let written = async {
         let segments = std::sync::atomic::AtomicU64::new(0);
@@ -746,56 +776,6 @@ async fn what_was_counted_of_a_segment_goes_with_its_seal_or_its_abandonment() {
     ended.expect("the writer ends");
 }
 
-#[tokio::test]
-async fn a_log_keeps_room_to_copy_the_open_frames_of_chunks_shared_with_other_segments() {
-    let store = Arc::new(MemoryWal::default());
-    let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
-    let orders = view("orders");
-    let shared = Arc::clone(log.writer.shared());
-    let copied = || shared.copied.load(std::sync::atomic::Ordering::SeqCst);
-    let unwritten = || shared.unwritten.load(std::sync::atomic::Ordering::SeqCst);
-    let written = async {
-        logged(&log, &budget, 0, &orders, SegmentId(1), &ids(0))
-            .await
-            .expect("the batch is logged");
-        let mut commit = meta(&[1]);
-        log.commit(&budget, vec![sealed_at(1)], Vec::new(), &commit, 0)
-            .await
-            .expect("durable");
-        assert_eq!(unwritten(), 0, "every batch sent is written");
-        assert_eq!(copied(), 0, "a chunk of one segment needs no copy");
-        let held = log.held();
-        logged(&log, &budget, 0, &orders, SegmentId(2), &ids(0))
-            .await
-            .expect("the batch is logged");
-        logged(&log, &budget, 0, &orders, SegmentId(3), &ids(0))
-            .await
-            .expect("the batch is logged");
-        commit.commit_seq = CommitSeq::FIRST.next();
-        commit.segments = [SegmentId(2)].into_iter().collect();
-        let both = log.held() - held;
-        log.commit(&budget, vec![sealed_at(2)], Vec::new(), &commit, 0)
-            .await
-            .expect("durable");
-        // Two open segments share the chunk: no receipt settled either.
-        assert_eq!(copied(), both);
-        log.committed(&receipt(CommitSeq::FIRST.next()))
-            .await
-            .expect("noted");
-        let mut last = meta(&[]);
-        last.commit_seq = CommitSeq::FIRST.next().next();
-        log.commit(&budget, Vec::new(), Vec::new(), &last, 0)
-            .await
-            .expect("durable");
-        // Segment 2 is settled: the frame of segment 3 is carried to a chunk of its own.
-        assert_eq!(copied(), 0);
-        drop(log);
-    };
-    let (ended, ()) = tokio::join!(task, written);
-    ended.expect("the writer ends");
-}
-
 #[tokio::test(start_paused = true)]
 async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() {
     let store = Arc::new(MemoryWal::default());
@@ -809,8 +789,8 @@ async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() 
         origin: load(),
     };
     let limit = std::num::NonZeroU64::new(4_000).unwrap();
-    let (log, task) = LoadLog::start(wal, owner, limit, None);
     let budget = MemoryBudget::new(1 << 20);
+    let (log, task) = LoadLog::start(wal, owner, (limit, budget.clone()), None);
     let orders = view("orders");
     let written = async {
         // A checkpoint a commit took leaves nothing for the next commit to free.

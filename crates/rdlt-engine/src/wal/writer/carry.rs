@@ -6,91 +6,72 @@
 //! Replay stages only the segments of commits without receipts, and the old chunk's commits all
 //! have theirs.
 
-use std::sync::atomic::Ordering;
-
 use bytes::Bytes;
 use rdlt_connector::SegmentId;
 
-use super::{Log, Logged, Span};
+use super::{Kept, Log, Logged, Span, Written};
 use crate::error::Error;
 
 impl Log {
-    /// Carries the frames of the open segments of the old chunks that hold nothing else a replay
-    /// needs into the chunk staged, where they hold at least as many bytes of settled segments as
-    /// of open ones: what is copied is never more than what is freed.
+    /// Carries the frames of the open segments of each old chunk that holds at least as many
+    /// bytes beside them as they take, its frames of settled segments, its header, seals, commit
+    /// and end: what a carry copies is never more than what it frees beside the copy.
     ///
-    /// A carry whose copies, with their schema frames, would take the log past what it may hold
-    /// is left undone: the old chunks stay, and the deletion that would free their bytes waits
-    /// for a later commit.
+    /// A carry the log has no room for, beside the frames that end the chunk staged, is left
+    /// undone: the old chunk stays, and a later carry may free it.
     pub(super) async fn carry(&mut self) -> Result<(), Error> {
-        let carried = self.carriable();
-        let schemas: u64 = carried
-            .iter()
-            .flat_map(|number| self.written[number].schemas.values())
-            .map(|span| span.len)
-            .fold(0, u64::saturating_add);
-        let (open, settled) = carried
-            .iter()
-            .fold((0_u64, 0_u64), |(open, settled), number| {
-                let batches = &self.written[number].batches;
-                batches
-                    .iter()
-                    .fold((open, settled), |(open, settled), logged| {
-                        if self.settled.contains(logged.segment) {
-                            (open, settled.saturating_add(logged.span.len))
-                        } else {
-                            (open.saturating_add(logged.span.len), settled)
-                        }
-                    })
-            });
-        let held = self.shared.held.load(Ordering::Relaxed);
-        let limit = self.shared.limit.load(Ordering::Relaxed);
-        if open == 0 || settled < open || held.saturating_add(open.saturating_add(schemas)) > limit
-        {
-            return Ok(());
-        }
-        for number in carried {
-            self.carry_chunk(number).await?;
+        for number in self.carriable() {
+            let written = &self.written[&number];
+            let copies = copies(written);
+            if copies == 0 || !worth(written.len, copies) {
+                continue;
+            }
+            if !self.shared.reserve(copies, self.shared.kept(Kept::Closing)) {
+                break;
+            }
+            let wrote = self.carry_chunk(number).await?;
+            self.shared.release(copies.saturating_sub(wrote));
         }
         Ok(())
     }
 
-    /// Carries the frames of the open segments of the old chunks that hold frames of settled
-    /// segments too, the oldest first, each the log has room to copy beside those before it:
-    /// whether it carried any, whose chunks the next publish frees.
-    pub(super) async fn carry_to_free(&mut self) -> Result<bool, Error> {
-        let held = self.shared.held.load(Ordering::Relaxed);
-        let limit = self.shared.limit.load(Ordering::Relaxed);
-        let mut copies = 0_u64;
-        let mut chosen = Vec::new();
+    /// Carries the frames of the open segments of the old chunks into the chunk staged, the
+    /// oldest first, each the log has room to copy beside those before it and the frames that
+    /// end the chunk staged: whether publishing the chunk then frees more than it writes, with
+    /// `unneeded` bytes of chunks no replay needs freed however the carry goes.
+    pub(super) async fn carry_to_free(&mut self, unneeded: u64) -> Result<bool, Error> {
+        let limit = self.shared.limit.load(std::sync::atomic::Ordering::SeqCst);
+        let held = self.shared.held.load(std::sync::atomic::Ordering::SeqCst);
+        // The relief ends the chunk staged alone: it frees more than it writes, so the room
+        // the next chunk needs is there after it as before.
+        let (closing, _) = self.ending()?;
+        let mut room = limit.saturating_sub(held).saturating_sub(closing);
+        let (mut copied, mut gained, mut chosen) = (0_u64, unneeded, Vec::new());
         for number in self.carriable() {
             let written = &self.written[&number];
-            let open = written.open;
-            let settled = written
-                .batches
-                .iter()
-                .map(|logged| logged.span.len)
-                .fold(0, u64::saturating_add)
-                .saturating_sub(open);
-            if settled == 0 {
+            let copy = copies(written);
+            let Some(left) = room.checked_sub(copy).filter(|_| copy > 0) else {
                 continue;
-            }
-            let schemas = written
-                .schemas
-                .values()
-                .map(|span| span.len)
-                .fold(0, u64::saturating_add);
-            let more = copies.saturating_add(open).saturating_add(schemas);
-            if held.saturating_add(more) > limit {
-                continue;
-            }
-            copies = more;
+            };
+            room = left;
+            copied = copied.saturating_add(copy);
+            gained = gained.saturating_add(written.len);
             chosen.push(number);
         }
-        for number in &chosen {
-            self.carry_chunk(*number).await?;
+        // What the publish writes beside the copies is at most what ends the chunk staged, which
+        // it frees more than: with nothing to copy it needs no room, where a commit larger than
+        // any before took the log past what it may hold.
+        if gained <= copied.saturating_add(closing)
+            || copied > 0 && !self.shared.reserve(copied, closing)
+        {
+            return Ok(false);
         }
-        Ok(!chosen.is_empty())
+        let mut wrote = 0_u64;
+        for number in chosen {
+            wrote = wrote.saturating_add(self.carry_chunk(number).await?);
+        }
+        self.shared.release(copied.saturating_sub(wrote));
+        Ok(true)
     }
 
     /// The old chunks not carried yet whose commits all have receipts and whose segments are
@@ -118,10 +99,14 @@ impl Log {
     }
 
     /// Writes the frames of chunk `number`'s open segments to the chunk staged, in the order
-    /// they were logged and each table's schema before its first, and marks the chunk carried.
-    async fn carry_chunk(&mut self, number: u64) -> Result<(), Error> {
+    /// they were logged and each table's schema before its first, counted already, and marks the
+    /// chunk carried: the bytes written.
+    ///
+    /// Each frame is read into memory the log's share of the budget holds for the largest of
+    /// them; a chunk the share has no room for at once is not carried.
+    async fn carry_chunk(&mut self, number: u64) -> Result<u64, Error> {
         let Some(written) = self.written.get(&number) else {
-            return Ok(());
+            return Ok(0);
         };
         let open: Vec<Logged> = written
             .batches
@@ -130,10 +115,21 @@ impl Log {
             .copied()
             .collect();
         let schemas = written.schemas.clone();
+        let largest = open
+            .iter()
+            .map(|logged| logged.span)
+            .chain(schemas.values().copied())
+            .map(|span| span.len)
+            .max()
+            .unwrap_or(0);
+        let Some(_reading) = self.budget.try_acquire_log(largest) else {
+            return Ok(0);
+        };
         let from = super::Chunk {
             load: self.owner.load,
             number,
         };
+        let mut wrote = 0_u64;
         for logged in open {
             if !self.current().schemas.contains_key(&logged.table) {
                 let span = schemas.get(&logged.table).copied().ok_or_else(|| {
@@ -144,9 +140,11 @@ impl Log {
                 })?;
                 let schema = self.read(from, span).await?;
                 self.describe(logged.table, schema).await?;
+                wrote = wrote.saturating_add(span.len);
             }
             let frame = self.read(from, logged.span).await?;
-            let span = self.append(frame).await?;
+            let span = self.written_out(frame).await?;
+            wrote = wrote.saturating_add(span.len);
             let current = self.current();
             current.open += span.len;
             current.segments.insert(logged.segment);
@@ -155,8 +153,8 @@ impl Log {
         if let Some(written) = self.written.get_mut(&number) {
             written.carried = true;
         }
-        self.refresh_copies();
-        Ok(())
+        self.note_room();
+        Ok(wrote)
     }
 
     /// The frame at `span` of chunk `chunk`.
@@ -166,4 +164,22 @@ impl Log {
             .await
             .map_err(|error| self.lost(error))
     }
+}
+
+/// Bytes: what a carry of `written` copies at most: the batch frames of its open segments and
+/// every schema frame it holds; none where it holds no open frame.
+fn copies(written: &Written) -> u64 {
+    if written.open == 0 {
+        return 0;
+    }
+    written
+        .schemas
+        .values()
+        .map(|span| span.len)
+        .fold(written.open, u64::saturating_add)
+}
+
+/// Whether a carry of `copies` bytes out of a chunk of `len` frees at least as much beside them.
+fn worth(len: u64, copies: u64) -> bool {
+    len.saturating_sub(copies) >= copies
 }

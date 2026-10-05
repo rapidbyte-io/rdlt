@@ -344,7 +344,13 @@ fn started(store: Arc<MemoryWal>) -> LoadLog {
         opened: None,
         origin: LoadId::from_parts(UNIX_EPOCH, 1),
     };
-    let (log, writer) = LoadLog::start(store, owner, std::num::NonZeroU64::MAX, None);
+    let budget = crate::budget::MemoryBudget::new(1 << 20);
+    let (log, writer) = LoadLog::start(
+        store,
+        owner,
+        (std::num::NonZeroU64::MAX, budget.clone()),
+        None,
+    );
     tokio::spawn(writer);
     log
 }

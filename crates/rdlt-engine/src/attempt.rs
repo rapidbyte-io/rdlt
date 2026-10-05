@@ -392,7 +392,7 @@ async fn start_log(
     let bound = store
         .chunk_bytes()
         .map_or(log_bytes, |most| most.min(log_bytes));
-    let (log, task) = LoadLog::start(store, owner, bound, staging);
+    let (log, task) = LoadLog::start(store, owner, (bound, context.budget.clone()), staging);
     scope.spawn(task);
     Ok(Some(log))
 }

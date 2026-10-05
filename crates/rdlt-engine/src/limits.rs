@@ -181,6 +181,11 @@ pub(crate) const WAL_STAGING_EXCEEDS_BUDGET: &str = "wal_staging_exceeds_budget"
 /// worth at the default policy's byte threshold.
 pub(crate) const LOG_BYTES: u64 = 4 << 30;
 
+/// Parts of what a load's write-ahead log may hold that each of these takes, 8: the room a batch
+/// keeps for a carry, which gathers many small chunks into one, and the least it keeps for a
+/// commit.
+pub(crate) const LOG_PARTS: u64 = 8;
+
 /// The code of the error for a batch whose frame would take its load's write-ahead log past
 /// what it may hold on disk: its source sent that much without a checkpoint a commit could take.
 pub(crate) const LOG_BYTES_EXCEEDED: &str = "log_bytes_exceeded";
