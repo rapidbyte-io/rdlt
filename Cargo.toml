@@ -164,6 +164,11 @@ dbg_macro = "warn"
 todo = "warn"
 unused_async_trait_impl = "allow"            # connectors implement async trait methods with `async fn`, awaiting or not
 
+# Tests and debugging need file and line in backtraces, not full debug information: line tables
+# alone link test binaries several times faster and keep target directories a fraction the size.
+[profile.dev]
+debug = "line-tables-only"
+
 # A spawned connector's digest hashes its binary, which a debug build makes hundreds of megabytes;
 # optimised, the tests that spawn connectors hash it in a fraction of a second, not seconds.
 [profile.dev.package.sha2]

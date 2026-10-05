@@ -96,15 +96,15 @@ jobs:
         env:
           RDLT_REQUIRE_SANDBOX: ${{ runner.os == 'Linux' && '1' || '0' }}
 
-  # The simulation's ten thousand seeds run as four shards side by side, each well within its
-  # time limit; `sim` passes once every shard has.
+  # The simulation's hundred thousand seeds, the gate every change to the engine passes, run as
+  # twenty shards side by side, each well within its time limit; `sim` passes once every shard has.
   sim-shard:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -120,7 +120,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: just sim "" 2500 "$(( ${{ matrix.shard }} * 2500 ))"
+      - run: just sim "" 5000 "$(( ${{ matrix.shard }} * 5000 ))"
 
   sim:
     runs-on: ubuntu-24.04
