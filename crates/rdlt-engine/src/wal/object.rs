@@ -160,10 +160,17 @@ impl Shared {
 
     /// Gives up every upload a staging dropped mid-way began, as far as each request's attempts
     /// get: a store keeps their parts, unseen, until something ends them.
+    ///
+    /// Each upload is kept until its abort was tried, so a reclaim dropped mid-way leaves those
+    /// it did not reach to the next.
     async fn reclaim(&self) {
-        let abandoned = std::mem::take(&mut *self.abandoned.lock());
-        for (key, id) in abandoned {
-            self.calls.abort(&key, &id).await;
+        loop {
+            let next = self.abandoned.lock().last().cloned();
+            let Some(upload) = next else {
+                return;
+            };
+            self.calls.abort(&upload.0, &upload.1).await;
+            self.abandoned.lock().retain(|held| *held != upload);
         }
     }
 
