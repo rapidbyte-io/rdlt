@@ -22,11 +22,31 @@ use crate::table::testing::view;
 use crate::wal::load::LoadLog;
 use crate::wal::memory::MemoryWal;
 
-/// How long each commit's receipt takes to come: the first, and every later one.
+/// How long each commit's frame waits after its seals, and its receipt after it, as `(the
+/// first commit's, every later one's)`.
 #[derive(Clone, Copy, Debug)]
 struct Landing {
-    first: Duration,
-    rest: Duration,
+    sealed: (Duration, Duration),
+    landed: (Duration, Duration),
+}
+
+impl Landing {
+    /// Receipts coming `first` and `rest` milliseconds after their commits, each commit's frame
+    /// following its seals at once.
+    fn after(first: u64, rest: u64) -> Self {
+        Self {
+            sealed: (Duration::ZERO, Duration::ZERO),
+            landed: (Duration::from_millis(first), Duration::from_millis(rest)),
+        }
+    }
+
+    /// As `self`, each commit's frame following its seals `first` and `rest` milliseconds after.
+    fn sealed(self, first: u64, rest: u64) -> Self {
+        Self {
+            sealed: (Duration::from_millis(first), Duration::from_millis(rest)),
+            ..self
+        }
+    }
 }
 
 /// Batches all partitions log at most before the first has sealed its rounds: past them it
@@ -172,13 +192,15 @@ async fn coordinate(
         let committing = log.committing();
         log.took(segments.len());
         let seals = segments.iter().copied().map(sealed_at).collect();
-        log.commit(&budget, seals, Vec::new(), &commit, 0).await?;
-        let wait = if seq == CommitSeq::FIRST {
-            landing.first
+        let (sealed_for, landed) = if seq == CommitSeq::FIRST {
+            (landing.sealed.0, landing.landed.0)
         } else {
-            landing.rest
+            (landing.sealed.1, landing.landed.1)
         };
-        SystemClock.sleep(wait).await;
+        let seals = log.seals(&budget, seals, &commit).await?;
+        SystemClock.sleep(sealed_for).await;
+        log.finish(&budget, seals, Vec::new(), &commit, 0).await?;
+        SystemClock.sleep(landed).await;
         log.committed(&receipt(seq)).await?;
         drop(committing);
         seq = seq.next();
@@ -198,9 +220,17 @@ fn gap(load: &Load, limit: u64) -> u64 {
 }
 
 async fn every_load_completes(landings: &[Landing]) {
-    for mut load in loads() {
+    let loads = loads().into_iter().map(|mut load| {
+        load.gaps[0] = gap(&load, 60 * load.frame());
+        load
+    });
+    completes(loads, landings).await;
+}
+
+/// Runs each of `loads` through a log of 60 of its frames, as each of `landings` says.
+async fn completes(loads: impl IntoIterator<Item = Load>, landings: &[Landing]) {
+    for load in loads {
         let limit = 60 * load.frame();
-        load.gaps[0] = gap(&load, limit);
         for landing in landings {
             let loaded = concurrent(limit, &load, 3, *landing).await;
             assert!(
@@ -211,42 +241,53 @@ async fn every_load_completes(landings: &[Landing]) {
     }
 }
 
+/// Two partitions of large frames, the first's checkpoints half and three fifths of a log of
+/// 60 frames apart, the second's after each batch.
+fn far_apart() -> Vec<Load> {
+    let mut loads = Vec::new();
+    for gap in [30, 36] {
+        for (recorded, stagger) in [(0, 0), (0, 3), (1_500, 0)] {
+            let mut load = Load::new(&[gap, 1]);
+            load.rows = 400;
+            load.recorded = recorded;
+            load.stagger = stagger;
+            loads.push(load);
+        }
+    }
+    loads
+}
+
 #[tokio::test(start_paused = true)]
 async fn partitions_running_at_once_load_three_quarters_of_a_log_whenever_receipts_come() {
-    let ms = Duration::from_millis;
     every_load_completes(&[
-        Landing {
-            first: ms(0),
-            rest: ms(0),
-        },
-        Landing {
-            first: ms(1),
-            rest: ms(1),
-        },
-        Landing {
-            first: ms(50),
-            rest: ms(50),
-        },
-        Landing {
-            first: ms(2_000),
-            rest: ms(0),
-        },
+        Landing::after(0, 0),
+        Landing::after(1, 1),
+        Landing::after(50, 50),
+        Landing::after(2_000, 0),
     ])
     .await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn partitions_running_at_once_load_three_quarters_of_a_log_however_long_a_commit_s_frame_waits()
+ {
+    let mut landings = Vec::new();
+    for landing in [Landing::after(0, 0), Landing::after(50, 50)] {
+        for (first, rest) in [(2_000, 0), (20, 20), (500, 500)] {
+            landings.push(landing.sealed(first, rest));
+        }
+    }
+    every_load_completes(&landings).await;
+    completes(far_apart(), &landings).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partitions_running_at_once_on_the_real_clock_load_three_quarters_of_a_log() {
-    let ms = Duration::from_millis;
     every_load_completes(&[
-        Landing {
-            first: ms(0),
-            rest: ms(0),
-        },
-        Landing {
-            first: ms(1),
-            rest: ms(1),
-        },
+        Landing::after(0, 0),
+        Landing::after(1, 1),
+        Landing::after(0, 0).sealed(5, 1),
+        Landing::after(1, 1).sealed(5, 1),
     ])
     .await;
 }
@@ -261,11 +302,7 @@ async fn a_partition_beside_many_checkpointing_every_batch_is_not_starved_of_roo
         load.recorded = recorded;
         load.stagger = stagger;
         let limit = 60 * load.frame();
-        let landing = Landing {
-            first: Duration::ZERO,
-            rest: Duration::ZERO,
-        };
-        let loaded = concurrent(limit, &load, 3, landing).await;
+        let loaded = concurrent(limit, &load, 3, Landing::after(0, 0)).await;
         assert!(loaded.is_ok(), "{load:?}: {loaded:?}");
     }
 }

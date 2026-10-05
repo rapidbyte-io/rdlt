@@ -3,23 +3,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use tokio::sync::oneshot;
-
 use super::super::super::frame::{Frame, PREAMBLE};
 use super::super::super::memory::MemoryWal;
 use super::super::Command;
-use super::{Driving, chunks, drive, frames, table};
-
-/// Completes once the writer has handled every command sent before: a relief, in a log past
-/// what it may hold, publishes nothing.
-async fn written(log: &Driving) {
-    let (done, answer) = oneshot::channel();
-    log.send(Command::Relieve { done }).await;
-    answer
-        .await
-        .expect("the writer answers")
-        .expect("it relieves");
-}
+use super::{chunks, drive, frames, segments, table};
 
 /// Bytes: what the first frame of chunk `number` for which `kind` holds takes.
 fn sized(store: &MemoryWal, number: u64, kind: fn(&Frame) -> bool) -> u64 {
@@ -85,46 +72,27 @@ async fn a_chunk_is_published_between_commits_only_once_a_batch_would_take_it_pa
 }
 
 #[tokio::test]
-async fn a_carry_keeps_room_for_the_open_frames_of_a_chunk_holding_settled_ones_too() {
+async fn a_chunk_holding_a_commit_s_seals_takes_no_other_frame_before_the_commit() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);
     drive(Arc::clone(&store), |mut log| async move {
-        let limit = 1 << 20;
-        let shared = Arc::clone(log.writer.shared());
-        shared.limit.store(limit, Ordering::SeqCst);
         log.send(table(0)).await;
-        // Segment 1 seals, and segment 2 logs past an eighth of the log beside it: the chunk,
-        // holding a seal, goes with its commit.
         log.batch(1, 0).await;
+        // Segment 1's seal goes out; segment 2's batch, a receipt and an abandonment come
+        // before the commit's frame.
         log.seal(1).await;
-        log.rows(2, 0, 40_000).await;
-        log.commit(1, &[1]).await.expect("durable");
-        assert_eq!(shared.carry.load(Ordering::SeqCst), limit / 8);
-        // Once segment 1 settles, a carry of chunk 0 copies segment 2's frame and the schema;
-        // the log, full, has no room to carry it now.
-        log.count(limit);
-        log.committed(1).await;
-        written(&log).await;
-        let schema = sized(&observed, 0, |frame| matches!(frame, Frame::Schema(_)));
-        let open = frames(&observed)
-            .into_iter()
-            .filter(|(chunk, _)| *chunk == 0)
-            .flat_map(|(_, frames)| frames)
-            .find_map(|frame| match frame {
-                Frame::Batch(batch) if batch.segment.0 == 2 => Some(Frame::Batch(batch)),
-                _ => None,
-            })
-            .map(|frame| frame.encode().expect("it encodes").len())
-            .expect("segment 2's frame");
-        let copies = schema + u64::try_from(open).expect("a length");
-        assert!(copies > limit / 8);
-        assert_eq!(shared.carry.load(Ordering::SeqCst), copies);
-        // A larger chunk of open frames alone needs no carry: the room stays.
-        log.rows(3, 0, 80_000).await;
-        log.batch(3, 0).await;
-        written(&log).await;
-        assert!(kinds(&observed, 1).contains(&"relieved".to_owned()));
-        assert_eq!(shared.carry.load(Ordering::SeqCst), copies);
+        log.batch(2, 0).await;
+        log.committed(9).await;
+        log.send(Command::Abandon {
+            segment: rdlt_connector::SegmentId(3),
+        })
+        .await;
+        log.commit(1, &[]).await.expect("durable");
+        log.commit(2, &[2]).await.expect("durable");
+        let commit = format!("commit of {:?}", segments(&[]));
+        let first = ["header 0", "schema 0", "batch 1 of 0", "seal 1", &commit];
+        assert_eq!(kinds(&observed, 0)[..5], first.map(str::to_owned));
+        assert_eq!(kinds(&observed, 1)[2], "batch 2 of 0");
     })
     .await
     .expect("the writer ends");
