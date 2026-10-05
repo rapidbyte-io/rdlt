@@ -352,7 +352,7 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
 /// # Errors
 ///
 /// `wal_staging_exceeds_budget` where the store stages more in memory than half the budget's
-/// share for the log, less what a carry reads at once: the log's frames need the rest.
+/// share for the log, which the log's frames need beside it.
 async fn start_log(
     context: &RunContext,
     load_id: LoadId,
@@ -375,9 +375,7 @@ async fn start_log(
         });
         return Ok(None);
     }
-    // What a carry reads back at once is held beside what the store stages.
-    let held = store.staging_bytes().saturating_add(LOG_COPY_BYTES);
-    let staging = staged(&context.budget, held).await?;
+    let staging = staged(&context.budget, store.staging_bytes()).await?;
     let owner = Owner {
         pipeline: context.plan.pipeline().clone(),
         load: load_id,
@@ -399,26 +397,26 @@ async fn start_log(
     Ok(Some(log))
 }
 
-/// What a log holds in memory beside its frames, `bytes`, what its store's stagings hold and what
-/// a carry reads back at once, reserved from `budget`'s share for the log for as long as the log
+/// What a log holds in memory beside its frames, `bytes` its store's stagings hold and what a
+/// carry reads back at once, reserved from `budget`'s share for the log for as long as the log
 /// is written.
 ///
 /// # Errors
 ///
-/// `wal_staging_exceeds_budget` for more than half the share, which the log's seal and commit
-/// frames need beside it.
+/// `wal_staging_exceeds_budget` for stagings of more than half the share: the log's seal and
+/// commit frames, and what a carry reads, need the other half.
 async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Error> {
     let most = budget.shares().log / 2;
     if bytes > most {
         return Err(Error::config(format!(
-            "the write-ahead log holds {bytes} bytes in memory, what its store stages and what a \
-             carry reads at once, more than the {most} the memory budget lets it: a larger \
-             budget, or smaller parts, let it run"
+            "the write-ahead log's store stages {bytes} bytes in memory, more than the {most} \
+             the memory budget lets it: a larger budget, or smaller parts, let it run"
         ))
         .with_code(WAL_STAGING_EXCEEDS_BUDGET));
     }
+    // What a carry reads back at once is held beside it, out of the other half.
     budget
-        .acquire_log(bytes)
+        .acquire_log(bytes.saturating_add(LOG_COPY_BYTES))
         .await
         .map_err(|denied| match denied {
             Denied::Exhausted(exhausted) => Error::memory(exhausted),

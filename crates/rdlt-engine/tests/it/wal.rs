@@ -550,8 +550,9 @@ async fn a_batch_waiting_for_room_in_the_log_brings_its_commit_at_once() {
 async fn what_a_store_stages_in_memory_is_charged_to_the_budget_and_bounded_by_it() {
     let memory = 64_u64 << 20;
     let log_share = memory / 16;
-    // What a carry reads back at once, 256 KiB, is held beside what the store stages.
-    let most = log_share / 2 - (256 << 10);
+    // Half the share, what the default part takes of the default budget's: what a carry reads
+    // back at once is held beside it from the other half.
+    let most = log_share / 2;
     for (staging, refused) in [(most, false), (most + 1, true)] {
         let name = format!("wal_staging_{refused}");
         let store = Arc::new(Memory::staging(staging));
