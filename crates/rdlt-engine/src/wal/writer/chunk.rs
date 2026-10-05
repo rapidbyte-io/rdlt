@@ -62,14 +62,14 @@ impl Written {
             .fold(self.open, u64::saturating_add)
     }
 
-    /// Whether the chunk holds frames of settled segments beside open ones, which a carry of the
-    /// open ones lets go.
+    /// Whether the chunk holds batch frames of settled segments, which a carry of its open ones
+    /// lets go: one holding no open frame copies nothing.
     pub(super) fn mixed(&self) -> bool {
         let batched = self
             .by_segment
             .values()
             .fold(0_u64, |sum, bytes| sum.saturating_add(*bytes));
-        self.open > 0 && batched > self.open
+        batched > self.open
     }
 }
 
