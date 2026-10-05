@@ -206,8 +206,8 @@ lowering may take, logged under more memory than replays it, is refused as
   for memory, however large a frame it copies.
 - What a store stages in memory beside the log, a part for `ObjectStoreWal`
   (`WalStore::staging_bytes`), is reserved from the budget's share for logs, with the carry's
-  buffer, when a load's log starts; a store staging more than half that share, less the buffer,
-  is refused (`wal_staging_exceeds_budget`).
+  buffer, when a load's log starts; a store staging more than half that share is refused
+  (`wal_staging_exceeds_budget`).
 - A failed write fails every batch after it at once and discards what its chunk staged. A full
   disk or quota is `wal_storage_full` and retryable. Where opening its own log finds the disk
   full, the next attempt removes what removals a crash cut short left and deletes what every load

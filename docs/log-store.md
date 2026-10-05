@@ -35,7 +35,7 @@ alone (ADR 0045).
 | `endpoint` | The store's address, where it is not AWS's: `https://host[:port]`. Plain `http://` is taken only to a loopback IP address, as `http://127.0.0.1:9000`, never to a name. |
 | `path_style` | `true` to name the bucket in the request's path, as most stores other than AWS's ask. Otherwise a custom endpoint's host is the bucket's, `https://<bucket>.<host>`, and an endpoint at an IP address is refused. |
 | `access_key_id`, `secret_access_key`, `session_token` | Each one secret reference, `${env:NAME}`, `${file:/absolute/path}` or `${secret:name}`, resolved by the resolver the operator gives the host, and again every five minutes; a refresh that fails keeps the keys held and tries again at the next request. A key written in the configuration itself is refused. |
-| `part_bytes` | Bytes of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 8 MiB by default. Each running load holds a part in memory, reserved from the engine's memory budget: a part larger than half the budget's share for logs, less the 256 KiB a load copies frames through, is refused (`wal_staging_exceeds_budget`). |
+| `part_bytes` | Bytes of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 8 MiB by default. Each running load holds a part in memory, reserved from the engine's memory budget: a part larger than half the budget's share for logs is refused (`wal_staging_exceeds_budget`). |
 
 The store is reached over TLS 1.2 or 1.3, checked against the system's trusted roots: a store
 whose certificate a private authority signs needs that authority among them. No redirect is

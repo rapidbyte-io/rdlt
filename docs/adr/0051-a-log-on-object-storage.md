@@ -72,7 +72,7 @@ to another machine and replay what the first left.
   (`wal_storage_unsupported`).
 - What a staging holds in memory, a part, is the store's `WalStore::staging_bytes`, which the
   engine reserves from the memory budget's share for logs as a load's log starts, beside the
-  256 KiB a carry copies through; one more than half the share, less that, is refused
+  256 KiB a carry copies through; one more than half the share is refused
   (`wal_staging_exceeds_budget`).
 
 ### Every request bounded
@@ -187,7 +187,7 @@ is what its operator states of it.
 - **No CA file.** A private endpoint's authority is trusted through the system's roots.
 - **What a store stages is charged to the budget.** A part is held in memory as it fills; it is
   reserved once, from the share for logs, as a load's log starts, and a part more than half that
-  share, less the 256 KiB a carry copies through, is refused. Cost: a load keeps a part reserved while its log is open, written to or not.
+  share is refused. Cost: a load keeps a part reserved while its log is open, written to or not.
 
 ## Consequences
 
