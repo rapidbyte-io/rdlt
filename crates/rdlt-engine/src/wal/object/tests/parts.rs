@@ -452,6 +452,43 @@ async fn a_staging_given_up_where_the_store_never_answers_ends_at_its_deadlines(
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn uploads_a_reclaim_dropped_mid_way_did_not_reach_are_given_up_by_the_next() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(4)).await;
+    let orders = pipeline("reclaimed");
+    let opened = objects.calls().len();
+    // Two stagings dropped mid-way, each with an upload begun.
+    let first = staged(&wal, &orders, chunk(1, 0), LONG).await;
+    let second = staged(&wal, &orders, chunk(2, 0), LONG).await;
+    drop((first, second));
+    let begun: Vec<String> = objects.calls()[opened..]
+        .iter()
+        .filter(|call| call.op == Op::Begin)
+        .map(|call| call.key.clone())
+        .collect();
+    assert_eq!(begun.len(), 2);
+    // The next request's reclaim is dropped while its first abort goes unanswered.
+    objects.plan(always(Fault::Hang, |call| call.op == Op::Abort));
+    let cut = crate::env::Clock::sleep(&SystemClock, Duration::from_millis(10));
+    tokio::select! {
+        biased;
+        staged = wal.stage(&orders, chunk(3, 0)) => panic!("answered: {}", staged.is_ok()),
+        () = cut => {}
+    }
+    objects.plan(faultless());
+    let before = objects.calls().len();
+    drop(staged(&wal, &orders, chunk(3, 1), b"abc").await);
+    let aborted: Vec<String> = objects.calls()[before..]
+        .iter()
+        .filter(|call| call.op == Op::Abort)
+        .map(|call| call.key.clone())
+        .collect();
+    for key in &begun {
+        assert!(aborted.contains(key), "{key} in {aborted:?}");
+    }
+}
+
 #[tokio::test]
 async fn an_upload_a_dropped_staging_began_is_given_up_by_the_store_s_next_request() {
     let objects = objects(faultless());
