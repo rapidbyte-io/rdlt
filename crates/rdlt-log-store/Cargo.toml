@@ -29,6 +29,7 @@ url.workspace = true
 [dev-dependencies]
 arrow-array.workspace = true
 fail = { workspace = true, features = ["failpoints"] }
+http-body.workspace = true
 rdlt-connector-reference.workspace = true
 rdlt-engine = { workspace = true, features = ["conformance", "failpoints", "object-store"] }
 rdlt-testkit.workspace = true

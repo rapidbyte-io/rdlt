@@ -136,6 +136,12 @@ fn refusals() -> Vec<(Value, &'static str)> {
 }
 
 #[test]
+fn a_region_named_at_the_longest_a_name_may_be_is_taken() {
+    let config = parsed(&s3(&json!({ "region": "a".repeat(64) })));
+    config.checked().expect("valid");
+}
+
+#[test]
 fn every_field_a_bucket_cannot_take_is_named_and_its_value_never_shown() {
     for (changes, field) in refusals() {
         let error = parsed(&s3(&changes)).checked().expect_err("refused");

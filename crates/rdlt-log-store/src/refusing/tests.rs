@@ -1,7 +1,12 @@
 use std::io;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
+use bytes::Bytes;
 use http::StatusCode;
-use object_store::client::{HttpError, HttpErrorKind, HttpResponse};
+use http_body::Frame;
+use object_store::client::{HttpError, HttpErrorKind, HttpResponse, HttpResponseBody};
 use rdlt_engine::StoreRefusal;
 
 use super::{REFUSAL_BYTES, malformed, refused, tls};
@@ -67,4 +72,34 @@ fn a_tls_error_wherever_among_the_causes_is_told_apart() {
     assert!(tls(&nested));
     let reset = HttpError::new(HttpErrorKind::Connect, io::Error::other("reset"));
     assert!(!tls(&reset));
+}
+
+/// A body of its bytes, and then nothing ever again, as from a store that stops sending.
+struct Stalled(Option<Bytes>);
+
+impl http_body::Body for Stalled {
+    type Data = Bytes;
+    type Error = HttpError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, HttpError>>> {
+        self.0.take().map_or(Poll::Pending, |bytes| {
+            Poll::Ready(Some(Ok(Frame::data(bytes))))
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refusal_is_judged_by_what_is_read_of_it_without_waiting_for_more() {
+    let read = Bytes::from(vec![b' '; REFUSAL_BYTES]);
+    let mut response = HttpResponse::new(HttpResponseBody::new(Stalled(Some(read))));
+    *response.status_mut() = StatusCode::BAD_REQUEST;
+    let judged = tokio::time::timeout(Duration::from_secs(60), malformed(response)).await;
+    let error = judged
+        .expect("judged without waiting")
+        .expect_err("refused for good");
+    let refusal = std::error::Error::source(&error).expect("a cause");
+    assert!(refusal.is::<StoreRefusal>());
 }

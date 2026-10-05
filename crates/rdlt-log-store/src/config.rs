@@ -201,13 +201,12 @@ fn endpoint(text: &str) -> Result<Endpoint, LogStoreError> {
     let plaintext = match url.scheme() {
         "https" => false,
         "http" if loopback => true,
-        "http" => {
+        _ => {
             return Err(refused(
                 "endpoint",
-                "is reached without TLS where it is not a loopback IP address",
+                "is neither https nor http at a loopback IP address",
             ));
         }
-        _ => return Err(refused("endpoint", "is neither https nor http")),
     };
     Ok(Endpoint {
         url: text.trim_end_matches('/').to_owned(),
