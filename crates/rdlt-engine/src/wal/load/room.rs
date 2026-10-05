@@ -68,6 +68,12 @@ impl LoadLog {
         self.pressure.sealed.load(Ordering::SeqCst)
     }
 
+    /// Batches waiting for room.
+    #[cfg(test)]
+    pub(crate) fn in_line(&self) -> usize {
+        self.pressure.waiting.lock().places.len()
+    }
+
     /// Notes a partition sealed a checkpoint, before the coordinator hears of it: a commit can
     /// take it, and free what the log holds of it.
     pub(crate) fn checkpointed(&self) {
