@@ -96,6 +96,19 @@ async fn a_store_on_a_loopback_address_is_reached_without_tls_in_the_bucket_s_pa
 }
 
 #[tokio::test]
+async fn a_store_refusing_connections_is_unavailable_and_tried_again() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let endpoint = format!("http://{}", listener.local_addr().expect("an address"));
+    drop(listener);
+    let error = reaching(&endpoint, true)
+        .open(Arc::new(Named), Arc::new(SystemClock))
+        .await
+        .expect_err("the store fails every attempt");
+    assert_eq!(error.code(), "wal_storage_unavailable");
+    assert!(error.is_retryable());
+}
+
+#[tokio::test]
 async fn a_request_the_store_takes_as_malformed_is_refused_for_good_and_not_tried_again() {
     let served = serve(None, Answer::Malformed).await;
     let endpoint = format!("http://{}", served.address);

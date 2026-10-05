@@ -75,6 +75,8 @@ async fn credentials_are_resolved_again_once_they_have_aged() {
     for secret in ["id-1", "key-2", "token-0", "id-4"] {
         assert!(!shown.contains(secret), "{shown}");
     }
+    let named = format!("{:?}", references(true));
+    assert!(shown.contains(&named), "the references are shown: {shown}");
 }
 
 #[tokio::test]

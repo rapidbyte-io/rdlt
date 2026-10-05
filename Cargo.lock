@@ -3164,6 +3164,7 @@ dependencies = [
  "fail",
  "futures-util",
  "http",
+ "http-body",
  "object_store",
  "rdlt-connector",
  "rdlt-connector-reference",
