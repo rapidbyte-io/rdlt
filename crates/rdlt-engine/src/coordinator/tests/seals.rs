@@ -246,3 +246,27 @@ async fn a_commit_never_takes_a_position_past_rows_still_on_their_way() {
         Some(&PartitionState::Cursor(cursor(3)))
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_taking_a_seal_of_no_rows_leaves_a_seal_with_rows_counted() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 2)],
+        vec![partition("p0", false), partition("p1", false)],
+    );
+    setup.wal = Some(std::sync::Arc::new(crate::wal::memory::MemoryWal::default()));
+    let (mut coordinator, _harness) = setup.coordinator().await;
+    let log = coordinator.parts.wal.clone().expect("a log");
+    // Partition 1 sealed rows, counted before the coordinator hears of them.
+    log.checkpointed();
+    // The commit takes partition 0's seal of no rows, never counted.
+    coordinator.observe(Progress::Sealed(seal(0, 1, 0, 3, None)));
+    drop(coordinator.collect(&[]));
+    assert_eq!(
+        log.sealed(),
+        1,
+        "partition 1's seal still waits for a commit"
+    );
+    coordinator.observe(Progress::Sealed(seal(1, 2, 4, 9, None)));
+    drop(coordinator.collect(&[]));
+    assert_eq!(log.sealed(), 0);
+}

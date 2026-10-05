@@ -47,6 +47,12 @@ impl Drop for Committing {
 }
 
 impl LoadLog {
+    /// Checkpoints sealed that no commit has taken yet.
+    #[cfg(test)]
+    pub(crate) fn sealed(&self) -> u64 {
+        self.pressure.sealed.load(Ordering::SeqCst)
+    }
+
     /// Notes a partition sealed a checkpoint, before the coordinator hears of it: a commit can
     /// take it, and free what the log holds of it.
     pub(crate) fn checkpointed(&self) {
