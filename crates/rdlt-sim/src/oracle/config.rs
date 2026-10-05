@@ -61,7 +61,8 @@ pub(super) fn config(
 ///
 /// Where `workload` keeps logs and every stream checkpoints as it reads, half its worlds' logs
 /// hold 128 KiB to 1 MiB, less than many of their loads send: batches wait for commits to free
-/// room.
+/// room. Half of those whose streams push plain Arrow keep a log only twice what their partitions
+/// hold unsealed, whose frames are small beside their commits', so chunks gather and are freed.
 pub(super) fn growth(seed: Seed, workload: Option<&Workload>) -> GrowthLimits {
     let mut rng = SplitMix64::new(seed.value().rotate_left(29));
     let defaults = GrowthLimits::default();
@@ -82,11 +83,37 @@ pub(super) fn growth(seed: Seed, workload: Option<&Workload>) -> GrowthLimits {
     let mut drawn = SplitMix64::new(seed.value().rotate_left(41));
     if workload.is_some_and(natural) && drawn.chance(500) {
         let bytes = (128 << 10) << drawn.below(4);
+        // Drawn apart, so every other world's log is as it was.
+        let mut sized = SplitMix64::new(seed.value().rotate_left(53));
+        let bytes = match workload.and_then(tiny) {
+            Some(tiny) if sized.chance(500) => tiny,
+            _ => bytes,
+        };
         return growth
             .with_log_bytes(bytes)
             .expect("a log holds some bytes");
     }
     growth
+}
+
+/// Bytes: what a batch frame of up to eight rows of a stream pushing plain Arrow, unpressed,
+/// takes at most.
+const PLAIN_FRAME: u64 = 4 << 10;
+
+/// Bytes: a log of twice what `workload`'s partitions hold of batch frames they have not sealed,
+/// and at least 16 KiB, where every stream pushes plain Arrow with no columns that drift; none
+/// otherwise.
+fn tiny(workload: &Workload) -> Option<u64> {
+    let plain = workload
+        .streams
+        .iter()
+        .all(|stream| !stream.json && stream.drift.is_empty());
+    let open: u64 = workload
+        .streams
+        .iter()
+        .map(|stream| to_u64(stream.partitions.len()).saturating_mul(stream.checkpoint_every))
+        .sum();
+    plain.then(|| open.saturating_mul(2 * PLAIN_FRAME).max(16 << 10))
 }
 
 /// How many partitions of `workload`'s streams never end.
@@ -101,7 +128,8 @@ pub(super) fn endless(workload: &Workload) -> usize {
 
 /// How hard the source of the world `seed`, of `workload`, presses on the budget of an engine of
 /// `config`, drawn apart from the world, so every other draw of the seed is as it was; where the
-/// engine keeps a `small_log`, its cursors carry no padding.
+/// engine keeps a `small_log`, its cursors carry no padding, and where it keeps a log smaller than
+/// 128 KiB, its batches no ballast either, so its frames are small.
 pub(super) fn pressed(
     seed: Seed,
     config: &EngineConfig,
@@ -118,6 +146,9 @@ pub(super) fn pressed(
     let pressure = Pressure::draw(&mut rng, &config.limits(), cursors, partitions);
     // A cursor is recorded twice over in its seal's frame, and a small log holds no more than a
     // few seals of cursors as long as a budget allows: there cursors carry their offsets alone.
+    if config.growth().log_bytes().get() < 128 << 10 {
+        return Pressure::default();
+    }
     if small_log {
         return Pressure { pad: 0, ..pressure };
     }
@@ -127,6 +158,10 @@ pub(super) fn pressed(
 /// Whether an engine of `config` keeps a log smaller than the default.
 pub(super) fn small_log(config: &EngineConfig) -> bool {
     config.growth().log_bytes() < GrowthLimits::default().log_bytes()
+}
+
+fn to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn to_usize(value: u64) -> usize {

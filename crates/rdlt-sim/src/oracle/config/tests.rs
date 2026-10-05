@@ -1,6 +1,6 @@
 use rdlt_engine::GrowthLimits;
 
-use super::growth;
+use super::{growth, tiny};
 use crate::seed::Seed;
 
 #[test]
@@ -47,7 +47,11 @@ fn half_the_worlds_whose_streams_checkpoint_as_they_read_keep_small_logs() {
         natural += usize::from(checkpoints);
         if growth.log_bytes() != defaults {
             assert!(checkpoints, "seed {seed}: a world checkpointing on demand");
-            assert!((128 << 10..=1 << 20).contains(&growth.log_bytes().get()));
+            let bytes = growth.log_bytes().get();
+            assert!(
+                (128 << 10..=1 << 20).contains(&bytes) || tiny(&workload) == Some(bytes),
+                "seed {seed}: {bytes}"
+            );
             small += 1;
         }
         let unlogged = Workload {
@@ -71,4 +75,42 @@ fn half_the_worlds_whose_streams_checkpoint_as_they_read_keep_small_logs() {
 
 fn growth_of(seed: u64, workload: &crate::workload::Workload) -> std::num::NonZeroU64 {
     growth(Seed::new(seed), Some(workload)).log_bytes()
+}
+
+#[test]
+fn some_worlds_whose_streams_push_plain_arrow_keep_a_log_twice_what_they_hold_unsealed() {
+    use crate::rng::SplitMix64;
+    use crate::swarm::Features;
+    use crate::workload::Workload;
+
+    let mut tiny_logs = 0;
+    for seed in 0..2_000 {
+        let features = Features {
+            wal: true,
+            json: false,
+            drift: false,
+            ..Features::ALL
+        };
+        let workload = Workload::generate(&mut SplitMix64::new(seed), features);
+        let open: u64 = workload
+            .streams
+            .iter()
+            .map(|stream| stream.partitions.len() as u64 * stream.checkpoint_every)
+            .sum();
+        let expected = (open * 2 * (4 << 10)).max(16 << 10);
+        assert_eq!(tiny(&workload), Some(expected), "seed {seed}");
+        if growth(Seed::new(seed), Some(&workload)).log_bytes().get() == expected {
+            tiny_logs += 1;
+        }
+    }
+    assert!(tiny_logs > 0, "no world keeps a tiny log");
+    // A world whose streams push JSON, or have columns that drift, keeps no tiny log.
+    for seed in 0..200 {
+        let workload = Workload::generate(&mut SplitMix64::new(seed), Features::ALL);
+        let plain = workload
+            .streams
+            .iter()
+            .all(|stream| !stream.json && stream.drift.is_empty());
+        assert_eq!(tiny(&workload).is_some(), plain, "seed {seed}");
+    }
 }
