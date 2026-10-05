@@ -334,7 +334,7 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
         log.commit(&committing, Vec::new(), Vec::new(), &second, 0)
             .await
             .expect("durable");
-        assert_eq!(committing.peak(), super::commit_bytes(&[], &second));
+        assert_eq!(committing.peak(), super::commit::commit_bytes(&[], &second));
         assert!(committing.peak() >= commit);
         assert_eq!(committing.reserved(), 0);
         drop(log);
@@ -408,7 +408,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
             changes: vec![rdlt_connector::StateChange::Delete("d".repeat(5_000))],
         }];
         let recording = MemoryBudget::new(1 << 20);
-        let estimate = super::commit_bytes(&begun, &third);
+        let estimate = super::commit::commit_bytes(&begun, &third);
         // Each record twice over and what a record takes beside, a segment, and two frames.
         assert_eq!(
             estimate,
@@ -427,7 +427,10 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
         log.commit(&paid, Vec::new(), Vec::new(), &prepaid, 20_000)
             .await
             .expect("durable");
-        assert_eq!(paid.peak(), super::commit_bytes(&[], &prepaid) - 20_000);
+        assert_eq!(
+            paid.peak(),
+            super::commit::commit_bytes(&[], &prepaid) - 20_000
+        );
         // A frame beyond the log's share of the budget is refused, and nothing is reserved.
         let small = MemoryBudget::new(64_000);
         let mut fourth = third.clone();
