@@ -491,6 +491,82 @@ async fn a_log_s_directory_holding_more_than_a_listing_holds_is_unreadable() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_pipeline_holding_more_logs_than_a_listing_holds_is_unreadable() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("crowded");
+    let most = u128::try_from(crate::limits::OBJECT_LISTED).expect("a count");
+    let key = |log: u128| format!("logs/p.crowded/logs/{}/00000000.wal", chunk(log, 0).load);
+    for log in 0..=most {
+        objects
+            .inner()
+            .put(&key(log).into(), PutPayload::from_static(b"x"))
+            .await
+            .expect("puts");
+    }
+    let refused = wal.leftovers(&orders).await.expect_err("crowded");
+    assert_eq!(judged(refused), (Some("wal_unreadable".to_owned()), false));
+    objects
+        .inner()
+        .delete(&key(0).into())
+        .await
+        .expect("deletes");
+    assert_eq!(
+        wal.leftovers(&orders).await.expect("lists").len(),
+        crate::limits::OBJECT_LISTED
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deletion_answered_as_finding_nothing_is_done() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("gone");
+    let at = chunk(1, 0);
+    wal.open_log(&orders, at.load).await.expect("opens");
+    let mut staged = wal.stage(&orders, at).await.expect("stages");
+    staged
+        .append(Bytes::from_static(b"gone"))
+        .await
+        .expect("appends");
+    staged.publish().await.expect("publishes");
+    objects.plan(always(Fault::Missing, |call| call.op == Op::Delete));
+    wal.remove(&orders, at).await.expect("gone already");
+    wal.remove_log(&orders, at.load)
+        .await
+        .expect("gone already");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_removal_refused_a_look_at_the_chunk_s_head_reports_the_refusal() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, options(1 << 20)).await;
+    let orders = pipeline("unseen");
+    let at = chunk(1, 0);
+    wal.open_log(&orders, at.load).await.expect("opens");
+    let mut staged = wal.stage(&orders, at).await.expect("stages");
+    staged
+        .append(Bytes::from_static(b"unseen"))
+        .await
+        .expect("appends");
+    staged.publish().await.expect("publishes");
+    // Another process knows nothing of the chunk, and is refused its head.
+    let other = opened(&objects, options(1 << 20)).await;
+    objects.plan(always(Fault::Denied, |call| call.op == Op::Get));
+    let refused = other.remove(&orders, at).await.expect_err("refused");
+    assert_eq!(
+        judged(refused),
+        (Some("wal_storage_denied".to_owned()), false)
+    );
+    objects.plan(faultless());
+    assert_eq!(
+        wal.chunks(&orders, at.load).await.expect("lists"),
+        [(0, 6)],
+        "nothing was deleted"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_create_that_lands_after_its_attempt_gave_up_is_known_as_its_own() {
     let objects = objects(faultless());
     let wal = opened(&objects, tries(3, Duration::from_secs(1))).await;

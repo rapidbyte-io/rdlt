@@ -128,20 +128,13 @@ pub(super) fn parse_load(name: &str) -> Option<LoadId> {
 
 /// What `name` names in a log's directory, as only [`Keys::head`] and [`Keys::body`] write it.
 pub(super) fn parse_name(name: &str) -> Option<Name> {
-    let digits = |text: &str, radix: u32| {
-        !text.is_empty()
-            && text
-                .chars()
-                .all(|c| c.is_digit(radix) && !c.is_ascii_uppercase())
-    };
+    // Each name is compared with the name its parts would be written as, so a sign, a capital or
+    // a digit too few or too many is refused.
     if let Some(number) = name.strip_suffix(".wal") {
-        let parsed: u64 = number.parse().ok().filter(|_| digits(number, 10))?;
+        let parsed: u64 = number.parse().ok()?;
         return (format!("{parsed:08}") == number).then_some(Name::Head(parsed));
     }
     let (number, token) = name.strip_suffix(".body")?.split_once('.')?;
-    if !digits(number, 10) || !digits(token, 16) {
-        return None;
-    }
     let (parsed, token) = (number.parse().ok()?, u128::from_str_radix(token, 16).ok()?);
     let canonical = format!("{parsed:08}.{token:032x}") == name.strip_suffix(".body")?;
     canonical.then_some(Name::Body(parsed, token))
