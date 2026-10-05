@@ -5,10 +5,8 @@ use std::sync::atomic::Ordering;
 use rdlt_connector::CommitSeq;
 
 use super::super::frame::{self, End, Frame};
-use super::chunk::Written;
 use super::{Log, count};
 use crate::error::Error;
-use crate::limits::LOG_PARTS;
 
 impl Log {
     /// Publishes chunks between commits while each lets the log hold less.
@@ -34,36 +32,22 @@ impl Log {
             .filter(|(_, written)| !self.needed(written))
             .map(|(_, written)| written.len)
             .fold(0, u64::saturating_add);
-        let staged = self
-            .written
-            .get(&self.chunk)
-            .map_or(0, |written| written.len);
-        if !self.carry_to_free(unneeded).await? {
+        let wrote = self.wrote;
+        let Some(freed) = self.carry_to_free(unneeded).await? else {
             return Ok(0);
-        }
+        };
         self.append(Frame::Relieved.encode()?).await?;
-        let freed = self.publish().await?;
-        let published = self.written.get(&(self.chunk - 1));
-        let wrote = published.map_or(0, |written| written.len.saturating_sub(staged));
-        Ok(freed.saturating_sub(wrote))
+        let freed = freed.saturating_add(self.publish().await?);
+        Ok(freed.saturating_sub(self.wrote - wrote))
     }
 
-    /// Notes the room the writer keeps: what ends the chunk staged and one more after it, and
-    /// what a carry copies of a chunk holding settled frames beside open ones, at least what a
-    /// chunk holds before it is published.
+    /// Notes the room the writer keeps for its own frames: what ends the chunk staged and one
+    /// more after it.
     pub(super) fn note_room(&mut self) {
         let closing = self
             .ending()
             .map_or(u64::MAX, |(ending, next)| ending.saturating_add(next));
         self.shared.closing.store(closing, Ordering::SeqCst);
-        let limit = self.shared.limit.load(Ordering::SeqCst);
-        let carry = self
-            .written
-            .values()
-            .filter(|written| written.mixed())
-            .map(Written::copies)
-            .fold(limit / LOG_PARTS, u64::max);
-        self.shared.carry.store(carry, Ordering::SeqCst);
     }
 
     /// Bytes: what ending the chunk staged writes at most, and what staging and ending one more

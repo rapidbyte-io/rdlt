@@ -6,25 +6,37 @@
 //! Replay stages only the segments of commits without receipts, and the old chunk's commits all
 //! have theirs.
 
+use std::sync::atomic::Ordering;
+
 use rdlt_connector::SegmentId;
 
+use super::super::frame::Frame;
 use super::super::store::Chunk;
 use super::chunk::Logged;
 use super::{Kept, Log};
 use crate::error::Error;
+
+/// The old chunks a relief carries, what it copies of them, and what deleting them frees.
+#[derive(Default)]
+struct Chosen {
+    numbers: Vec<u64>,
+    copied: u64,
+    gained: u64,
+}
 
 impl Log {
     /// Carries the frames of the open segments of each old chunk that holds at least as many
     /// bytes beside them as they take, its frames of settled segments, its header, seals, commit
     /// and end: what a carry copies is never more than what it frees beside the copy.
     ///
-    /// A carry the log has no room for, beside the frames that end the chunk staged, is left
-    /// undone: the old chunk stays, and a later carry may free it.
+    /// A carry the log has no room for, beside the frames that end the chunk staged, or that
+    /// would take the chunk staged past what a chunk holds, is left undone: the old chunk stays,
+    /// and a later carry may free it.
     pub(super) async fn carry(&mut self) -> Result<(), Error> {
         for number in self.carriable() {
             let written = &self.written[&number];
             let copies = written.copies();
-            if copies == 0 || !worth(written.len, copies) {
+            if copies == 0 || !worth(written.len, copies) || !self.takes(copies) {
                 continue;
             }
             if !self.shared.reserve(copies, self.shared.kept(Kept::Closing)) {
@@ -36,43 +48,88 @@ impl Log {
         Ok(())
     }
 
-    /// Carries the frames of the open segments of the old chunks into the chunk staged, the
-    /// oldest first, each the log has room to copy beside those before it and the frames that
-    /// end the chunk staged: whether publishing the chunk then frees more than it writes, with
-    /// `unneeded` bytes of chunks no replay needs freed however the carry goes.
-    pub(super) async fn carry_to_free(&mut self, unneeded: u64) -> Result<bool, Error> {
-        let limit = self.shared.limit.load(std::sync::atomic::Ordering::SeqCst);
-        let held = self.shared.held.load(std::sync::atomic::Ordering::SeqCst);
-        // The relief ends the chunk staged alone: it frees more than it writes, so the room
+    /// Whether the chunk staged takes `copies` bytes of carried frames: they keep it within what
+    /// a chunk holds, or it holds no batch frame yet.
+    fn takes(&self, copies: u64) -> bool {
+        self.written.get(&self.chunk).is_none_or(|written| {
+            written.batches.is_empty() || written.len.saturating_add(copies) <= self.most()
+        })
+    }
+
+    /// Carries the frames of the open segments of the old chunks, the oldest first, each the log
+    /// has room to copy beside those before it and the frames that end the chunks it writes, and
+    /// each that keeps the chunk it goes to within what a chunk holds: what an earlier publish
+    /// freed where publishing the chunk then frees more than the relief writes, with `unneeded`
+    /// bytes of chunks no replay needs freed however the carry goes; none otherwise.
+    ///
+    /// The copies go to the chunk staged where it takes them; where it holds batch frames and
+    /// takes none, it is published first and they go to the next.
+    pub(super) async fn carry_to_free(&mut self, unneeded: u64) -> Result<Option<u64>, Error> {
+        let limit = self.shared.limit.load(Ordering::SeqCst);
+        let held = self.shared.held.load(Ordering::SeqCst);
+        // A relief ends the chunks it writes alone: it frees more than it writes, so the room
         // the next chunk needs is there after it as before.
-        let (closing, _) = self.ending()?;
-        let mut room = limit.saturating_sub(held).saturating_sub(closing);
-        let (mut copied, mut gained, mut chosen) = (0_u64, unneeded, Vec::new());
+        let (ending, next) = self.ending()?;
+        let room = limit.saturating_sub(held).saturating_sub(ending);
+        let most = self.most();
+        let staged = self.written.get(&self.chunk);
+        let len = staged.map_or(0, |written| written.len);
+        let batched = staged.is_some_and(|written| !written.batches.is_empty());
+        let mut chosen = self.chosen(room, |copied, copy| {
+            copied == 0 && !batched || len.saturating_add(copied).saturating_add(copy) <= most
+        });
+        let mut first = false;
+        if chosen.numbers.is_empty() && batched {
+            let fresh = self.chosen(room.saturating_sub(next), |copied, copy| {
+                copied == 0 || next.saturating_add(copied).saturating_add(copy) <= most
+            });
+            first = !fresh.numbers.is_empty();
+            if first {
+                chosen = fresh;
+            }
+        }
+        let ends = if first {
+            ending.saturating_add(next)
+        } else {
+            ending
+        };
+        let gained = chosen.gained.saturating_add(unneeded);
+        // With nothing to copy it needs no room, where a commit larger than any before took the
+        // log past what it may hold.
+        if gained <= chosen.copied.saturating_add(ends)
+            || chosen.copied > 0 && !self.shared.reserve(chosen.copied, ends)
+        {
+            return Ok(None);
+        }
+        let mut freed = 0;
+        if first {
+            self.append(Frame::Relieved.encode()?).await?;
+            freed = self.publish().await?;
+        }
+        let mut wrote = 0_u64;
+        for number in chosen.numbers {
+            wrote = wrote.saturating_add(self.carry_chunk(number).await?);
+        }
+        self.shared.release(chosen.copied.saturating_sub(wrote));
+        Ok(Some(freed))
+    }
+
+    /// The old chunks to carry, the oldest first, each whose copy fits `room` beside those before
+    /// it and `fits` the chunk it goes to, given what those before it copied.
+    fn chosen(&self, mut room: u64, fits: impl Fn(u64, u64) -> bool) -> Chosen {
+        let mut chosen = Chosen::default();
         for number in self.carriable() {
             let written = &self.written[&number];
             let copy = written.copies();
-            let Some(left) = room.checked_sub(copy).filter(|_| copy > 0) else {
+            if copy == 0 || copy > room || !fits(chosen.copied, copy) {
                 continue;
-            };
-            room = left;
-            copied = copied.saturating_add(copy);
-            gained = gained.saturating_add(written.len);
-            chosen.push(number);
+            }
+            room -= copy;
+            chosen.copied = chosen.copied.saturating_add(copy);
+            chosen.gained = chosen.gained.saturating_add(written.len);
+            chosen.numbers.push(number);
         }
-        // What the publish writes beside the copies is at most what ends the chunk staged, which
-        // it frees more than: with nothing to copy it needs no room, where a commit larger than
-        // any before took the log past what it may hold.
-        if gained <= copied.saturating_add(closing)
-            || copied > 0 && !self.shared.reserve(copied, closing)
-        {
-            return Ok(false);
-        }
-        let mut wrote = 0_u64;
-        for number in chosen {
-            wrote = wrote.saturating_add(self.carry_chunk(number).await?);
-        }
-        self.shared.release(copied.saturating_sub(wrote));
-        Ok(true)
+        chosen
     }
 
     /// The old chunks not carried yet whose commits all have receipts and whose segments are

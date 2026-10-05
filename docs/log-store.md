@@ -113,8 +113,10 @@ batch that began to wait after it, so no partition starves while others checkpoi
 partitions' frames sent and not yet committed with a receipt, beside one commit's frames, take at
 most three quarters of `log_bytes` loads through it, however late its receipts arrive; the rest
 of the log is kept for gathering chunks, for commits and for what ends a chunk. A chunk holds at
-most an eighth of `log_bytes` but where it holds a single frame or a commit's seals, so its
-frames can always be gathered into a later one. A load fails `log_bytes_exceeded` where the frames its partitions have sent and not yet
+most an eighth of `log_bytes`, but where it holds a single batch frame or the frames gathered out
+of a single chunk, and beside that the seals and frame of the commit that ends it: batches sent
+while a commit's frame follows its seals wait for that commit, and go to the chunks after it. So
+a chunk's frames can always be gathered into a later one. A load fails `log_bytes_exceeded` where the frames its partitions have sent and not yet
 checkpointed fill its log, as a source that never checkpoints does: give such a load a larger
 `log_bytes`, at least four thirds of what its partitions send between checkpoints.
 

@@ -61,16 +61,6 @@ impl Written {
             .map(|span| span.len)
             .fold(self.open, u64::saturating_add)
     }
-
-    /// Whether the chunk holds batch frames of settled segments, which a carry of its open ones
-    /// lets go: one holding no open frame copies nothing.
-    pub(super) fn mixed(&self) -> bool {
-        let batched = self
-            .by_segment
-            .values()
-            .fold(0_u64, |sum, bytes| sum.saturating_add(*bytes));
-        batched > self.open
-    }
 }
 
 /// Where a frame lies in its chunk: its offset and its length.
@@ -89,6 +79,12 @@ pub(super) struct Logged {
 }
 
 impl Log {
+    /// Bytes: the most a chunk holds, but a chunk of a single frame or carried from a single
+    /// chunk, and the frames of a commit beside it.
+    pub(super) fn most(&self) -> u64 {
+        self.shared.limit.load(Ordering::SeqCst) / LOG_PARTS
+    }
+
     pub(super) fn current(&mut self) -> &mut Written {
         self.written.entry(self.chunk).or_default()
     }
@@ -193,6 +189,7 @@ impl Log {
             return Err(Error::from_wal(error));
         }
         self.current().len += len;
+        self.wrote = self.wrote.saturating_add(len);
         Ok(())
     }
 
@@ -261,7 +258,7 @@ impl Log {
         frame: Bytes,
         schema: u64,
     ) -> Result<(), Error> {
-        let most = self.shared.limit.load(Ordering::SeqCst) / LOG_PARTS;
+        let most = self.most();
         let staged = self.written.get(&self.chunk);
         let len = staged.map_or(0, |written| written.len);
         let full = staged.is_some_and(|written| !written.batches.is_empty())
@@ -269,7 +266,7 @@ impl Log {
                 .saturating_add(schema)
                 .saturating_add(count(frame.len()))
                 > most;
-        if full && !self.sealing {
+        if full {
             self.append(Frame::Relieved.encode()?).await?;
             self.publish().await?;
         }

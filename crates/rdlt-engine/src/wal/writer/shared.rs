@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rdlt_connector::CommitSeq;
 
 use crate::error::Error;
+use crate::limits::LOG_PARTS;
 
 /// What a load's writer and its senders share: what the log holds on disk, and its first
 /// failure.
@@ -18,9 +19,6 @@ pub(crate) struct Shared {
     /// Bytes: what the writer needs to end the chunk staged, and to stage and end one more: a
     /// header, an end naming every chunk and commit the log holds, and a closing frame each.
     pub(crate) closing: AtomicU64,
-    /// Bytes: the room a carry keeps: the most a carry of a chunk holding settled frames beside
-    /// open ones copies, and at least what a chunk holds before it is published.
-    pub(crate) carry: AtomicU64,
     /// Bytes: the most a commit of the load wrote, its seal, phase and commit frames, and at
     /// least an eighth of `limit`, which a batch keeps room for, so the commit its checkpoint
     /// brings can be written.
@@ -41,7 +39,6 @@ impl Shared {
             held: AtomicU64::new(0),
             limit: AtomicU64::new(limit),
             closing: AtomicU64::new(0),
-            carry: AtomicU64::new(0),
             committed: AtomicU64::new(0),
             failed: parking_lot::Mutex::default(),
             oldest: parking_lot::Mutex::default(),
@@ -83,7 +80,8 @@ impl Shared {
     /// and beside it what each of `kept` names.
     pub(crate) fn kept(&self, kept: Kept) -> u64 {
         let closing = self.closing.load(Ordering::SeqCst);
-        let carry = self.carry.load(Ordering::SeqCst);
+        // A chunk holds no more than this, so a carry of any chunk copies no more.
+        let carry = self.limit.load(Ordering::SeqCst) / LOG_PARTS;
         let committed = self.committed.load(Ordering::SeqCst);
         match kept {
             Kept::Closing => closing,

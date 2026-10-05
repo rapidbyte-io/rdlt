@@ -170,33 +170,39 @@ lowering may take, logged under more memory than replays it, is refused as
   a carry counts the copies it makes. Each keeps room beside it for what the writer adds of its
   own: a chunk's preamble, header, end and closing frame, for the chunk staged and one after it,
   the end naming every chunk and commit the log holds.
-- A batch also keeps room for a carry, the most a carry of a chunk holding settled frames beside
-  open ones copies and at least an eighth of the bound, and for a commit, the most a commit of
-  the load wrote and at least an eighth of the bound.
-- A chunk holds at most an eighth of the bound: before a batch frame would take it past that,
-  it is published between commits, closed by a relief frame, unless it holds no batch frame yet
-  or holds seals. A batch counts what ending its chunk writes beside its frames. The carry's
-  room grows to what a carry of a larger chunk copies, so any chunk's open frames fit it.
-- A carry follows each receipt for each old chunk whose open frames take no more than what
-  else it holds, while the log has room. A batch that finds no room has the writer publish
-  chunks between commits, each closed by a relief frame where a commit's chunk has its commit,
-  while each frees more than it writes: the chunks whose receipts arrived go, and the chunks
-  whose open frames it has room to copy, the oldest first, which gathers small chunks into one
-  and frees what others hold of settled segments. Then, while a commit can free room, as a
+- A batch also keeps room for a carry, an eighth of the bound, and for a commit, the most a
+  commit of the load wrote and at least an eighth of the bound.
+- A chunk holds at most an eighth of the bound, but where it holds a single batch frame or the
+  frames carried out of a single chunk, and beside it the seals, phase and commit frames of the
+  commit that ends it. Before a batch frame would take it past that, it is published between
+  commits, closed by a relief frame; a batch counts what ending its chunk writes beside its
+  frames. A carry copies into it only what keeps it within that. While it holds a commit's
+  seals, the writer holds back every batch frame, receipt, abandonment and close sent until the
+  commit's frame publishes it, and then writes them in turn. So the open frames of any chunk
+  holding settled ones fit the carry's room, however long a commit's frame comes after its
+  seals.
+- A carry follows each receipt for each old chunk whose open frames take no more than what else it
+  holds, while the log has room. A batch that finds no room has the writer publish chunks between
+  commits, each closed by a relief frame where a commit's chunk has its commit, while each frees
+  more than it writes: the chunks whose receipts arrived go, and the chunks whose open frames it
+  has room to copy, the oldest first, which gathers small chunks into one and frees what others
+  hold of settled segments; where the chunk staged holds batch frames and takes no copy, it is
+  published first, and the copies go to the next. Then, while a commit can free room, as a
   checkpoint sealed that no commit took or a commit under way can, the batch waits, and a commit
   is due at once. Where none can, the batch takes the carry's room, as it may be what brings its
   partition's checkpoint, and is refused, `log_bytes_exceeded`, before its source hears of it,
-  only where even that is too little. A batch that waits takes the room a commit frees before
-  any batch that began to wait after it: each later batch keeps room beside it for what those
-  in line count, so no partition starves while others checkpoint. A load whose partitions'
-  batch frames not yet committed with a receipt, beside the frames of one of its commits, take
-  at most three quarters of the bound loads through it, however late its receipts arrive and
-  however its partitions interleave. A wait ends with the attempt's deadlines, and the frame it
-  holds stays reserved from the memory budget.
+  only where even that is too little. A batch that waits takes the room a commit frees before any
+  batch that began to wait after it: each later batch keeps room beside it for what those in line
+  count, so no partition starves while others checkpoint. A load whose partitions' batch frames
+  not yet committed with a receipt, beside the frames of one of its commits, take at most three
+  quarters of the bound loads through it, however late its receipts arrive and however its
+  partitions interleave. A wait ends with the attempt's deadlines, and the frame it holds stays
+  reserved from the memory budget.
 - Nothing passes the bound but a commit's own frames. A commit may take the carry's room; a
   frame of it that still finds no room has the log publish what it can, and is then counted all
-  the same. Between a commit's first seal and its commit frame the log publishes nothing, as
-  its seals go in one chunk with its commit, so a commit with several seals passes the bound by
+  the same. Between a commit's first seal and its commit frame the log publishes nothing and
+  writes no other frame, as its seals go in one chunk with its commit, so a commit with several
+  seals passes the bound by
   at most its own frames beyond the room kept for it, the larger of an eighth of the bound and
   the largest commit before it, beside the carry's room. The log holds more until the carry
   that follows its receipt, or a later relief, frees what it settled; every batch waits or is
@@ -298,14 +304,16 @@ draw is then taken again among the reads and commits that run told, so every dra
   carry and a commit; a carry follows each receipt chunk by chunk; a batch has the log publish
   chunks that record the receipts that arrived and gather open frames out of chunks it then
   deletes, waits for a commit where one can free room, and is refused only where the frames of
-  unsealed segments leave none; a chunk holds at most an eighth of the bound, so its open frames
-  fit a carry; a carry copies a frame a piece at a time; and a batch waiting for room takes it
-  before later ones. Cost: a batch keeps a quarter of the bound and what ends two chunks free,
-  so a load holds three quarters of it unsealed; a full log publishes chunks between commits, a
-  write each, and copies open frames out of the chunks it frees; a log writes at least eight
-  chunks for each bound's worth of frames; and each load holds 256 KiB more of the budget's
-  share for logs. A chunk published between commits is closed by a frame an engine before this
-  does not know, which it refuses as `wal_unreadable`.
+  unsealed segments leave none; a chunk holds at most an eighth of the bound, carried frames
+  and a slow commit's window included, so its open frames fit a carry; a carry copies a frame a
+  piece at a time; and a batch waiting for room takes it before later ones. Cost: a batch keeps
+  a quarter of the bound and what ends two chunks free, so a load holds three quarters of it
+  unsealed; a full log publishes chunks between commits, a write each, and copies open frames
+  out of the chunks it frees; a log writes at least eight chunks for each bound's worth of
+  frames; batch frames sent while a commit's frame follows its seals wait in the writer, each
+  holding its memory and what ending a chunk writes, until the commit is published; and each
+  load holds 256 KiB more of the budget's share for logs. A chunk published between commits is
+  closed by a frame an engine before this does not know, which it refuses as `wal_unreadable`.
 - **A staged file's name is told apart by process id and a counter.** Two processes of different
   process namespaces may take one name once a staging was deleted; a publish compares the file it
   linked with the file it holds, by device and inode, and refuses another's.

@@ -65,7 +65,7 @@ impl Load {
             segment: SegmentId(u64::MAX),
             table: 0,
             ordinal: u64::MAX,
-            batch: self.batch(i64::MAX - 1_000),
+            batch: self.batch(i64::MAX / 2),
         };
         length(Frame::Batch(batch).encode().expect("encodes").len())
     }
@@ -337,5 +337,52 @@ async fn a_chunk_a_burst_between_commits_fills_with_two_partitions_is_carried_al
         ended.expect("the writer ends");
         let loaded = loaded.unwrap_or_else(|error| panic!("burst {burst}: {error:?}"));
         assert_eq!(loaded, slow, "burst {burst}");
+    }
+}
+
+#[tokio::test]
+async fn a_carry_gathers_open_frames_into_chunks_no_larger_than_an_eighth_of_the_log() {
+    // Two segments interleaved, one frame of the first to three of the second, over some eight
+    // capped chunks: once the second commits, its receipt carries the first's frames out of
+    // each, and the next batch publishes the chunks they went to.
+    let load = Load::new(&[1]);
+    let limit = 200 * load.frame();
+    let store = Arc::new(MemoryWal::default());
+    let budget = MemoryBudget::new(64 << 20);
+    let (log, task) = started(&store, limit);
+    let observed = Arc::clone(&store);
+    let written = async move {
+        let orders = view("orders");
+        let mut from = 0;
+        let mut next = || {
+            from += 1_000;
+            load.batch(from)
+        };
+        for _ in 0..40 {
+            logged(&log, &budget, 0, &orders, SegmentId(1), &next())
+                .await
+                .expect("logged");
+            for _ in 0..3 {
+                logged(&log, &budget, 0, &orders, SegmentId(2), &next())
+                    .await
+                    .expect("logged");
+            }
+        }
+        sealed(&log, &budget, &load.commit(&[2], CommitSeq::FIRST))
+            .await
+            .expect("committed");
+        logged(&log, &budget, 0, &orders, SegmentId(1), &next())
+            .await
+            .expect("logged");
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends well");
+    for (chunk, bytes) in observed.stored(&pipeline()) {
+        assert!(
+            length(bytes.len()) <= limit / 8,
+            "{chunk:?}: {}",
+            bytes.len()
+        );
     }
 }

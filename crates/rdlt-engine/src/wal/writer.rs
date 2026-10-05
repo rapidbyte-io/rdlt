@@ -10,7 +10,7 @@ mod shared;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -151,6 +151,8 @@ impl Log {
             unrecorded: BTreeSet::new(),
             settled: Settled::default(),
             sealing: false,
+            held_back: VecDeque::new(),
+            wrote: 0,
             last: None,
             spare: 0,
         };
@@ -179,8 +181,13 @@ struct Log {
     /// The segments of commits with receipts, and those abandoned, still in a chunk.
     settled: Settled,
     /// Whether the chunk staged holds seals, which go with the commit that follows them: it is
-    /// published by that commit alone.
+    /// published by that commit alone, and holds no other frame before it.
     sealing: bool,
+    /// The commands that came while the chunk staged held seals, handled in turn once their
+    /// commit is published.
+    held_back: VecDeque<Command>,
+    /// Bytes: what the writer has appended to its chunks.
+    wrote: u64,
     /// The last commit written, which the next follows.
     last: Option<CommitSeq>,
     /// Bytes: what the batch being written counted for the writer's own frames and they have
@@ -194,8 +201,19 @@ struct Log {
 impl Log {
     async fn run(mut self, mut receiver: mpsc::Receiver<Command>) -> Result<(), Error> {
         while let Some(command) = receiver.recv().await {
-            let close = matches!(command, Command::Close { .. });
+            if self.holds_back(&command) {
+                self.held_back.push_back(command);
+                continue;
+            }
+            let mut close = matches!(command, Command::Close { .. });
             self.handle(command).await;
+            while !close && !self.holding() {
+                let Some(command) = self.held_back.pop_front() else {
+                    break;
+                };
+                close = matches!(command, Command::Close { .. });
+                self.handle(command).await;
+            }
             if close {
                 break;
             }
@@ -203,6 +221,27 @@ impl Log {
         // What was staged and never published goes, giving back the room it took.
         self.discard().await;
         Ok(())
+    }
+
+    /// Whether the chunk staged holds seals and the log has not failed: no frame but the seals'
+    /// commit's goes in it, so its open frames fit what a carry may copy.
+    fn holding(&self) -> bool {
+        self.sealing && self.failure().is_ok()
+    }
+
+    /// Whether `command` waits for the commit of the seals the chunk staged holds: a batch frame,
+    /// or what may carry frames into the chunk staged, publish it, or name a table or segment a
+    /// batch frame held back names.
+    fn holds_back(&self, command: &Command) -> bool {
+        self.holding()
+            && matches!(
+                command,
+                Command::Batch { .. }
+                    | Command::Committed { .. }
+                    | Command::Abandon { .. }
+                    | Command::Retire { .. }
+                    | Command::Close { .. }
+            )
     }
 
     /// Deletes the chunk staged, where there is one: after a failed write nothing of it is
