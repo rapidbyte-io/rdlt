@@ -1,3 +1,4 @@
+mod concurrent;
 mod room;
 
 use std::sync::Arc;
@@ -82,13 +83,7 @@ fn start(
         opened: None,
         origin: load(),
     };
-    let budget = MemoryBudget::new(1 << 20);
-    LoadLog::start(
-        wal,
-        owner,
-        (std::num::NonZeroU64::MAX, budget.clone()),
-        None,
-    )
+    LoadLog::start(wal, owner, std::num::NonZeroU64::MAX, None)
 }
 
 /// The view of `table` at `version`.
@@ -644,7 +639,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
     let limit = 4_000;
     let budget = MemoryBudget::new(1 << 20);
     let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
-    let (log, task) = LoadLog::start(wal, owner, (limit_bytes, budget.clone()), None);
+    let (log, task) = LoadLog::start(wal, owner, limit_bytes, None);
     let orders = view("orders");
     let written = async {
         let mut refused = None;
@@ -683,7 +678,7 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
     let limit = 80_000;
     let budget = MemoryBudget::new(1 << 20);
     let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
-    let (log, task) = LoadLog::start(wal, owner, (limit_bytes, budget.clone()), None);
+    let (log, task) = LoadLog::start(wal, owner, limit_bytes, None);
     let orders = view("orders");
     let written = async {
         let segments = std::sync::atomic::AtomicU64::new(0);
@@ -777,6 +772,61 @@ async fn what_was_counted_of_a_segment_goes_with_its_seal_or_its_abandonment() {
 }
 
 #[tokio::test(start_paused = true)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the test runs the writer and a waiting batch as tasks of their own"
+)]
+async fn a_batch_waiting_for_room_takes_it_before_batches_that_come_after_it() {
+    let store = Arc::new(MemoryWal::default());
+    store.open(&pipeline(), load());
+    let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
+    let owner = Owner {
+        pipeline: pipeline(),
+        load: load(),
+        epoch: Epoch(1),
+        opened: None,
+        origin: load(),
+    };
+    let limit = std::num::NonZeroU64::new(1 << 20).unwrap();
+    let (log, task) = LoadLog::start(wal, owner, limit, None);
+    let writer = tokio::spawn(task);
+    let shared = Arc::clone(log.writer.shared());
+    let kept = shared.kept(crate::wal::writer::Kept::All);
+    let (first, later) = (40_000, 20_000);
+    // The log has room for neither, and a commit can free some.
+    assert!(shared.reserve(limit.get() - kept - 1_000, 0));
+    log.checkpointed();
+    let waiting = {
+        let log = log.clone();
+        tokio::spawn(async move { log.admit(first).await })
+    };
+    while !log.waits() {
+        tokio::task::yield_now().await;
+    }
+    // Room frees for either alone, not both: a batch that comes now waits behind the first.
+    shared.release(first + 5_000);
+    shared.room.notify_waiters();
+    {
+        let came = log.admit(later);
+        tokio::pin!(came);
+        tokio::select! {
+            biased;
+            admitted = &mut came => panic!("taken before the batch waiting: {admitted:?}"),
+            () = std::future::ready(()) => {}
+        }
+        waiting
+            .await
+            .expect("the first ends")
+            .expect("the first takes the room");
+        shared.release(later + 5_000);
+        shared.room.notify_waiters();
+        came.await.expect("the later takes what frees after");
+    }
+    drop(log);
+    writer.await.expect("the writer ends").expect("ends well");
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() {
     let store = Arc::new(MemoryWal::default());
     store.open(&pipeline(), load());
@@ -790,7 +840,7 @@ async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() 
     };
     let limit = std::num::NonZeroU64::new(4_000).unwrap();
     let budget = MemoryBudget::new(1 << 20);
-    let (log, task) = LoadLog::start(wal, owner, (limit, budget.clone()), None);
+    let (log, task) = LoadLog::start(wal, owner, limit, None);
     let orders = view("orders");
     let written = async {
         // A checkpoint a commit took leaves nothing for the next commit to free.

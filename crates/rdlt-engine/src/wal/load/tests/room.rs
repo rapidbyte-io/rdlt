@@ -18,37 +18,49 @@ use crate::wal::store::WalStore;
 
 /// A load as the tests drive one.
 #[derive(Clone, Debug)]
-struct Load {
+pub(super) struct Load {
     /// Each partition's batches between its checkpoints.
-    gaps: Vec<u64>,
+    pub(super) gaps: Vec<u64>,
     /// The rows of each batch.
-    rows: usize,
+    pub(super) rows: usize,
+    /// The rows of each batch of the first partition, where they are not `rows`.
+    pub(super) first_rows: Option<usize>,
     /// Bytes each commit records of state beside its segments.
-    recorded: usize,
+    pub(super) recorded: usize,
     /// Batches the first segment of each partition but the first is short of its gap, times
     /// its index.
-    stagger: u64,
+    pub(super) stagger: u64,
 }
 
 impl Load {
-    fn new(gaps: &[u64]) -> Self {
+    pub(super) fn new(gaps: &[u64]) -> Self {
         Self {
             gaps: gaps.to_vec(),
             rows: 3,
+            first_rows: None,
             recorded: 0,
             stagger: 1,
         }
     }
 
     /// A batch of the load's rows, its ids from `from`.
-    fn batch(&self, from: i64) -> RecordBatch {
-        let count = i64::try_from(self.rows).expect("few rows");
+    pub(super) fn batch(&self, from: i64) -> RecordBatch {
+        self.batch_of(1, from)
+    }
+
+    /// A batch of partition `partition`'s rows, its ids from `from`.
+    pub(super) fn batch_of(&self, partition: usize, from: i64) -> RecordBatch {
+        let rows = match (partition, self.first_rows) {
+            (0, Some(rows)) => rows,
+            _ => self.rows,
+        };
+        let count = i64::try_from(rows).expect("few rows");
         let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(from..from + count));
         RecordBatch::try_from_iter([("id", ids)]).expect("a valid batch")
     }
 
     /// Bytes: what the frame of one of the load's batches takes.
-    fn frame(&self) -> u64 {
+    pub(super) fn frame(&self) -> u64 {
         let batch = frame::Batch {
             segment: SegmentId(u64::MAX),
             table: 0,
@@ -58,9 +70,9 @@ impl Load {
         length(Frame::Batch(batch).encode().expect("encodes").len())
     }
 
-    /// The commit of `segment` as `seq`, recording the load's bytes of state.
-    fn commit(&self, segment: u64, seq: CommitSeq) -> rdlt_connector::CommitMeta {
-        let mut commit = meta(&[segment]);
+    /// The commit of `segments` as `seq`, recording the load's bytes of state.
+    pub(super) fn commit(&self, segments: &[u64], seq: CommitSeq) -> rdlt_connector::CommitMeta {
+        let mut commit = meta(segments);
         commit.commit_seq = seq;
         if self.recorded > 0 {
             commit.state_delta = vec![StateChange::Put(StateRecord {
@@ -72,8 +84,8 @@ impl Load {
     }
 
     /// Bytes: what one of the load's commits writes, its seal and its commit frame.
-    fn committed(&self) -> u64 {
-        let commit = self.commit(u64::MAX, CommitSeq::FIRST);
+    pub(super) fn committed(&self) -> u64 {
+        let commit = self.commit(&[u64::MAX], CommitSeq::FIRST);
         let frame = frame::commit(&commit, 1, 0).expect("encodes");
         // A seal frame of the tests takes well under a KiB.
         length(frame.len()) + 1_024
@@ -107,7 +119,7 @@ async fn sealed(
 }
 
 /// Bytes: what `store` holds of the load's log.
-fn stored(store: &MemoryWal) -> u64 {
+pub(super) fn stored(store: &MemoryWal) -> u64 {
     store
         .stored(&pipeline())
         .iter()
@@ -116,10 +128,9 @@ fn stored(store: &MemoryWal) -> u64 {
 }
 
 /// The log of the tests' load in `store`, of `limit` bytes, and its writer's task.
-fn started(
+pub(super) fn started(
     store: &Arc<MemoryWal>,
     limit: u64,
-    budget: &MemoryBudget,
 ) -> (
     LoadLog,
     impl Future<Output = Result<(), crate::Error>> + Send + 'static,
@@ -134,7 +145,7 @@ fn started(
         origin: load(),
     };
     let bound = NonZeroU64::new(limit).expect("a limit");
-    LoadLog::start(wal, owner, (bound, budget.clone()), None)
+    LoadLog::start(wal, owner, bound, None)
 }
 
 /// Checks neither what `log` counts nor what `store` holds passes `most` bytes.
@@ -152,7 +163,7 @@ fn bounded(store: &MemoryWal, log: &LoadLog, most: u64) {
 async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::Error> {
     let store = Arc::new(MemoryWal::default());
     let budget = MemoryBudget::new(64 << 20);
-    let (log, task) = started(&store, limit, &budget);
+    let (log, task) = started(&store, limit);
     let orders = view("orders");
     let past = if load.committed() > limit / 4 {
         load.committed() + 2_048
@@ -180,7 +191,7 @@ async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::
                 if slot.1 < *gap {
                     continue;
                 }
-                let commit = load.commit(slot.0, seq);
+                let commit = load.commit(&[slot.0], seq);
                 if let Err(error) = sealed(&log, &budget, &commit).await {
                     break 'load Err(error);
                 }
@@ -205,7 +216,7 @@ async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::
 /// The loads the tests drive, each partition's gap but the first's: one partition alone, one
 /// beside others committing after every batch, several of unequal gaps; small batches beside
 /// large commits and large batches beside small ones; partitions begun in step or apart.
-fn loads() -> Vec<Load> {
+pub(super) fn loads() -> Vec<Load> {
     let mut loads = Vec::new();
     for others in [&[][..], &[1], &[1, 1, 1, 1], &[2, 3], &[5, 1]] {
         for (rows, recorded) in [(1, 0), (3, 1_500), (3, 3_000), (40, 0)] {
@@ -215,6 +226,7 @@ fn loads() -> Vec<Load> {
                 loads.push(Load {
                     gaps,
                     rows,
+                    first_rows: None,
                     recorded,
                     stagger,
                 });
@@ -273,6 +285,7 @@ async fn a_partition_beside_one_committing_every_batch_in_a_small_log_of_large_c
         let mut load = Load {
             gaps: vec![1, 1],
             rows: 3,
+            first_rows: None,
             recorded: 1_000,
             stagger,
         };
@@ -281,5 +294,48 @@ async fn a_partition_beside_one_committing_every_batch_in_a_small_log_of_large_c
         assert!(load.gaps[0] > 10, "{load:?}");
         let loaded = interleaved(limit, &load, 3).await;
         assert!(loaded.is_ok(), "{load:?} of {limit}: {loaded:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_chunk_a_burst_between_commits_fills_with_two_partitions_is_carried_all_the_same() {
+    // Both partitions log a burst, within three quarters of the log, before the first commit;
+    // then the second commits after each batch: the burst's chunks hold the first's open frames
+    // beside the second's settled ones, which a carry frees within the room a batch keeps.
+    for burst in [5_u64, 10, 20] {
+        let load = Load::new(&[1, 1]);
+        let limit = 60 * load.frame();
+        let store = Arc::new(MemoryWal::default());
+        let budget = MemoryBudget::new(64 << 20);
+        let (log, task) = started(&store, limit);
+        let orders = view("orders");
+        let slow = gap(&load, limit, (3, 4));
+        let written = async {
+            let mut from = 0;
+            let mut next = || {
+                from += 1_000;
+                load.batch(from)
+            };
+            let (slow_segment, mut fast, mut seq) = (0, 1_000, CommitSeq::FIRST);
+            let mut logged_slow = 0;
+            for _ in 0..burst {
+                logged(&log, &budget, 0, &orders, SegmentId(slow_segment), &next()).await?;
+                logged(&log, &budget, 0, &orders, SegmentId(fast), &next()).await?;
+                logged_slow += 1;
+            }
+            while logged_slow < slow {
+                sealed(&log, &budget, &load.commit(&[fast], seq)).await?;
+                (fast, seq) = (fast + 1, seq.next());
+                logged(&log, &budget, 0, &orders, SegmentId(slow_segment), &next()).await?;
+                logged(&log, &budget, 0, &orders, SegmentId(fast), &next()).await?;
+                logged_slow += 1;
+            }
+            drop(log);
+            Ok::<u64, crate::Error>(logged_slow)
+        };
+        let (ended, loaded) = tokio::join!(task, written);
+        ended.expect("the writer ends");
+        let loaded = loaded.unwrap_or_else(|error| panic!("burst {burst}: {error:?}"));
+        assert_eq!(loaded, slow, "burst {burst}");
     }
 }

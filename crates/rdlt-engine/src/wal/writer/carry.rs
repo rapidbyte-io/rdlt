@@ -6,10 +6,11 @@
 //! Replay stages only the segments of commits without receipts, and the old chunk's commits all
 //! have theirs.
 
-use bytes::Bytes;
 use rdlt_connector::SegmentId;
 
-use super::{Kept, Log, Logged, Span, Written};
+use super::super::store::Chunk;
+use super::chunk::Logged;
+use super::{Kept, Log};
 use crate::error::Error;
 
 impl Log {
@@ -22,7 +23,7 @@ impl Log {
     pub(super) async fn carry(&mut self) -> Result<(), Error> {
         for number in self.carriable() {
             let written = &self.written[&number];
-            let copies = copies(written);
+            let copies = written.copies();
             if copies == 0 || !worth(written.len, copies) {
                 continue;
             }
@@ -49,7 +50,7 @@ impl Log {
         let (mut copied, mut gained, mut chosen) = (0_u64, unneeded, Vec::new());
         for number in self.carriable() {
             let written = &self.written[&number];
-            let copy = copies(written);
+            let copy = written.copies();
             let Some(left) = room.checked_sub(copy).filter(|_| copy > 0) else {
                 continue;
             };
@@ -92,18 +93,15 @@ impl Log {
     }
 
     /// Whether a commit waiting for its receipt takes `segment`.
-    fn taken(&self, segment: SegmentId) -> bool {
+    pub(super) fn taken(&self, segment: SegmentId) -> bool {
         self.pending
             .values()
             .any(|segments| segments.contains(segment))
     }
 
-    /// Writes the frames of chunk `number`'s open segments to the chunk staged, in the order
-    /// they were logged and each table's schema before its first, counted already, and marks the
-    /// chunk carried: the bytes written.
-    ///
-    /// Each frame is read into memory the log's share of the budget holds for the largest of
-    /// them; a chunk the share has no room for at once is not carried.
+    /// Copies the frames of chunk `number`'s open segments to the chunk staged, in the order
+    /// they were logged and each table's schema before its first, counted already, a piece at a
+    /// time, and marks the chunk carried: the bytes written.
     async fn carry_chunk(&mut self, number: u64) -> Result<u64, Error> {
         let Some(written) = self.written.get(&number) else {
             return Ok(0);
@@ -115,17 +113,7 @@ impl Log {
             .copied()
             .collect();
         let schemas = written.schemas.clone();
-        let largest = open
-            .iter()
-            .map(|logged| logged.span)
-            .chain(schemas.values().copied())
-            .map(|span| span.len)
-            .max()
-            .unwrap_or(0);
-        let Some(_reading) = self.budget.try_acquire_log(largest) else {
-            return Ok(0);
-        };
-        let from = super::Chunk {
+        let from = Chunk {
             load: self.owner.load,
             number,
         };
@@ -138,45 +126,19 @@ impl Log {
                         logged.table
                     ))
                 })?;
-                let schema = self.read(from, span).await?;
-                self.describe(logged.table, schema).await?;
+                let span = self.copy(from, span).await?;
+                self.current().schemas.insert(logged.table, span);
                 wrote = wrote.saturating_add(span.len);
             }
-            let frame = self.read(from, logged.span).await?;
-            let span = self.written_out(frame).await?;
+            let span = self.copy(from, logged.span).await?;
             wrote = wrote.saturating_add(span.len);
-            let current = self.current();
-            current.open += span.len;
-            current.segments.insert(logged.segment);
-            current.batches.push(Logged { span, ..logged });
+            self.logged(Logged { span, ..logged });
         }
         if let Some(written) = self.written.get_mut(&number) {
             written.carried = true;
         }
-        self.note_room();
         Ok(wrote)
     }
-
-    /// The frame at `span` of chunk `chunk`.
-    async fn read(&mut self, chunk: super::Chunk, span: Span) -> Result<Bytes, Error> {
-        self.store
-            .read(&self.owner.pipeline, chunk, span.offset, span.len)
-            .await
-            .map_err(|error| self.lost(error))
-    }
-}
-
-/// Bytes: what a carry of `written` copies at most: the batch frames of its open segments and
-/// every schema frame it holds; none where it holds no open frame.
-fn copies(written: &Written) -> u64 {
-    if written.open == 0 {
-        return 0;
-    }
-    written
-        .schemas
-        .values()
-        .map(|span| span.len)
-        .fold(written.open, u64::saturating_add)
 }
 
 /// Whether a carry of `copies` bytes out of a chunk of `len` frees at least as much beside them.

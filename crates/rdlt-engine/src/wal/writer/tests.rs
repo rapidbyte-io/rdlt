@@ -84,7 +84,8 @@ fn segments(ids: &[u64]) -> SegmentSet {
 /// one row, so its seals count them.
 struct Driving {
     writer: WalWriter,
-    logged: BTreeMap<u64, u64>,
+    /// The batches and rows logged of each segment.
+    logged: BTreeMap<u64, (u64, u64)>,
     /// The ordinal the next batch takes.
     ordinal: u64,
     /// The bytes of each table's schema frame, by index.
@@ -116,13 +117,16 @@ impl Driving {
 
     /// Logs a batch of one row of `segment` for the table at `table`.
     async fn batch(&mut self, segment: u64, table: u32) {
+        self.rows(segment, table, 1).await;
+    }
+
+    /// Logs a batch of `count` rows of `segment` for the table at `table`.
+    async fn rows(&mut self, segment: u64, table: u32, count: u64) {
         let schema = Schema::new(vec![ArrowField::new("id", DataType::Int64, false)]);
         let row = i64::try_from(segment).unwrap_or(0);
-        let rows = RecordBatch::try_new(
-            Arc::new(schema),
-            vec![Arc::new(Int64Array::from(vec![row]))],
-        )
-        .expect("a valid batch");
+        let values: Vec<i64> = (0..count).map(|_| row).collect();
+        let rows = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(Int64Array::from(values))])
+            .expect("a valid batch");
         let frame = encoded(&Frame::Batch(Batch {
             segment: SegmentId(segment),
             table,
@@ -130,16 +134,24 @@ impl Driving {
             batch: rows,
         }));
         self.ordinal += 1;
-        *self.logged.entry(segment).or_default() += 1;
-        // Counted with its table's schema frame, as a load's log counts a batch it admits.
+        let logged = self.logged.entry(segment).or_default();
+        *logged = (logged.0 + 1, logged.1 + count);
+        // Counted with its table's schema frame and what ends its chunk, as a load's log counts a
+        // batch it admits.
         let schema = self.schemas.lock().get(&table).copied().unwrap_or(0);
-        self.count(length(&frame) + schema);
+        let closing = self
+            .writer
+            .shared()
+            .closing
+            .load(std::sync::atomic::Ordering::SeqCst);
+        self.count(length(&frame) + schema + closing);
         let segment = SegmentId(segment);
         self.send(Command::Batch {
             segment,
             table,
             frame,
             schema,
+            closing,
             held: Box::new(()),
         })
         .await;
@@ -156,8 +168,8 @@ impl Driving {
             phase: 0,
             from: None,
             state: PartitionState::Done,
-            batches: logged,
-            rows: logged,
+            batches: logged.0,
+            rows: logged.1,
         });
         let frame = encoded(&seal);
         self.count(length(&frame));
@@ -268,19 +280,9 @@ where
     F: FnOnce(Driving) -> Fut,
     Fut: Future<Output = ()>,
 {
-    driven(store, MemoryBudget::new(1 << 20), drive).await
-}
-
-/// Runs a writer of `store` holding what it reads back in `budget` while `drive` sends it
-/// commands, until both end.
-async fn driven<F, Fut>(store: Arc<MemoryWal>, budget: MemoryBudget, drive: F) -> Result<(), Error>
-where
-    F: FnOnce(Driving) -> Fut,
-    Fut: Future<Output = ()>,
-{
     store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = store;
-    let (writer, task) = WalWriter::start(wal, owner(), budget);
+    let (writer, task) = WalWriter::start(wal, owner(), u64::MAX);
     let (ended, ()) = tokio::join!(task, drive(Driving::new(writer)));
     ended
 }
@@ -457,7 +459,7 @@ async fn a_load_whose_next_chunk_a_replay_took_is_fenced_before_it_answers() {
         log.batch(1, 0).await;
         log.commit(1, &[1]).await.expect("durable");
         // A replay publishes chunk 1 first, as it fences the log.
-        let chunk = super::Chunk {
+        let chunk = super::super::store::Chunk {
             load: load(),
             number: 1,
         };

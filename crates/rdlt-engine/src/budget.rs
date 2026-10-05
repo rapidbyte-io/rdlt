@@ -160,17 +160,6 @@ impl MemoryBudget {
         self.request(Class::Log, bytes).await
     }
 
-    /// As [`MemoryBudget::acquire_log`], where that needs no wait; nothing otherwise.
-    pub(crate) fn try_acquire_log(&self, bytes: u64) -> Option<Reservation> {
-        let mut ledger = self.shared.lock();
-        let admitted =
-            ledger.too_large(Class::Log, bytes).is_none() && ledger.open(Class::Log, bytes);
-        admitted.then(|| {
-            ledger.reserve(Class::Log, bytes);
-            Reservation::of(&self.shared, Class::Log, bytes)
-        })
-    }
-
     /// Reserves the `bytes` a commit will record of a table, from the tables' share: only a
     /// commit releases them.
     ///

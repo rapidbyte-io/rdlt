@@ -35,7 +35,7 @@ alone (ADR 0045).
 | `endpoint` | The store's address, where it is not AWS's: `https://host[:port]`. Plain `http://` is taken only to a loopback IP address, as `http://127.0.0.1:9000`, never to a name. |
 | `path_style` | `true` to name the bucket in the request's path, as most stores other than AWS's ask. Otherwise a custom endpoint's host is the bucket's, `https://<bucket>.<host>`, and an endpoint at an IP address is refused. |
 | `access_key_id`, `secret_access_key`, `session_token` | Each one secret reference, `${env:NAME}`, `${file:/absolute/path}` or `${secret:name}`, resolved by the resolver the operator gives the host, and again every five minutes; a refresh that fails keeps the keys held and tries again at the next request. A key written in the configuration itself is refused. |
-| `part_bytes` | Bytes of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 8 MiB by default. Each running load holds a part in memory, reserved from the engine's memory budget: a part larger than half the budget's share for logs is refused (`wal_staging_exceeds_budget`). |
+| `part_bytes` | Bytes of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 8 MiB by default. Each running load holds a part in memory, reserved from the engine's memory budget: a part larger than half the budget's share for logs, less the 256 KiB a load copies frames through, is refused (`wal_staging_exceeds_budget`). |
 
 The store is reached over TLS 1.2 or 1.3, checked against the system's trusted roots: a store
 whose certificate a private authority signs needs that authority among them. No redirect is
@@ -103,17 +103,23 @@ to 5 seconds between attempts; one that never succeeds fails the attempt retryab
 (`wal_storage_unavailable`).
 
 A staged chunk is held in memory up to a part, 8 MiB by default, reserved from the engine's
-memory budget, one a running load.
+memory budget, one a running load, beside 256 KiB through which the load copies frames it keeps
+out of old chunks, a piece at a time, however large a frame.
 
 A source that sends more than its log holds between commits loads through it: a batch that finds
 the log full has it publish a chunk that lets go of what was committed, waits for a commit where
-one can free room, and a commit is due at once. A load whose partitions' frames sent and not yet
-checkpointed, beside one commit's frames, take at most three quarters of `log_bytes` loads
-through it; the rest of the log is kept for gathering chunks, for commits and for what ends a
-chunk. A load fails `log_bytes_exceeded` where the frames its partitions have sent and not yet
+one can free room, and a commit is due at once; a batch that waits takes the room before any
+batch that began to wait after it, so no partition starves while others checkpoint. A load whose
+partitions' frames sent and not yet committed with a receipt, beside one commit's frames, take at
+most three quarters of `log_bytes` loads through it, however late its receipts arrive; the rest
+of the log is kept for gathering chunks, for commits and for what ends a chunk. A chunk holds at
+most an eighth of `log_bytes` but where it holds a single frame or a commit's seals, so its
+frames can always be gathered into a later one. A load fails `log_bytes_exceeded` where the frames its partitions have sent and not yet
 checkpointed fill its log, as a source that never checkpoints does: give such a load a larger
 `log_bytes`, at least four thirds of what its partitions send between checkpoints.
 
 A log never holds more than `log_bytes`, but where a commit is larger than the room kept for one,
 an eighth of `log_bytes` or the largest commit before it, and the carry's eighth: it is written
-all the same, and the log holds more by that commit's frames until the next relief.
+all the same, seals and commit in one chunk, and the log holds more by at most that commit's
+frames until its receipt or the next relief frees what it settled. Batches wait or are refused
+meanwhile.

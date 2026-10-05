@@ -5,8 +5,10 @@ use std::sync::atomic::Ordering;
 use rdlt_connector::CommitSeq;
 
 use super::super::frame::{self, End, Frame};
-use super::{Log, Settled, Written, count};
+use super::chunk::Written;
+use super::{Log, count};
 use crate::error::Error;
+use crate::limits::LOG_PARTS;
 
 impl Log {
     /// Publishes chunks between commits while each lets the log hold less.
@@ -46,17 +48,22 @@ impl Log {
         Ok(freed.saturating_sub(wrote))
     }
 
-    /// Counts again what each chunk holds of open segments, and notes the room the writer keeps
-    /// to end the chunk staged and one more after it.
+    /// Notes the room the writer keeps: what ends the chunk staged and one more after it, and
+    /// what a carry copies of a chunk holding settled frames beside open ones, at least what a
+    /// chunk holds before it is published.
     pub(super) fn note_room(&mut self) {
-        let settled = &self.settled;
-        for written in self.written.values_mut() {
-            written.open = open(written, settled);
-        }
         let closing = self
             .ending()
             .map_or(u64::MAX, |(ending, next)| ending.saturating_add(next));
         self.shared.closing.store(closing, Ordering::SeqCst);
+        let limit = self.shared.limit.load(Ordering::SeqCst);
+        let carry = self
+            .written
+            .values()
+            .filter(|written| written.mixed())
+            .map(Written::copies)
+            .fold(limit / LOG_PARTS, u64::max);
+        self.shared.carry.store(carry, Ordering::SeqCst);
     }
 
     /// Bytes: what ending the chunk staged writes at most, and what staging and ending one more
@@ -91,14 +98,4 @@ impl Log {
         let next = staged(self.chunk.saturating_add(1))?.saturating_add(ended(&live, &received)?);
         Ok((ending, next))
     }
-}
-
-/// Bytes: what the batch frames of `written`'s segments not `settled` take.
-fn open(written: &Written, settled: &Settled) -> u64 {
-    written
-        .batches
-        .iter()
-        .filter(|logged| !settled.contains(logged.segment))
-        .map(|logged| logged.span.len)
-        .fold(0, u64::saturating_add)
 }

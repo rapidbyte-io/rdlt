@@ -46,8 +46,7 @@ async fn stalled(store: Arc<dyn WalStore>, open: bool) {
         .open_log(&pipeline(), load())
         .await
         .expect("the log opens");
-    let budget = crate::budget::MemoryBudget::new(1 << 20);
-    let (writer, task) = WalWriter::start(Arc::clone(&store), owner(), budget);
+    let (writer, task) = WalWriter::start(Arc::clone(&store), owner(), u64::MAX);
     let mut log = Driving::new(writer);
     let replayer = Arc::clone(&store);
     let drive = async move {

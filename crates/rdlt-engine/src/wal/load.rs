@@ -102,18 +102,17 @@ struct Version {
 impl LoadLog {
     /// The log of `owner`'s load in `store`, holding at most `limit` bytes on disk, and the task
     /// writing it, for the attempt's scope to run until every clone is dropped or the log is
-    /// closed; what it reads back to carry is held in `budget`.
+    /// closed; `staging` holds what the store stages in memory, and what a carry reads at once.
     pub(crate) fn start(
         store: Arc<dyn WalStore>,
         owner: Owner,
-        (limit, budget): (NonZeroU64, MemoryBudget),
+        limit: NonZeroU64,
         staging: Option<Reservation>,
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
     ) {
-        let (writer, task) = WalWriter::start(store, owner, budget);
-        writer.shared().limit.store(limit.get(), Ordering::SeqCst);
+        let (writer, task) = WalWriter::start(store, owner, limit.get());
         writer
             .shared()
             .committed
@@ -197,8 +196,10 @@ impl LoadLog {
         if let Some(reserved) = held.downcast_mut::<Reservation>() {
             reserved.shrink(count(frame.len()));
         }
-        // Counted with its table's schema frame, which the chunk it lands in may lack.
-        self.admit(count(frame.len()).saturating_add(schema))
+        // Counted with its table's schema frame, which the chunk it lands in may lack, and what
+        // ends that chunk, where the frame would take it past what a carry may copy.
+        let closing = self
+            .admit(count(frame.len()).saturating_add(schema))
             .await?;
         self.writer
             .send(Command::Batch {
@@ -206,6 +207,7 @@ impl LoadLog {
                 table: index,
                 frame,
                 schema,
+                closing,
                 held,
             })
             .await

@@ -4,7 +4,9 @@
 use std::sync::atomic::Ordering;
 
 use super::super::frame::{End, Frame};
-use super::{Chunk, Log, Written};
+use super::super::store::Chunk;
+use super::Log;
+use super::chunk::Written;
 use crate::crash::crash_point;
 use crate::error::Error;
 
@@ -62,13 +64,12 @@ impl Log {
                 .remove(&self.owner.pipeline, chunk)
                 .await
                 .map_err(Error::from_wal)?;
-            if let Some(written) = self.written.remove(&number) {
+            if let Some(written) = self.forgotten(number) {
                 self.shared.release(written.len);
                 freed = freed.saturating_add(written.len);
             }
             crash_point!("engine.wal.remove");
         }
-        self.settled.forget_unwritten(&self.written);
         self.unrecorded.clear();
         self.note_oldest();
         self.shared.room.notify_waiters();
