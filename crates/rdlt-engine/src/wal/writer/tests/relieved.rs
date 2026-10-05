@@ -237,3 +237,63 @@ async fn a_frame_larger_than_what_a_carry_reads_at_once_is_copied_whole() {
     .await
     .expect("the writer ends");
 }
+
+#[tokio::test]
+async fn a_relief_whose_chunk_takes_no_copy_gathers_open_frames_into_the_next() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Chunk 0 holds a batch of segment 1 beside five of segment 2, chunk 1 one of segment 3
+        // beside three of segment 4: more open than settled once 1 and 3 settle, so no carry
+        // follows their receipts.
+        log.batch(1, 0).await;
+        for _ in 0..5 {
+            log.batch(2, 0).await;
+        }
+        log.commit(1, &[1]).await.expect("durable");
+        log.batch(3, 0).await;
+        for _ in 0..3 {
+            log.batch(4, 0).await;
+        }
+        log.commit(2, &[3]).await.expect("durable");
+        log.committed(1).await;
+        log.committed(2).await;
+        let sized = |kind: fn(&Frame) -> bool| {
+            let frame = frames(&observed)[1]
+                .1
+                .iter()
+                .find(|frame| kind(frame))
+                .cloned();
+            let frame = frame.expect("a frame").encode().expect("encodes");
+            u64::try_from(frame.len()).expect("a length")
+        };
+        let frame = sized(|frame| matches!(frame, Frame::Batch(_)));
+        let schema = sized(|frame| matches!(frame, Frame::Schema(_)));
+        // A chunk holds both chunks' open frames and a thousand bytes more, but not the chunk
+        // staged filled with segment 5's frames beside either.
+        let most = 8 * frame + 2 * schema + 1_000;
+        let shared = Arc::clone(log.writer.shared());
+        shared.limit.store(8 * most, Ordering::SeqCst);
+        let header = sized(|frame| matches!(frame, Frame::Header(_)));
+        let preamble = u64::try_from(super::super::super::frame::PREAMBLE).expect("small");
+        // A batch counts its schema frame, which the chunk holds already, beside its own.
+        let fits = (most - preamble - header - 2 * schema) / frame;
+        for _ in 0..fits {
+            log.batch(5, 0).await;
+        }
+        relieve(&log).await;
+        let held = numbers(&observed);
+        assert!(!held.contains(&0) && !held.contains(&1), "{held:?}");
+        // The chunk staged is published first, and both chunks' open frames go to the next.
+        assert_eq!(batches_of(&observed, 3), [2, 2, 2, 2, 2, 4, 4, 4]);
+        let fives = held
+            .iter()
+            .flat_map(|number| batches_of(&observed, *number))
+            .filter(|segment| *segment == 5)
+            .count();
+        assert_eq!(u64::try_from(fives).expect("few"), fits);
+    })
+    .await
+    .expect("the writer ends");
+}

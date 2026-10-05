@@ -18,27 +18,27 @@ impl Log {
     /// commit that follows them.
     pub(super) async fn relieve(&mut self) -> Result<(), Error> {
         self.failure()?;
-        // Each relief that goes on frees some of what the log holds, so this ends.
-        while !self.sealing && self.relieved().await? > 0 {}
+        // Each relief that goes on frees more of what the log holds than it writes, so this
+        // ends.
+        while !self.sealing && self.relieved().await? {}
         Ok(())
     }
 
-    /// Publishes the chunk staged between commits where that frees more than it writes: the
-    /// bytes it freed, less those it wrote.
-    async fn relieved(&mut self) -> Result<u64, Error> {
+    /// Publishes the chunk staged between commits where that frees more than it writes: whether
+    /// it did.
+    async fn relieved(&mut self) -> Result<bool, Error> {
         let unneeded = self
             .written
             .range(..self.chunk)
             .filter(|(_, written)| !self.needed(written))
             .map(|(_, written)| written.len)
             .fold(0, u64::saturating_add);
-        let wrote = self.wrote;
-        let Some(freed) = self.carry_to_free(unneeded).await? else {
-            return Ok(0);
-        };
+        if !self.carry_to_free(unneeded).await? {
+            return Ok(false);
+        }
         self.append(Frame::Relieved.encode()?).await?;
-        let freed = freed.saturating_add(self.publish().await?);
-        Ok(freed.saturating_sub(self.wrote - wrote))
+        self.publish().await?;
+        Ok(true)
     }
 
     /// Notes the room the writer keeps for its own frames: what ends the chunk staged and one
