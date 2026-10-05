@@ -45,7 +45,8 @@ impl Coordinator {
         self.due.committing();
         let seals = self.sealed.take();
         if let Some(log) = &self.parts.wal {
-            log.took(seals.len());
+            // Only seals with rows were counted as their partitions sealed them.
+            log.took(seals.iter().filter(|seal| !seal.moves_only()).count());
         }
         self.sealing.clear();
         if self.parts.wal.is_some() {

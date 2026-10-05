@@ -180,9 +180,7 @@ async fn read(mut job: PartitionJob, context: &PartitionContext) -> Result<(), E
             // A cursor the read ended at waits for its commit as a checkpoint's does.
             let held = CursorHold::reserve(&context.budget, &context.cancel, &state).await;
             let seal = ingested.open.seal(job.index, state, None, held?);
-            if let Some(log) = &context.wal {
-                log.checkpointed();
-            }
+            checkpointed(context, &seal);
             context.report(Progress::Sealed(seal))?;
         }
         None => abandon(job.index, &ingested.open, context).await?,
@@ -494,10 +492,16 @@ fn seal_segment(
     }
     // The position it carries is newer than a waiting seal's of no rows, which it replaces.
     seal.answers = seal.answers.max(context.latest.superseded(partition));
-    if let Some(log) = &context.wal {
+    checkpointed(context, &seal);
+    context.report(Progress::Sealed(seal))
+}
+
+/// Tells the load's log of `seal` before the coordinator hears of it, where a commit taking it
+/// frees any of the log: a seal of no rows frees nothing, and is not counted.
+fn checkpointed(context: &PartitionContext, seal: &Seal) {
+    if let Some(log) = context.wal.as_ref().filter(|_| !seal.moves_only()) {
         log.checkpointed();
     }
-    context.report(Progress::Sealed(seal))
 }
 
 /// The error for a push the stream's read mode does not take: `what` it pushed, and why not.
