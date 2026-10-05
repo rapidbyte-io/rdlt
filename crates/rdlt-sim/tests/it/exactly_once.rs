@@ -1,7 +1,7 @@
 use rdlt_sim::{Seed, check_exactly_once, seeds};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 15] = [
+const FOUND: [u64; 16] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -45,6 +45,9 @@ const FOUND: [u64; 15] = [
     // A frozen normalized stream's declared array whose table no row had made yet was refused
     // as new to the table once a crashed attempt had created the stream's own table.
     77_581,
+    // Logged in a small log: eight partitions' segments each spanned several chunks, which
+    // stayed, holding committed frames beside open ones, until no batch fitted.
+    53_249,
 ];
 
 #[test]

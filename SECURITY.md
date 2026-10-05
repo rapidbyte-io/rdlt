@@ -308,8 +308,9 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
   first, dropping no table. A replay that fails keeps the log for the next attempt.
 - What replay reads and decodes is reserved from the memory budget before it is held
   (`replay_exceeds_budget`). A load's log holds at most `GrowthLimits::log_bytes` on disk, 4 GiB
-  by default: a batch that would pass it waits for a commit to free room, and is refused
-  (`log_bytes_exceeded`) only where no checkpoint since the last commit lets one free any. What a
+  by default: a batch that would pass it has the log publish a chunk that frees what is
+  committed, waits for a commit to free room, and is refused (`log_bytes_exceeded`) only where
+  the frames of segments not yet checkpointed leave it none. What a
   store stages in memory is reserved from the budget (`wal_staging_exceeds_budget`). A full disk is retried (`wal_storage_full`): a failed write
   gives back what it staged, and the next attempt deletes what a crashed load staged, which
   needs no room, before it needs a directory's block and a few hundred bytes of its own.

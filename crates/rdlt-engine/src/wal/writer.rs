@@ -4,6 +4,7 @@
 
 mod carry;
 mod publish;
+mod relief;
 #[cfg(test)]
 mod tests;
 
@@ -76,6 +77,11 @@ pub(crate) enum Command {
     Abandon { segment: SegmentId },
     /// Tables whose schema frames no later batch frame names: the writer keeps them no more.
     Retire { tables: Vec<u32> },
+    /// A batch finds the log full: chunks are published between commits while each lets the
+    /// log hold less, and `done` answered.
+    Relieve {
+        done: oneshot::Sender<Result<(), Error>>,
+    },
     /// The load stopped: a closing chunk is published, then the log deleted where every commit
     /// in it has a receipt.
     Close {
@@ -91,8 +97,12 @@ pub(crate) struct Shared {
     pub(crate) held: AtomicU64,
     /// Bytes: what the log may hold on disk; a carry that would take it past is left undone.
     pub(crate) limit: AtomicU64,
-    /// Bytes: the batch frames counted in `held` that no published chunk holds yet.
-    pub(crate) unpublished: AtomicU64,
+    /// Bytes: the batch frames counted in `held` that the writer has not written yet.
+    pub(crate) unwritten: AtomicU64,
+    /// Bytes: the most the batch frames of open segments take in one chunk that holds frames of
+    /// another segment too, which a carry copies before it frees what that chunk holds of the
+    /// other: a log with that much room can free its chunks one at a time.
+    pub(crate) copied: AtomicU64,
     /// The first failure, which every later batch and command is answered with.
     pub(crate) failed: parking_lot::Mutex<Option<Error>>,
     /// The oldest commit a replay of the log may repeat: one waiting for its receipt, or whose
@@ -107,7 +117,8 @@ impl Default for Shared {
         Self {
             held: AtomicU64::new(0),
             limit: AtomicU64::new(u64::MAX),
-            unpublished: AtomicU64::new(0),
+            unwritten: AtomicU64::new(0),
+            copied: AtomicU64::new(0),
             failed: parking_lot::Mutex::default(),
             oldest: parking_lot::Mutex::default(),
             room: tokio::sync::Notify::new(),
@@ -156,6 +167,8 @@ impl WalWriter {
             pending: BTreeMap::new(),
             unrecorded: BTreeSet::new(),
             settled: Settled::default(),
+            sealing: false,
+            copied: 0,
         };
         (Self { commands, shared }, log.run(receiver))
     }
@@ -205,8 +218,8 @@ impl Settled {
 struct Written {
     /// Bytes: what was written to it.
     len: u64,
-    /// Bytes: what its batch frames, those sent to it rather than carried, take.
-    sent: u64,
+    /// Bytes: what its batch frames of segments not settled take.
+    open: u64,
     /// Where each table's schema frame lies in it.
     schemas: BTreeMap<u32, Span>,
     /// The segments with frames in it.
@@ -252,6 +265,11 @@ struct Log {
     unrecorded: BTreeSet<CommitSeq>,
     /// The segments of commits with receipts, and those abandoned, still in a chunk.
     settled: Settled,
+    /// Whether the chunk staged holds seals, which go with the commit that follows them: it is
+    /// published by that commit alone.
+    sealing: bool,
+    /// Bytes: the most a carry of a chunk published copies, as [`Shared::copied`] counts.
+    copied: u64,
     /// What the log holds on disk, and its first failure: after a failed write, what the log
     /// holds is unknown, and no later frame may be trusted to follow it.
     shared: Arc<Shared>,
@@ -300,10 +318,8 @@ impl Log {
                 frame,
                 held,
             } => {
-                let result = self.append(frame).await.map(drop);
+                self.seal(segment, frame).await;
                 drop(held);
-                self.note(&result);
-                self.current().segments.insert(segment);
             }
             Command::Commit {
                 seq,
@@ -314,30 +330,50 @@ impl Log {
             } => {
                 let result = self.commit(seq, segments, frame).await;
                 drop(held);
-                self.note(&result);
-                drop(durable.send(result));
+                self.answer(result, durable);
             }
             Command::Committed { seq } => {
                 let result = self.committed(seq).await;
                 self.note(&result);
             }
-            Command::Abandon { segment } => self.settled.settle([segment]),
+            Command::Abandon { segment } => {
+                self.settled.settle([segment]);
+                self.refresh_copies();
+            }
             Command::Retire { tables } => {
                 for table in tables {
                     self.tables.remove(&table);
                     drop(self.describing.remove(&table));
                 }
             }
+            Command::Relieve { done } => {
+                let result = self.relieve().await;
+                self.answer(result, done);
+            }
             Command::Close { done } => {
                 let result = self.close().await;
-                self.note(&result);
-                drop(done.send(result));
+                self.answer(result, done);
             }
         }
     }
 
+    /// Writes `frame`, the seal frame of `segment`, which the commit that follows takes.
+    async fn seal(&mut self, segment: SegmentId, frame: Bytes) {
+        let result = self.append(frame).await.map(drop);
+        self.note(&result);
+        self.sealing = true;
+        self.current().segments.insert(segment);
+        self.note_copies();
+    }
+
+    /// Keeps the first failure, and answers with `result`.
+    fn answer<T>(&mut self, result: Result<T, Error>, to: oneshot::Sender<Result<T, Error>>) {
+        self.note(&result);
+        drop(to.send(result));
+    }
+
     /// Keeps the first failure.
-    fn note(&mut self, result: &Result<(), Error>) {
+    fn note<T>(&mut self, result: &Result<T, Error>) {
         let mut failed = self.shared.failed.lock();
         if let (Err(error), None) = (result, &*failed) {
             *failed = Some(Error::wal_failed_before(error));
@@ -441,15 +477,25 @@ impl Log {
             drop(self.describing.remove(&table));
         }
         // Counted on disk once it was sent.
-        let span = self.written_out(frame).await?;
+        let len = count(frame.len());
+        let written = self.written_out(frame).await;
+        // The update only lowers the count, so it never fails.
+        self.shared
+            .unwritten
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |unwritten| {
+                Some(unwritten.saturating_sub(len))
+            })
+            .ok();
+        let span = written?;
         let current = self.current();
-        current.sent += span.len;
+        current.open += span.len;
         current.segments.insert(segment);
         current.batches.push(Logged {
             segment,
             table,
             span,
         });
+        self.note_copies();
         Ok(())
     }
 
@@ -471,6 +517,7 @@ impl Log {
         self.append(frame).await?;
         self.current().commits.insert(seq);
         self.publish().await?;
+        self.sealing = false;
         self.pending.insert(seq, segments);
         self.note_oldest();
         Ok(())
@@ -492,7 +539,10 @@ impl Log {
             self.unrecorded.insert(seq);
             self.note_oldest();
         }
-        self.carry().await
+        self.refresh_copies();
+        self.carry().await?;
+        self.refresh_copies();
+        Ok(())
     }
 }
 

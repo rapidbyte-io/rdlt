@@ -1,5 +1,6 @@
 mod abandoned;
 mod carried;
+mod relieved;
 mod taken;
 
 use std::collections::BTreeMap;
@@ -104,6 +105,15 @@ impl Driving {
         }));
         self.ordinal += 1;
         *self.logged.entry(segment).or_default() += 1;
+        // Counted on disk as a load's log counts a batch it admits.
+        let shared = self.writer.shared();
+        let len = u64::try_from(frame.len()).expect("a length");
+        shared
+            .held
+            .fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+        shared
+            .unwritten
+            .fetch_add(len, std::sync::atomic::Ordering::SeqCst);
         let segment = SegmentId(segment);
         self.send(Command::Batch {
             segment,
@@ -192,6 +202,7 @@ fn kind(frame: &Frame) -> String {
         Frame::Begun(begun) => format!("phase {} of {}", begun.phase, begun.stream),
         Frame::Commit(commit) => format!("commit of {:?}", commit.meta.segments),
         Frame::Closed => "closed".to_owned(),
+        Frame::Relieved => "relieved".to_owned(),
         Frame::End(end) => format!("end {:?} {:?}", end.live, end.received),
         Frame::Fence(fence) => format!("fence {}", fence.chunk),
     }

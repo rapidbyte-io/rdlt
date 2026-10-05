@@ -37,16 +37,10 @@ impl Log {
         crash_point!("engine.wal.sync.before");
         staged.publish().await.map_err(|error| self.lost(error))?;
         crash_point!("engine.wal.sync.after");
-        let sent = self.current().sent;
-        // The update only lowers the count, so it never fails.
-        self.shared
-            .unpublished
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
-                Some(held.saturating_sub(sent))
-            })
-            .ok();
         self.chunk += 1;
-        self.forget(&live).await
+        self.forget(&live).await?;
+        self.refresh_copies();
+        Ok(())
     }
 
     /// Deletes every chunk before the chunk published last that `live` does not name; every
@@ -81,7 +75,7 @@ impl Log {
 
     /// Whether a replay needs `written`, a published chunk: a segment in it is neither settled
     /// nor carried to a later chunk, or a commit in it waits for its receipt.
-    fn needed(&self, written: &Written) -> bool {
+    pub(super) fn needed(&self, written: &Written) -> bool {
         let open = !written.carried
             && written
                 .segments

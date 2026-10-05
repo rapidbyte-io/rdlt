@@ -96,6 +96,7 @@ fn metadata() -> Vec<Frame> {
             phases: 1,
         })),
         Frame::Closed,
+        Frame::Relieved,
         Frame::End(End {
             live: vec![1, 3],
             received: vec![CommitSeq::FIRST],
@@ -263,8 +264,8 @@ fn a_chunk_of_another_format_or_none_at_all_is_told_from_one_damaged() {
 fn a_frame_whose_checksum_matches_but_whose_payload_does_not_decode_is_an_error() {
     let frame = super::framed(2, b"not json").expect("a frame");
     assert!(decode(&frame, limits()).is_err());
-    // An unknown kind is refused too, and a closing frame that holds anything.
-    for kind in [99, 7, 6] {
+    // An unknown kind is refused too, and a closing or relieving frame that holds anything.
+    for kind in [99, 7, 6, 11] {
         let frame = super::framed(kind, b"{}").expect("a frame");
         assert!(decode(&frame, limits()).is_err(), "kind {kind}");
     }

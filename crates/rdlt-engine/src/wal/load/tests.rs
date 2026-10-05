@@ -1,3 +1,5 @@
+mod room;
+
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
@@ -41,6 +43,17 @@ fn meta(segments: &[u64]) -> CommitMeta {
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
         horizon: None,
+    }
+}
+
+/// The receipt of the load's commit `seq`.
+fn receipt(seq: CommitSeq) -> Receipt {
+    Receipt {
+        load_id: load(),
+        commit_seq: seq,
+        committed_at: UNIX_EPOCH,
+        rows: 3,
+        bytes: 24,
     }
 }
 
@@ -617,6 +630,9 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         assert_eq!(error.code(), Some("log_bytes_exceeded"));
         assert!(!error.is_retryable());
         assert!(log.held() <= limit);
+        // Every frame counted was written, and the refused one counted nowhere.
+        let unwritten = &log.writer.shared().unwritten;
+        assert_eq!(unwritten.load(std::sync::atomic::Ordering::SeqCst), 0);
         drop(log);
     };
     let (ended, ()) = tokio::join!(task, written);
@@ -731,28 +747,49 @@ async fn what_was_counted_of_a_segment_goes_with_its_seal_or_its_abandonment() {
 }
 
 #[tokio::test]
-async fn a_batch_counts_as_unpublished_until_its_chunk_is_published() {
+async fn a_log_keeps_room_to_copy_the_open_frames_of_chunks_shared_with_other_segments() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
     let budget = MemoryBudget::new(1 << 20);
     let orders = view("orders");
     let shared = Arc::clone(log.writer.shared());
-    let unpublished = || {
-        shared
-            .unpublished
-            .load(std::sync::atomic::Ordering::Relaxed)
-    };
+    let copied = || shared.copied.load(std::sync::atomic::Ordering::SeqCst);
+    let unwritten = || shared.unwritten.load(std::sync::atomic::Ordering::SeqCst);
     let written = async {
-        for from in [0, 3] {
-            logged(&log, &budget, 0, &orders, SegmentId(1), &ids(from))
-                .await
-                .expect("the batch is logged");
-        }
-        assert!(unpublished() > 0, "the batches wait for their chunk");
-        log.commit(&budget, vec![sealed_at(1)], Vec::new(), &meta(&[1]), 0)
+        logged(&log, &budget, 0, &orders, SegmentId(1), &ids(0))
+            .await
+            .expect("the batch is logged");
+        let mut commit = meta(&[1]);
+        log.commit(&budget, vec![sealed_at(1)], Vec::new(), &commit, 0)
             .await
             .expect("durable");
-        assert_eq!(unpublished(), 0, "the chunk holding them is published");
+        assert_eq!(unwritten(), 0, "every batch sent is written");
+        assert_eq!(copied(), 0, "a chunk of one segment needs no copy");
+        let held = log.held();
+        logged(&log, &budget, 0, &orders, SegmentId(2), &ids(0))
+            .await
+            .expect("the batch is logged");
+        logged(&log, &budget, 0, &orders, SegmentId(3), &ids(0))
+            .await
+            .expect("the batch is logged");
+        commit.commit_seq = CommitSeq::FIRST.next();
+        commit.segments = [SegmentId(2)].into_iter().collect();
+        let both = log.held() - held;
+        log.commit(&budget, vec![sealed_at(2)], Vec::new(), &commit, 0)
+            .await
+            .expect("durable");
+        // Two open segments share the chunk: no receipt settled either.
+        assert_eq!(copied(), both);
+        log.committed(&receipt(CommitSeq::FIRST.next()))
+            .await
+            .expect("noted");
+        let mut last = meta(&[]);
+        last.commit_seq = CommitSeq::FIRST.next().next();
+        log.commit(&budget, Vec::new(), Vec::new(), &last, 0)
+            .await
+            .expect("durable");
+        // Segment 2 is settled: the frame of segment 3 is carried to a chunk of its own.
+        assert_eq!(copied(), 0);
         drop(log);
     };
     let (ended, ()) = tokio::join!(task, written);
