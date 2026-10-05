@@ -2,6 +2,7 @@
 //! is committed, waits for a commit where one can free room, and is refused only where the
 //! frames of segments not yet sealed leave none.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -20,10 +21,17 @@ pub(super) struct Pressure {
     sealed: AtomicU64,
     /// Commits under way.
     committing: AtomicU64,
-    /// Batches waiting for room.
-    waiting: AtomicU64,
+    /// Batches waiting for room, in the order they began to wait.
+    waiting: parking_lot::Mutex<Queue>,
     /// Rung by a batch that waits for room: a commit is due.
     full: Notify,
+}
+
+/// Batches waiting for room: the bytes each counts, by its place in line.
+#[derive(Default)]
+struct Queue {
+    next: u64,
+    places: BTreeMap<u64, u64>,
 }
 
 /// A commit under way, which a batch waiting for room waits for; its end wakes such a batch.
@@ -32,12 +40,17 @@ pub(crate) struct Committing {
     log: LoadLog,
 }
 
-/// A batch waiting for room, counted until the wait ends however it ends.
-struct Waiting<'a>(&'a AtomicU64);
+/// A batch's place in line for room, given up however its wait ends; the batches behind it look
+/// again.
+struct Waiting<'a> {
+    log: &'a LoadLog,
+    place: u64,
+}
 
 impl Drop for Waiting<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.log.pressure.waiting.lock().places.remove(&self.place);
+        self.log.writer.shared().room.notify_waiters();
     }
 }
 
@@ -90,54 +103,82 @@ impl LoadLog {
     /// Whether a batch waits for room in the log, which only a commit frees: no barrier waits for
     /// its partition, which cannot answer before the batch is logged.
     pub(crate) fn waits(&self) -> bool {
-        self.pressure.waiting.load(Ordering::SeqCst) > 0
+        !self.pressure.waiting.lock().places.is_empty()
     }
 
     /// Counts `bytes` of a batch frame, and its table's schema frame, on disk once the log holds
-    /// them beside the room it keeps: what ends its chunk, what a carry copies, and the frames of
-    /// a commit as large as the largest yet, and at least an eighth of the log each.
+    /// them beside the room it keeps, what ends its chunk, what a carry copies and the frames of
+    /// a commit, and beside what the batches waiting before it count: what it counted for ending
+    /// its chunk, where it would take that past what a carry may copy.
     ///
     /// A batch finding no room first has the writer publish chunks between commits while that
-    /// frees any; then, while a checkpoint waits for a commit or a commit is under way, it rings
-    /// for a commit and waits for the room it frees. Where no commit can free room, it takes the
-    /// carry's room, as it may be what brings its partition's next checkpoint.
+    /// frees any; then, while a checkpoint waits for a commit or a commit is under way, it takes
+    /// a place in line, rings for a commit and waits for the room it frees, which goes to the
+    /// batches in line first. Where no commit can free room, it takes the carry's room and the
+    /// line's, as it may be what brings its partition's next checkpoint.
     ///
     /// # Errors
     ///
     /// `log_bytes_exceeded` where the log has no room for the batch beside what ends its chunk
     /// and a commit, publishing chunks frees none, and no commit can: no checkpoint was sealed
     /// since the last commit took them, and none is under way.
-    pub(super) async fn admit(&self, bytes: u64) -> Result<(), Error> {
+    pub(super) async fn admit(&self, bytes: u64) -> Result<u64, Error> {
         let shared = self.writer.shared();
+        let mut waiting: Option<Waiting<'_>> = None;
         loop {
             // Listening before the look, so room freed after it wakes the wait.
             let room = shared.room.notified();
             tokio::pin!(room);
             room.as_mut().enable();
             shared.failure()?;
-            if shared.reserve(bytes, shared.kept(Kept::All)) {
-                return Ok(());
+            let closing = shared.closing.load(Ordering::SeqCst);
+            let counted = bytes.saturating_add(closing);
+            let ahead = self.ahead(waiting.as_ref());
+            if shared.reserve(counted, shared.kept(Kept::All).saturating_add(ahead)) {
+                return Ok(closing);
             }
             // Looked at before the relief: a commit that ended since queued its receipt before
             // the relief, which the relief then counts.
             let freeing = self.freeing();
             self.relieve().await?;
             // The writer answered once it wrote every frame sent before and freed what it could.
-            if shared.reserve(bytes, shared.kept(Kept::All)) {
-                return Ok(());
+            let ahead = self.ahead(waiting.as_ref());
+            if shared.reserve(counted, shared.kept(Kept::All).saturating_add(ahead)) {
+                return Ok(closing);
             }
             if !(freeing || self.freeing()) {
-                if shared.reserve(bytes, shared.kept(Kept::Commit)) {
-                    return Ok(());
+                if shared.reserve(counted, shared.kept(Kept::Commit)) {
+                    return Ok(closing);
                 }
                 return Err(full(self.disk.limit));
             }
-            let pressure = &self.pressure;
-            pressure.waiting.fetch_add(1, Ordering::SeqCst);
-            let _waiting = Waiting(&pressure.waiting);
-            pressure.full.notify_one();
+            if waiting.is_none() {
+                waiting = Some(self.wait(counted));
+            }
+            self.pressure.full.notify_one();
             room.await;
         }
+    }
+
+    /// Takes a place in line for room for `bytes`.
+    fn wait(&self, bytes: u64) -> Waiting<'_> {
+        let mut queue = self.pressure.waiting.lock();
+        let place = queue.next;
+        queue.next += 1;
+        queue.places.insert(place, bytes);
+        Waiting { log: self, place }
+    }
+
+    /// Bytes: what the batches in line before `waiting` count, all of them where it is not in
+    /// line.
+    fn ahead(&self, waiting: Option<&Waiting<'_>>) -> u64 {
+        let queue = self.pressure.waiting.lock();
+        let before = waiting.map_or(u64::MAX, |waiting| waiting.place);
+        queue
+            .places
+            .range(..before)
+            .map(|(_, bytes)| *bytes)
+            .fold(0, u64::saturating_add)
     }
 
     /// Counts `bytes` of one of a commit's seal, phase and commit frames on disk, of the `whole`

@@ -186,6 +186,10 @@ pub(crate) const LOG_BYTES: u64 = 4 << 30;
 /// commit.
 pub(crate) const LOG_PARTS: u64 = 8;
 
+/// Bytes: what a carry reads back of a frame at a time, 256 KiB, held in the memory budget's
+/// share for logs while the log is written, so a carry of a frame of any size holds no more.
+pub(crate) const LOG_COPY_BYTES: u64 = 256 << 10;
+
 /// The code of the error for a batch whose frame would take its load's write-ahead log past
 /// what it may hold on disk: its source sent that much without a checkpoint a commit could take.
 pub(crate) const LOG_BYTES_EXCEEDED: &str = "log_bytes_exceeded";

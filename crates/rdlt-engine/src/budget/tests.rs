@@ -113,7 +113,6 @@ async fn a_request_for_more_than_its_share_takes_is_refused_and_never_cut_down()
         large("lowering", 1_601, 1_600)
     );
     assert!(budget.try_acquire_working(1_601).is_none());
-    assert!(budget.try_acquire_log(401).is_none());
     assert_eq!(
         budget.acquire_cursor(101).await.unwrap_err(),
         large("a cursor", 101, 100)
@@ -597,16 +596,4 @@ async fn a_waiter_gone_before_it_is_admitted_gives_back_what_it_was_admitted() {
     assert_eq!(budget.peak(), 100);
     let again = tokio::time::timeout(Duration::from_secs(5), budget.acquire_cursor(100));
     assert_eq!(again.await.unwrap().unwrap().bytes(), 100);
-}
-
-#[tokio::test(start_paused = true)]
-async fn the_log_s_share_is_taken_at_once_or_not_at_all() {
-    let budget = MemoryBudget::new(BUDGET);
-    let all = budget.try_acquire_log(400).expect("the share is free");
-    assert_eq!(budget.reserved(), 400);
-    assert!(budget.try_acquire_log(1).is_none(), "the share is full");
-    drop(all);
-    let some = budget.try_acquire_log(1).expect("the share is free again");
-    assert_eq!(some.bytes(), 1);
-    assert_eq!(budget.reserved(), 1);
 }

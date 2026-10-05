@@ -27,7 +27,7 @@ use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun,
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
-use crate::limits::WAL_STAGING_EXCEEDS_BUDGET;
+use crate::limits::{LOG_COPY_BYTES, WAL_STAGING_EXCEEDS_BUDGET};
 use crate::naming::{Naming, recorded};
 use crate::partition::{
     self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Slots,
@@ -352,7 +352,7 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
 /// # Errors
 ///
 /// `wal_staging_exceeds_budget` where the store stages more in memory than half the budget's
-/// share for the log, which the log's frames need beside it.
+/// share for the log, less what a carry reads at once: the log's frames need the rest.
 async fn start_log(
     context: &RunContext,
     load_id: LoadId,
@@ -375,7 +375,9 @@ async fn start_log(
         });
         return Ok(None);
     }
-    let staging = staged(&context.budget, store.staging_bytes()).await?;
+    // What a carry reads back at once is held beside what the store stages.
+    let held = store.staging_bytes().saturating_add(LOG_COPY_BYTES);
+    let staging = staged(&context.budget, held).await?;
     let owner = Owner {
         pipeline: context.plan.pipeline().clone(),
         load: load_id,
@@ -392,34 +394,32 @@ async fn start_log(
     let bound = store
         .chunk_bytes()
         .map_or(log_bytes, |most| most.min(log_bytes));
-    let (log, task) = LoadLog::start(store, owner, (bound, context.budget.clone()), staging);
+    let (log, task) = LoadLog::start(store, owner, bound, Some(staging));
     scope.spawn(task);
     Ok(Some(log))
 }
 
-/// What a store's stagings hold in memory, `bytes`, reserved from `budget`'s share for the log
-/// for as long as the log is written; none where they hold nothing.
+/// What a log holds in memory beside its frames, `bytes`, what its store's stagings hold and what
+/// a carry reads back at once, reserved from `budget`'s share for the log for as long as the log
+/// is written.
 ///
 /// # Errors
 ///
 /// `wal_staging_exceeds_budget` for more than half the share, which the log's seal and commit
 /// frames need beside it.
-async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Option<Reservation>, Error> {
-    if bytes == 0 {
-        return Ok(None);
-    }
+async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Error> {
     let most = budget.shares().log / 2;
     if bytes > most {
         return Err(Error::config(format!(
-            "the write-ahead log's store stages {bytes} bytes in memory, more than the {most} \
-             the memory budget lets it: a larger budget, or smaller parts, let it run"
+            "the write-ahead log holds {bytes} bytes in memory, what its store stages and what a \
+             carry reads at once, more than the {most} the memory budget lets it: a larger \
+             budget, or smaller parts, let it run"
         ))
         .with_code(WAL_STAGING_EXCEEDS_BUDGET));
     }
     budget
         .acquire_log(bytes)
         .await
-        .map(Some)
         .map_err(|denied| match denied {
             Denied::Exhausted(exhausted) => Error::memory(exhausted),
             Denied::TooLarge(large) => {

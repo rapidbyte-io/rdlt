@@ -10,7 +10,7 @@ use super::super::super::frame::Frame;
 use super::super::super::memory::MemoryWal;
 use super::super::super::scan::scan;
 use super::super::Command;
-use super::{Driving, chunks, drive, driven, frames, load, numbers, pipeline, table};
+use super::{Driving, chunks, drive, frames, load, numbers, pipeline, table};
 
 /// Has the writer publish chunks between commits while each frees anything.
 async fn relieve(log: &Driving) {
@@ -186,35 +186,6 @@ async fn a_relief_carries_open_frames_out_of_the_chunks_it_has_room_to_copy() {
 }
 
 #[tokio::test]
-async fn a_relief_carries_nothing_its_reads_have_no_memory_for() {
-    for (budget, carried) in [(16 * 64, false), (1 << 20, true)] {
-        let store = Arc::new(MemoryWal::default());
-        let observed = Arc::clone(&store);
-        let budget = crate::budget::MemoryBudget::new(budget);
-        driven(Arc::clone(&store), budget, |mut log| async move {
-            log.send(table(0)).await;
-            // Chunk 0's open frames, beside a settled one, are worth carrying where they can
-            // be read.
-            log.batch(1, 0).await;
-            log.batch(2, 0).await;
-            log.commit(1, &[1]).await.expect("durable");
-            log.commit(2, &[]).await.expect("durable");
-            log.committed(1).await;
-            log.committed(2).await;
-            relieve(&log).await;
-            assert_eq!(
-                !numbers(&observed).contains(&0),
-                carried,
-                "{:?}",
-                numbers(&observed)
-            );
-        })
-        .await
-        .expect("the writer ends");
-    }
-}
-
-#[tokio::test]
 async fn a_relief_with_nothing_to_copy_frees_a_log_a_commit_took_past_its_bound() {
     let store = Arc::new(MemoryWal::default());
     let observed = Arc::clone(&store);
@@ -230,6 +201,38 @@ async fn a_relief_with_nothing_to_copy_frees_a_log_a_commit_took_past_its_bound(
         relieve(&log).await;
         assert!(!numbers(&observed).contains(&0), "chunk 0 went");
         assert!(shared.held.load(Ordering::SeqCst) < held);
+    })
+    .await
+    .expect("the writer ends");
+}
+
+#[tokio::test]
+async fn a_frame_larger_than_what_a_carry_reads_at_once_is_copied_whole() {
+    let store = Arc::new(MemoryWal::default());
+    let observed = Arc::clone(&store);
+    drive(Arc::clone(&store), |mut log| async move {
+        log.send(table(0)).await;
+        // Chunk 0 holds a frame of segment 1 of some 320 KB, beside a settled one of segment 2:
+        // a relief copies it, more than a carry reads at once, and chunk 0 goes.
+        log.rows(1, 0, 40_000).await;
+        log.batch(2, 0).await;
+        log.commit(1, &[2]).await.expect("durable");
+        log.committed(1).await;
+        relieve(&log).await;
+        assert!(!numbers(&observed).contains(&0), "chunk 0 went");
+        let copied = frames(&observed)
+            .into_iter()
+            .flat_map(|(_, frames)| frames)
+            .find_map(|frame| match frame {
+                Frame::Batch(batch) if batch.segment.0 == 1 => Some(batch.batch.num_rows()),
+                _ => None,
+            });
+        assert_eq!(copied, Some(40_000), "the copy reads back whole");
+        log.commit(2, &[1]).await.expect("durable");
+        let scanned = scan(observed.as_ref(), &pipeline(), load(), 1 << 28)
+            .await
+            .expect("it reads");
+        assert_eq!(scanned.pending().count(), 1);
     })
     .await
     .expect("the writer ends");

@@ -550,7 +550,9 @@ async fn a_batch_waiting_for_room_in_the_log_brings_its_commit_at_once() {
 async fn what_a_store_stages_in_memory_is_charged_to_the_budget_and_bounded_by_it() {
     let memory = 64_u64 << 20;
     let log_share = memory / 16;
-    for (staging, refused) in [(log_share / 2, false), (log_share / 2 + 1, true)] {
+    // What a carry reads back at once, 256 KiB, is held beside what the store stages.
+    let most = log_share / 2 - (256 << 10);
+    for (staging, refused) in [(most, false), (most + 1, true)] {
         let name = format!("wal_staging_{refused}");
         let store = Arc::new(Memory::staging(staging));
         let mut events = ScriptStream::new("events", 1, 40, 20);
@@ -683,24 +685,23 @@ async fn several_partitions_load_through_a_log_their_open_frames_fit_on_the_real
 }
 
 /// Loads a stream whose one partition checkpoints every `every` batches beside one whose
-/// partition checkpoints every batch, both of `rows` rows in batches of one row written as
-/// they come, so each commit's chunk holds a small frame of each, through a log of `log_bytes`
-/// with `engine`; the run's outcome.
-async fn slow_beside_fast(
+/// partition checkpoints every batch, both of `rows` rows in batches of `batch_rows` rows written
+/// as they come, so each commit's chunk holds a frame of each, through a log of `log_bytes` in
+/// `store`, with `engine` and the first commit landing as `destination` lets it; the run's outcome.
+async fn slow_beside_fast_into(
     name: &str,
-    (every, rows): (u64, u64),
-    log_bytes: u64,
+    (every, rows, batch_rows): (u64, u64, u64),
+    (store, log_bytes): (Arc<dyn WalStore>, u64),
+    destination: Arc<dyn rdlt_connector::Destination>,
     engine: impl FnOnce(
         rdlt_engine::EngineConfigBuilder,
         Arc<dyn WalStore>,
     ) -> crate::support::TestEngine,
 ) -> RunOutcome {
-    let base = tempfile::tempdir().expect("a temporary directory");
-    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
-    let mut slow = ScriptStream::new("slow", 1, rows, 1);
+    let mut slow = ScriptStream::new("slow", 1, rows, batch_rows);
     slow.replayable = false;
     slow.checkpoint_every = every;
-    let mut fast = ScriptStream::new("fast", 1, rows, 1);
+    let mut fast = ScriptStream::new("fast", 1, rows, batch_rows);
     fast.replayable = false;
     let (_, source) = Script::new(vec![slow, fast]).connect(name).await;
     let growth = GrowthLimits::default()
@@ -713,18 +714,102 @@ async fn slow_beside_fast(
             stream("fast").read(ReadMode::Incremental),
         ],
     );
-    // One row a frame, written at once.
-    let batch = rdlt_engine::BatchPolicy::new(1 << 20, 1, std::time::Duration::from_millis(1), 16)
-        .expect("a valid policy");
+    // One batch a frame, written at once.
+    let batch = rdlt_engine::BatchPolicy::new(
+        64 << 20,
+        batch_rows,
+        std::time::Duration::from_millis(1),
+        16,
+    )
+    .expect("a valid policy");
     let config = commit_every(1).growth(growth).batch(batch);
-    let outcome = engine(config, store)
-        .run(plan, source, memory(name).await)
-        .await;
+    let outcome = engine(config, store).run(plan, source, destination).await;
     if outcome.report.status == RunStatus::Succeeded {
         assert_eq!(published_ids(name, "slow"), ids(1, rows), "{name}");
         assert_eq!(published_ids(name, "fast"), ids(1, rows), "{name}");
     }
     outcome
+}
+
+/// As [`slow_beside_fast_into`], in batches of one row, through a local log of `log_bytes`.
+async fn slow_beside_fast(
+    name: &str,
+    (every, rows): (u64, u64),
+    log_bytes: u64,
+    engine: impl FnOnce(
+        rdlt_engine::EngineConfigBuilder,
+        Arc<dyn WalStore>,
+    ) -> crate::support::TestEngine,
+) -> RunOutcome {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let destination = memory(name).await;
+    slow_beside_fast_into(
+        name,
+        (every, rows, 1),
+        (store, log_bytes),
+        destination,
+        engine,
+    )
+    .await
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_first_commit_beside_a_partition_committing_every_batch_loads_through_its_log() {
+    // A frame of one row takes some 1,700 bytes: the slow partition holds 60% of the log open
+    // while the first commit takes two seconds to land, and every frame logged meanwhile waits
+    // in the chunks it gathers.
+    let (frames, every) = (100, 60);
+    let name = "wal_slow_first";
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let store: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let hook: crate::support::hooked::Hook = Arc::new(|| {
+        Box::pin(async { tokio::time::sleep(std::time::Duration::from_secs(2)).await })
+    });
+    let destination = crate::support::hooked::hooked(
+        memory(name).await,
+        crate::support::hooked::At::Landed,
+        hook,
+    );
+    let shape = (every, 3 * every + 10, 1);
+    let log = (store, frames * 1_700);
+    let outcome = slow_beside_fast_into(name, shape, log, destination, logging_engine).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn frames_larger_than_the_log_s_memory_are_carried_a_piece_at_a_time() {
+    // A budget whose share for logs, beside a store's part, holds less than one batch frame: a
+    // carry copies each frame in pieces, so the slow partition's frames still leave the chunks
+    // the fast one settles.
+    use object_store::memory::InMemory;
+    use rdlt_engine::{ObjectStoreOptions, ObjectStoreWal, SystemClock};
+    let (rows, frame, every) = (160_000, 1_920_000, 24);
+    let name = "wal_large_frames";
+    let options = ObjectStoreOptions::default().with_part_bytes((768 << 10).try_into().unwrap());
+    let objects = Arc::new(InMemory::new());
+    let wal = ObjectStoreWal::open(objects as _, "logs", Arc::new(SystemClock), options)
+        .await
+        .expect("the probe passes");
+    let store: Arc<dyn WalStore> = Arc::new(wal);
+    let destination = memory(name).await;
+    let engine = |config: rdlt_engine::EngineConfigBuilder, store| {
+        logging_engine(config.memory(34 << 20).partitions(2), store)
+    };
+    let shape = (every, rows * (2 * every + 4), rows);
+    let outcome =
+        slow_beside_fast_into(name, shape, (store, 40 * frame), destination, engine).await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
 }
 
 #[tokio::test(start_paused = true)]
