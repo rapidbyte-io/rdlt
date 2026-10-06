@@ -20,13 +20,14 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
   commit that does it, with the reason in the body; CI fails it otherwise. The counts need
   valgrind, so `just instructions` and `just ci` run on Linux only.
 - `just mutants-diff` tests each changed crate's mutants against the packages whose tests can
-  catch them; the nightly workflow runs the full pass, every crate's tests against every mutant
-  (ADR 0025). Fix a mutant the nightly finds the next day, and when the crate's packages in
-  `mutants-diff` missed it, add the package that caught it.
+  catch them; the nightly workflow runs the full pass, every mutant against the tests of every
+  package that links its crate, over four nights (ADR 0025). Fix a mutant the nightly finds the
+  next day, and when the crate's packages in `mutants-diff` missed it, add the package that
+  caught it. `just mutants <crate>` runs one crate's part of the full pass.
 - Test mutants on an otherwise idle machine: a test that times out counts its mutant as caught, so
-  load hides survivors. Mutation builds carry no debug info, and four jobs' build directories
-  (about 2 GB each) fit a 16 GB `/tmp`; use fewer jobs when memory is short. Do not set
-  `CARGO_INCREMENTAL=0`: incremental builds make a run about a third faster.
+  load hides survivors. Mutation builds carry no debug info and optimise dependencies, and four
+  jobs' build directories (about 2 GB each) fit a 16 GB `/tmp`; use fewer jobs when memory is
+  short. Do not set `CARGO_INCREMENTAL=0`: incremental builds make a run about a third faster.
 - `main` is protected: changes land through pull requests, rebase-merged, with every review thread
   resolved. Commit messages follow Conventional Commits with body lines of at most 72 characters
   (`committed` checks them).

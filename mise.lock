@@ -34,6 +34,16 @@ checksum = "sha256:39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb
 url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-universal-apple-darwin.tar.gz"
 url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/579630774"
 
+[[tools."aqua:rui314/mold"]]
+version = "2.42.1"
+backend = "aqua:rui314/mold"
+specifiers = ["2.42.1"]
+
+[tools."aqua:rui314/mold"."platforms.linux-x64"]
+checksum = "sha256:6ff270c9bf07d2bec5c98aa324eb7c4daf6a1a4d815c05ff1708049616047855"
+url = "https://github.com/rui314/mold/releases/download/v2.42.1/mold-2.42.1-x86_64-linux.tar.gz"
+url_api = "https://api.github.com/repos/rui314/mold/releases/assets/557036001"
+
 [[tools."aqua:taiki-e/cargo-llvm-cov"]]
 version = "0.9.1"
 backend = "aqua:taiki-e/cargo-llvm-cov"

@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      night:
+        description: The night of the mutation pass's four to run, 0 to 3; today's where empty
+        required: false
+        default: ""
 
 # Every job's token can read the repository and nothing else, and no step has it in its
 # environment.
@@ -36,9 +41,6 @@ jobs:
           github_token: ""
           install_args: --locked just cargo-deny
           cache_key_prefix: mise-v2-deny
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: false
       - run: just deny
 
   # The simulation's integration tests, built once in its profile into the archive the shards,
@@ -100,16 +102,17 @@ jobs:
           if-no-files-found: warn
           overwrite: true
 
-  # A million seeds, in ten shards of 100 000 that run at once, each shard's seeds side by side
-  # on its runner's cores: one job alone outlasts its time.
+  # A million seeds, in forty shards of 25 000 that run as runners free up, each shard's seeds side
+  # by side on its runner's four cores: a runner checks about 14 seeds a second, so a shard takes
+  # about half an hour.
   sim:
     needs: sim-archive
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,7 +129,7 @@ jobs:
         with:
           name: sim-archive
           path: target
-      - run: just --no-deps sim "" 100000 "${{ matrix.shard }}00000"
+      - run: just --no-deps sim "" 25000 "$(( ${{ matrix.shard }} * 25000 ))"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -166,6 +169,7 @@ jobs:
           if-no-files-found: warn
           overwrite: true
 
+  # A thousand seeds under coverage, side by side on the runner's four cores.
   sim-coverage:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -181,9 +185,6 @@ jobs:
           github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest aqua:taiki-e/cargo-llvm-cov
           cache_key_prefix: mise-v2-coverage
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: false
       - run: just sim-coverage 1000
 
   fuzz:
@@ -207,17 +208,49 @@ jobs:
           cache_key_prefix: mise-v2-fuzz
       - run: just fuzz ${{ matrix.target }} 1200
 
-  # The full mutation pass, every crate's tests against every mutant, in forty shards of about an
-  # hour each and none over an hour and a half, queued as runners free up; a shard that reaches
-  # its timeout is cancelled with its mutants untested, so the shards are sized with room to
-  # grow. A branch's mutation testing runs each changed crate's mutants against fewer tests.
+  # The full mutation pass: every crate's mutants against the tests of every package that links
+  # the crate, its own first. On CI's runners a mutant takes about half a minute, so the whole
+  # pass, some sixty runner-hours, runs over four nights: each crate's mutants are cut into
+  # shards of 15 to 80 minutes, and the shards of the large crates are taken in turn, a quarter a
+  # night, while the small crates run whole every night. `night` runs another night's quarter.
+  # A mutant no test catches runs every linking package's tests, six minutes, and a shard cut off
+  # at its limit reports none of its mutants: the limit is half again the longest shard.
   mutants:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+        include:
+          - { crate: rdlt-engine, part: 0, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 1, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 2, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 3, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 4, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 5, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 6, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 7, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 8, of: 40, every: 4 }
+          - { crate: rdlt-engine, part: 9, of: 40, every: 4 }
+          - { crate: rdlt-connector, part: 0, of: 28, every: 4 }
+          - { crate: rdlt-connector, part: 1, of: 28, every: 4 }
+          - { crate: rdlt-connector, part: 2, of: 28, every: 4 }
+          - { crate: rdlt-connector, part: 3, of: 28, every: 4 }
+          - { crate: rdlt-connector, part: 4, of: 28, every: 4 }
+          - { crate: rdlt-connector, part: 5, of: 28, every: 4 }
+          - { crate: rdlt-connector, part: 6, of: 28, every: 4 }
+          - { crate: rdlt-connector-reference, part: 0, of: 20, every: 4 }
+          - { crate: rdlt-connector-reference, part: 1, of: 20, every: 4 }
+          - { crate: rdlt-connector-reference, part: 2, of: 20, every: 4 }
+          - { crate: rdlt-connector-reference, part: 3, of: 20, every: 4 }
+          - { crate: rdlt-connector-reference, part: 4, of: 20, every: 4 }
+          - { crate: rdlt-wire, part: 0, of: 8, every: 4 }
+          - { crate: rdlt-wire, part: 1, of: 8, every: 4 }
+          - { crate: rdlt-host, part: 0, of: 4, every: 4 }
+          - { crate: rdlt-certify, part: 0, of: 2, every: 1 }
+          - { crate: rdlt-certify, part: 1, of: 2, every: 1 }
+          - { crate: rdlt-log-store, part: 0, of: 1, every: 1 }
+          - { crate: rdlt-adopt, part: 0, of: 1, every: 1 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -228,13 +261,18 @@ jobs:
           version: ${{ env.SETUP_MISE_VERSION }}
           sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
           github_token: ""
-          install_args: --locked just github:sourcefrog/cargo-mutants aqua:nextest-rs/nextest/cargo-nextest
+          install_args: --locked just github:sourcefrog/cargo-mutants aqua:nextest-rs/nextest/cargo-nextest aqua:rui314/mold
           cache_key_prefix: mise-v2-mutants
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: false
       - name: Make a sandbox available
         run: ./.github/sandbox.sh
-      - run: just mutants --shard "${{ matrix.shard }}/40" -j 2
+      # Two mutants at once on four cores, each tested on two threads, and linked by mold.
+      - run: |
+          night="${NIGHT:-$(( $(date -u +%s) / 86400 % 4 ))}"
+          [[ $night =~ ^[0-3]$ ]] || { echo "night must be 0 to 3" >&2; exit 2; }
+          shard=$(( ${{ matrix.part }} * ${{ matrix.every }} + night % ${{ matrix.every }} ))
+          just mutants "${{ matrix.crate }}" --shard "$shard/${{ matrix.of }}" -j 2
         env:
+          NIGHT: ${{ inputs.night }}
           RDLT_REQUIRE_SANDBOX: "1"
+          NEXTEST_TEST_THREADS: "2"
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
