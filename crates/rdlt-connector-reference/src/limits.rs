@@ -124,3 +124,6 @@ pub(crate) const RUN_ROWS: usize = 256;
 /// Cells: what a run of JSON lines shorter than [`RUN_ROWS`] may lack of the columns its lines
 /// name before a line of other columns ends it all the same.
 pub(crate) const RUN_ABSENT_CELLS: usize = 64 * 1024;
+
+#[cfg(test)]
+mod tests;
