@@ -27,6 +27,15 @@ impl SystemEnv {
         })
     }
 
+    /// Creates an environment within the cores this process may run on, beside `runtime`'s
+    /// workers, as [`try_new`](Self::try_new) does.
+    ///
+    /// The count of cores honours the process's CPU affinity mask and, on Linux, its cgroup's CPU
+    /// quota; the runtime keeps the workers it was built with.
+    pub fn try_from_runtime(runtime: &tokio::runtime::Handle) -> Result<Self, ComputePoolError> {
+        Self::try_new(Cores::try_beside(runtime)?)
+    }
+
     /// The environment keeping write-ahead logs in `store`, usually a
     /// [`LocalWal`](crate::LocalWal).
     #[must_use]

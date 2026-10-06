@@ -25,10 +25,11 @@ pub struct RayonPool {
     pool: rayon::ThreadPool,
 }
 
-/// The compute pool's threads failed to start.
+/// The compute pool's threads failed to start, or the host's count of cores to size it by is
+/// unknown.
 #[derive(Debug, thiserror::Error)]
 #[error("compute pool failed to start")]
-pub struct ComputePoolError(#[source] rayon::ThreadPoolBuildError);
+pub struct ComputePoolError(#[source] Box<dyn std::error::Error + Send + Sync>);
 
 /// The cores a run may use, and how many of them the embedder's tokio runtime takes for its
 /// worker threads.
@@ -66,6 +67,23 @@ impl Cores {
             None => NonZeroUsize::MIN,
         }
     }
+
+    /// The host's cores, beside `runtime`'s workers.
+    pub(crate) fn try_beside(runtime: &tokio::runtime::Handle) -> Result<Self, ComputePoolError> {
+        let workers =
+            NonZeroUsize::new(runtime.metrics().num_workers()).expect("a runtime has a worker");
+        Ok(Self::new(host_cores()?, workers))
+    }
+}
+
+/// The cores this process may run on: the host's, less what its CPU affinity mask and, on
+/// Linux, its cgroup's CPU quota leave it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the engine reads the host's cores here alone; a simulation declares its own"
+)]
+fn host_cores() -> Result<NonZeroUsize, ComputePoolError> {
+    std::thread::available_parallelism().map_err(|error| ComputePoolError(Box::new(error)))
 }
 
 impl RayonPool {
@@ -81,7 +99,7 @@ impl RayonPool {
             .thread_name(|index| format!("rdlt-compute-{index}"))
             .build()
             .map(|pool| Self { pool })
-            .map_err(ComputePoolError)
+            .map_err(|error| ComputePoolError(Box::new(error)))
     }
 }
 

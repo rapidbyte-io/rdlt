@@ -123,3 +123,12 @@ fn system_env_declares_the_cores_it_was_given_not_the_host_s() {
         assert_eq!(env.cores(), count);
     }
 }
+
+#[test]
+fn a_system_env_from_a_runtime_declares_the_host_s_cores() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let env = SystemEnv::try_from_runtime(runtime.handle()).unwrap();
+    assert!(env.cores().get() >= 1);
+}
