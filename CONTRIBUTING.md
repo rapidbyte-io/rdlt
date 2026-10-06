@@ -92,7 +92,11 @@ code, or `TODO` without an issue number (`TODO(#123)`).
 
 A doc comment's first paragraph is one sentence. Doc comments are usually one to five lines, plus
 an example on entry-point types. `//` comments are at most three lines; longer reasoning belongs in
-an ADR under `docs/adr/`. ADRs are short and immutable: a changed decision gets a new ADR.
+an ADR under `docs/adr/`.
+
+An ADR states a decision in force and why, in the present tense. When the decision changes, its
+ADR is rewritten to state the new decision, with no note that it changed and no account of what
+it replaced; a new ADR is written for a new decision, never for a change to an old one.
 
 ## Structure
 
