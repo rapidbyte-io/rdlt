@@ -142,7 +142,11 @@ impl EngineConfig {
         }
     }
 
-    /// Bytes of in-flight batches the engine holds at most.
+    /// Bytes: the memory budget, across all its shares, which the engine's reservations never pass.
+    ///
+    /// The shares are fixed parts of it: pushes and what lowering makes of them, cursors waiting
+    /// for a commit, the log's frames and its store's staging, what commits record of tables,
+    /// what reads keep, and what decoding connectors' answers holds.
     pub fn memory(&self) -> NonZeroU64 {
         self.memory
     }
@@ -280,7 +284,7 @@ pub struct EngineConfigBuilder {
 }
 
 impl EngineConfigBuilder {
-    /// Bytes of in-flight batches (default 256 MiB).
+    /// Bytes: the memory budget, across all its shares (default 256 MiB).
     #[must_use]
     pub fn memory(mut self, bytes: u64) -> Self {
         self.memory = Some(bytes);
