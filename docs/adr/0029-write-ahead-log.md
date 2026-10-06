@@ -9,8 +9,8 @@ acknowledged, as a message queue that forgets what its consumer committed cannot
 acknowledges such a source before the destination commits, so the log is the only copy of those
 rows until the commit lands. Until M5c the engine had no log, and a source had to be replayable.
 
-The owner ruled (2026-09-28) that logs are kept locally only: in the worst case a pipeline reads
-its data from the source again, so an object store backend is not built.
+A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object storage
+(`ObjectStoreWal`, ADR 0051).
 
 ## Decision
 
@@ -106,8 +106,6 @@ its data from the source again, so an object store backend is not built.
 
 ## Deviations from spec §15.6
 
-- **No object store backend** (owner's ruling above). Amended 2026-10-03 (ADR 0045): the store
-  is shaped so that one could implement it.
 - **Acknowledged after the commit frame, not the seal frame.** Seals are logged with their commit,
   in one durable write, so a seal frame is never durable alone; sealed segments in no commit frame
   are never replayed. Their source was never acknowledged, so it serves them again.
@@ -122,7 +120,7 @@ its data from the source again, so an object store backend is not built.
 ## Consequences
 
 - A pipeline can load a source that forgets what it acknowledged, exactly once through crashes,
-  failed commits and fenced workers, as long as its logs' directory survives.
+  failed commits and fenced workers, as long as its log store keeps what was published to it.
 - A commit frame the destination refuses on replay fails every later run until an operator
   removes the log: the price of acknowledging before the commit.
 - A load that keeps a log writes each batch twice, once to the log, and makes one sync per commit.

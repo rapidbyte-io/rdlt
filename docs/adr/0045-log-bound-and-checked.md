@@ -1,8 +1,6 @@
 # ADR 0045: A write-ahead log that is bound, private, checked and charged
 
-Status: accepted, 2026-10-03. Amended 2026-10-04 (ADR 0051): `ObjectStoreWal` keeps logs in S3
-and stores that answer as it does, under this contract; a batch the log cannot hold waits for a
-commit to free room, and what a store stages in memory is charged to the budget.
+Status: accepted, 2026-10-03.
 
 ## Context
 
@@ -29,8 +27,9 @@ what it holds with the engine's authority. Yet a log was found to be much less t
 - Destinations kept every receipt for ever; the files destination kept those of its sixteen
   latest loads, and so forgot receipts a replay could still ask for.
 
-The owner ruled (2026-10-03) that the log's store must be one an object store could implement,
-with the semantics the local store has, though no object-store backend is built.
+The log's store must be one an object store implements with the semantics the local store has:
+`LocalWal` keeps logs in a local directory, and `ObjectStoreWal` in S3 and stores that answer as
+it does (ADR 0051).
 
 ## Decision
 
