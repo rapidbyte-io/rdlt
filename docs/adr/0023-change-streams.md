@@ -23,17 +23,16 @@ data is replayed from the source.
   - **M5b**, change streams for the SQL destinations (`sqlgen`, SQLite), and the clauses
     `S-ACK`, `D-DELETE`, `D-PARTIAL`, `D-TRUNCATE`, and `D-MERGE`'s seq guard.
   - **M5c**, the WAL: `WalStore`, `LocalWal`, replay, and acknowledging non-replayable sources
-    once their seal is durable. There is no `ObjectStoreWal` (see below).
+    once their seal is durable.
   - **M5d**, continuous runs (`until`) and the owner's streaming items 1–4, and `S-PARTITION`.
   - **M5e**, history (SCD2) and `D-HIST`. Amended 2026-09-30: ADR 0035 leaves history for
     normalized streams and updates leaving columns unchanged to M5e2.
   - **M5f**, the failpoint sweep, the kill matrix with spawned connectors, and M5's exit
     criterion (ADR 0036).
-- **The WAL has one store, `LocalWal`** (owner, 2026-09-28). §15.6's `ObjectStoreWal` is dropped:
-  a worker that loses its disk replays from the source, which every replayable source can do. A
-  non-replayable source still needs the WAL, and a stateless worker reading one keeps its WAL on
-  a volume that outlives it. `WalStore` stays a trait, so a remote store can come back without
-  changing the engine.
+- **The WAL's store is a trait.** `WalStore` keeps a load's log: `LocalWal` in a local
+  directory, `ObjectStoreWal` on object storage (ADR 0051). A worker that loses a local log's
+  disk replays from the source, which every replayable source can do; a source that cannot read
+  again keeps its log where it outlives the worker.
 - **Truncate is op 3 in `_rdlt_op`**, in band and ordered by `_rdlt_seq`, and its rows name no
   key. A truncate at seq `s` removes every row whose seq is below `s`, or soft-deletes it, even
   rows staged earlier in the same commit. §9.4's "deletes all rows" is refined this way so that a
@@ -135,6 +134,6 @@ data is replayed from the source.
   not know, so a build reading another's state refuses it rather than misread it.
 - Switching an existing merge table to CDC needs a new table; a reset that clears a stream's
   table and state is owed with M5d's retention reset.
-- The WAL cannot survive the loss of a worker's disk. That costs a re-read from the source, or,
-  for a non-replayable source, the changes the lost WAL held. A deployment that cannot afford
-  that keeps its WAL on durable storage.
+- A log kept in a local directory does not survive the loss of a worker's disk. That costs a
+  re-read from the source, or, for a source that cannot read again, the changes the lost log
+  held; a deployment that cannot afford that keeps its log on object storage (ADR 0051).

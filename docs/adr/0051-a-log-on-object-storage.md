@@ -206,5 +206,3 @@ is what its operator states of it.
 - A bucket needs a rule ending unfinished uploads, and credentials that may list the bucket, or
   S3 answers a missing object as forbidden and the probe refuses it.
 - `rdlt_connector::parse_config` and `SecretReference::parse` are public.
-
-ADR 0045 is amended by this one: an object-store backend exists.
