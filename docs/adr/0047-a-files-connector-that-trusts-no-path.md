@@ -209,7 +209,3 @@ What remains by design:
   a shared keeper serves.
 - A keeper file is one process's, for as long as the process runs: a second process naming it
   fails to connect until the first is gone.
-
-This amends ADR 0006: manifest paths are relative to the pipeline's directory, the destination's
-files are private, catalogs keep 9 versions, and JSON lines are no longer read with an inferred
-schema.

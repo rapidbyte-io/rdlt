@@ -1,7 +1,6 @@
 # ADR 0006: SQL and file reference connectors
 
-Status: accepted, 2026-09-24; the files connectors' paths, modes, readers and retention are
-amended 2026-10-01 by ADR 0047.
+Status: accepted, 2026-09-24.
 
 ## Context
 
@@ -29,9 +28,9 @@ and building them surfaced decisions the spec leaves open.
 - **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
   published rows of those keys and inserts the first of each. The writer's `TableRef` decides:
   each staged segment records its merge key, so a table that switches between append and merge
-  follows its writer, and no key index is needed, which a table that appended repeated keys
-  could not take. SQLite and Postgres share the form; the spec's `MERGE` style waits for a
-  dialect that needs it.
+  follows its writer. A merge needs no unique key, which a table that appended repeated keys
+  could not take: the key indexes a writer creates are not unique (ADR 0028). SQLite and
+  Postgres share the form; the spec's `MERGE` style waits for a dialect that needs it.
 - **Generations are tables.** Rows of a replace generation fill their own table, created with the
   table's columns if the generation was never declared; the finishing commit drops the table and
   renames the generation over it, and drops older generations. A generation with no table leaves
@@ -51,20 +50,28 @@ and building them surfaced decisions the spec leaves open.
   the pipeline's next manifest version with a hard link, which fails if another session created
   it first: the conditional put on a local filesystem. Opening creates a version with the next
   epoch. Each pipeline's directory is `_rdlt/pipelines/<id>-<hash>`, so ids that differ only in
-  case never share one. Staged files live at
-  `_rdlt/pipelines/<dir>/staging/<epoch>/<load>/<segment>/<table>/<generation>/<part>.<ext>` and
-  are published where they are; opening removes the files older epochs staged that the latest
-  manifest does not list. A merge table's commit rewrites the table as one file. The manifest
-  keeps the receipts of the 16 most recent loads and the last 8 versions stay on disk. Amended
-  2026-10-03 (ADR 0045): the manifest keeps the receipts no commit's horizon has passed.
+  case never share one, and a manifest names its files by their paths beneath it. Directories
+  are created 0700 and files 0600, the destination's user's alone (ADR 0047). A segment's files
+  are staged at `staging/<epoch>/<load>/<segment>/<table>/<generation>/<part>.<ext>` beneath the
+  pipeline's directory, and a commit's own files, a merge table's rewrite, its tombstones and a
+  compaction, at the same place with `merged`, `tombstones` or `compacted` and a name unique to
+  the commit's try (`<load>-<commit>-<random>`) in the segment's; files are published where they
+  are. Opening removes the files older epochs staged, and older commits wrote, that the latest
+  manifest does not list. A merge table's commit rewrites the whole table: JSON lines as one
+  file, Arrow as a file for each set of columns its rows hold, the smallest sets joined where
+  there are more than 16. The manifest keeps the receipts no commit's horizon has passed, and the
+  8 versions before the latest stay on disk.
 - **Formats decide types.** Arrow IPC files keep every type; JSON lines keep scalars, structs and
-  lists, and the engine stores the rest as text. A table's columns live in a catalog under the root, which schema changes update with the rules
-  the memory destination follows; each change creates the table's next catalog version
-  exclusively and works itself out again when another change lands first, so none is lost.
-- **The files source discovers streams from names.** `<stream>.jsonl` or `<stream>.arrow` is a
-  stream of one partition and a directory is a stream of its files; a partition is read only if
-  it is listed, never by joining its id to a path. JSON lines are read with a schema inferred from
-  the whole file, and every batch is checkpointed.
+  lists, and the engine stores the rest as text. A table's columns live in a catalog under the
+  root, which schema changes update with the rules the memory destination follows; each change
+  creates the table's next catalog version exclusively and works itself out again when another
+  change lands first, so none is lost, and the 8 versions before the latest stay on disk.
+- **The files source discovers streams from names.** `<stream>.jsonl` (or `.ndjson`) or
+  `<stream>.arrow` is a stream of one partition and a directory is a stream of its files; a
+  partition is read only if it is listed, never by joining its id to a path. A JSON lines file's
+  records are pushed as JSON, as they are written, `batch_rows` records a push, for the engine to
+  type; an Arrow file's batches are pushed as written. Every push but a file's last is followed
+  by a checkpoint, and a following read checkpoints the last too.
 - **The engine's integration suite runs against every destination** where the destination
   matters: exactly-once loads, resumes, append and replace, stopped replaces, merges, lost
   responses, fencing, schema changes and nested values run against memory, SQLite and both file
