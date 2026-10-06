@@ -77,10 +77,10 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   records, pushes and chunk sizes; JSON text compares as parsed values. The `shred` fuzz target
   asserts the shredder never fails inside itself, and runs nightly.
 - **Benchmarks build as shipped binaries.** The `bench` feature exposes the shredder to a
-  criterion bench, and the bench profile uses fat LTO, as the old engine's harness does. The
-  comparison, its method and the core scaling live in [docs/perf/shred.md](../perf/shred.md);
-  scaling is measured on cores of one type. The base-against-head instruction-count gate of
-  §21.3 lands with the other §20.14 gates in M9.
+  criterion bench, which builds with the release profile's fat LTO and one codegen unit, as every
+  shipped binary does. The comparison, its method and the core scaling live in
+  [docs/perf/shred.md](../perf/shred.md); scaling is measured on cores of one type. The
+  base-against-head instruction-count gate of §21.3 lands with the other §20.14 gates in M9.
 - **`Emitter::rows` keeps `serde_json`.** The spec serializes rows with sonic-rs, but sonic-rs
   writes `serde_json`'s private tokens (raw values, arbitrary-precision numbers) out as objects,
   so rows holding them would be pushed as different JSON.

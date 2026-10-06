@@ -178,6 +178,12 @@ fuzz target seconds="60":
     rustup toolchain install {{ nightly }} --profile minimal
     cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" -- -max_total_time={{ seconds }}
 
+# Build an engine bench for profiling, for example `just profiling shred`: release's code with
+# line tables and frame pointers, in a target directory of its own so the flags never rebuild the
+# shared one; cargo prints the binary's path last
+profiling bench:
+    CARGO_TARGET_DIR=target/frame-pointers RUSTFLAGS="-C force-frame-pointers=yes" cargo bench --package rdlt-engine --features bench --profile profiling --bench {{ bench }} --no-run
+
 # Everything the pull-request gate runs
 ci: lint test coverage miri (sim "" "10000")
 

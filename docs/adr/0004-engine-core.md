@@ -62,8 +62,9 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
 - **Tests fail instead of hanging.** Engine tests run on tokio's paused clock with time limits,
   and mutation testing uses a nextest profile that terminates any test still running after ten
   seconds, so a mutant that makes the engine spin fails its tests rather than timing out. The
-  simulation suite builds with a `sim` profile (optimised, overflow checks and debug assertions
-  kept), which runs 10 000 seeds in about half a minute.
+  simulation suite builds with a `sim` profile (optimised, without release's fat LTO and single
+  codegen unit, and with overflow checks and debug assertions kept), which runs 10 000 seeds in
+  about half a minute.
 - **Reports** add `peak_memory`, the most of the memory budget the run reserved at once across
   all its shares, so budget accounting is observable.
 - **Deferred:** the loom model of the memory budget (M9); the configuration size limit, which
