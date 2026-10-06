@@ -17,6 +17,7 @@ pub(crate) const PLATFORMS: &[&str] = &["linux-x64", "macos-arm64"];
 pub(crate) const UNBUILT: &[(&str, &str)] = &[
     ("github:rust-fuzz/cargo-fuzz", "macos-arm64"),
     ("github:sourcefrog/cargo-mutants", "macos-arm64"),
+    ("aqua:rui314/mold", "macos-arm64"),
 ];
 
 /// A tool the lockfile does not hold to one download.

@@ -160,6 +160,17 @@ follows H1c.
     shards took up to that limit too, and one was cancelled with its mutants untested. A mutant
     it finds is fixed the next day; one the branch's packages missed adds the package that caught
     it.
+    - Amended 2026-10-06: the forty shards ran past their limit every night, and their
+      baselines failed on tests that took longer than the profile's limits on four-core runners.
+      Every crate's mutants now run against the tests of every package that links the crate,
+      which are all the tests that can catch them, the crate's own first through a nextest
+      profile of its own, where most mutants are caught. Dependencies are optimised in the
+      mutation build, builds link with mold, and two mutants run at once on two threads each.
+      A mutant still takes about half a minute on CI's runners, so the whole pass, some sixty
+      runner-hours, runs over four nights: the large crates' shards are taken a quarter a night,
+      and the small crates run whole every night. A missed mutant is found within four nights.
+      - Limits are taken from what each test took on the nightly's runners: twenty seconds for
+        any test, more for those named in the profile, each with what it took.
   - `just ready` runs lint, tests and `mutants-diff`. CI's pull-request gate runs the rest:
     coverage, Miri, the simulation, macOS and the instruction and allocation counts against
     `main`.
