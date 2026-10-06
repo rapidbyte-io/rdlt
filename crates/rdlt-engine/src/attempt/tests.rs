@@ -105,3 +105,22 @@ fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
         .unwrap();
     assert_eq!(lane_count(&config, &destination(8)).get(), 3);
 }
+
+#[tokio::test]
+async fn a_staging_the_log_s_share_cannot_hold_beside_a_carry_s_reads_is_refused_for_the_budget() {
+    // A budget whose log's share holds half its frames' share of staging, but not that and what
+    // a carry reads at once.
+    let budget = crate::budget::MemoryBudget::new(4 << 20);
+    let staging = budget.shares().frames() / 2;
+    let refused = super::staged(&budget, staging)
+        .await
+        .map(drop)
+        .expect_err("refused");
+    assert_eq!(refused.code(), Some("wal_staging_exceeds_budget"));
+    let cause = std::error::Error::source(&refused);
+    let cause = cause.and_then(|cause| cause.downcast_ref::<crate::budget::TooLarge>());
+    assert!(
+        cause.is_some(),
+        "the budget's refusal is its cause: {refused:?}"
+    );
+}
