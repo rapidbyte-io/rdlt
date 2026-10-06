@@ -108,3 +108,16 @@ fn a_pool_starts_one_thread_for_each_core_the_workers_leave() {
         );
     }
 }
+
+#[test]
+fn cores_beside_a_runtime_are_the_host_s_and_the_runtime_s_workers() {
+    for workers in [1, 3] {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .build()
+            .unwrap();
+        let cores = Cores::try_beside(runtime.handle()).unwrap();
+        assert!(cores.count().get() >= 1);
+        assert_eq!(cores.workers().get(), workers);
+    }
+}
