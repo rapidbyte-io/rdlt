@@ -43,8 +43,7 @@ Status: accepted, 2026-09-29.
   - a child table by its root id (`SqlPlanner::root_index`, `_rdlt_root__{target}`).
 
   The prefix is one no user table takes, and each index is created through the dialect's
-  `create_index`, whose default is `CREATE INDEX IF NOT EXISTS`. A database indexed by an older
-  engine keeps its old index beside the new one.
+  `create_index`, whose default is `CREATE INDEX IF NOT EXISTS`.
 - **A replace generation swaps in only where schema changes commit with their transaction.**
   Every dialect declares `transactional_ddl`, which has no default. The planner refuses a swap
   that renames or drops a generation table for one that does not, as `Unsupported`; a generation
@@ -60,10 +59,9 @@ Status: accepted, 2026-09-29.
   widening in place would otherwise fail the commit that buries a widened key.
 - **Tables whose derived tables would share a name are refused** when the second is created, as
   `table_name_clash`, a configuration error renaming either resolves (`SqlPlanner::distinct`):
-  their staging, tombstones, root index or key indexes, cut to the dialect's identifiers. A generation table's
-  name holds its generation, which two tables' generations rarely share, and is not checked.
-  Amended 2026-10-01: generation tables are compared as well, and a cut name is a SHA-256 of the
-  whole name under a prefix no table may take (ADR 0049).
+  their staging, tombstones, root index or key indexes, and a generation table with its
+  indexes, cut to the dialect's identifiers. A cut name is a SHA-256 of the whole name under a
+  prefix no table may take (ADR 0049).
 
 ## Consequences
 
