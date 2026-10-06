@@ -27,9 +27,8 @@ what it holds with the engine's authority. Yet a log was found to be much less t
 - Destinations kept every receipt for ever; the files destination kept those of its sixteen
   latest loads, and so forgot receipts a replay could still ask for.
 
-The log's store must be one an object store implements with the semantics the local store has:
-`LocalWal` keeps logs in a local directory, and `ObjectStoreWal` in S3 and stores that answer as
-it does (ADR 0051).
+The log's store has an object store's semantics, wherever it keeps logs: `LocalWal` keeps them in
+a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 does (ADR 0051).
 
 ## Decision
 

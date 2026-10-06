@@ -53,11 +53,12 @@ and building them surfaced decisions the spec leaves open.
   case never share one, and a manifest names its files by their paths beneath it. Directories
   are created 0700 and files 0600, the destination's user's alone (ADR 0047). A segment's files
   are staged at `staging/<epoch>/<load>/<segment>/<table>/<generation>/<part>.<ext>` beneath the
-  pipeline's directory, and a commit's own files, a merge table's rewrite, its tombstones and a
-  compaction, at the same place with `merged`, `tombstones` or `compacted` and a name unique to
-  the commit's try (`<load>-<commit>-<random>`) in the segment's; files are published where they
-  are. Opening removes the files older epochs staged, and older commits wrote, that the latest
-  manifest does not list. A merge table's commit rewrites the whole table: JSON lines as one
+  pipeline's directory. A commit's own files, a merge table's rewrite, its tombstones and a
+  compaction, are staged there too, with `merged`, `tombstones` or `compacted` and a name unique
+  to the commit's try (`<load>-<commit>-<random>`) in place of the segment. Files are published
+  where they are. A commit, once its manifest is durable, removes the files that manifest no
+  longer lists, and opening removes what older epochs staged or wrote that the latest manifest
+  does not list. A merge table's commit rewrites the whole table: JSON lines as one
   file, Arrow as a file for each set of columns its rows hold, the smallest sets joined where
   there are more than 16. The manifest keeps the receipts no commit's horizon has passed, and the
   8 versions before the latest stay on disk.

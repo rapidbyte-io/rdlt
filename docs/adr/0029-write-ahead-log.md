@@ -123,6 +123,7 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
   failed commits and fenced workers, as long as its log store keeps what was published to it.
 - A commit frame the destination refuses on replay fails every later run until an operator
   removes the log: the price of acknowledging before the commit.
-- A load that keeps a log writes each batch twice, once to the log, and makes one sync per commit.
+- A load that keeps a log writes each batch twice, once to the log, and publishes a chunk of the
+  log at each commit before the destination commits; ADR 0051 counts what that takes on S3.
 - `S-ACK`, a certification clause checking that a source advances only once acknowledged, and its
   probe of what a source acknowledged, move to M5c2 (ADR 0030).
