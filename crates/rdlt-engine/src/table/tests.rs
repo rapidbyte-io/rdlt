@@ -389,7 +389,7 @@ fn stamp() -> Stamp {
 }
 
 /// The values of `batch`'s column `index`, a dictionary of one value per batch encoding values of
-/// `values`: the load id and load start (spec §8.5).
+/// `values`: the load id and load start.
 fn constant(batch: &RecordBatch, index: usize, values: &DataType) -> ArrayRef {
     let column = batch.column(index);
     assert_eq!(

@@ -1,5 +1,5 @@
-//! Schema policies: what the engine does with a batch that would change its table (spec §8.4,
-//! §8.7), set per pipeline, stream, table and column.
+//! Schema policies: what the engine does with a batch that would change its table, set per
+//! pipeline, stream, table and column.
 
 #[cfg(test)]
 mod tests;
@@ -42,7 +42,7 @@ pub enum Nested {
     Native,
     /// As one `Json` value per nested column.
     Json,
-    /// Normalized (spec §8.7): arrays become child tables at any depth, objects flatten into one
+    /// Normalized: arrays become child tables at any depth, objects flatten into one
     /// column per field, and containers nested deeper than `max_depth` are stored as `Json`.
     ///
     /// Only pipelines and streams normalize; a column set to [`Nested::Native`] or

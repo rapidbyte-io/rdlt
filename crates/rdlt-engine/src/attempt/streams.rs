@@ -185,7 +185,7 @@ fn planned(
         truncates: plan.truncate_mode(),
         partial_updates: partial_updates && !plan.keeps_history(),
     });
-    // Only change streams read in phases (spec §9.4).
+    // Only change streams read in phases.
     let tracked = cdc || (follow && plan.read_mode() == ReadMode::Incremental);
     let phases = tracked.then(|| Phases {
         phase: partitioned.phase,

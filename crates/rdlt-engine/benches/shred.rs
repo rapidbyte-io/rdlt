@@ -1,4 +1,4 @@
-//! JSON shredding throughput (spec §21.1, §21.2): each corpus on one core, and the nested corpus
+//! JSON shredding throughput: each corpus on one core, and the nested corpus
 //! as one stream over more cores.
 //!
 //! `RDLT_SHRED_CORPUS` names a JSON lines file to measure as one more corpus, such as the corpus
@@ -211,8 +211,8 @@ fn many_cores(c: &mut Criterion) {
     group.finish();
 }
 
-/// The arrow-json decoder against the shredder on flat JSON of a known schema: the fast path spec
-/// §7.4 allows where it is faster (ADR 0008 records the evaluation).
+/// The arrow-json decoder against the shredder on flat JSON of a known schema, the fast path
+/// ADR 0008 evaluated.
 fn arrow_json_fast_path(c: &mut Criterion) {
     let narrow = Schema::new(vec![
         ArrowField::new("id", DataType::Int64, true),
@@ -278,8 +278,8 @@ fn decode(pushes: &[Bytes], schema: &SchemaRef) -> usize {
     rows
 }
 
-/// Shredding rows with arrays, alone and normalized into child tables with their lineage (spec
-/// §8.7): keyed roots hash their key, keyless ones their whole row.
+/// Shredding rows with arrays, alone and normalized into child tables with their lineage:
+/// keyed roots hash their key, keyless ones their whole row.
 fn normalizing(c: &mut Criterion) {
     let pushes = corpus(with_arrays);
     let bytes: usize = pushes.iter().map(Bytes::len).sum();

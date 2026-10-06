@@ -443,7 +443,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
     /// Normalizing shredded JSON agrees with the reference normalizer, ids included, however the
-    /// records chunk into batches (§20.4).
+    /// records chunk into batches.
     #[test]
     fn normalizing_agrees_with_the_reference(
         records in prop::collection::vec(record(), 1..10),

@@ -388,7 +388,7 @@ async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_commit_within_deadline_succeeds() {
-    // Liveness and work deadlines differ (§12.6): a commit much longer than the heartbeat's
+    // Liveness and work deadlines differ: a commit much longer than the heartbeat's
     // patience still succeeds while the connector answers heartbeats.
     let source = crate::support::memory_source(rows(30), &quick()).await;
     let io =

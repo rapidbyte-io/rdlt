@@ -21,6 +21,11 @@ fn each_rule_fires_on_its_violation() {
         ("// fixed in Round-3\n", Rule::TrackerId),
         ("// since 044 this is lazy\n", Rule::TrackerId),
         ("// see specs/foo.md\n", Rule::TrackerId),
+        ("// lowered as spec §8.7 says\n", Rule::TrackerId),
+        (
+            "/// Reads until caught up (§9.6).\nfn f() {}\n",
+            Rule::TrackerId,
+        ),
         ("// the seat for this check\n", Rule::Jargon),
         ("// pinned by the test below\n", Rule::Jargon),
         ("// we honestly retry\n", Rule::Jargon),
@@ -76,6 +81,8 @@ fn allowed_forms_pass() {
         "tokio::select! {\n    biased;\n    _ = a => {}\n}\n",
         "let s = \"select! { x }\";\n",
         "let warehouse = 1; // warehouse writer\n",
+        "// The preface HTTP/2 sends first (RFC 9113 §3.4)\n",
+        "let section = \"§8.7\";\n",
     ];
     for source in clean {
         assert_eq!(rules(source), Vec::<Rule>::new(), "source: {source:?}");

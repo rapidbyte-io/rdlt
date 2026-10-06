@@ -1,5 +1,5 @@
 //! Resetting a stream once every phase converged, while runs of every pipeline load: the reset
-//! fences them, and the tables must converge again on what the model says (spec §16.1).
+//! fences them, and the tables must converge again on what the model says.
 
 use std::sync::Arc;
 use std::time::Duration;

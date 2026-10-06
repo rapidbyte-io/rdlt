@@ -94,7 +94,7 @@ impl Source for RemoteSource {
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, rdlt_connector::Result<()>> {
         Box::pin(async move {
-            // §12.6 names no deadline for reporting committed cursors; a commit's is the closest.
+            // Reporting committed cursors has no deadline of its own; it takes a commit's.
             let (connection, deadline) =
                 (&self.connection, self.connection.options.deadlines.commit);
             let mut client = connection.client.control.clone();

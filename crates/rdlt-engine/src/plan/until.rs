@@ -1,4 +1,4 @@
-//! How long a run reads (spec §9.6).
+//! How long a run reads.
 
 use std::time::Duration;
 

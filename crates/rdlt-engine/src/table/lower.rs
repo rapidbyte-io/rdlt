@@ -279,8 +279,7 @@ pub(crate) fn validity(capabilities: &Capabilities) -> LogicalType {
 
 /// The Arrow schema of prepared batches of a table whose columns are `fields`, of the types
 /// `logical` gives, the model's `columns` first: each stored as another type names its own, and
-/// the load id and load start, which hold one value per batch, are dictionaries of it (spec
-/// §8.5).
+/// the load id and load start, which hold one value per batch, are dictionaries of it.
 pub(crate) fn prepared_schema(fields: &[Field], logical: &[Field], columns: usize) -> SchemaRef {
     let fields: Vec<ArrowField> = fields
         .iter()

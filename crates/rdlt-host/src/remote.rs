@@ -37,7 +37,7 @@ pub const CONNECTOR_LOST: &str = "connector_lost";
 
 pub use rdlt_connector::DEADLINE_EXCEEDED;
 
-/// How long each kind of call may take (§12.6).
+/// How long each kind of call may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Deadlines {
     /// The handshake.
@@ -375,7 +375,7 @@ where
             })
         }
     });
-    // HTTP/2's own pings notice a connection the network dropped silently (§12.6), beside the
+    // HTTP/2's own pings notice a connection the network dropped silently, beside the
     // protocol's heartbeat, which notices a connector that stopped answering.
     let patience = options.heartbeat.saturating_mul(options.missed.get());
     let channel = Endpoint::from_static("http://connector")

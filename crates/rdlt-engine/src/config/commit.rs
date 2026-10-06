@@ -67,7 +67,7 @@ impl CommitPolicy {
 
 impl CommitPolicy {
     /// Every 10 seconds or 1 GiB, whichever comes first: a run that follows its source, or
-    /// reads changes, commits what it reads soon after it arrives (spec §6.4).
+    /// reads changes, commits what it reads soon after it arrives.
     pub fn streaming() -> Self {
         Self {
             every: Some(Duration::from_secs(10)),

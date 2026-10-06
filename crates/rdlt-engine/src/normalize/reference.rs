@@ -1,5 +1,5 @@
 //! A reference normalizer over JSON values, written apart from the Arrow one, for the differential
-//! test (§20.4): its ids come from its own canonical encoding of the JSON values.
+//! test: its ids come from its own canonical encoding of the JSON values.
 
 use std::collections::BTreeMap;
 

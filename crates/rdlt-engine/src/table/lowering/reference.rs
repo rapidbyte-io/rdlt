@@ -1,4 +1,4 @@
-//! The reference for the lowering differential (spec §20.4): each value lowered on its own, from
+//! The reference for the lowering differential: each value lowered on its own, from
 //! the table's model alone, sharing none of the routes and conversions lowering plans make once.
 //!
 //! Every conversion is exact, so a value's column holds the value itself, whatever type the
