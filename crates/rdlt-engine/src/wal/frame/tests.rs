@@ -520,6 +520,36 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
     assert_eq!(decoded(&frame), Frame::Commit(Box::new(committing)));
 }
 
+#[test]
+fn a_seal_frame_writes_its_cursor_once_as_base64_within_what_it_is_reserved() {
+    let cursor = Cursor::new(1, &vec![b'c'; 300_000]).expect("a cursor within the limit");
+    let seal = Seal {
+        segment: SegmentId(4),
+        stream: StreamName::new("orders").expect("a valid stream"),
+        partition: PartitionId::parse("p0").expect("a valid partition"),
+        replayable: true,
+        phase: 2,
+        from: None,
+        state: PartitionState::Cursor(cursor),
+        batches: 3,
+        rows: 40,
+    };
+    let frame = Frame::Seal(seal.clone())
+        .encode()
+        .expect("the frame encodes");
+    // Four bytes of base64 for every three of the cursor, and a head beside; base64 of the
+    // base64 would take a third more again.
+    let base64 = 300_000 / 3 * 4;
+    assert!(
+        (base64..base64 + 1_024).contains(&frame.len()),
+        "{} bytes",
+        frame.len()
+    );
+    let recorded = usize::try_from(crate::limits::RECORDED).expect("a small factor") * 300_000;
+    assert!(frame.len() < recorded, "{} bytes", frame.len());
+    assert_eq!(decoded(&frame), Frame::Seal(seal));
+}
+
 /// The deepest a table's types may nest.
 fn limit() -> usize {
     usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH).expect("a small limit")
