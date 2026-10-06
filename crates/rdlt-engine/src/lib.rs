@@ -56,7 +56,7 @@ mod table;
 mod wal;
 mod watch;
 
-pub use compute::{ComputePool, ComputePoolError, Job, RayonPool};
+pub use compute::{ComputePool, ComputePoolError, Cores, Job, RayonPool};
 pub use config::{
     BatchPolicy, CommitPolicy, EngineConfig, EngineConfigBuilder, GrowthLimits, RetryPolicy,
 };

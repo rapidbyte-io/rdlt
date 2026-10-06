@@ -30,6 +30,44 @@ pub struct RayonPool {
 #[error("compute pool failed to start")]
 pub struct ComputePoolError(#[source] rayon::ThreadPoolBuildError);
 
+/// The cores a run may use, and how many of them the embedder's tokio runtime takes for its
+/// worker threads.
+///
+/// The runtime's workers run the engine's per-row work and its destination writes, and the
+/// compute pool its CPU-bound jobs; sized apart, the two contend for the same cores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cores {
+    count: NonZeroUsize,
+    workers: NonZeroUsize,
+}
+
+impl Cores {
+    /// `count` cores, `workers` of them the runtime's worker threads: the count the runtime was
+    /// built with, which `tokio::runtime::Handle::current().metrics().num_workers()` reads.
+    pub const fn new(count: NonZeroUsize, workers: NonZeroUsize) -> Self {
+        Self { count, workers }
+    }
+
+    /// The cores a run may use.
+    pub const fn count(self) -> NonZeroUsize {
+        self.count
+    }
+
+    /// The runtime's worker threads.
+    pub const fn workers(self) -> NonZeroUsize {
+        self.workers
+    }
+
+    /// The compute pool's threads: the cores the runtime's workers leave, and one at least, so
+    /// CPU-bound jobs always have a thread.
+    pub const fn compute_threads(self) -> NonZeroUsize {
+        match NonZeroUsize::new(self.count.get().saturating_sub(self.workers.get())) {
+            Some(threads) => threads,
+            None => NonZeroUsize::MIN,
+        }
+    }
+}
+
 impl RayonPool {
     /// Starts a pool of `threads` worker threads named `rdlt-compute-<n>`, each with 8 MiB of
     /// stack.
