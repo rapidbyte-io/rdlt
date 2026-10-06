@@ -48,17 +48,22 @@ async fn a_descriptor_the_host_holds_to_be_inherited_reaches_no_connector() {
     use std::os::fd::AsRawFd as _;
 
     // A file the host was started with, as a supervisor's log is: open, and inherited by
-    // whatever the host starts.
-    let mut held = tempfile::tempfile().expect("a temporary file");
-    held.write_all(b"the host's own").expect("it writes");
-    held.rewind().expect("it rewinds");
+    // whatever the host starts. Its number is past nine, as one is in a process started with
+    // many open, and where some shells' redirections cannot name it.
+    let mut opened = tempfile::tempfile().expect("a temporary file");
+    opened.write_all(b"the host's own").expect("it writes");
+    opened.rewind().expect("it rewinds");
+    let mut held = std::fs::File::from(
+        rustix::io::fcntl_dupfd_cloexec(&opened, 10).expect("a descriptor past nine"),
+    );
+    drop(opened);
     rdlt_host_inheritable(&held);
     let dir = tempfile::tempdir().expect("a temporary directory");
     let (seen, done) = (dir.path().join("seen"), dir.path().join("done"));
     // The connector starts a shell that copies what it finds at the descriptor's number, and
     // then says it has.
     let copy = format!(
-        "cat <&{} > '{}' 2>/dev/null; touch '{}'",
+        "cat /proc/self/fd/{} > '{}' 2>/dev/null; touch '{}'",
         held.as_raw_fd(),
         seen.display(),
         done.display()
