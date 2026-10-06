@@ -553,3 +553,17 @@ fn a_schema_counts_its_names_and_metadata_at_any_depth() {
     let deep = crate::cost::tests::nested(3_000).schema();
     assert_eq!(schema_bytes(&deep), 3_000 * 128 + 6 + 2_999);
 }
+
+#[test]
+fn a_piece_is_found_in_a_stretch_for_each_doubling_and_halving() {
+    let ids = batch(Arc::new(Int64Array::from(vec![7; 1_000])));
+    // Eight bytes a row: 135 rows to a piece of 1080 bytes.
+    let mut measure = native().measure(&ids, 1_080);
+    let cuts = measure.cuts();
+    assert_eq!(ends(&cuts)[..7], [135, 270, 405, 540, 675, 810, 945]);
+    // Each piece is found in a stretch for each doubling and each halving, about fifteen, and
+    // no more: a search that halves too far, or steps past the batch's end, takes more.
+    assert_eq!(measure.work().0, 118);
+    // It shows nothing of the batch it measures.
+    assert_eq!(format!("{measure:?}"), "Measure { .. }");
+}
