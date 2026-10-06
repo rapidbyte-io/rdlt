@@ -7,8 +7,10 @@
 //! nothing, and counts what decoding it would hold at its peak: each message its size, four times
 //! over for each entry of a repeated field, eight for one-byte numbers, as a vector allocates
 //! room for four entries at its first and holds its old entries beside twice as many as it grows;
-//! each string and byte field its length, or the least a vector of bytes allocates; and a field
-//! the form does not know its bytes. That is no less than what decoding holds, so a message whose
+//! each string and byte field its length, or the least a vector of bytes allocates, and a string
+//! set again, alone or in a message set again, twice that, as the room the decoder reuses for it
+//! grows to twice what it held beside what it held; and a field the form does not know its
+//! bytes. That is no less than what decoding holds, so a message whose
 //! count passes a bound is refused before it is decoded, and one the scan cannot walk is refused
 //! too.
 
@@ -92,7 +94,7 @@ pub fn decoded(form: &Form, message: &[u8], bound: usize) -> Result<usize, Unsca
         held: form.size,
         bound,
     };
-    count.walk(form, message, 1)?;
+    count.walk(form, message, 1, false)?;
     Ok(count.held)
 }
 
@@ -109,15 +111,28 @@ struct Key {
 }
 
 impl Count {
-    /// Counts what `bytes`, an encoding of `form` at `depth`, holds beside the form's own size.
-    fn walk(&mut self, form: &Form, mut bytes: &[u8], depth: usize) -> Result<(), Unscanned> {
+    /// Counts what `bytes`, an encoding of `form` at `depth`, holds beside the form's own size;
+    /// `merging` where the message was set before, so its fields are decoded into what it holds.
+    fn walk(
+        &mut self,
+        form: &Form,
+        mut bytes: &[u8],
+        depth: usize,
+        merging: bool,
+    ) -> Result<(), Unscanned> {
         if depth > MAX_DEPTH {
             return Err(Unscanned::Deep);
         }
+        // The fields set so far, by their place in the form.
+        let mut set = 0_u64;
         while !bytes.is_empty() && self.held <= self.bound {
             let key = key(&mut bytes)?;
-            let field = form.fields.iter().find(|field| field.number == key.number);
-            let Some(field) = field else {
+            let found = form
+                .fields
+                .iter()
+                .enumerate()
+                .find(|(_, field)| field.number == key.number);
+            let Some((index, field)) = found else {
                 // A field the form does not know, held at its bytes.
                 let before = bytes.len();
                 skip(&key, &mut bytes, depth)?;
@@ -128,7 +143,8 @@ impl Count {
                 let length =
                     usize::try_from(varint(&mut bytes)?).map_err(|_| Unscanned::Malformed)?;
                 let payload = take(&mut bytes, length)?;
-                self.delimited(field, payload, depth)?;
+                let again = set_before(&mut set, index) || merging;
+                self.delimited(field, payload, depth, again)?;
                 continue;
             }
             skip(&key, &mut bytes, depth)?;
@@ -140,18 +156,30 @@ impl Count {
         Ok(())
     }
 
-    /// Counts `payload`, a length-delimited value of `field`.
-    fn delimited(&mut self, field: &Field, payload: &[u8], depth: usize) -> Result<(), Unscanned> {
-        // An entry of a repeated field is held in a vector.
+    /// Counts `payload`, a length-delimited value of `field`, `again` where the field was set
+    /// before in the message it is decoded into.
+    fn delimited(
+        &mut self,
+        field: &Field,
+        payload: &[u8],
+        depth: usize,
+        again: bool,
+    ) -> Result<(), Unscanned> {
+        // An entry of a repeated field is held in a vector, and is a value of its own.
         let entry = |size: usize| if field.repeated { entries(size, 1) } else { 0 };
+        let again = again && !field.repeated;
         match field.kind {
             Kind::Message(inner) => {
                 self.hold(entry(inner.size));
-                self.walk(inner, payload, depth + 1)
+                self.walk(inner, payload, depth + 1, again)
             }
-            // A text or bytes takes at least the least a vector of bytes allocates.
+            // A text or bytes takes at least the least a vector of bytes allocates. A text set
+            // again is decoded into the room the last took, which grows to twice that, or to the
+            // text, beside the room it grew from.
             Kind::String => {
-                self.hold(entry(size_of::<String>()).saturating_add(payload.len().max(LEAST)));
+                let text = payload.len().max(LEAST);
+                let text = if again { text.saturating_mul(2) } else { text };
+                self.hold(entry(size_of::<String>()).saturating_add(text));
                 Ok(())
             }
             Kind::Bytes => {
@@ -171,6 +199,20 @@ impl Count {
     fn hold(&mut self, bytes: usize) {
         self.held = self.held.saturating_add(bytes);
     }
+}
+
+/// Whether the field at `index` of a form was set before, noting in `set` that it is now; one
+/// past the first 64 is taken to have been.
+fn set_before(set: &mut u64, index: usize) -> bool {
+    let Some(bit) = u32::try_from(index)
+        .ok()
+        .and_then(|index| 1_u64.checked_shl(index))
+    else {
+        return true;
+    };
+    let before = *set & bit != 0;
+    *set |= bit;
+    before
 }
 
 /// What `count` entries of `size` bytes hold in a vector at its peak.
