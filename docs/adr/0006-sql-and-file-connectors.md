@@ -71,8 +71,9 @@ and building them surfaced decisions the spec leaves open.
   `<stream>.arrow` is a stream of one partition and a directory is a stream of its files; a
   partition is read only if it is listed, never by joining its id to a path. A JSON lines file's
   records are pushed as JSON, as they are written, `batch_rows` records a push, for the engine to
-  type; an Arrow file's batches are pushed as written. Every push but a file's last is followed
-  by a checkpoint, and a following read checkpoints the last too.
+  type; an Arrow file's batches are pushed as written. Its streams are read in full: every push
+  but a file's last is followed by a checkpoint, and the last is not, so the partition ends done
+  without a cursor and the next run reads the file from its start.
 - **The engine's integration suite runs against every destination** where the destination
   matters: exactly-once loads, resumes, append and replace, stopped replaces, merges, lost
   responses, fencing, schema changes and nested values run against memory, SQLite and both file
