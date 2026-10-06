@@ -202,17 +202,16 @@ impl Log {
                 self.held_back.push_back(command);
                 continue;
             }
-            let mut close = matches!(command, Command::Close { .. });
+            let close = matches!(command, Command::Close { .. });
             self.handle(command).await;
-            while !close && !self.holding() {
+            if close {
+                break;
+            }
+            while !self.holding() {
                 let Some(command) = self.held_back.pop_front() else {
                     break;
                 };
-                close = matches!(command, Command::Close { .. });
                 self.handle(command).await;
-            }
-            if close {
-                break;
             }
         }
         // What was staged and never published goes, giving back the room it took.
@@ -229,6 +228,9 @@ impl Log {
     /// Whether `command` waits for the commit of the seals the chunk staged holds: a batch frame,
     /// or what may carry frames into the chunk staged, publish it, or name a table or segment a
     /// batch frame held back names.
+    ///
+    /// A close is not held back: one that comes while seals are staged came without their
+    /// commit, and fails the log.
     fn holds_back(&self, command: &Command) -> bool {
         self.holding()
             && matches!(
@@ -237,7 +239,6 @@ impl Log {
                     | Command::Committed { .. }
                     | Command::Abandon { .. }
                     | Command::Retire { .. }
-                    | Command::Close { .. }
             )
     }
 
@@ -251,10 +252,7 @@ impl Log {
 
     async fn handle(&mut self, command: Command) {
         match command {
-            Command::Table { index, frame, held } => {
-                self.tables.insert(index, frame);
-                self.describing.insert(index, held);
-            }
+            Command::Table { index, frame, held } => self.table(index, frame, held),
             Command::Batch {
                 segment,
                 table,
@@ -300,7 +298,7 @@ impl Log {
                 self.answer(result, done);
             }
             Command::Close { done } => {
-                let result = self.close().await;
+                let result = self.closed().await;
                 self.answer(result, done);
             }
         }
@@ -308,11 +306,41 @@ impl Log {
 
     /// Writes `frame`, the seal of `segment`: the chunk staged is published by the commit that
     /// takes it alone.
+    ///
+    /// The schema frames no batch frame took yet are the writer's to keep from the first seal on,
+    /// their memory released: the batches that would take them wait for the commit, and its
+    /// frames need that memory.
     async fn seal(&mut self, segment: SegmentId, frame: Bytes) -> Result<(), Error> {
         let result = self.written_out(frame).await.map(drop);
         self.sealing = true;
+        self.describing.clear();
         self.holds(segment);
         result
+    }
+
+    /// Keeps `frame`, the schema frame of the table at `index`, and the memory `held` for it
+    /// until it is first written.
+    ///
+    /// While seals are staged, the batch that would write it waits for their commit, whose frames
+    /// need that memory: the frame is the writer's to keep from now on.
+    fn table(&mut self, index: u32, frame: Bytes, held: Permit) {
+        self.tables.insert(index, frame);
+        if self.holding() {
+            drop(held);
+        } else {
+            self.describing.insert(index, held);
+        }
+    }
+
+    /// Closes the log, where no seals are staged: a close that comes while they are came without
+    /// their commit, and fails the log.
+    async fn closed(&mut self) -> Result<(), Error> {
+        if self.holding() {
+            return Err(Error::internal(
+                "the write-ahead log was closed after seals no commit followed",
+            ));
+        }
+        self.close().await
     }
 
     /// Settles `segment`, which its partition ended without sealing.

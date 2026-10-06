@@ -177,10 +177,13 @@ lowering may take, logged under more memory than replays it, is refused as
   commit that ends it. Before a batch frame would take it past that, it is published between
   commits, closed by a relief frame; a batch counts what ending its chunk writes beside its
   frames. A carry copies into it only what keeps it within that. While it holds a commit's
-  seals, the writer holds back every batch frame, receipt, abandonment and close sent until the
+  seals, the writer holds back every batch frame, receipt and abandonment sent until the
   commit's frame publishes it, and then writes them in turn. So the open frames of any chunk
   holding settled ones fit the carry's room, however long a commit's frame comes after its
-  seals.
+  seals. What it holds back holds none of the log's memory the commit's frames need: the
+  schema frames their batches would write are the writer's to keep from the first seal on,
+  their memory released. A close that comes while seals are staged came without their commit,
+  and fails the log.
 - A carry follows each receipt for each old chunk whose open frames take no more than what else it
   holds, while the log has room. A batch that finds no room has the writer publish chunks between
   commits, each closed by a relief frame where a commit's chunk has its commit, while each frees
