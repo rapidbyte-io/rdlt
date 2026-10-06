@@ -37,7 +37,7 @@ use crate::report::{AttemptEnd, AttemptLog};
 use crate::scope::TaskScope;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
-use crate::wal::{LoadLog, Owner, Positions};
+use crate::wal::{LoadLog, Owner, Positions, staged_at_most};
 use crate::watch;
 
 pub(crate) use sequences::Keying;
@@ -398,22 +398,24 @@ async fn start_log(
 }
 
 /// What a log holds in memory beside its frames, `bytes` its store's stagings hold and what a
-/// carry reads back at once, reserved from `budget`'s share for the log, which holds them beside
-/// its frames' share, for as long as the log is written.
+/// carry reads back at once, reserved from `budget`'s share for the log for as long as the log
+/// is written.
 ///
 /// # Errors
 ///
-/// `wal_staging_exceeds_budget` for stagings of more than half the frames' share.
+/// `wal_staging_exceeds_budget` for stagings that leave the share too little for a commit's
+/// frame recording a full share of cursors ([`staged_at_most`]).
 async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Error> {
-    let most = budget.shares().frames() / 2;
+    let most = staged_at_most(budget.shares());
     if bytes > most {
         return Err(Error::config(format!(
             "the write-ahead log's store stages {bytes} bytes in memory, more than the {most} \
-             the memory budget lets it: a larger budget, or smaller parts, let it run"
+             the memory budget's share for the log leaves beside a commit recording every \
+             cursor it holds: a larger budget, or smaller parts, let it run"
         ))
         .with_code(WAL_STAGING_EXCEEDS_BUDGET));
     }
-    // What a carry reads back at once is held beside it.
+    // What a carry reads back at once is held beside it, out of the other half.
     budget
         .acquire_log(bytes.saturating_add(LOG_COPY_BYTES))
         .await

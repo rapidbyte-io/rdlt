@@ -214,11 +214,13 @@ lowering may take, logged under more memory than replays it, is refused as
   the budget's share for logs with the store's staging: a carry never waits or is left undone
   for memory, however large a frame it copies.
 - What a store stages in memory beside the log, a part for `ObjectStoreWal`
-  (`WalStore::staging_bytes`), is reserved with the carry's buffer when a load's log starts,
-  from the budget's share for logs, which holds them beside its frames' share, out of what
-  pushes and lowering may take: the log's frames keep their whole share, so a commit recording
-  as many positions as the cursors' share holds fits beside them. A store staging more than half
-  the frames' share is refused (`wal_staging_exceeds_budget`).
+  (`WalStore::staging_bytes`), is reserved from the budget's share for logs, with the carry's
+  buffer, when a load's log starts. A store staging more than leaves the share room for that
+  buffer and for a commit's frame recording as many cursor bytes as the cursors' share holds,
+  each twice over, beside a frame's 4 KiB head, is refused (`wal_staging_exceeds_budget`): past
+  8,122,368 bytes at the default 256 MiB budget. What a commit names of each partition beside
+  its cursor, some kilobyte, takes the margin a smaller part leaves: the default 7 MiB part
+  leaves 782,336 bytes, about 690 partitions' names in one commit.
 - A failed write fails every batch after it at once and discards what its chunk staged. A full
   disk or quota is `wal_storage_full` and retryable. Where opening its own log finds the disk
   full, the next attempt removes what removals a crash cut short left and deletes what every load

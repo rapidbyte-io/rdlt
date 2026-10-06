@@ -17,7 +17,7 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use load::{LoadLog, Owner, Sealed};
+pub(crate) use load::{LoadLog, Owner, Sealed, staged_at_most};
 pub use local::LocalWal;
 pub(crate) use local::Refusal;
 #[cfg(feature = "object-store")]
