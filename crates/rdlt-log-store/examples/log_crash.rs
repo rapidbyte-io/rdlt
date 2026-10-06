@@ -11,7 +11,6 @@
 #![forbid(unsafe_code)]
 
 use std::io::Write as _;
-use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -29,12 +28,6 @@ use rdlt_host::EnvSecrets;
 use rdlt_log_store::LogStoreConfig;
 use serde_json::json;
 
-/// The cores the run takes: its runtime's two workers and two compute threads.
-const CORES: Cores = Cores::new(
-    NonZeroUsize::new(4).expect("four is not zero"),
-    NonZeroUsize::new(2).expect("two is not zero"),
-);
-
 /// The variables the store's credentials are read from, and no other.
 const CREDENTIALS: [&str; 2] = ["RDLT_S3_ACCESS_KEY_ID", "RDLT_S3_SECRET_ACCESS_KEY"];
 
@@ -45,8 +38,15 @@ fn main() -> ExitCode {
         writeln!(std::io::stderr(), "usage: log_crash <dir> <log-store.json>").ok();
         return ExitCode::from(2);
     };
+    let cores = match Cores::try_from_host() {
+        Ok(cores) => cores,
+        Err(error) => {
+            writeln!(std::io::stderr(), "log_crash: {error}").ok();
+            return ExitCode::from(2);
+        }
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(CORES.workers().get())
+        .worker_threads(cores.workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -86,7 +86,7 @@ async fn run(dir: &Path, store: &Path) -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
-    let env = SystemEnv::try_new(CORES)
+    let env = SystemEnv::try_from_runtime(&tokio::runtime::Handle::current())
         .map_err(|e| e.to_string())?
         .with_wal(wal);
     let outcome = Engine::new(engine()?, Arc::new(env))

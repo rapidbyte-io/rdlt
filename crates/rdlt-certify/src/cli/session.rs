@@ -37,8 +37,10 @@ impl Session {
     /// which then stops what it spawned.
     pub(super) fn start(until: Option<Instant>) -> Result<Self, Ended> {
         let failed = |error| Ended(IO, format!("starting the runtime failed: {error}"));
+        let cores = rdlt_engine::Cores::try_from_host()
+            .map_err(|error| Ended(IO, format!("sizing the runtime failed: {error}")))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(rdlt_certify::WORKERS.get())
+            .worker_threads(cores.workers().get())
             .enable_all()
             .build()
             .map_err(failed)?;

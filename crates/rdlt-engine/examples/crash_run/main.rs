@@ -15,7 +15,6 @@ mod config;
 mod watch;
 
 use std::io::Write as _;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -29,12 +28,6 @@ use rdlt_host::{ConnectorRef, Kills, Local, Options, Provider as _};
 
 use config::{Config, Victim};
 use watch::Watch;
-
-/// The cores the run takes: its runtime's two workers and two compute threads.
-const CORES: Cores = Cores::new(
-    NonZeroUsize::new(4).expect("four is not zero"),
-    NonZeroUsize::new(2).expect("two is not zero"),
-);
 
 fn main() -> ExitCode {
     undumped();
@@ -55,8 +48,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let cores = match Cores::try_from_host() {
+        Ok(cores) => cores,
+        Err(error) => {
+            writeln!(std::io::stderr(), "crash_run: {error}").ok();
+            return ExitCode::from(2);
+        }
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(CORES.workers().get())
+        .worker_threads(cores.workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -116,7 +116,8 @@ async fn run(config: &Config) -> Result<(), String> {
     let watch = Arc::new(Watch::new(kill, config.pause));
     let source = watch::source(source, Arc::clone(&watch));
     let destination = watch::destination(destination, watch);
-    let mut env = SystemEnv::try_new(CORES).map_err(|error| error.to_string())?;
+    let mut env = SystemEnv::try_from_runtime(&tokio::runtime::Handle::current())
+        .map_err(|error| error.to_string())?;
     if let Some(wal) = &config.wal {
         env = env.with_wal(Arc::new(LocalWal::new(wal)));
     }

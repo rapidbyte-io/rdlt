@@ -31,6 +31,19 @@ proptest! {
             prop_assert_eq!(threads, 1);
         }
     }
+
+    /// The suggested split gives the runtime and the pool a core each at least, and every core
+    /// to one of them where there are two or more.
+    #[test]
+    fn a_count_of_cores_splits_into_workers_and_compute_threads(count in 1usize..=1024) {
+        let split = Cores::from_count(NonZeroUsize::new(count).unwrap());
+        prop_assert_eq!(split.count().get(), count);
+        prop_assert!(split.workers().get() >= 1);
+        prop_assert!(split.compute_threads().get() >= 1);
+        if count >= 2 {
+            prop_assert_eq!(split.workers().get() + split.compute_threads().get(), count);
+        }
+    }
 }
 
 fn pool() -> Arc<RayonPool> {
@@ -120,4 +133,10 @@ fn cores_beside_a_runtime_are_the_host_s_and_the_runtime_s_workers() {
         assert!(cores.count().get() >= 1);
         assert_eq!(cores.workers().get(), workers);
     }
+}
+
+#[test]
+fn the_host_s_cores_split_as_their_count_does() {
+    let host = Cores::try_from_host().unwrap();
+    assert_eq!(host, Cores::from_count(host.count()));
 }
