@@ -247,3 +247,23 @@ fn a_sample_log_reads_back_with_its_one_commit_and_a_garbled_one_is_refused() {
     let refused = super::scan_log(&garbled).expect_err("the commit does not decode");
     assert_eq!(refused.code, "wal_unreadable");
 }
+
+#[test]
+fn a_log_another_load_wrote_is_refused_as_foreign() {
+    use crate::wal::frame::{self, End, Frame, Header};
+    let other = rdlt_connector::LoadId::from_parts(std::time::UNIX_EPOCH, 2);
+    let header = Frame::Header(Header {
+        pipeline: PipelineId::parse("fuzzed").expect("a valid pipeline"),
+        load: other,
+        chunk: 0,
+        epoch: rdlt_connector::Epoch(1),
+        opened: None,
+        origin: other,
+    });
+    let mut log = frame::preamble().to_vec();
+    for frame in [header, Frame::End(End::default())] {
+        log.extend_from_slice(&frame.encode().expect("the frame encodes"));
+    }
+    let refused = super::scan_log(&log).expect_err("another load's log");
+    assert_eq!(refused.code, "wal_foreign", "{}", refused.message);
+}
