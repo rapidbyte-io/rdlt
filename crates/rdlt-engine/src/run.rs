@@ -77,11 +77,6 @@ impl Engine {
             .within(Arc::clone(&self.env), self.config.memory_wait())
             .read_by(self.config.partitions().get())
             .limited(self.config.limits());
-        // What the log's store stages in memory is held beside its frames' share.
-        let budget = match self.env.wal() {
-            Some(store) => budget.staging(store.staging_bytes()),
-            None => budget,
-        };
         let waits =
             Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
         let context = RunContext {

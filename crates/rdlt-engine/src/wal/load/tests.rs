@@ -458,9 +458,9 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
 async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part_s_staging() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let part = u64::try_from(crate::limits::OBJECT_PART_BYTES).expect("a size");
-    let budget = MemoryBudget::new(256 << 20).staging(part);
+    let budget = MemoryBudget::new(256 << 20);
     // Held, as an attempt holds it, for as long as the log is written.
+    let part = u64::try_from(crate::limits::OBJECT_PART_BYTES).expect("a size");
     let held = part + crate::limits::LOG_COPY_BYTES;
     let _staging = budget.acquire_log(held).await.expect("it fits");
     // Positions of 34 partitions, each under what a partition's cursor may take, filling the
@@ -476,7 +476,7 @@ async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part
             })
         })
         .collect();
-    assert!(super::commit::commit_bytes(&[], &commit) > budget.shares().cursors * 2);
+    assert!(super::commit::commit_bytes(&[], &commit) > 2 * budget.shares().cursors);
     let written = async {
         let committed = log.commit(&budget, Vec::new(), Vec::new(), &commit, 0);
         let deadline =

@@ -107,20 +107,24 @@ fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
 }
 
 #[tokio::test]
-async fn a_staging_the_log_s_share_cannot_hold_beside_a_carry_s_reads_is_refused_for_the_budget() {
-    // A budget whose log's share holds half its frames' share of staging, but not that and what
-    // a carry reads at once.
-    let budget = crate::budget::MemoryBudget::new(4 << 20);
-    let staging = budget.shares().frames() / 2;
-    let refused = super::staged(&budget, staging)
+async fn the_default_part_stages_within_the_default_budget_and_a_byte_more_than_it_leaves_is_refused()
+ {
+    let budget = crate::budget::MemoryBudget::new(256 << 20);
+    let part = u64::try_from(crate::limits::OBJECT_PART_BYTES).expect("a size");
+    let held = super::staged(&budget, part)
+        .await
+        .expect("the default part fits");
+    drop(held);
+    let shares = budget.shares();
+    let most = crate::wal::staged_at_most(shares);
+    assert_eq!(
+        most,
+        shares.log - crate::limits::LOG_COPY_BYTES - 2 * shares.cursors - (4 << 10)
+    );
+    drop(super::staged(&budget, most).await.expect("the most fits"));
+    let refused = super::staged(&budget, most + 1)
         .await
         .map(drop)
         .expect_err("refused");
     assert_eq!(refused.code(), Some("wal_staging_exceeds_budget"));
-    let cause = std::error::Error::source(&refused);
-    let cause = cause.and_then(|cause| cause.downcast_ref::<crate::budget::TooLarge>());
-    assert!(
-        cause.is_some(),
-        "the budget's refusal is its cause: {refused:?}"
-    );
 }

@@ -62,7 +62,7 @@ pub struct S3Config {
     /// A reference to a session token, for temporary credentials.
     #[serde(default)]
     pub session_token: Option<String>,
-    /// Bytes: the length of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 8 MiB
+    /// Bytes: the length of a part of a chunk uploaded in parts, from 5 MiB to 5 GiB; 7 MiB
     /// where none is given.
     #[serde(default)]
     pub part_bytes: Option<u64>,

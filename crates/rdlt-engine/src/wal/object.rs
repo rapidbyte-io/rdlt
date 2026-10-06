@@ -54,7 +54,7 @@ pub struct ObjectStoreOptions {
 }
 
 impl Default for ObjectStoreOptions {
-    /// Parts of 8 MiB; five attempts a request, waiting up to 100 ms before the first retry, each
+    /// Parts of 7 MiB; five attempts a request, waiting up to 100 ms before the first retry, each
     /// up to twice the last, at most 5 s; 30 s a request and a second more for each MiB it moves.
     fn default() -> Self {
         Self {

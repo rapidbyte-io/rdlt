@@ -50,41 +50,12 @@ async fn felt(budget: &MemoryBudget) -> bool {
 }
 
 #[test]
-fn a_log_s_staging_is_held_beside_its_frames_share_out_of_what_pushes_and_lowering_take() {
-    let plain = MemoryBudget::new(256 << 20).shares();
-    let part = 8 << 20;
-    let staged = MemoryBudget::new(256 << 20).staging(part).shares();
-    let held = part + crate::limits::LOG_COPY_BYTES;
-    assert_eq!(staged.frames(), plain.log);
-    assert_eq!((staged.log, staged.staging), (plain.log + held, held));
-    assert_eq!(staged.data, plain.data - held);
-    assert_eq!(staged.intake, plain.intake - held);
-    assert_eq!(
-        (staged.cursors, staged.request, staged.piece),
-        (plain.cursors, plain.request, plain.piece)
-    );
-    // A staging past half the frames' share, which a log refuses, moves nothing.
-    let refused = MemoryBudget::new(256 << 20)
-        .staging(plain.log / 2 + 1)
-        .shares();
-    assert_eq!(refused, plain);
-    assert_eq!(
-        MemoryBudget::new(256 << 20)
-            .staging(plain.log / 2)
-            .shares()
-            .frames(),
-        plain.log
-    );
-}
-
-#[test]
 fn the_shares_of_a_budget_never_pass_it() {
     assert_eq!(
         Shares::of(BUDGET),
         Shares {
             cursors: 100,
             log: 400,
-            staging: 0,
             tables: 200,
             reads: 1_600,
             control: 400,

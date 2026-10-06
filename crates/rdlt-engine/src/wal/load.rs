@@ -23,10 +23,10 @@ use super::frame::{self, Frame};
 use super::store::WalStore;
 pub(crate) use super::writer::Owner;
 use super::writer::{Command, WalWriter};
-use crate::budget::{Denied, MemoryBudget, Reservation};
+use crate::budget::{Denied, MemoryBudget, Reservation, Shares};
 use crate::compute::{ComputePool, run_all};
 use crate::error::Error;
-use crate::limits::{LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS, RECORDED};
+use crate::limits::{LOG_COPY_BYTES, LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS, RECORDED};
 use crate::table::TableView;
 
 /// A table as a load's log tells its versions apart: its index in the attempt, its schema version
@@ -342,6 +342,17 @@ async fn reserved(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Erro
 /// Bytes: what a frame takes beside the records it holds, at most: its head, its kind and the
 /// names and numbers it carries.
 const FRAMED: u64 = 4 << 10;
+
+/// Bytes: the most a log's store may stage in memory within a budget of `shares`: what leaves
+/// the log's share room for what a carry reads at once and for a commit's frame recording as
+/// many cursor bytes as the cursors' share holds, each twice over, beside a frame's head.
+pub(crate) fn staged_at_most(shares: Shares) -> u64 {
+    shares
+        .log
+        .saturating_sub(LOG_COPY_BYTES)
+        .saturating_sub(RECORDED.saturating_mul(shares.cursors))
+        .saturating_sub(FRAMED)
+}
 
 /// Bytes: the most a table's schema frame takes: its schema written twice over, as its fields
 /// with their names take, and a frame beside.

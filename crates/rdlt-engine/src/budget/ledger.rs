@@ -54,11 +54,8 @@ impl Class {
 pub(crate) struct Shares {
     /// The cursors of seals waiting for a commit.
     pub(crate) cursors: u64,
-    /// The log's seal and commit frames, and what it holds beside them.
+    /// The log's seal and commit frames.
     pub(crate) log: u64,
-    /// Bytes: what the log's share holds beside its seal and commit frames: what its store
-    /// stages in memory, and what a carry reads back at once.
-    pub(crate) staging: u64,
     /// What commits record of tables' schemas and names.
     pub(crate) tables: u64,
     /// What all reads keep together.
@@ -91,7 +88,6 @@ impl Shares {
         Self {
             cursors,
             log,
-            staging: 0,
             tables,
             reads,
             control,
@@ -100,29 +96,6 @@ impl Shares {
             intake: data - request,
             piece: (capacity / PIECE_SHARE).max(MIN_PIECE).min(request),
         }
-    }
-}
-
-impl Shares {
-    /// The shares with `staging` bytes more for the log, held beside its frames, out of what
-    /// pushes and lowering may take.
-    pub(crate) fn staging(self, staging: u64) -> Self {
-        let data = self.data.saturating_sub(staging);
-        let request = self.request.min(data);
-        Self {
-            log: self.log.saturating_add(staging),
-            staging: self.staging.saturating_add(staging),
-            data,
-            request,
-            intake: data - request,
-            piece: self.piece.min(request),
-            ..self
-        }
-    }
-
-    /// Bytes: what the log's share holds for its seal and commit frames.
-    pub(crate) fn frames(&self) -> u64 {
-        self.log - self.staging
     }
 }
 

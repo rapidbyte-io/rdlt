@@ -17,9 +17,6 @@ pub(crate) const CURSOR_SHARE: u64 = 64;
 /// The log's seal and commit frames, from before they are encoded until they are appended: a
 /// 16th of the budget, four times the cursors' share, since a seal's frame records two cursors,
 /// each twice over in base64.
-///
-/// What the log's store stages in memory is held beside it, out of what pushes and lowering may
-/// take.
 pub(crate) const LOG_SHARE: u64 = 16;
 
 /// What commits record of tables, each table's schema and names, from the schema change that
@@ -234,11 +231,14 @@ pub(crate) const WAL_PREFIX_INVALID: &str = "wal_prefix_invalid";
 pub(crate) const WAL_PREFIX_BYTES: usize = 512;
 
 /// Bytes: what an object-store log's staged chunk holds in memory before it uploads a part of
-/// it, by default 8 MiB: a chunk this long or shorter is published by one request, a longer one
+/// it, by default 7 MiB: a chunk this long or shorter is published by one request, a longer one
 /// is uploaded in parts of this length, each at least the 5 MiB S3 takes, and published by a
 /// request naming them, so a staging never holds much more than a part.
+///
+/// The default memory budget's share for logs holds a part this long beside a commit recording
+/// a full share of cursors.
 #[cfg(feature = "object-store")]
-pub(crate) const OBJECT_PART_BYTES: usize = 8 << 20;
+pub(crate) const OBJECT_PART_BYTES: usize = 7 << 20;
 
 /// The most parts an upload may take, S3's limit: a chunk holds at most this many parts.
 #[cfg(feature = "object-store")]

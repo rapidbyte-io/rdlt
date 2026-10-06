@@ -19,7 +19,6 @@ pub(crate) use self::decoding::Decoding;
 pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
 use self::ledger::{Ledger, admit_waiting};
 use crate::env::Env;
-use crate::limits::LOG_COPY_BYTES;
 
 /// Bytes the engine may hold, divided into shares, each its holders' alone.
 ///
@@ -90,20 +89,6 @@ impl MemoryBudget {
     /// The budget, what its reads may keep divided among `readers` reads at once at most.
     pub(crate) fn read_by(mut self, readers: usize) -> Self {
         self.readers = readers.max(1);
-        self
-    }
-
-    /// The budget, its share for the log holding `staging` bytes its store stages in memory and
-    /// what a carry reads back at once beside its frames, out of what pushes and lowering may
-    /// take, where the staging is at most half the frames' share; a log refuses one larger.
-    pub(crate) fn staging(self, staging: u64) -> Self {
-        {
-            let mut ledger = self.shared.lock();
-            if staging <= ledger.shares.frames() / 2 {
-                let held = staging.saturating_add(LOG_COPY_BYTES);
-                ledger.shares = ledger.shares.staging(held);
-            }
-        }
         self
     }
 

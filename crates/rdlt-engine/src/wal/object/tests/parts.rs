@@ -366,7 +366,7 @@ async fn a_completion_that_fails_where_no_body_of_its_length_is_fails() {
 }
 
 #[tokio::test]
-async fn a_part_is_eight_mib_by_default_and_a_chunk_that_long_is_published_by_one_put() {
+async fn a_part_is_seven_mib_by_default_and_a_chunk_that_long_is_published_by_one_put() {
     let objects = objects(faultless());
     let default = super::ObjectStoreOptions::default();
     let wal = super::super::ObjectStoreWal::open(
@@ -377,7 +377,7 @@ async fn a_part_is_eight_mib_by_default_and_a_chunk_that_long_is_published_by_on
     )
     .await
     .expect("the store is probed");
-    let part = 8 << 20;
+    let part = 7 << 20;
     assert_eq!(wal.staging_bytes(), part);
     assert_eq!(
         wal.chunk_bytes().map(std::num::NonZero::get),
