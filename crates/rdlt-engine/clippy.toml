@@ -35,7 +35,7 @@ disallowed-methods = [
   { path = "rayon::scope", reason = "run CPU work on Env::compute" },
   { path = "tokio::sync::watch::Receiver::changed", reason = "wakes waiters in a random order; use crate::watch" },
   { path = "tokio::sync::watch::Receiver::wait_for", reason = "wakes waiters in a random order; use crate::watch" },
-  { path = "std::thread::available_parallelism", reason = "use Env::cores so a run sizes itself alike on every host" },
+  { path = "std::thread::available_parallelism", reason = "use Env::cores; a SystemEnv reads the host's cores in one place" },
 ]
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "iteration order breaks deterministic simulation; use BTreeMap" },

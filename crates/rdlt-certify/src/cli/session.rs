@@ -38,7 +38,7 @@ impl Session {
     pub(super) fn start(until: Option<Instant>) -> Result<Self, Ended> {
         let failed = |error| Ended(IO, format!("starting the runtime failed: {error}"));
         let cores = rdlt_engine::Cores::try_from_host()
-            .map_err(|error| Ended(IO, format!("sizing the runtime failed: {error}")))?;
+            .map_err(|error| Ended(IO, format!("the host's count of cores is unknown: {error}")))?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(cores.workers().get())
             .enable_all()
