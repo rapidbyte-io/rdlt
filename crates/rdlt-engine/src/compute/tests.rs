@@ -1,9 +1,37 @@
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, mpsc};
 
+use proptest::prelude::*;
 use tokio::task::JoinSet;
 
-use super::{RayonPool, run_all};
+use super::{Cores, RayonPool, run_all};
+
+fn cores(count: usize, workers: usize) -> Cores {
+    Cores::new(
+        NonZeroUsize::new(count).unwrap(),
+        NonZeroUsize::new(workers).unwrap(),
+    )
+}
+
+proptest! {
+    /// The pool gets every core the runtime's workers leave, and one thread however many
+    /// workers there are.
+    #[test]
+    fn the_pool_gets_the_cores_the_workers_leave_and_one_thread_at_least(
+        count in 1usize..=1024,
+        workers in 1usize..=1024,
+    ) {
+        let sized = cores(count, workers);
+        prop_assert_eq!(sized.count().get(), count);
+        prop_assert_eq!(sized.workers().get(), workers);
+        let threads = sized.compute_threads().get();
+        if workers < count {
+            prop_assert_eq!(threads + workers, count);
+        } else {
+            prop_assert_eq!(threads, 1);
+        }
+    }
+}
 
 fn pool() -> Arc<RayonPool> {
     Arc::new(RayonPool::new(NonZeroUsize::new(2).unwrap()).unwrap())
