@@ -44,14 +44,18 @@
 //!         StreamSpec::new(StreamName::new("numbers").expect("valid name"))
 //!     }
 //!
-//!     async fn read(&self, source: &Numbers, _: &Partition, next: u64, out: &mut Emitter<u64>) -> Result<()> {
-//!         for n in next..source.rows {
-//!             out.rows(&[serde_json::json!({ "n": n })]).await?;
-//!             // No checkpoint after the last row: the partition is finished, and recorded done.
-//!             if n + 1 < source.rows {
-//!                 out.checkpoint(&(n + 1)).await?;
+//!     async fn read(&self, source: &Numbers, _: &Partition, mut next: u64, out: &mut Emitter<u64>) -> Result<()> {
+//!         while next < source.rows {
+//!             // A checkpoint seals a segment: one where the engine waits for it.
+//!             if out.checkpoint_due() {
+//!                 out.checkpoint(&next).await?;
 //!             }
+//!             let end = source.rows.min(next + 1_000);
+//!             let rows: Vec<_> = (next..end).map(|n| serde_json::json!({ "n": n })).collect();
+//!             out.rows(&rows).await?;
+//!             next = end;
 //!         }
+//!         // No checkpoint after the last push: the partition is finished, and recorded done.
 //!         Ok(())
 //!     }
 //! }
