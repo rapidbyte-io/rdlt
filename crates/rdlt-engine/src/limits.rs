@@ -17,6 +17,9 @@ pub(crate) const CURSOR_SHARE: u64 = 64;
 /// The log's seal and commit frames, from before they are encoded until they are appended: a
 /// 16th of the budget, four times the cursors' share, since a seal's frame records two cursors,
 /// each twice over in base64.
+///
+/// What the log's store stages in memory is held beside it, out of what pushes and lowering may
+/// take.
 pub(crate) const LOG_SHARE: u64 = 16;
 
 /// What commits record of tables, each table's schema and names, from the schema change that

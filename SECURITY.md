@@ -315,9 +315,9 @@ the engine's authority, so it is bound, private and checked (ADR 0045):
   it none. A chunk holds at most an eighth of the bound, but a chunk of one batch frame or of
   frames carried out of one chunk, beside the frames of the commit that ends it, and frames are
   copied out of old chunks 256 KiB at a time, so neither a frame's size nor a slow commit keeps
-  a chunk from being freed. What a store stages in
-  memory, and the copy's buffer, are reserved from the budget (`wal_staging_exceeds_budget`). A
-  full disk is retried (`wal_storage_full`): a failed write
+  a chunk from being freed. What a store stages in memory, and the copy's buffer, are reserved
+  from the budget beside the share the log's frames take (`wal_staging_exceeds_budget`). A full
+  disk is retried (`wal_storage_full`): a failed write
   gives back what it staged, and the next attempt deletes what a crashed load staged, which
   needs no room, before it needs a directory's block and a few hundred bytes of its own.
 - A load opens its log before it reads any other. A replay or a reset fences a running load by
