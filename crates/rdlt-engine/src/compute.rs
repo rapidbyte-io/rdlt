@@ -49,6 +49,29 @@ impl Cores {
         Self { count, workers }
     }
 
+    /// `count` cores, half of them, rounded down and one at least, the runtime's workers.
+    ///
+    /// `docs/perf/passthrough.md` records the layouts measured and why this one is chosen.
+    pub const fn from_count(count: NonZeroUsize) -> Self {
+        let workers = match NonZeroUsize::new(count.get() / 2) {
+            Some(workers) => workers,
+            None => NonZeroUsize::MIN,
+        };
+        Self::new(count, workers)
+    }
+
+    /// The cores this process may run on, split as [`from_count`](Self::from_count) splits them:
+    /// what a process that builds its own runtime gives it.
+    ///
+    /// The count honours the process's CPU affinity mask and, on Linux, its cgroup's CPU quota.
+    ///
+    /// # Errors
+    ///
+    /// When the host does not say how many cores the process may run on.
+    pub fn try_from_host() -> Result<Self, ComputePoolError> {
+        Ok(Self::from_count(host_cores()?))
+    }
+
     /// The cores a run may use.
     pub const fn count(self) -> NonZeroUsize {
         self.count

@@ -38,12 +38,6 @@ pub use registry::{Family, clauses, markdown};
 pub use report::{json, line, plain};
 pub use target::Target;
 
-/// The worker threads of the runtime a certification is meant to run on; the kill clauses size
-/// their engine's compute pool beside them.
-pub const WORKERS: NonZeroUsize = NonZeroUsize::new(2).expect("two is not zero");
-
-use std::num::NonZeroUsize;
-
 use rdlt_connector::Role;
 use rdlt_connector::testing::{
     certify_destination_factory_observed, certify_source_factory_observed,

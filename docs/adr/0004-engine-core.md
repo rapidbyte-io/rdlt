@@ -16,15 +16,19 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   destination) -> RunHandle`. The handle is a future; `control()` returns a `RunControl` that stops
   the run after committing or at once, and dropping the handle cancels every task the run started.
   Events and `status()` arrive with the surface in M7.
-- **Cores.** An embedder gives the engine a `Cores`: the cores a run may use and how many of them
-  its tokio runtime's workers take, passed in because the engine does not own the runtime.
-  `RayonPool::try_new` gives the compute pool the cores the workers leave, one thread at least, and
-  `SystemEnv::try_new` builds its pool through it; nothing else sizes a pool. `Env::cores` returns
-  the cores a run may use, and lanes default to one per core. Nothing in the engine reads the
-  host's count of cores (clippy bans `available_parallelism` in `rdlt-engine`), so a run sizes
-  itself alike on every machine, and the simulation declares a fixed count beside its inline pool.
-  A runtime and a pool each as large as the machine contend for its cores;
-  [docs/perf/passthrough.md](../perf/passthrough.md) records the layout measured.
+- **Cores.** A `Cores` is the cores a run may use and how many of them the embedder's tokio
+  runtime takes for its workers; the compute pool gets the rest, one thread at least, through
+  `RayonPool::try_new`, and nothing else sizes a pool. `SystemEnv::try_from_runtime` takes the
+  cores the process may run on (its affinity mask and cgroup quota honoured) and the workers of the
+  runtime it is given, since the engine does not own the embedder's runtime. A process that builds
+  its own runtime gives it the workers `Cores::try_from_host` suggests: half the cores, rounded
+  down and one at least. [docs/perf/passthrough.md](../perf/passthrough.md) measured that split
+  best at 4 cores and tied with the best at 8; at 2 cores it is the only split that leaves each
+  side a core of its own, and runs slower than a runtime of 2 workers beside the pool. An embedder
+  that fixes a layout passes `Cores::new` to `SystemEnv::try_new`. `Env::cores` returns the count,
+  and lanes default to one per core. The engine reads the host's cores in those two constructors
+  and nowhere else (clippy bans `available_parallelism` in the rest of `rdlt-engine`), and the
+  simulation declares a fixed count, so a simulated run sizes itself alike on every machine.
 - **One writer per table per lane.** Each attempt creates its writers before any partition reads,
   and routes a partition's batches for a table to one lane by an FNV hash, so they stay in order.
 - **Barriers wait only for partitions that are reading.** A partition waiting for a read slot, or

@@ -4,7 +4,6 @@
 #![forbid(unsafe_code)]
 
 use std::hint::black_box;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow_array::{
@@ -20,13 +19,6 @@ use rdlt_engine::{CommitPolicy, Cores, Engine, EngineConfig, PipelinePlan, Strea
 const ROWS: i64 = 80_000;
 /// Batches per run.
 const BATCHES: usize = 64;
-
-/// The cores the bench runs within, as docs/perf/passthrough.md runs it under `taskset`, and its
-/// runtime's workers among them; the compute pool gets the rest.
-const CORES: Cores = Cores::new(
-    NonZeroUsize::new(4).expect("four is not zero"),
-    NonZeroUsize::new(2).expect("a runtime has a worker"),
-);
 
 fn batch(offset: i64) -> RecordBatch {
     let ids = offset..offset + ROWS;
@@ -78,8 +70,9 @@ fn passthrough(c: &mut Criterion) {
         .map(|index| batch(i64::try_from(index).unwrap_or(0) * ROWS))
         .collect();
     let bytes: usize = batches.iter().map(RecordBatch::get_array_memory_size).sum();
+    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(CORES.workers().get())
+        .worker_threads(cores.workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -105,7 +98,7 @@ fn passthrough(c: &mut Criterion) {
         .commit(CommitPolicy::new(None, None, Some(1 << 40)).expect("a valid policy"))
         .build()
         .expect("a valid configuration");
-    let env = SystemEnv::try_new(CORES).expect("the pool starts");
+    let env = SystemEnv::try_from_runtime(runtime.handle()).expect("the pool starts");
     let engine = Engine::new(config, Arc::new(env));
     let plan = PipelinePlan::new(
         PipelineId::parse("passthrough").expect("a valid id"),

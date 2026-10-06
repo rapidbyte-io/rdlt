@@ -6,16 +6,21 @@
 //! randomness, CPU scheduling) comes from an [`Env`], so the whole engine runs under
 //! deterministic simulation.
 //!
-//! ```
-//! use std::num::NonZeroUsize;
+//! A process gives its tokio runtime the workers [`Cores::try_from_host`] suggests for the cores
+//! it may run on, and the engine's compute pool the rest; an embedder that fixes its own layout
+//! passes a [`Cores`] to [`SystemEnv::try_new`] instead.
 //!
+//! ```
 //! use rdlt_engine::{Cores, Env, SystemEnv};
 //!
-//! let count = NonZeroUsize::new(4).expect("4 is non-zero");
-//! let workers = NonZeroUsize::new(2).expect("2 is non-zero");
-//! let env = SystemEnv::try_new(Cores::new(count, workers))?;
-//! assert_eq!(env.cores(), count);
-//! # Ok::<(), rdlt_engine::ComputePoolError>(())
+//! let cores = Cores::try_from_host()?;
+//! let runtime = tokio::runtime::Builder::new_multi_thread()
+//!     .worker_threads(cores.workers().get())
+//!     .enable_all()
+//!     .build()?;
+//! let env = SystemEnv::try_from_runtime(runtime.handle())?;
+//! assert_eq!(env.cores(), cores.count());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
 //! # Building
