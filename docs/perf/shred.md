@@ -93,6 +93,11 @@ mode every figure falls to about a third, so compare only runs taken back to bac
 Measured 2026-10-06, `main` at `b46a4574` with the change that last edited this record, load
 average 0.80–0.99, governor `powersave`; the median of five runs.
 
+Neither count meets the spec's bound. Before any chunk parses, one job walks every record of every
+push to cut the chunks, and the pool's other threads wait for it; each chunk then finds its records
+again. Cutting the chunks in parallel with the parse is the planned change; the bound stays per
+core.
+
 ## Build profile
 
 The figures here assume the release profile. Cargo's defaults, which an embedder gets without
@@ -101,8 +106,13 @@ interleaved runs, 2026-10-06, load average 0.78–0.99:
 
 | Build | `nested` | `flat_wide` | `string_heavy` | `normalize/keyless` | Instructions per `nested` pass |
 |---|---|---|---|---|---|
-| Release profile (`lto = "fat"`, `codegen-units = 1`) | 578 MiB/s | 482 MiB/s | 590 MiB/s | 177 MiB/s | 1.31 × 10⁹ |
-| Cargo's release defaults | 426 MiB/s | 376 MiB/s | 484 MiB/s | 149 MiB/s | 1.54 × 10⁹ |
+| Release profile (`lto = "fat"`, `codegen-units = 1`) | 578 MiB/s | 482 MiB/s | 590 MiB/s | 177 MiB/s | 1.305 × 10⁹ |
+| Cargo's release defaults | 426 MiB/s | 376 MiB/s | 484 MiB/s | 149 MiB/s | 1.583 × 10⁹ |
+
+Instructions are callgrind's inclusive count of `rdlt_engine::bench::shred` over one pass in
+criterion's test mode (`--test '^shred/nested$'`): the shredder's own work, without the pool's and
+criterion's threads, which a whole-process count includes and which vary by a few percent from
+run to run.
 
 ## Metering (ADR 0040)
 

@@ -13,8 +13,9 @@ measured on one machine.
 - **Bare loop.** The batches written to the sink's writer one after another, on one thread.
 - **Engine.** `Engine::run` with the `Replay` source pushing the same batches, a checkpoint after
   each, one stream of one partition, commits only at the end, within the cores `taskset` gives the
-  bench: a runtime of the workers `Cores::try_from_host` suggests for them, half, and a compute
-  pool of the rest (`SystemEnv::try_from_runtime`), and lanes one per core.
+  bench: a runtime of the workers `Cores::try_from_host` suggests for them, half and two at
+  least, and a compute pool of the rest, one thread at least (`SystemEnv::try_from_runtime`), and
+  lanes one per core.
 - **Build and cores.** `cargo bench -p rdlt-engine --features bench --bench passthrough`, built
   with the release profile's fat LTO and one codegen unit, run with `taskset -c 0-3` on the
   performance cores; criterion's mean of ten samples, the median and range of five runs.
@@ -38,6 +39,7 @@ engine's median and range:
 | Cores | Workers + compute threads | Bare loop | Engine |
 |---|---|---|---|
 | 2 performance cores (`taskset -c 0-1`) | 1 + 1 | 24.3 ms | 40.0 ms (39.5–41.0) |
+| | 2 + 1 | 24.2 ms | 31.2 ms (30.8–31.6) |
 | 4 performance cores (`taskset -c 0-3`) | 1 + 3 | 24.7 ms | 42.9 ms (42.7–44.6) |
 | | 2 + 2 | 24.1 ms | 28.3 ms (28.0–31.3) |
 | | 3 + 1 | 24.3 ms | 31.2 ms (30.9–31.6) |
@@ -49,12 +51,15 @@ engine's median and range:
 | | 6 + 2 | 35.1 ms | 38.4 ms (38.1–39.1) |
 | | 7 + 1 | 35.1 ms | 38.3 ms (38.1–38.9) |
 
-One worker is the slowest layout at every count: it runs the engine's per-row work and the lane's
-writes alone. Half the cores, the split `Cores::try_from_host` suggests, is the fastest at four
-cores and within the range of every eight-core split but one worker's. At two cores it is the only split that gives each
-side a core; two workers beside a one-thread pool (`Cores::new` with two workers of two cores),
-measured in five further interleaved rounds, ran the engine in 30.6 ms (30.4–31.2) against 39.8 ms
-(39.3–39.9) for one worker and one thread.
+The 2 + 1 row comes from five further interleaved rounds against `main`'s build, whose runtime of
+two workers beside a pool of four threads ran the engine in 29.6 ms (29.1–29.6) in them.
+
+One worker is the slowest layout at every count, 1.5–1.8 times the bare loop: it runs the
+engine's per-row work and every lane's writes alone. So `Cores::try_from_host` gives the runtime
+half the cores and two workers at least: the fastest split at four cores, within the range of
+every eight-core split but one worker's, and at two cores two workers beside a one-thread pool,
+one thread more than there are cores, which ran the engine 22 % faster than one worker and one
+thread, and still 6 % slower than `main`'s two workers beside four threads.
 
 Where the difference goes, on the performance cores:
 
