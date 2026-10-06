@@ -28,33 +28,32 @@ leaves open, and one it words otherwise.
   whole and lowers to `Json`, or text where the destination has no JSON type. Only pipelines and
   streams normalize: a column set to `native` or `json` in a normalized stream is kept whole, and a
   column set to `normalize` is refused when the plan is built.
-- **Identity.** A root row's id is the xxh3-128 of a canonical encoding of its key (the plan's merge
-  key or the source's primary key) or, without one, of the whole row; a child's is the xxh3-128 of
-  its parent's id and its position. The encoding tags each value's kind, renders integers as their
-  digits and floats as their shortest round-trip text (so `1` and `1.0` agree), lists an object's
-  non-null fields in name order (so a missing field and a null one agree), encodes the JSON text
-  a column of mixed types holds as the values it renders, tags every field and writes lengths in
-  LEB128, so no encoding is a prefix of another. It works on Arrow values, so an id does not
-  depend on the batch, chunk or Arrow type that carried the row. A reference normalizer over JSON
-  values, with its own encoding, checks it. Roots that share a key, or whose key is null, share an
-  id, as the spec's keyed identity has them.
-  - Amended 2026-10-03 (ADR 0046): ids are BLAKE3's 256 bits, each kind of id after a tag of its
-    own; numbers carry their length; a float encodes as the 64-bit float it widens to, and a
-    Date64 as the day it is within. A batch lacking a key column, or holding a null or NaN key, is
-    refused before it is identified (`merge_key_missing`, `merge_key_null`, `merge_key_nan`).
-  - Amended 2026-10-03 (ADR 0040): JSON text is read without recursion and its numbers by their
-    exact value, in one canonical text a value; a float's text is its shortest, a tie going to
-    the even digit. Text that is not JSON fails the write, `json_invalid`. A merge key stored as
+- **Identity.** A root row's id is the BLAKE3 hash, all 256 bits, of a canonical encoding of its
+  key (the plan's merge key or the source's primary key) or, without one, of its whole row; a
+  child's is the BLAKE3 hash of its parent's id and its position; each kind of id is hashed
+  after a tag of its own. The encoding tags each value's kind, renders integers as their digits
+  and a float as the 64-bit float it widens to, written as its shortest round-trip text with a
+  tie going to the even digit (so `1` and `1.0` agree), gives each number its length, encodes a
+  `Date64` as the day it is within, lists an object's non-null fields in name order (so a
+  missing field and a null one agree), reads the JSON text a column of mixed types holds as the
+  values it renders, without recursion and its numbers by their exact value, tags every field
+  and writes lengths in LEB128, so no encoding is a prefix of another. It works on Arrow values,
+  so an id does not depend on the batch, chunk or Arrow type that carried the row. A reference
+  normalizer over JSON values, with its own encoding, checks it. Roots that share a key share
+  an id, as the spec's keyed identity has them.
+  - A batch lacking a key column, or holding a null or NaN key, is refused before it is
+    identified (`merge_key_missing`, `merge_key_null`, `merge_key_nan`). A merge key stored as
     JSON on a normalized stream is refused, `merge_key_json`: its rows would merge by stored
-    text while their children follow ids that read the values. An array under a key that cannot
-    name a child table follows the stream's policy, refused as `table_path_invalid` where it
-    does not discard.
-- **Lineage columns' types.** The spec gives the ids as `FixedSizeBinary(16)` and the position as
-  `UInt32`. The contract has no fixed-size binary or unsigned logical types, so the ids are 16
-  bytes of `Binary`, as `_rdlt_seq` already is, and the position is `Int64`; every destination
-  stores both. A stream's own table carries `_rdlt_id`; child tables carry all four. They are
-  nullable: a stream that starts to normalize keeps its table, to which planning adds the lineage
-  columns, and its earlier rows have none.
+    text while their children follow ids that read the values. Text in a column of JSON that is
+    not JSON fails the write, `json_invalid`. An array under a key that cannot name a child
+    table follows the stream's policy, refused as `table_path_invalid` where it does not
+    discard.
+- **Lineage columns' types.** Ids are 32 bytes of `Binary`, BLAKE3's whole output, and the
+  position is `Int64`: the contract has no fixed-size binary or unsigned logical types, so the
+  spec's `FixedSizeBinary(16)` and `UInt32` are not used, as `_rdlt_seq` is `Binary` too. Every
+  destination stores both. A stream's own table carries `_rdlt_id`; child tables carry all four.
+  They are nullable: a stream that starts to normalize keeps its table, to which planning adds the
+  lineage columns, and its earlier rows have none.
 - **Child tables.** A child table's path is its parent table's path and the array's path within
   the parent row, and its name comes from the naming rules for that path, so `a__b` as a key and
   `a.b` as nesting never alias (D4). Tables that state records keep their names. A child table is
