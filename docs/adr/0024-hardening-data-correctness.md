@@ -25,10 +25,10 @@ M5b follows H1b.
 - **sqlgen's internal names never collide with a table's.**
   - A merge ranks its rows under an alias that no column of the table has, compared without
     case.
-  - Derived tables and indexes keep within `SqlDialect::max_identifier`. A name too long keeps what
-    fits of its start and ends in a 32-bit FNV-1a hash of the whole name, so two long names sharing
-    a start stay distinct. No shipped dialect sets a limit yet; M5b's SQL destinations do, and
-    review then whether a fitted name can meet another table's own.
+  - Derived tables and indexes keep within `SqlDialect::max_identifier`. A name too long is the
+    prefix `_rdlt_fit_` and the SHA-256 of the whole name in base 32: no name the planner derives
+    uncut and no catalog table begins with that prefix, so a cut name meets only another cut name
+    (ADR 0049).
   - The name functions became planner methods.
   - User columns may still start with `_rdlt_`: the engine names its own metadata columns around
     them. Amended 2026-10-03 (ADR 0046): one named exactly as a metadata column, folded and
@@ -55,8 +55,8 @@ M5b follows H1b.
 - **Writers' memory is charged until they flush.** A lane holds each write's reservation until its
   writer flushes, since a writer may buffer what it stages. It flushes when the coordinator asks,
   and on its own when the budget is pressed while it holds writes it has not flushed. The budget
-  is pressed while a request waits or while charges exceed it: one push with nothing admitted
-  behind it still flushes the writers it fills.
+  is pressed while a request for pushes or for lowering waits, or while a holder of queued
+  pieces waits for their writes.
 - **Unbounded partitions.** `Partition::unbounded()` marks a partition that never ends, such as a
   change stream's or a log's.
   - Such a partition is never `Done`.
