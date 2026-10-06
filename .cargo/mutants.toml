@@ -1,8 +1,20 @@
 test_tool = "nextest"
 profile = "mutants"
-exclude_globs = ["xtask/**", "crates/rdlt-sim/**", "crates/rdlt-wire/src/generated/**"]
+# The stores' shared contract tests are tests, run against each store, not code under test.
+exclude_globs = [
+  "xtask/**",
+  "crates/rdlt-sim/**",
+  "crates/rdlt-wire/src/generated/**",
+  "crates/rdlt-engine/src/conformance.rs",
+]
 all_features = true
-additional_cargo_test_args = ["--profile", "mutants"]
+# Whether the kernel marks a range of descriptors at once is true on every kernel of 5.11 or
+# later, where the nightly and every machine the project is built on run: a mutant that answers
+# true there is the code as it is.
+exclude_re = ["crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true"]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
-# this; cargo-mutants' own timeout would count it as a timeout instead.
-minimum_test_timeout = 90
+# this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant
+# no test catches takes, every tested package's whole suite, about six minutes on the nightly's
+# runners beside another mutant's: a shard's baseline tests only the packages it mutates, and the
+# timeout cargo-mutants derives from it can fall short of that.
+minimum_test_timeout = 900

@@ -50,16 +50,18 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 filter = "package(rdlt-engine) & binary(crashes)"
 slow-timeout = { period = "120s", terminate-after = 8 }
 
-# Mutation testing: every engine and contract test takes well under a second, so one still running
-# after ten seconds is hung on the mutant. Terminating it fails the test, which catches the mutant.
+# Mutation testing: two mutants' tests at once on a four-core runner, beside a build, take under
+# seven seconds each but those given more below, so one still running after twenty is hung on the
+# mutant. Terminating it fails the test, which catches the mutant; a test that passes unmutated
+# never comes near its limit, so no limit catches a mutant no assertion would.
 [profile.mutants]
 # Each of cargo-mutants' jobs runs tests of its own, by default a thread per core: four jobs on
 # sixteen cores ran sixty-four tests at once, and tests that pass unmutated outran the timeouts
 # below, counting mutants no assertion caught as caught. Four threads a job keep
-# `just mutants-diff`'s four jobs at sixteen tests on sixteen cores, and leave the nightly's two
-# jobs on four-core runners with the thread per core the default gives there.
+# `just mutants-diff`'s four jobs at sixteen tests on sixteen cores; the nightly's two jobs on
+# four-core runners set two threads each.
 test-threads = 4
-slow-timeout = { period = "5s", terminate-after = 2 }
+slow-timeout = { period = "10s", terminate-after = 2 }
 leak-timeout = "500ms"
 # A mutant is caught by its first failing test: the tests still running then, which a mutant can
 # slow past cargo-mutants' timeout, are terminated at once.
@@ -68,15 +70,29 @@ fail-fast = { max-fail = 1, terminate = "immediate" }
 # tests do not first: they run in the test job, never against each mutant.
 default-filter = "not (package(rdlt-engine) & binary(crashes)) & not (package(rdlt-log-store) & binary(containers))"
 
-# The placement matrix runs on the real clock, and a scenario sleeps for seconds; the host's process
-# tests spawn connectors, each within seconds.
+# The placement matrix runs on the real clock, and a scenario sleeps for seconds: up to 23
+# seconds on the nightly's runners.
 [[profile.mutants.overrides]]
 filter = "test(/^placement::/)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
+# The host's tests that no connector inherits a descriptor another thread opens spawn three
+# hundred connectors each, eight at a time: up to 13 seconds on the nightly's runners.
 [[profile.mutants.overrides]]
-filter = "package(rdlt-host) & test(/^process::/)"
-slow-timeout = { period = "10s", terminate-after = 2 }
+filter = "package(rdlt-host) & binary(it) & test(/^descriptors::no_/)"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# A read frame at the default bound for data is decoded to its end before it is refused: up to 9
+# seconds on the nightly's runners.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-host) & binary(it) & test(=decoded::a_read_frame_counted_beyond_its_bound_is_refused_within_it)"
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# The log's tests of partitions loading at once run every load of a matrix through every way
+# receipts may come, one of them on the real clock: up to 10 seconds on the nightly's runners.
+[[profile.mutants.overrides]]
+filter = "package(rdlt-engine) & test(/^wal::load::tests::concurrent::/)"
+slow-timeout = { period = "30s", terminate-after = 2 }
 
 # The certifier's command-line and spawned tests run the binary against real connectors and kill
 # processes, more slowly beside other tests.
@@ -98,15 +114,67 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 filter = "package(rdlt-connector-reference)"
 slow-timeout = { period = "30s", terminate-after = 2 }
 
-# The engine's tests of the files destinations' growth run over a hundred runs against real files,
-# each syncing them: three seconds alone, and as the reference connectors' tests beside others.
-[[profile.mutants.overrides]]
-filter = "package(rdlt-engine) & test(/keeps_few_files_however_many_commits_append$/)"
-slow-timeout = { period = "30s", terminate-after = 2 }
-
 # The engine's tests of a table that changes with every push load and replay hundreds of schema
 # versions through a spawned destination: up to eight seconds alone, more beside other mutants'
 # tests. They wait long enough that only a hang times out.
 [[profile.mutants.overrides]]
 filter = "package(rdlt-engine) & test(/through_a_served_destination$/)"
 slow-timeout = { period = "30s", terminate-after = 2 }
+
+# Each crate's mutants run its own tests first, where most are caught, then those of the packages
+# that link it: `just mutants <crate>` tests with the crate's profile.
+[profile.mutants-rdlt-engine]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-engine.overrides]]
+filter = "package(rdlt-engine)"
+priority = 1
+
+[profile.mutants-rdlt-connector]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-connector.overrides]]
+filter = "package(rdlt-connector)"
+priority = 1
+
+[profile.mutants-rdlt-adopt]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-adopt.overrides]]
+filter = "package(rdlt-adopt)"
+priority = 1
+
+[profile.mutants-rdlt-wire]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-wire.overrides]]
+filter = "package(rdlt-wire)"
+priority = 1
+
+[profile.mutants-rdlt-host]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-host.overrides]]
+filter = "package(rdlt-host)"
+priority = 1
+
+[profile.mutants-rdlt-certify]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-certify.overrides]]
+filter = "package(rdlt-certify)"
+priority = 1
+
+[profile.mutants-rdlt-connector-reference]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-connector-reference.overrides]]
+filter = "package(rdlt-connector-reference)"
+priority = 1
+
+[profile.mutants-rdlt-log-store]
+inherits = "mutants"
+
+[[profile.mutants-rdlt-log-store.overrides]]
+filter = "package(rdlt-log-store)"
+priority = 1
