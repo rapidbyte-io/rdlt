@@ -42,3 +42,6 @@ pub const SECRET_BYTES: u64 = 64 * 1024;
 
 /// Bytes: bounds the name of a secret reference, a path among them.
 pub const SECRET_NAME_BYTES: usize = 4096;
+
+#[cfg(test)]
+mod tests;
