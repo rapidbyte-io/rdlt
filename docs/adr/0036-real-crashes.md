@@ -15,20 +15,25 @@ processes, with real files, sockets and child processes.
 
 - **Crash points.** The engine's `failpoints` feature (the `fail` crate, never in a release)
   names a point at each durability step:
-  - a log append;
-  - either side of the lanes' flush and of the commit frame's fsync;
-  - before a forgetting source hears of a logged commit;
-  - either side of the destination's commit, and of the commit completing a stream, where a
-    replace publishes its generation;
-  - after the log appends the receipt, and after it removes each chunk it no longer needs;
-  - either side of a source hearing of a landed commit;
-  - either side of the closing frame's fsync, and after the log is removed;
-  - either side of a replayed commit.
+  - before each frame is appended to the chunk the log stages (`engine.wal.append`);
+  - either side of the lanes' flush (`engine.flush.*`), and either side of a chunk's publish, a
+    commit's chunk among them (`engine.wal.publish.*`);
+  - before a source that forgets hears of a logged commit (`engine.ack.early`);
+  - either side of the destination's commit (`engine.commit.*`), and of the commit completing a
+    stream, where a replace publishes its generation (`engine.complete.*`);
+  - once the log hears a commit landed, before it notes the receipt (`engine.receipt.after`),
+    and after it deletes each chunk it leaves unneeded (`engine.wal.remove`);
+  - either side of a source hearing of a landed commit (`engine.ack.before`, `engine.ack.after`);
+  - either side of the closing chunk's publish (`engine.wal.close.*`), and after the log is
+    removed (`engine.wal.removed`);
+  - in a replay: once it fenced the log (`engine.replay.fenced`), either side of the replayed
+    commit (`engine.replay.before`, `engine.replay.after`), and once it released the log before
+    deleting it (`engine.replay.released`).
 
   A point configured through `FAILPOINTS` aborts the process there: no unwinding, no flush, no
-  goodbye to a connector. Amended 2026-10-02: the harness turns
-  its core dumps off before it runs, so an abort costs the system's dump handler nothing; and
-  each process a test starts is killed with its group when the test's own process ends.
+  goodbye to a connector. The harness turns its core dumps off before it runs, so an abort costs
+  the system's dump handler nothing, and each process a test starts is killed with its group
+  when the test's own process ends.
 - **The harness stands for the CLI** until M7 has one: the engine's `crash_run` example runs one
   pipeline from a configuration file, its source and destination in its process or spawned, its
   log in a local directory where it keeps one, tells each read and commit as it happens, and
@@ -50,7 +55,8 @@ processes, with real files, sockets and child processes.
   - The destination's commit crashes at every hit a run reaches, ending once a run makes fewer
     commits than the hit, since the commits a run makes vary with timing; the commits where a
     phase begins or a truncate lands crash with the rest.
-  - A commit left by a crash is replayed through two more crashes, before and after it lands.
+  - A commit left by a crash is replayed through more crashes: once the replay fenced the log,
+    before and after the commit lands, and once it released the log before deleting it.
 
   The next run must load the table exactly as the reference models say, with no log left, or
   none written. A point that no longer crashes a run fails the sweep.
