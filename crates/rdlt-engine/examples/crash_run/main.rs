@@ -51,7 +51,11 @@ fn main() -> ExitCode {
     let cores = match Cores::try_from_host() {
         Ok(cores) => cores,
         Err(error) => {
-            writeln!(std::io::stderr(), "crash_run: {error}").ok();
+            writeln!(
+                std::io::stderr(),
+                "crash_run: the host's count of cores: {error}"
+            )
+            .ok();
             return ExitCode::from(2);
         }
     };

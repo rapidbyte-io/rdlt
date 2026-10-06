@@ -1,4 +1,4 @@
-//! Injected sources of time and randomness.
+//! Injected sources of time and randomness, and the cores a run may use.
 
 mod system;
 #[cfg(test)]

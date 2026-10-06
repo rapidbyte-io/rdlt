@@ -68,7 +68,7 @@ impl Cores {
     /// # Errors
     ///
     /// When the host does not say how many cores the process may run on.
-    pub fn try_from_host() -> Result<Self, ComputePoolError> {
+    pub fn try_from_host() -> std::io::Result<Self> {
         Ok(Self::from_count(host_cores()?))
     }
 
@@ -95,7 +95,8 @@ impl Cores {
     pub(crate) fn try_beside(runtime: &tokio::runtime::Handle) -> Result<Self, ComputePoolError> {
         let workers =
             NonZeroUsize::new(runtime.metrics().num_workers()).expect("a runtime has a worker");
-        Ok(Self::new(host_cores()?, workers))
+        let count = host_cores().map_err(|error| ComputePoolError(Box::new(error)))?;
+        Ok(Self::new(count, workers))
     }
 }
 
@@ -105,8 +106,8 @@ impl Cores {
     clippy::disallowed_methods,
     reason = "the engine reads the host's cores here alone; a simulation declares its own"
 )]
-fn host_cores() -> Result<NonZeroUsize, ComputePoolError> {
-    std::thread::available_parallelism().map_err(|error| ComputePoolError(Box::new(error)))
+fn host_cores() -> std::io::Result<NonZeroUsize> {
+    std::thread::available_parallelism()
 }
 
 impl RayonPool {
