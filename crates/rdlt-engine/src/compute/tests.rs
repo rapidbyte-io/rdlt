@@ -32,16 +32,20 @@ proptest! {
         }
     }
 
-    /// The suggested split gives the runtime and the pool a core each at least, and every core
-    /// to one of them where there are two or more.
+    /// The suggested split gives the pool a thread and the runtime two workers at least, where
+    /// there are two cores, and every core to one of them from three on; one or two cores take
+    /// one thread more than there are.
     #[test]
     fn a_count_of_cores_splits_into_workers_and_compute_threads(count in 1usize..=1024) {
         let split = Cores::from_count(NonZeroUsize::new(count).unwrap());
         prop_assert_eq!(split.count().get(), count);
-        prop_assert!(split.workers().get() >= 1);
+        prop_assert_eq!(split.workers().get(), count.min(2).max(count / 2));
         prop_assert!(split.compute_threads().get() >= 1);
-        if count >= 2 {
-            prop_assert_eq!(split.workers().get() + split.compute_threads().get(), count);
+        let threads = split.workers().get() + split.compute_threads().get();
+        if count >= 3 {
+            prop_assert_eq!(threads, count);
+        } else {
+            prop_assert_eq!(threads, count + 1);
         }
     }
 }
@@ -142,10 +146,20 @@ fn the_host_s_cores_split_as_their_count_does() {
 }
 
 #[test]
-fn the_suggested_split_gives_the_runtime_half_the_cores() {
-    for (count, workers) in [(1, 1), (2, 1), (3, 1), (4, 2), (8, 4), (9, 4), (16, 8)] {
+fn the_suggested_split_gives_the_runtime_half_the_cores_and_two_workers_at_least() {
+    for (count, workers, threads) in [
+        (1, 1, 1),
+        (2, 2, 1),
+        (3, 2, 1),
+        (4, 2, 2),
+        (5, 2, 3),
+        (8, 4, 4),
+        (9, 4, 5),
+        (32, 16, 16),
+    ] {
         let split = Cores::from_count(NonZeroUsize::new(count).unwrap());
         assert_eq!(split.workers().get(), workers, "{count} cores");
+        assert_eq!(split.compute_threads().get(), threads, "{count} cores");
     }
 }
 
