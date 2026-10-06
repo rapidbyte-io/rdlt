@@ -73,8 +73,10 @@ to another machine and replay what the first left.
 - What a staging holds in memory, a part, is the store's `WalStore::staging_bytes`, which the
   engine reserves from the memory budget's share for logs as a load's log starts, beside the
   256 KiB a carry copies through. One that leaves the share too little for a commit's frame
-  recording a full share of cursors is refused (`wal_staging_exceeds_budget`; ADR 0045 states
-  the bound), so the default part is 7 MiB, which the default budget holds.
+  recording a full share of cursors, counted twice over for its encoding, and 4 KiB of frame
+  head is refused (`wal_staging_exceeds_budget`; ADR 0045 states the bound), so the default part
+  is 7 MiB, which the default budget holds: at the default 256 MiB budget a part past 8,122,368
+  bytes is refused.
 
 ### Every request bounded
 
@@ -188,15 +190,15 @@ is what its operator states of it.
 - **No CA file.** A private endpoint's authority is trusted through the system's roots.
 - **What a store stages is charged to the budget.** A part is held in memory as it fills; it is
   reserved once, from the share for logs, as a load's log starts, and a part that leaves that
-  share too little for a commit recording a full share of cursors is refused. Cost: a load keeps
-  a part reserved while its log is open, written to or not, and the default part is 7 MiB rather
-  than 8.
+  share too little for a commit recording a full share of cursors, counted twice over for its
+  encoding, and 4 KiB of frame head is refused. Cost: a load keeps a part reserved while its log
+  is open, written to or not, and the default part is 7 MiB rather than 8.
 
 ## Consequences
 
 - An embedder chooses a pipeline's log store in configuration; the local store is unchanged.
 - A log on S3 costs, each commit, a HEAD of its mark, a PUT of its chunk and a HEAD of the mark
-  again; a chunk past 7 MiB adds a multipart upload; deleting a chunk no longer needed is a
+  again; a chunk past the configured part (7 MiB by default) adds a multipart upload; deleting a chunk no longer needed is a
   DELETE, two for one uploaded in parts, and a GET of its head where the process never read it. Opening a log is a LIST and a PUT, removing it a DELETE,
   a LIST and a DELETE an object; every commit lists the open marks once, for its horizon. What a
   log costs is bounded by its live chunks, never by how many it held. A commit waits for its PUT
