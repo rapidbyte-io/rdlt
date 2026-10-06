@@ -140,3 +140,28 @@ fn the_host_s_cores_split_as_their_count_does() {
     let host = Cores::try_from_host().unwrap();
     assert_eq!(host, Cores::from_count(host.count()));
 }
+
+#[test]
+fn the_suggested_split_gives_the_runtime_half_the_cores() {
+    for (count, workers) in [(1, 1), (2, 1), (3, 1), (4, 2), (8, 4), (9, 4), (16, 8)] {
+        let split = Cores::from_count(NonZeroUsize::new(count).unwrap());
+        assert_eq!(split.workers().get(), workers, "{count} cores");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_host_s_cores_are_those_its_affinity_mask_leaves() {
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
+    let allowed = sched_getaffinity(None).unwrap();
+    let mut two = CpuSet::new();
+    let chosen: Vec<usize> = (0..CpuSet::MAX_CPU)
+        .filter(|cpu| allowed.is_set(*cpu))
+        .take(2)
+        .collect();
+    for cpu in &chosen {
+        two.set(*cpu);
+    }
+    sched_setaffinity(None, &two).unwrap();
+    assert_eq!(Cores::try_from_host().unwrap().count().get(), chosen.len());
+}

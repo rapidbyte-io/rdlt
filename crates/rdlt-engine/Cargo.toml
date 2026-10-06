@@ -53,7 +53,7 @@ xxhash-rust.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { workspace = true, features = ["signal", "user"] }
-rustix = { workspace = true, features = ["process", "time"] }
+rustix = { workspace = true, features = ["process", "thread", "time"] }
 
 [dev-dependencies]
 criterion.workspace = true
