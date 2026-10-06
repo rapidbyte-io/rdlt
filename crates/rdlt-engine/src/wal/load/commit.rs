@@ -119,8 +119,8 @@ impl LoadLog {
     async fn seal(&self, budget: &MemoryBudget, seal: Sealed) -> Result<(Command, u64), Error> {
         let segment = seal.segment;
         let counted = self.counts.lock().remove(&segment).unwrap_or_default();
-        // Reserved before it is encoded for the cursors it records, each written twice over in
-        // base64, and for the frame as it is once it exists.
+        // Reserved before it is encoded, for the cursors it records as base64 text, within
+        // `RECORDED` bytes for each of their bytes, and for the frame as it is once it exists.
         let cursors = [seal.from.as_ref(), Some(&seal.state)];
         let cursors = cursors.into_iter().flatten().map(recorded);
         let bytes = cursors.fold(FRAMED, u64::saturating_add);

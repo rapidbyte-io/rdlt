@@ -14,9 +14,14 @@ use std::time::Duration;
 /// larger than the share is refused. A cursor waits for no push: its share is its own.
 pub(crate) const CURSOR_SHARE: u64 = 64;
 
-/// The log's seal and commit frames, from before they are encoded until they are appended: a
-/// 16th of the budget, four times the cursors' share, since a seal's frame records two cursors,
-/// each twice over in base64.
+/// The log's frames and its store's staging: a 16th of the budget, four times the cursors'
+/// share, so a commit's frame recording a full share of cursors fits beside what the store
+/// stages.
+///
+/// Seal, commit and table frames hold it from before they are encoded until they are appended,
+/// a cursor taking at most `RECORDED` bytes in a frame for each of its bytes; while a log is
+/// open, what its store stages and what a carry reads at once hold it too, at most what
+/// `staged_at_most` leaves.
 pub(crate) const LOG_SHARE: u64 = 16;
 
 /// What commits record of tables, each table's schema and names, from the schema change that
@@ -127,7 +132,8 @@ pub(crate) const JSON_EXCEEDS_BUDGET: &str = "json_exceeds_budget";
 /// The code of the error for one row that takes more to lower than a request may take.
 pub(crate) const ROW_EXCEEDS_BUDGET: &str = "row_exceeds_budget";
 
-/// The code of the error for a seal's or a commit's frame that takes more than the log's share.
+/// The code of the error for a seal's, commit's or table's frame that takes more than the log's
+/// share.
 pub(crate) const LOG_FRAME_EXCEEDS_BUDGET: &str = "log_frame_exceeds_budget";
 
 /// Cells: the most one shred of JSON pushes builds, a cell being a row under a column holding
@@ -173,8 +179,9 @@ pub(crate) const WAL_FOREIGN: &str = "wal_foreign";
 /// take of the memory budget: the log was written under more memory than replays it.
 pub(crate) const REPLAY_EXCEEDS_BUDGET: &str = "replay_exceeds_budget";
 
-/// The code of the error for a write-ahead log store that stages more in memory than half the
-/// budget's share for the log, which the log's seal and commit frames need beside it.
+/// The code of the error for a write-ahead log store that stages more in memory than the log's
+/// share of the budget leaves beside a commit's frame recording a full share of cursors, a
+/// carry's read and a frame's head (`staged_at_most`).
 pub(crate) const WAL_STAGING_EXCEEDS_BUDGET: &str = "wal_staging_exceeds_budget";
 
 /// Bytes: what a load's write-ahead log holds on disk at most by default, 4 GiB: four commits'

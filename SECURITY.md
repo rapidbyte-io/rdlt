@@ -217,10 +217,11 @@ Whatever a connector sends is reserved from the memory budget before the engine 
 bounded by a limit with a typed refusal (ADR 0039):
 
 - The budget is never passed. It is divided into shares, for the cursors of checkpoints, the
-  log's frames, what commits record of tables, what reads keep, and data, and a reservation is
-  made only where it fits its share. One that could never fit is refused:
-  `push_exceeds_budget`, `row_exceeds_budget`, `log_frame_exceeds_budget`,
-  `table_exceeds_budget`, and `limit_exceeded` naming `cursor bytes` or `read kept bytes`.
+  log's frames and its store's staging, what commits record of tables, what reads keep, what
+  decoding answers holds, and data, and a reservation is made only where it fits its share.
+  One that could never fit is refused: `push_exceeds_budget`, `row_exceeds_budget`,
+  `log_frame_exceeds_budget`, `wal_staging_exceeds_budget`, `table_exceeds_budget`, and
+  `limit_exceeded` naming `cursor bytes` or `read kept bytes`.
 - A push reserves what it keeps alive, its schema included; JSON text reserves three times
   itself, for the batches it becomes, and what its batches take beyond that is reckoned and
   reserved before any of it is built, or refused, `json_exceeds_budget` (ADR 0040). The

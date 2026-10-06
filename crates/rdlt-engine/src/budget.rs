@@ -151,11 +151,12 @@ impl MemoryBudget {
         self.request(Class::Cursor, bytes).await
     }
 
-    /// Reserves the `bytes` of a frame on its way into the log, from the log's own share.
+    /// Reserves the `bytes` of a frame on its way into the log, or of what the log's store stages
+    /// and a carry reads at once, from the log's own share.
     ///
     /// # Errors
     ///
-    /// As [`MemoryBudget::acquire`], for a frame larger than the share.
+    /// As [`MemoryBudget::acquire`], for a request larger than the share.
     pub(crate) async fn acquire_log(&self, bytes: u64) -> Result<Reservation, Denied> {
         self.request(Class::Log, bytes).await
     }

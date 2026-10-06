@@ -351,8 +351,8 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
 ///
 /// # Errors
 ///
-/// `wal_staging_exceeds_budget` where the store stages more in memory than half the budget's
-/// share for the log, which the log's frames need beside it.
+/// `wal_staging_exceeds_budget` where the store stages more in memory than `staged_at_most`
+/// leaves of the log's share beside a commit's frame, a carry's read and a frame's head.
 async fn start_log(
     context: &RunContext,
     load_id: LoadId,
@@ -415,7 +415,7 @@ async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Error>
         ))
         .with_code(WAL_STAGING_EXCEEDS_BUDGET));
     }
-    // What a carry reads back at once is held beside it, out of the other half.
+    // What a carry reads back at once is held beside the staging, in the log's share.
     budget
         .acquire_log(bytes.saturating_add(LOG_COPY_BYTES))
         .await

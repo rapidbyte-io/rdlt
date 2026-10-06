@@ -32,7 +32,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   | Share | Of the budget | At the default 256 MiB | Holds |
   |---|---|---|---|
   | cursors | 1/64 | 4 MiB | the cursors of seals waiting for a commit |
-  | log | 1/16 | 16 MiB | seal, commit and table frames from before they are encoded until they are appended |
+  | log | 1/16 | 16 MiB | seal, commit and table frames from before they are encoded until they are appended, and, while a log is open, what its store stages and what a carry reads at once |
   | tables | 1/32 | 8 MiB | what a commit records of each changed table, its schema and names, from the change until the commit lands |
   | reads | 1/4 | 64 MiB | what reads keep beside their events: a decoder's schema and dictionaries |
   | answers | 1/16 | 16 MiB | what decoding a remote connector's answers holds, but a read's frames, from before each is decoded until it is (ADR 0042) |
@@ -46,9 +46,12 @@ budget before it is held, or bounded by a limit with a typed refusal.
     than a request may fails its write with `row_exceeds_budget`; a cursor beyond the cursors'
     share and what a read keeps beyond its part fail the read with `limit_exceeded`, naming
     `cursor bytes` and `read kept bytes`; a seal's or commit's frame beyond the log's share
-    fails the commit with `log_frame_exceeds_budget`; a table whose records pass the tables'
-    share fails its schema change with `table_exceeds_budget`, before the destination or any
-    commit sees it.
+    fails the commit, and a table's frame the write that logs it, with
+    `log_frame_exceeds_budget`; a log store that stages more than the log's share leaves beside
+    a commit recording a full share of cursors, a carry's read and a frame's head fails the
+    attempt with `wal_staging_exceeds_budget`; a table whose records pass the tables' share
+    fails its schema change with `table_exceeds_budget`, before the destination or any commit
+    sees it.
   - **Control never waits behind data.** A checkpoint's cursor is reserved from the cursors'
     share, which no push can use. A commit is due once the waiting cursors take half of it, and
     as soon as a cursor waits for room in it; a barrier raised for that commit ends its wait for
