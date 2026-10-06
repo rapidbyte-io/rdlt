@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use rdlt_engine::Env;
 
-use crate::seed::{Seed, run};
+use crate::seed::{Seed, run, run_threaded};
 
 /// How long ten sleeps of a tenth of a second take in virtual time, `perturbed` or not.
 fn slept(perturbed: bool) -> Duration {
@@ -51,4 +51,12 @@ fn a_perturbed_pool_runs_some_jobs_later_but_runs_them_all() {
         }
         assert_eq!(done.load(Ordering::SeqCst), 100, "and every job runs");
     });
+}
+
+#[test]
+fn a_threaded_run_s_runtime_has_the_workers_its_pool_was_sized_beside() {
+    let workers = run_threaded(Seed::new(7), |_env| async {
+        tokio::runtime::Handle::current().metrics().num_workers()
+    });
+    assert_eq!(workers, super::WORKERS.get());
 }

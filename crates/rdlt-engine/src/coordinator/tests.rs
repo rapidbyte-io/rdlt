@@ -26,7 +26,6 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::{Coordinator, CoordinatorParts, Cycle, PartitionRun, StreamRun};
-use crate::compute::RayonPool;
 use crate::config::CommitPolicy;
 use crate::env::SystemEnv;
 use crate::error::{Error, ErrorKind};
@@ -256,7 +255,6 @@ impl Setup {
             latest: Arc::default(),
             budget: crate::budget::MemoryBudget::new(self.budget),
         };
-        let pool = RayonPool::new(NonZeroUsize::MIN).unwrap();
         let session = SharedSession::new(Box::new(Recorder {
             commits: Arc::clone(&commits),
             closed,
@@ -268,7 +266,7 @@ impl Setup {
         let wal = self.wal.as_ref().map(|store| started(Arc::clone(store)));
         let lanes = lanes(&tables);
         let coordinator = Coordinator::new(CoordinatorParts {
-            env: Arc::new(SystemEnv::new(pool)),
+            env: Arc::new(SystemEnv::one_core()),
             policy: self.policy,
             barrier_wait: self.barrier_wait,
             tables,

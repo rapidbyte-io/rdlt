@@ -37,7 +37,11 @@ impl Session {
     /// which then stops what it spawned.
     pub(super) fn start(until: Option<Instant>) -> Result<Self, Ended> {
         let failed = |error| Ended(IO, format!("starting the runtime failed: {error}"));
-        let runtime = Runtime::new().map_err(failed)?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(rdlt_certify::WORKERS.get())
+            .enable_all()
+            .build()
+            .map_err(failed)?;
         let mut signals = tokio::runtime::Builder::new_multi_thread();
         let signals = signals
             .worker_threads(1)

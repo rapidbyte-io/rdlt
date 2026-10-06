@@ -36,9 +36,10 @@ pub use reset::{ResetReport, ResetScope};
 /// use std::num::NonZeroUsize;
 /// use std::sync::Arc;
 ///
-/// use rdlt_engine::{Engine, EngineConfig, RayonPool, SystemEnv};
+/// use rdlt_engine::{Cores, Engine, EngineConfig, SystemEnv};
 ///
-/// let env = Arc::new(SystemEnv::new(RayonPool::new(NonZeroUsize::MIN)?));
+/// let cores = Cores::new(NonZeroUsize::new(2).expect("2 is non-zero"), NonZeroUsize::MIN);
+/// let env = Arc::new(SystemEnv::try_new(cores)?);
 /// let engine = Engine::new(EngineConfig::builder().build()?, env);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```

@@ -15,8 +15,8 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rdlt_engine::RayonPool;
 use rdlt_engine::bench::{normalize, shred, shred_on};
+use rdlt_engine::{Cores, RayonPool};
 
 /// Bytes each corpus holds.
 const CORPUS_BYTES: usize = 32 << 20;
@@ -24,6 +24,9 @@ const CORPUS_BYTES: usize = 32 << 20;
 const PUSH_BYTES: usize = 8 << 20;
 /// Bytes per shredding job, the default chunk size.
 const CHUNK_BYTES: usize = 1 << 20;
+/// The counts of cores `shred_cores` runs within, each beside the bench's one runtime worker,
+/// which only waits: run `shred_cores/N` under `taskset` on N cores.
+const CORE_COUNTS: [usize; 3] = [1, 4, 8];
 
 /// A deterministic source of numbers for the corpora.
 struct Mix(u64);
@@ -191,17 +194,17 @@ fn single_core(c: &mut Criterion) {
 fn many_cores(c: &mut Criterion) {
     let pushes = corpus(nested);
     let bytes: usize = pushes.iter().map(Bytes::len).sum();
-    let cores = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("a runtime starts");
     let mut group = c.benchmark_group("shred_cores");
     group.sample_size(10);
     group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
-    for threads in [1, 2, 4, 8].into_iter().filter(|threads| *threads <= cores) {
-        let pool = RayonPool::new(NonZeroUsize::new(threads).expect("at least one thread"))
-            .expect("the pool starts");
-        group.bench_with_input(BenchmarkId::from_parameter(threads), &pool, |b, pool| {
+    for count in CORE_COUNTS {
+        let count = NonZeroUsize::new(count).expect("a run has a core");
+        let pool =
+            RayonPool::try_new(Cores::new(count, NonZeroUsize::MIN)).expect("the pool starts");
+        group.bench_with_input(BenchmarkId::from_parameter(count), &pool, |b, pool| {
             b.iter(|| {
                 let batches = runtime.block_on(shred_on(pool, &pushes, CHUNK_BYTES));
                 black_box(batches.expect("the corpus shreds"))

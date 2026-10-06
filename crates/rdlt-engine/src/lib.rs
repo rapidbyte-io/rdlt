@@ -9,10 +9,11 @@
 //! ```
 //! use std::num::NonZeroUsize;
 //!
-//! use rdlt_engine::{Env, RayonPool, SystemEnv};
+//! use rdlt_engine::{Cores, Env, SystemEnv};
 //!
-//! let threads = NonZeroUsize::new(2).expect("2 is non-zero");
-//! let env = SystemEnv::new(RayonPool::new(threads)?);
+//! let count = NonZeroUsize::new(4).expect("4 is non-zero");
+//! let workers = NonZeroUsize::new(2).expect("2 is non-zero");
+//! let env = SystemEnv::try_new(Cores::new(count, workers))?;
 //! assert!(env.now() > std::time::UNIX_EPOCH);
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```

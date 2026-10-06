@@ -14,14 +14,19 @@ use arrow_array::{
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter};
 use rdlt_engine::bench::{SinkWriter, ipc_sink, replay};
-use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, RayonPool, StreamPlan, SystemEnv,
-};
+use rdlt_engine::{CommitPolicy, Cores, Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 
 /// Rows per batch: about 7 MB of ten mixed columns, as docs/perf/passthrough.md records.
 const ROWS: i64 = 80_000;
 /// Batches per run.
 const BATCHES: usize = 64;
+
+/// The cores the bench runs within, as docs/perf/passthrough.md runs it under `taskset`, and its
+/// runtime's workers among them; the compute pool gets the rest.
+const CORES: Cores = Cores::new(
+    NonZeroUsize::new(4).expect("four is not zero"),
+    NonZeroUsize::new(2).expect("a runtime has a worker"),
+);
 
 fn batch(offset: i64) -> RecordBatch {
     let ids = offset..offset + ROWS;
@@ -74,6 +79,7 @@ fn passthrough(c: &mut Criterion) {
         .collect();
     let bytes: usize = batches.iter().map(RecordBatch::get_array_memory_size).sum();
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(CORES.workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -99,8 +105,8 @@ fn passthrough(c: &mut Criterion) {
         .commit(CommitPolicy::new(None, None, Some(1 << 40)).expect("a valid policy"))
         .build()
         .expect("a valid configuration");
-    let pool = RayonPool::new(NonZeroUsize::new(4).expect("four")).expect("the pool starts");
-    let engine = Engine::new(config, Arc::new(SystemEnv::new(pool)));
+    let env = SystemEnv::try_new(CORES).expect("the pool starts");
+    let engine = Engine::new(config, Arc::new(env));
     let plan = PipelinePlan::new(
         PipelineId::parse("passthrough").expect("a valid id"),
         [StreamPlan::new(

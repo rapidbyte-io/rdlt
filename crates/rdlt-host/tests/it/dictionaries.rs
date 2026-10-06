@@ -398,9 +398,12 @@ async fn wide(store: &str, dictionary: usize, told: bool) -> rdlt_engine::RunOut
         .expect("the source handshakes");
     let source = RemoteSource::new(connection);
     let destination = crate::support::memory_destination(store, &Options::default()).await;
-    let threads = NonZeroUsize::new(4).expect("not zero");
-    let pool = rdlt_engine::RayonPool::new(threads).expect("the compute pool starts");
-    let engine = rdlt_engine::Engine::new(config, Arc::new(rdlt_engine::SystemEnv::new(pool)));
+    let cores = rdlt_engine::Cores::new(
+        NonZeroUsize::new(8).expect("not zero"),
+        NonZeroUsize::new(4).expect("not zero"),
+    );
+    let env = rdlt_engine::SystemEnv::try_new(cores).expect("the compute pool starts");
+    let engine = rdlt_engine::Engine::new(config, Arc::new(env));
     let stream = StreamPlan::new(StreamName::new("wide").expect("a valid stream name"));
     let plan = PipelinePlan::new(PipelineId::parse(store).expect("a valid id"), [stream]);
     let run = engine.run(

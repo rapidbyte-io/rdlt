@@ -69,14 +69,14 @@ impl Cores {
 }
 
 impl RayonPool {
-    /// Starts a pool of `threads` worker threads named `rdlt-compute-<n>`, each with 8 MiB of
-    /// stack.
+    /// Starts a pool of [`Cores::compute_threads`] threads named `rdlt-compute-<n>`, each with
+    /// 8 MiB of stack.
     ///
     /// Shredding a JSON value at the nesting limit walks it once per level; the stack lets every
     /// job run without growing it, in every build.
-    pub fn new(threads: NonZeroUsize) -> Result<Self, ComputePoolError> {
+    pub fn try_new(cores: Cores) -> Result<Self, ComputePoolError> {
         rayon::ThreadPoolBuilder::new()
-            .num_threads(threads.get())
+            .num_threads(cores.compute_threads().get())
             .stack_size(8_388_608)
             .thread_name(|index| format!("rdlt-compute-{index}"))
             .build()

@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use rdlt_connector::{BoxFuture, PipelineId, Secret, StreamName};
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, LocalWal, PipelinePlan, RayonPool, RetryPolicy, RunStatus,
-    StreamPlan, SystemEnv,
+    CommitPolicy, Engine, EngineConfig, LocalWal, PipelinePlan, RetryPolicy, RunStatus, StreamPlan,
 };
 use rdlt_host::{
     Local, Provider as _, Registry, SecretFault, SecretKind, SecretReference, SecretResolver,
@@ -339,9 +338,7 @@ fn engine(wal: &Path) -> Engine {
         .lanes(2)
         .build()
         .expect("the engine's configuration is valid");
-    let threads = std::num::NonZeroUsize::new(2).expect("two is not zero");
-    let pool = RayonPool::new(threads).expect("the compute pool starts");
-    let env = SystemEnv::new(pool).with_wal(Arc::new(LocalWal::new(wal)));
+    let env = crate::support::system_env().with_wal(Arc::new(LocalWal::new(wal)));
     Engine::new(config, Arc::new(env))
 }
 

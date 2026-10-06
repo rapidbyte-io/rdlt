@@ -22,12 +22,18 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::{LogSource, SqliteDestination};
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, PipelinePlan, RayonPool, RetryPolicy, RunStatus,
-    StreamPlan, SystemClock, SystemEnv, WriteMode,
+    CommitPolicy, Cores, Engine, EngineConfig, PipelinePlan, RetryPolicy, RunStatus, StreamPlan,
+    SystemClock, SystemEnv, WriteMode,
 };
 use rdlt_host::EnvSecrets;
 use rdlt_log_store::LogStoreConfig;
 use serde_json::json;
+
+/// The cores the run takes: its runtime's two workers and two compute threads.
+const CORES: Cores = Cores::new(
+    NonZeroUsize::new(4).expect("four is not zero"),
+    NonZeroUsize::new(2).expect("two is not zero"),
+);
 
 /// The variables the store's credentials are read from, and no other.
 const CREDENTIALS: [&str; 2] = ["RDLT_S3_ACCESS_KEY_ID", "RDLT_S3_SECRET_ACCESS_KEY"];
@@ -40,6 +46,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(CORES.workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -79,8 +86,9 @@ async fn run(dir: &Path, store: &Path) -> Result<(), String> {
         )
         .await
         .map_err(|error| error.to_string())?;
-    let pool = RayonPool::new(NonZeroUsize::new(2).expect("two")).map_err(|e| e.to_string())?;
-    let env = SystemEnv::new(pool).with_wal(wal);
+    let env = SystemEnv::try_new(CORES)
+        .map_err(|e| e.to_string())?
+        .with_wal(wal);
     let outcome = Engine::new(engine()?, Arc::new(env))
         .run(plan()?, Arc::from(source), Arc::from(destination))
         .await;

@@ -9,4 +9,5 @@ pub(crate) mod served;
 pub(crate) use fake::{Fake, Fault, serve_fake};
 pub(crate) use served::{
     engine, memory_destination, memory_source, raw_channel, raw_client, served, served_within,
+    system_env,
 };

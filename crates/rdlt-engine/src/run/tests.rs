@@ -1,4 +1,3 @@
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::{
@@ -7,15 +6,13 @@ use rdlt_connector::{
 };
 
 use super::{Engine, StopMode};
-use crate::compute::RayonPool;
 use crate::config::EngineConfig;
 use crate::env::SystemEnv;
 use crate::plan::{PipelinePlan, StreamPlan};
 
 fn engine() -> Engine {
-    let pool = RayonPool::new(NonZeroUsize::MIN).unwrap();
     let config = EngineConfig::builder().lanes(3).build().unwrap();
-    Engine::new(config, Arc::new(SystemEnv::new(pool)))
+    Engine::new(config, Arc::new(SystemEnv::one_core()))
 }
 
 /// A connector the tests never poll a run far enough to use.

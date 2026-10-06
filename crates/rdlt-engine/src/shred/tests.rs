@@ -11,7 +11,7 @@ use rdlt_connector::{DecimalType, Field, LogicalType, TableSchema};
 use super::differential::shredded;
 use super::reference::Code;
 use super::{Parsed, ShredLimits, chunks, parse, shred};
-use crate::compute::RayonPool;
+use crate::compute::{Cores, RayonPool};
 
 thread_local! {
     /// How many chunks this thread built again.
@@ -521,7 +521,8 @@ fn a_column_that_changes_type_within_a_chunk_is_built_again_as_their_join() {
 
 #[tokio::test]
 async fn parallel_shredding_keeps_the_pushes_order() {
-    let pool = RayonPool::new(NonZeroUsize::new(4).unwrap()).unwrap();
+    let pool =
+        RayonPool::try_new(Cores::new(NonZeroUsize::new(5).unwrap(), NonZeroUsize::MIN)).unwrap();
     let pushes: Vec<Bytes> = (0..40)
         .map(|push| {
             let lines: Vec<String> = (0..50)

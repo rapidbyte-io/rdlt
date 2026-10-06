@@ -17,7 +17,6 @@ use rdlt_connector::{
 use tokio::time::Instant;
 
 use super::Waits;
-use crate::compute::RayonPool;
 use crate::env::SystemEnv;
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -116,8 +115,7 @@ impl DestinationWriter for SlowWriter {
 }
 
 fn waited(delay: Option<Duration>) -> Arc<dyn Destination> {
-    let pool = RayonPool::new(NonZeroUsize::MIN).unwrap();
-    let waits = Waits::new(Arc::new(SystemEnv::new(pool)), WAIT);
+    let waits = Waits::new(Arc::new(SystemEnv::one_core()), WAIT);
     waits.destination(Arc::new(Slow {
         delay,
         capabilities: Capabilities::minimal(),
@@ -255,8 +253,7 @@ impl rdlt_connector::Source for SlowSource {
 
 #[tokio::test(start_paused = true)]
 async fn every_call_into_a_source_but_a_read_ends_at_the_wait() {
-    let pool = RayonPool::new(NonZeroUsize::MIN).unwrap();
-    let waits = Waits::new(Arc::new(SystemEnv::new(pool)), WAIT);
+    let waits = Waits::new(Arc::new(SystemEnv::one_core()), WAIT);
     let stream = rdlt_connector::StreamName::new("s").unwrap();
     let state = rdlt_connector::StreamState::default();
     for (delay, answers) in [(None, false), (Some(WAIT / 2), true)] {

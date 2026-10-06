@@ -17,8 +17,7 @@ use crate::env::SystemEnv;
 const BUDGET: u64 = 6_400;
 
 fn budget() -> MemoryBudget {
-    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
-    MemoryBudget::new(BUDGET).within(Arc::new(SystemEnv::new(pool)), Duration::from_secs(3_600))
+    MemoryBudget::new(BUDGET).within(Arc::new(SystemEnv::one_core()), Duration::from_secs(3_600))
 }
 
 #[tokio::test(start_paused = true)]

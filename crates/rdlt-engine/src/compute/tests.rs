@@ -34,7 +34,7 @@ proptest! {
 }
 
 fn pool() -> Arc<RayonPool> {
-    Arc::new(RayonPool::new(NonZeroUsize::new(2).unwrap()).unwrap())
+    Arc::new(RayonPool::try_new(cores(3, 1)).unwrap())
 }
 
 #[tokio::test]
@@ -95,4 +95,16 @@ async fn pool_threads_have_the_stack_a_shredding_job_asks_for() {
         remaining[0].is_some_and(|bytes| bytes >= 6 * 1024 * 1024),
         "{remaining:?}"
     );
+}
+
+#[test]
+fn a_pool_starts_one_thread_for_each_core_the_workers_leave() {
+    for (count, workers, threads) in [(4, 1, 3), (4, 2, 2), (4, 4, 1), (2, 8, 1), (1, 1, 1)] {
+        let pool = RayonPool::try_new(cores(count, workers)).unwrap();
+        assert_eq!(
+            pool.pool.current_num_threads(),
+            threads,
+            "{count} cores, {workers} workers"
+        );
+    }
 }

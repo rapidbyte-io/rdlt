@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ConnectorErrorKind, ConnectorId, PipelineId, StreamName};
-use rdlt_engine::{CommitPolicy, Engine, EngineConfig, RayonPool, RetryPolicy, RunStatus};
-use rdlt_engine::{PipelinePlan, StreamPlan, SystemEnv};
+use rdlt_engine::{CommitPolicy, Engine, EngineConfig, RetryPolicy, RunStatus};
+use rdlt_engine::{PipelinePlan, StreamPlan};
 use rdlt_host::{ConnectorRef, Digest, LastWords, Local, Placement, Provider as _, ProviderError};
 use sha2::Digest as _;
 
-use crate::support::memory_destination;
+use crate::support::{memory_destination, system_env};
 
 /// The example `name`, which the test build builds beside the tests: in the first directory above
 /// the test binary that holds an `examples` directory with it, whichever layout the build uses.
@@ -359,8 +359,7 @@ async fn a_crashed_connector_is_respawned_and_the_run_loads_every_row_once() {
         .retry(RetryPolicy::default().initial(Duration::from_millis(10)))
         .build()
         .expect("a valid configuration");
-    let threads = std::num::NonZeroUsize::new(2).expect("two is not zero");
-    let env = SystemEnv::new(RayonPool::new(threads).expect("the compute pool starts"));
+    let env = system_env();
     let outcome = Engine::new(config, Arc::new(env))
         .run(plan, Arc::from(source), Arc::new(destination))
         .await;
