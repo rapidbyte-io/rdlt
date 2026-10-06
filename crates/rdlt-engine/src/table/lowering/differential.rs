@@ -1,4 +1,4 @@
-//! The lowering differential (spec §20.4): batches of every logical type, in every encoding a
+//! The lowering differential: batches of every logical type, in every encoding a
 //! source may send, lowered by plans into a table each batch evolves, for any destination's
 //! capabilities, against the reference lowering each value on its own.
 

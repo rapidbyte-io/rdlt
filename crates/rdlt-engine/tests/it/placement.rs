@@ -1,6 +1,6 @@
 //! The destination-facing scenarios against every reference destination spawned in a process of
 //! its own, and listening on the network reached over mutual TLS: the placement matrix's second
-//! and third legs (§20.9).
+//! and third legs.
 //!
 //! They run on the real clock: a spawned connector's heartbeat and deadlines do, and a paused
 //! clock would expire them while the connector's process works.

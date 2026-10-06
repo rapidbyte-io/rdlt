@@ -1,4 +1,4 @@
-//! Conformance clauses for connectors reached over the wire protocol (§20.8).
+//! Conformance clauses for connectors reached over the wire protocol.
 //!
 //! The source and destination clauses of `rdlt_connector::testing` run through the protocol
 //! against a connector served in this process, spawned from its binary, or listening at an

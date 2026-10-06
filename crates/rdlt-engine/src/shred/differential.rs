@@ -1,4 +1,4 @@
-//! The parallel shredder against the reference one, on generated pushes (§20.4).
+//! The parallel shredder against the reference one, on generated pushes.
 
 use std::sync::Arc;
 

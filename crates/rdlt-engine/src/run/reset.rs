@@ -1,4 +1,4 @@
-//! Resetting streams: one commit that clears what a pipeline recorded of them (spec §16.1).
+//! Resetting streams: one commit that clears what a pipeline recorded of them.
 
 use std::sync::Arc;
 

@@ -1,4 +1,4 @@
-//! Arrow passthrough (spec §21.1): the engine against a bare loop writing the same batches to the
+//! Arrow passthrough: the engine against a bare loop writing the same batches to the
 //! same destination; the gate is at most 10 % overhead.
 
 #![forbid(unsafe_code)]

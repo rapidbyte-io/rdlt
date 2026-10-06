@@ -1,5 +1,5 @@
-//! Pushes gathered into batches of a useful size before they are shredded and written (spec
-//! §7.3), so batch size does not mirror how a source chunks its data.
+//! Pushes gathered into batches of a useful size before they are shredded and written, so
+//! batch size does not mirror how a source chunks its data.
 
 #[cfg(test)]
 mod tests;

@@ -1,4 +1,4 @@
-//! Destination identifiers for tables and columns (spec §8.6).
+//! Destination identifiers for tables and columns.
 //!
 //! An identifier is the source name folded and cleaned under the destination's rules. When that is
 //! taken — by another column, a metadata column or a reserved word — a hash of the exact source

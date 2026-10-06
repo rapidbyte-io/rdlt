@@ -1,4 +1,4 @@
-//! Streams read in phases, as a CDC stream reads its snapshot and then its changes (spec §9.4):
+//! Streams read in phases, as a CDC stream reads its snapshot and then its changes:
 //! once every partition of a phase has ended and its end is committed, the stream is planned
 //! again, and a plan naming a new phase starts that phase's partitions.
 

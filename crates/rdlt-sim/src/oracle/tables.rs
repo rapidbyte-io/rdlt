@@ -98,7 +98,7 @@ fn check_children(
     );
     let tables: BTreeSet<Vec<String>> = paths.iter().map(|(_, path)| path.clone()).collect();
     // Parents come first, so each child row's parent is known when it is read. A child's id
-    // derives from its parent's and its position alone (spec §7.4), so sibling arrays' rows share
+    // derives from its parent's and its position alone, so sibling arrays' rows share
     // ids: each table's are kept apart.
     for (_, path) in paths.iter().filter(|(depth, _)| *depth > 1) {
         let rows = expected.get(path).map_or(&[][..], Vec::as_slice);

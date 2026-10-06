@@ -1,4 +1,4 @@
-//! Continuous runs (spec §9.6): a run that follows its source reads what arrives until its
+//! Continuous runs: a run that follows its source reads what arrives until its
 //! deadline or a stop, plans its streams again as it reads, and loads each message exactly once.
 
 use std::collections::BTreeMap;

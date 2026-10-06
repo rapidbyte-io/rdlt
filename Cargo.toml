@@ -37,7 +37,7 @@ arrow-select = "59.2" # take, filter and concat for discards, compaction and mer
 async-trait = "0.1.92" # implementing object_store's traits, for the test kit's store that fails on cue
 base64 = "0.22" # cursor bytes inside JSON state values
 blake3 = "1.8.7" # row identity: the collision-resistant hash of each row's canonical encoding
-crc32c = "0.6" # the write-ahead log's frame checksums, spec §15.6
+crc32c = "0.6" # the write-ahead log's frame checksums
 bytes = { version = "1.12.1", features = [
   "serde",
 ] } # zero-copy byte buffers for pushes, cursors and state

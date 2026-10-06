@@ -1,5 +1,5 @@
 //! Replaying the write-ahead logs earlier loads left: each commit a log holds without its receipt
-//! is committed again, in a session of its own, before the attempt opens (spec §15.6).
+//! is committed again, in a session of its own, before the attempt opens.
 //!
 //! A log is replayed once a fence at its next chunk keeps its load, if it still runs, from
 //! publishing more. Each commit stages again only the segments of partitions the destination

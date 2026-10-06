@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use crate::error::Error;
 
-/// How a partition coalesces pushes into batches (spec §7.3) and cuts JSON into chunks to shred
-/// in parallel (§7.4).
+/// How a partition coalesces pushes into batches and cuts JSON into chunks to shred in
+/// parallel.
 ///
 /// Pushes are held until they reach `target_bytes` or `max_rows`, or the first has waited
 /// `max_latency`; a checkpoint and the end of the read flush them too. A JSON push's rows are

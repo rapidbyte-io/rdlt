@@ -1,5 +1,5 @@
 //! `rdlt-certify`: certifies a connector binary, or a connector listening at an endpoint, against
-//! the protocol's conformance clauses (§20.8).
+//! the protocol's conformance clauses.
 
 #![forbid(unsafe_code)]
 

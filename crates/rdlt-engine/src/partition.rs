@@ -217,7 +217,7 @@ async fn read_and_ingest(
     context: &PartitionContext,
 ) -> Result<(Ingested, rdlt_connector::Result<()>), Error> {
     // Each push and checkpoint reserves what it costs before it enters the channel, so a source
-    // buffers nothing outside the budget (spec §7.5).
+    // buffers nothing outside the budget.
     let admission = Arc::new(Charging::new(context.budget.clone()));
     let charging = Arc::clone(&admission) as Arc<dyn rdlt_connector::Admission>;
     let (sink, feed) = admitted_partition_channel(context.buffer, charging);

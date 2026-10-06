@@ -1,4 +1,4 @@
-//! Schema resolution (spec §8.4): how a batch's columns fit its table, and the changes the table
+//! Schema resolution: how a batch's columns fit its table, and the changes the table
 //! needs first.
 
 use std::collections::BTreeSet;

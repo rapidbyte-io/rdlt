@@ -133,7 +133,7 @@ pub struct HistoryColumns {
     pub row_hash: Arc<str>,
 }
 
-/// How the rows of a change stream's merge table apply (spec §9.3, §9.4).
+/// How the rows of a change stream's merge table apply.
 ///
 /// Each written row carries a [`ChangeOp`](crate::ChangeOp) code in `op`, and its source position
 /// in the key's `seq`, which orders rows across commits too: a row applies only when its `seq` is
@@ -183,7 +183,7 @@ pub enum Deletion {
     },
 }
 
-/// How a child table of a normalized merge stream follows its root table (spec §8.7): a merge
+/// How a child table of a normalized merge stream follows its root table: a merge
 /// replaces all child rows of each root it publishes.
 ///
 /// The child table's key ([`MergeKey::columns`]) is its rows' root id, and its `seq` column holds

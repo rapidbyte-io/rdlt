@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-# Internals for the benchmarks and fuzz targets (spec §21.2); not a public API.
+# Internals for the benchmarks and fuzz targets; not a public API.
 bench = ["dep:arrow-ipc", "dep:schemars"]
 # Crash points at every durability step, for the failpoint sweep; never in a release.
 failpoints = ["dep:fail", "fail/failpoints"]

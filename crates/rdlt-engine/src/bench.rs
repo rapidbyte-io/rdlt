@@ -1,4 +1,4 @@
-//! Internals the benchmarks and fuzz targets drive (spec §21.2); not part of the engine's API.
+//! Internals the benchmarks and fuzz targets drive; not part of the engine's API.
 
 mod connectors;
 #[cfg(test)]
