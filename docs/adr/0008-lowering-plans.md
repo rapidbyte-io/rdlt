@@ -25,9 +25,9 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
 - **Constant metadata columns are dictionaries.** `_rdlt_load_id` and `_rdlt_loaded_at` hold one
   value per load, so each is a dictionary of one value with an `Int8` key per row (spec §8.5
   names the load id; the load start is constant alike). A plan builds them once and slices them
-  per batch, building them again only for a batch larger than they are or smaller than half of
-  them. Their logical types stay `Uuid` and `Timestamp`, and `Field::from_arrow` keeps an
-  extension type under a dictionary or run-end encoding.
+  per batch, building them again only for a new load or a batch of more rows than they hold.
+  Their logical types stay `Uuid` and `Timestamp`, and `Field::from_arrow` keeps an extension type
+  under a dictionary or run-end encoding.
 - **Destinations take dictionary-encoded columns.** The writer contract says a column may be
   dictionary-encoded and its values are what the column stores; clause `D-ENCODING` checks it.
   The SQLite destination decodes them; the memory and files destinations already store them.
