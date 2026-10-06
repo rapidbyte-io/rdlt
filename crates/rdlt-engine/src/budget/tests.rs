@@ -9,8 +9,8 @@ use std::time::Duration;
 use super::{Denied, Exhausted, MemoryBudget, Shares, TooLarge};
 
 /// A budget whose shares are round: 100 for cursors, 400 for the log, 200 for tables' records,
-/// 1,600 for reads, and 4,100 for data, of which a request for lowering takes 1,600 at most and
-/// pushes 2,500.
+/// 1,600 for reads, 400 for answers, and 3,700 for data, of which a request for lowering takes
+/// 1,600 at most and pushes 2,100.
 const BUDGET: u64 = 6_400;
 
 const HOUR: Duration = Duration::from_secs(3600);
