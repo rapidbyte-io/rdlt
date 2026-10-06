@@ -51,12 +51,16 @@ impl GrowthLimits {
     }
 
     /// Bytes: the most a load's write-ahead log holds on disk, its chunks published and the chunk
-    /// it stages together.
+    /// it stages together; a store whose largest chunk is smaller bounds the log to that.
     ///
     /// Only a commit lets a chunk go, so a source that does not checkpoint grows its load's log
     /// by what it sends. Once the log holds half of this, a commit is due, and again at each
-    /// eighth more; a batch whose frame would take the log past it fails its write with
-    /// `log_bytes_exceeded`, before the source is told anything of it.
+    /// eighth more. A batch that finds the log full has it publish what commits freed, then
+    /// waits for a commit while one can free room: a checkpoint no commit has taken, or a commit
+    /// under way. Only where the frames of segments not yet sealed fill the log does the batch
+    /// fail its write, with `log_bytes_exceeded`, before the source is told anything of it. A
+    /// commit's own frames are counted even where they take the log past this, until the log
+    /// frees what the commit settled.
     pub fn log_bytes(&self) -> NonZeroU64 {
         self.log_bytes
     }
