@@ -22,13 +22,15 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   cores the process may run on (its affinity mask and cgroup quota honoured) and the workers of the
   runtime it is given, since the engine does not own the embedder's runtime. A process that builds
   its own runtime gives it the workers `Cores::try_from_host` suggests: half the cores, rounded
-  down and one at least. [docs/perf/passthrough.md](../perf/passthrough.md) measured that split
-  best at 4 cores and tied with the best at 8; at 2 cores it is the only split that leaves each
-  side a core of its own, and runs slower than a runtime of 2 workers beside the pool. An embedder
-  that fixes a layout passes `Cores::new` to `SystemEnv::try_new`. `Env::cores` returns the count,
-  and lanes default to one per core. The engine reads the host's cores in those two constructors
-  and nowhere else (clippy bans `available_parallelism` in the rest of `rdlt-engine`), and the
-  simulation declares a fixed count, so a simulated run sizes itself alike on every machine.
+  down, and two at least where there are two, since one worker runs the engine's per-row work and
+  every lane's writes alone. Two and three cores so run two workers beside a one-thread pool, two
+  cores one thread more than they have. [docs/perf/passthrough.md](../perf/passthrough.md)
+  measured that split the best of the splits at 2 and 4 cores and tied with the best at 8. An
+  embedder that fixes a layout passes `Cores::new` to `SystemEnv::try_new`. `Env::cores` returns
+  the count, and lanes default to one per core. The engine reads the host's cores in those two
+  constructors and nowhere else (clippy bans `available_parallelism` in the rest of
+  `rdlt-engine`), and the simulation declares a fixed count, so a simulated run sizes itself alike
+  on every machine.
 - **One writer per table per lane.** Each attempt creates its writers before any partition reads,
   and routes a partition's batches for a table to one lane by an FNV hash, so they stay in order.
 - **Barriers wait only for partitions that are reading.** A partition waiting for a read slot, or
