@@ -57,8 +57,8 @@ fn default_file_bytes() -> NonZeroU64 {
 /// Bytes: what a line's ending adds to it at most, a carriage return and a line feed.
 const LINE_ENDING: u64 = 2;
 
-/// Reads the files under a root: `<stream>.jsonl` or `<stream>.arrow` is a stream of one
-/// partition, and a directory `<stream>/` is a stream whose files are its partitions.
+/// Reads the files under a root: `<stream>.jsonl` (or `.ndjson`) or `<stream>.arrow` is a stream
+/// of one partition, and a directory `<stream>/` is a stream whose files are its partitions.
 ///
 /// Names starting with `.` or `_`, names that are no stream or partition name, and whatever is
 /// no regular file or directory (a link, a pipe, a device) are skipped. A JSON lines file's

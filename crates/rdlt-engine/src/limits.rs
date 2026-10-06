@@ -19,7 +19,7 @@ pub(crate) const CURSOR_SHARE: u64 = 64;
 /// stages.
 ///
 /// Seal, commit and table frames hold it from before they are encoded until they are appended,
-/// a cursor taking at most `RECORDED` bytes in a frame for each of its bytes; while a log is
+/// a cursor they record reserved as `RECORDED` bytes for each of its bytes; while a log is
 /// open, what its store stages and what a carry reads at once hold it too, at most what
 /// `staged_at_most` leaves.
 pub(crate) const LOG_SHARE: u64 = 16;
