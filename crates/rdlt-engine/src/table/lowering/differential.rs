@@ -1,6 +1,6 @@
-//! The lowering differential: batches of every logical type, in every encoding a
-//! source may send, lowered by plans into a table each batch evolves, for any destination's
-//! capabilities, against the reference lowering each value on its own.
+//! The lowering differential: batches of every logical type, in every encoding a source may send,
+//! lowered by plans into a table each batch evolves, for any destination's capabilities, against
+//! the reference lowering each value on its own.
 
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};

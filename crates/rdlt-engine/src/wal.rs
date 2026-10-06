@@ -1,5 +1,5 @@
-//! The write-ahead log: what a load writes, sealed and is about to commit, durable
-//! before the destination commits it, so a non-replayable source's data survives a crash.
+//! The write-ahead log: what a load writes, sealed and is about to commit, durable before the
+//! destination commits it, so a non-replayable source's data survives a crash.
 
 pub(crate) mod frame;
 pub(crate) mod load;

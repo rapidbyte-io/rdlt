@@ -1,6 +1,6 @@
-//! Lowering plans: how batches of one incoming schema become rows of one table view,
-//! worked out once and applied to every batch — discards, exact conversions, lowering, metadata
-//! columns and, for merge tables, the sequence column and compaction.
+//! Lowering plans: how batches of one incoming schema become rows of one table view, worked out
+//! once and applied to every batch — discards, exact conversions, lowering, metadata columns and,
+//! for merge tables, the sequence column and compaction.
 
 mod changes;
 mod constants;
@@ -457,8 +457,8 @@ type Kept = (
     unheld::Converted,
 );
 
-/// `array` of `logical` as the destination stores it: as it is, or as its text, which for
-/// nested values and JSON is JSON.
+/// `array` of `logical` as the destination stores it: as it is, or as its text, which for nested
+/// values and JSON is JSON.
 fn lower_array(
     array: &ArrayRef,
     logical: &LogicalType,

@@ -1,5 +1,5 @@
-//! Normalizing nested data: arrays become child tables at any depth, objects flatten
-//! into one column per field, and every row carries its lineage.
+//! Normalizing nested data: arrays become child tables at any depth, objects flatten into one
+//! column per field, and every row carries its lineage.
 //!
 //! Normalizing works on Arrow batches, after JSON is shredded, so Arrow and JSON pushes normalize
 //! alike. A container (an object or an array) nested deeper than the stream's `max_depth` stays

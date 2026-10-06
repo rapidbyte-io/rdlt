@@ -1,6 +1,6 @@
-//! Streams read in phases, as a CDC stream reads its snapshot and then its changes:
-//! once every partition of a phase has ended and its end is committed, the stream is planned
-//! again, and a plan naming a new phase starts that phase's partitions.
+//! Streams read in phases, as a CDC stream reads its snapshot and then its changes: once every
+//! partition of a phase has ended and its end is committed, the stream is planned again, and a plan
+//! naming a new phase starts that phase's partitions.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

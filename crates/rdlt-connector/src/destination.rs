@@ -183,8 +183,8 @@ pub enum Deletion {
     },
 }
 
-/// How a child table of a normalized merge stream follows its root table: a merge
-/// replaces all child rows of each root it publishes.
+/// How a child table of a normalized merge stream follows its root table: a merge replaces all
+/// child rows of each root it publishes.
 ///
 /// The child table's key ([`MergeKey::columns`]) is its rows' root id, and its `seq` column holds
 /// the sequence of the root row each child row came from. A commit that publishes rows of the
