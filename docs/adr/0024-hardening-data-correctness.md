@@ -45,28 +45,13 @@ M5b follows H1b.
     whole float of magnitude 2⁶³ or more, so such a float flags its chunk.
   - A flagged chunk is parsed again with exact numbers: sonic-rs's raw numbers, walked through the
     same visitors.
-  - An integer beyond u64 within 38 digits is a `Decimal(38,0)`; beyond that it is refused as
-    `value_unrepresentable`.
+  - An integer beyond u64 within 38 digits is a `Decimal(38,0)`, within 76 digits a
+    `Decimal(76,0)`, and beyond that its column holds JSON text, as ADR 0007 states.
   - The exact parse reads every other number as the fast parse does: `-0` as the float zero, and a
     float beyond the finite ones refused as `json_invalid`. What a record shreds to never depends
     on what came before it in its chunk.
   - Rejected: `arbitrary_precision` for the workspace, which costs an allocation per number on the
     hot path and changes `serde_json` everywhere.
-- **Memory is charged at its decoded size.**
-  (Superseded by ADR 0039: a push reserves what it keeps alive, and each piece of it what
-  lowering it holds, by one cost model.)
-  - `decoded_bytes` counts every row of a run-end or dictionary column as the value it decodes
-    to, at any depth, and counts a slice by its own rows. An average of the values would let an
-    encoding skewed toward one large value pass for a few bytes a row. A push is admitted, and
-    coalesced, at that size.
-  - A request larger than the budget takes the whole budget.
-  - A unit larger than a slice (a sixteenth of the budget, at least 64 KiB) is lowered a slice of
-    rows at a time, cut where its rows' own values say (`decoded_rows`), so encoded data decodes
-    within the budget.
-  - A lowered piece is charged for the memory its rows hold: a piece shares its buffers with the
-    batch it was cut from, and the engine's constant metadata columns stay encoded.
-  - Rejected: acquiring bytes before lowering. A partition would wait while holding admitted
-    pushes, which deadlocks.
 - **Writers' memory is charged until they flush.** A lane holds each write's reservation until its
   writer flushes, since a writer may buffer what it stages. It flushes when the coordinator asks,
   and on its own when the budget is pressed while it holds writes it has not flushed. The budget
@@ -100,5 +85,3 @@ M5b follows H1b.
   columns.** The model's JSON number inference needs value-level exactness for both.
 - **Deferred to M5b: portable sqlgen.** Moving DDL out of the commit transaction and replacing
   `ON CONFLICT` and row-value `IN` are part of making sqlgen fit Postgres and warehouses.
-- **Admission counts decoded bytes.** A source pushing dictionary or run-end encoded batches is
-  admitted slower than before, at its real cost.

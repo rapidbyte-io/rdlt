@@ -35,14 +35,15 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   pool before chunking: JSON lines by their line ends, a JSON array by its top-level commas,
   scanned without recursion however deep its values nest. Each record is then parsed on its own,
   so a line holds exactly one record and an array element exactly one value.
-- **Values are typed by what they hold.** Integers that fit 64 signed bits are `Int64`; one
-  beyond that range makes the column `Decimal(20, 0)`. Integers and floats together are `Float64`
-  while every integer is exact as a float, and `Json` otherwise. Mixed kinds are `Json`, each
-  value rendered as compact JSON text as it is parsed, keys in their order. Objects are structs
-  and arrays lists, whatever the nesting policy: lowering applies the policy. sonic-rs, without
-  its `arbitrary_precision` feature, reads integers beyond the unsigned 64-bit range as floats and
-  negative zero as zero; the feature costs about a quarter of the throughput, so those are
-  documented limits.
+- **Values are typed by what they hold.** Integers are read exactly at any width: those that
+  fit 64 signed bits are `Int64`; beyond that, up to the unsigned 64-bit range, `Decimal(20, 0)`;
+  within 38 digits `Decimal(38, 0)`; within 76 digits `Decimal(76, 0)`; and a column holding an
+  integer beyond 76 digits is `Json`, each such integer kept as the text it was written as. A
+  chunk whose fast parse read a float that may be a rounded integer is parsed again with its
+  numbers as text. Integers and floats together are `Float64` while every integer is exact as a
+  float, and `Json` otherwise. Mixed kinds are `Json`, each value rendered as compact JSON text
+  as it is parsed, keys in their order. Objects are structs and arrays lists, whatever the
+  nesting policy: lowering applies the policy. Negative zero reads as zero.
 - **Hostile input is refused, typed.** A record that is not an object is `json_not_object`; an
   object repeating a key, however escaped and at any depth, `json_duplicate_key`; a value nested
   deeper than `MAX_NESTING_DEPTH` (64, the record counting as the first level), an object of more
@@ -88,8 +89,8 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
 
 ## Consequences
 
-JSON pushes load, in parallel, at over five times the old engine on one core. Wide integers load
-exactly up to the unsigned 64-bit range and as floats beyond it. A chunk whose shape drifts is
-parsed twice, so drift costs throughput where it happens and nowhere else. The engine's
+JSON pushes load, in parallel, at over five times the old engine on one core. Integers load
+exactly at any width, as decimals within 76 digits and as JSON text beyond. A chunk whose shape
+drifts is parsed twice, so drift costs throughput where it happens and nowhere else. The engine's
 integration tests run compute jobs inline, since the paused test clock would otherwise advance
 while a job runs on another thread.
