@@ -5,7 +5,7 @@ nightly := "nightly-2026-09-20"
 # The crates mutation testing mutates, and the crates whose tests may catch a mutant: the
 # protocol's served end is tested from the host, where a client exists, and the reference
 # connectors from the engine and certification too
-mutated := "--package rdlt-engine --package rdlt-connector --package rdlt-adopt --package rdlt-wire --package rdlt-host --package rdlt-certify --package rdlt-connector-reference --package rdlt-log-store --test-package rdlt-engine --test-package rdlt-connector --test-package rdlt-adopt --test-package rdlt-wire --test-package rdlt-host --test-package rdlt-certify --test-package rdlt-connector-reference --test-package rdlt-log-store"
+mutated := "rdlt-engine rdlt-connector rdlt-adopt rdlt-wire rdlt-host rdlt-certify rdlt-connector-reference rdlt-log-store"
 
 # List the recipes
 default:
@@ -128,14 +128,24 @@ miri:
 instructions base="origin/main":
     cargo xtask instructions --base "{{ base }}" --limit 2
 
-# Mutation testing; extra arguments go to cargo-mutants, for example --in-diff pr.diff
-mutants *args:
-    cargo mutants {{ mutated }} {{ args }}
+# Mutation testing of a crate: its mutants against the tests of every mutated package that links
+# it, which are all the tests that can catch one, the crate's own first, where most are caught.
+# Extra arguments go to cargo-mutants, for example --shard 1/4 or --in-diff pr.diff
+mutants crate *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ " {{ mutated }} " == *" {{ crate }} "* ]] || { echo "{{ crate }} is not a crate mutation testing mutates" >&2; exit 2; }
+    linking=$(cargo tree --all-features --workspace --invert "{{ crate }}" --edges normal,dev --prefix none --format '{p}' | awk '{ print $1 }' | sort -u)
+    tests=()
+    for package in $linking; do
+        if [[ " {{ mutated }} " == *" $package "* ]]; then tests+=(--test-package "$package"); fi
+    done
+    CARGO_INCREMENTAL=1 cargo mutants --package "{{ crate }}" "${tests[@]}" {{ args }} -- --profile "mutants-{{ crate }}"
 
 # Mutation testing over this branch's changes, including uncommitted ones, against `base`, in
 # `jobs` parallel builds; incremental builds are what make rebuilding per mutant cheap. Each changed
-# crate's mutants run the tests that can catch them, and the nightly full pass runs every crate's
-# tests against every mutant (ADR 0025)
+# crate's mutants run the tests of the packages that drive it, and the nightly full pass runs every
+# mutant against the tests of every package that links its crate (ADR 0025)
 mutants-diff base="origin/main" jobs="4":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -159,7 +169,8 @@ mutants-diff base="origin/main" jobs="4":
         tests=()
         for package in $(catching "$crate"); do tests+=(--test-package "$package"); done
         CARGO_INCREMENTAL=1 cargo mutants --package "$crate" "${tests[@]}" \
-            --in-diff target/mutants.diff -j {{ jobs }} --output "target/mutants/$crate" || failed=1
+            --in-diff target/mutants.diff -j {{ jobs }} --output "target/mutants/$crate" \
+            -- --profile "mutants-$crate" || failed=1
     done
     exit "$failed"
 

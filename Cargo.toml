@@ -226,3 +226,9 @@ overflow-checks = true
 inherits = "dev"
 debug = false
 incremental = true
+
+# Dependencies optimised, as the mutated crates never are: built once a run, they keep Arrow,
+# Serde and Tokio's work in tests that bound large inputs from taking seconds, which a mutant's
+# tests beside another's on a four-core runner stretched past their limits.
+[profile.mutants.package."*"]
+opt-level = 2
