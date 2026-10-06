@@ -25,3 +25,11 @@ fn a_seed_that_once_found_a_defect_passes() {
 fn a_seed_whose_transition_only_the_log_held_passes() {
     let _ = check_changes(Seed::new(130));
 }
+
+/// A seed whose log's mark and one of its chunks were each made again after an attempt given up,
+/// which landed once the log was removed: the log opened again held a chunk naming chunks the
+/// removal deleted, which no replay could read.
+#[test]
+fn a_seed_whose_removed_log_was_opened_again_by_a_late_mark_passes() {
+    let _ = check_changes(Seed::new(133_238));
+}

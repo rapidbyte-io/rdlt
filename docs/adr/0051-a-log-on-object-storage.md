@@ -26,6 +26,12 @@ to another machine and replay what the first left.
   never read (`wal_stray`).
 - A log is opened by creating its mark where none of the name exists, holding a random token; a
   load whose `logs/<load>/` holds anything is refused, as one whose removal left something.
+  Amended 2026-10-07: the mark is created by one attempt. One whose outcome is unknown is never
+  made again, since it may land after the log was removed and open it again, with chunks whose
+  creates landed late too, naming chunks the removal deleted, which no replay can read. Its
+  token is read back: a mark bearing it is the log's, and where none is there the open fails as
+  unavailable, retryably, and the run tries again under another load. A mark that lands later
+  opens a log no chunk was published in, which the next replay fences and removes.
 - A chunk is staged in memory up to a part, 7 MiB by default. A chunk of a part or less is
   published by one create of its head; a longer one is uploaded in parts as it is staged, each
   part as it fills, the last with the publish, and its head is a 38-byte reference naming the

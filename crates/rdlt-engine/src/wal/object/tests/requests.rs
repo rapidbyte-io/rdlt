@@ -11,10 +11,13 @@ use object_store::{ObjectStoreExt as _, PutPayload};
 use parking_lot::Mutex;
 use rdlt_testkit::objects::{Call, Fault, Op, faultless};
 
+use rdlt_connector::PipelineId;
+
 use super::{always, any, chunk, every, judged, objects, opened, options, pipeline, tries};
 use crate::env::{Clock, Sleep};
-use crate::wal::WalStore;
+use crate::wal::object::ObjectStoreWal;
 use crate::wal::object::calls::Calls;
+use crate::wal::{StagedChunk, WalStore};
 
 /// A clock that sleeps on tokio's clock and draws `random`, in turn.
 #[derive(Debug)]
@@ -107,17 +110,29 @@ fn puts(call: &Call) -> bool {
     matches!(call.op, Op::Put { .. })
 }
 
+fn creates(call: &Call) -> bool {
+    call.op == (Op::Put { create: true })
+}
+
+/// Chunk 0 of a log of `orders` opened in `wal`, staged and holding five bytes, to be published.
+async fn publishing(wal: &ObjectStoreWal, orders: &PipelineId) -> Box<dyn StagedChunk> {
+    wal.open_log(orders, chunk(1, 0).load).await.expect("opens");
+    let mut staged = wal.stage(orders, chunk(1, 0)).await.expect("stages");
+    staged
+        .append(Bytes::from_static(b"chunk"))
+        .await
+        .expect("appends");
+    staged
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_request_failing_every_attempt_is_unavailable_retryably_after_its_attempts() {
     let objects = objects(faultless());
     let wal = opened(&objects, tries(3, Duration::from_secs(1))).await;
-    let orders = pipeline("unavailable");
+    let staged = publishing(&wal, &pipeline("unavailable")).await;
     objects.plan(always(Fault::Fail, puts));
     let before = objects.calls().len();
-    let refused = wal
-        .open_log(&orders, chunk(1, 0).load)
-        .await
-        .expect_err("fails");
+    let refused = staged.publish().await.expect_err("fails");
     let made: Vec<_> = objects.calls()[before..].to_vec();
     assert_eq!(made.iter().filter(|call| puts(call)).count(), 3, "{made:?}");
     let (code, retryable) = judged(refused);
@@ -153,11 +168,12 @@ async fn a_failure_before_the_last_attempt_is_tried_again_and_succeeds() {
     let objects = objects(faultless());
     let wal = opened(&objects, tries(2, Duration::from_secs(1))).await;
     let orders = pipeline("retried");
+    let staged = publishing(&wal, &orders).await;
     objects.plan(every(2, Fault::Fail, any));
-    let load = chunk(1, 0).load;
     // Every second request fails: each fails at most once, and its retry answers.
-    wal.open_log(&orders, load).await.expect("opens");
-    assert_eq!(wal.loads(&orders).await.expect("lists"), [load]);
+    staged.publish().await.expect("publishes");
+    let load = chunk(1, 0).load;
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), [(0, 5)]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -213,37 +229,35 @@ async fn a_create_answered_taken_at_once_is_another_s_and_after_an_unknown_attem
     assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists);
     // An attempt that fails first leaves its outcome unknown: a name then answered taken is read
     // back, and found empty, is created again.
+    let staged = publishing(&wal, &orders).await;
     let mut answers = vec![Fault::Fail, Fault::Raced].into_iter();
     objects.plan(Box::new(move |call| match call.op {
         Op::Put { create: true } => answers.next().unwrap_or(Fault::None),
         _ => Fault::None,
     }));
     let reads = objects.ranges().len();
-    wal.open_log(&orders, chunk(2, 0).load)
-        .await
-        .expect("made again");
+    staged.publish().await.expect("made again");
     assert_eq!(
         objects.ranges().len(),
         reads,
         "a read back looks, reading no bytes"
     );
-    assert_eq!(wal.loads(&orders).await.expect("lists"), [chunk(2, 0).load]);
+    let load = chunk(1, 0).load;
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), [(0, 5)]);
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_create_raced_on_every_attempt_after_an_unknown_one_is_unavailable() {
     let objects = objects(faultless());
     let wal = opened(&objects, tries(3, Duration::from_secs(1))).await;
+    let staged = publishing(&wal, &pipeline("raced")).await;
     let mut first = true;
     objects.plan(Box::new(move |call| match call.op {
         Op::Put { create: true } if std::mem::take(&mut first) => Fault::Fail,
         Op::Put { create: true } => Fault::Raced,
         _ => Fault::None,
     }));
-    let refused = wal
-        .open_log(&pipeline("raced"), chunk(1, 0).load)
-        .await
-        .expect_err("never lands");
+    let refused = staged.publish().await.expect_err("never lands");
     assert_eq!(
         judged(refused),
         (Some("wal_storage_unavailable".to_owned()), true)
@@ -254,6 +268,7 @@ async fn a_create_raced_on_every_attempt_after_an_unknown_one_is_unavailable() {
 async fn a_create_whose_read_back_is_refused_reports_the_refusal_and_creates_nothing_more() {
     let objects = objects(faultless());
     let wal = opened(&objects, options(1 << 20)).await;
+    let staged = publishing(&wal, &pipeline("unread")).await;
     let mut answers = vec![Fault::Fail, Fault::Raced].into_iter();
     objects.plan(Box::new(move |call| match call.op {
         Op::Put { create: true } => answers.next().unwrap_or(Fault::None),
@@ -261,19 +276,16 @@ async fn a_create_whose_read_back_is_refused_reports_the_refusal_and_creates_not
         _ => Fault::None,
     }));
     let before = objects.calls().len();
-    let refused = wal
-        .open_log(&pipeline("unread"), chunk(1, 0).load)
-        .await
-        .expect_err("refused");
+    let refused = staged.publish().await.expect_err("refused");
     assert_eq!(
         judged(refused),
         (Some("wal_storage_denied".to_owned()), false)
     );
-    let creates = objects.calls()[before..]
+    let made = objects.calls()[before..]
         .iter()
-        .filter(|call| call.op == (Op::Put { create: true }))
+        .filter(|call| creates(call))
         .count();
-    assert_eq!(creates, 2, "the attempt failed and the one answered taken");
+    assert_eq!(made, 2, "the attempt failed and the one answered taken");
 }
 
 #[tokio::test(start_paused = true)]
@@ -608,6 +620,32 @@ async fn a_create_that_lands_after_its_attempt_gave_up_is_known_as_its_own() {
         .await
         .expect("its own mark");
     assert_eq!(wal.loads(&orders).await.expect("lists"), [chunk(1, 0).load]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_mark_whose_create_may_land_later_opens_no_log_and_lands_as_one_holding_nothing() {
+    let objects = objects(faultless());
+    let wal = opened(&objects, tries(3, Duration::from_secs(1))).await;
+    let orders = pipeline("given-up");
+    let load = chunk(1, 0).load;
+    // The mark's create is given up, and lands five seconds later.
+    objects.plan(always(Fault::Late(Duration::from_secs(5)), creates));
+    let before = objects.calls().len();
+    let refused = wal.open_log(&orders, load).await.expect_err("not opened");
+    assert_eq!(
+        judged(refused),
+        (Some("wal_storage_unavailable".to_owned()), true)
+    );
+    let made = objects.calls()[before..]
+        .iter()
+        .filter(|call| creates(call))
+        .count();
+    assert_eq!(made, 1, "a create that may still land is never made again");
+    // Landed, it opens a log no chunk was published in, which a replay fences and removes.
+    objects.plan(faultless());
+    tokio::time::advance(Duration::from_secs(6)).await;
+    assert_eq!(wal.loads(&orders).await.expect("lists"), [load]);
+    assert_eq!(wal.chunks(&orders, load).await.expect("lists"), []);
 }
 
 #[test]

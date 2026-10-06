@@ -86,9 +86,12 @@ impl Shared {
         {
             return Err(io::Error::from(io::ErrorKind::AlreadyExists));
         }
+        // Never tried again once an attempt's outcome is unknown: that attempt may land after the
+        // log was removed, open it again, and with it chunks whose creates landed late too,
+        // naming chunks the removal deleted. A mark landing so is a log no chunk was published in.
         let token = PutPayload::from(format!("{:032x}", self.token()));
         self.calls
-            .create(&self.keys.mark(pipeline, load), token)
+            .create_once(&self.keys.mark(pipeline, load), token)
             .await
     }
 
