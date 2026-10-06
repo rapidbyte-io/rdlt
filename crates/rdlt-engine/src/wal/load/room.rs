@@ -147,7 +147,9 @@ impl LoadLog {
             // the relief, which the relief then counts.
             let freeing = self.freeing();
             self.relieve().await?;
-            // The writer answered once it wrote every frame sent before and freed what it could.
+            // The writer handled every command sent before and freed what it could, but while a
+            // commit's seals are staged: that commit is under way, and a batch short of room
+            // waits for it.
             let ahead = self.ahead(waiting.as_ref());
             if shared.reserve(counted, shared.kept(Kept::All).saturating_add(ahead)) {
                 return Ok(closing);
@@ -193,6 +195,9 @@ impl LoadLog {
     /// it may take the carry's room, and a commit larger than all that room is counted all the
     /// same, taking the log past what it may hold by its own frames until a later relief frees
     /// what it settles.
+    ///
+    /// Once the commit's first seal is staged, a relief publishes nothing until its frame: its
+    /// later frames take what room is left, or pass the bound.
     pub(super) async fn admit_commit(&self, bytes: u64, whole: u64) -> Result<(), Error> {
         let shared = self.writer.shared();
         shared.failure()?;
