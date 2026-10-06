@@ -9,7 +9,7 @@ use std::time::UNIX_EPOCH;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{
     CommitMeta, CommitSeq, Cursor, Epoch, LoadId, PartitionId, PartitionState, PipelineId, Receipt,
-    SchemaVersion, SegmentId, StreamName,
+    SchemaVersion, SegmentId, StateChange, StateRecord, StreamName,
 };
 
 use super::{LoadLog, Owner, Sealed};
@@ -398,16 +398,14 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
         // more than its frame takes.
         let mut third = meta(&[3]);
         third.commit_seq = CommitSeq::FIRST;
-        third.state_delta = vec![rdlt_connector::StateChange::Put(
-            rdlt_connector::StateRecord {
-                key: "k".repeat(1_000),
-                value: vec![7; 9_000].into(),
-            },
-        )];
+        third.state_delta = vec![StateChange::Put(StateRecord {
+            key: "k".repeat(1_000),
+            value: vec![7; 9_000].into(),
+        })];
         let begun = vec![frame::BegunPhase {
             stream: StreamName::new("orders").expect("a valid stream"),
             phase: 1,
-            changes: vec![rdlt_connector::StateChange::Delete("d".repeat(5_000))],
+            changes: vec![StateChange::Delete("d".repeat(5_000))],
         }];
         let recording = MemoryBudget::new(1 << 20);
         let estimate = super::commit::commit_bytes(&begun, &third);
@@ -444,6 +442,44 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
             (crate::ErrorKind::Wal, Some("log_frame_exceeds_budget"))
         );
         assert_eq!((small.reserved(), small.peak()), (0, 0));
+        drop(log);
+    };
+    let (ended, ()) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part_s_staging() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    let part = u64::try_from(crate::limits::OBJECT_PART_BYTES).expect("a size");
+    let budget = MemoryBudget::new(256 << 20).staging(part);
+    // Held, as an attempt holds it, for as long as the log is written.
+    let held = part + crate::limits::LOG_COPY_BYTES;
+    let _staging = budget.acquire_log(held).await.expect("it fits");
+    // Positions of 34 partitions, each under what a partition's cursor may take, filling the
+    // cursors' share: the commit's frame is charged for each twice over.
+    let segments: Vec<u64> = (0..34).collect();
+    let mut commit = meta(&segments);
+    commit.state_delta = segments
+        .iter()
+        .map(|partition| {
+            StateChange::Put(StateRecord {
+                key: format!("position/orders/p{partition}"),
+                value: vec![7; 123_000].into(),
+            })
+        })
+        .collect();
+    assert!(super::commit::commit_bytes(&[], &commit) > budget.shares().cursors * 2);
+    let written = async {
+        let committed = log.commit(&budget, Vec::new(), Vec::new(), &commit, 0);
+        let deadline =
+            crate::env::Clock::sleep(&crate::env::SystemClock, std::time::Duration::from_hours(4));
+        tokio::select! {
+            biased;
+            committed = committed => committed.expect("durable"),
+            () = deadline => panic!("the commit waits for memory the log's staging holds"),
+        }
         drop(log);
     };
     let (ended, ()) = tokio::join!(task, written);

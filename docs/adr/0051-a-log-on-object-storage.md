@@ -71,8 +71,9 @@ to another machine and replay what the first left.
   the header, seals, commit and end; a staging past the parts' whole is refused
   (`wal_storage_unsupported`).
 - What a staging holds in memory, a part, is the store's `WalStore::staging_bytes`, which the
-  engine reserves from the memory budget's share for logs as a load's log starts, beside the
-  256 KiB a carry copies through; one more than half the share is refused
+  engine reserves as a load's log starts, beside the 256 KiB a carry copies through, from the
+  memory budget's share for logs; that share holds them beside its frames' share, out of what
+  pushes and lowering may take. One more than half the frames' share is refused
   (`wal_staging_exceeds_budget`).
 
 ### Every request bounded
@@ -186,8 +187,9 @@ is what its operator states of it.
   of its source, fixed by digest.
 - **No CA file.** A private endpoint's authority is trusted through the system's roots.
 - **What a store stages is charged to the budget.** A part is held in memory as it fills; it is
-  reserved once, from the share for logs, as a load's log starts, and a part more than half that
-  share is refused. Cost: a load keeps a part reserved while its log is open, written to or not.
+  reserved once, as a load's log starts, beside the share the log's frames take, and a part more
+  than half that share is refused. Cost: a load keeps a part reserved while its log is open,
+  written to or not, and pushes and lowering may take that much less.
 
 ## Consequences
 
