@@ -101,8 +101,11 @@ an ADR under `docs/adr/`. ADRs are short and immutable: a changed decision gets 
   function. A function that needs many arguments needs a struct.
 - File order: module doc, `use` declarations, public types, their impls, private helpers, then
   `#[cfg(test)] mod tests;`.
-- Unit tests live in a sibling `tests.rs` (`foo/tests.rs` for `foo.rs`). Each crate has one
-  integration test binary, `tests/it/main.rs`, with `tests/it/<area>.rs`.
+- Unit tests live in a sibling `tests.rs` (`foo/tests.rs` for `foo.rs`). A crate's integration
+  tests are one binary, `tests/it/main.rs`, with `tests/it/<area>.rs`, but where they need what
+  the rest must not have: `rdlt-engine`'s `crashes` (the `failpoints` feature) is a binary of
+  its own, and `rdlt-log-store`'s integration tests are `containers` (Docker). `rdlt-wire`'s
+  one binary is `tests/decoded.rs`.
 - Crate roots hold a crate doc with one example, `mod` declarations and an explicit `pub use`
   list. No glob re-exports.
 - Every numeric limit a crate enforces lives in that crate's `limits.rs`.
@@ -127,8 +130,9 @@ and durations are `Duration`, never integer milliseconds.
 
 ## Async, concurrency and determinism
 
-- Every task has an owner: spawn through a `TaskScope`, never `tokio::spawn`. Dropping any future
-  cleans up everything it started.
+- Inside `rdlt-engine` every task has an owner: spawn through a `TaskScope`, never
+  `tokio::spawn`, and dropping any future cleans up everything it started. Clippy bans the
+  direct calls there.
 - Nothing blocks the async runtime. CPU-heavy work runs on `Env::compute`; blocking file I/O runs
   on a dedicated task that owns the file.
 - Inside `rdlt-engine`, time, randomness and scheduling come only from `Env`. Clippy bans the
