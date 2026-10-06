@@ -4,6 +4,8 @@
 //! - [`MemoryDestination`] keeps published tables and pipeline state in process memory.
 //! - [`GeneratorSource`] produces seeded, partitioned Arrow data of any size.
 //! - [`ChangesSource`] produces seeded change streams: a snapshot in phases, then changes.
+//! - [`LogSource`] reads offset logs of seeded messages, as a message queue keeps them, keeping
+//!   each partition's committed offset in its consumer group.
 //! - [`SqliteDestination`] loads into a SQLite database, through `sqlgen`.
 //! - [`FilesSource`] reads JSON lines and Arrow IPC files.
 //! - [`FilesDestination`] writes JSON lines or Arrow IPC files and publishes them with manifests.
