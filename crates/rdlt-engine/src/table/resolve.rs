@@ -1,5 +1,4 @@
-//! Schema resolution: how a batch's columns fit its table, and the changes the table
-//! needs first.
+//! Schema resolution: how a batch's columns fit its table, and the changes the table needs first.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

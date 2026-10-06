@@ -1,6 +1,6 @@
-//! Rows dropped from a unit of a normalized stream, which take their descendants with them:
-//! a unit's parts are lowered parents first, so each part loses the rows whose
-//! parent went before the schema policy meets its own.
+//! Rows dropped from a unit of a normalized stream, which take their descendants with them: a
+//! unit's parts are lowered parents first, so each part loses the rows whose parent went before the
+//! schema policy meets its own.
 //!
 //! Rows are known by their part and position, not their ids, which rows sharing a key share.
 

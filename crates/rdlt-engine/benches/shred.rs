@@ -1,5 +1,5 @@
-//! JSON shredding throughput: each corpus on one core, and the nested corpus
-//! as one stream over more cores.
+//! JSON shredding throughput: each corpus on one core, and the nested corpus as one stream over
+//! more cores.
 //!
 //! `RDLT_SHRED_CORPUS` names a JSON lines file to measure as one more corpus, such as the corpus
 //! of the comparison with the old engine (docs/perf/shred.md).

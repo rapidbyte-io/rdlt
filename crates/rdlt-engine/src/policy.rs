@@ -42,8 +42,8 @@ pub enum Nested {
     Native,
     /// As one `Json` value per nested column.
     Json,
-    /// Normalized: arrays become child tables at any depth, objects flatten into one
-    /// column per field, and containers nested deeper than `max_depth` are stored as `Json`.
+    /// Normalized: arrays become child tables at any depth, objects flatten into one column per
+    /// field, and containers nested deeper than `max_depth` are stored as `Json`.
     ///
     /// Only pipelines and streams normalize; a column set to [`Nested::Native`] or
     /// [`Nested::Json`] in a normalized stream is stored whole, as is a hinted one. The settings of

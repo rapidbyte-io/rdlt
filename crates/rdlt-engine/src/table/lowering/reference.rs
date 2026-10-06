@@ -1,5 +1,5 @@
-//! The reference for the lowering differential: each value lowered on its own, from
-//! the table's model alone, sharing none of the routes and conversions lowering plans make once.
+//! The reference for the lowering differential: each value lowered on its own, from the table's
+//! model alone, sharing none of the routes and conversions lowering plans make once.
 //!
 //! Every conversion is exact, so a value's column holds the value itself, whatever type the
 //! column has and however the destination stores it. The reference says what each value means as
