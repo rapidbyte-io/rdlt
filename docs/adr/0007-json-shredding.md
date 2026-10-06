@@ -36,7 +36,7 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   scanned without recursion however deep its values nest. Each record is then parsed on its own,
   so a line holds exactly one record and an array element exactly one value.
 - **Values are typed by what they hold.** Integers are read exactly at any width: those that
-  fit 64 signed bits are `Int64`; beyond that, up to the unsigned 64-bit range, `Decimal(20, 0)`;
+  fit 64 signed bits are `Int64`; those above them that fit 64 unsigned bits, `Decimal(20, 0)`;
   within 38 digits `Decimal(38, 0)`; within 76 digits `Decimal(76, 0)`; and a column holding an
   integer beyond 76 digits is `Json`, each such integer kept as the text it was written as. A
   chunk whose fast parse read a float that may be a rounded integer is parsed again with its
