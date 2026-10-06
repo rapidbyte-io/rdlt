@@ -169,11 +169,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
     /// `Data` error.
     ///
     /// A merge keeps one row per key: a staged row replaces the published rows with its key, and
-    /// among staged rows of one key the greatest sequence wins. It needs no key index, so a table
-    /// that merged before, or never did, merges alike. A child table of a merge table replaces
-    /// the children of the roots its root's staged rows publish, reading them from the root's
-    /// staging, so it publishes before its root; [`SqlPlanner::root_index`] indexes it by its
-    /// root id where its rows are staged, as each such commit deletes its rows by it.
+    /// among staged rows of one key the greatest sequence wins. It needs no unique key: the key
+    /// indexes are not unique, so a table that appended repeated keys merges as any other. A child
+    /// table of a merge table replaces the children of the roots its root's staged rows publish,
+    /// reading them from the root's staging, so it publishes before its root;
+    /// [`SqlPlanner::root_index`] indexes it by its root id where its rows are staged, as each such
+    /// commit deletes its rows by it.
     pub fn publish(
         &self,
         owned: &Owned<'_>,
