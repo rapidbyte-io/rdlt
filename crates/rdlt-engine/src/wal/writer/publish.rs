@@ -36,9 +36,9 @@ impl Log {
             .staged
             .take()
             .ok_or_else(|| Error::internal("a chunk was published that was never staged"))?;
-        crash_point!("engine.wal.sync.before");
+        crash_point!("engine.wal.publish.before");
         staged.publish().await.map_err(|error| self.lost(error))?;
-        crash_point!("engine.wal.sync.after");
+        crash_point!("engine.wal.publish.after");
         self.chunk += 1;
         self.forget(&live).await?;
         self.note_room();

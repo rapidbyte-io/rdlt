@@ -13,8 +13,8 @@ use crate::servers::{BUCKET, KEY_ID, SECRET_KEY, Server, opened};
 
 /// The steps a commit takes, each a point a load is killed at, at its second commit.
 const POINTS: [&str; 7] = [
-    "engine.wal.sync.before",
-    "engine.wal.sync.after",
+    "engine.wal.publish.before",
+    "engine.wal.publish.after",
     "engine.ack.early",
     "engine.commit.before",
     "engine.commit.after",
