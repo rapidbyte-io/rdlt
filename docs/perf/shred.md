@@ -12,10 +12,13 @@ record keeps the method with the numbers.
   `rdlt_engine::fuzzing::bench_shred_bytes`, over 8 MiB pushes cut at line ends, built with fat
   LTO and one codegen unit, best of five runs. The harness is below.
 - **This engine.** `cargo bench -p rdlt-engine --features bench --bench shred` with
-  `RDLT_SHRED_CORPUS` naming the corpus (`shred/file`): 8 MiB pushes, 1 MiB chunks, the bench
-  profile's fat LTO, criterion's mean.
-- **Cores.** `shred_cores/N` shreds the `nested` corpus on a pool of N threads. The development
-  machine mixes core types, so scaling is measured on cores of one type, with `taskset`.
+  `RDLT_SHRED_CORPUS` naming the corpus (`shred/file`): 8 MiB pushes, 1 MiB chunks, built with the
+  release profile's fat LTO and one codegen unit, criterion's mean.
+- **Cores.** `shred_cores/N` shreds the `nested` corpus within N cores, run with `taskset` on N
+  cores of one type, since the development machine mixes them: the bench's runtime has one
+  worker, which only waits, and the compute pool the N − 1 threads it leaves, one at N = 1.
+- **Profiles.** `just profiling shred` builds the bench with line tables and frame pointers for
+  `perf record --call-graph fp`.
 
 ```python
 """Nested ~170-byte JSON lines rows, deterministic: gen.py ROWS OUT."""
@@ -82,13 +85,24 @@ mode every figure falls to about a third, so compare only runs taken back to bac
 | `flat_wide` (200 columns) | 506 MiB/s |
 | `string_heavy` | 557 MiB/s |
 
-| Cores | One core | N cores | Scaling | Gate |
-|---|---|---|---|---|
-| 8 efficient cores (`taskset -c 4-11`) | 524.2 MiB/s | 3104 MiB/s | 5.92× | ≥ 5.6× |
-| 4 performance cores (`taskset -c 0-3`) | 684.9 MiB/s | 2194 MiB/s | 3.20× | ≥ 2.8× |
+| Cores | Layout | One core | N cores | Scaling | Spec's bound |
+|---|---|---|---|---|---|
+| 8 efficient cores (`taskset -c 4-11`) | 1 worker, 7 compute threads | 446.8 MiB/s | 2094 MiB/s | 4.69× | ≥ 5.6× |
+| 4 performance cores (`taskset -c 0-3`) | 1 worker, 3 compute threads | 598.4 MiB/s | 1507 MiB/s | 2.52× | ≥ 2.8× |
 
-Unpinned, the pool's eighth thread lands on slower cores than the first, so eight threads reach
-about 4.1× the fastest core: the mix of cores, not the shredder, sets that figure.
+Measured 2026-10-06, `main` at `b46a4574` with the change that last edited this record, load
+average 0.80–0.99, governor `powersave`; the median of five runs.
+
+## Build profile
+
+The figures here assume the release profile. Cargo's defaults, which an embedder gets without
+setting its own profile, shred more slowly, one core (`taskset -c 0`), the median of five
+interleaved runs, 2026-10-06, load average 0.78–0.99:
+
+| Build | `nested` | `flat_wide` | `string_heavy` | `normalize/keyless` | Instructions per `nested` pass |
+|---|---|---|---|---|---|
+| Release profile (`lto = "fat"`, `codegen-units = 1`) | 578 MiB/s | 482 MiB/s | 590 MiB/s | 177 MiB/s | 1.31 × 10⁹ |
+| Cargo's release defaults | 426 MiB/s | 376 MiB/s | 484 MiB/s | 149 MiB/s | 1.54 × 10⁹ |
 
 ## Metering (ADR 0040)
 
