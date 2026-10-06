@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::{Buf as _, Bytes};
-use http_body::{Body, Frame, SizeHint};
+use http_body::{Body, Frame};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use tonic::Status;
 
@@ -328,9 +328,5 @@ impl Body for Bounded {
 
     fn is_end_stream(&self) -> bool {
         self.done && self.arriving.is_empty() && self.trailers.is_none()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
     }
 }

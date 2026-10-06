@@ -246,3 +246,35 @@ fn a_message_behind_messages_holding_the_window_is_passed_on_once_they_are() {
     drop(writes);
     assert_eq!(window.taken(), 0);
 }
+
+#[test]
+fn room_for_an_arriving_message_doubles_then_goes_to_its_end() {
+    let mut body = Bounded::new(chunks(&[]), bounds(1024, 1 << 20), None);
+    let prefix = message(&[0; 100]);
+    let mut rooms = Vec::new();
+    // Before its prefix the length is unknown: room is what arrived. Then it doubles, until the
+    // message's end is no more than twice as far, and then it is the end.
+    for (from, to) in [(0, 3), (3, 5), (5, 15), (15, 35), (35, 45), (45, 105)] {
+        body.arrive(&prefix[from..to]).expect("within its bound");
+        rooms.push(body.arriving.capacity());
+    }
+    assert_eq!(rooms, [3, 5, 15, 35, 105, 105]);
+    // Room that is full takes nothing more for nothing more.
+    let mut full = Bounded::new(chunks(&[]), bounds(1024, 1 << 20), None);
+    full.arrive(&prefix[..5]).expect("within its bound");
+    full.arrive(&prefix[5..15]).expect("within its bound");
+    full.arrive(&[]).expect("nothing");
+    assert_eq!(full.arriving.capacity(), 15);
+}
+
+#[test]
+fn a_body_shows_its_bounds_and_what_has_arrived() {
+    let mut body = Bounded::new(chunks(&[]), bounds(1024, 1 << 20), None);
+    body.arrive(&[0, 0]).expect("within its bound");
+    let shown = format!("{body:?}");
+    assert!(shown.starts_with("Bounded {"), "{shown}");
+    assert!(
+        shown.contains("wire: 1024") && shown.contains("arriving: 2"),
+        "{shown}"
+    );
+}
