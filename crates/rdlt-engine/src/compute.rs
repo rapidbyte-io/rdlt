@@ -49,15 +49,18 @@ impl Cores {
         Self { count, workers }
     }
 
-    /// `count` cores, half of them, rounded down and one at least, the runtime's workers.
+    /// `count` cores, half of them, rounded down, the runtime's workers, and two at least where
+    /// there are two.
     ///
-    /// `docs/perf/passthrough.md` records the layouts measured and why this one is chosen.
-    pub const fn from_count(count: NonZeroUsize) -> Self {
-        let workers = match NonZeroUsize::new(count.get() / 2) {
-            Some(workers) => workers,
-            None => NonZeroUsize::MIN,
-        };
-        Self::new(count, workers)
+    /// One worker runs the engine's per-row work and every lane's writes alone, so two and three
+    /// cores take two workers beside the pool's one thread, two cores a thread more than they
+    /// have. `docs/perf/passthrough.md` records the layouts measured.
+    pub fn from_count(count: NonZeroUsize) -> Self {
+        let workers = count.get().min(2).max(count.get() / 2);
+        Self::new(
+            count,
+            NonZeroUsize::new(workers).unwrap_or(NonZeroUsize::MIN),
+        )
     }
 
     /// The cores this process may run on, split as [`from_count`](Self::from_count) splits them:
