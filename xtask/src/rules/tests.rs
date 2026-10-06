@@ -22,6 +22,7 @@ fn each_rule_fires_on_its_violation() {
         ("// since 044 this is lazy\n", Rule::TrackerId),
         ("// see specs/foo.md\n", Rule::TrackerId),
         ("// lowered as spec §8.7 says\n", Rule::TrackerId),
+        ("// RFC 9113 §3.4 as spec §8.7 says\n", Rule::TrackerId),
         (
             "/// Reads until caught up (§9.6).\nfn f() {}\n",
             Rule::TrackerId,
@@ -82,6 +83,8 @@ fn allowed_forms_pass() {
         "let s = \"select! { x }\";\n",
         "let warehouse = 1; // warehouse writer\n",
         "// The preface HTTP/2 sends first (RFC 9113 §3.4)\n",
+        "// A frame on a closed stream is an error (RFC 9113, §5.1 and §6.8)\n",
+        "// Pings and their acks (RFC 9113 §6.7, §8.1)\n",
         "let section = \"§8.7\";\n",
     ];
     for source in clean {

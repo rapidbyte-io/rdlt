@@ -101,8 +101,9 @@ fn pattern(source: &str) -> Regex {
 static CODE_SPAN: LazyLock<Regex> = LazyLock::new(|| pattern(r"`[^`]*`"));
 static TRACKER: LazyLock<Regex> =
     LazyLock::new(|| pattern(r"\b(US\d+|D-\d+|GLM|Round-\d+|0\d{2})\b|\bspecs/|§\s*\d"));
-/// A section of a published standard, which a comment may cite.
-static RFC_SECTION: LazyLock<Regex> = LazyLock::new(|| pattern(r"\bRFC \d+ §\s*[\d.]+"));
+/// Sections of a published standard, which a comment may cite.
+static RFC_SECTION: LazyLock<Regex> =
+    LazyLock::new(|| pattern(r"\bRFC \d+,? §\s*[\d.]+(\s*(,|and|or)\s*§\s*[\d.]+)*"));
 static JARGON: LazyLock<Regex> = LazyLock::new(|| {
     pattern(
         r"(?i)\b(seats?|doors?|belts?|honest|honestly|deliberately|laws?|spelling|house|the one)\b|\b(pins?|pinned|pinning)\b",
