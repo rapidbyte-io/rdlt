@@ -24,11 +24,17 @@ use rdlt_connector::{ConnectContext, Destination, Source, destination_factory, s
 use rdlt_connector_reference::{
     ChangesSource, FilesDestination, GeneratorSource, LogSource, SqliteDestination,
 };
-use rdlt_engine::{Engine, LocalWal, RayonPool, RunStatus, SystemEnv};
+use rdlt_engine::{Cores, Engine, LocalWal, RunStatus, SystemEnv};
 use rdlt_host::{ConnectorRef, Kills, Local, Options, Provider as _};
 
 use config::{Config, Victim};
 use watch::Watch;
+
+/// The cores the run takes: its runtime's two workers and two compute threads.
+const CORES: Cores = Cores::new(
+    NonZeroUsize::new(4).expect("four is not zero"),
+    NonZeroUsize::new(2).expect("two is not zero"),
+);
 
 fn main() -> ExitCode {
     undumped();
@@ -50,6 +56,7 @@ fn main() -> ExitCode {
         }
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(CORES.workers().get())
         .enable_all()
         .build()
         .expect("a runtime starts");
@@ -109,9 +116,7 @@ async fn run(config: &Config) -> Result<(), String> {
     let watch = Arc::new(Watch::new(kill, config.pause));
     let source = watch::source(source, Arc::clone(&watch));
     let destination = watch::destination(destination, watch);
-    let pool =
-        RayonPool::new(NonZeroUsize::new(2).expect("two")).map_err(|error| error.to_string())?;
-    let mut env = SystemEnv::new(pool);
+    let mut env = SystemEnv::try_new(CORES).map_err(|error| error.to_string())?;
     if let Some(wal) = &config.wal {
         env = env.with_wal(Arc::new(LocalWal::new(wal)));
     }

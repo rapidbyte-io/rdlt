@@ -1,12 +1,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::compute::{ComputePool, RayonPool};
+use crate::compute::{ComputePool, ComputePoolError, Cores, RayonPool};
 use crate::env::{Clock, Env, Sleep};
 use crate::wal::WalStore;
 
 /// The production [`Env`]: the operating system's clock and random source, tokio's timers, a
-/// rayon compute pool and, where given one, a write-ahead log store.
+/// rayon compute pool on the cores the runtime leaves and, where given one, a write-ahead log
+/// store.
 #[derive(Debug)]
 pub struct SystemEnv {
     compute: RayonPool,
@@ -14,9 +15,13 @@ pub struct SystemEnv {
 }
 
 impl SystemEnv {
-    /// Creates an environment that runs CPU-bound work on `compute` and keeps no write-ahead logs.
-    pub fn new(compute: RayonPool) -> Self {
-        Self { compute, wal: None }
+    /// Creates an environment within `cores` that runs CPU-bound work on a pool of the threads
+    /// the runtime's workers leave, and keeps no write-ahead logs.
+    pub fn try_new(cores: Cores) -> Result<Self, ComputePoolError> {
+        Ok(Self {
+            compute: RayonPool::try_new(cores)?,
+            wal: None,
+        })
     }
 
     /// The environment keeping write-ahead logs in `store`, usually a
@@ -27,6 +32,15 @@ impl SystemEnv {
             wal: Some(store),
             ..self
         }
+    }
+}
+
+#[cfg(test)]
+impl SystemEnv {
+    /// An environment of one core: the pool's one thread beside a runtime's one worker.
+    pub(crate) fn one_core() -> Self {
+        let one = std::num::NonZeroUsize::MIN;
+        Self::try_new(Cores::new(one, one)).expect("a one-thread pool starts")
     }
 }
 

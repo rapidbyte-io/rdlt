@@ -146,11 +146,10 @@ impl crate::env::Env for Readings {
 fn a_load_s_batches_are_received_in_order_whatever_the_clock_reads() {
     use std::time::{Duration, UNIX_EPOCH};
     let at = |seconds: u64| UNIX_EPOCH + Duration::from_secs(seconds);
-    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
     let readings = [at(5), at(20), at(10), at(30)];
     let env = Readings(
         parking_lot::Mutex::new(readings.to_vec()),
-        crate::env::SystemEnv::new(pool),
+        crate::env::SystemEnv::one_core(),
     );
     let clock = super::LoadClock::new(at(10));
     let received: Vec<_> = (0..4).map(|_| clock.received(&env)).collect();

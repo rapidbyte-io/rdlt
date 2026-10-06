@@ -70,9 +70,7 @@ async fn a_catalog_at_the_least_budget_s_limit_is_charged_before_it_is_decoded_a
         [StreamPlan::new(first)],
     )
     .expect("a plan");
-    let env = rdlt_engine::SystemEnv::new(
-        rdlt_engine::RayonPool::new(NonZeroUsize::MIN).expect("a pool"),
-    );
+    let env = crate::support::system_env();
     let outcome = Engine::new(config, Arc::new(env))
         .run(plan, Arc::new(source), Arc::new(destination))
         .await;

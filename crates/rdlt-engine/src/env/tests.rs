@@ -1,15 +1,14 @@
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rdlt_connector::LoadId;
 
 use super::{Clock, Env, Sleep, SystemClock, SystemEnv};
-use crate::compute::{ComputePool, RayonPool};
+use crate::compute::ComputePool;
 use crate::wal::{LocalWal, WalStore};
 
 fn system_env() -> SystemEnv {
-    SystemEnv::new(RayonPool::new(NonZeroUsize::MIN).unwrap())
+    SystemEnv::one_core()
 }
 
 #[tokio::test(start_paused = true)]

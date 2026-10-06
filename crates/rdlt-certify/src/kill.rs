@@ -135,10 +135,17 @@ mod running {
 
     use crate::protocol::Violation;
     use rdlt_engine::{
-        BatchPolicy, CommitPolicy, Engine, EngineConfig, PipelinePlan, RayonPool, RetryPolicy,
+        BatchPolicy, CommitPolicy, Cores, Engine, EngineConfig, PipelinePlan, RetryPolicy,
         RunStatus, SystemEnv,
     };
     use rdlt_host::Kills;
+
+    /// The cores the loading engine is sized to, the certification runtime's workers among
+    /// them, alike on every host.
+    const CORES: Cores = Cores::new(
+        NonZeroUsize::new(4).expect("four is not zero"),
+        crate::WORKERS,
+    );
 
     /// The longest a kill clause takes, all its loads together, unless the target chooses.
     const KILL_TIME: Duration = Duration::from_secs(300);
@@ -330,9 +337,8 @@ mod running {
     /// An engine of that configuration.
     fn engine() -> Result<Engine, Violation> {
         let config = config()?;
-        let threads = NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN);
-        let pool = RayonPool::new(threads).map_err(Violation::of)?;
-        Ok(Engine::new(config, Arc::new(SystemEnv::new(pool))))
+        let env = SystemEnv::try_new(CORES).map_err(Violation::of)?;
+        Ok(Engine::new(config, Arc::new(env)))
     }
 
     /// Loads `plan` from `source` into `destination` until a load succeeds, at most [`LOADS`]

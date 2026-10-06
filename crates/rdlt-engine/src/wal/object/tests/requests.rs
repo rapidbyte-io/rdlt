@@ -135,9 +135,7 @@ async fn a_request_that_never_answers_is_given_up_at_each_deadline() {
     )
     .await;
     objects.plan(always(Fault::Hang, any));
-    let env = crate::env::SystemEnv::new(
-        crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).expect("a pool"),
-    );
+    let env = crate::env::SystemEnv::one_core();
     let start = crate::env::Env::instant(&env);
     let refused = wal
         .loads(&pipeline("hung"))
@@ -445,9 +443,7 @@ async fn a_listing_whose_page_never_comes_is_given_up_at_a_page_s_deadline() {
     )
     .await;
     objects.plan(always(Fault::Hang, |call| call.op == Op::List));
-    let env = crate::env::SystemEnv::new(
-        crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).expect("a pool"),
-    );
+    let env = crate::env::SystemEnv::one_core();
     let start = crate::env::Env::instant(&env);
     let refused = wal
         .chunks(&pipeline("paged"), chunk(1, 0).load)

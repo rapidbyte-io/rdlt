@@ -14,8 +14,8 @@ use rdlt_connector::{
 };
 use rdlt_connector_reference::published;
 use rdlt_engine::{
-    CommitPolicy, Engine, EngineConfig, LocalWal, PipelinePlan, RayonPool, RetryPolicy, RunControl,
-    RunOutcome, RunStatus, StopMode, StreamPlan, SystemEnv, WalStore,
+    CommitPolicy, Engine, EngineConfig, LocalWal, PipelinePlan, RetryPolicy, RunControl,
+    RunOutcome, RunStatus, StopMode, StreamPlan, WalStore,
 };
 use rdlt_host::{Connect, Connection, ConnectorRef, Kills, Options, Provider as _, RemoteSource};
 use rdlt_wire::Limits;
@@ -80,8 +80,7 @@ fn engine(wal: Option<Arc<dyn WalStore>>) -> Engine {
     let commit = CommitPolicy::new(None, Some(100), None).expect("a row threshold is valid");
     let config = EngineConfig::builder().commit(commit).retry(retry).lanes(2);
     let config = config.build().expect("the configuration is valid");
-    let pool = RayonPool::new(NonZeroUsize::new(2).expect("not zero")).expect("a pool");
-    let env = SystemEnv::new(pool);
+    let env = crate::support::system_env();
     let env = match wal {
         Some(wal) => env.with_wal(wal),
         None => env,

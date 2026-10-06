@@ -2,7 +2,6 @@
 //! batch frame of its segments.
 
 use std::collections::BTreeSet;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use rdlt_connector::{ConnectContext, PipelineId, destination_factory, source_factory};
@@ -12,7 +11,6 @@ use serde_json::json;
 use super::WalStore;
 use super::frame::Frame;
 use super::memory::MemoryWal;
-use crate::compute::RayonPool;
 use crate::config::{CommitPolicy, EngineConfig};
 use crate::env::SystemEnv;
 use crate::plan::{PipelinePlan, StreamPlan};
@@ -25,8 +23,7 @@ async fn a_commit_s_frame_follows_every_batch_of_its_segments_however_slow_the_d
         slow: true,
         ..MemoryWal::default()
     });
-    let pool = RayonPool::new(NonZeroUsize::MIN).expect("a pool starts");
-    let env = SystemEnv::new(pool).with_wal(Arc::clone(&store) as Arc<dyn WalStore>);
+    let env = SystemEnv::one_core().with_wal(Arc::clone(&store) as Arc<dyn WalStore>);
     let config = EngineConfig::builder()
         .lanes(3)
         .commit(CommitPolicy::new(None, Some(50), None).expect("a valid policy"))

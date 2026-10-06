@@ -6,7 +6,7 @@ use std::sync::Arc;
 use rdlt_connector::serve::{Served, serve_connection};
 use rdlt_connector::{Role, destination_factory, source_factory};
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
-use rdlt_engine::{CommitPolicy, Engine, EngineConfig, RayonPool, SystemEnv};
+use rdlt_engine::{CommitPolicy, Cores, Engine, EngineConfig, SystemEnv};
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
 use rdlt_wire::Limits;
 use rdlt_wire::v1::connector_client::ConnectorClient;
@@ -73,7 +73,16 @@ pub(crate) fn engine(rows: u64) -> Engine {
         .lanes(2)
         .build()
         .expect("the engine's configuration is valid");
-    let threads = NonZeroUsize::new(2).expect("two is not zero");
-    let env = SystemEnv::new(RayonPool::new(threads).expect("the compute pool starts"));
+    let env = system_env();
     Engine::new(config, Arc::new(env))
+}
+
+/// The system environment declaring four cores, two of them a runtime's workers, whatever runtime
+/// the test runs on, so default lanes and the compute pool are alike on every machine.
+pub(crate) fn system_env() -> SystemEnv {
+    let cores = Cores::new(
+        NonZeroUsize::new(4).expect("four is not zero"),
+        NonZeroUsize::new(2).expect("two is not zero"),
+    );
+    SystemEnv::try_new(cores).expect("the compute pool starts")
 }

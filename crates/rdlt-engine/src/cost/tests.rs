@@ -418,8 +418,7 @@ fn only_what_rows_name_is_materialized() {
 
 /// The system's clock, which a paused test runtime moves.
 fn clock() -> Arc<dyn Env> {
-    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
-    Arc::new(crate::env::SystemEnv::new(pool))
+    Arc::new(crate::env::SystemEnv::one_core())
 }
 
 /// A budget of `capacity` bytes whose requests wait an hour at most, and an admission charging

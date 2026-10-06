@@ -155,7 +155,7 @@ where
     Fut: Future<Output = T>,
 {
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(crate::env::WORKERS.get())
         .enable_time()
         .build()
         .expect("a runtime of many threads builds");

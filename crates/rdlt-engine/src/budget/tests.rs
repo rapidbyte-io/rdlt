@@ -17,8 +17,7 @@ const HOUR: Duration = Duration::from_secs(3600);
 
 /// A budget of `capacity` whose requests wait an hour at most.
 fn bounded(capacity: u64) -> MemoryBudget {
-    let pool = crate::compute::RayonPool::new(std::num::NonZeroUsize::MIN).unwrap();
-    let env = std::sync::Arc::new(crate::env::SystemEnv::new(pool));
+    let env = std::sync::Arc::new(crate::env::SystemEnv::one_core());
     MemoryBudget::new(capacity).within(env, HOUR)
 }
 

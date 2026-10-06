@@ -11,7 +11,7 @@ use serde_json::json;
 
 use super::connectors::Replay;
 use super::{Refused, SinkWriter, ipc_sink, normalize, replay, shred, shred_on};
-use crate::compute::RayonPool;
+use crate::compute::{Cores, RayonPool};
 use crate::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 
 #[test]
@@ -21,7 +21,8 @@ fn shredding_inline_and_on_a_pool_gives_the_same_batches() {
         Bytes::from_static(b"[{\"a\":3}]"),
     ];
     let inline = shred(&pushes, 8).unwrap();
-    let pool = RayonPool::new(NonZeroUsize::new(2).unwrap()).unwrap();
+    let pool =
+        RayonPool::try_new(Cores::new(NonZeroUsize::new(3).unwrap(), NonZeroUsize::MIN)).unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -54,8 +55,7 @@ async fn replayed_batches_pass_through_the_engine_into_the_sink() {
             RecordBatch::try_from_iter([("id", ids)]).unwrap()
         })
         .collect();
-    let pool = RayonPool::new(NonZeroUsize::new(2).unwrap()).unwrap();
-    let engine = Engine::new(EngineConfig::default(), Arc::new(SystemEnv::new(pool)));
+    let engine = Engine::new(EngineConfig::default(), Arc::new(SystemEnv::one_core()));
     let plan = PipelinePlan::new(
         PipelineId::parse("replay").unwrap(),
         [StreamPlan::new(StreamName::new("events").unwrap())],
