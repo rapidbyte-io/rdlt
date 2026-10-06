@@ -463,3 +463,37 @@ async fn a_slot_on_disk_keeps_what_the_source_acknowledged_for_its_next_process(
         .await;
     assert!(refused.is_err());
 }
+
+#[tokio::test]
+async fn a_snapshot_cursor_past_its_partition_s_rows_is_refused() {
+    // One key over two partitions: the first holds it.
+    let config = serde_json::json!({
+        "seed": 3,
+        "streams": [{ "name": "orders", "keys": 1, "snapshot_partitions": 2, "changes": 0,
+                      "batch_rows": 4 }],
+    });
+    let source = source_factory::<ChangesSource>()
+        .connect(config, ConnectContext::new())
+        .await
+        .unwrap();
+    let reading = |partition: &str, next, done| {
+        let cursor = Cursor::encode(1, &Position { next, done }).unwrap();
+        let (sink, _feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+        let partition = Partition::new(PartitionId::parse(partition).unwrap());
+        source.read(ReadRequest::new(orders(), partition, Some(cursor)), sink)
+    };
+    // At its last row the partition is done, and reads nothing more.
+    reading("snapshot-0", 1, true)
+        .await
+        .expect("the cursor it issued");
+    for (next, done) in [(2, true), (1, false)] {
+        let refused = reading("snapshot-0", next, done)
+            .await
+            .expect_err("past its rows, or at its last not done");
+        assert_eq!(refused.code(), Some(rdlt_connector::CURSOR_UNISSUED));
+    }
+    // A partition of no rows is done where it starts.
+    reading("snapshot-1", 0, true)
+        .await
+        .expect("the cursor it issued");
+}
