@@ -17,6 +17,14 @@
 //! assert_eq!(env.cores(), count);
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```
+//!
+//! # Building
+//!
+//! The figures in the repository's `docs/perf` assume its release profile: `lto = "fat"` and
+//! `codegen-units = 1`, without which the shredder runs measurably slower (`docs/perf/shred.md`
+//! records how much). Cargo applies only the root package's profiles, so an embedder sets the
+//! same in its own `[profile.release]`, and keeps `panic = "unwind"`: the engine contains a
+//! panicking job by unwinding, and does not build without it.
 
 #![forbid(unsafe_code)]
 
