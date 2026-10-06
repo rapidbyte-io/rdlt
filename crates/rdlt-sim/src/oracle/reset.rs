@@ -13,7 +13,7 @@ use serde_json::json;
 
 use super::scenario::Scenario;
 use super::{PIPELINES, Simulation};
-use crate::destination::SimDestination;
+use crate::destination::{SimDestination, records};
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
 use crate::source::SimSource;
@@ -34,10 +34,14 @@ struct Drawn {
 
 impl Simulation {
     /// Resets a stream the source can read again, drawn with its scope apart from the seed's
-    /// generator, while a run of every pipeline loads in `phase`, then converges the phase again;
-    /// whether it reset one.
+    /// generator, while a run of every pipeline loads in `phase`; whether it drew one.
     ///
-    /// Only resets after which the model's rows still hold are drawn, as [`scopes`] says.
+    /// Only resets after which the model's rows still hold are drawn, as [`scopes`] says. A reset
+    /// of a stream the pipeline's state records nothing of when the reset opens the destination
+    /// must be refused as `stream_not_found`, which changes nothing the model holds. A run raced
+    /// may record the stream as the reset begins, so a reset raced is wrong only where it refuses
+    /// a stream the state recorded before it began; once the runs have ended, the state alone
+    /// says which answer is right.
     pub(super) async fn reset(&mut self, seed: Seed, phase: usize) -> bool {
         let Some(drawn) = self.draw(seed) else {
             return false;
@@ -46,14 +50,29 @@ impl Simulation {
             .reset
             .lock()
             .insert(drawn.streams[0].name().to_owned());
-        let (engine, world) = (self.engine.clone(), self.name.clone());
+        let (engine, world, name) = (
+            self.engine.clone(),
+            Arc::clone(&self.world),
+            self.name.clone(),
+        );
         let racing = drawn.clone();
         let resetting = async move {
             tokio::time::sleep(racing.delay).await;
-            let (source, destination) = connected(&world).await;
+            let (source, destination) = connected(&name).await;
             for _ in 0..TRIES {
-                if tried(&engine, &racing, &source, &destination).await.is_ok() {
-                    return None;
+                let recorded = records(&world, &racing.pipeline, &racing.streams[0]);
+                match tried(&engine, &racing, &source, &destination).await {
+                    Ok(_) => return None,
+                    Err(error) if refused(&error) => {
+                        assert!(
+                            !recorded,
+                            "seed {seed}: resetting {:?} as {:?} was refused, though the \
+                             pipeline recorded the stream before the reset began: {error}",
+                            racing.streams, racing.scope
+                        );
+                        return None;
+                    }
+                    Err(_) => {}
                 }
             }
             Some((engine, source, destination))
@@ -67,11 +86,21 @@ impl Simulation {
         // left to reach the source, so it is checked again from here on.
         self.world.reset.lock().remove(drawn.streams[0].name());
         if let Some((engine, source, destination)) = unfinished {
-            // Faults kept it from committing: without them, it must.
+            // Faults kept it from committing: without them, it must, or refuse a stream the
+            // pipeline recorded nothing of.
             self.world.set_faulty(false);
-            if let Err(error) = tried(&engine, &drawn, &source, &destination).await {
+            let recorded = records(&self.world, &drawn.pipeline, &drawn.streams[0]);
+            let answer = tried(&engine, &drawn, &source, &destination).await;
+            let right = match &answer {
+                Ok(_) => recorded,
+                Err(error) => !recorded && refused(error),
+            };
+            if !right {
                 let (streams, scope) = (&drawn.streams, drawn.scope);
-                panic!("seed {seed}: resetting {streams:?} as {scope:?} failed: {error}");
+                panic!(
+                    "seed {seed}: resetting {streams:?} as {scope:?}, recorded: {recorded}, \
+                     answered {answer:?}"
+                );
             }
         }
         true
@@ -169,6 +198,11 @@ fn scopes(stream: &SimStream) -> Vec<ResetScope> {
         scopes.push(ResetScope::Positions);
     }
     scopes
+}
+
+/// Whether `error` refuses a reset of a stream the pipeline recorded nothing of.
+fn refused(error: &rdlt_engine::Error) -> bool {
+    error.code() == Some("stream_not_found")
 }
 
 /// One of `items`, drawn from `rng`.

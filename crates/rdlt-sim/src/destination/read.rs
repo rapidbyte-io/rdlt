@@ -1,10 +1,11 @@
-//! What the oracle reads from the store: published tables, committed cursors and completed full
-//! reads.
+//! What the oracle reads from the store: published tables, committed cursors, completed full
+//! reads and the streams a pipeline's state records.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use rdlt_connector::{
-    NameMap, PartitionId, PartitionState, StateEntry, StateKey, StateRecord, StreamName, TablePath,
+    NameMap, PartitionId, PartitionState, PipelineId, StateEntry, StateKey, StateRecord,
+    StreamName, TablePath,
 };
 
 use super::Stored;
@@ -112,6 +113,25 @@ pub(crate) fn committed_next(
         .pipelines
         .values()
         .find_map(|pipeline| next_offset(&pipeline.state, stream, partition))
+}
+
+/// Whether `pipeline`'s state records anything of `stream`: where its reads stand, or its last
+/// reset.
+pub(crate) fn records(world: &World, pipeline: &PipelineId, stream: &StreamName) -> bool {
+    let store = world.store.lock();
+    let Some(stored) = store.pipelines.get(pipeline) else {
+        return false;
+    };
+    stored.state.keys().any(|key| match StateKey::parse(key) {
+        Ok(
+            StateKey::Phase(named)
+            | StateKey::Partition(named, _)
+            | StateKey::Generation(named)
+            | StateKey::Completed(named)
+            | StateKey::Reset(named),
+        ) => named == *stream,
+        _ => false,
+    })
 }
 
 pub(super) fn next_offset(

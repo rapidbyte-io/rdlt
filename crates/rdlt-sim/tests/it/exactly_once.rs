@@ -3,7 +3,7 @@ use rdlt_sim::{
 };
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 16] = [
+const FOUND: [u64; 21] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -50,6 +50,12 @@ const FOUND: [u64; 16] = [
     // Logged in a small log: eight partitions' segments each spanned several chunks, which
     // stayed, holding committed frames beside open ones, until no batch fitted.
     53_249,
+    // Reset: an incremental stream whose partitions never held a row, so the pipeline recorded
+    // nothing of it, was refused as no stream it knew, which the world took for a failure.
+    249_911, 728_591, 820_601, 918_105,
+    // Reset: a followed stream that never held a row, whose read had sent its position all the
+    // same, was reset, which a world that judged by the rows alone took for a failure.
+    685_665,
 ];
 
 #[test]
