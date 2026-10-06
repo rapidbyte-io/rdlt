@@ -1,10 +1,11 @@
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rdlt_connector::LoadId;
 
 use super::{Clock, Env, Sleep, SystemClock, SystemEnv};
-use crate::compute::ComputePool;
+use crate::compute::{ComputePool, Cores};
 use crate::wal::{LocalWal, WalStore};
 
 fn system_env() -> SystemEnv {
@@ -67,6 +68,10 @@ impl Env for Fixed {
     fn compute(&self) -> &dyn ComputePool {
         self.inner.compute()
     }
+
+    fn cores(&self) -> NonZeroUsize {
+        self.inner.cores()
+    }
 }
 
 #[test]
@@ -108,4 +113,13 @@ async fn the_system_clock_sleeps_on_the_runtime_clock() {
 #[test]
 fn the_system_clock_s_random_values_differ() {
     assert_ne!(SystemClock.random(), SystemClock.random());
+}
+
+#[test]
+fn system_env_declares_the_cores_it_was_given_not_the_host_s() {
+    for count in [1, 3, 64] {
+        let count = NonZeroUsize::new(count).unwrap();
+        let env = SystemEnv::try_new(Cores::new(count, count)).unwrap();
+        assert_eq!(env.cores(), count);
+    }
 }

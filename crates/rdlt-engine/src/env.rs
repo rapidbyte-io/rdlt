@@ -5,6 +5,7 @@ mod system;
 mod tests;
 
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -32,10 +33,11 @@ pub trait Clock: std::fmt::Debug + Send + Sync + 'static {
     fn random(&self) -> u64;
 }
 
-/// Every source of nondeterminism the engine may use, and where it keeps write-ahead logs.
+/// Every source of nondeterminism the engine may use, the cores it may use, and where it keeps
+/// write-ahead logs.
 ///
 /// Production code uses [`SystemEnv`]. Deterministic simulation substitutes a virtual clock, a
-/// seeded random source, an inline compute pool and logs in memory.
+/// seeded random source, an inline compute pool, a fixed count of cores and logs in memory.
 pub trait Env: Send + Sync + 'static {
     /// Wall-clock time, for timestamps that are persisted or reported.
     fn now(&self) -> SystemTime;
@@ -51,6 +53,9 @@ pub trait Env: Send + Sync + 'static {
 
     /// The pool that runs CPU-bound work.
     fn compute(&self) -> &dyn ComputePool;
+
+    /// The cores the engine may use: lanes default to one per core.
+    fn cores(&self) -> NonZeroUsize;
 
     /// Where write-ahead logs are kept; none by default, so a pipeline that needs one fails to
     /// plan.

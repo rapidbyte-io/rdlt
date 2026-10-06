@@ -14,7 +14,7 @@
 //! let count = NonZeroUsize::new(4).expect("4 is non-zero");
 //! let workers = NonZeroUsize::new(2).expect("2 is non-zero");
 //! let env = SystemEnv::try_new(Cores::new(count, workers))?;
-//! assert!(env.now() > std::time::UNIX_EPOCH);
+//! assert_eq!(env.cores(), count);
 //! # Ok::<(), rdlt_engine::ComputePoolError>(())
 //! ```
 

@@ -28,8 +28,9 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 
 ## Engine code
 
-- Time, randomness and tasks come only from `Env` and `TaskScope`, so the engine runs under
-  deterministic simulation. Clippy bans the direct calls in `rdlt-engine`; do not work around it.
+- Time, randomness, tasks and the count of cores come only from `Env` and `TaskScope`, so the
+  engine runs under deterministic simulation. Clippy bans the direct calls in `rdlt-engine`; do
+  not work around it.
 - Tests that involve time run on tokio's paused clock and must fail rather than hang: bound every
   wait.
 - A simulation failure prints its seed; replay it with `just sim <seed>`.

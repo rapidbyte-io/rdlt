@@ -140,6 +140,10 @@ impl crate::env::Env for Readings {
     fn compute(&self) -> &dyn crate::compute::ComputePool {
         self.1.compute()
     }
+
+    fn cores(&self) -> std::num::NonZeroUsize {
+        self.1.cores()
+    }
 }
 
 #[test]

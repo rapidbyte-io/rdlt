@@ -1,10 +1,11 @@
+use std::num::{NonZeroU16, NonZeroUsize};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use rdlt_connector::{Checkpointing, ConnectorErrorKind, ReadMode};
 use rdlt_engine::{
-    CommitPolicy, EngineConfig, ErrorKind, RetryPolicy, RunStatus, SchemaPolicy, SchemaSettings,
-    StopMode, WriteMode,
+    CommitPolicy, Cores, EngineConfig, ErrorKind, RetryPolicy, RunStatus, SchemaPolicy,
+    SchemaSettings, StopMode, WriteMode,
 };
 
 use crate::support::destinations::limited;
@@ -12,8 +13,8 @@ use crate::support::script::{
     Fault, Hang, Planning, PushKind, Script, ScriptStream, id, reconnect,
 };
 use crate::support::{
-    commit_every, counting_engine, engine, every_id, generator, memory, pipeline, published_ids,
-    published_rows, retrying, stream, until,
+    commit_every, counting_engine, engine, engine_within, every_id, generator, memory, pipeline,
+    published_ids, published_rows, retrying, stream, until,
 };
 
 fn ids(partitions: usize, rows: u64) -> Vec<i64> {
@@ -41,6 +42,30 @@ async fn a_run_publishes_every_row_once() {
     assert_eq!(outcome.report.rows, 1000);
     assert_eq!(outcome.report.streams["orders"].rows, 1000);
     assert!(outcome.report.streams["orders"].bytes >= outcome.report.rows * 8);
+}
+
+#[tokio::test(start_paused = true)]
+async fn default_lanes_are_one_per_core_the_env_declares() {
+    use crate::support::destinations::counting;
+    let unlimited = limited(memory("lanes_per_core").await, |capabilities| {
+        capabilities.max_parallel_writers = NonZeroU16::MAX;
+    });
+    let (destination, sessions) = counting(unlimited);
+    let source = generator(&[("orders", 1000, 32, 37)]).await;
+    let three = Cores::new(
+        NonZeroUsize::new(3).expect("three is not zero"),
+        NonZeroUsize::MIN,
+    );
+    let outcome = engine_within(EngineConfig::builder(), three)
+        .run(
+            pipeline("lanes-per-core", [stream("orders")]),
+            source,
+            destination,
+        )
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Succeeded);
+    assert_eq!(sessions.opened.load(Ordering::SeqCst), 1);
+    assert_eq!(sessions.writers.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test(start_paused = true)]

@@ -89,6 +89,12 @@ fn inline_system() -> SystemEnv {
     SystemEnv::try_new(INLINE).expect("a one-thread pool starts")
 }
 
+/// An engine as [`engine`] makes it, declaring `cores` instead.
+pub(crate) fn engine_within(config: EngineConfigBuilder, cores: Cores) -> TestEngine {
+    let system = SystemEnv::try_new(cores).expect("the pool starts");
+    engine_on(config, system).0
+}
+
 fn engine_on(config: EngineConfigBuilder, system: SystemEnv) -> (TestEngine, Arc<AtomicUsize>) {
     let config = config.build().expect("the test configuration is valid");
     let jobs = Arc::new(AtomicUsize::new(0));
@@ -176,6 +182,10 @@ impl Env for InlineEnv {
 
     fn compute(&self) -> &dyn ComputePool {
         &self.1
+    }
+
+    fn cores(&self) -> NonZeroUsize {
+        self.0.cores()
     }
 
     fn wal(&self) -> Option<Arc<dyn WalStore>> {

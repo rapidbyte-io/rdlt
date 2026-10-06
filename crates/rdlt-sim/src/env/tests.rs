@@ -60,3 +60,11 @@ fn a_threaded_run_s_runtime_has_the_workers_its_pool_was_sized_beside() {
     });
     assert_eq!(workers, super::WORKERS.get());
 }
+
+#[test]
+fn a_simulated_env_declares_the_same_cores_on_every_host() {
+    let paused = run(Seed::new(7), |env| async move { env.cores() });
+    let threaded = run_threaded(Seed::new(7), |env| async move { env.cores() });
+    assert_eq!(paused, threaded);
+    assert_eq!(paused, super::CORES);
+}

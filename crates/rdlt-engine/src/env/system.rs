@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -11,6 +12,7 @@ use crate::wal::WalStore;
 #[derive(Debug)]
 pub struct SystemEnv {
     compute: RayonPool,
+    cores: NonZeroUsize,
     wal: Option<Arc<dyn WalStore>>,
 }
 
@@ -20,6 +22,7 @@ impl SystemEnv {
     pub fn try_new(cores: Cores) -> Result<Self, ComputePoolError> {
         Ok(Self {
             compute: RayonPool::try_new(cores)?,
+            cores: cores.count(),
             wal: None,
         })
     }
@@ -39,7 +42,7 @@ impl SystemEnv {
 impl SystemEnv {
     /// An environment of one core: the pool's one thread beside a runtime's one worker.
     pub(crate) fn one_core() -> Self {
-        let one = std::num::NonZeroUsize::MIN;
+        let one = NonZeroUsize::MIN;
         Self::try_new(Cores::new(one, one)).expect("a one-thread pool starts")
     }
 }
@@ -93,6 +96,10 @@ impl Env for SystemEnv {
 
     fn compute(&self) -> &dyn ComputePool {
         &self.compute
+    }
+
+    fn cores(&self) -> NonZeroUsize {
+        self.cores
     }
 
     fn wal(&self) -> Option<Arc<dyn WalStore>> {

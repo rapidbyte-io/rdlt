@@ -139,8 +139,8 @@ and durations are `Duration`, never integer milliseconds.
   direct calls there.
 - Nothing blocks the async runtime. CPU-heavy work runs on `Env::compute`; blocking file I/O runs
   on a dedicated task that owns the file.
-- Inside `rdlt-engine`, time, randomness and scheduling come only from `Env`. Clippy bans the
-  direct calls, and iteration order must never depend on a hash map's random state.
+- Inside `rdlt-engine`, time, randomness, scheduling and the count of cores come only from `Env`.
+  Clippy bans the direct calls, and iteration order must never depend on a hash map's random state.
 - Every `select!` starts with `biased;` and documents which branch wins.
 - Timeouts are per operation and configurable. Locks come from `parking_lot` and are never held
   across `.await`.

@@ -151,7 +151,8 @@ impl EngineConfig {
         self.memory
     }
 
-    /// Writers per destination; `None` uses one per core, up to the destination's limit.
+    /// Writers per destination; `None` uses one per core of [`Env::cores`](crate::Env::cores),
+    /// up to the destination's limit.
     pub fn lanes(&self) -> Option<NonZeroU16> {
         self.lanes
     }
@@ -291,7 +292,8 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// Destination writers (default: one per core, up to the destination's limit).
+    /// Destination writers (default: one per core of [`Env::cores`](crate::Env::cores), up to
+    /// the destination's limit).
     #[must_use]
     pub fn lanes(mut self, lanes: u16) -> Self {
         self.lanes = Some(lanes);
