@@ -290,3 +290,37 @@ proptest! {
 fn every_message_the_calls_carry_is_held_to_the_scan() {
     assert_eq!(differential::count(), 29);
 }
+
+/// Field `number` holding `value`, length-delimited.
+fn field(number: u8, value: &[u8]) -> Vec<u8> {
+    let length = u8::try_from(value.len()).expect("a short value");
+    [&[number << 3 | 2, length][..], value].concat()
+}
+
+/// What the scan counts of `bytes` as `form`, and what decoding them as the message type of
+/// that form holds at its peak.
+fn counted_and_held(form: &Form, bytes: &[u8]) -> (usize, usize) {
+    let which = (0..differential::count())
+        .find(|which| {
+            differential::decoding(*which, &[], &peak_of)
+                .is_some_and(|decoding| std::ptr::eq(decoding.form, form))
+        })
+        .expect("a message the calls carry");
+    let decoding = differential::decoding(which, bytes, &peak_of).expect("a form");
+    assert!(decoding.decoded, "{}", form.name);
+    (decoding.counted.expect("it scans"), decoding.held)
+}
+
+#[test]
+fn text_set_again_is_counted_as_its_vector_grows() {
+    // A text field set twice is decoded into the room its first value took, which grows to
+    // twice that and holds both at once as it does.
+    let (first, second) = (field(1, &[b'a'; 50]), field(1, &[b'b'; 56]));
+    let again = [first.clone(), second.clone()].concat();
+    let (counted, held) = counted_and_held(asked("Configure"), &again);
+    assert!(held <= counted, "held {held}, counted {counted}");
+    // So is one in a message set twice, which decodes as one message.
+    let merged = [field(1, &first), field(1, &second)].concat();
+    let (counted, held) = counted_and_held(answer("Configure"), &merged);
+    assert!(held <= counted, "held {held}, counted {counted}");
+}

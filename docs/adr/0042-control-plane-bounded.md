@@ -52,7 +52,9 @@ still taken largely on trust:
     for repeated messages, nested single entries, strings and numbers, packed and not, the heap
     peak of decoding stays within the count; a property test and a fuzz target (`scan`) decode
     random encodings as every message the calls carry, and whatever decodes, the scan takes and
-    counts no less than its peak.
+    counts no less than its peak. Amended 2026-10-06: the fuzz target found a string set twice,
+    which the decoder reads into the room the first took, grown to twice that beside it; a string
+    its message, or a message it is decoded into, set before counts twice its length.
   - A message the scan cannot walk, which protocol buffers would not decode either, fails its
     call as `InvalidArgument` and never reaches the decoder; so does a call whose body ends within
     a message.

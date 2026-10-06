@@ -212,3 +212,29 @@ fn a_field_of_the_largest_number_a_key_holds_is_walked_and_one_beyond_refused() 
         Err(Unscanned::Malformed)
     );
 }
+
+#[test]
+fn a_text_set_again_holds_twice_its_length_as_its_room_grows() {
+    let form = request("Configure").unwrap();
+    let text = |length: usize| {
+        let mut field = vec![0x0a, u8::try_from(length).unwrap()];
+        field.extend(std::iter::repeat_n(b'x', length));
+        field
+    };
+    let size = size_of::<v1::ConfigureRequest>();
+    assert_eq!(decoded(form, &text(50), usize::MAX), Ok(size + 50));
+    let twice = [text(50), text(56)].concat();
+    assert_eq!(decoded(form, &twice, usize::MAX), Ok(size + 50 + 112));
+    let thrice = [text(50), text(56), text(3)].concat();
+    assert_eq!(decoded(form, &thrice, usize::MAX), Ok(size + 50 + 112 + 16));
+    // A text in a message set again is decoded into what the message holds: set again too.
+    let spec = response("Configure").unwrap();
+    let in_spec = |length: usize| {
+        let inner = text(length);
+        [vec![0x0a, u8::try_from(inner.len()).unwrap()], inner].concat()
+    };
+    let specs = [in_spec(50), in_spec(56)].concat();
+    let spec_size = size_of::<v1::ConfigureResponse>();
+    assert_eq!(decoded(spec, &in_spec(50), usize::MAX), Ok(spec_size + 50));
+    assert_eq!(decoded(spec, &specs, usize::MAX), Ok(spec_size + 50 + 112));
+}
