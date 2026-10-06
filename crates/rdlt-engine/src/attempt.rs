@@ -419,9 +419,12 @@ async fn staged(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Error>
         .await
         .map_err(|denied| match denied {
             Denied::Exhausted(exhausted) => Error::memory(exhausted),
-            Denied::TooLarge(large) => {
-                Error::config(large.to_string()).with_code(WAL_STAGING_EXCEEDS_BUDGET)
-            }
+            Denied::TooLarge(large) => Error::config(format!(
+                "the write-ahead log's store stages {bytes} bytes in memory, more than the memory \
+                 budget's share for the log holds beside what a carry reads at once"
+            ))
+            .with_code(WAL_STAGING_EXCEEDS_BUDGET)
+            .with_source(large),
         })
 }
 

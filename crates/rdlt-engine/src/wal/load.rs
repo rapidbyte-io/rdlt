@@ -330,9 +330,12 @@ async fn reserved(budget: &MemoryBudget, bytes: u64) -> Result<Reservation, Erro
         .await
         .map_err(|denied| match denied {
             Denied::Exhausted(exhausted) => Error::memory(exhausted),
-            Denied::TooLarge(large) => {
-                Error::wal(large.to_string()).with_code(LOG_FRAME_EXCEEDS_BUDGET)
-            }
+            Denied::TooLarge(large) => Error::wal(format!(
+                "a frame of the write-ahead log takes up to {bytes} bytes in memory, more than \
+                 the memory budget's share for the log holds"
+            ))
+            .with_code(LOG_FRAME_EXCEEDS_BUDGET)
+            .with_source(large),
         })
 }
 

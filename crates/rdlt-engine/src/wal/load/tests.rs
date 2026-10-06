@@ -441,6 +441,12 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
             (refused.kind(), refused.code()),
             (crate::ErrorKind::Wal, Some("log_frame_exceeds_budget"))
         );
+        let cause = std::error::Error::source(&refused);
+        let cause = cause.and_then(|cause| cause.downcast_ref::<crate::budget::TooLarge>());
+        assert!(
+            cause.is_some(),
+            "the budget's refusal is its cause: {refused:?}"
+        );
         assert_eq!((small.reserved(), small.peak()), (0, 0));
         drop(log);
     };
