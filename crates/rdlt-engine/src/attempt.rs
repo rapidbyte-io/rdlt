@@ -327,7 +327,11 @@ async fn launch(
 
 /// The attempt's lanes, their tasks started in `scope`.
 fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope<Error>) -> Lanes {
-    let count = lane_count(&context.config, context.destination.as_ref());
+    let count = lane_count(
+        &context.config,
+        context.env.cores(),
+        context.destination.as_ref(),
+    );
     let writers = context.config.growth().writers();
     let (lanes, tasks) = Lanes::new(
         (count, writers),
@@ -470,14 +474,17 @@ fn spawn_partitions(
     (streams, partitions)
 }
 
-/// The configured lanes, or one per core, never more than the destination's parallel writers,
-/// nor than the writers an attempt holds open: each lane holds one at least.
-fn lane_count(config: &EngineConfig, destination: &dyn Destination) -> NonZeroUsize {
+/// The configured lanes, or one per core of `cores`, never more than the destination's parallel
+/// writers, nor than the writers an attempt holds open: each lane holds one at least.
+fn lane_count(
+    config: &EngineConfig,
+    cores: NonZeroUsize,
+    destination: &dyn Destination,
+) -> NonZeroUsize {
     let limit = usize::from(destination.capabilities().max_parallel_writers.get());
-    let lanes = config.lanes().map_or_else(
-        || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
-        |lanes| usize::from(lanes.get()),
-    );
+    let lanes = config
+        .lanes()
+        .map_or(cores.get(), |lanes| usize::from(lanes.get()));
     let lanes = lanes.min(limit).min(config.growth().writers().get());
     NonZeroUsize::new(lanes).unwrap_or(NonZeroUsize::MIN)
 }

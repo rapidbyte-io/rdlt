@@ -102,6 +102,10 @@ impl Env for SimEnv {
         &self.compute
     }
 
+    fn cores(&self) -> NonZeroUsize {
+        CORES
+    }
+
     fn wal(&self) -> Option<Arc<dyn WalStore>> {
         self.wal.lock().clone()
     }

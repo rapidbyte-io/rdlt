@@ -1,4 +1,4 @@
-use std::num::NonZeroU16;
+use std::num::{NonZeroU16, NonZeroUsize};
 
 use rdlt_connector::{BoxFuture, Capabilities, Destination, OpenContext, OpenedSession, Result};
 
@@ -27,20 +27,34 @@ fn destination(writers: u16) -> Writers {
     Writers(capabilities)
 }
 
-#[test]
-fn configured_lanes_never_exceed_the_destinations_writers() {
-    let config = EngineConfig::builder().lanes(5).build().unwrap();
-    assert_eq!(lane_count(&config, &destination(2)).get(), 2);
-    assert_eq!(lane_count(&config, &destination(8)).get(), 5);
+fn cores(count: usize) -> NonZeroUsize {
+    NonZeroUsize::new(count).unwrap()
 }
 
 #[test]
-fn default_lanes_are_one_per_core_up_to_the_destinations_limit() {
+fn configured_lanes_never_exceed_the_destinations_writers() {
+    let config = EngineConfig::builder().lanes(5).build().unwrap();
+    assert_eq!(lane_count(&config, cores(16), &destination(2)).get(), 2);
+    assert_eq!(lane_count(&config, cores(1), &destination(8)).get(), 5);
+}
+
+#[test]
+fn default_lanes_are_one_per_declared_core_up_to_the_destinations_limit() {
     let config = EngineConfig::builder().build().unwrap();
-    let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    assert_eq!(lane_count(&config, &destination(1)).get(), 1);
-    assert_eq!(lane_count(&config, &destination(u16::MAX)).get(), cores);
-    assert_eq!(lane_count(&config, &destination(2)).get(), cores.min(2));
+    for (count, writers, lanes) in [
+        (1, u16::MAX, 1),
+        (6, u16::MAX, 6),
+        (64, u16::MAX, 64),
+        (6, 2, 2),
+        (6, 1, 1),
+        (3, 8, 3),
+    ] {
+        assert_eq!(
+            lane_count(&config, cores(count), &destination(writers)).get(),
+            lanes,
+            "{count} cores, {writers} writers"
+        );
+    }
 }
 
 mod keys {
@@ -103,7 +117,7 @@ fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
         .growth(growth)
         .build()
         .unwrap();
-    assert_eq!(lane_count(&config, &destination(8)).get(), 3);
+    assert_eq!(lane_count(&config, cores(16), &destination(8)).get(), 3);
 }
 
 #[tokio::test]

@@ -16,6 +16,15 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
   destination) -> RunHandle`. The handle is a future; `control()` returns a `RunControl` that stops
   the run after committing or at once, and dropping the handle cancels every task the run started.
   Events and `status()` arrive with the surface in M7.
+- **Cores.** An embedder gives the engine a `Cores`: the cores a run may use and how many of them
+  its tokio runtime's workers take, passed in because the engine does not own the runtime.
+  `RayonPool::try_new` gives the compute pool the cores the workers leave, one thread at least, and
+  `SystemEnv::try_new` builds its pool through it; nothing else sizes a pool. `Env::cores` returns
+  the cores a run may use, and lanes default to one per core. Nothing in the engine reads the
+  host's count of cores (clippy bans `available_parallelism` in `rdlt-engine`), so a run sizes
+  itself alike on every machine, and the simulation declares a fixed count beside its inline pool.
+  A runtime and a pool each as large as the machine contend for its cores;
+  [docs/perf/passthrough.md](../perf/passthrough.md) records the layout measured.
 - **One writer per table per lane.** Each attempt creates its writers before any partition reads,
   and routes a partition's batches for a table to one lane by an FNV hash, so they stay in order.
 - **Barriers wait only for partitions that are reading.** A partition waiting for a read slot, or

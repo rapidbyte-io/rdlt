@@ -1,7 +1,7 @@
 //! Destinations for tests: one that discards what it stages, one that hides a capability, one
 //! that fails at a chosen step, one whose commits wait until a test lets them go, one whose
-//! writes never return, one that counts the sessions it opens and closes, and one that answers
-//! an open with state it rewrote.
+//! writes never return, one that counts the sessions it opens and closes and the writers they
+//! create, and one that answers an open with state it rewrote.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -454,11 +454,13 @@ impl DestinationWriter for Stalled {
     }
 }
 
-/// How many sessions a [`counting`] destination opened and how many it closed.
+/// How many sessions a [`counting`] destination opened and how many it closed, and how many
+/// writers its sessions created.
 #[derive(Debug, Default)]
 pub(crate) struct Sessions {
     pub(crate) opened: AtomicUsize,
     pub(crate) closed: AtomicUsize,
+    pub(crate) writers: AtomicUsize,
 }
 
 /// `inner`, counting in the [`Sessions`] returned the sessions it opens and closes.
@@ -514,6 +516,7 @@ impl DestinationSession for CountedSession {
         &'a mut self,
         table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
+        self.sessions.writers.fetch_add(1, Ordering::SeqCst);
         self.inner.writer(table)
     }
 
