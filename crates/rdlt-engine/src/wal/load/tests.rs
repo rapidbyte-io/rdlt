@@ -366,6 +366,34 @@ async fn a_tables_schema_frame_is_charged_from_the_log_until_it_is_appended() {
     assert_eq!(budget.reserved(), 0);
 }
 
+#[tokio::test]
+async fn a_tables_schema_frame_beyond_the_log_s_share_fails_the_batch_that_needs_it() {
+    let store = Arc::new(MemoryWal::default());
+    let (log, task) = start(&store);
+    // The log's share, a 16th of the budget, is less than any schema frame takes.
+    let budget = MemoryBudget::new(64_000);
+    let orders = at(&view("orders"), 1);
+    let written = async {
+        let refused = logged(&log, &budget, 0, &orders, SegmentId(0), &ids(0)).await;
+        drop(log);
+        refused.expect_err("the schema frame passes the log's share")
+    };
+    let (ended, refused) = tokio::join!(task, written);
+    ended.expect("the writer ends");
+    assert_eq!(
+        (refused.kind(), refused.code()),
+        (crate::ErrorKind::Wal, Some("log_frame_exceeds_budget"))
+    );
+    let logged = frames(&store);
+    assert!(
+        !logged
+            .iter()
+            .any(|frame| matches!(frame, Frame::Schema(_) | Frame::Batch(_))),
+        "{logged:?}"
+    );
+    assert_eq!(budget.reserved(), 0);
+}
+
 /// Logs `batch` of `segment`, lowered for `view` of table `table`, its frame held by `budget`.
 async fn logged(
     log: &LoadLog,
