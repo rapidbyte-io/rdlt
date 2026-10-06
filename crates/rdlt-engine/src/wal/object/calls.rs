@@ -22,17 +22,19 @@ use super::{ObjectStoreOptions, WalObjects};
 use crate::env::Clock;
 use crate::limits::{OBJECT_LISTED, OBJECT_PARTS};
 
-/// How a request's tries go: each within `deadline`, read as `ask`, and whether one ended with
-/// its outcome unknown.
+/// How a request's tries go: at most `attempts`, each within `deadline`, read as `ask`, and
+/// whether one ended with its outcome unknown.
 pub(super) struct Tries {
+    attempts: u32,
     deadline: Duration,
     ask: Ask,
     unsure: bool,
 }
 
 impl Tries {
-    fn new(deadline: Duration, ask: Ask) -> Self {
+    fn new(attempts: u32, deadline: Duration, ask: Ask) -> Self {
         Self {
+            attempts,
             deadline,
             ask,
             unsure: false,
@@ -68,12 +70,17 @@ impl Calls {
         F: FnMut() -> Fut,
         Fut: Future<Output = object_store::Result<T>>,
     {
-        let mut tries = Tries::new(self.deadline(bytes), Ask::Other);
+        let attempts = self.options.attempts.get();
+        let mut tries = Tries::new(attempts, self.deadline(bytes), Ask::Other);
         self.tried(key, &mut tries, attempt).await
     }
 
     /// What `attempt` answers at `key`, tried as `tries` say; `tries` notes whether an attempt
     /// ended with its outcome unknown.
+    ///
+    /// # Errors
+    ///
+    /// As [`Calls::call`], [`ObjectFault::Unavailable`] once the attempts `tries` allows failed.
     pub(super) async fn tried<T, F, Fut>(
         &self,
         key: &Path,
@@ -102,7 +109,7 @@ impl Calls {
             };
             tries.unsure = true;
             failed += 1;
-            if failed >= self.options.attempts.get() {
+            if failed >= tries.attempts {
                 let key = key.to_string();
                 return Err(ObjectFault::Unavailable { key, source: last }.into());
             }
@@ -148,9 +155,30 @@ impl Calls {
     /// [`io::ErrorKind::AlreadyExists`] where another's object holds the name, and as
     /// [`Calls::call`].
     pub(super) async fn create(&self, key: &Path, payload: PutPayload) -> io::Result<()> {
+        self.created(key, payload, self.options.attempts.get())
+            .await
+    }
+
+    /// Creates `key` as [`Calls::create`] does, by one attempt only.
+    ///
+    /// An attempt whose outcome is unknown is never made again: it may still land, after the
+    /// object it makes was deleted. The object's token then says whether it landed.
+    ///
+    /// # Errors
+    ///
+    /// [`ObjectFault::Unavailable`] where the attempt's outcome is unknown and the name holds no
+    /// object of its making, and as [`Calls::create`].
+    pub(super) async fn create_once(&self, key: &Path, payload: PutPayload) -> io::Result<()> {
+        self.created(key, payload, 1).await
+    }
+
+    /// Creates `key` as [`Calls::create`] does, in at most `attempts` attempts; where that is one,
+    /// a name an attempt of unknown outcome left empty is not created again.
+    async fn created(&self, key: &Path, payload: PutPayload, attempts: u32) -> io::Result<()> {
         let bytes = u64::try_from(payload.content_length()).unwrap_or(u64::MAX);
         let token = format!("{:016x}{:016x}", self.clock.random(), self.clock.random());
-        let mut tries = Tries::new(self.deadline(bytes), Ask::Create);
+        let mut tries = Tries::new(attempts, self.deadline(bytes), Ask::Create);
+        let once = attempts == 1;
         let mut raced = 0_u32;
         loop {
             let created = self
@@ -164,13 +192,18 @@ impl Calls {
                 })
                 .await;
             let refusal = match created {
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists && tries.unsure => error,
+                Err(error)
+                    if tries.unsure && (once || error.kind() == io::ErrorKind::AlreadyExists) =>
+                {
+                    error
+                }
                 created => return created.map(drop),
             };
             match self.token(key).await {
                 Ok(held) if held.as_deref() == Some(token.as_str()) => return Ok(()),
                 Ok(_) => return Err(refusal),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound && !once => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(refusal),
                 Err(error) => return Err(error),
             }
             raced += 1;
@@ -249,7 +282,8 @@ impl Calls {
     pub(super) async fn list(&self, dir: &Path) -> io::Result<Vec<ObjectMeta>> {
         let page = self.deadline(0);
         let pages = u32::try_from(OBJECT_LISTED / LISTED_PAGE + 1).unwrap_or(u32::MAX);
-        let mut tries = Tries::new(page.saturating_mul(pages), Ask::Other);
+        let attempts = self.options.attempts.get();
+        let mut tries = Tries::new(attempts, page.saturating_mul(pages), Ask::Other);
         self.tried(dir, &mut tries, || async {
             let mut stream = self.objects.list(Some(dir));
             let mut listed = Vec::new();

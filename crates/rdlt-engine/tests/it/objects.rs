@@ -7,7 +7,7 @@ use std::time::Duration;
 use object_store::memory::InMemory;
 use rdlt_connector::{PipelineId, ReadMode};
 use rdlt_engine::{ObjectStoreOptions, ObjectStoreWal, RunStatus, SystemClock, WalStore};
-use rdlt_testkit::objects::{Fault, Faulty, Op, Plan, faultless};
+use rdlt_testkit::objects::{Call, Fault, Faulty, Op, Plan, faultless};
 
 use crate::support::destinations::{Step, failing};
 use crate::support::script::{Script, ScriptStream, id};
@@ -99,12 +99,22 @@ async fn a_commit_whose_destination_failed_lands_once_replayed_from_the_object_s
     }
 }
 
+/// Whether `call` creates a log's mark.
+fn marks(call: &Call) -> bool {
+    call.op == (Op::Put { create: true }) && call.key.contains("/open/")
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_load_lands_once_whatever_fault_its_requests_meet() {
     let faults = [Fault::Fail, Fault::Slow(5), Fault::Hang, Fault::Answerless];
     for fault in faults {
+        // A fault on a mark's create fails its attempt, as the next test shows: every third
+        // request but those would fail each attempt at its mark.
         let mut seen = 0_u32;
-        let plan: Plan = Box::new(move |_| {
+        let plan: Plan = Box::new(move |call| {
+            if marks(call) {
+                return Fault::None;
+            }
             seen += 1;
             if seen.is_multiple_of(3) {
                 fault
@@ -116,6 +126,33 @@ async fn a_load_lands_once_whatever_fault_its_requests_meet() {
         let name = format!("objects_{fault:?}")
             .to_lowercase()
             .replace(['(', ')'], "");
+        let status = loaded(&name, wal, None).await;
+        assert_eq!(status, RunStatus::Succeeded, "{fault:?}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_load_whose_log_s_mark_meets_a_fault_lands_once_under_another_attempt() {
+    for fault in [
+        Fault::Fail,
+        Fault::Hang,
+        Fault::Answerless,
+        Fault::Late(Duration::from_millis(1_500)),
+    ] {
+        // The first attempt's mark meets the fault; the next attempt's does not.
+        let mut first = true;
+        let plan: Plan = Box::new(move |call| {
+            if marks(call) && std::mem::take(&mut first) {
+                fault
+            } else {
+                Fault::None
+            }
+        });
+        let (_, wal) = store(plan).await;
+        let name = format!("objects_mark_{fault:?}")
+            .to_lowercase()
+            .replace(['(', ')', '.', ' '], "")
+            .replace("late", "late_");
         let status = loaded(&name, wal, None).await;
         assert_eq!(status, RunStatus::Succeeded, "{fault:?}");
     }

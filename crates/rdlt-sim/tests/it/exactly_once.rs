@@ -3,7 +3,7 @@ use rdlt_sim::{
 };
 
 /// Seeds that each found a defect when first run, kept so they stay green.
-const FOUND: [u64; 21] = [
+const FOUND: [u64; 22] = [
     // Over the network: a served writer that panicked ended its write as though it were done.
     19,
     // Over the network: a host whose handshake a partition cut short held its connection, and
@@ -56,6 +56,9 @@ const FOUND: [u64; 21] = [
     // Reset: a followed stream that never held a row, whose read had sent its position all the
     // same, was reset, which a world that judged by the rows alone took for a failure.
     685_665,
+    // Logs in an object store: a mark's and a head's creates given up landed after their log
+    // was removed, and the head named a body deleted with it, which no replay could read.
+    725_620,
 ];
 
 #[test]

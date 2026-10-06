@@ -5,7 +5,7 @@ use std::io;
 use bytes::Bytes;
 use rdlt_testkit::objects::{Call, Fault, Op, faultless};
 
-use super::{any, chunk, every, keys, objects, opened, options, pipeline};
+use super::{chunk, every, keys, objects, opened, options, pipeline};
 use crate::conformance;
 use crate::wal::{Chunk, WalStore};
 
@@ -20,15 +20,22 @@ fn deletes(call: &Call) -> bool {
     call.op == Op::Delete
 }
 
+/// Whether `call` creates a log's mark.
+fn marks(call: &Call) -> bool {
+    call.op == (Op::Put { create: true }) && call.key.contains("/open/")
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_contract_holds_under_every_fault_a_retry_meets() {
     let faults = [Fault::Fail, Fault::Slow(3), Fault::Hang, Fault::Answerless];
-    // A name answered taken at once is another's, which the contract's own races test.
+    // A name answered taken at once is another's, which the contract's own races test. A log's
+    // mark is created by one attempt, which fails the open where the attempt's outcome is unknown,
+    // as the requests' tests show: the contract's opens are not faulted.
     for part in [1 << 20, 4] {
         for fault in faults {
             let objects = objects(faultless());
             let wal = opened(&objects, options(part)).await;
-            objects.plan(every(3, fault, any));
+            objects.plan(every(3, fault, |call| !marks(call)));
             conformance::conforms(&wal).await;
         }
         // Deletions that fail, each tried again.
