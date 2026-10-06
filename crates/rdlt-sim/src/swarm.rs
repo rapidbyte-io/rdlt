@@ -68,8 +68,10 @@ pub struct Features {
     /// one, cannot read again what they acknowledged; crashes tear the logs' unsynced tails.
     pub wal: bool,
     /// Logs kept in an object store in memory through the engine's `ObjectStoreWal`, whose
-    /// requests fail, stall, race, lose their answers and list stale with the faults, rather
-    /// than in the simulation's own store; it changes nothing where no log is kept.
+    /// requests fail, stall, race and lose their answers with the faults, and whose puts and
+    /// deletions land up to twenty seconds after their clients gave up on them, rather than in
+    /// the simulation's own store; no listing misses an object, and it changes nothing where no
+    /// log is kept.
     pub objects: bool,
     /// Incremental streams whose rows arrive as simulated time passes, which runs follow for a
     /// while before a run reads them to their end; every other one's partitions never end, and
