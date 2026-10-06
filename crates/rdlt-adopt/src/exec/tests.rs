@@ -155,6 +155,10 @@ fn the_loop_marks_nothing_from_its_cap_up() {
     let at = beyond.as_raw_fd();
     marked_one_by_one(at, at);
     assert!(!close_on_exec(&beyond), "{at} is above the cap");
+}
+
+#[test]
+fn the_loop_marks_each_descriptor_below_the_limit_and_leaves_a_marked_one_marked() {
     // A descriptor marked already stays marked.
     let marked = std::fs::File::open("/dev/null").expect("it opens");
     let fd = marked.as_raw_fd();
