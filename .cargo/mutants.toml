@@ -1,17 +1,32 @@
 test_tool = "nextest"
 profile = "mutants"
-# The stores' shared contract tests are tests, run against each store, not code under test.
+# The stores' shared contract tests are tests, run against each store, not code under test; so
+# are the probes' tests, built only without the `certify` feature, which a mutant's never lacks.
 exclude_globs = [
   "xtask/**",
   "crates/rdlt-sim/**",
   "crates/rdlt-wire/src/generated/**",
   "crates/rdlt-engine/src/conformance.rs",
+  "crates/rdlt-connector/src/serve/probes/tests.rs",
 ]
 all_features = true
 # Whether the kernel marks a range of descriptors at once is true on every kernel of 5.11 or
 # later, where the nightly and every machine the project is built on run: a mutant that answers
 # true there is the code as it is.
-exclude_re = ["crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true"]
+#
+# A mutant that returns what the function already returns is the code as it is: an admission's
+# limits are the wire's defaults, and a dialect reserves no table name, unless they say otherwise.
+# So is one that joins a directory's open flags, each a bit of its own, with `^` for `|`; and one
+# that takes every widen a destination refuses for a column not yet kept from widening: the
+# resolver widens no column kept from it on any path, so a refusal never names one, and the guard
+# only bounds the loop were that to change.
+exclude_re = [
+  "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
+  "crates/rdlt-connector-reference/src/rooted\\.rs:.*replace \\| with \\^ in Dir::(resolved|dir|opened|create)$",
+  "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",
+  "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
+  "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
+]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
 # this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant
 # no test catches takes, every tested package's whole suite, about six minutes on the nightly's
