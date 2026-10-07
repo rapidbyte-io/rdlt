@@ -15,7 +15,7 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rdlt_engine::bench::{normalize, shred, shred_on};
+use rdlt_engine::bench::{Mix, normalize, shred, shred_on};
 use rdlt_engine::{Cores, RayonPool};
 
 /// Bytes each corpus holds.
@@ -28,26 +28,9 @@ const CHUNK_BYTES: usize = 1 << 20;
 /// which only waits: run `shred_cores/N` under `taskset` on N cores.
 const CORE_COUNTS: [usize; 3] = [1, 4, 8];
 
-/// A deterministic source of numbers for the corpora.
-struct Mix(u64);
-
-impl Mix {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, bound: u64) -> u64 {
-        self.next() % bound
-    }
-}
-
 /// Rows from `row` until the corpus holds `CORPUS_BYTES`, cut into pushes of whole lines.
 fn corpus(mut row: impl FnMut(u64, &mut Mix) -> String) -> Vec<Bytes> {
-    let mut mix = Mix(7);
+    let mut mix = Mix::new(7);
     let mut pushes = Vec::new();
     let mut push = String::with_capacity(PUSH_BYTES + 4096);
     let (mut total, mut index) = (0, 0);
@@ -130,7 +113,7 @@ fn sparse(index: u64, mix: &mut Mix) -> String {
 fn flat_narrow(index: u64, mix: &mut Mix) -> String {
     format!(
         r#"{{"id":{index},"value":{},"flag":{}}}"#,
-        mix.next() >> 12,
+        mix.draw() >> 12,
         mix.below(2) == 0
     )
 }
