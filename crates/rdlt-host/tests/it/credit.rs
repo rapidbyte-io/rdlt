@@ -321,7 +321,7 @@ async fn a_read_the_engine_does_not_take_holds_at_most_its_stream_window_in_tran
     .await
     .expect("the transport stops taking frames");
     assert!(!reading.is_finished(), "the read ended");
-    let transport = Transport::of(&Limits::default());
+    let transport = Transport::default();
     let frame = length(&crate::support::fake::mebibyte().1);
     // What left the connector: the frame the sink holds, a frame waiting for its room, the
     // call's stream window, and on the connector the frame its encoder holds and what HTTP/2

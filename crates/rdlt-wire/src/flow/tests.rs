@@ -105,7 +105,7 @@ fn credit_saturates_rather_than_wraps() {
 
 #[test]
 fn the_connection_window_holds_every_calls_stream_window_and_the_heartbeats() {
-    let transport = Transport::of(&Limits::default());
+    let transport = Transport::default();
     let calls = u64::from(MAX_CALLS) + 1;
     assert!(u64::from(transport.connection_window) >= calls * u64::from(transport.stream_window));
     assert!(transport.connection_window < 1 << 31);
@@ -113,7 +113,7 @@ fn the_connection_window_holds_every_calls_stream_window_and_the_heartbeats() {
 
 #[test]
 fn a_stream_window_holds_four_transport_frames_and_the_floor() {
-    let transport = Transport::of(&Limits::default());
+    let transport = Transport::default();
     assert!(transport.stream_window >= 4 * transport.max_frame);
     assert!(u64::from(transport.stream_window) >= CREDIT_FLOOR);
     assert!((16_384..=16_777_215).contains(&transport.max_frame));
