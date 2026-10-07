@@ -6,17 +6,11 @@
 mod tests;
 
 use std::num::{NonZeroU32, NonZeroU64};
-use std::sync::Arc;
 
-use rdlt_connector::{PipelineId, StreamName};
-use tokio::runtime::Runtime;
-
+use super::runner::{Runner, stream};
 use super::{Corpus, PUSH_BYTES, Replayed, logical_bytes, null_sink, replay};
 use crate::fixtures::events;
-use crate::{
-    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, StreamPlan,
-    SystemEnv,
-};
+use crate::{ComputePoolError, Cores};
 
 /// The form a wide table's rows are pushed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,9 +24,7 @@ pub enum Form {
 /// Rows of a table of many columns, and an engine to load them.
 #[derive(Debug)]
 pub struct Wide {
-    runtime: Runtime,
-    engine: Engine,
-    plan: PipelinePlan,
+    runner: Runner,
     replayed: Replayed,
     rows: u64,
     bytes: u64,
@@ -61,19 +53,6 @@ impl Wide {
         columns: u16,
         pushes: u32,
     ) -> Result<Self, ComputePoolError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cores.workers().get())
-            .enable_all()
-            .build()
-            .expect("a runtime starts");
-        let config = EngineConfig::builder()
-            .memory(1 << 30)
-            .commit(CommitPolicy::new(None, None, Some(1 << 40)).expect("a valid policy"))
-            .build()
-            .expect("a valid configuration");
-        let stream = StreamPlan::new(StreamName::new("events").expect("a valid name"));
-        let plan = PipelinePlan::new(PipelineId::parse("wide").expect("a valid id"), [stream])
-            .expect("a valid plan");
         let per_push = per_push(form, columns);
         let replayed = match form {
             Form::Arrow => Replayed::Batches(
@@ -95,9 +74,7 @@ impl Wide {
             Replayed::Json(pushes) => pushes.iter().map(|push| push.len() as u64).sum(),
         };
         Ok(Self {
-            runtime,
-            engine: Engine::new(config, Arc::new(SystemEnv::try_new(cores)?)),
-            plan,
+            runner: Runner::try_new(cores, "wide", stream(), None)?,
             replayed,
             rows: Self::rows_of(form, columns, pushes),
             bytes,
@@ -127,16 +104,13 @@ impl Wide {
     ///
     /// Panics where the run fails or loads other rows than the pushes hold.
     pub fn run(&self) -> u64 {
-        self.runtime.block_on(async {
-            let source = replay("wide", self.replayed.clone()).await;
-            let outcome = self
-                .engine
-                .run(self.plan.clone(), source, null_sink().await)
-                .await;
-            assert!(outcome.error.is_none(), "{:?}", outcome.error);
-            assert_eq!(outcome.report.rows, self.rows);
-            outcome.report.rows
-        })
+        let replayed = self.replayed.clone();
+        let (source, destination) = self
+            .runner
+            .block_on(async { (replay("wide", replayed).await, null_sink().await) });
+        let report = self.runner.load(source, destination);
+        assert_eq!(report.rows, self.rows);
+        report.rows
     }
 }
 

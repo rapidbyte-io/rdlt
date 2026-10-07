@@ -7,23 +7,18 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{Destination, PipelineId, SegmentId, Source, StreamName, TableWriter};
-use tokio::runtime::Runtime;
+use rdlt_connector::{Destination, SegmentId, Source, TableWriter};
 
+use super::runner::{Runner, stream};
 use super::{Replayed, SinkWriter, Sinking, ipc_sink, logical_bytes, replay};
 use crate::fixtures::events;
-use crate::{
-    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, StreamPlan,
-    SystemEnv,
-};
+use crate::{ComputePoolError, Cores};
 
 /// Batches written to the same destination by a bare loop and by the engine, on a runtime and a
 /// compute pool that split the same cores.
 #[derive(Debug)]
 pub struct Passthrough {
-    runtime: Runtime,
-    engine: Engine,
-    plan: PipelinePlan,
+    runner: Runner,
     batches: Vec<RecordBatch>,
 }
 
@@ -46,27 +41,8 @@ impl Passthrough {
     ///
     /// Panics where the runtime does not start.
     pub fn try_new(cores: Cores, batches: u32, rows: u32) -> Result<Self, ComputePoolError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cores.workers().get())
-            .enable_all()
-            .build()
-            .expect("a runtime starts");
-        let config = EngineConfig::builder()
-            .memory(1 << 30)
-            .commit(CommitPolicy::new(None, None, Some(1 << 40)).expect("a valid policy"))
-            .build()
-            .expect("a valid configuration");
-        let plan = PipelinePlan::new(
-            PipelineId::parse("passthrough").expect("a valid id"),
-            [StreamPlan::new(
-                StreamName::new("events").expect("a valid name"),
-            )],
-        )
-        .expect("a valid plan");
         Ok(Self {
-            runtime,
-            engine: Engine::new(config, Arc::new(SystemEnv::try_new(cores)?)),
-            plan,
+            runner: Runner::try_new(cores, "passthrough", stream(), None)?,
             batches: (0..batches)
                 .map(|index| events(i64::from(index) * i64::from(rows), rows, Self::COLUMNS))
                 .collect(),
@@ -84,7 +60,7 @@ impl Passthrough {
     ///
     /// Panics where the writer refuses a batch.
     pub fn bare_loop(&self) -> u64 {
-        self.runtime.block_on(async {
+        self.runner.block_on(async {
             let mut writer = SinkWriter::new(Arc::default(), Sinking::Ipc);
             for batch in &self.batches {
                 writer
@@ -124,7 +100,7 @@ impl Passthrough {
 
     /// Runs `future` on the workload's runtime, where connectors served from this process run.
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.runtime.block_on(future)
+        self.runner.block_on(future)
     }
 
     /// Runs the engine from `source`, which pushes the batches, into `destination`; the rows it
@@ -134,14 +110,8 @@ impl Passthrough {
     ///
     /// Panics where the run fails, or reports other rows than the batches hold.
     pub fn run(&self, source: Arc<dyn Source>, destination: Arc<dyn Destination>) -> u64 {
-        self.runtime.block_on(async {
-            let outcome = self
-                .engine
-                .run(self.plan.clone(), source, destination)
-                .await;
-            assert!(outcome.error.is_none(), "{:?}", outcome.error);
-            assert_eq!(outcome.report.rows, self.rows());
-            outcome.report.rows
-        })
+        let report = self.runner.load(source, destination);
+        assert_eq!(report.rows, self.rows());
+        report.rows
     }
 }

@@ -9,16 +9,13 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{ConnectContext, Destination, DestinationFactory, PipelineId, StreamName};
+use rdlt_connector::{ConnectContext, Destination, DestinationFactory};
 use serde_json::Value;
-use tokio::runtime::Runtime;
 
+use super::runner::{Runner, stream};
 use super::{Replayed, replay};
 use crate::fixtures::events_of;
-use crate::{
-    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, Report, StreamPlan,
-    SystemEnv, WriteMode,
-};
+use crate::{ComputePoolError, Cores, Report, WriteMode};
 
 /// Columns of each row a load writes.
 const COLUMNS: usize = 10;
@@ -26,9 +23,7 @@ const COLUMNS: usize = 10;
 /// Rows of ten mixed columns, in batches, and an engine to load them.
 #[derive(Debug)]
 pub struct Loading {
-    runtime: Runtime,
-    engine: Engine,
-    plan: PipelinePlan,
+    runner: Runner,
     batches: Vec<RecordBatch>,
 }
 
@@ -62,35 +57,16 @@ impl Loading {
         per_batch: NonZeroU64,
         commit: Option<NonZeroU64>,
     ) -> Result<Self, ComputePoolError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cores.workers().get())
-            .enable_all()
-            .build()
-            .expect("a runtime starts");
-        let policy = match commit {
-            Some(rows) => CommitPolicy::new(None, Some(rows.get()), None),
-            None => CommitPolicy::new(None, None, Some(1 << 40)),
-        };
-        let config = EngineConfig::builder()
-            .memory(1 << 30)
-            .commit(policy.expect("a valid policy"))
-            .build()
-            .expect("a valid configuration");
-        let stream = StreamPlan::new(StreamName::new("events").expect("a valid name"));
         let stream = match load {
-            Load::Append => stream.write(WriteMode::Append),
-            Load::Merge | Load::Update => stream.write(WriteMode::Merge).key(["id"]),
+            Load::Append => stream().write(WriteMode::Append),
+            Load::Merge | Load::Update => stream().write(WriteMode::Merge).key(["id"]),
         };
-        let plan = PipelinePlan::new(PipelineId::parse("loading").expect("a valid id"), [stream])
-            .expect("a valid plan");
         let rows = i64::try_from(rows).expect("rows fit in 63 bits");
         let ids = ids(load, rows);
         let per_batch = usize::try_from(per_batch.get()).unwrap_or(usize::MAX);
         let shift = i64::from(load == Load::Update);
         Ok(Self {
-            runtime,
-            engine: Engine::new(config, Arc::new(SystemEnv::try_new(cores)?)),
-            plan,
+            runner: Runner::try_new(cores, "loading", stream, commit)?,
             batches: ids
                 .chunks(per_batch)
                 .map(|ids| events_of(ids, COLUMNS, shift))
@@ -118,7 +94,7 @@ impl Loading {
     /// Panics where it does not connect.
     pub fn connect(&self, factory: &dyn DestinationFactory, config: Value) -> Arc<dyn Destination> {
         let connected = self
-            .runtime
+            .runner
             .block_on(factory.connect(config, ConnectContext::new()))
             .expect("the destination connects");
         Arc::from(connected)
@@ -130,16 +106,11 @@ impl Loading {
     ///
     /// Panics where the run fails or loads other rows than the batches hold.
     pub fn run(&self, destination: Arc<dyn Destination>) -> Report {
-        self.runtime.block_on(async {
-            let source = replay("loading", Replayed::Batches(self.batches.clone())).await;
-            let outcome = self
-                .engine
-                .run(self.plan.clone(), source, destination)
-                .await;
-            assert!(outcome.error.is_none(), "{:?}", outcome.error);
-            assert_eq!(outcome.report.rows, self.rows());
-            outcome.report
-        })
+        let replayed = Replayed::Batches(self.batches.clone());
+        let source = self.runner.block_on(replay("loading", replayed));
+        let report = self.runner.load(source, destination);
+        assert_eq!(report.rows, self.rows());
+        report
     }
 }
 
