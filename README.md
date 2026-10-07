@@ -127,6 +127,7 @@ just ready          # before pushing: `just ci` plus mutation testing of your ch
 just sim 42         # replay simulation seed 42
 just stress 20      # the simulation on many threads and the real clock
 just sim-coverage   # how much of the engine the simulation alone reaches
+just bench passthrough # a recorded figure: a bench on chosen CPUs, with its commit, load and counts
 cargo xtask codegen # regenerate the wire protocol's code after changing its .proto files
 ```
 

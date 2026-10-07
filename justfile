@@ -187,6 +187,60 @@ fuzz target seconds="60":
 profiling bench:
     CARGO_TARGET_DIR=target/frame-pointers RUSTFLAGS="-C force-frame-pointers=yes" cargo bench --package rdlt-engine --features bench --profile profiling --bench {{ bench }} --no-run
 
+# Measure a bench as every recorded figure is measured: on the CPUs `cores` lists, every CPU
+# this process may use by default, saved as criterion's baseline named after the commit, then each
+# benchmark under `perf stat` for the instructions a cycle and the CPUs kept busy, then the
+# bench's allocation counts, with the commit, load, governor and thread counts. Linux only, which
+# can hold a process to chosen CPUs; the record is in `target/bench`
+bench $name $cores="" $filter="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ "$(uname -s)" == Linux ]] || { echo "just bench runs only on Linux, which can hold a process to chosen CPUs" >&2; exit 2; }
+    [[ -n $cores ]] || cores=$(taskset -cp $$ | sed 's/.*: //')
+    [[ $name != allocations && -f "crates/rdlt-engine/benches/$name.rs" ]] || { echo "$name is not a timed bench of rdlt-engine" >&2; exit 2; }
+    [[ $cores =~ ^[0-9]{1,4}(-[0-9]{1,4})?(,[0-9]{1,4}(-[0-9]{1,4})?)*$ ]] || { echo "cores must be a CPU list such as 0-3" >&2; exit 2; }
+    command -v perf > /dev/null || { echo "just bench needs perf" >&2; exit 2; }
+    mkdir -p target/bench
+    changed=$(git status --porcelain --untracked-files=no)
+    commit=$(git rev-parse --short=12 HEAD)${changed:+-changed}
+    record="target/bench/$name-$commit.txt"
+    cargo bench --package rdlt-engine --features bench --bench "$name" --bench allocations --no-run 2> target/bench/build.log || { cat target/bench/build.log >&2; exit 1; }
+    built() { sed -n "s|^ *Executable benches/$1\.rs (\(.*\))\$|\1|p" target/bench/build.log; }
+    exe=$(built "$name")
+    counter=$(built allocations)
+    cpus=()
+    IFS=, read -ra parts <<< "$cores"
+    for part in "${parts[@]}"; do mapfile -t -O "${#cpus[@]}" cpus < <(seq "${part%-*}" "${part#*-}"); done
+    {
+        echo "bench $name${filter:+ matching $filter}, commit $(git rev-parse HEAD)${changed:+ with uncommitted changes}"
+        echo "$(rustc -V), $(uname -sr)"
+        echo "CPUs $cores ($(taskset -c "$cores" nproc) of $(nproc --all)): $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+        for cpu in "${cpus[@]}"; do
+            policy=/sys/devices/system/cpu/cpu$cpu/cpufreq
+            echo "governor $(cat "$policy/scaling_governor" 2>/dev/null || echo unknown), energy preference $(cat "$policy/energy_performance_preference" 2>/dev/null || echo unknown)"
+        done | sort | uniq -c | sed 's/^ *\([0-9]*\) /CPUs: \1, /'
+        echo "load before: $(cut -d' ' -f1-3 /proc/loadavg)"
+    } | tee "$record"
+    taskset -c "$cores" "$exe" --bench --noplot --save-baseline "$commit" ${filter:+"$filter"} | tee -a "$record"
+    mapfile -t ids < <(taskset -c "$cores" "$exe" --list --format terse ${filter:+"$filter"} | sed -n 's/: benchmark$//p')
+    declare -A wall
+    for id in "${ids[@]}"; do
+        for seconds in 5 15; do
+            started=$(date +%s%N)
+            taskset -c "$cores" perf stat -x, -o "target/bench/perf-$seconds.csv" -e cycles:u,instructions:u,task-clock "$exe" --bench --exact --profile-time "$seconds" "$id" > /dev/null
+            wall[$seconds]=$(( $(date +%s%N) - started ))
+        done
+        awk -F, -v id="$id" -v wall="$(( wall[15] - wall[5] ))" '
+            FNR == 1 { run++ }
+            $1 ~ /^[0-9.]+$/ && $3 ~ /cycles/ { cycles[run] += $1 }
+            $1 ~ /^[0-9.]+$/ && $3 ~ /instructions/ { instructions[run] += $1 }
+            $1 ~ /^[0-9.]+$/ && $3 ~ /task-clock/ { busy[run] += $1 }
+            END { printf "%s: %.2f instructions a cycle, %.2f CPUs busy (perf stat, 15 s of it less 5 s)\n", id, (instructions[2] - instructions[1]) / (cycles[2] - cycles[1]), (busy[2] - busy[1]) * 1e6 / wall }
+        ' target/bench/perf-5.csv target/bench/perf-15.csv | tee -a "$record"
+    done
+    taskset -c "$cores" "$counter" "$name" | tee -a "$record"
+    echo "load after: $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$record"
+
 # Everything the pull-request gate runs
 ci: lint test coverage miri (sim "" "10000")
 
