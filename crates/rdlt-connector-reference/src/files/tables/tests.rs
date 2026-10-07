@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use rdlt_connector::{ConnectorErrorKind, Field, LogicalType, PipelineId, TableSchema};
 
-use super::{LOCK_TIMEOUT, claim, empty_trash, locked, named, owner, read, release, update};
+use super::{
+    LOCK_TIMEOUT, claim, empty_trash, locked, longer, named, owner, read, release, update,
+};
 use crate::limits::{CATALOG_BYTES, KEPT_VERSIONS, OWNER_BYTES, TABLE_NAME_BYTES};
 use crate::rooted::Dir;
 
@@ -374,6 +376,29 @@ fn catalogs_a_release_left_renamed_out_of_place_are_removed() {
     std::fs::write(trash.join("file"), b"a").unwrap();
     empty_trash(&rdlt).unwrap();
     assert_eq!(std::fs::read_dir(&trash).unwrap().count(), 0);
+    // A trash others may write is not entered: emptying it is refused.
+    std::fs::write(trash.join("file"), b"a").unwrap();
+    std::fs::set_permissions(&trash, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(empty_trash(&rdlt).is_err());
+    assert!(trash.join("file").exists());
+}
+
+#[test]
+fn a_catalog_another_release_moved_first_is_released_and_any_other_failure_is_not() {
+    use crate::rooted::trace;
+    let (root, rdlt) = private();
+    // Where no table was ever made, there is nothing to release.
+    release(&rdlt, "t", &pipeline("a"), WAIT, || Ok(true)).unwrap();
+    claim(&rdlt, "t", &pipeline("a")).unwrap();
+    // The lock and the trash are there already: moving the catalog away is the first step.
+    locked(&rdlt, "t", WAIT, || Ok(())).unwrap();
+    std::fs::create_dir(root.path().join("trash")).unwrap();
+    trace::fail_as(0, std::io::ErrorKind::NotFound);
+    release(&rdlt, "t", &pipeline("a"), WAIT, || Ok(true)).unwrap();
+    trace::fail_at(0);
+    assert!(release(&rdlt, "t", &pipeline("a"), WAIT, || Ok(true)).is_err());
+    trace::clear();
+    assert_eq!(owner(&rdlt, "t").unwrap().as_deref(), Some("a"));
 }
 
 #[test]
@@ -428,4 +453,14 @@ fn a_catalog_of_another_format_or_with_a_field_it_does_not_know_is_refused() {
         let error = read(&rdlt, "t").unwrap_err();
         assert_eq!(error.code(), Some(super::CATALOG_INVALID), "case {index}");
     }
+}
+
+#[test]
+fn a_lock_is_tried_again_after_pauses_that_double_to_fifty_milliseconds() {
+    let pauses: Vec<u64> =
+        std::iter::successors(Some(Duration::from_millis(1)), |pause| Some(longer(*pause)))
+            .take(8)
+            .map(|pause| u64::try_from(pause.as_millis()).unwrap())
+            .collect();
+    assert_eq!(pauses, [1, 2, 4, 8, 16, 32, 50, 50]);
 }

@@ -488,27 +488,21 @@ impl Dir {
 
     /// Removes `name` as [`Dir::remove_tree`] does, entering at most `depth` directories.
     fn remove_within(&self, name: &OsStr, depth: usize) -> io::Result<()> {
-        let gone = |removed: io::Result<()>| match removed {
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-            removed => removed,
-        };
         match self.kind(name)? {
             None => Ok(()),
             Some(Kind::Dir) => {
                 let Some(depth) = depth.checked_sub(1) else {
                     return Err(Refusal::TooDeep { limit: TREE_DEPTH }.into());
                 };
-                let dir = match self.dir(name) {
-                    Ok(dir) => dir,
-                    Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-                    Err(error) => return Err(error),
+                let Some(dir) = present(self.dir(name))? else {
+                    return Ok(());
                 };
                 for (entry, _) in dir.entries()? {
                     dir.remove_within(&entry, depth)?;
                 }
-                gone(self.remove_dir(name))
+                present(self.remove_dir(name)).map(drop)
             }
-            Some(_) => gone(self.remove_file(name)),
+            Some(_) => present(self.remove_file(name)).map(drop),
         }
     }
 
@@ -516,6 +510,14 @@ impl Dir {
     /// process runs as, and neither its group nor others may write it.
     pub(crate) fn private(&self) -> io::Result<()> {
         private(&self.file)
+    }
+}
+
+/// What `result` holds, or none where its name was gone: another removal took it first.
+fn present<T>(result: io::Result<T>) -> io::Result<Option<T>> {
+    match result {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        result => result.map(Some),
     }
 }
 

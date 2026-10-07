@@ -28,11 +28,13 @@ pub(crate) enum Step {
     RemoveDir(PathBuf),
 }
 
-/// Which step of those taken since it was set a fault refuses, and whether every later one too.
+/// Which step of those taken since it was set a fault refuses, whether every later one too, and
+/// as what.
 #[derive(Clone, Copy, Debug)]
 struct Fault {
     at: usize,
     crash: bool,
+    kind: io::ErrorKind,
 }
 
 thread_local! {
@@ -47,12 +49,14 @@ thread_local! {
 pub(crate) fn attempt(step: &Step) -> io::Result<()> {
     let taken = TAKEN.get();
     TAKEN.set(taken + 1);
-    let refused = FAULT
-        .get()
-        .is_some_and(|fault| taken == fault.at || (fault.crash && taken > fault.at));
-    if refused {
+    let fault = FAULT.get();
+    let refused = fault.filter(|fault| taken == fault.at || (fault.crash && taken > fault.at));
+    if let Some(fault) = refused {
         REFUSED.set(true);
-        return Err(io::Error::other(format!("a fault refused {step:?}")));
+        return Err(io::Error::new(
+            fault.kind,
+            format!("a fault refused {step:?}"),
+        ));
     }
     Ok(())
 }
@@ -93,14 +97,28 @@ pub(crate) fn synced() -> Vec<PathBuf> {
 
 /// Clears the record and refuses step `at` of those that follow, counted from zero.
 pub(crate) fn fail_at(at: usize) {
+    fail_as(at, io::ErrorKind::Other);
+}
+
+/// Clears the record and refuses step `at` of those that follow as `kind`, as a step that
+/// another process took first is refused: a removal whose name is gone, a create whose is taken.
+pub(crate) fn fail_as(at: usize, kind: io::ErrorKind) {
     clear();
-    FAULT.set(Some(Fault { at, crash: false }));
+    FAULT.set(Some(Fault {
+        at,
+        crash: false,
+        kind,
+    }));
 }
 
 /// Clears the record and refuses step `at` of those that follow and every step after it.
 pub(crate) fn crash_at(at: usize) {
     clear();
-    FAULT.set(Some(Fault { at, crash: true }));
+    FAULT.set(Some(Fault {
+        at,
+        crash: true,
+        kind: io::ErrorKind::Other,
+    }));
 }
 
 /// Has every sync that follows on this thread recorded and not made.

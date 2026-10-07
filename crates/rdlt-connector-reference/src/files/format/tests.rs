@@ -963,6 +963,15 @@ impl<R: std::io::Read> std::io::Read for Counting<R> {
 }
 
 #[test]
+fn a_bounded_writer_flushes_what_it_writes_into() {
+    let mut writer = Bounded::new(std::io::BufWriter::new(Vec::new()), 16);
+    writer.write_all(b"12\n").unwrap();
+    writer.flush().unwrap();
+    // What the buffer held reached what it writes into.
+    assert_eq!(writer.into_inner().get_ref(), b"12\n");
+}
+
+#[test]
 fn a_bounded_writer_refuses_a_line_beyond_its_limit_however_it_is_written() {
     let written = |parts: &[&[u8]]| {
         let mut writer = Bounded::new(Vec::new(), 4);
