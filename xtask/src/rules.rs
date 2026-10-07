@@ -288,29 +288,31 @@ fn check_code(role: FileRole, scan: &Scan, findings: &mut Vec<Finding>) {
     }
 }
 
-/// Whether the last top-level argument of the generic list starting at `args` is a string type.
+/// Whether the generic list starting at `args` ends in an error type that is a string: its last
+/// argument of at least two, since a one-argument alias such as `anyhow::Result<T>` fixes its own.
 fn error_is_string(args: &str) -> bool {
     let mut depth = 0usize;
-    let mut last_start = 0;
+    let mut commas = Vec::new();
     let mut previous = ' ';
     for (offset, c) in args.char_indices() {
         match c {
             '<' | '(' | '[' => depth += 1,
             '>' if previous == '-' => {}
-            ',' if depth == 0 => last_start = offset + 1,
+            ',' if depth == 0 => commas.push(offset),
             '>' | ')' | ']' if depth == 0 => {
-                let last = args[last_start..offset].trim();
-                let last = if last.is_empty() {
-                    args[..last_start]
-                        .trim_end_matches([',', ' ', '\n'])
-                        .rsplit(',')
-                        .next()
-                } else {
-                    Some(last)
-                };
-                let normalized =
-                    last.map(|arg| arg.split_whitespace().collect::<Vec<_>>().join(" "));
-                return normalized.is_some_and(|arg| STRING_ERRORS.contains(&arg.as_str()));
+                let mut start = 0;
+                let mut listed = Vec::new();
+                for end in commas.iter().copied().chain([offset]) {
+                    let arg = args[start..end].split_whitespace().collect::<Vec<_>>();
+                    if !arg.is_empty() {
+                        listed.push(arg.join(" "));
+                    }
+                    start = end + 1;
+                }
+                return listed.len() >= 2
+                    && listed
+                        .last()
+                        .is_some_and(|arg| STRING_ERRORS.contains(&arg.as_str()));
             }
             '>' | ')' | ']' => depth -= 1,
             _ => {}

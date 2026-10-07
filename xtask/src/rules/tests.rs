@@ -124,3 +124,14 @@ fn heavy_commenting_and_long_files_only_warn() {
     assert_eq!(Rule::FileLength.severity(), Severity::Warning);
     assert_eq!(Rule::Jargon.severity(), Severity::Error);
 }
+
+#[test]
+fn a_result_alias_of_one_argument_holding_a_string_passes() {
+    for source in [
+        "fn f() -> anyhow::Result<String> { g() }\n",
+        "fn f() -> io::Result<&'static str> { g() }\n",
+        "fn f() -> anyhow::Result<\n    String,\n> {\n    g()\n}\n",
+    ] {
+        assert_eq!(rules(source), Vec::<Rule>::new(), "source: {source:?}");
+    }
+}
