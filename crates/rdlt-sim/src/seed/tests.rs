@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use super::{
     CORES_VAR, Failed, Recorded, SEED_VAR, SEEDS_FROM_VAR, SEEDS_VAR, Seed, SeedRange, Weight,
-    cores, drive, select, side_by_side, sweep, timings,
+    cores, drive, replay, select, side_by_side, sweep, timings,
 };
 
 fn seeds(range: SeedRange) -> Vec<u64> {
@@ -302,4 +302,15 @@ fn timings_go_beneath_the_workspace_a_test_runs_in() {
         timings(workspace.path(), "changes"),
         workspace.path().join("target/sim-timings/changes.jsonl")
     );
+}
+
+#[test]
+fn a_failing_seed_names_the_recipe_that_runs_it_again() {
+    let cases = [
+        (Weight::One, "`just sim 7`"),
+        (Weight::Threaded, "`RDLT_SIM_SEED=7 just stress`"),
+    ];
+    for (weight, command) in cases {
+        assert!(replay(Seed::new(7), weight).contains(command), "{weight:?}");
+    }
 }

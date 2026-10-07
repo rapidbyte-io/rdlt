@@ -152,7 +152,7 @@ where
         runtime.block_on(async { scenario(Arc::new(SimEnv::new(seed))).await })
     }));
     outcome.unwrap_or_else(|payload| {
-        report_failure(seed);
+        report_failure(seed, Weight::One);
         panic::resume_unwind(payload)
     })
 }
@@ -178,7 +178,7 @@ where
         runtime.block_on(async { scenario(Arc::new(SimEnv::threaded(seed))).await })
     }));
     outcome.unwrap_or_else(|payload| {
-        report_failure(seed);
+        report_failure(seed, Weight::Threaded);
         panic::resume_unwind(payload)
     })
 }
@@ -242,8 +242,19 @@ where
     clippy::print_stderr,
     reason = "the seed must reach the test output to be replayable"
 )]
-pub(crate) fn report_failure(seed: Seed) {
-    eprintln!("rdlt-sim: failing seed {seed}; replay it with `just sim {seed}`");
+pub(crate) fn report_failure(seed: Seed, weight: Weight) {
+    eprintln!("rdlt-sim: failing seed {seed}; {}", replay(seed, weight));
+}
+
+/// How a failing seed's run of `weight` is run again.
+fn replay(seed: Seed, weight: Weight) -> String {
+    match weight {
+        Weight::One => format!("replay it with `just sim {seed}`"),
+        Weight::Threaded => format!(
+            "rerun it with `RDLT_SIM_SEED={seed} just stress`, which real threads and the real \
+             clock keep from replaying it exactly"
+        ),
+    }
 }
 
 /// Runs [`for_each_seed`] for a test that runs in `here`.

@@ -29,7 +29,7 @@ use rdlt_wire::tls::{Accepted, Hosts};
 use crate::destination::SimDestination;
 use crate::env::SimEnv;
 use crate::rng::SplitMix64;
-use crate::seed::{Seed, report_failure};
+use crate::seed::{Seed, Weight, report_failure};
 use crate::source::SimSource;
 use connectors::Connectors;
 use faults::{Healing, disrupt};
@@ -141,11 +141,11 @@ where
         }
         Ok(Err(error)) => error,
         Err(payload) => {
-            report_failure(seed);
+            report_failure(seed, Weight::One);
             panic::resume_unwind(payload)
         }
     };
-    report_failure(seed);
+    report_failure(seed, Weight::One);
     match error.downcast::<tokio::task::JoinError>() {
         Ok(joined) if joined.is_panic() => panic::resume_unwind(joined.into_panic()),
         Ok(joined) => panic!("{joined}"),
