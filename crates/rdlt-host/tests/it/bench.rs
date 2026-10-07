@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use nix::sys::time::TimeValLike as _;
 use rdlt_connector::serve::{Listening, Served, serve_listener};
 use rdlt_connector::{ConnectContext, Destination, Role, Source};
 use rdlt_engine::Cores;
@@ -166,8 +167,7 @@ fn cpu() -> Duration {
     let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
         .expect("the process's usage reads");
     let seconds = |time: nix::sys::time::TimeVal| {
-        let micros = time.tv_sec() * 1_000_000 + time.tv_usec();
-        Duration::from_micros(u64::try_from(micros).unwrap_or(0))
+        Duration::from_micros(u64::try_from(time.num_microseconds()).unwrap_or(0))
     };
     seconds(usage.user_time()) + seconds(usage.system_time())
 }
