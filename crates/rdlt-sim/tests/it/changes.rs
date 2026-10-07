@@ -33,3 +33,11 @@ fn a_seed_whose_transition_only_the_log_held_passes() {
 fn a_seed_whose_removed_log_was_opened_again_by_a_late_mark_passes() {
     let _ = check_changes(Seed::new(133_238));
 }
+
+/// A seed whose replay listed a log before its load published a chunk, then fenced it at a
+/// number the load had since freed: it called the log finished and removed it, with a commit
+/// the source was told of, which no run could read again.
+#[test]
+fn a_seed_whose_replay_fenced_a_log_below_its_last_chunk_passes() {
+    let _ = check_changes(Seed::new(446_159));
+}
