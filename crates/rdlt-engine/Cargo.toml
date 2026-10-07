@@ -65,6 +65,7 @@ rdlt-connector = { workspace = true, features = ["serve", "testing"] }
 rdlt-connector-reference = { workspace = true, features = ["certify"] }
 rdlt-host.workspace = true
 rdlt-testkit.workspace = true
+rusqlite.workspace = true
 schemars.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 tempfile.workspace = true
@@ -111,6 +112,11 @@ required-features = ["bench"]
 
 [[bench]]
 name = "normalized"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "sqlite"
 harness = false
 required-features = ["bench"]
 

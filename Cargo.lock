@@ -3100,6 +3100,7 @@ dependencies = [
  "rdlt-host",
  "rdlt-testkit",
  "rdlt-wire",
+ "rusqlite",
  "rustix",
  "ryu",
  "schemars 1.2.2",

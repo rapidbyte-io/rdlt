@@ -5,7 +5,6 @@ pub(crate) mod lowering;
 #[cfg(test)]
 mod tests;
 
-use std::ops::Range;
 use std::sync::Arc;
 
 use arrow_array::{
@@ -24,8 +23,18 @@ const MIXED: [&str; 10] = ["id", "a", "b", "x", "y", "name", "city", "at", "flag
 ///
 /// Panics where `columns` is zero.
 pub(crate) fn events(first: i64, rows: u32, columns: usize) -> RecordBatch {
+    let ids: Vec<i64> = (first..first + i64::from(rows)).collect();
+    events_of(&ids, columns, 0)
+}
+
+/// The rows of `ids`, as [`events`] makes them, of `columns` columns, every value but the ids
+/// shifted by `shift` as a round shifts them.
+///
+/// # Panics
+///
+/// Panics where `columns` is zero.
+pub(crate) fn events_of(ids: &[i64], columns: usize, shift: i64) -> RecordBatch {
     assert!(columns > 0, "a batch has a column");
-    let ids = first..first + i64::from(rows);
     let columns = (0..columns).map(|index| {
         let (round, kind) = (index / MIXED.len(), index % MIXED.len());
         let name = match round {
@@ -33,13 +42,15 @@ pub(crate) fn events(first: i64, rows: u32, columns: usize) -> RecordBatch {
             _ => format!("{}_{round}", MIXED[kind]),
         };
         let round = i64::try_from(round).expect("a round fits in 64 bits");
-        (name, mixed(kind, round, ids.clone()))
+        let shift = if index == 0 { 0 } else { round + shift };
+        (name, mixed(kind, shift, ids))
     });
     RecordBatch::try_from_iter(columns).expect("equal-length columns make a batch")
 }
 
-/// The column of the mixed `kind` in `round` for the rows of `ids`.
-fn mixed(kind: usize, round: i64, ids: Range<i64>) -> ArrayRef {
+/// The column of the mixed `kind` shifted by `round` for the rows of `ids`.
+fn mixed(kind: usize, round: i64, ids: &[i64]) -> ArrayRef {
+    let ids = ids.iter().copied();
     let int = |factor: i64| -> ArrayRef {
         Arc::new(Int64Array::from_iter_values(
             ids.clone().map(|id| id * factor + round),
