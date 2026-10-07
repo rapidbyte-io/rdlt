@@ -57,7 +57,10 @@ faults, concurrency, replay and coverage.
 
 ## Consequences
 
-- The simulation runs 10⁴ seeds in CI and 10⁵ locally in about ten minutes, as before.
+- The test job runs 20 seeds of each sweep, in the dev profile, on Linux and macOS, macOS's only
+  simulation; the pull request's shards run 100 000 seeds of each in the simulation's profile and
+  the nightly a million. How fast the simulation checks seeds is recorded in
+  [docs/perf/sim.md](../perf/sim.md).
 - A failed run's report may miss a commit whose response its last attempt lost; a later attempt of
   the same run would have credited it. Discard counts are therefore checked exactly only on seeds
   without faults or disruptions, and bounded on the rest.

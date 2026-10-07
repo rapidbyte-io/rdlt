@@ -62,8 +62,6 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
 
 ## Consequences
 
-- A seed over the network takes about twice as long as one in process: 10 000 seeds take about
-  two and a half minutes on a pull request.
 - turmoil's TCP does not retransmit what a partition dropped, so a connection that lost data in a
   partition never recovers: the host notices it by its heartbeat and redials. Real TCP recovers
   from short partitions, so the simulation is the harsher.

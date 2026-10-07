@@ -128,9 +128,10 @@ things did not hold to that:
 - **`P-CREDIT` accounts credit.** It sizes the first frame as the host does and grants a byte
   more, three times, each too little to restore the credit, watching a second after each. A
   first frame too small to leave room for three such bytes is granted nothing in their place, so
-  the watch is four seconds whatever the frame spent. A caller of the library may choose
-  another watch (`Target::credit_watch`), as the tests that are not of this clause do; the
-  binary keeps the second.
+  the watch is four watches whatever the frame spent, four seconds unless one is chosen. A caller
+  of the library chooses another watch with `Target::credit_watch`, and the binary with
+  `--credit-watch <ms>`, from 1 to 1000; a pass under any watch but a second carries a note
+  naming it, so a shortened certification shows in its report.
 - **A connector can tell a certification, and the documentation says so.** Certification names
   its pipelines and tables `certify_…`, offers the read-back and acknowledged features, makes
   calls no engine makes, and holds a connector to its limits on purpose. A connector built to
@@ -150,7 +151,7 @@ things did not hold to that:
 - A destination that reads flat columns back nested, or encoded twice over, fails the clauses
   that read them.
 - Silence is observed for a bounded time: a source that ignores credit and sends less than a
-  frame every four seconds still passes `P-CREDIT`.
+  frame every four seconds still passes `P-CREDIT`, or every four watches where one is chosen.
 - A connector that leaves its process group and ends itself when its launcher is killed is
   counted as killed. A sandboxed spawn, with a process namespace of its own, closes that.
 - A destination that reads a column back as another kind than it was written as, beyond the
