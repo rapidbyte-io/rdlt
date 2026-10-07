@@ -1,10 +1,8 @@
-use rdlt_sim::{Seed, check_changes, seeds};
+use rdlt_sim::{Seed, Weight, check_changes, for_each_seed, seeds};
 
 #[test]
 fn every_change_lands_as_the_model_says_through_faults_crashes_and_concurrent_runs() {
-    for seed in seeds(200) {
-        let _ = check_changes(seed);
-    }
+    for_each_seed("changes", seeds(20), Weight::One, check_changes);
 }
 
 #[test]

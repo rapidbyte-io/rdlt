@@ -1,4 +1,6 @@
-use rdlt_sim::{Features, Recorded, Seed, SplitMix64, check_exactly_once, seeds};
+use rdlt_sim::{
+    Features, Recorded, Seed, SplitMix64, Weight, check_exactly_once, for_each_seed, seeds,
+};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
 const FOUND: [u64; 16] = [
@@ -52,28 +54,29 @@ const FOUND: [u64; 16] = [
 
 #[test]
 fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
-    let (mut seeds_run, mut pushes_waited, mut cursors_waited) = (0_u64, 0_u64, 0_u64);
-    for seed in seeds(200) {
-        let checked = check_exactly_once(seed);
-        seeds_run += 1;
-        pushes_waited += u64::from(checked.memory_waits > 0);
-        cursors_waited += u64::from(checked.cursor_waits > 0);
-    }
-    // The budget presses on a good share of the seeds: their pushes wait for lowering's room
-    // and their cursors for a commit.
-    if seeds_run >= 100 {
+    let checked = for_each_seed("exactly_once", seeds(20), Weight::One, check_exactly_once);
+    // The budget presses on a good share of the seeds: their pushes wait for lowering's room and
+    // their cursors for a commit. The test job's twenty seeds are too few to hold the share; the
+    // shards' and the nightly's thousands hold it.
+    if checked.len() >= 100 {
+        let pushes = checked.iter().filter(|run| run.memory_waits > 0).count();
+        let cursors = checked.iter().filter(|run| run.cursor_waits > 0).count();
         assert!(
-            pushes_waited * 5 >= seeds_run && cursors_waited * 10 >= seeds_run,
-            "of {seeds_run} seeds, {pushes_waited} made pushes wait and {cursors_waited} cursors"
+            pushes * 5 >= checked.len() && cursors * 10 >= checked.len(),
+            "of {} seeds, {pushes} made pushes wait and {cursors} cursors",
+            checked.len()
         );
     }
 }
 
 #[test]
 fn seeds_that_once_found_a_defect_pass() {
-    for seed in FOUND {
-        let _ = check_exactly_once(Seed::new(seed));
-    }
+    for_each_seed(
+        "found",
+        FOUND.map(Seed::new),
+        Weight::One,
+        check_exactly_once,
+    );
 }
 
 /// A seed whose run acknowledged rows its destination then failed to commit, so only the
