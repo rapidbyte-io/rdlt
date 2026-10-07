@@ -6,8 +6,9 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use super::destination::{Fault, ROWS, every_row_once};
 use super::killing::Schedule;
 use super::rows::{Parted, parted, rendered};
+use super::source::uncompared;
 use super::{DRAWS, Loaded, Proof, drawn, proven, unproven};
-use rdlt_connector::testing::render::Rendering;
+use rdlt_connector::testing::render::{RenderError, Rendering};
 
 /// The rows of `batches`, rendered with no limit.
 fn rows(batches: &[RecordBatch]) -> Vec<String> {
@@ -507,4 +508,14 @@ async fn a_kill_clause_tells_its_target_the_limits_its_engine_admits_exactly() {
         .await
         .expect_err("a cursor beyond what the engine admits");
     assert!(refused.to_string().contains("cursor bytes"), "{refused}");
+}
+
+#[test]
+fn a_table_whose_rows_do_not_render_is_named_with_why_it_is_not_compared() {
+    let reason = uncompared("orders", &RenderError::Beyond(10));
+    assert_eq!(
+        reason,
+        "table `orders` cannot be compared: the rows render as more than the 10 bytes of text a \
+         comparison holds"
+    );
 }

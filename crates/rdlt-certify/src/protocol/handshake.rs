@@ -1,6 +1,9 @@
 //! The handshake's clauses: the version it answers and refuses, the calls it and the
 //! configuration must come before and not after, and the roles it refuses.
 
+#[cfg(test)]
+mod tests;
+
 use rdlt_connector::Role;
 use rdlt_connector::wire::v1;
 use rdlt_wire::PROTOCOL_MAJOR;
