@@ -482,6 +482,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
     ended.expect("the writer ends");
 }
 
+#[cfg(feature = "object-store")]
 #[tokio::test(start_paused = true)]
 async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part_s_staging() {
     let store = Arc::new(MemoryWal::default());
