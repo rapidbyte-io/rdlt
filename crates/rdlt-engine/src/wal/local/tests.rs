@@ -383,6 +383,41 @@ async fn a_load_that_only_staged_is_listed_so_replay_removes_it() {
     assert_eq!(left, 0, "nothing of the log is left");
 }
 
+#[tokio::test]
+async fn a_staging_that_empties_a_removed_log_s_directory_removes_it() {
+    // A removal that closed and listed the log before a staging's file landed, or before its
+    // publish linked it, finds the directory full and leaves it: the publish refused, or the
+    // discard, that empties the directory after it removes it.
+    for publish in [true, false] {
+        let base = tempfile::tempdir().expect("a temporary directory");
+        let wal = LocalWal::new(base.path());
+        let orders = pipeline("orders");
+        let load = chunk(1, 0).load;
+        opened(&wal, &orders, load).await;
+        let mut staged = wal.stage(&orders, chunk(1, 1)).await.expect("stages");
+        staged
+            .append(Bytes::from_static(b"late"))
+            .await
+            .expect("appends");
+        let dir = wal.pipeline_dir(&orders);
+        std::fs::remove_file(dir.join(names::load(load)).join(names::OPEN)).expect("closes");
+        assert_eq!(wal.leftovers(&orders).await.expect("lists"), [load]);
+        if publish {
+            let refused = staged.publish().await.expect_err("the log was removed");
+            assert_eq!(refused.kind(), std::io::ErrorKind::NotFound, "{refused}");
+        } else {
+            staged.discard().await.expect("discards");
+        }
+        assert_eq!(
+            wal.leftovers(&orders).await.expect("lists"),
+            [],
+            "{publish}"
+        );
+        let left = std::fs::read_dir(&dir).expect("lists").count();
+        assert_eq!(left, 0, "{publish}: nothing of the log is left");
+    }
+}
+
 /// The directories synced under `base` since `from` syncs were recorded.
 fn synced_under(base: &Path, from: usize) -> Vec<std::path::PathBuf> {
     SYNCED.lock()[from..]

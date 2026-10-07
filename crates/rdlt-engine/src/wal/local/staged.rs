@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use rdlt_connector::BoxFuture;
 
 use super::dir::Dir;
-use super::{Place, blocking, is_open, names};
+use super::{Place, blocking, is_open, names, remove_emptied};
 use crate::wal::store::{Chunk, StagedChunk};
 
 /// How many names a staging tries before it gives up: each is new to the process, and only a
@@ -39,7 +39,8 @@ impl StagedChunk for Staged {
     /// makes the directory durable, keeping the chunk only where the log is open still.
     ///
     /// A chunk linked in as the log is removed is unlinked again, refused as
-    /// [`io::ErrorKind::NotFound`]. The staged name goes whatever happens.
+    /// [`io::ErrorKind::NotFound`]. The staged name goes whatever happens, and with it the
+    /// directory of a log removed meanwhile where that leaves it empty.
     fn publish(self: Box<Self>) -> BoxFuture<'static, io::Result<()>> {
         blocking(move || {
             let dir = self.place.load(self.chunk.load)?;
@@ -51,6 +52,8 @@ impl StagedChunk for Staged {
                 dir.remove_file(OsStr::new(&self.part))?;
                 if published.is_ok() {
                     dir.sync()?;
+                } else {
+                    self.emptied()?;
                 }
             }
             published
@@ -63,10 +66,21 @@ impl StagedChunk for Staged {
 }
 
 impl Staged {
-    /// Unlinks the staged file, where its log's directory is still there.
+    /// Unlinks the staged file, where its log's directory is still there, and the directory of a
+    /// log removed meanwhile where that leaves it empty.
     fn discarded(&self) -> io::Result<()> {
-        match self.place.load(self.chunk.load)? {
-            Some(dir) => dir.remove_file(OsStr::new(&self.part)),
+        let Some(dir) = self.place.load(self.chunk.load)? else {
+            return Ok(());
+        };
+        dir.remove_file(OsStr::new(&self.part))?;
+        self.emptied()
+    }
+
+    /// Removes the log's directory where its removal left it to this staging and nothing is left
+    /// in it.
+    fn emptied(&self) -> io::Result<()> {
+        match self.place.pipeline()? {
+            Some(pipeline) => remove_emptied(&pipeline, self.chunk.load),
             None => Ok(()),
         }
     }
