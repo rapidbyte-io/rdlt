@@ -41,6 +41,7 @@ checks: locked
     cargo xtask deny
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
     RUSTFLAGS="-D warnings" cargo hack check --workspace --each-feature --no-dev-deps
+    RUSTFLAGS="-D warnings" cargo check --package rdlt-engine --lib --tests
     actionlint
 
 # Check that each action is pinned to the commit of the version beside it; GITHUB_TOKEN, where
