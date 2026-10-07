@@ -62,10 +62,21 @@ The owner chose to keep all of this in one milestone.
   the real clock, with compute jobs on a pool of four threads.
   - Races the paused single thread never meets can happen there.
   - A failure names its seed but does not replay exactly.
-  - `just stress` runs it; the nightly workflow runs 200 seeds.
+  - `just stress` runs it; the nightly workflow runs 200 seeds, as many at once as the runner's
+    cores hold eight threads each. The contention between them is intended.
 - **Same-seed replay.** `check_exactly_once` returns a digest of everything the destination holds
   at the end: its tables' columns and rows, each pipeline's state, and the receipts. A test runs
-  twenty seeds twice and requires the same digests.
+  twenty fixed seeds twice each, one run after the other, and requires the same digests. It runs
+  in the test job alone, not in the simulation's shards; a mismatch replays with
+  `just test -E 'test(the_same_seed_leaves_the_destination_alike)'`.
+- **Seeds side by side.** Every simulation test runs its seeds through `for_each_seed`: each seed
+  on a thread of its own, with its own runtime or turmoil simulation, its own generators and its
+  own world, as many at once as the cores hold, the host's or as many as `RDLT_SIM_CORES` says.
+  Determinism is per seed, so a seed replays alike whatever runs beside it. No two runs of one
+  seed are in flight in one process: they share their world's name, and registering a name twice
+  panics. The simulation's tests therefore run under nextest, one process a test; `cargo test`,
+  which runs a binary's tests on threads of one process, would put two tests that check one seed
+  side by side.
 - **The simulation's own coverage.** `just sim-coverage` measures the engine and connector code
   the simulation alone reaches, leaving out test code and the connector's test kit and SQL
   planner. Over 1 000 seeds it reaches 83.6 % of lines and 75.6 % of branches, and the engine
@@ -101,5 +112,5 @@ The owner chose to keep all of this in one milestone.
     network (M4).
 - The simulation reaches least of JSON shredding's rarer paths, temporal text, plan validation,
   state records other than cursors, and change streams, which the engine does not load yet.
-- The nightly workflow runs longer: 200 stress seeds take about ten minutes, and the coverage run
-  about as long.
+- The nightly workflow runs the stress seeds and the coverage run beside the shards;
+  [docs/perf/sim.md](../perf/sim.md) records how long each takes.

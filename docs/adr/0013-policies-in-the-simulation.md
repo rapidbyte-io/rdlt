@@ -99,7 +99,8 @@ sequences.
   taking with them the columns only they hold values in. Which columns arrive then depends on how
   the engine groups a flush's batches, so where rows go the oracle predicts refusals, keys' too,
   only as possible.
-- Seeds that once found a defect are replayed on every run.
+- Seeds that once found a defect are replayed on every change, in the test job; the simulation's
+  shards run only the sweeps.
 - The engine does not branch on commit kind. The simulated destination declares either, so a
   future difference is covered from the start.
 - Faults beyond connector calls, multi-threaded runs, replay and the simulation's own coverage

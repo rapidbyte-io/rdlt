@@ -115,6 +115,11 @@ This record decides what holds each statement, and says where a check ends.
     own, `pins`, runs the second and is the only place the token goes, to stay within GitHub's
     rate limit: it installs `just` and `pinact` from the lockfile and builds nothing, so no
     build script, proc macro or program of the workspace runs where the token is.
+  - The simulation's shards and the nightly's stress run and rate check take its tests from an
+    archive one job of the same run builds, through the artifact actions, held to commits like
+    every action. An artifact needs no token beyond the run's own, a download checks its digest,
+    and the archive lives a day; a rerun replaces what its earlier attempt uploaded. The shards
+    upload each seed's timing lines the same way.
   - Workflows run on `pull_request`, `push`, a schedule and by hand. None references a secret,
     and none runs a fork's code with more than a read-only token.
 
