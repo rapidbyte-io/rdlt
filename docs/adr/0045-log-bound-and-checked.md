@@ -78,6 +78,12 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
   since it was listed leaves it to the replay that took it; a fence whose staging a rival
   deleted is tried again; an open a rival's replay removed is `wal_running`. So every race
   between attempts ends in a typed, retryable code, or in `wal_fenced` for a load that lost.
+  Amended 2026-10-07: a load deletes the chunks it no longer needs, freeing their numbers, so a
+  fence numbered from a listing the load has since outrun can take a freed number below the
+  load's last chunk. Taken for a fence, such a chunk let a replay call a log that held a commit
+  its source was told of finished, and remove it. A replay lists the log once its fence is
+  published: where a chunk above the fence is there, the fence fenced nothing, is deleted, and
+  the log is taken again. A load never deletes its last chunk while its log is open.
 - One store per pipeline and destination: the first commit of a pipeline at a destination that
   names no store records its store's identity (`StateEntry::LogStore`), and an attempt, a
   replay or a reset whose store is another is refused, `wal_store_other`, before it reads or

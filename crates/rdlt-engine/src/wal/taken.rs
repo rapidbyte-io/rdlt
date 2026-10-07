@@ -104,8 +104,8 @@ fn full(error: &io::Error) -> bool {
 enum Fenced {
     /// It was: the replay holds the log.
     Published,
-    /// The name was taken first, or a rival replay deleted the fence's staging: the log is
-    /// taken again.
+    /// The name was taken first, a chunk above it was published first, or a rival replay deleted
+    /// the fence's staging: the log is taken again.
     Lost,
     /// The log is no longer open.
     Gone,
@@ -246,10 +246,30 @@ async fn fence(
         return missing(store, pipeline, chunk.load, error).await;
     }
     match staged.publish().await {
-        Ok(()) => Ok(Fenced::Published),
+        Ok(()) => above(store, pipeline, chunk).await,
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(Fenced::Lost),
         Err(error) => missing(store, pipeline, chunk.load, error).await,
     }
+}
+
+/// Whether the fence published as `chunk` of `pipeline`'s log fences it: no chunk above it.
+///
+/// A log's load deletes the chunks it no longer needs, freeing their numbers, and never its last
+/// one while the log is open. A fence a listing chose before the load went on can take such a
+/// number: below the load's last chunk, it fences nothing, and is deleted.
+async fn above(store: &dyn WalStore, pipeline: &PipelineId, chunk: Chunk) -> Result<Fenced, Error> {
+    let chunks = store
+        .chunks(pipeline, chunk.load)
+        .await
+        .map_err(Error::from_wal)?;
+    if chunks.iter().all(|(number, _)| *number <= chunk.number) {
+        return Ok(Fenced::Published);
+    }
+    store
+        .remove(pipeline, chunk)
+        .await
+        .map_err(Error::from_wal)?;
+    Ok(Fenced::Lost)
 }
 
 /// What a fence's `error` means: a staging or log found missing, a rival replay deleted the
