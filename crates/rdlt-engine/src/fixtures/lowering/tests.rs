@@ -123,6 +123,14 @@ fn a_history_table_hashes_its_rows_and_a_change_stream_carries_its_flags() {
     assert_eq!(hashes.null_count(), 0);
     let (changes, batch) = prepared(LoweringCase::Changes);
     assert_eq!(changes.plan().view().model.columns.len(), 200);
+    // A pushed bitmap covers the change batch's own fields, its change columns among them.
+    let pushed = changes.batch();
+    let bitmaps = pushed
+        .column_by_name("_rdlt_unchanged")
+        .unwrap()
+        .as_binary::<i32>();
+    let fields = pushed.num_columns().div_ceil(8);
+    assert!(bitmaps.iter().all(|bitmap| bitmap.unwrap().len() == fields));
     let flags = batch.column_by_name("_rdlt_unchanged").unwrap();
     let flags = flags.as_binary::<i32>();
     // Row 0 flags column 1 and row 1 column 2, one bit a row.
