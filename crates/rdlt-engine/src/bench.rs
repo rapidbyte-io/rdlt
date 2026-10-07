@@ -20,7 +20,7 @@ use crate::shred::{self, ShredError};
 
 pub use connectors::{SinkSession, SinkWriter, ipc_sink, replay};
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
-pub use measure::Paired;
+pub use measure::{Allocations, Paired, counted, logical_bytes};
 pub use mix::Mix;
 pub use passthrough::Passthrough;
 

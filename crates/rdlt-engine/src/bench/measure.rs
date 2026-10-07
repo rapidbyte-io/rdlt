@@ -4,7 +4,12 @@
 #[cfg(test)]
 mod tests;
 
+use std::alloc::System;
 use std::fmt;
+use std::num::NonZeroU64;
+
+use arrow_array::{Array, RecordBatch};
+use stats_alloc::{Region, Stats, StatsAlloc};
 
 use super::Mix;
 
@@ -68,6 +73,83 @@ impl fmt::Display for Paired {
             self.median, self.low, self.high, self.samples
         )
     }
+}
+
+/// What a run allocated, or its share of each unit it moved.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Allocations {
+    /// Allocations made.
+    pub allocations: f64,
+    /// Reallocations made.
+    pub reallocations: f64,
+    /// Bytes requested by allocations and by reallocations that grew.
+    pub bytes: f64,
+}
+
+impl From<Stats> for Allocations {
+    fn from(stats: Stats) -> Self {
+        #[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^52")]
+        let count = |count: usize| count as f64;
+        Self {
+            allocations: count(stats.allocations),
+            reallocations: count(stats.reallocations),
+            bytes: count(stats.bytes_allocated),
+        }
+    }
+}
+
+impl Allocations {
+    /// These allocations spread over `units`, such as a run's rows or batches.
+    #[must_use]
+    pub fn per(self, units: NonZeroU64) -> Self {
+        #[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^52")]
+        let units = units.get() as f64;
+        Self {
+            allocations: self.allocations / units,
+            reallocations: self.reallocations / units,
+            bytes: self.bytes / units,
+        }
+    }
+}
+
+impl fmt::Display for Allocations {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:.3} allocations, {:.3} reallocations, {:.0} bytes",
+            self.allocations, self.reallocations, self.bytes
+        )
+    }
+}
+
+/// What `heap` served while `run` ran, on every thread.
+///
+/// `heap` counts only where it is the process's global allocator.
+pub fn counted(heap: &StatsAlloc<System>, run: impl FnOnce()) -> Allocations {
+    let region = Region::new(heap);
+    run();
+    Allocations::from(region.change())
+}
+
+/// The bytes `batches` hold in the rows they reference, without spare capacity or the parts of
+/// buffers another slice shares.
+///
+/// # Panics
+///
+/// Panics where a column's size overflows `usize` or its type is one Arrow cannot measure, which
+/// no batch a bench builds holds.
+pub fn logical_bytes(batches: &[RecordBatch]) -> u64 {
+    batches
+        .iter()
+        .flat_map(RecordBatch::columns)
+        .map(|column| {
+            let bytes = column
+                .to_data()
+                .get_slice_memory_size()
+                .expect("a batch's column measures within usize");
+            u64::try_from(bytes).expect("a column's bytes fit in 64 bits")
+        })
+        .sum()
 }
 
 /// The 2.5th and 97.5th percentiles of `values`.

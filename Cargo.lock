@@ -2650,7 +2650,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -2671,7 +2671,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -3107,6 +3107,7 @@ dependencies = [
  "serde_json",
  "sonic-rs",
  "stacker",
+ "stats_alloc",
  "tempfile",
  "thiserror",
  "tokio",
@@ -3928,6 +3929,12 @@ dependencies = [
  "psm",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "stats_alloc"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0e04424e733e69714ca1bbb9204c1a57f09f5493439520f9f68c132ad25eec"
 
 [[package]]
 name = "strsim"

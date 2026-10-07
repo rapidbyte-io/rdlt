@@ -127,6 +127,7 @@ criterion = { version = "0.8.2", default-features = false, features = [
 ] } # throughput benchmarks
 insta = { version = "1.48.0", default-features = false } # snapshots of the certification's help and reports
 peak_alloc = "0.3.0" # the heap's peak size, for the engine's memory bound
+stats_alloc = "0.1.10" # counts of a benchmark's allocations and the bytes they request, which peak_alloc does not keep
 proptest = "1.11.0" # property tests
 rcgen = "0.14.10" # a certificate authority made at test time, for the protocol's TLS
 tonic-prost-build = "0.14.6" # xtask generates the wire protocol's messages and service stubs
