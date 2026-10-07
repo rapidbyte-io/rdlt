@@ -111,10 +111,11 @@ pub struct Transport {
 /// Bytes: HTTP/2's largest window.
 const MAX_WINDOW: u64 = (1 << 31) - 1;
 
-impl Transport {
-    /// The settings of an end that receives within `limits`.
-    pub fn of(limits: &Limits) -> Self {
-        let _ = limits;
+impl Default for Transport {
+    /// The settings both ends set: a stream window of the credit floor, whatever the limits, so a
+    /// sender within it is never held by the transport and a peer that ignores its credit parks
+    /// at most the floor a call.
+    fn default() -> Self {
         let stream_window = CREDIT_FLOOR.min(MAX_WINDOW);
         let calls = u64::from(MAX_CALLS) + 1;
         let connection_window = calls.saturating_mul(stream_window).min(MAX_WINDOW);

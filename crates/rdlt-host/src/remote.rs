@@ -380,7 +380,7 @@ where
     // HTTP/2's own pings notice a connection the network dropped silently, beside the
     // protocol's heartbeat, which notices a connector that stopped answering.
     let patience = options.heartbeat.saturating_mul(options.missed.get());
-    let transport = Transport::of(&options.limits);
+    let transport = Transport::default();
     let channel = Endpoint::from_static("http://connector")
         .initial_stream_window_size(transport.stream_window)
         .initial_connection_window_size(transport.connection_window)

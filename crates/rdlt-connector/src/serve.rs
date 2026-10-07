@@ -159,7 +159,7 @@ where
         request.map(rdlt_wire::tonic::body::Body::new)
     });
     let builder = {
-        let transport = Transport::of(&limits);
+        let transport = Transport::default();
         let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
         builder
             .timer(TokioTimer::new())
