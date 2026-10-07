@@ -44,9 +44,15 @@ impl Passthrough {
         Ok(Self {
             runner: Runner::try_new(cores, "passthrough", stream(), None)?,
             batches: (0..batches)
-                .map(|index| events(i64::from(index) * i64::from(rows), rows, Self::COLUMNS))
+                .map(|index| Self::batch(i64::from(index) * i64::from(rows), rows))
                 .collect(),
         })
+    }
+
+    /// One batch of `rows` rows of the workload's columns, its ids running from `first`: the
+    /// batch a workload of `rows` rows a batch moves at that id.
+    pub fn batch(first: i64, rows: u32) -> RecordBatch {
+        events(first, rows, Self::COLUMNS)
     }
 
     /// The batches the workload moves.
@@ -87,7 +93,7 @@ impl Passthrough {
     /// The logical bytes of `batches` batches of `rows` rows, known before they are made: every
     /// batch holds as many as the first.
     pub fn bytes(batches: u32, rows: u32) -> u64 {
-        logical_bytes(&[events(0, rows, Self::COLUMNS)]) * u64::from(batches)
+        logical_bytes(&[Self::batch(0, rows)]) * u64::from(batches)
     }
 
     /// The rows of the batches.

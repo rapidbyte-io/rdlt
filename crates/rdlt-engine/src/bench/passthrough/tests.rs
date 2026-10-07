@@ -52,3 +52,13 @@ fn the_engine_moves_the_batches_from_any_source_into_any_destination() {
     });
     assert_eq!(passthrough.run(source, destination), 20);
 }
+
+#[test]
+fn a_batch_is_the_workload_s_batch_whose_ids_run_from_the_first() {
+    let cores = Cores::from_count(NonZeroUsize::new(2).unwrap());
+    let passthrough = Passthrough::try_new(cores, 2, 5).unwrap();
+    let batch = Passthrough::batch(5, 5);
+    assert_eq!(batch, passthrough.batches()[1]);
+    assert_eq!(batch.num_columns(), Passthrough::COLUMNS);
+    assert_eq!(ids(&batch), [5, 6, 7, 8, 9]);
+}
