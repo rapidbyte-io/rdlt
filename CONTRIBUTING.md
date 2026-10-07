@@ -162,7 +162,7 @@ and durations are `Duration`, never integer milliseconds.
 - One test per behavior; inputs that differ only in data go in a table-driven test.
 - Law-like code (lattices, codecs, naming) gets property tests. Anything persisted or evolved is
   tested across at least two runs.
-- Simulation tests run their seeds through `rdlt_sim::for_each_seed`, which runs them side by side; a sweep takes its seeds from `rdlt_sim::seeds`. They run under nextest, one process a test. A failing seed replays with `just sim <seed>`, a failing stress seed reruns, not exactly, with `RDLT_SIM_SEED=<seed> just stress`, and `just sim "" <count> <first>` runs `<count>` seeds of each sweep from `<first>`, as each shard does; the fixed-seed and replay tests run in `just test` alone.
+- Simulation tests run their seeds through `rdlt_sim::for_each_seed`, which runs them side by side; a sweep takes its seeds from `rdlt_sim::seeds`. They run under nextest, one process a test. A failing seed replays with `just sim <seed>`, a failing stress seed reruns, not exactly, with `RDLT_SIM_SEED=<seed> just stress`, and `just sim "" <count> <first>` runs `<count>` seeds of each sweep from `<first>`, as each shard does; the fixed-seed and replay tests run in `just test` alone. A test's seeds share the host's cores, or as many as `RDLT_SIM_CORES` says, which the simulation's recipes take as their last argument.
 - Snapshot tests (`insta`) hold output a person reads, such as `rdlt-certify`'s help and reports. When it changes on purpose, record it again with `INSTA_UPDATE=always`, and review the snapshots' diff before committing.
 
 ## Definition of done
