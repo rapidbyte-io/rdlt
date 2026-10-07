@@ -55,15 +55,14 @@ pins:
 deny: locked
     cargo xtask deny
 
-# Run the test suite; extra arguments go to nextest. Each benchmark then runs once as a test, in
-# a process of its own beside the others, and the allocation counts once, so every bench's setup,
-# checks and counts run on every change; the last run is of a connector built without
+# Run the test suite; extra arguments go to nextest. Each benchmark, and each bench's allocation
+# counts, then runs once as a test in a process of its own beside the others, so every bench's
+# setup, checks and counts run on every change; the last run is of a connector built without
 # certification's probes, which a build with every feature never is: it must serve none
 test *args:
     cargo nextest run --workspace --all-features {{ args }}
     cargo test --workspace --all-features --doc
-    cargo nextest run --workspace --all-features --benches -E 'kind(bench) & not binary(allocations)'
-    cargo test --workspace --all-features --bench allocations
+    cargo nextest run --workspace --all-features --benches -E 'kind(bench)'
     cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
 
 # Run the simulation suite; pass a seed to replay one run, or an empty seed, a count and the first
@@ -273,7 +272,7 @@ bench $name $cores="" $filter="":
             }
         ' target/bench/strace.txt | tee -a "$record"
     done
-    if "$counter" --names | grep -qx "$name"; then taskset -c "$cores" "$counter" "$name" | tee -a "$record"; fi
+    if "$counter" --list | grep -qx "$name: test"; then taskset -c "$cores" "$counter" "$name" | tee -a "$record"; fi
     echo "load after: $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$record"
 
 # Everything the pull-request gate runs
