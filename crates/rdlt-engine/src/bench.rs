@@ -4,6 +4,7 @@ mod connectors;
 mod corpora;
 mod measure;
 mod mix;
+mod passthrough;
 #[cfg(test)]
 mod tests;
 
@@ -21,6 +22,7 @@ pub use connectors::{SinkSession, SinkWriter, ipc_sink, replay};
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use measure::Paired;
 pub use mix::Mix;
+pub use passthrough::Passthrough;
 
 /// Why the shredder refused pushes.
 #[derive(Clone, Debug, PartialEq, Eq)]
