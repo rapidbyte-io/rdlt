@@ -50,9 +50,8 @@ impl StagedChunk for Staged {
                 .and_then(|dir| self.linked(dir));
             if let Some(dir) = &dir {
                 dir.remove_file(OsStr::new(&self.part))?;
-                if published.is_ok() {
-                    dir.sync()?;
-                } else {
+                dir.sync()?;
+                if published.is_err() {
                     self.emptied()?;
                 }
             }
@@ -73,6 +72,7 @@ impl Staged {
             return Ok(());
         };
         dir.remove_file(OsStr::new(&self.part))?;
+        dir.sync()?;
         self.emptied()
     }
 
