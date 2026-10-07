@@ -248,14 +248,15 @@ bench $name $cores="" $filter="":
             taskset -c "$cores" perf stat -x, -o "target/bench/perf-$seconds.csv" -e cycles:u,instructions:u,task-clock "$exe" --bench --exact --profile-time "$seconds" "$id" > /dev/null
             wall[$seconds]=$(( $(date +%s%N) - started ))
         done
-        # A run longer than ten seconds runs as often in both, which leaves no difference.
+        # A run of several seconds runs about as often in both, which leaves no difference to
+        # measure, so a difference of less than five seconds of wall time is reported as such.
         awk -F, -v id="$id" -v wall="$(( wall[15] - wall[5] ))" '
             FNR == 1 { run++ }
             $1 ~ /^[0-9.]+$/ && $3 ~ /cycles/ { cycles[run] += $1 }
             $1 ~ /^[0-9.]+$/ && $3 ~ /instructions/ { instructions[run] += $1 }
             $1 ~ /^[0-9.]+$/ && $3 ~ /task-clock/ { busy[run] += $1 }
             END {
-                if (cycles[2] - cycles[1] <= 0 || wall <= 0) { printf "%s: a run outlasts what perf stat can difference\n", id; exit }
+                if (cycles[2] - cycles[1] <= 0 || instructions[2] - instructions[1] <= 0 || wall < 5e9) { printf "%s: a run outlasts what perf stat can difference\n", id; exit }
                 printf "%s: %.2f instructions a cycle, %.2f CPUs busy (perf stat, 15 s of it less 5 s)\n", id, (instructions[2] - instructions[1]) / (cycles[2] - cycles[1]), (busy[2] - busy[1]) * 1e6 / wall
             }
         ' target/bench/perf-5.csv target/bench/perf-15.csv | tee -a "$record"
