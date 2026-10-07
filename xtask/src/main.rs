@@ -6,6 +6,7 @@ mod codegen;
 mod coverage;
 mod deny;
 mod deps;
+mod instructions;
 mod lexer;
 mod lint;
 mod rules;
@@ -45,6 +46,16 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Count each hot path's instructions and allocations on this tree and on `base`, and fail
+    /// where one grew past the limit.
+    Instructions {
+        /// The revision to compare with, checked out and built beside this tree.
+        #[arg(long)]
+        base: String,
+        /// The most a case may grow, in percent of its count on `base`.
+        #[arg(long)]
+        limit: f64,
+    },
     /// Fail when an llvm-cov JSON export is below the coverage thresholds.
     CoverageGate {
         /// Path to the export written by `cargo llvm-cov --json --summary-only`.
@@ -67,6 +78,7 @@ fn main() -> anyhow::Result<ExitCode> {
         Command::Tools => tools::run(&root),
         Command::Shipped => shipped::run(&root),
         Command::Codegen { check } => codegen::run(&root, check),
+        Command::Instructions { base, limit } => instructions::run(&root, &base, limit),
         Command::CoverageGate {
             export,
             lines,

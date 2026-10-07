@@ -142,6 +142,13 @@ miri:
     rustup toolchain install {{ nightly }} --profile minimal --component miri
     cargo +{{ nightly }} miri test --package rdlt-adopt --lib -- --exact tests::an_owned_descriptor_is_its_socket
 
+# Builds this tree and `base` with one toolchain and runs each case under valgrind, so Linux
+# only; a commit's `Instructions-Accepted: <case>` trailer accepts that case's growth, and the
+# report is `target/instructions/report.md`.
+# Count each hot path's instructions and allocations here and on `base`, failing past 2% more
+instructions base="origin/main":
+    cargo xtask instructions --base "{{ base }}" --limit 2
+
 # Mutation testing; extra arguments go to cargo-mutants, for example --in-diff pr.diff
 mutants *args:
     cargo mutants {{ mutated }} {{ args }}
