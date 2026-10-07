@@ -307,3 +307,21 @@ fn each_piece_says_what_it_was_measured_to_take_and_items_cost_what_they_are_tol
     assert_eq!(plain.len(), 1);
     assert_eq!(itemized[0].1 - plain[0].1, 30 * 100);
 }
+
+#[test]
+fn a_piece_its_rows_fill_to_the_byte_takes_what_its_stretches_were_measured_to() {
+    // Two strings, each measured alone, fill a piece exactly, or with a byte to spare: the piece
+    // takes the two measures, though the two measured together take less, an offset each.
+    let column: ArrayRef = Arc::new(StringArray::from(vec!["abc"; 4]));
+    let strings = RecordBatch::try_from_iter([("s", column)]).unwrap();
+    let row = native().expanded(&strings, 0..1, u64::MAX);
+    assert!(native().expanded(&strings, 0..2, u64::MAX) < 2 * row);
+    for max in [2 * row, 2 * row + 1] {
+        let lowered = unplanned(max, u64::MAX);
+        assert_eq!(
+            pieces(strings.clone(), lowered),
+            [(2, 2 * row), (2, 2 * row)],
+            "{max}"
+        );
+    }
+}
