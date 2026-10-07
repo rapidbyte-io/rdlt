@@ -1,10 +1,10 @@
 //! The served path: the passthrough batches through the engine with the destination, the source
 //! or both served over the wire protocol, over a `UnixStream` pair and over mutual TLS on
 //! loopback, in frames as large as the default coalescing target makes and in eighths of that,
-//! the read window of a served source a parameter. Each benchmark prints the process's CPU time
-//! a gigabyte its runs moved.
+//! the read window of a served source a parameter.
 //!
-//! The bench lives beside the integration tests to serve connectors as they do.
+//! Each benchmark prints the process's CPU time a gigabyte its runs moved. The bench lives beside
+//! the integration tests to serve connectors as they do.
 
 #![forbid(unsafe_code)]
 
