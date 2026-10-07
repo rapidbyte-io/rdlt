@@ -10,6 +10,7 @@ use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
 use rdlt_wire::bounded::Charged;
+use rdlt_wire::flow::Spending;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::{Cut, Encoder};
 use tokio::sync::mpsc;
@@ -28,7 +29,7 @@ pub(super) struct RemoteWriter {
     /// The charge of the answer decoded last, released once it is.
     charged: Charged,
     /// The credit the connector has left, which the last frame may have taken below zero.
-    credit: i64,
+    credit: Spending,
     encoder: Encoder,
     schema: Option<SchemaRef>,
     version: u32,
@@ -70,7 +71,7 @@ impl RemoteWriter {
             frames,
             acks,
             charged,
-            credit: 0,
+            credit: Spending::default(),
             encoder: Encoder::default(),
             schema: None,
             version: table.version.0,
@@ -114,12 +115,9 @@ impl RemoteWriter {
     ///
     /// A credit of no bytes, which grants nothing and only keeps the write waiting.
     fn grant(&mut self, credit: v1::Credit) -> rdlt_connector::Result<()> {
-        if credit.bytes == 0 {
-            return Err(out_of_turn("a credit of no bytes"));
-        }
-        let bytes = i64::try_from(credit.bytes).unwrap_or(i64::MAX);
-        self.credit = self.credit.saturating_add(bytes);
-        Ok(())
+        self.credit
+            .grant(credit.bytes)
+            .map_err(|_| out_of_turn("a credit of no bytes"))
     }
 
     /// Sends `frame` once the connector has credit left for it, spending its size.
@@ -127,7 +125,7 @@ impl RemoteWriter {
         let frame = v1::WriteFrame { frame: Some(frame) };
         let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
         let due = self.due();
-        while self.credit <= 0 {
+        while !self.credit.may_send() {
             match self.ack(due).await? {
                 v1::write_ack::Ack::Credit(credit) => self.grant(credit)?,
                 v1::write_ack::Ack::Flushed(_) | v1::write_ack::Ack::Error(_) => {
@@ -135,7 +133,7 @@ impl RemoteWriter {
                 }
             }
         }
-        self.credit -= i64::try_from(size).unwrap_or(i64::MAX);
+        self.credit.spend(size);
         // The transport's windows may fill before the credit is spent: the send has a deadline.
         let deadline = self.connection.options.deadlines.write_ack;
         let sent = tokio::select! {

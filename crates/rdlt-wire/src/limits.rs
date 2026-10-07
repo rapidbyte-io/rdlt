@@ -97,9 +97,6 @@ const MESSAGE_OVERHEAD: usize = 64 * 1024;
 /// Bytes: bounds the text of a panic the decoder contained, as its error carries it.
 pub const PANIC_TEXT_BYTES: u64 = 256;
 
-/// Bytes: the credit a receiver grants a sender by default, before the sender's frames spend it.
-pub const CREDIT_WINDOW: u64 = 4 * 1024 * 1024;
-
 /// Bytes: the least window of credit a receiver grants a call, and each call's transport window:
 /// one frame at the least frame limit a peer may set.
 pub const CREDIT_FLOOR: u64 = MIN_FRAME_BYTES;

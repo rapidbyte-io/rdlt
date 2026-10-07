@@ -1,6 +1,8 @@
 //! A served write: the engine's frames for one table become batches the destination's writer
 //! stages, and each frame's bytes return to the engine as credit once staged.
 
+use rdlt_wire::flow::Granting;
+use rdlt_wire::limits::CREDIT_FLOOR;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::tonic::{Status, Streaming};
 use rdlt_wire::{Decoder, IpcFrame, Limits};
@@ -48,7 +50,7 @@ pub(super) async fn serve(
 }
 
 /// Stages the engine's frames until it finishes the write, answering each with credit, a flush
-/// with its stats, and a failure with the error, after which the write ends.
+/// with its credit and then its stats, and a failure with the error, after which the write ends.
 async fn pump(
     mut writer: Box<dyn DestinationWriter>,
     mut frames: Streaming<v1::WriteFrame>,
@@ -56,33 +58,37 @@ async fn pump(
     limits: Limits,
 ) {
     use v1::write_ack::Ack;
-    // The window never exceeds a frame, so a small frame limit keeps the engine close behind.
-    let window = rdlt_wire::limits::CREDIT_WINDOW.min(limits.frame_bytes);
+    let answer = |ack| acks.send(Ok(v1::WriteAck { ack: Some(ack) }));
+    let mut granting = Granting::new(CREDIT_FLOOR, &limits);
     let mut staging = Staging {
         decoder: Decoder::new(limits),
         limits,
         staged: 0,
     };
-    let mut answer = Some(Ack::Credit(v1::Credit { bytes: window }));
-    while let Some(ack) = answer.take() {
-        let failed = matches!(ack, Ack::Error(_));
-        if acks
-            .send(Ok(v1::WriteAck { ack: Some(ack) }))
-            .await
-            .is_err()
-            || failed
-        {
-            return;
-        }
-        let Ok(Some(frame)) = frames.message().await else {
-            return;
-        };
+    let opening = v1::Credit {
+        bytes: granting.opening(),
+    };
+    if answer(Ack::Credit(opening)).await.is_err() {
+        return;
+    }
+    while let Ok(Some(frame)) = frames.message().await {
         let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
-        answer = Some(match staging.stage(frame, writer.as_mut()).await {
-            Ok(Some(stats)) => Ack::Flushed(stats),
-            Ok(None) => Ack::Credit(v1::Credit { bytes: size }),
-            Err(error) => Ack::Error(v1::Error::from(&error)),
+        let flushed = match staging.stage(frame, writer.as_mut()).await {
+            Ok(flushed) => flushed,
+            Err(error) => {
+                answer(Ack::Error(v1::Error::from(&error))).await.ok();
+                return;
+            }
+        };
+        let credit = Ack::Credit(v1::Credit {
+            bytes: granting.taken(size),
         });
+        let answers = std::iter::once(credit).chain(flushed.map(Ack::Flushed));
+        for ack in answers {
+            if answer(ack).await.is_err() {
+                return;
+            }
+        }
     }
 }
 

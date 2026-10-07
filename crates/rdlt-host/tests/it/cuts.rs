@@ -273,7 +273,7 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
             batch_values: MIN_BATCH_VALUES,
             ..Limits::default()
         },
-        read_window: 1,
+        read_floor: 1,
         ..Options::default()
     };
     let connect = Connect::new(|| {
@@ -315,7 +315,7 @@ async fn a_checkpoint_asked_for_between_a_batchs_pieces_follows_its_last_piece()
             batch_values: MIN_BATCH_VALUES,
             ..Limits::default()
         },
-        read_window: 1,
+        read_floor: 1,
         ..Options::default()
     };
     let io = served(Served::new().with_source(source_factory::<Ticks>()));

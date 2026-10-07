@@ -89,8 +89,9 @@ pub struct Options {
     pub deadlines: Deadlines,
     /// The limits this end enforces on what it receives.
     pub limits: Limits,
-    /// The bytes a read may send ahead of what the engine has taken.
-    pub read_window: u64,
+    /// Bytes: the least window of credit a read grants, which opens it; the window grows to two
+    /// of the largest frames the read has taken.
+    pub read_floor: u64,
 }
 
 impl Default for Options {
@@ -100,7 +101,7 @@ impl Default for Options {
             missed: NonZeroU32::new(6).unwrap_or(NonZeroU32::MIN),
             deadlines: Deadlines::default(),
             limits: Limits::default(),
-            read_window: rdlt_wire::limits::CREDIT_WINDOW,
+            read_floor: rdlt_wire::limits::CREDIT_FLOOR,
         }
     }
 }

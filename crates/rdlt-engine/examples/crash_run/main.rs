@@ -192,10 +192,11 @@ async fn destination(
     Ok(Arc::from(connected))
 }
 
-/// Bytes of credit a spawned source reads within: less than a batch, so a source is never
-/// more than a frame ahead of what the engine took, and one with more to send than the run
-/// holds is still reading when a commit is asked, however slowly the host runs.
-const READ_WINDOW: u64 = 512;
+/// Bytes: the floor of the credit a spawned source reads within, less than a batch, so its window
+/// is two of its frames and a source is never more than those ahead of what the engine took: one
+/// with more to send than the run holds is still reading when a commit is asked, however slowly
+/// the host runs.
+const READ_FLOOR: u64 = 512;
 
 /// The host spawning connectors, each told `limits`, those the engine admits within, and killed
 /// by `kills` where given.
@@ -203,7 +204,7 @@ fn host(kills: Option<&Kills>, limits: rdlt_wire::Limits) -> Local {
     // Each connector is told as it is spawned, by its process id: the id of the process group
     // it leads, which what watches the run checks is gone once the run has ended.
     let options = Options {
-        read_window: READ_WINDOW,
+        read_floor: READ_FLOOR,
         limits,
         ..Options::default()
     };
