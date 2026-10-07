@@ -11,6 +11,7 @@ mod lexer;
 mod lint;
 mod rules;
 mod shipped;
+mod sim_rate;
 mod tools;
 mod unsafe_code;
 mod unwinding;
@@ -67,6 +68,14 @@ enum Command {
         #[arg(long)]
         branches: f64,
     },
+    /// Fail when a simulation sweep's timing file shows fewer seeds a second than a floor.
+    SimRate {
+        /// Path to the timing file a sweep wrote, `target/sim-timings/<sweep>.jsonl`.
+        timings: PathBuf,
+        /// The fewest seeds a second that pass.
+        #[arg(long)]
+        floor: f64,
+    },
 }
 
 fn main() -> anyhow::Result<ExitCode> {
@@ -84,6 +93,7 @@ fn main() -> anyhow::Result<ExitCode> {
             lines,
             branches,
         } => coverage::run(&export, lines, branches),
+        Command::SimRate { timings, floor } => sim_rate::run(&timings, floor),
     }
 }
 
