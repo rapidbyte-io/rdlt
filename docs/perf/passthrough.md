@@ -8,7 +8,7 @@ interval, measured on one machine, so this record keeps the method with the numb
 
 - **Batches.** 64 batches of 80 000 rows, about 7 MB each: three 64-bit integers, two floats,
   two short strings, a timestamp, a boolean and a 32-bit integer.
-- **Destination.** `IpcSink` from the `bench` feature, which encodes each staged batch as an
+- **Destination.** `ipc_sink` from the `bench` feature, which encodes each staged batch as an
   Arrow IPC stream into a buffer it reuses: the least a real destination does with a batch.
 - **Bare loop.** The batches written to the sink's writer one after another, on one thread.
 - **Engine.** `Engine::run` with the `Replay` source pushing the same batches, a checkpoint after
