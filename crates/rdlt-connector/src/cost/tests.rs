@@ -567,3 +567,138 @@ fn a_piece_is_found_in_a_stretch_for_each_doubling_and_halving() {
     // It shows nothing of the batch it measures.
     assert_eq!(format!("{measure:?}"), "Measure { .. }");
 }
+
+#[test]
+fn the_widest_item_of_a_list_is_found_within_a_struct_at_any_depth() {
+    use super::widths::{item_slot, null_slot};
+    let field = |name: &str, kind: DataType| Arc::new(Field::new(name, kind, true));
+    let longs = DataType::List(field("item", DataType::Int64));
+    let bytes = DataType::List(field("item", DataType::Int8));
+    assert_eq!(item_slot(&longs), null_slot(&DataType::Int64));
+    // A struct's lists, however deep, give their widest item; one holding none gives none.
+    let held = DataType::Struct(Fields::from(vec![
+        field("small", bytes),
+        field(
+            "deep",
+            DataType::Struct(Fields::from(vec![field("wide", longs.clone())])),
+        ),
+    ]));
+    assert_eq!(item_slot(&held), item_slot(&longs));
+    let flat = DataType::Struct(Fields::from(vec![field("id", DataType::Int64)]));
+    assert_eq!(item_slot(&flat), 0);
+}
+
+#[test]
+fn a_null_of_a_union_is_its_type_ids_offset_beside_a_null_slot_of_each_member() {
+    use super::widths::{OFFSET, null_slot};
+    let members = [DataType::Int64, DataType::Utf8, DataType::Int8];
+    let fields = UnionFields::try_new(
+        [0, 1, 2],
+        members
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| Field::new(format!("m{index}"), kind.clone(), true)),
+    )
+    .unwrap();
+    let union = DataType::Union(fields, arrow_schema::UnionMode::Dense);
+    let slots: u64 = members.iter().map(null_slot).sum();
+    assert_eq!(null_slot(&union), OFFSET + slots);
+}
+
+#[test]
+fn a_null_list_view_is_two_offsets_and_a_null_fixed_size_list_its_items_beside_one() {
+    use super::widths::{BRACKETS, OFFSET, null_slot};
+    let item = Arc::new(Field::new("item", DataType::Int32, true));
+    // A view's offset and size, and the brackets of its text.
+    for view in [
+        DataType::ListView(Arc::clone(&item)),
+        DataType::LargeListView(Arc::clone(&item)),
+    ] {
+        assert_eq!(null_slot(&view), 2 * OFFSET + BRACKETS, "{view}");
+    }
+    // Each of its three items' slots, its offset and its brackets.
+    let fixed = DataType::FixedSizeList(item, 3);
+    assert_eq!(
+        null_slot(&fixed),
+        3 * null_slot(&DataType::Int32) + OFFSET + BRACKETS
+    );
+}
+
+#[test]
+fn the_text_of_a_null_is_what_its_type_lays_out_beside_a_validity_byte() {
+    use super::widths::{BRACKETS, OFFSET, VIEW, null_text, scalar};
+    let field = |kind: DataType| Arc::new(Field::new("item", kind, true));
+    // The longer of a value's slot and its longest text with an offset.
+    let longs = scalar(&DataType::Int64).unwrap();
+    assert!(longs.text + OFFSET > longs.slot);
+    let long = null_text(&DataType::Int64);
+    let text = null_text(&DataType::Utf8);
+    let members = UnionFields::try_new(
+        [0, 1],
+        [
+            Field::new("long", DataType::Int64, true),
+            Field::new("text", DataType::Utf8, true),
+        ],
+    )
+    .unwrap();
+    let laid_out = [
+        (DataType::Int64, longs.text + OFFSET),
+        // A string's two offsets and its quotes, a view its view beside them.
+        (DataType::Utf8, 2 * OFFSET + BRACKETS),
+        (DataType::Utf8View, VIEW + OFFSET + BRACKETS),
+        // Each item's text and separator, and an offset and brackets.
+        (
+            DataType::FixedSizeList(field(DataType::Int64), 3),
+            3 * (1 + long) + OFFSET + BRACKETS,
+        ),
+        // Each member's text beside the type ids' and offsets'.
+        (
+            DataType::Union(members, arrow_schema::UnionMode::Dense),
+            2 * OFFSET + long + text,
+        ),
+        // The values' text beside the key's offset.
+        (
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int64)),
+            long + OFFSET,
+        ),
+        (
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+            text + OFFSET,
+        ),
+    ];
+    for (kind, bytes) in laid_out {
+        assert_eq!(null_text(&kind), bytes + 1, "{kind}");
+    }
+}
+
+#[test]
+fn bytes_stored_as_they_are_cost_their_offsets_or_views_and_bytes_and_as_text_their_hex_beside() {
+    let bytes: ArrayRef = Arc::new(arrow_array::BinaryArray::from(vec![
+        b"abc".as_slice(),
+        b"de",
+    ]));
+    let views: ArrayRef = Arc::new(arrow_array::BinaryViewArray::from(vec![
+        b"abc".as_slice(),
+        b"de",
+    ]));
+    // Three offsets, or a view and an offset each, and the five bytes; rendered as text, the
+    // bytes again as hex, and each value's quotes.
+    for (column, plain) in [(bytes, 3 * 8 + 5), (views, 2 * (16 + 8) + 5)] {
+        let kind = column.data_type().clone();
+        assert_eq!(expanded(&native(), &column), plain, "{kind}");
+        assert_eq!(expanded(&Rendering::native(), &column), plain, "{kind}");
+        assert_eq!(
+            expanded(&Rendering::text(), &column),
+            plain + 5 + 2 * 2,
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn a_string_view_outside_a_nested_value_costs_its_view_and_its_bytes_however_stored() {
+    let strings: ArrayRef = Arc::new(arrow_array::StringViewArray::from(vec!["abc", "de"]));
+    for rendering in [native(), Rendering::native(), Rendering::text()] {
+        assert_eq!(expanded(&rendering, &strings), 2 * (16 + 8) + 5);
+    }
+}

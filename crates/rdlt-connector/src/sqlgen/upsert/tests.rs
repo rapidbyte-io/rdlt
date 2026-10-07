@@ -156,3 +156,12 @@ fn only_sqlite_writes_on_conflict() {
     assert_eq!(Standard.upserts(), Upserts::Guarded);
     assert_eq!(super::super::tests::Widening.upserts(), Upserts::Guarded);
 }
+
+#[test]
+fn a_byte_of_bytes_is_taken_in_standard_sql_unless_the_dialect_says_otherwise() {
+    assert_eq!(
+        Standard.byte_at("flags", 3),
+        "SUBSTRING(flags FROM 3 FOR 1)"
+    );
+    assert_eq!(Sqlite.byte_at("flags", 3), "SUBSTR(flags, 3, 1)");
+}

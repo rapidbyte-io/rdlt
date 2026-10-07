@@ -181,6 +181,20 @@ fn draws_fall_below_their_bound_and_cover_it() {
 }
 
 #[test]
+fn draws_are_splitmix64_s() {
+    // SplitMix64's first outputs from a state of zero, below no bound but the widest.
+    let mut source = Draws(0);
+    let outputs: Vec<usize> = (0..3).map(|_| source.below(usize::MAX)).collect();
+    let known = [
+        0xe220_a839_7b1d_cdaf_u64,
+        0x6e78_9e6a_a1b9_65f4,
+        0x06c4_5d18_8009_454f,
+    ]
+    .map(|value| usize::try_from(value).expect("a 64-bit target"));
+    assert_eq!(outputs, known);
+}
+
+#[test]
 fn seeds_differ_between_listeners() {
     let seeds: BTreeSet<u64> = (0..8).map(|_| seed()).collect();
     assert!(seeds.len() > 1);

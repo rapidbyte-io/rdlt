@@ -81,6 +81,18 @@ fn list() -> ArrayRef {
     Arc::new(list.finish())
 }
 
+fn list_view() -> ArrayRef {
+    let mut list = ListViewBuilder::new(instants());
+    list.append_value([Some(EDGE)]);
+    Arc::new(list.finish())
+}
+
+fn large_list_view() -> ArrayRef {
+    let mut list = LargeListViewBuilder::new(instants());
+    list.append_value([Some(EDGE)]);
+    Arc::new(list.finish())
+}
+
 /// Columns holding instants, dates, times and spans no calendar or clock holds, in every
 /// encoding and nesting.
 fn temporal() -> Vec<ArrayRef> {
@@ -126,6 +138,8 @@ fn temporal() -> Vec<ArrayRef> {
         run::<Int64Type>(edge().as_ref()),
         list(),
         large_list,
+        list_view(),
+        large_list_view(),
         fixed_list,
         structure(edge()),
         map,
@@ -175,28 +189,14 @@ fn instants_where_no_cast_reaches_do_not_render_and_do_not_panic() {
         let ids = ScalarBuffer::from(vec![0_i8]);
         Arc::new(UnionArray::try_new(fields, ids, None, vec![edge()]).unwrap()) as ArrayRef
     };
-    let list_view = {
-        let mut list = ListViewBuilder::new(instants());
-        list.append_value([Some(EDGE)]);
-        Arc::new(list.finish()) as ArrayRef
-    };
-    let large_list_view = {
-        let mut list = LargeListViewBuilder::new(instants());
-        list.append_value([Some(EDGE)]);
-        Arc::new(list.finish()) as ArrayRef
-    };
-    for column in [union.clone(), structure(union), list_view, large_list_view] {
+    for column in [union.clone(), structure(union)] {
         let kind = column.data_type().clone();
         let rendered = rendered(&batch(column), usize::MAX);
         let unrendered = matches!(
             &rendered,
             Err(RenderError::Unrendered { column, .. }) if column == "at"
         );
-        // A list view renders where its cast is one Arrow has.
-        let integers = rendered
-            .as_ref()
-            .is_ok_and(|rows| rows[0].contains(&EDGE.to_string()));
-        assert!(unrendered || integers, "{kind}: {rendered:?}");
+        assert!(unrendered, "{kind}: {rendered:?}");
     }
 }
 
