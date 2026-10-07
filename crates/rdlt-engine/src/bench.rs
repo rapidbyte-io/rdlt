@@ -11,6 +11,7 @@ mod passthrough;
 mod pools;
 #[cfg(test)]
 mod tests;
+mod wide;
 
 use std::sync::Arc;
 
@@ -34,6 +35,7 @@ pub use mix::Mix;
 pub use normalized::Normalized;
 pub use passthrough::Passthrough;
 pub use pools::pool_cores;
+pub use wide::{Form, Wide};
 
 /// Why the shredder refused pushes.
 #[derive(Clone, Debug, PartialEq, Eq)]

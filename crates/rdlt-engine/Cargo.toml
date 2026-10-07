@@ -121,6 +121,11 @@ harness = false
 required-features = ["bench"]
 
 [[bench]]
+name = "wide"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
 name = "allocations"
 harness = false
 required-features = ["bench"]
