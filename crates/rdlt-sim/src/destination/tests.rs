@@ -35,7 +35,8 @@ fn session_over(
     batches: Vec<RecordBatch>,
     extra: LogicalType,
 ) -> (Vec<String>, Option<ConnectorErrorKind>) {
-    let world = World::register(name, &mut SplitMix64::new(1));
+    let registered = World::register(name, &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
     let outcome = run(Seed::new(1), {
         let world = Arc::clone(&world);
         |_env| async move {
@@ -67,7 +68,7 @@ fn session_over(
             })
         }
     });
-    World::unregister(name);
+    drop(registered);
     (world.violations(), outcome)
 }
 
@@ -105,7 +106,8 @@ fn writes_to_missing_columns_or_at_types_they_cannot_hold_are_violations() {
 #[test]
 fn a_writer_given_batches_of_two_schemas_is_a_violation() {
     let name = "versions";
-    let world = World::register(name, &mut SplitMix64::new(1));
+    let registered = World::register(name, &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
     run(Seed::new(1), {
         let world = Arc::clone(&world);
         |_env| async move {
@@ -145,7 +147,7 @@ fn a_writer_given_batches_of_two_schemas_is_a_violation() {
             new.write(SegmentId(1), both()).await.unwrap();
         }
     });
-    World::unregister(name);
+    drop(registered);
     let violations = world.violations();
     assert_eq!(violations.len(), 1, "{violations:?}");
     assert!(
@@ -230,7 +232,8 @@ fn a_child_table_keeps_only_the_children_of_each_merged_roots_winning_row() {
 #[test]
 fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
     let name = "shared";
-    let world = World::register(name, &mut SplitMix64::new(1));
+    let registered = World::register(name, &mut SplitMix64::new(1));
+    let world = Arc::clone(registered.world());
     run(Seed::new(1), {
         let world = Arc::clone(&world);
         |_env| async move {
@@ -290,7 +293,7 @@ fn pipelines_sharing_the_destination_neither_fence_nor_discard_each_other() {
             );
         }
     });
-    World::unregister(name);
+    drop(registered);
 }
 
 /// Reads back what the simulated destination published, for certification.
@@ -313,11 +316,12 @@ impl rdlt_connector::testing::Probe for StoreProbe {
 
 #[test]
 fn the_simulated_destination_keeps_history_as_certification_asks() {
-    let world = World::register_changes(
+    let registered = World::register_changes(
         "certified-history",
         &mut SplitMix64::new(3),
         &mut SplitMix64::new(4),
     );
+    let world = Arc::clone(registered.world());
     let probe = StoreProbe(Arc::clone(&world));
     let report = run(Seed::new(3), |_| async move {
         rdlt_connector::testing::certify_destination::<SimDestination>(
@@ -326,7 +330,7 @@ fn the_simulated_destination_keeps_history_as_certification_asks() {
         )
         .await
     });
-    World::unregister("certified-history");
+    drop(registered);
     assert_eq!(
         report.outcome("D-HIST"),
         Some(&rdlt_connector::testing::Outcome::Passed),

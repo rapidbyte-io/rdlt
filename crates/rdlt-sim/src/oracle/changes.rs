@@ -44,11 +44,12 @@ pub fn check_changes(seed: Seed) -> Digest {
 async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     let mut rng = SplitMix64::new(seed.value() ^ CHANGES);
     let name = format!("changes-{seed}");
-    let world = World::register_changes(
+    let registered = World::register_changes(
         &name,
         &mut rng,
         &mut SplitMix64::new(seed.value() ^ HISTORY),
     );
+    let world = Arc::clone(registered.world());
     let features = world.workload.features;
     env.perturb(features.perturb);
     world.keep_logs(&env, seed).await;
@@ -82,7 +83,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>) -> Digest {
     };
     reported.check(seed).await;
     let violations = world.violations();
-    World::unregister(&name);
+    drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     digest
 }
