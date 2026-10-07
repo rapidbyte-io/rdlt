@@ -63,11 +63,12 @@ still taken largely on trust:
   - On a served connection, the requests still arriving hold at most four of its largest
     messages together. A request finding no room is not refused: its body is not read until
     room comes back, so HTTP/2 flow control holds its sender on that stream alone, the
-    connection's window being HTTP/2's largest. Room is taken as a message's prefix arrives and
-    given back as the whole message is passed on, and the window serves bodies in turn, so a
-    commit behind writes holding the window gets room as soon as their messages arrive; a body
-    waiting holds none, and none waits on another body to finish its message.
-  - A served connection holds at most 200 open calls, set explicitly.
+    connection's window holding every call's stream window and one more (ADR 0016). Room is
+    taken as a message's prefix arrives and given back as the whole message is passed on, and
+    the window serves bodies in turn, so a commit behind writes holding the window gets room as
+    soon as their messages arrive; a body waiting holds none, and none waits on another body to
+    finish its message.
+  - A served connection holds at most 200 open calls (`MAX_CALLS`), set explicitly.
   - A served connector takes the state one request may carry from `--max-state-bytes`, spawned or
     listening; a host spawning a connector passes its own `state_bytes` where it raises the
     protocol's, so raising the host's limit raises both ends', and a host whose budget takes less
@@ -97,7 +98,9 @@ still taken largely on trust:
   - A charge waits as any request of the budget does, in turn, and fails its call at the
     budget's deadline; one larger than its share fails it at once. No charge is held while
     another is waited for, and none while its holder waits for anything but the answer's bytes.
-  - A served connector has no engine budget: its window bounds what it holds of requests.
+  - A served connector has no engine budget: its window bounds what it holds of requests
+    arriving, and HTTP/2's stream windows what waits for them in transport, a stream window a
+    call.
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64

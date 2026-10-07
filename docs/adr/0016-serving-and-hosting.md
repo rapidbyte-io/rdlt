@@ -47,21 +47,29 @@ socket will be.
   - A write the connector ended answers with the error its last answers carry, not a transport
     failure.
 - **Credit** (§12.5).
+  - A receiver grants each call a window of credit: its floor at first, then two of the largest
+    frames it has taken, never more than its own data wire bound. Each frame it takes, a flush
+    included, comes back as credit with any growth of the window, a flush's before its stats; the
+    window never shrinks (`rdlt_wire::flow::Granting`). A served write's floor is `CREDIT_FLOOR`,
+    a frame at the least frame limit a peer may set (4 MiB); a host's read takes its floor from
+    `Options::read_floor`, `CREDIT_FLOOR` by default.
   - A sender sends while its credit is above zero, and each frame spends its encoded size, which
-    may leave the credit below zero until more is granted. A small window then bounds how far a
-    sender runs ahead, and no frame is too large for any window.
-  - Both ends default to 4 MiB (`CREDIT_WINDOW`). The host's read window is an option. A served
-    write grants the smaller of the default window and the connector's frame limit.
+    may leave the credit a frame below zero until more is granted (`Spending`). A sender runs at
+    most two of its frames ahead of its receiver, and one more below zero; no frame is too large
+    for any window. A credit of no bytes is refused by the host, and grants nothing on a served
+    read.
   - The host grants a read's credit back as it hands each frame to the engine, whose memory
     budget admits it.
   - A host cannot tell a connector that overran its credit from one that did not, because it
-    grants credit back as it consumes. So the protection is the served end keeping to its credit,
-    plus HTTP/2's own flow control, not a check on the host. Frames that carry no event are
-    bounded by count between events instead (ADR 0042).
-  - Both ends grant HTTP/2's largest connection window (`CONNECTION_WINDOW`). Credit and each
-    stream's window bound what a peer sends, so frames the engine has not taken yet, on reads it
-    is behind on, never starve the connection's other streams. The heartbeat is one of them: with
-    HTTP/2's default window, four backpressured reads silenced it and lost a live connector.
+    grants credit back as it consumes. So the protection is HTTP/2's flow control, which the
+    receiver enforces: each call's stream window is `CREDIT_FLOOR`, and the connection's window
+    holds every call's and one more (`MAX_CALLS`, 200, and the heartbeat's: 804 MiB), so a peer
+    that ignores its credit parks at most a stream window a call, and never starves the
+    connection's other streams, the heartbeat among them. Frames that carry no event are bounded
+    by count between events instead (ADR 0042).
+  - Both ends take transport frames of up to `TRANSPORT_FRAME_BYTES` (1 MiB): a frame of the
+    protocol crosses in few reads and writes, and a ping waits for at most one transport frame.
+    Neither end lets HTTP/2 size its windows itself, which would override both.
 - **Liveness and deadlines** (§12.6).
   - The host sends a heartbeat every interval (5 s by default). Once as many as it allows (6) are
     unanswered when the next is due, the connector is lost, and every call on the connection
@@ -72,10 +80,11 @@ socket will be.
     commit's deadline.
   - A started read has no deadline: silence on a data stream is never fatal. A read asked to
     stop is dropped once the engine's stop wait passes (ADR 0042).
-  - Each frame of a write is sent within the write-ack deadline, as the transport's windows may
-    fill before the connector's credit is spent: a destination whose writer never returns fails
-    the write with `deadline_exceeded` rather than hanging it. The deadline bounds the whole wait
-    for credit, however many answers arrive, and a credit of no bytes is refused (ADR 0042).
+  - Each frame of a write is sent within the write-ack deadline, as the transport's windows fill
+    when a connector grants credit and reads nothing: such a write fails with `deadline_exceeded`
+    rather than hanging. The deadline bounds the whole wait for credit too, however many answers
+    arrive, so a destination whose writer never returns fails the write as well, and a credit of
+    no bytes is refused (ADR 0042).
   - After this end stalls, the next heartbeat waits its interval rather than catching up, so a
     stalled host does not lose a live connector. An echo of a heartbeat never sent answers
     nothing.

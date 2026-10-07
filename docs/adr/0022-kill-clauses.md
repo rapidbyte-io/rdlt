@@ -45,10 +45,11 @@ through the connector, and a host that can kill what it placed. The owner ruled 
   failure reports it, so it can be replayed.
 - **The loads are shaped so the kills land in flight**: batches of 8 rows, a commit every 16
   rows, 1 MiB of engine memory, one event of partition buffer, one write in flight per lane, and
-  64 KiB of read credit, so a source runs little ahead of the commits. A load retries 20 times,
-  quickly, and up to three loads run until one succeeds.
+  a read's credit floor of 64 KiB, so a source runs little ahead of the commits: 64 KiB, or two
+  of its frames where they are larger. A load retries 20 times, quickly, and up to three loads
+  run until one succeeds.
 - **A clause passes only on evidence.** When no kill interrupted a load (the load ended first,
-  as a source smaller than about one credit window does), the clause is skipped with the seed,
+  as a source smaller than about its credit floor does), the clause is skipped with the seed,
   not passed. A clause takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`)
   gives it: a connector slower than about two seconds a commit needs more.
 - **`S-ARROW-JSON` waits for M8.** The engine infers the types of JSON pushes where Arrow pushes
