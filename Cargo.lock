@@ -3125,6 +3125,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "command-fds",
+ "criterion",
  "http",
  "http-body",
  "hyper",
