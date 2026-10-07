@@ -1,6 +1,6 @@
 //! The wire protocol between rdlt and connectors that run out of process: the messages of
-//! package `rdlt.connector.v1`, the codec carrying Arrow batches in them, and the limits each
-//! end enforces on what it receives.
+//! package `rdlt.connector.v1`, the codec carrying Arrow batches in them, the limits each end
+//! enforces on what it receives, and the flow control of its calls.
 
 #![forbid(unsafe_code)]
 
