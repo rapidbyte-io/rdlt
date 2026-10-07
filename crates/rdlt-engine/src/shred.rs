@@ -49,6 +49,12 @@ use visit::{Context, Row};
 
 pub(crate) use error::ShredError;
 
+/// How many chunks `pushes` are cut into, each shredded in a job of its own.
+#[cfg(feature = "bench")]
+pub(crate) fn chunked(pushes: &[Bytes], chunk_bytes: usize) -> Result<usize, ShredError> {
+    Ok(chunks(pushes, chunk_bytes)?.len())
+}
+
 /// What shredding pushes may take.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ShredLimits {

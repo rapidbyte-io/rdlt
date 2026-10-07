@@ -4,6 +4,7 @@
 mod tests;
 
 use std::fmt::Write as _;
+use std::num::NonZeroU64;
 
 use bytes::Bytes;
 
@@ -33,6 +34,9 @@ pub enum Corpus {
     StringHeavy,
     /// Nested rows with arrays: `Nested`'s fields and up to three orders of a few tags each.
     WithArrays,
+    /// Rows of an object and of as many items as their id modulo four, each item of two tags,
+    /// so the rows normalizing them makes follow from the rows' count alone.
+    Orders,
 }
 
 impl Corpus {
@@ -54,23 +58,51 @@ impl Corpus {
             Self::FlatWide => "flat_wide",
             Self::StringHeavy => "string_heavy",
             Self::WithArrays => "with_arrays",
+            Self::Orders => "orders",
         }
     }
 
     /// The corpus's rows until they hold `bytes`, cut into pushes of whole lines of
     /// [`PUSH_BYTES`] or a little more.
     pub fn pushes(self, bytes: usize) -> Vec<Bytes> {
-        let row: fn(u64, &mut Mix) -> String = match self {
+        corpus(bytes, PUSH_BYTES, self.row())
+    }
+
+    /// The corpus's first `rows` rows, cut into pushes of `per_push` lines, the last of the rest.
+    pub fn rows(self, rows: u64, per_push: NonZeroU64) -> Vec<Bytes> {
+        let row = self.row();
+        let mut mix = Mix::new(SEED);
+        let mut pushes = Vec::new();
+        let mut first = 0;
+        while first < rows {
+            let last = rows.min(first.saturating_add(per_push.get()));
+            let mut push = String::new();
+            for index in first..last {
+                push.push_str(&row(index, &mut mix));
+                push.push('\n');
+            }
+            pushes.push(Bytes::from(push));
+            first = last;
+        }
+        pushes
+    }
+
+    /// The generator of the corpus's rows.
+    fn row(self) -> fn(u64, &mut Mix) -> String {
+        match self {
             Self::Nested => nested,
             Self::Sparse => sparse,
             Self::FlatNarrow => flat_narrow,
             Self::FlatWide => flat_wide,
             Self::StringHeavy => string_heavy,
             Self::WithArrays => with_arrays,
-        };
-        corpus(bytes, PUSH_BYTES, row)
+            Self::Orders => orders,
+        }
     }
 }
+
+/// The seed of every corpus's draws.
+const SEED: u64 = 7;
 
 /// Rows from `row` until they hold `bytes`, cut into pushes of whole lines of `push_bytes` or a
 /// little more.
@@ -79,7 +111,7 @@ fn corpus(
     push_bytes: usize,
     mut row: impl FnMut(u64, &mut Mix) -> String,
 ) -> Vec<Bytes> {
-    let mut mix = Mix::new(7);
+    let mut mix = Mix::new(SEED);
     let mut pushes = Vec::new();
     let mut push = String::with_capacity(push_bytes + 4096);
     let (mut total, mut index) = (0, 0);
@@ -138,6 +170,27 @@ fn with_arrays(index: u64, mix: &mut Mix) -> String {
         r#"{},"orders":[{}]}}"#,
         &row[..row.len() - 1],
         orders.join(",")
+    )
+}
+
+/// Rows of an object and of as many items as `index` modulo four, each of two tags.
+fn orders(index: u64, _: &mut Mix) -> String {
+    let items: Vec<String> = (0..index % 4)
+        .map(|item| {
+            format!(
+                r#"{{"sku":"sku-{index}-{item}","qty":{},"price":{}.25,"tags":["t{}","u{item}"]}}"#,
+                item + 1,
+                index % 97,
+                index % 5,
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"id":{index},"user":{{"name":"user-{index:08}","age":{},"active":{}}},"total":{}.5,"items":[{}]}}"#,
+        index % 90,
+        index.is_multiple_of(2),
+        index % 1000,
+        items.join(",")
     )
 }
 
