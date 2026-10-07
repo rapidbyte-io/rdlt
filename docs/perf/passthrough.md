@@ -1,8 +1,8 @@
 # Arrow passthrough
 
 The spec gates in-process Arrow passthrough at an engine overhead of at most 10 % against a bare
-read-then-write loop (§21.1). This record keeps the method with the numbers, which are ratios
-measured on one machine.
+read-then-write loop. The overhead is the median ratio of paired runs with its 95 % bootstrap
+interval, measured on one machine, so this record keeps the method with the numbers.
 
 ## Method
 
@@ -12,29 +12,55 @@ measured on one machine.
   Arrow IPC stream into a buffer it reuses: the least a real destination does with a batch.
 - **Bare loop.** The batches written to the sink's writer one after another, on one thread.
 - **Engine.** `Engine::run` with the `Replay` source pushing the same batches, a checkpoint after
-  each, one stream of one partition, commits only at the end, within the cores `taskset` gives the
-  bench: a runtime of the workers `Cores::try_from_host` suggests for them, half and two at
-  least, and a compute pool of the rest, one thread at least (`SystemEnv::try_from_runtime`), and
-  lanes one per core.
-- **Build and cores.** `cargo bench -p rdlt-engine --features bench --bench passthrough`, built
-  with the release profile's fat LTO and one codegen unit, run with `taskset -c 0-3` on the
-  performance cores; criterion's mean of ten samples, the median and range of five runs.
+  each, one stream of one partition, commits only at the end, within the cores the bench may run
+  on: a runtime of the workers `Cores::try_from_host` suggests for them, half and two at least,
+  and a compute pool of the rest, one thread at least (`SystemEnv::try_new`), and lanes one per
+  core.
+- **Pairs.** `passthrough/paired/<W>+<C>`, named by its runtime workers and compute threads, runs
+  blocks of bare loop, engine, engine, bare loop in each of its 30 samples, so each side runs
+  first as often as last, and takes the ratio of the engine's time to the bare loop's in each
+  sample. The overhead is the median of the ratios with a 95 % percentile bootstrap interval: a
+  machine that slows down or speeds up during a run moves both sides of every ratio alike.
+  Criterion's time is one engine run; throughput counts the batches' logical bytes, 6.9 MB a
+  batch.
+- **Allocations.** The `allocations` bench, whose global allocator is `stats_alloc`'s counting
+  system allocator, runs each side once and prints its allocations, reallocations and bytes
+  requested, a row and a batch. The timed bench keeps the system allocator.
+- **Running.** `just bench passthrough 0-3` on the four performance cores, built with the release
+  profile's fat LTO and one codegen unit. It records the commit, the load before and after, each
+  CPU's governor, criterion's estimate of the engine's time, the ratio, `perf stat`'s
+  instructions a cycle and CPUs busy over both sides of the pairs, and the allocations.
 - **Profiles.** `just profiling passthrough` builds the bench with line tables and frame pointers.
 
 ## Results
 
-Intel Core Ultra X7 358H, on mains power, governor `powersave`, 2026-10-06: `main` at `b46a4574`
-with the change that last edited this record, load average 0.78–0.99 over the runs.
+Intel Core Ultra X7 358H, mains power, 2026-10-07, commit `d482d4ecb150`, governor `powersave`
+with energy preference `performance`, one-minute load average 0.46–1.25 before and after the runs;
+five runs of `just bench passthrough 0-3`.
 
-| Cores | Layout | Bare loop | Engine |
-|---|---|---|---|
-| 4 performance cores (`taskset -c 0-3`) | 2 workers, 2 compute threads | 24.1 ms (24.0–27.2) | 28.3 ms (28.0–31.3) |
+| Run | Engine | Engine over bare loop (95 % interval) | Instructions a cycle | CPUs busy |
+|---|---|---|---|---|
+| 1 | 28.82 ms | 1.167 (1.164 to 1.179) | 0.62 | 1.33 |
+| 2 | 29.04 ms | 1.167 (1.161 to 1.173) | 0.61 | 1.32 |
+| 3 | 29.00 ms | 1.179 (1.171 to 1.188) | 0.62 | 1.32 |
+| 4 | 28.93 ms | 1.168 (1.159 to 1.173) | 0.61 | 1.32 |
+| 5 | 29.21 ms | 1.171 (1.160 to 1.176) | 0.62 | 1.32 |
+
+The engine is 16.8 % over the bare loop (16.7–17.9 % across the five runs) with 2 runtime
+workers and 2 compute threads, against the spec's 10 %. Instructions a cycle and CPUs busy cover
+both sides of the pairs.
+
+| Side | A row | A batch |
+|---|---|---|
+| Bare loop | 0.001 allocations, 0.000 reallocations, 3 bytes | 62.062 allocations, 22.156 reallocations, 270028 bytes |
+| Engine (median of five runs, range) | 0.005 allocations, 0.001 reallocations, 4 bytes | 394.672 allocations (394.656 to 394.688), 40.266 reallocations, 321620 bytes |
 
 ## Layouts
 
 How many of N cores the runtime's workers take, the bench built once per worker count and run
-within N cores, five rounds interleaved across every row, the same day and load as above; the
-engine's median and range:
+within N cores, five rounds interleaved across every row, 2026-10-06, `main` at `b46a4574` with
+the change that sized the runtime by this table, load average 0.78–0.99; the engine's median and
+range:
 
 | Cores | Workers + compute threads | Bare loop | Engine |
 |---|---|---|---|

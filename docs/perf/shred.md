@@ -11,12 +11,18 @@ record keeps the method with the numbers.
 - **Old engine.** `rdlt.old` at `0249668f`, through its production shred path
   `rdlt_engine::fuzzing::bench_shred_bytes`, over 8 MiB pushes cut at line ends, built with fat
   LTO and one codegen unit, best of five runs. The harness is below.
-- **This engine.** `cargo bench -p rdlt-engine --features bench --bench shred` with
-  `RDLT_SHRED_CORPUS` naming the corpus (`shred/file`): 8 MiB pushes, 1 MiB chunks, built with the
-  release profile's fat LTO and one codegen unit, criterion's mean.
-- **Cores.** `shred_cores/N` shreds the `nested` corpus within N cores, run with `taskset` on N
-  cores of one type, since the development machine mixes them: the bench's runtime has one
-  worker, which only waits, and the compute pool the N − 1 threads it leaves, one at N = 1.
+- **This engine.** `RDLT_SHRED_CORPUS=<corpus> just bench shred 0 '^shred/file$'`: 8 MiB pushes,
+  1 MiB chunks, built with the release profile's fat LTO and one codegen unit, criterion's mean.
+- **Cores.** `shred_cores/N` shreds the `nested` corpus within N cores, for one core, each power
+  of two below the cores the bench may run on, and all of them, run on cores of one type, since
+  the development machine mixes them: `just bench shred 0-3 '^shred_cores/4$'` on the performance
+  cores and `just bench shred 4-11 '^shred_cores/8$'` on the efficient ones. The bench's runtime
+  has one worker, which only waits, and the compute pool the N − 1 threads it leaves, one at
+  N = 1; the bench prints each pool's threads.
+- **Allocations.** The `allocations` bench, whose global allocator is `stats_alloc`'s counting
+  system allocator, runs each single-core group's workload once and prints its allocations,
+  reallocations and bytes requested, a row and a batch of what it shredded. The timed bench keeps
+  the system allocator. Throughput is the corpus's JSON bytes.
 - **Profiles.** `just profiling shred` builds the bench with line tables and frame pointers for
   `perf record --call-graph fp`.
 
@@ -146,8 +152,8 @@ rather than allocating it (allocating cost `keyless` a quarter).
 ## The `arrow-json` fast path
 
 The spec lets flat JSON of a known schema go through `arrow-json`'s decoder where that is faster
-(§7.4). `cargo bench -p rdlt-engine --features bench --bench shred -- fast_path` measures both on
-the flat corpora, the decoder given the schema:
+(§7.4). `just bench shred 0 '^fast_path/'` measures both on the flat corpora, the decoder given
+the schema:
 
 | Corpus | Shredder | `arrow-json` |
 |---|---|---|
@@ -159,11 +165,11 @@ The shredder is faster on both, and needs no schema, so the engine has no fast p
 ## Normalizing
 
 A normalized stream's batches are split into child tables after shredding, and each row gets its
-lineage (spec §8.7). `cargo bench -p rdlt-engine --features bench --bench shred -- normalize`
-measures it on one core, on the `with_arrays` corpus: `nested`'s rows with up to three orders of a
-few tags each, so rows reach two child tables. `shred_only` shreds it; `keyed` shreds and
-normalizes rows identified by their `id`; `keyless` shreds and normalizes rows identified by their
-whole content, whose canonical encoding is the extra cost.
+lineage (spec §8.7). `just bench shred 0 '^normalize/'` measures it on one core, on the
+`with_arrays` corpus: `nested`'s rows with up to three orders of a few tags each, so rows reach
+two child tables. `shred_only` shreds it; `keyed` shreds and normalizes rows identified by their
+`id`; `keyless` shreds and normalizes rows identified by their whole content, whose canonical
+encoding is the extra cost.
 
 | Group | Time | Throughput | Against `shred_only` |
 |---|---|---|---|
@@ -176,3 +182,20 @@ runs back to back. A first draft of the encoding, which built each row's encodin
 time with a buffer per field, ran `keyless` at 5.8× on battery; it now encodes a row at a time
 into one buffer, with lengths in LEB128. Formatting floats as their shortest round-trip text, which
 the spec asks of every number, is most of what remains.
+
+## Allocations
+
+One run of each single-core group, from `just bench shred 0 '^(shred|normalize)/'` on 2026-10-07
+at commit `d482d4ecb150`; the counts are the same on every run and do not depend on the
+machine's load.
+
+| Group | Allocations a row | Reallocations a row | Bytes a row | Allocations a batch | Bytes a batch |
+|---|---|---|---|---|---|
+| `shred/nested` | 0.024 | 0.001 | 115 | 140.594 | 664719 |
+| `shred/sparse` | 0.026 | 0.001 | 121 | 148.500 | 702084 |
+| `shred/flat_narrow` | 0.001 | 0.000 | 16 | 27.781 | 334835 |
+| `shred/flat_wide` | 3.538 | 0.077 | 2382 | 1386.969 | 933766 |
+| `shred/string_heavy` | 1.007 | 4.901 | 616 | 4772.531 | 2918951 |
+| `normalize/shred_only` | 2.562 | 0.003 | 298 | 10775.844 | 1254479 |
+| `normalize/keyed` | 2.615 | 0.036 | 1012 | 11000.844 | 4256876 |
+| `normalize/keyless` | 5.623 | 0.036 | 1109 | 23650.781 | 4664724 |

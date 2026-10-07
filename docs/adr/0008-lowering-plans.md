@@ -35,10 +35,13 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
   narrow rows and 279 MiB/s rows of 200 columns where the shredder takes 513 and 527 MiB/s, and it
   needs the schema up front. The spec allows the fast path only where it is faster, so the engine
   keeps one shredder; the `fast_path` bench group measures both for whoever looks again.
-- **Passthrough is measured against a bare loop.** The `passthrough` bench replays 64 batches of
-  about 7 MB into a destination that encodes each as Arrow IPC, through the engine and through a
-  bare loop writing the same batches to the same writer.
-  [docs/perf/passthrough.md](../perf/passthrough.md) records the method and the numbers.
+- **Passthrough is measured against a bare loop, in pairs.** The `passthrough` bench replays 64
+  batches of about 7 MB into a destination that encodes each as Arrow IPC, through the engine
+  and through a bare loop writing the same batches to the same writer. Each sample runs blocks of
+  bare loop, engine, engine, bare loop and keeps the ratio of their times; the overhead is the
+  median of the samples' ratios with a bootstrap interval, so a machine that drifts during a run
+  moves both sides of a ratio alike. [docs/perf/passthrough.md](../perf/passthrough.md) records
+  the method and the numbers.
 
 ## Consequences
 
