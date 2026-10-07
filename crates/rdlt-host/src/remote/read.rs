@@ -10,6 +10,7 @@ use rdlt_connector::{
     Requested, SourceEvent,
 };
 use rdlt_wire::bounded::Charged;
+use rdlt_wire::flow::Granting;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::prost::bytes::Bytes;
 use rdlt_wire::{Decoder, IpcFrame, Limits};
@@ -31,7 +32,9 @@ pub(super) async fn run(
     // later control answers it, as in the engine's process; and as a control before its credit,
     // for a connector that knows no barrier in the start. One that knows both answers it once.
     let pending = sink.pending_barrier().unwrap_or(0);
-    let (controls, (mut frames, charged)) = start(connection, &request, pending).await?;
+    let mut granting = Granting::new(connection.options.read_floor, &limits);
+    let opening = granting.opening();
+    let (controls, (mut frames, charged)) = start(connection, &request, pending, opening).await?;
     let control = |control| v1::ReadControl {
         control: Some(control),
     };
@@ -81,7 +84,8 @@ pub(super) async fn run(
                     // them.
                     Read::Nothing => kept.charge(&sink, reader.kept())?,
                 }
-                controls.send(control(Control::Credit(v1::Credit { bytes: size }))).await.ok();
+                let credit = v1::Credit { bytes: granting.taken(size) };
+                controls.send(control(Control::Credit(credit))).await.ok();
             }
         }
     }
@@ -116,18 +120,18 @@ async fn forward(
     }
 }
 
-/// Starts the read: its first message, and the read's window of credit; the sender of what
+/// Starts the read: its first message, and the read's `opening` credit; the sender of what
 /// follows, and the connector's frames.
 async fn start(
     connection: &Connection,
     request: &ReadRequest,
     barrier: u64,
+    opening: u64,
 ) -> rdlt_connector::Result<(
     mpsc::Sender<v1::ReadControl>,
     (tonic::Streaming<v1::ReadFrame>, Charged),
 )> {
     use v1::read_control::Control;
-    let window = connection.options.read_window;
     let (controls, receiver) = mpsc::channel(8);
     let start = v1::ReadStart {
         stream: Some(v1::StreamName::from(&request.stream)),
@@ -152,7 +156,7 @@ async fn start(
             .ok();
     }
     controls
-        .send(control(Control::Credit(v1::Credit { bytes: window })))
+        .send(control(Control::Credit(v1::Credit { bytes: opening })))
         .await
         .ok();
     let mut client = connection.client.data.clone();

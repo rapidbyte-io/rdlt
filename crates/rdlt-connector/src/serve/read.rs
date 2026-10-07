@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
+use rdlt_wire::flow::Spending;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::tonic::{Status, Streaming};
 use rdlt_wire::{Cut, Encoder, Limits};
@@ -76,7 +77,7 @@ fn request(start: v1::ReadStart) -> Result<ReadRequest, Invalid> {
 /// Frames waiting for credit, and what encodes them.
 pub(super) struct Outbox {
     frames: VecDeque<v1::ReadFrame>,
-    credit: i64,
+    credit: Spending,
     encoder: Encoder,
     schema: Option<SchemaRef>,
     epoch: u64,
@@ -96,7 +97,7 @@ impl Outbox {
     pub(super) fn new(host: Limits) -> Self {
         Self {
             frames: VecDeque::new(),
-            credit: 0,
+            credit: Spending::default(),
             encoder: Encoder::default(),
             schema: None,
             epoch: 0,
@@ -251,10 +252,11 @@ async fn pump(
     loop {
         while let Some(frame) = outbox.frames.front() {
             // A frame goes while credit remains, and spends its size, even below zero.
-            if outbox.credit <= 0 {
+            if !outbox.credit.may_send() {
                 break;
             }
-            outbox.credit -= i64::try_from(frame.encoded_len()).unwrap_or(i64::MAX);
+            let size = u64::try_from(frame.encoded_len()).unwrap_or(u64::MAX);
+            outbox.credit.spend(size);
             let frame = outbox.frames.pop_front().expect("a frame is at the front");
             if frames.send(Ok(frame)).await.is_err() {
                 feed.stop();
@@ -314,8 +316,8 @@ fn control_read(
     };
     match control.control {
         Some(Control::Credit(credit)) => {
-            let bytes = i64::try_from(credit.bytes).unwrap_or(i64::MAX);
-            outbox.credit = outbox.credit.saturating_add(bytes);
+            // A credit of no bytes grants nothing, and changes nothing.
+            outbox.credit.grant(credit.bytes).ok();
         }
         Some(Control::Checkpoint(request)) => feed.request_checkpoint(request.barrier),
         Some(Control::Stop(_)) => feed.stop(),

@@ -33,7 +33,7 @@ use rdlt_host::{
 };
 use rdlt_testkit::tls::{Files, Pki};
 use rdlt_wire::Limits;
-use rdlt_wire::limits::CREDIT_WINDOW;
+use rdlt_wire::limits::CREDIT_FLOOR;
 
 /// Which of a run's connectors are served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,7 +128,7 @@ impl Case {
                     transport,
                     mode,
                     frames,
-                    window: CREDIT_WINDOW,
+                    window: CREDIT_FLOOR,
                 }));
             }
         }
@@ -137,7 +137,7 @@ impl Case {
                 transport: Transport::Socket,
                 mode,
                 frames: Frames::Large,
-                window: CREDIT_WINDOW * times,
+                window: CREDIT_FLOOR * times,
             }));
         }
         cases
@@ -308,7 +308,7 @@ impl Workload {
             Transport::Socket => None,
         };
         let options = Options {
-            read_window: case.window,
+            read_floor: case.window,
             ..Options::default()
         };
         let (mut took, mut busy) = (Duration::ZERO, Duration::ZERO);

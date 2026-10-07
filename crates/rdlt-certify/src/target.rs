@@ -258,9 +258,9 @@ impl Target {
     }
 }
 
-/// Bytes: the credit a source placed for a kill clause reads within.
+/// Bytes: the floor of the credit a source placed for a kill clause reads within.
 #[cfg(feature = "kill")]
-const KILL_WINDOW: u64 = 65_536;
+const KILL_FLOOR: u64 = 65_536;
 
 #[cfg(feature = "kill")]
 impl Target {
@@ -269,8 +269,9 @@ impl Target {
     /// its handshake answered.
     ///
     /// A spawned connector is killed outright; one reached otherwise has its connections cut. A
-    /// source reads within [`KILL_WINDOW`] of credit, so it runs little ahead of the commits the
-    /// kills follow, and is told `admitted`, the limits the loading engine admits within.
+    /// source's credit opens at [`KILL_FLOOR`] and grows to two of its frames, so it runs little
+    /// ahead of the commits the kills follow, and is told `admitted`, the limits the loading
+    /// engine admits within.
     pub(crate) fn provider(
         &self,
         id: &rdlt_connector::ConnectorId,
@@ -289,7 +290,7 @@ impl Target {
                 .unwrap_or_default(),
         };
         let options = Options {
-            read_window: KILL_WINDOW,
+            read_floor: KILL_FLOOR,
             limits: self.options.limits.lesser(admitted),
             ..self.options
         };
