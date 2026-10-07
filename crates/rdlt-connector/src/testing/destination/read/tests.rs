@@ -624,8 +624,8 @@ fn a_column_is_read_only_as_what_a_column_of_its_kind_is_written_as() {
             assert_eq!(read(&DataType::Boolean), flag || nothing, "{kind}");
             let whole = *kind == DataType::Int64;
             assert_eq!(read(&micros), instant || whole || nothing, "{kind}");
+            assert_eq!(read(&DataType::Binary), bytes || nothing, "{kind}");
             // Bytes of another length than a column holds are refused by the cast itself.
-            assert!(!read(&DataType::Binary) || bytes || nothing, "{kind}");
             assert!(
                 !read(&DataType::FixedSizeBinary(16)) || bytes || nothing,
                 "{kind}"
@@ -662,4 +662,16 @@ fn the_integers_of_a_read_back_are_read_through_its_admission_whatever_their_col
     }
     let many = ids(Arc::new(Int64Array::from(vec![0; PUBLISHED_ROWS + 1]))).unwrap();
     assert!(read_back_integers(vec![many], "id").is_err());
+}
+
+#[test]
+fn a_read_back_expanding_to_its_limit_to_the_byte_is_admitted_and_one_byte_more_is_not() {
+    use crate::cost::Rendering;
+    // One string, beside its two offsets.
+    let text = |length: usize| batch(Arc::new(StringArray::from(vec!["x".repeat(length)])));
+    let limit = u64::try_from(PUBLISHED_BYTES).unwrap();
+    let full = text(PUBLISHED_BYTES - 16);
+    assert_eq!(Rendering::native().expanded(&full, 0..1, u64::MAX), limit);
+    assert!(Published::admit(vec![full]).is_ok());
+    assert!(Published::admit(vec![text(PUBLISHED_BYTES - 15)]).is_err());
 }

@@ -349,3 +349,41 @@ fn flagged_updates_cost_their_rows_and_columns_not_the_columns_squared() {
         );
     }
 }
+
+#[test]
+fn only_a_stream_that_flags_columns_merges_through_passes_over_its_flags() {
+    let joined = |plan: &[Statement]| -> String {
+        let sql: Vec<&str> = plan
+            .iter()
+            .map(|statement| statement.sql.as_str())
+            .collect();
+        sql.join("\n")
+    };
+    for hard in [true, false] {
+        let deletion = if hard {
+            Deletion::Hard
+        } else {
+            Deletion::Soft {
+                at: "deleted_at".into(),
+            }
+        };
+        let (connection, planner, staged) = orders(deletion);
+        let plain = joined(&committing(&connection, &planner, &staged, 1));
+        assert!(!plain.contains("_rdlt_set"), "hard: {hard}: {plain}");
+        // Where rows flag columns, each column but the key and the sequence is passed over.
+        let (connection, planner, staged) = wide_orders(2, hard);
+        let flagged = joined(&committing(&connection, &planner, &staged, 1));
+        for column in ["c0", "c1", "deleted_at"] {
+            assert!(
+                flagged.contains(&format!("END) AS \"{column}\"")),
+                "{column}: {flagged}"
+            );
+        }
+        for column in ["id", "seq"] {
+            assert!(
+                !flagged.contains(&format!("END) AS \"{column}\"")),
+                "{column}: {flagged}"
+            );
+        }
+    }
+}

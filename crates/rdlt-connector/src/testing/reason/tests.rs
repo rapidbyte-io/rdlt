@@ -77,6 +77,9 @@ fn listed_rows_show_their_count_and_only_the_first_few() {
                 "{count}: row {index} of {listed}"
             );
         }
+        // Only rows cut short say how many are shown.
+        let cut = format!(", the first {SHOWN_ROWS}:");
+        assert_eq!(listed.contains(&cut), count > SHOWN_ROWS, "{listed}");
         assert!(listed.len() < 100, "{listed}");
     }
 }

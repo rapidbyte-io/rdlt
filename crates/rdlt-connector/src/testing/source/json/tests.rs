@@ -25,7 +25,7 @@ fn records(text: &str) -> Vec<&str> {
 
 #[test]
 fn a_push_is_the_rows_of_its_arrays_and_each_value_beside_one() {
-    let cases: [(&str, &[&str]); 16] = [
+    let cases: [(&str, &[&str]); 18] = [
         ("", &[]),
         ("  \n", &[]),
         ("[]", &[]),
@@ -46,6 +46,10 @@ fn a_push_is_the_rows_of_its_arrays_and_each_value_beside_one() {
         ("[{\"a\": [1, 2", &["{\"a\": [1, 2"]),
         ("[\"open", &["\"open"]),
         ("]} 7", &["7"]),
+        // A backslash outside a string escapes nothing: the quote after it opens one.
+        ("\\\" 7", &["\\\" 7"]),
+        // A container ends where the brackets it opened close, not where one within it does.
+        ("[{\"a\": [1]}, 2]", &["{\"a\": [1]}", "2"]),
     ];
     for (text, expected) in cases {
         assert_eq!(records(text), expected, "{text:?}");

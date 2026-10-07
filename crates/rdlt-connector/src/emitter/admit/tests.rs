@@ -203,3 +203,77 @@ fn a_batch_that_is_cut_as_it_is_sent_is_held_to_its_rows_and_schema_alone() {
     let refusal = admit(&nested(65), false, &Limits::default()).unwrap_err();
     assert_eq!((refusal.name, refusal.limit), ("nesting depth", 64));
 }
+
+/// A list of each kind holding `item`, by name.
+fn lists(item: &Arc<Field>) -> Vec<(&'static str, DataType)> {
+    let entries = Field::new(
+        "entries",
+        DataType::Struct(Fields::from(vec![Arc::clone(item)])),
+        false,
+    );
+    vec![
+        ("list", DataType::List(Arc::clone(item))),
+        ("large list", DataType::LargeList(Arc::clone(item))),
+        ("list view", DataType::ListView(Arc::clone(item))),
+        ("large list view", DataType::LargeListView(Arc::clone(item))),
+        (
+            "fixed size list",
+            DataType::FixedSizeList(Arc::clone(item), 2),
+        ),
+        ("map", DataType::Map(Arc::new(entries), false)),
+    ]
+}
+
+/// The limit a schema of one column of `kind` is refused by, within `columns` and `depth`.
+fn refused_by(kind: DataType, columns: u64, depth: u64) -> Option<&'static str> {
+    let limits = Limits {
+        schema_columns: columns,
+        nesting_depth: depth,
+        ..Limits::default()
+    };
+    let schema = arrow_schema::Schema::new(vec![Field::new("c", kind, true)]);
+    super::columns(&schema, &limits)
+        .err()
+        .map(|refused| refused.name)
+}
+
+#[test]
+fn every_kind_of_list_counts_its_columns_and_levels() {
+    for (name, kind) in lists(&Arc::new(Field::new("item", DataType::Int8, true))) {
+        // The list and its items: two levels and two columns, three of each for a map's entries.
+        let (columns, depth) = if name == "map" { (3, 3) } else { (2, 2) };
+        assert_eq!(refused_by(kind.clone(), columns, depth), None, "{name}");
+        assert_eq!(
+            refused_by(kind.clone(), columns, depth - 1),
+            Some("nesting depth"),
+            "{name}"
+        );
+        assert_eq!(
+            refused_by(kind, columns - 1, depth),
+            Some("batch columns"),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_union_s_members_count_below_it_and_a_dictionary_counts_as_its_values() {
+    let fields = UnionFields::try_new(
+        [0, 1],
+        [
+            Field::new("a", DataType::Int8, true),
+            Field::new("b", DataType::Int8, true),
+        ],
+    )
+    .unwrap();
+    let union = DataType::Union(fields, arrow_schema::UnionMode::Dense);
+    assert_eq!(refused_by(union.clone(), 3, 2), None);
+    assert_eq!(refused_by(union.clone(), 2, 2), Some("batch columns"));
+    assert_eq!(refused_by(union, 3, 1), Some("nesting depth"));
+    let dictionary =
+        |kind: DataType| DataType::Dictionary(Box::new(DataType::Int8), Box::new(kind));
+    assert_eq!(refused_by(dictionary(DataType::Int8), 1, 1), None);
+    let listed = DataType::List(Arc::new(Field::new("item", DataType::Int8, true)));
+    assert_eq!(refused_by(dictionary(listed.clone()), 2, 2), None);
+    assert_eq!(refused_by(dictionary(listed), 2, 1), Some("nesting depth"));
+}

@@ -107,6 +107,21 @@ fn view_lists(lists: usize, items: usize) -> ArrayRef {
     ))
 }
 
+#[test]
+fn a_view_in_a_nested_value_is_scanned_a_step_for_each_64_bytes_of_it() {
+    let listed = |bytes: usize| -> ArrayRef {
+        let mut views = StringViewBuilder::new();
+        views.append_value("x".repeat(bytes));
+        Arc::new(ListArray::new(
+            item(DataType::Utf8View),
+            OffsetBuffer::from_lengths([1]),
+            Arc::new(views.finish()),
+            None,
+        ))
+    };
+    assert_eq!(alone(&listed(64 * 80)) - alone(&listed(64 * 40)), 40);
+}
+
 /// The steps one row naming the first of `values` takes to measure.
 fn alone(values: &ArrayRef) -> u64 {
     let one = keyed::<Int32Type>([0], Arc::clone(values));
