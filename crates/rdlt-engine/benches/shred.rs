@@ -67,12 +67,15 @@ fn many_cores(c: &mut Criterion) {
     let host = Cores::try_from_host().expect("the host says how many cores the bench may use");
     for count in pool_cores(host.count()) {
         let cores = Cores::new(count, NonZeroUsize::MIN);
-        println!(
-            "shred_cores/{count}: 1 runtime worker, {} compute threads",
-            cores.compute_threads()
-        );
-        let pool = RayonPool::try_new(cores).expect("the pool starts");
-        group.bench_with_input(BenchmarkId::from_parameter(count), &pool, |b, pool| {
+        let mut pool = None;
+        group.bench_function(BenchmarkId::from_parameter(count), |b| {
+            let pool = pool.get_or_insert_with(|| {
+                println!(
+                    "shred_cores/{count}: 1 runtime worker, {} compute threads",
+                    cores.compute_threads()
+                );
+                RayonPool::try_new(cores).expect("the pool starts")
+            });
             b.iter(|| {
                 let batches = runtime.block_on(shred_on(pool, &pushes, CHUNK_BYTES));
                 black_box(batches.expect("the corpus shreds"))

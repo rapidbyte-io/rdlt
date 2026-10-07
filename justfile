@@ -55,13 +55,15 @@ pins:
 deny: locked
     cargo xtask deny
 
-# Run the test suite; extra arguments go to nextest. Each bench then runs once as a test, so its
-# setup, checks and counts run on every change, and the last run is of a connector built without
+# Run the test suite; extra arguments go to nextest. Each benchmark then runs once as a test, in
+# a process of its own beside the others, and the allocation counts once, so every bench's setup,
+# checks and counts run on every change; the last run is of a connector built without
 # certification's probes, which a build with every feature never is: it must serve none
 test *args:
     cargo nextest run --workspace --all-features {{ args }}
     cargo test --workspace --all-features --doc
-    cargo test --workspace --all-features --bench '*'
+    cargo nextest run --workspace --all-features --benches -E 'kind(bench) & not binary(allocations)'
+    cargo test --workspace --all-features --bench allocations
     cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
 
 # Run the simulation suite; pass a seed to replay one run, or an empty seed, a count and the first

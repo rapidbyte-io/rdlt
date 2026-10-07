@@ -66,8 +66,11 @@ fn passthrough(c: &mut Criterion) {
         });
     });
     group.finish();
-    println!("passthrough/paired/{layout}: {workers} runtime workers, {threads} compute threads");
+    // Only a run that measured has ratios, so listing the benchmarks prints nothing.
     if let Some(paired) = Paired::of(&ratios[ratios.len().saturating_sub(SAMPLES)..]) {
+        println!(
+            "passthrough/paired/{layout}: {workers} runtime workers, {threads} compute threads"
+        );
         println!("  engine over bare loop: {paired}");
     }
 }
