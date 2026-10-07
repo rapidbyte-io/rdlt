@@ -15,13 +15,9 @@ use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, normalize, shred, shred_on,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, normalize, pool_cores, shred, shred_on,
 };
 use rdlt_engine::{Cores, RayonPool};
-
-/// The counts of cores `shred_cores` runs within, each beside the bench's one runtime worker,
-/// which only waits: run `shred_cores/N` under `taskset` on N cores.
-const CORE_COUNTS: [usize; 3] = [1, 4, 8];
 
 fn single_core(c: &mut Criterion) {
     let mut corpora: Vec<(&str, Vec<Bytes>)> = Corpus::SHREDDED
@@ -53,6 +49,12 @@ fn single_core(c: &mut Criterion) {
     group.finish();
 }
 
+/// The nested corpus shredded by pools of each count of cores [`pool_cores`] gives for the
+/// host's, each beside the bench's one runtime worker, which only waits.
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports times; each pool's threads are printed beside them"
+)]
 fn many_cores(c: &mut Criterion) {
     let pushes = Corpus::Nested.pushes(CORPUS_BYTES);
     let bytes: usize = pushes.iter().map(Bytes::len).sum();
@@ -62,10 +64,14 @@ fn many_cores(c: &mut Criterion) {
     let mut group = c.benchmark_group("shred_cores");
     group.sample_size(10);
     group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
-    for count in CORE_COUNTS {
-        let count = NonZeroUsize::new(count).expect("a run has a core");
-        let pool =
-            RayonPool::try_new(Cores::new(count, NonZeroUsize::MIN)).expect("the pool starts");
+    let host = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    for count in pool_cores(host.count()) {
+        let cores = Cores::new(count, NonZeroUsize::MIN);
+        println!(
+            "shred_cores/{count}: 1 runtime worker, {} compute threads",
+            cores.compute_threads()
+        );
+        let pool = RayonPool::try_new(cores).expect("the pool starts");
         group.bench_with_input(BenchmarkId::from_parameter(count), &pool, |b, pool| {
             b.iter(|| {
                 let batches = runtime.block_on(shred_on(pool, &pushes, CHUNK_BYTES));

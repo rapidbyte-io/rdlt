@@ -5,6 +5,7 @@ mod corpora;
 mod measure;
 mod mix;
 mod passthrough;
+mod pools;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +24,7 @@ pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use measure::{Allocations, Paired, counted, logical_bytes};
 pub use mix::Mix;
 pub use passthrough::Passthrough;
+pub use pools::pool_cores;
 
 /// Why the shredder refused pushes.
 #[derive(Clone, Debug, PartialEq, Eq)]
