@@ -118,11 +118,43 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just containers --profile ci
 
-  # The simulation's hundred thousand seeds, the gate every change to the engine passes, run as
-  # twenty shards side by side, each well within its time limit; `sim` passes once every shard has.
-  sim-shard:
+  # The simulation's integration tests, built once in its profile into the archive every shard
+  # runs.
+  sim-archive:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
+          cache_key_prefix: mise-v2-test
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: just sim-archive
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sim-archive
+          path: target/sim.tar.zst
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+
+  # The simulation's hundred thousand seeds, the gate every change to the engine passes, run as
+  # twenty shards side by side, each shard's seeds side by side on its runner's cores; `sim`
+  # passes once every shard has.
+  sim-shard:
+    needs: sim-archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -139,10 +171,19 @@ jobs:
           github_token: ""
           install_args: --locked just aqua:nextest-rs/nextest/cargo-nextest
           cache_key_prefix: mise-v2-test
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: just sim "" 5000 "$(( ${{ matrix.shard }} * 5000 ))"
+          name: sim-archive
+          path: target
+      - run: just --no-deps sim "" 5000 "$(( ${{ matrix.shard }} * 5000 ))"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: sim-timings-${{ matrix.shard }}
+          path: target/sim-timings/
+          retention-days: 14
+          if-no-files-found: warn
+          overwrite: true
 
   sim:
     runs-on: ubuntu-24.04
