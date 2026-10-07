@@ -10,7 +10,9 @@ use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter, WriteStats}
 use serde_json::json;
 
 use super::connectors::Replay;
-use super::{Refused, SinkWriter, ipc_sink, normalize, replay, shred, shred_on};
+use super::{
+    Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, replay, shred, shred_on,
+};
 use crate::compute::{Cores, RayonPool};
 use crate::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 
@@ -62,7 +64,11 @@ async fn replayed_batches_pass_through_the_engine_into_the_sink() {
     )
     .unwrap();
     let outcome = engine
-        .run(plan, replay("replay", batches).await, ipc_sink().await)
+        .run(
+            plan,
+            replay("replay", Replayed::Batches(batches)).await,
+            ipc_sink().await,
+        )
         .await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert_eq!(outcome.report.rows, 30);
@@ -76,7 +82,7 @@ async fn the_replay_source_resumes_after_each_checkpoint() {
             RecordBatch::try_from_iter([("id", ids)]).unwrap()
         })
         .collect();
-    replay("certified", batches).await;
+    replay("certified", Replayed::Batches(batches)).await;
     certify_source::<Replay>(json!({ "name": "certified" }))
         .await
         .assert_passed();
@@ -86,7 +92,7 @@ async fn the_replay_source_resumes_after_each_checkpoint() {
 async fn the_sink_encodes_each_batch_and_reports_what_it_staged() {
     let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
     let batch = RecordBatch::try_from_iter([("id", ids)]).unwrap();
-    let mut writer = SinkWriter::new(Arc::default());
+    let mut writer = SinkWriter::new(Arc::default(), Sinking::Ipc);
     let encoded = writer.encode(&batch).unwrap().to_vec();
     let decoded = StreamReader::try_new(Cursor::new(&encoded), None)
         .unwrap()
@@ -101,6 +107,46 @@ async fn the_sink_encodes_each_batch_and_reports_what_it_staged() {
     };
     assert_eq!(writer.flush().await.unwrap(), staged);
     assert_eq!(writer.flush().await.unwrap(), WriteStats::default());
+}
+
+#[tokio::test]
+async fn the_null_sink_counts_what_it_stages_and_encodes_nothing() {
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
+    let batch = RecordBatch::try_from_iter([("id", ids)]).unwrap();
+    let staged = Arc::default();
+    let mut writer = SinkWriter::new(Arc::clone(&staged), Sinking::Discard);
+    writer.write(SegmentId(1), batch.clone()).await.unwrap();
+    writer.write(SegmentId(2), batch).await.unwrap();
+    let flushed = WriteStats { rows: 20, bytes: 0 };
+    assert_eq!(writer.flush().await.unwrap(), flushed);
+    assert_eq!(
+        *staged.lock(),
+        [(SegmentId(1), 10), (SegmentId(2), 10)]
+            .into_iter()
+            .collect()
+    );
+}
+
+#[tokio::test]
+async fn replayed_json_pushes_pass_through_the_engine_into_the_null_sink() {
+    let pushes = vec![
+        Bytes::from_static(b"{\"id\":1}\n{\"id\":2}\n"),
+        Bytes::from_static(b"{\"id\":3}\n"),
+    ];
+    let replayed = Replayed::Json(pushes);
+    assert_eq!(replayed.pushes(), 2);
+    let engine = Engine::new(EngineConfig::default(), Arc::new(SystemEnv::one_core()));
+    let plan = PipelinePlan::new(
+        PipelineId::parse("json").unwrap(),
+        [StreamPlan::new(StreamName::new("events").unwrap())],
+    )
+    .unwrap();
+    let outcome = engine
+        .run(plan, replay("json", replayed).await, null_sink().await)
+        .await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.rows, 3);
+    assert_eq!(outcome.report.commits, 1);
 }
 
 #[test]
