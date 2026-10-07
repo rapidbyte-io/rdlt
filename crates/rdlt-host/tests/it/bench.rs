@@ -1,7 +1,6 @@
 //! The served path: the passthrough batches through the engine with the destination, the source
 //! or both served over the wire protocol, over a `UnixStream` pair and over mutual TLS on
-//! loopback, in frames as large as the default coalescing target makes and in eighths of that,
-//! the read window of a served source a parameter.
+//! loopback, in frames as large as the default coalescing target makes and in eighths of that.
 //!
 //! Each benchmark prints the process's CPU time a gigabyte its runs moved. The bench lives beside
 //! the integration tests to serve connectors as they do.
@@ -33,7 +32,6 @@ use rdlt_host::{
 };
 use rdlt_testkit::tls::{Files, Pki};
 use rdlt_wire::Limits;
-use rdlt_wire::limits::CREDIT_FLOOR;
 
 /// Which of a run's connectors are served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,19 +105,16 @@ impl Frames {
     }
 }
 
-/// One benchmark: which connectors are served, how, the frames they move, and a served source's
-/// read window.
+/// One benchmark: which connectors are served, how, and the frames they move.
 #[derive(Clone, Copy, Debug)]
 struct Case {
     transport: Transport,
     mode: Mode,
     frames: Frames,
-    window: u64,
 }
 
 impl Case {
-    /// Every mode over each transport in large and in small frames at the default window, and a
-    /// served source over the socket in large frames at two and four times the default.
+    /// Every mode over each transport in large and in small frames.
     fn all() -> Vec<Self> {
         let mut cases = Vec::new();
         for transport in [Transport::Socket, Transport::Tls] {
@@ -128,26 +123,16 @@ impl Case {
                     transport,
                     mode,
                     frames,
-                    window: CREDIT_FLOOR,
                 }));
             }
-        }
-        for mode in [Mode::Source, Mode::Both] {
-            cases.extend([2, 4].map(|times| Self {
-                transport: Transport::Socket,
-                mode,
-                frames: Frames::Large,
-                window: CREDIT_FLOOR * times,
-            }));
         }
         cases
     }
 
-    /// What the case moves and how: its mode, batches, rows a batch and window.
+    /// What the case moves: its mode, batches and rows a batch.
     fn shape(self) -> String {
         let (batches, rows) = self.frames.shape();
-        let window = self.window >> 20;
-        format!("{}/{batches}x{rows}/{window}MiB", self.mode.name())
+        format!("{}/{batches}x{rows}", self.mode.name())
     }
 
     fn id(self) -> BenchmarkId {
@@ -307,10 +292,7 @@ impl Workload {
             ),
             Transport::Socket => None,
         };
-        let options = Options {
-            read_floor: case.window,
-            ..Options::default()
-        };
+        let options = Options::default();
         let (mut took, mut busy) = (Duration::ZERO, Duration::ZERO);
         for _ in 0..runs {
             let connected = connectors(case, listener, &options);
