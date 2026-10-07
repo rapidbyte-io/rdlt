@@ -1,6 +1,12 @@
-use proptest::prelude::*;
+use std::num::NonZeroU64;
+use std::sync::Arc;
 
-use super::{Paired, interval};
+use arrow_array::builder::Int64Builder;
+use arrow_array::{ArrayRef, BooleanArray, Int64Array, RecordBatch, StringArray};
+use proptest::prelude::*;
+use stats_alloc::{INSTRUMENTED_SYSTEM, Stats};
+
+use super::{Allocations, Paired, counted, interval, logical_bytes};
 
 #[test]
 #[expect(clippy::float_cmp, reason = "the median of these ratios is exact")]
@@ -87,5 +93,80 @@ fn a_paired_ratio_renders_its_median_interval_and_samples() {
     assert_eq!(
         paired.to_string(),
         "1.291 (95 % interval 1.270 to 1.310; samples: 30)"
+    );
+}
+
+#[test]
+fn a_runs_allocations_spread_over_the_units_it_moved() {
+    let stats = Stats {
+        allocations: 40,
+        reallocations: 8,
+        bytes_allocated: 4000,
+        ..Stats::default()
+    };
+    let run = Allocations::from(stats);
+    assert_eq!(
+        run,
+        Allocations {
+            allocations: 40.0,
+            reallocations: 8.0,
+            bytes: 4000.0,
+        }
+    );
+    assert_eq!(
+        run.per(NonZeroU64::new(5).unwrap()),
+        Allocations {
+            allocations: 8.0,
+            reallocations: 1.6,
+            bytes: 800.0,
+        }
+    );
+}
+
+#[test]
+fn counting_runs_the_run_and_counts_nothing_another_allocator_served() {
+    let mut ran = false;
+    let allocated = counted(&INSTRUMENTED_SYSTEM, || {
+        ran = true;
+        std::hint::black_box(vec![0_u8; 64]);
+    });
+    assert!(ran);
+    assert_eq!(allocated, Allocations::default());
+}
+
+#[test]
+fn logical_bytes_count_the_rows_a_batch_references_and_not_its_capacity() {
+    let ints: ArrayRef = Arc::new(Int64Array::from_iter_values(0..10));
+    let mut roomy = Int64Builder::with_capacity(1024);
+    roomy.append_slice(&[7; 10]);
+    let roomy: ArrayRef = Arc::new(roomy.finish());
+    let text: ArrayRef = Arc::new(StringArray::from(vec!["ab", "c"]));
+    let flags: ArrayRef = Arc::new(BooleanArray::from(vec![Some(true), None, Some(false)]));
+    let int_batch = RecordBatch::try_from_iter([("i", Arc::clone(&ints))]).unwrap();
+    for (batches, bytes) in [
+        (vec![int_batch.clone()], 80),
+        (
+            vec![RecordBatch::try_from_iter([("r", roomy)]).unwrap()],
+            80,
+        ),
+        (vec![int_batch.slice(2, 3)], 24),
+        (vec![int_batch.clone(), int_batch], 160),
+        (vec![RecordBatch::try_from_iter([("t", text)]).unwrap()], 15),
+        (vec![RecordBatch::try_from_iter([("f", flags)]).unwrap()], 2),
+    ] {
+        assert_eq!(logical_bytes(&batches), bytes, "{batches:?}");
+    }
+}
+
+#[test]
+fn allocations_render_each_count_and_the_bytes() {
+    let allocated = Allocations {
+        allocations: 2.5,
+        reallocations: 0.25,
+        bytes: 312.4,
+    };
+    assert_eq!(
+        allocated.to_string(),
+        "2.500 allocations, 0.250 reallocations, 312 bytes"
     );
 }

@@ -9,7 +9,7 @@ repository.workspace = true
 
 [features]
 # Internals for the benchmarks and fuzz targets; not a public API.
-bench = ["dep:arrow-ipc", "dep:schemars", "tokio/rt-multi-thread"]
+bench = ["dep:arrow-ipc", "dep:schemars", "dep:stats_alloc", "tokio/rt-multi-thread"]
 # Crash points at every durability step, for the failpoint sweep; never in a release.
 failpoints = ["dep:fail", "fail/failpoints"]
 # Write-ahead logs kept in an object store (`ObjectStoreWal`).
@@ -46,6 +46,7 @@ serde.workspace = true
 serde_json.workspace = true
 sonic-rs.workspace = true
 stacker.workspace = true
+stats_alloc = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
@@ -87,6 +88,11 @@ required-features = ["failpoints"]
 name = "crashes"
 path = "tests/crashes/main.rs"
 required-features = ["failpoints"]
+
+[[test]]
+name = "counted"
+path = "tests/counted.rs"
+required-features = ["bench"]
 
 [[bench]]
 name = "shred"
