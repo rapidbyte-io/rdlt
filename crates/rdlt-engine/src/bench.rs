@@ -1,6 +1,7 @@
 //! Internals the benchmarks and fuzz targets drive; not part of the engine's API.
 
 mod connectors;
+mod corpora;
 mod measure;
 mod mix;
 #[cfg(test)]
@@ -17,6 +18,7 @@ use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
 pub use connectors::{SinkSession, SinkWriter, ipc_sink, replay};
+pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use measure::Paired;
 pub use mix::Mix;
 

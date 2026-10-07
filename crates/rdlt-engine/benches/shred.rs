@@ -6,7 +6,6 @@
 
 #![forbid(unsafe_code)]
 
-use std::fmt::Write as _;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 
@@ -15,140 +14,20 @@ use std::sync::Arc;
 use arrow_schema::{DataType, Field as ArrowField, Schema, SchemaRef};
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rdlt_engine::bench::{Mix, normalize, shred, shred_on};
+use rdlt_engine::bench::{
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, normalize, shred, shred_on,
+};
 use rdlt_engine::{Cores, RayonPool};
 
-/// Bytes each corpus holds.
-const CORPUS_BYTES: usize = 32 << 20;
-/// Bytes per push, the default coalescing target.
-const PUSH_BYTES: usize = 8 << 20;
-/// Bytes per shredding job, the default chunk size.
-const CHUNK_BYTES: usize = 1 << 20;
 /// The counts of cores `shred_cores` runs within, each beside the bench's one runtime worker,
 /// which only waits: run `shred_cores/N` under `taskset` on N cores.
 const CORE_COUNTS: [usize; 3] = [1, 4, 8];
 
-/// Rows from `row` until the corpus holds `CORPUS_BYTES`, cut into pushes of whole lines.
-fn corpus(mut row: impl FnMut(u64, &mut Mix) -> String) -> Vec<Bytes> {
-    let mut mix = Mix::new(7);
-    let mut pushes = Vec::new();
-    let mut push = String::with_capacity(PUSH_BYTES + 4096);
-    let (mut total, mut index) = (0, 0);
-    while total < CORPUS_BYTES {
-        let line = row(index, &mut mix);
-        total += line.len() + 1;
-        push.push_str(&line);
-        push.push('\n');
-        if push.len() >= PUSH_BYTES {
-            pushes.push(Bytes::from(std::mem::take(&mut push)));
-        }
-        index += 1;
-    }
-    if !push.is_empty() {
-        pushes.push(Bytes::from(push));
-    }
-    pushes
-}
-
-/// Nested rows of about 170 bytes.
-fn nested(index: u64, mix: &mut Mix) -> String {
-    let cities = ["Warsaw", "Krakow", "Gdansk", "Wroclaw", "Poznan"];
-    format!(
-        r#"{{"id":{index},"name":"user-{index:07}","score":{}.{:02},"active":{},"created_at":"2026-09-{:02}T12:{:02}:00Z","profile":{{"city":"{}","zip":"{}","geo":{{"lat":{}.{:05},"lon":{}.{:05}}}}}}}"#,
-        mix.below(1000),
-        mix.below(100),
-        index.is_multiple_of(3),
-        1 + index % 28,
-        index % 60,
-        cities[usize::try_from(mix.below(5)).unwrap_or(0)],
-        10_000 + mix.below(90_000),
-        49 + mix.below(6),
-        mix.below(100_000),
-        14 + mix.below(10),
-        mix.below(100_000),
-    )
-}
-
-/// Nested rows with arrays: `nested`'s fields and up to three orders of a few tags each.
-fn with_arrays(index: u64, mix: &mut Mix) -> String {
-    let row = nested(index, mix);
-    let orders: Vec<String> = (0..mix.below(4))
-        .map(|order| {
-            let tags: Vec<String> = (0..mix.below(3))
-                .map(|tag| format!(r#""t{}""#, mix.below(50) + tag))
-                .collect();
-            format!(
-                r#"{{"sku":"s{}","qty":{},"tags":[{}]}}"#,
-                mix.below(1000) + order,
-                1 + mix.below(9),
-                tags.join(",")
-            )
-        })
-        .collect();
-    format!(
-        r#"{},"orders":[{}]}}"#,
-        &row[..row.len() - 1],
-        orders.join(",")
-    )
-}
-
-/// Nested rows of which about one in ten thousand carries an optional key after its name, so most
-/// chunks lack a column the others have, and those that hold it meet it before most columns.
-fn sparse(index: u64, mix: &mut Mix) -> String {
-    let row = nested(index, mix);
-    if mix.below(10_000) == 0 {
-        let name = row.find(r#","score""#).unwrap_or(row.len() - 1);
-        format!(
-            r#"{},"tag":"t{}"{}"#,
-            &row[..name],
-            mix.below(100),
-            &row[name..]
-        )
-    } else {
-        row
-    }
-}
-
-/// Flat rows of three narrow columns.
-fn flat_narrow(index: u64, mix: &mut Mix) -> String {
-    format!(
-        r#"{{"id":{index},"value":{},"flag":{}}}"#,
-        mix.draw() >> 12,
-        mix.below(2) == 0
-    )
-}
-
-/// Flat rows of 200 columns, integers and short strings.
-fn flat_wide(_: u64, mix: &mut Mix) -> String {
-    let columns: Vec<String> = (0..200)
-        .map(|column| match column % 2 {
-            0 => format!(r#""c{column}":{}"#, mix.below(1 << 20)),
-            _ => format!(r#""c{column}":"v{}""#, mix.below(1000)),
-        })
-        .collect();
-    format!("{{{}}}", columns.join(","))
-}
-
-/// Rows of long strings with escapes.
-fn string_heavy(index: u64, mix: &mut Mix) -> String {
-    let mut text = String::new();
-    for _ in 0..8 {
-        write!(text, "word{} \\\"quoted\\\" é ", mix.below(1000)).expect("writing to a string");
-    }
-    format!(
-        r#"{{"id":{index},"body":"{text}","title":"title {} é"}}"#,
-        mix.below(1000)
-    )
-}
-
 fn single_core(c: &mut Criterion) {
-    let mut corpora = vec![
-        ("nested", corpus(nested)),
-        ("sparse", corpus(sparse)),
-        ("flat_narrow", corpus(flat_narrow)),
-        ("flat_wide", corpus(flat_wide)),
-        ("string_heavy", corpus(string_heavy)),
-    ];
+    let mut corpora: Vec<(&str, Vec<Bytes>)> = Corpus::SHREDDED
+        .into_iter()
+        .map(|corpus| (corpus.name(), corpus.pushes(CORPUS_BYTES)))
+        .collect();
     if let Ok(path) = std::env::var("RDLT_SHRED_CORPUS") {
         let file = std::fs::read_to_string(path).expect("RDLT_SHRED_CORPUS names a readable file");
         let lines: Vec<&str> = file.lines().collect();
@@ -175,7 +54,7 @@ fn single_core(c: &mut Criterion) {
 }
 
 fn many_cores(c: &mut Criterion) {
-    let pushes = corpus(nested);
+    let pushes = Corpus::Nested.pushes(CORPUS_BYTES);
     let bytes: usize = pushes.iter().map(Bytes::len).sum();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
@@ -219,17 +98,15 @@ fn arrow_json_fast_path(c: &mut Criterion) {
     );
     let mut group = c.benchmark_group("fast_path");
     group.sample_size(10);
-    for (name, pushes, schema) in [
-        ("flat_narrow", corpus(flat_narrow), narrow),
-        ("flat_wide", corpus(flat_wide), wide),
-    ] {
+    for (corpus, schema) in [(Corpus::FlatNarrow, narrow), (Corpus::FlatWide, wide)] {
+        let pushes = corpus.pushes(CORPUS_BYTES);
         let bytes: usize = pushes.iter().map(Bytes::len).sum();
         group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
-        group.bench_function(BenchmarkId::new("shredder", name), |b| {
+        group.bench_function(BenchmarkId::new("shredder", corpus.name()), |b| {
             b.iter(|| black_box(shred(&pushes, CHUNK_BYTES).expect("the corpus shreds")));
         });
         let schema = Arc::new(schema);
-        group.bench_function(BenchmarkId::new("arrow_json", name), |b| {
+        group.bench_function(BenchmarkId::new("arrow_json", corpus.name()), |b| {
             b.iter(|| black_box(decode(&pushes, &schema)));
         });
     }
@@ -267,7 +144,7 @@ fn decode(pushes: &[Bytes], schema: &SchemaRef) -> usize {
 /// Shredding rows with arrays, alone and normalized into child tables with their lineage:
 /// keyed roots hash their key, keyless ones their whole row.
 fn normalizing(c: &mut Criterion) {
-    let pushes = corpus(with_arrays);
+    let pushes = Corpus::WithArrays.pushes(CORPUS_BYTES);
     let bytes: usize = pushes.iter().map(Bytes::len).sum();
     let mut group = c.benchmark_group("normalize");
     group.sample_size(10);
