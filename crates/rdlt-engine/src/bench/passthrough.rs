@@ -13,7 +13,7 @@ use arrow_array::{
 use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter};
 use tokio::runtime::Runtime;
 
-use super::{SinkWriter, ipc_sink, replay};
+use super::{Replayed, SinkWriter, Sinking, ipc_sink, replay};
 use crate::{
     CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, StreamPlan,
     SystemEnv,
@@ -85,7 +85,7 @@ impl Passthrough {
     /// Panics where the writer refuses a batch.
     pub fn bare_loop(&self) -> u64 {
         self.runtime.block_on(async {
-            let mut writer = SinkWriter::new(Arc::default());
+            let mut writer = SinkWriter::new(Arc::default(), Sinking::Ipc);
             for batch in &self.batches {
                 writer
                     .write(SegmentId(1), batch.clone())
@@ -104,7 +104,7 @@ impl Passthrough {
     /// Panics where the run fails.
     pub fn engine_run(&self) -> u64 {
         self.runtime.block_on(async {
-            let source = replay("passthrough", self.batches.clone()).await;
+            let source = replay("passthrough", Replayed::Batches(self.batches.clone())).await;
             let outcome = self
                 .engine
                 .run(self.plan.clone(), source, ipc_sink().await)

@@ -19,7 +19,10 @@ use crate::compute::{ComputePool, Inline, ready};
 use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
-pub use connectors::{SinkSession, SinkWriter, ipc_sink, replay};
+pub use connectors::{
+    Replayed, SinkSession, SinkWriter, Sinking, ipc_sink, null_sink, register, replay,
+    replay_config, replay_factory, sink_factory,
+};
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use measure::{Allocations, Paired, counted, logical_bytes};
 pub use mix::Mix;
