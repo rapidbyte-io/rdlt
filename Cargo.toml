@@ -187,8 +187,7 @@ debug = "line-tables-only"
 [profile.dev.package.sha2]
 opt-level = 3
 
-# SQLite's C, optimised, loads the SQLite bench's million rows in the bench smoke run in seconds;
-# unoptimised, the run took minutes.
+# SQLite's C is built optimised: the bench smoke run loads the SQLite bench's million rows through it.
 [profile.dev.package.libsqlite3-sys]
 opt-level = 3
 
