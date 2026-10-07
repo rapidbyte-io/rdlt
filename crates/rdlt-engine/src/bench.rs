@@ -1,6 +1,7 @@
 //! Internals the benchmarks and fuzz targets drive; not part of the engine's API.
 
 mod connectors;
+mod measure;
 mod mix;
 #[cfg(test)]
 mod tests;
@@ -16,6 +17,7 @@ use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
 pub use connectors::{SinkSession, SinkWriter, ipc_sink, replay};
+pub use measure::Paired;
 pub use mix::Mix;
 
 /// Why the shredder refused pushes.
