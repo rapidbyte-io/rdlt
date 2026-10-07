@@ -316,11 +316,13 @@ impl Case {
     }
 
     /// The rows the batch holds.
+    #[cfg(test)]
     pub(crate) fn rows(&self) -> usize {
         self.batch().num_rows()
     }
 
     /// The batch as it was pushed.
+    #[cfg(test)]
     pub(crate) fn batch(&self) -> &RecordBatch {
         match &self.pushed {
             Pushed::Data(batch) | Pushed::Changes(batch) => batch,

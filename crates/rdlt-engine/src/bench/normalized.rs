@@ -91,13 +91,17 @@ impl Normalized {
         u64::try_from(bytes).expect("a length fits in 64 bits")
     }
 
-    /// The rows each run loads into the three tables: each root, its items and their tags.
+    /// The rows each run loads into the three tables.
     pub fn rows(&self) -> u64 {
+        Self::loaded(self.roots)
+    }
+
+    /// The rows loading the first `roots` rows of the orders corpus makes in the three tables:
+    /// each root, its items and their tags.
+    pub fn loaded(roots: u64) -> u64 {
         // Item counts cycle 0, 1, 2, 3 over the roots' ids; each item has two tags.
-        let cycles = self.roots / 4;
-        let rest = (0..self.roots % 4).sum::<u64>();
-        let items = cycles * 6 + rest;
-        self.roots + 3 * items
+        let items = roots / 4 * 6 + (0..roots % 4).sum::<u64>();
+        roots + 3 * items
     }
 
     /// The fewest and the most units a flush is cut into: one per chunk of JSON.

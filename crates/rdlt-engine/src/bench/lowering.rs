@@ -4,13 +4,16 @@
 #[cfg(test)]
 mod tests;
 
+use std::sync::OnceLock;
+
 use crate::fixtures::lowering::{Case, LoweringCase};
 
-/// One kind of batch and the plan that prepares it.
+/// One kind of batch, and the plan that prepares it, made the first time it is prepared.
 #[derive(Debug)]
 pub struct Lowering {
-    case: Case,
-    name: &'static str,
+    case: LoweringCase,
+    rows: u32,
+    made: OnceLock<Case>,
 }
 
 impl Lowering {
@@ -21,49 +24,40 @@ impl Lowering {
     /// natively and as text, merges of unique and of duplicated keys, a history table, a change
     /// stream with unchanged flags, a split column of JSON, a value the stream discards, and
     /// instants widened into a finer column.
-    ///
-    /// # Panics
-    ///
-    /// Panics where `rows` is below two.
     pub fn all(rows: u32) -> Vec<Self> {
         LoweringCase::ALL
             .into_iter()
             .map(|case| Self {
-                case: Case::new(case, rows),
-                name: case.name(),
+                case,
+                rows,
+                made: OnceLock::new(),
             })
             .collect()
     }
 
     /// The kind of batch, as benchmark ids name it.
     pub fn name(&self) -> &'static str {
-        self.name
+        self.case.name()
     }
 
     /// The rows of the batch.
-    ///
-    /// # Panics
-    ///
-    /// Panics where the count does not fit in 64 bits, which happens on no platform Rust supports.
     pub fn rows(&self) -> u64 {
-        u64::try_from(self.case.rows()).expect("a batch's rows fit in 64 bits")
+        u64::from(self.rows)
     }
 
     /// Prepares the batch as a partition does; the rows of its table it made.
     ///
     /// # Panics
     ///
-    /// Panics where preparing fails, keeps other rows than the kind of batch keeps, or discards
-    /// other values.
+    /// Panics where the batch holds fewer than two rows, or preparing it fails, keeps other rows
+    /// than the kind of batch keeps, or discards other values.
     pub fn prepare(&self) -> u64 {
-        let prepared = self.case.prepare().expect("the batch prepares");
-        let kept = self.case.kept();
-        assert_eq!(prepared.batch.num_rows(), kept.rows, "{}", self.name);
-        assert_eq!(
-            prepared.discarded_values, kept.discarded_values,
-            "{}",
-            self.name
-        );
+        let case = self.made.get_or_init(|| Case::new(self.case, self.rows));
+        let prepared = case.prepare().expect("the batch prepares");
+        let kept = case.kept();
+        let name = self.name();
+        assert_eq!(prepared.batch.num_rows(), kept.rows, "{name}");
+        assert_eq!(prepared.discarded_values, kept.discarded_values, "{name}");
         u64::try_from(kept.rows).expect("a batch's rows fit in 64 bits")
     }
 }

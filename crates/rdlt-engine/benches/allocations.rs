@@ -5,7 +5,8 @@
 //! The timed benches keep the system allocator, since counting every call slows the runs that
 //! allocate most.
 //!
-//! An argument, the name of one of those benches, counts only its workloads.
+//! An argument, the name of one of those benches, counts only its workloads; `--names` lists
+//! the benches it counts.
 
 #![forbid(unsafe_code)]
 
@@ -31,9 +32,16 @@ const COUNTED: [(&str, fn()); 4] = [
     ("normalized", normalizing),
 ];
 
+#[expect(clippy::print_stdout, reason = "the names are what `--names` asks for")]
 fn main() {
-    let only = std::env::args().skip(1).find(|arg| !arg.starts_with('-'));
     let names = COUNTED.map(|(name, _)| name);
+    if std::env::args().any(|arg| arg == "--names") {
+        for name in names {
+            println!("{name}");
+        }
+        return;
+    }
+    let only = std::env::args().skip(1).find(|arg| !arg.starts_with('-'));
     assert!(
         only.as_deref().is_none_or(|bench| names.contains(&bench)),
         "only the workloads of {names:?} are counted, not {only:?}"
@@ -87,9 +95,10 @@ fn passing_through() {
     });
 }
 
-/// Each batch the lowering bench prepares, prepared once.
+/// Each batch the lowering bench prepares, prepared once after the prepare that makes it.
 fn lowering() {
     for lowering in Lowering::all(Lowering::ROWS) {
+        black_box(lowering.prepare());
         report(&format!("lowering/{}", lowering.name()), || {
             black_box(lowering.prepare());
             (
