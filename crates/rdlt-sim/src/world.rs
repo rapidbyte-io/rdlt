@@ -157,9 +157,57 @@ const OBJECTS: u64 = 0x006f_626a_6563_7473;
 
 static WORLDS: LazyLock<Mutex<BTreeMap<String, Arc<World>>>> = LazyLock::new(Mutex::default);
 
+/// A world's entry in the registry, under its name, which it leaves when this drops: when its
+/// simulation ends, or unwinds from a panic.
+#[derive(Debug)]
+#[must_use = "the world leaves the registry when this drops"]
+pub(crate) struct Registered {
+    name: String,
+    world: Arc<World>,
+}
+
+impl Registered {
+    /// Registers `world` as `name`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a world is registered as `name` already: the runs of one seed share a name,
+    /// so no two of them may be in flight in one process.
+    fn enter(name: &str, world: Arc<World>) -> Self {
+        let mut worlds = WORLDS.lock();
+        assert!(
+            !worlds.contains_key(name),
+            "a world is registered as {name} already: two runs of one seed are in flight"
+        );
+        worlds.insert(name.to_owned(), Arc::clone(&world));
+        Self {
+            name: name.to_owned(),
+            world,
+        }
+    }
+
+    /// The world registered.
+    pub(crate) fn world(&self) -> &Arc<World> {
+        &self.world
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        WORLDS.lock().remove(&self.name);
+    }
+}
+
 impl World {
-    /// A world whose workload and faults derive from `rng`, registered as `name`.
-    pub fn register(name: &str, rng: &mut SplitMix64) -> Arc<Self> {
+    /// A world whose workload and faults derive from `rng`, registered as `name` until what this
+    /// returns drops.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a world is registered as `name` already. The simulation's tests run under
+    /// nextest, one process a test, so two tests that check one seed never meet here; under
+    /// `cargo test`, which runs a binary's tests on threads of one process, they would.
+    pub(crate) fn register(name: &str, rng: &mut SplitMix64) -> Registered {
         let features = Features::draw(rng);
         let world = Arc::new(Self {
             workload: Workload::generate(rng, features),
@@ -180,8 +228,7 @@ impl World {
             arrived: Notify::new(),
             pressure: Mutex::default(),
         });
-        WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
-        world
+        Registered::enter(name, world)
     }
 
     /// Presses on the engine's memory budget as `pressure` says from now on.
@@ -195,13 +242,20 @@ impl World {
     }
 
     /// A world whose change workload and faults derive from `rng`, and which of its merge streams
-    /// keep history from `apart`, registered as `name`: its destination merges changes, removing
-    /// rows or marking them deleted, keeps columns updates leave unchanged, and keeps history.
+    /// keep history from `apart`, registered as `name` until what this returns drops: its
+    /// destination merges changes, removing rows or marking them deleted, keeps columns updates
+    /// leave unchanged, and keeps history.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a world is registered as `name` already. The simulation's tests run under
+    /// nextest, one process a test, so two tests that check one seed never meet here; under
+    /// `cargo test`, which runs a binary's tests on threads of one process, they would.
     pub(crate) fn register_changes(
         name: &str,
         rng: &mut SplitMix64,
         apart: &mut SplitMix64,
-    ) -> Arc<Self> {
+    ) -> Registered {
         let features = Features::draw(rng);
         let mut capabilities = Capabilities::minimal();
         capabilities.write_modes.merge = true;
@@ -233,18 +287,12 @@ impl World {
             arrived: Notify::new(),
             pressure: Mutex::default(),
         });
-        WORLDS.lock().insert(name.to_owned(), Arc::clone(&world));
-        world
+        Registered::enter(name, world)
     }
 
     /// The world registered as `name`.
     pub(crate) fn named(name: &str) -> Option<Arc<Self>> {
         WORLDS.lock().get(name).cloned()
-    }
-
-    /// Removes the world registered as `name`.
-    pub fn unregister(name: &str) {
-        WORLDS.lock().remove(name);
     }
 
     /// What the destination can store.

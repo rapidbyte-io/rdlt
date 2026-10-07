@@ -72,7 +72,8 @@ pub fn stress(seed: Seed) {
 async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checked {
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
-    let world = World::register(&name, &mut rng);
+    let registered = World::register(&name, &mut rng);
+    let world = Arc::clone(registered.world());
     env.perturb(world.workload.features.perturb);
     world.keep_logs(&env, seed).await;
     let streaming = world.workload.features.streaming;
@@ -122,7 +123,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         simulation.check_reports(seed).await;
     }
     let violations = simulation.world.violations();
-    World::unregister(&simulation.name);
+    drop(registered);
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     Checked {
         digest,

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 
 use rdlt_connector::{CommitKind, ConnectorErrorKind, IdentifierChars};
 
@@ -21,10 +22,11 @@ fn some_destinations_cannot_add_columns_until_granted() {
         let caps = capabilities(&mut SplitMix64::new(seed), unset);
         assert!(caps.schema_changes.add_column);
     }
-    let world = World::register("granted", &mut SplitMix64::new(3));
+    let registered = World::register("granted", &mut SplitMix64::new(3));
+    let world = registered.world();
     world.grant_add_column();
     assert!(world.capabilities().schema_changes.add_column);
-    World::unregister("granted");
+    drop(registered);
 }
 
 #[test]
@@ -67,7 +69,8 @@ fn destinations_differ_in_commits_and_identifier_rules() {
 #[test]
 fn a_fault_is_transient_rate_limited_permanent_or_a_panic() {
     let name = "faults";
-    let world = World::register(name, &mut SplitMix64::new(3));
+    let registered = World::register(name, &mut SplitMix64::new(3));
+    let world = registered.world();
     world.set_faulty(true);
     let mut kinds = BTreeSet::new();
     for _ in 0..20_000 {
@@ -83,7 +86,7 @@ fn a_fault_is_transient_rate_limited_permanent_or_a_panic() {
         };
         kinds.insert(kind);
     }
-    World::unregister(name);
+    drop(registered);
     assert_eq!(
         kinds,
         BTreeSet::from(["panic", "permanent", "rate limited", "transient"])
@@ -110,4 +113,30 @@ fn every_partition_s_cursor_together_stays_within_a_quarter_of_the_state_an_open
             "{partitions}: {together}"
         );
     }
+}
+
+#[test]
+fn a_world_leaves_the_registry_when_its_simulation_panics() {
+    let name = "panicked";
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        let _registered = World::register(name, &mut SplitMix64::new(3));
+        assert!(World::named(name).is_some());
+        panic!("the simulation fails");
+    }));
+    assert!(unwound.is_err());
+    assert!(World::named(name).is_none());
+}
+
+#[test]
+fn a_name_registered_twice_at_once_is_refused_and_keeps_its_first_world() {
+    let name = "twice";
+    let first = World::register(name, &mut SplitMix64::new(3));
+    let again = catch_unwind(AssertUnwindSafe(|| {
+        World::register(name, &mut SplitMix64::new(4))
+    }));
+    assert!(again.is_err());
+    let named = World::named(name).expect("the first world stays registered");
+    assert!(Arc::ptr_eq(&named, first.world()));
+    drop(first);
+    assert!(World::named(name).is_none());
 }
