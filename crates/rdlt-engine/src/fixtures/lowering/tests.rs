@@ -216,3 +216,23 @@ fn a_case_stored_as_text_lowers_every_column_to_text() {
 fn a_case_of_one_row_is_a_bug() {
     Case::new(LoweringCase::MergeDuplicates, 1);
 }
+
+#[test]
+fn a_change_flags_only_data_columns_and_never_its_key() {
+    let changes = Case::new(LoweringCase::Changes, 400);
+    let pushed = changes.batch();
+    let bitmaps = pushed
+        .column_by_name("_rdlt_unchanged")
+        .unwrap()
+        .as_binary::<i32>();
+    let mut flagged = std::collections::BTreeSet::new();
+    for bitmap in bitmaps.iter().map(Option::unwrap) {
+        for bit in 0..bitmap.len() * 8 {
+            if bitmap[bit / 8] & (1 << (bit % 8)) != 0 {
+                flagged.insert(bit);
+            }
+        }
+    }
+    // Every data column but the key, column 0, and none of the change columns past them.
+    assert_eq!(flagged, (1..200).collect());
+}
