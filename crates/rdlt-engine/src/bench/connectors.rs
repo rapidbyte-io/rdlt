@@ -193,6 +193,8 @@ impl DestinationConnector for Sink {
     fn capabilities(&self) -> Capabilities {
         let mut capabilities = Capabilities::minimal();
         capabilities.types.extend([TypeKind::Uuid, TypeKind::Json]);
+        // It keeps no row a merge could replace, so a merge stages as an append does.
+        capabilities.write_modes.merge = true;
         capabilities
     }
 

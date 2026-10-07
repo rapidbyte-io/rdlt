@@ -2,7 +2,7 @@ use arrow_array::RecordBatch;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Float64Type, Int32Type, Int64Type, TimestampMicrosecondType};
 
-use super::events;
+use super::{events, events_of};
 
 fn ints(batch: &RecordBatch, name: &str) -> Vec<i64> {
     let column = batch.column_by_name(name).unwrap();
@@ -89,4 +89,16 @@ fn a_wide_batch_takes_the_ten_kinds_again_each_round_shifted_by_it() {
 #[should_panic(expected = "a batch has a column")]
 fn a_batch_of_no_columns_is_a_bug() {
     events(0, 1, 0);
+}
+
+#[test]
+fn events_of_any_ids_shift_every_value_but_the_ids() {
+    let batch = events_of(&[5, 3], 11, 7);
+    assert_eq!(ints(&batch, "id"), [5, 3]);
+    assert_eq!(ints(&batch, "a"), [42, 28]);
+    assert_eq!(ints(&batch, "id_1"), [13, 11]);
+    let names = batch.column_by_name("name").unwrap().as_string::<i32>();
+    assert_eq!(names.value(0), "user7-00000005");
+    let unshifted = events_of(&[5, 6], 10, 0);
+    assert_eq!(unshifted, events(5, 2, 10));
 }

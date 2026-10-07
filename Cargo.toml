@@ -187,6 +187,11 @@ debug = "line-tables-only"
 [profile.dev.package.sha2]
 opt-level = 3
 
+# SQLite's C, optimised, loads the SQLite bench's million rows in the bench smoke run in seconds;
+# unoptimised, the run took minutes.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
 # Shipped binaries and benchmarks build alike, so a benchmark measures what ships: fat LTO and one
 # codegen unit inline the shredder's and the lowering's hot loops across crates. Cargo applies only
 # the root package's profiles, so an embedder sets the same in its own manifest.
