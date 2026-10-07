@@ -108,12 +108,6 @@ pub const MAX_CALLS: u32 = 200;
 /// Bytes: the most one transport frame carries; a ping waits for at most one.
 pub const TRANSPORT_FRAME_BYTES: u32 = 1024 * 1024;
 
-/// Bytes: the HTTP/2 connection window either end grants, HTTP/2's largest.
-///
-/// Credit and each stream's window bound what a peer sends, so frames the engine has not yet
-/// taken never starve the connection's other streams, its heartbeat among them.
-pub const CONNECTION_WINDOW: u32 = (1 << 31) - 1;
-
 /// Bytes: the headers and trailers a host accepts in one response; a failed call's trailers carry
 /// its error, whose message is at most [`CONTROL_STRING_BYTES`], in base64.
 pub const HEADER_LIST_BYTES: u32 = 256 * 1024;

@@ -19,6 +19,7 @@ use hyper_util::rt::TokioIo;
 use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
 use rdlt_wire::bounded::Charged;
+use rdlt_wire::flow::Transport;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -379,8 +380,11 @@ where
     // HTTP/2's own pings notice a connection the network dropped silently, beside the
     // protocol's heartbeat, which notices a connector that stopped answering.
     let patience = options.heartbeat.saturating_mul(options.missed.get());
+    let transport = Transport::of(&options.limits);
     let channel = Endpoint::from_static("http://connector")
-        .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
+        .initial_stream_window_size(transport.stream_window)
+        .initial_connection_window_size(transport.connection_window)
+        .max_frame_size(transport.max_frame)
         .http2_max_header_list_size(rdlt_wire::limits::HEADER_LIST_BYTES)
         .http2_keep_alive_interval(options.heartbeat)
         .keep_alive_timeout(patience)

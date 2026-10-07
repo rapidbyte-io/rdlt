@@ -27,6 +27,7 @@ use std::time::Duration;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use rdlt_wire::Limits;
+use rdlt_wire::flow::Transport;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tower::ServiceExt as _;
 
@@ -120,10 +121,6 @@ const KEEP_ALIVE: Duration = Duration::from_secs(5);
 /// How long a ping may go unanswered before the host counts as gone.
 const KEEP_ALIVE_PATIENCE: Duration = Duration::from_secs(30);
 
-/// The calls one connection may hold open at once: a host's reads, writes, heartbeat and
-/// control calls.
-const MAX_CALLS: u32 = 200;
-
 /// Serves the protocol on `io`, enforcing `limits` on what it receives, until the host closes the
 /// connection, which ends it cleanly.
 ///
@@ -162,11 +159,14 @@ where
         request.map(rdlt_wire::tonic::body::Body::new)
     });
     let builder = {
+        let transport = Transport::of(&limits);
         let mut builder = hyper::server::conn::http2::Builder::new(TokioExecutor::new());
         builder
             .timer(TokioTimer::new())
-            .initial_connection_window_size(rdlt_wire::limits::CONNECTION_WINDOW)
-            .max_concurrent_streams(MAX_CALLS)
+            .initial_stream_window_size(transport.stream_window)
+            .initial_connection_window_size(transport.connection_window)
+            .max_frame_size(transport.max_frame)
+            .max_concurrent_streams(rdlt_wire::limits::MAX_CALLS)
             // Pings notice a host the network dropped silently, which would hold its session.
             .keep_alive_interval(Some(KEEP_ALIVE))
             .keep_alive_timeout(KEEP_ALIVE_PATIENCE);
