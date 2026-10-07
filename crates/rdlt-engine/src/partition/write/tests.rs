@@ -328,7 +328,8 @@ fn changes(rows: i64, deletes: i64) -> RecordBatch {
 
 #[test]
 fn a_change_stream_s_unit_is_judged_and_cut_where_it_lies() {
-    use super::changes::{aligned, data, ignored, split_changes};
+    use super::changes::{data, ignored, split_changes};
+    use crate::table::aligned;
     let mode = crate::partition::ChangeMode {
         merge: true,
         deletes: crate::plan::DeleteMode::Ignore,

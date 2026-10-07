@@ -2,6 +2,7 @@
 //! than the model says the batch expands to.
 
 mod lowering;
+mod prepared;
 
 use std::sync::Arc;
 

@@ -4,17 +4,12 @@
 use arrow_array::cast::AsArray as _;
 use arrow_array::types::Int8Type;
 use arrow_array::{BooleanArray, RecordBatch};
-use rdlt_connector::cost::Stored;
 use rdlt_connector::{ChangeOp, OP_COLUMN, StreamName};
 
 use super::super::ChangeMode;
 use crate::error::Error;
 use crate::plan::{DeleteMode, OnTruncate};
-use crate::table::{ChangeRows, data_ordinals};
-
-/// Bytes: what splitting a change row holds beside its data: its op, its position as bytes and
-/// its flags, each with its offset.
-pub(super) const CHANGE_ROW: u64 = 64;
+use crate::table::ChangeRows;
 
 /// How many rows a change stream ignores.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -59,15 +54,6 @@ pub(super) fn ignored(mode: ChangeMode, parts: &[RecordBatch]) -> Ignored {
         }
     }
     ignored
-}
-
-/// `stored`, how a table stores each data column of `batch`, a change batch, by the batch's own
-/// columns: nothing for its change columns.
-pub(super) fn aligned(batch: &RecordBatch, stored: &[Option<Stored>]) -> Vec<Option<Stored>> {
-    data_ordinals(batch)
-        .into_iter()
-        .map(|data| data.and_then(|data| stored.get(data).cloned().flatten()))
-        .collect()
 }
 
 /// The data columns of `batch`, a change batch, none of them copied.

@@ -6,14 +6,12 @@ mod tests;
 
 use std::sync::Arc;
 
-use arrow_array::{
-    ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
-    TimestampMicrosecondArray,
-};
+use arrow_array::RecordBatch;
 use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter};
 use tokio::runtime::Runtime;
 
 use super::{Replayed, SinkWriter, Sinking, ipc_sink, replay};
+use crate::fixtures::events;
 use crate::{
     CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, StreamPlan,
     SystemEnv,
@@ -34,6 +32,8 @@ impl Passthrough {
     pub const ROWS: u32 = 80_000;
     /// Batches the bench moves a run.
     pub const BATCHES: u32 = 64;
+    /// Columns of each batch.
+    pub const COLUMNS: usize = 10;
 
     /// `batches` batches of `rows` rows, their ids running on from one batch to the next, and a
     /// runtime of `cores`' workers and an engine within `cores` to move them.
@@ -68,7 +68,7 @@ impl Passthrough {
             engine: Engine::new(config, Arc::new(SystemEnv::try_new(cores)?)),
             plan,
             batches: (0..batches)
-                .map(|index| events(i64::from(index) * i64::from(rows), rows))
+                .map(|index| events(i64::from(index) * i64::from(rows), rows, Self::COLUMNS))
                 .collect(),
         })
     }
@@ -113,50 +113,4 @@ impl Passthrough {
             outcome.report.rows
         })
     }
-}
-
-/// `rows` rows of ten mixed columns whose ids run from `first`.
-fn events(first: i64, rows: u32) -> RecordBatch {
-    let ids = first..first + i64::from(rows);
-    let int = |factor: i64| -> ArrayRef {
-        Arc::new(Int64Array::from_iter_values(
-            ids.clone().map(|id| id * factor),
-        ))
-    };
-    let float = |factor: f64| -> ArrayRef {
-        Arc::new(Float64Array::from_iter_values(
-            ids.clone()
-                .map(|id| f64::from(u32::try_from(id).unwrap_or(0)) * factor),
-        ))
-    };
-    let text = |prefix: &str| -> ArrayRef {
-        Arc::new(StringArray::from_iter_values(
-            ids.clone().map(|id| format!("{prefix}-{id:08}")),
-        ))
-    };
-    let at: ArrayRef = Arc::new(
-        TimestampMicrosecondArray::from_iter_values(
-            ids.clone().map(|id| 1_790_000_000_000_000 + id),
-        )
-        .with_timezone("UTC"),
-    );
-    let flag: ArrayRef = Arc::new(BooleanArray::from_iter(
-        ids.clone().map(|id| Some(id % 3 == 0)),
-    ));
-    let small: ArrayRef = Arc::new(Int32Array::from_iter_values(
-        ids.clone().map(|id| i32::try_from(id % 1000).unwrap_or(0)),
-    ));
-    RecordBatch::try_from_iter([
-        ("id", int(1)),
-        ("a", int(7)),
-        ("b", int(13)),
-        ("x", float(0.5)),
-        ("y", float(1.25)),
-        ("name", text("user")),
-        ("city", text("city")),
-        ("at", at),
-        ("flag", flag),
-        ("n", small),
-    ])
-    .expect("equal-length columns make a batch")
 }

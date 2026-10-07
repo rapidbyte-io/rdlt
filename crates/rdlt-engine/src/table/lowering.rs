@@ -34,7 +34,7 @@ use super::resolve::{Incoming, Rest, Route};
 use crate::error::Error;
 use crate::normalize::Lineage;
 use crate::policy::SchemaPolicy;
-pub(crate) use changes::{ChangeRows, data_ordinals};
+pub(crate) use changes::{ChangeRows, aligned};
 use constants::Constants;
 use kept::{discard_rows, kept_by};
 use keys::keyed;

@@ -16,6 +16,7 @@ use arrow_array::{
 };
 use arrow_row::{RowConverter, SortField};
 use arrow_schema::{ArrowError, DataType};
+use rdlt_connector::cost::Stored;
 use rdlt_connector::{ChangeOp, LogicalType, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN};
 
 use super::merge::compact;
@@ -51,6 +52,15 @@ pub(crate) fn data_ordinals(batch: &RecordBatch) -> Vec<Option<usize>> {
                 data - 1
             })
         })
+        .collect()
+}
+
+/// `stored`, how a table stores each data column of `batch`, a change batch, by the batch's own
+/// columns: nothing for its change columns.
+pub(crate) fn aligned(batch: &RecordBatch, stored: &[Option<Stored>]) -> Vec<Option<Stored>> {
+    data_ordinals(batch)
+        .into_iter()
+        .map(|data| data.and_then(|data| stored.get(data).cloned().flatten()))
         .collect()
 }
 

@@ -53,6 +53,8 @@ mod crash;
 mod deadline;
 mod env;
 mod error;
+#[cfg(any(test, feature = "bench"))]
+mod fixtures;
 mod json;
 mod lane;
 mod limits;
