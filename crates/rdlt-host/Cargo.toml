@@ -44,6 +44,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 bytes.workspace = true
+criterion.workspace = true
 http.workspace = true
 http-body.workspace = true
 hyper = { workspace = true, features = ["http2", "server"] }
@@ -52,7 +53,7 @@ nix = { workspace = true, features = ["process", "signal"] }
 peak_alloc.workspace = true
 rdlt-connector = { workspace = true, features = ["certify", "serve"] }
 rdlt-connector-reference = { workspace = true, features = ["certify"] }
-rdlt-engine.workspace = true
+rdlt-engine = { workspace = true, features = ["bench"] }
 rdlt-testkit.workspace = true
 rdlt-wire = { workspace = true, features = ["serve"] }
 schemars.workspace = true
@@ -69,3 +70,9 @@ tonic = { workspace = true, features = ["server"] }
 
 [lints]
 workspace = true
+
+# Beside the integration tests, whose served connectors it takes.
+[[bench]]
+name = "served"
+path = "tests/it/bench.rs"
+harness = false

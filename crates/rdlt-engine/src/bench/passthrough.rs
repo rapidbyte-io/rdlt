@@ -7,10 +7,10 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter};
+use rdlt_connector::{Destination, PipelineId, SegmentId, Source, StreamName, TableWriter};
 use tokio::runtime::Runtime;
 
-use super::{Replayed, SinkWriter, Sinking, ipc_sink, replay};
+use super::{Replayed, SinkWriter, Sinking, ipc_sink, logical_bytes, replay};
 use crate::fixtures::events;
 use crate::{
     CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, PipelinePlan, StreamPlan,
@@ -103,13 +103,44 @@ impl Passthrough {
     ///
     /// Panics where the run fails.
     pub fn engine_run(&self) -> u64 {
+        let replayed = Replayed::Batches(self.batches.clone());
+        let source = self.block_on(replay("passthrough", replayed));
+        self.run(source, self.block_on(ipc_sink()))
+    }
+
+    /// The logical bytes of `batches` batches of `rows` rows, known before they are made: every
+    /// batch holds as many as the first.
+    pub fn bytes(batches: u32, rows: u32) -> u64 {
+        logical_bytes(&[events(0, rows, Self::COLUMNS)]) * u64::from(batches)
+    }
+
+    /// The rows of the batches.
+    pub fn rows(&self) -> u64 {
+        self.batches
+            .iter()
+            .map(|batch| batch.num_rows() as u64)
+            .sum()
+    }
+
+    /// Runs `future` on the workload's runtime, where connectors served from this process run.
+    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
+    /// Runs the engine from `source`, which pushes the batches, into `destination`; the rows it
+    /// reports.
+    ///
+    /// # Panics
+    ///
+    /// Panics where the run fails, or reports other rows than the batches hold.
+    pub fn run(&self, source: Arc<dyn Source>, destination: Arc<dyn Destination>) -> u64 {
         self.runtime.block_on(async {
-            let source = replay("passthrough", Replayed::Batches(self.batches.clone())).await;
             let outcome = self
                 .engine
-                .run(self.plan.clone(), source, ipc_sink().await)
+                .run(self.plan.clone(), source, destination)
                 .await;
             assert!(outcome.error.is_none(), "{:?}", outcome.error);
+            assert_eq!(outcome.report.rows, self.rows());
             outcome.report.rows
         })
     }
