@@ -1,4 +1,4 @@
-use rdlt_sim::{Seed, check_exactly_once, seeds};
+use rdlt_sim::{Features, Recorded, Seed, SplitMix64, check_exactly_once, seeds};
 
 /// Seeds that each found a defect when first run, kept so they stay green.
 const FOUND: [u64; 16] = [
@@ -81,5 +81,13 @@ fn seeds_that_once_found_a_defect_pass() {
 /// later run fails.
 #[test]
 fn a_seed_whose_rows_only_the_log_held_passes() {
-    let _ = check_exactly_once(Seed::new(61));
+    // What the seed's timing line records beside its outcome.
+    let recorded = check_exactly_once(Seed::new(61)).recorded();
+    assert!(recorded["digest"].is_u64(), "{recorded:?}");
+    assert!(
+        recorded["simulated_ms"].as_f64().is_some_and(|ms| ms > 0.0),
+        "{recorded:?}"
+    );
+    let drawn = Features::draw(&mut SplitMix64::new(61));
+    assert_eq!(recorded["features"], serde_json::to_value(drawn).unwrap());
 }

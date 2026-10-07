@@ -1,11 +1,15 @@
 //! How a simulation presses on the engine's memory budget, and what it checks of it: no run
 //! reserves more than its budget, and none without faults waits out its deadline.
 
+use std::time::Duration;
+
 use rdlt_engine::Report;
+use serde_json::{Map, Value, json};
 
 use super::refusals::{Failure, Prediction, unexplained};
 use crate::destination::Digest;
-use crate::seed::Seed;
+use crate::seed::{Recorded, Seed};
+use crate::swarm::Features;
 
 /// What a simulation left: a digest of what the destination holds at the end, which the same seed
 /// always leaves alike, and how often its runs waited on the memory budget.
@@ -17,6 +21,24 @@ pub struct Checked {
     pub memory_waits: u64,
     /// How many times a cursor waited for a commit.
     pub cursor_waits: u64,
+    /// How long the simulation took on its own clock.
+    pub simulated: Duration,
+    /// The features its seed turned on.
+    pub features: Features,
+}
+
+impl Recorded for Checked {
+    fn recorded(&self) -> Map<String, Value> {
+        let mut fields = self.digest.recorded();
+        fields.insert(
+            "simulated_ms".to_owned(),
+            json!(self.simulated.as_secs_f64() * 1e3),
+        );
+        fields.insert("features".to_owned(), json!(self.features));
+        fields.insert("memory_waits".to_owned(), json!(self.memory_waits));
+        fields.insert("cursor_waits".to_owned(), json!(self.cursor_waits));
+        fields
+    }
 }
 
 /// The code of a failure that waited out the memory budget's deadline: nothing but a fault

@@ -22,7 +22,7 @@ pub(crate) const RESET: u64 = 0x0072_6573_6574;
 const OBJECT_STORE: u64 = 0x6f62_6a73_746f_7265;
 
 /// Which of the simulation's features one seed exercises.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each feature is on or off, independently"

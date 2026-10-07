@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{Engine, PipelinePlan, Report, StreamPlan, Until};
+use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until};
 
 use crate::destination::{committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
@@ -70,6 +70,8 @@ pub fn stress(seed: Seed) {
 /// Checks the exactly-once guarantee for the workload `seed` generates, with the connectors on
 /// `net` when there is one, and in this process otherwise.
 async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checked {
+    let clock = Arc::clone(&env);
+    let started = clock.instant();
     let mut rng = SplitMix64::new(seed.value());
     let name = format!("oracle-{seed}");
     let registered = World::register(&name, &mut rng);
@@ -93,29 +95,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         budget,
         waits: (0, 0),
     };
-    let mut stopped = false;
-    for phase in 0..PHASES {
-        let (reports, stopped_short) = simulation.converge(phase, &mut rng).await;
-        stopped = stopped_short;
-        settle(seed).await;
-        let world = &simulation.world;
-        check_contents(world, phase, stopped, seed);
-        check_acknowledged(world, stopped, seed);
-        check_discards(world, phase, &reports, stopped, seed);
-        if stopped {
-            break;
-        }
-        simulation.intrude(seed, phase).await;
-        settle(seed).await;
-    }
-    let last = PHASES - 1;
-    if !stopped && simulation.reset(seed, last).await {
-        let (_, short) = simulation.converge(last, &mut rng).await;
-        stopped = short;
-        settle(seed).await;
-        check_contents(&simulation.world, last, stopped, seed);
-        check_acknowledged(&simulation.world, stopped, seed);
-    }
+    let stopped = simulation.load(&mut rng).await;
     // What the destination holds once the workload is loaded; the checks that follow load
     // nothing more.
     let digest = simulation.world.store.lock().digest();
@@ -129,6 +109,8 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         digest,
         memory_waits: simulation.waits.0,
         cursor_waits: simulation.waits.1,
+        simulated: clock.instant() - started,
+        features: simulation.world.workload.features,
     }
 }
 
@@ -149,6 +131,36 @@ struct Simulation {
 }
 
 impl Simulation {
+    /// Runs every phase, checking the destination after each and intruding before the next,
+    /// then resets the last and runs it again; whether a refusal no operator can relax stopped
+    /// it short.
+    async fn load(&mut self, rng: &mut SplitMix64) -> bool {
+        let seed = self.seed;
+        let mut stopped = false;
+        for phase in 0..PHASES {
+            let (reports, stopped_short) = self.converge(phase, rng).await;
+            stopped = stopped_short;
+            settle(seed).await;
+            check_contents(&self.world, phase, stopped, seed);
+            check_acknowledged(&self.world, stopped, seed);
+            check_discards(&self.world, phase, &reports, stopped, seed);
+            if stopped {
+                break;
+            }
+            self.intrude(seed, phase).await;
+            settle(seed).await;
+        }
+        let last = PHASES - 1;
+        if !stopped && self.reset(seed, last).await {
+            let (_, short) = self.converge(last, rng).await;
+            stopped = short;
+            settle(seed).await;
+            check_contents(&self.world, last, stopped, seed);
+            check_acknowledged(&self.world, stopped, seed);
+        }
+        stopped
+    }
+
     /// Runs `phase` until it converges, or a refusal no operator can relax stops it short; the
     /// reports of its runs that ended, and whether it stopped.
     ///
