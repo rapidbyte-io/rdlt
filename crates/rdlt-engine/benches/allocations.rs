@@ -1,6 +1,6 @@
 //! What one run of each bench workload allocates, a row and a batch, under a counting allocator:
 //! the shred bench's single-core groups, both sides of the passthrough pairs, each batch the
-//! lowering bench prepares and each run of the normalized bench.
+//! lowering bench prepares, and each run of the normalized and wide benches.
 //!
 //! The timed benches keep the system allocator, since counting every call slows the runs that
 //! allocate most.
@@ -17,7 +17,8 @@ use std::num::NonZeroU64;
 use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, Lowering, Normalized, Passthrough, counted, normalize, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Lowering, Normalized, Passthrough, Wide, counted,
+    normalize, shred,
 };
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 
@@ -25,11 +26,12 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 static HEAP: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 /// The benches whose workloads this counts, each with what counts them.
-const COUNTED: [(&str, fn()); 4] = [
+const COUNTED: [(&str, fn()); 5] = [
     ("shred", shredding),
     ("passthrough", passing_through),
     ("lowering", lowering),
     ("normalized", normalizing),
+    ("wide", widening),
 ];
 
 #[expect(clippy::print_stdout, reason = "the names are what `--names` asks for")]
@@ -124,6 +126,21 @@ fn normalizing() {
                 usize::try_from(flushes).expect("flushes fit in usize"),
             )
         });
+    }
+}
+
+/// Each case of the wide bench, run once: its batches the pushes.
+fn widening() {
+    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    for (form, name) in [(Form::Arrow, "arrow"), (Form::Json, "json")] {
+        for columns in Wide::COLUMNS {
+            let bench = Wide::try_new(cores, form, columns, Wide::PUSHES).expect("the pool starts");
+            report(&format!("wide/{name}/{columns}"), || {
+                let rows = bench.run();
+                let pushes = usize::try_from(Wide::PUSHES).expect("pushes fit in usize");
+                (usize::try_from(rows).expect("rows fit in usize"), pushes)
+            });
+        }
     }
 }
 

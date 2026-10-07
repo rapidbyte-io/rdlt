@@ -20,7 +20,7 @@ use rdlt_engine::bench::{
 use rdlt_engine::{Cores, RayonPool};
 
 fn single_core(c: &mut Criterion) {
-    let mut corpora: Vec<(&str, Vec<Bytes>)> = Corpus::SHREDDED
+    let mut corpora: Vec<(String, Vec<Bytes>)> = Corpus::SHREDDED
         .into_iter()
         .map(|corpus| (corpus.name(), corpus.pushes(CORPUS_BYTES)))
         .collect();
@@ -35,14 +35,14 @@ fn single_core(c: &mut Criterion) {
             .chunks(per_push)
             .map(|lines| Bytes::from(lines.join("\n")))
             .collect();
-        corpora.push(("file", pushes));
+        corpora.push(("file".to_owned(), pushes));
     }
     let mut group = c.benchmark_group("shred");
     group.sample_size(10);
     for (name, pushes) in &corpora {
         let bytes: usize = pushes.iter().map(Bytes::len).sum();
         group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
-        group.bench_function(*name, |b| {
+        group.bench_function(name, |b| {
             b.iter(|| black_box(shred(pushes, CHUNK_BYTES).expect("the corpus shreds")));
         });
     }
@@ -93,8 +93,9 @@ fn arrow_json_fast_path(c: &mut Criterion) {
         ArrowField::new("value", DataType::Int64, true),
         ArrowField::new("flag", DataType::Boolean, true),
     ]);
+    let columns: u16 = 200;
     let wide = Schema::new(
-        (0..200)
+        (0..columns)
             .map(|column| {
                 let kind = if column % 2 == 0 {
                     DataType::Int64
@@ -107,7 +108,7 @@ fn arrow_json_fast_path(c: &mut Criterion) {
     );
     let mut group = c.benchmark_group("fast_path");
     group.sample_size(10);
-    for (corpus, schema) in [(Corpus::FlatNarrow, narrow), (Corpus::FlatWide, wide)] {
+    for (corpus, schema) in [(Corpus::FlatNarrow, narrow), (Corpus::Wide(columns), wide)] {
         let pushes = corpus.pushes(CORPUS_BYTES);
         let bytes: usize = pushes.iter().map(Bytes::len).sum();
         group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));

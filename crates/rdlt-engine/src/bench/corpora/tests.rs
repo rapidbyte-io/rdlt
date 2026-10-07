@@ -18,7 +18,7 @@ fn each_corpus_is_the_rows_its_seed_draws() {
             "7a43f6f71714132dbc881509e2aaa252153e049450f3c6728000fe5f6222ed15",
         ),
         (
-            Corpus::FlatWide,
+            Corpus::Wide(200),
             "5ff96274cc6746321b28112eaa0230a9b5324de02033266724adcfcd1e84d8e4",
         ),
         (
@@ -68,14 +68,14 @@ fn a_corpus_is_cut_into_pushes_of_whole_lines_once_it_holds_its_bytes() {
 
 #[test]
 fn the_corpora_shredded_on_one_core_are_named_as_their_benchmarks() {
-    let names: Vec<&str> = Corpus::SHREDDED.into_iter().map(Corpus::name).collect();
+    let names: Vec<String> = Corpus::SHREDDED.into_iter().map(Corpus::name).collect();
     assert_eq!(
         names,
         [
             "nested",
             "sparse",
             "flat_narrow",
-            "flat_wide",
+            "wide_200",
             "string_heavy"
         ]
     );
@@ -110,4 +110,14 @@ fn an_order_holds_as_many_items_as_its_id_modulo_four_each_of_two_tags() {
         );
     }
     assert_eq!(Corpus::Orders.name(), "orders");
+}
+
+#[test]
+fn a_wide_row_holds_its_columns_integers_and_strings_by_turns() {
+    let pushes = Corpus::Wide(5_000).rows(2, NonZeroU64::MIN);
+    let row: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&pushes[0]).unwrap();
+    assert_eq!(row.len(), 5_000);
+    assert!(row["c4998"].is_u64() && row["c4999"].is_string());
+    assert_eq!(Corpus::Wide(5_000).name(), "wide_5000");
 }

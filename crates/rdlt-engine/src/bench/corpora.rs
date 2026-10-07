@@ -28,8 +28,8 @@ pub enum Corpus {
     Sparse,
     /// Flat rows of three narrow columns.
     FlatNarrow,
-    /// Flat rows of 200 columns, integers and short strings.
-    FlatWide,
+    /// Flat rows of this many columns, integers and short strings by turns.
+    Wide(u16),
     /// Rows of long strings with escapes.
     StringHeavy,
     /// Nested rows with arrays: `Nested`'s fields and up to three orders of a few tags each.
@@ -45,32 +45,31 @@ impl Corpus {
         Self::Nested,
         Self::Sparse,
         Self::FlatNarrow,
-        Self::FlatWide,
+        Self::Wide(200),
         Self::StringHeavy,
     ];
 
     /// The corpus's name in benchmark ids.
-    pub const fn name(self) -> &'static str {
+    pub fn name(self) -> String {
         match self {
-            Self::Nested => "nested",
-            Self::Sparse => "sparse",
-            Self::FlatNarrow => "flat_narrow",
-            Self::FlatWide => "flat_wide",
-            Self::StringHeavy => "string_heavy",
-            Self::WithArrays => "with_arrays",
-            Self::Orders => "orders",
+            Self::Nested => "nested".to_owned(),
+            Self::Sparse => "sparse".to_owned(),
+            Self::FlatNarrow => "flat_narrow".to_owned(),
+            Self::Wide(columns) => format!("wide_{columns}"),
+            Self::StringHeavy => "string_heavy".to_owned(),
+            Self::WithArrays => "with_arrays".to_owned(),
+            Self::Orders => "orders".to_owned(),
         }
     }
 
     /// The corpus's rows until they hold `bytes`, cut into pushes of whole lines of
     /// [`PUSH_BYTES`] or a little more.
     pub fn pushes(self, bytes: usize) -> Vec<Bytes> {
-        corpus(bytes, PUSH_BYTES, self.row())
+        corpus(bytes, PUSH_BYTES, |index, mix| self.row(index, mix))
     }
 
     /// The corpus's first `rows` rows, cut into pushes of `per_push` lines, the last of the rest.
     pub fn rows(self, rows: u64, per_push: NonZeroU64) -> Vec<Bytes> {
-        let row = self.row();
         let mut mix = Mix::new(SEED);
         let mut pushes = Vec::new();
         let mut first = 0;
@@ -78,7 +77,7 @@ impl Corpus {
             let last = rows.min(first.saturating_add(per_push.get()));
             let mut push = String::new();
             for index in first..last {
-                push.push_str(&row(index, &mut mix));
+                push.push_str(&self.row(index, &mut mix));
                 push.push('\n');
             }
             pushes.push(Bytes::from(push));
@@ -87,16 +86,16 @@ impl Corpus {
         pushes
     }
 
-    /// The generator of the corpus's rows.
-    fn row(self) -> fn(u64, &mut Mix) -> String {
+    /// The corpus's row `index`, its values drawn from `mix`.
+    fn row(self, index: u64, mix: &mut Mix) -> String {
         match self {
-            Self::Nested => nested,
-            Self::Sparse => sparse,
-            Self::FlatNarrow => flat_narrow,
-            Self::FlatWide => flat_wide,
-            Self::StringHeavy => string_heavy,
-            Self::WithArrays => with_arrays,
-            Self::Orders => orders,
+            Self::Nested => nested(index, mix),
+            Self::Sparse => sparse(index, mix),
+            Self::FlatNarrow => flat_narrow(index, mix),
+            Self::Wide(columns) => wide(columns, mix),
+            Self::StringHeavy => string_heavy(index, mix),
+            Self::WithArrays => with_arrays(index, mix),
+            Self::Orders => orders(index),
         }
     }
 }
@@ -174,7 +173,7 @@ fn with_arrays(index: u64, mix: &mut Mix) -> String {
 }
 
 /// Rows of an object and of as many items as `index` modulo four, each of two tags.
-fn orders(index: u64, _: &mut Mix) -> String {
+fn orders(index: u64) -> String {
     let items: Vec<String> = (0..index % 4)
         .map(|item| {
             format!(
@@ -219,9 +218,9 @@ fn flat_narrow(index: u64, mix: &mut Mix) -> String {
     )
 }
 
-/// Flat rows of 200 columns, integers and short strings.
-fn flat_wide(_: u64, mix: &mut Mix) -> String {
-    let columns: Vec<String> = (0..200)
+/// A flat row of `columns` columns, integers and short strings by turns.
+fn wide(columns: u16, mix: &mut Mix) -> String {
+    let columns: Vec<String> = (0..columns)
         .map(|column| match column % 2 {
             0 => format!(r#""c{column}":{}"#, mix.below(1 << 20)),
             _ => format!(r#""c{column}":"v{}""#, mix.below(1000)),

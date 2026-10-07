@@ -88,7 +88,7 @@ mode every figure falls to about a third, so compare only runs taken back to bac
 | `nested` | 692 MiB/s |
 | `sparse` (`nested`, one row in ten thousand with an optional key after its name) | 697 MiB/s, 3 % below `nested` measured with it (718 MiB/s); rebuilding every chunk whose shape differs, as the first draft did, ran it at 407 MiB/s |
 | `flat_narrow` | 490 MiB/s |
-| `flat_wide` (200 columns) | 506 MiB/s |
+| `wide_200` (200 columns) | 506 MiB/s |
 | `string_heavy` | 557 MiB/s |
 
 | Cores | Layout | One core | N cores | Scaling | Spec's bound |
@@ -110,7 +110,7 @@ The figures here assume the release profile. Cargo's defaults, which an embedder
 setting its own profile, shred more slowly, one core (`taskset -c 0`), the median of five
 interleaved runs, 2026-10-06, load average 0.78–0.99:
 
-| Build | `nested` | `flat_wide` | `string_heavy` | `normalize/keyless` | Instructions per `nested` pass |
+| Build | `nested` | `wide_200` | `string_heavy` | `normalize/keyless` | Instructions per `nested` pass |
 |---|---|---|---|---|---|
 | Release profile (`lto = "fat"`, `codegen-units = 1`) | 578 MiB/s | 482 MiB/s | 590 MiB/s | 177 MiB/s | 1.305 × 10⁹ |
 | Cargo's release defaults | 426 MiB/s | 376 MiB/s | 484 MiB/s | 149 MiB/s | 1.583 × 10⁹ |
@@ -134,7 +134,7 @@ mean of each, the median of five; 2026-10-03, load average 3 to 9:
 | `nested` | 506 MiB/s | 466 MiB/s | 0.92 |
 | `sparse` | 499 MiB/s | 464 MiB/s | 0.93 |
 | `flat_narrow` | 391 MiB/s | 378 MiB/s | 0.97 |
-| `flat_wide` | 453 MiB/s | 432 MiB/s | 0.95 |
+| `wide_200` | 453 MiB/s | 432 MiB/s | 0.95 |
 | `string_heavy` | 536 MiB/s | 522 MiB/s | 0.97 |
 | normalize `shred_only` | 412 MiB/s | 377 MiB/s | 0.92 |
 | normalize `keyed` | 328 MiB/s | 304 MiB/s | 0.93 |
@@ -158,7 +158,7 @@ the schema:
 | Corpus | Shredder | `arrow-json` |
 |---|---|---|
 | `flat_narrow` | 513 MiB/s | 429 MiB/s |
-| `flat_wide` (200 columns) | 527 MiB/s | 279 MiB/s |
+| `wide_200` (200 columns) | 527 MiB/s | 279 MiB/s |
 
 The shredder is faster on both, and needs no schema, so the engine has no fast path (ADR 0008).
 
@@ -194,7 +194,7 @@ machine's load.
 | `shred/nested` | 0.024 | 0.001 | 115 | 140.594 | 664719 |
 | `shred/sparse` | 0.026 | 0.001 | 121 | 148.500 | 702084 |
 | `shred/flat_narrow` | 0.001 | 0.000 | 16 | 27.781 | 334835 |
-| `shred/flat_wide` | 3.538 | 0.077 | 2382 | 1386.969 | 933766 |
+| `shred/wide_200` | 3.538 | 0.077 | 2382 | 1386.969 | 933766 |
 | `shred/string_heavy` | 1.007 | 4.901 | 616 | 4772.531 | 2918951 |
 | `normalize/shred_only` | 2.562 | 0.003 | 298 | 10775.844 | 1254479 |
 | `normalize/keyed` | 2.615 | 0.036 | 1012 | 11000.844 | 4256876 |
