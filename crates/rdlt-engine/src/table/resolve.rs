@@ -47,20 +47,6 @@ pub(crate) enum Rest {
     DiscardValues,
 }
 
-impl Route {
-    /// Whether rows holding a value the route sends nowhere are dropped.
-    pub(crate) fn drops_rows(self) -> bool {
-        matches!(
-            self,
-            Self::DiscardRows
-                | Self::Split {
-                    rest: Rest::DiscardRows,
-                    ..
-                }
-        )
-    }
-}
-
 /// A change to a table's model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Change {
