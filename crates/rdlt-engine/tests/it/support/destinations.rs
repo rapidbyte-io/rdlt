@@ -516,8 +516,11 @@ impl DestinationSession for CountedSession {
         &'a mut self,
         table: &'a TableRef,
     ) -> BoxFuture<'a, Result<Box<dyn DestinationWriter>>> {
-        self.sessions.writers.fetch_add(1, Ordering::SeqCst);
-        self.inner.writer(table)
+        Box::pin(async move {
+            let writer = self.inner.writer(table).await?;
+            self.sessions.writers.fetch_add(1, Ordering::SeqCst);
+            Ok(writer)
+        })
     }
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {

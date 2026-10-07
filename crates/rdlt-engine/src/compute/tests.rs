@@ -168,6 +168,8 @@ fn the_suggested_split_gives_the_runtime_half_the_cores_and_two_workers_at_least
 fn the_host_s_cores_are_those_its_affinity_mask_leaves() {
     use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
     let allowed = sched_getaffinity(None).unwrap();
+    // A cgroup CPU quota also caps the count, so the mask can only lower what the host reported.
+    let before = Cores::try_from_host().unwrap().count().get();
     let mut two = CpuSet::new();
     let chosen: Vec<usize> = (0..CpuSet::MAX_CPU)
         .filter(|cpu| allowed.is_set(*cpu))
@@ -177,5 +179,8 @@ fn the_host_s_cores_are_those_its_affinity_mask_leaves() {
         two.set(*cpu);
     }
     sched_setaffinity(None, &two).unwrap();
-    assert_eq!(Cores::try_from_host().unwrap().count().get(), chosen.len());
+    assert_eq!(
+        Cores::try_from_host().unwrap().count().get(),
+        chosen.len().min(before)
+    );
 }
