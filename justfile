@@ -183,31 +183,47 @@ fuzz target seconds="60":
     rustup toolchain install {{ nightly }} --profile minimal
     cargo +{{ nightly }} fuzz run {{ target }} --target "$(rustc -vV | sed -n 's/host: //p')" -- -max_total_time={{ seconds }}
 
-# Build an engine bench for profiling, for example `just profiling shred`: release's code with
-# line tables and frame pointers, in a target directory of its own so the flags never rebuild the
+# Build a bench for profiling, for example `just profiling shred`: release's code with line
+# tables and frame pointers, in a target directory of its own so the flags never rebuild the
 # shared one; cargo prints the binary's path last
 profiling bench:
-    CARGO_TARGET_DIR=target/frame-pointers RUSTFLAGS="-C force-frame-pointers=yes" cargo bench --package rdlt-engine --features bench --profile profiling --bench {{ bench }} --no-run
+    #!/usr/bin/env bash
+    set -euo pipefail
+    found=$(just --quiet bench-package "{{ bench }}")
+    read -r package features <<< "$found"
+    CARGO_TARGET_DIR=target/frame-pointers RUSTFLAGS="-C force-frame-pointers=yes" cargo bench --package "$package" $features --profile profiling --bench "{{ bench }}" --no-run
+
+# The package whose manifest declares the bench `name`, and the features it builds with
+[private]
+bench-package name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    manifest=$(awk -v name="{{ name }}" '/^\[\[bench\]\]/ { bench = 1; next } /^\[/ { bench = 0 } bench && $0 == "name = \"" name "\"" { print FILENAME }' crates/*/Cargo.toml)
+    [[ "{{ name }}" != allocations && -n $manifest ]] || { echo "{{ name }} is not a timed bench of any crate" >&2; exit 2; }
+    features=$(grep -q '^bench = ' "$manifest" && echo "--features bench" || true)
+    echo "$(basename "$(dirname "$manifest")") $features"
 
 # Measure a bench as every recorded figure is measured: on the CPUs `cores` lists, every CPU
 # this process may use by default, saved as criterion's baseline named after the commit, then each
-# benchmark under `perf stat` for the instructions a cycle and the CPUs kept busy, then the
-# bench's allocation counts, with the commit, load, governor and thread counts. Linux only, which
-# can hold a process to chosen CPUs; the record is in `target/bench`
+# benchmark under `perf stat` for the instructions a cycle and the CPUs kept busy, and once under
+# a count-only `strace -c` for the syscalls a run makes, then the bench's allocation counts, with
+# the commit, load, governor and thread counts. Linux only, which can hold a process to chosen
+# CPUs; the record is in `target/bench`
 bench $name $cores="" $filter="":
     #!/usr/bin/env bash
     set -euo pipefail
     [[ "$(uname -s)" == Linux ]] || { echo "just bench runs only on Linux, which can hold a process to chosen CPUs" >&2; exit 2; }
     [[ -n $cores ]] || cores=$(taskset -cp $$ | sed 's/.*: //')
-    [[ $name != allocations && -f "crates/rdlt-engine/benches/$name.rs" ]] || { echo "$name is not a timed bench of rdlt-engine" >&2; exit 2; }
+    found=$(just --quiet bench-package "$name")
+    read -r package features <<< "$found"
     [[ $cores =~ ^[0-9]{1,4}(-[0-9]{1,4})?(,[0-9]{1,4}(-[0-9]{1,4})?)*$ ]] || { echo "cores must be a CPU list such as 0-3" >&2; exit 2; }
-    command -v perf > /dev/null || { echo "just bench needs perf" >&2; exit 2; }
+    for tool in perf strace; do command -v "$tool" > /dev/null || { echo "just bench needs $tool" >&2; exit 2; }; done
     mkdir -p target/bench
     changed=$(git status --porcelain --untracked-files=no)
     commit=$(git rev-parse --short=12 HEAD)${changed:+-changed}
     record="target/bench/$name-$commit.txt"
-    cargo bench --package rdlt-engine --features bench --bench "$name" --bench allocations --no-run 2> target/bench/build.log || { cat target/bench/build.log >&2; exit 1; }
-    built() { sed -n "s|^ *Executable benches/$1\.rs (\(.*\))\$|\1|p" target/bench/build.log; }
+    { cargo bench --package "$package" $features --bench "$name" --no-run && cargo bench --package rdlt-engine --features bench --bench allocations --no-run; } 2> target/bench/build.log || { cat target/bench/build.log >&2; exit 1; }
+    built() { sed -n "s|^ *Executable .* (\(.*/deps/$1-[0-9a-f]*\))\$|\1|p" target/bench/build.log | tail -1; }
     exe=$(built "$name")
     counter=$(built allocations)
     cpus=()
@@ -232,15 +248,31 @@ bench $name $cores="" $filter="":
             taskset -c "$cores" perf stat -x, -o "target/bench/perf-$seconds.csv" -e cycles:u,instructions:u,task-clock "$exe" --bench --exact --profile-time "$seconds" "$id" > /dev/null
             wall[$seconds]=$(( $(date +%s%N) - started ))
         done
+        # A run longer than ten seconds runs as often in both, which leaves no difference.
         awk -F, -v id="$id" -v wall="$(( wall[15] - wall[5] ))" '
             FNR == 1 { run++ }
             $1 ~ /^[0-9.]+$/ && $3 ~ /cycles/ { cycles[run] += $1 }
             $1 ~ /^[0-9.]+$/ && $3 ~ /instructions/ { instructions[run] += $1 }
             $1 ~ /^[0-9.]+$/ && $3 ~ /task-clock/ { busy[run] += $1 }
-            END { printf "%s: %.2f instructions a cycle, %.2f CPUs busy (perf stat, 15 s of it less 5 s)\n", id, (instructions[2] - instructions[1]) / (cycles[2] - cycles[1]), (busy[2] - busy[1]) * 1e6 / wall }
+            END {
+                if (cycles[2] - cycles[1] <= 0 || wall <= 0) { printf "%s: a run outlasts what perf stat can difference\n", id; exit }
+                printf "%s: %.2f instructions a cycle, %.2f CPUs busy (perf stat, 15 s of it less 5 s)\n", id, (instructions[2] - instructions[1]) / (cycles[2] - cycles[1]), (busy[2] - busy[1]) * 1e6 / wall
+            }
         ' target/bench/perf-5.csv target/bench/perf-15.csv | tee -a "$record"
     done
-    taskset -c "$cores" "$counter" "$name" | tee -a "$record"
+    for id in "${ids[@]}"; do
+        taskset -c "$cores" strace -f -c -U name,calls -o target/bench/strace.txt "$exe" --test --exact "$id" > /dev/null
+        awk -v id="$id" '
+            BEGIN { count = split("read write readv writev recvfrom sendto recvmsg sendmsg pread64 pwrite64 fsync fdatasync openat", names, " ") }
+            { calls[$1] = $2 }
+            END {
+                line = ""
+                for (i = 1; i <= count; i++) if (calls[names[i]] > 0) line = line (line == "" ? "" : ", ") calls[names[i]] " " names[i]
+                printf "%s: %s a run, its setup included (strace -c, one run in test mode)\n", id, line
+            }
+        ' target/bench/strace.txt | tee -a "$record"
+    done
+    if "$counter" --names | grep -qx "$name"; then taskset -c "$cores" "$counter" "$name" | tee -a "$record"; fi
     echo "load after: $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$record"
 
 # Everything the pull-request gate runs
