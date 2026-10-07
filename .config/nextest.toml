@@ -31,6 +31,11 @@ path = "junit.xml"
 filter = "package(rdlt-sim)"
 slow-timeout = { period = "60s" }
 
+# The simulation tests that run seeds side by side take every core: nothing runs beside them.
+[[profile.default.overrides]]
+filter = "package(rdlt-sim) & binary(it) & (test(through_faults) | test(=exactly_once::seeds_that_once_found_a_defect_pass) | test(/^determinism::(the_same_seed_|a_seed_over_a_faulty_network)/) | test(many_threads))"
+threads-required = "num-test-threads"
+
 [[profile.ci.overrides]]
 filter = "package(rdlt-sim)"
 slow-timeout = { period = "60s" }
