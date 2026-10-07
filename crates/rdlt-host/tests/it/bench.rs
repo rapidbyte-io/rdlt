@@ -1,6 +1,8 @@
 //! The served path: the passthrough batches through the engine with the destination, the source
 //! or both served over the wire protocol, over a `UnixStream` pair and over mutual TLS on
-//! loopback, the read window of a served source a parameter.
+//! loopback, in frames as large as the default coalescing target makes and in eighths of that,
+//! the read window of a served source a parameter. Each benchmark prints the process's CPU time
+//! a gigabyte its runs moved.
 //!
 //! The bench lives beside the integration tests to serve connectors as they do.
 
@@ -32,9 +34,6 @@ use rdlt_testkit::tls::{Files, Pki};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::CREDIT_WINDOW;
 
-/// The replay every run's source pushes.
-const REPLAY: &str = "served";
-
 /// Which of a run's connectors are served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -44,6 +43,8 @@ enum Mode {
 }
 
 impl Mode {
+    const ALL: [Self; 3] = [Self::Destination, Self::Source, Self::Both];
+
     fn name(self) -> &'static str {
         match self {
             Self::Destination => "destination",
@@ -70,25 +71,105 @@ enum Transport {
     Tls,
 }
 
-/// The cases: each mode over each transport, a served source at windows of one, two and four
-/// times the default.
-fn cases() -> Vec<(Transport, Mode, u64)> {
-    let mut cases = Vec::new();
-    for transport in [Transport::Socket, Transport::Tls] {
-        cases.push((transport, Mode::Destination, CREDIT_WINDOW));
-        for mode in [Mode::Source, Mode::Both] {
-            let windows: &[u64] = match transport {
-                Transport::Socket => &[1, 2, 4],
-                Transport::Tls => &[1],
-            };
-            cases.extend(
-                windows
-                    .iter()
-                    .map(|times| (transport, mode, CREDIT_WINDOW * times)),
-            );
+impl Transport {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Socket => "socket",
+            Self::Tls => "tls",
         }
     }
-    cases
+}
+
+/// The batches a run moves, each a frame on the wire: as large as the default coalescing target
+/// makes them, or an eighth of that, the same rows in all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Frames {
+    Large,
+    Small,
+}
+
+impl Frames {
+    /// Batches and rows a batch.
+    fn shape(self) -> (u32, u32) {
+        match self {
+            Self::Large => (Passthrough::BATCHES, Passthrough::ROWS),
+            Self::Small => (Passthrough::BATCHES * 8, Passthrough::ROWS / 8),
+        }
+    }
+
+    /// The replay a run's source pushes.
+    fn replay(self) -> &'static str {
+        match self {
+            Self::Large => "large",
+            Self::Small => "small",
+        }
+    }
+}
+
+/// One benchmark: which connectors are served, how, the frames they move, and a served source's
+/// read window.
+#[derive(Clone, Copy, Debug)]
+struct Case {
+    transport: Transport,
+    mode: Mode,
+    frames: Frames,
+    window: u64,
+}
+
+impl Case {
+    /// Every mode over each transport in large and in small frames at the default window, and a
+    /// served source over the socket in large frames at two and four times the default.
+    fn all() -> Vec<Self> {
+        let mut cases = Vec::new();
+        for transport in [Transport::Socket, Transport::Tls] {
+            for frames in [Frames::Large, Frames::Small] {
+                cases.extend(Mode::ALL.map(|mode| Self {
+                    transport,
+                    mode,
+                    frames,
+                    window: CREDIT_WINDOW,
+                }));
+            }
+        }
+        for mode in [Mode::Source, Mode::Both] {
+            cases.extend([2, 4].map(|times| Self {
+                transport: Transport::Socket,
+                mode,
+                frames: Frames::Large,
+                window: CREDIT_WINDOW * times,
+            }));
+        }
+        cases
+    }
+
+    /// What the case moves and how: its mode, batches, rows a batch and window.
+    fn shape(self) -> String {
+        let (batches, rows) = self.frames.shape();
+        let window = self.window >> 20;
+        format!("{}/{batches}x{rows}/{window}MiB", self.mode.name())
+    }
+
+    fn id(self) -> BenchmarkId {
+        BenchmarkId::new(self.transport.name(), self.shape())
+    }
+}
+
+/// The batches of one size of frame, and the listener serving them over mutual TLS once a case
+/// asks for it, on the batches' runtime.
+struct Workload {
+    passthrough: Passthrough,
+    listener: Option<Listener>,
+}
+
+/// The process's user and system time so far.
+fn cpu() -> Duration {
+    let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
+        .expect("the process's usage reads");
+    let seconds = |time: nix::sys::time::TimeVal| {
+        let micros = time.tv_sec() * 1_000_000 + time.tv_usec();
+        Duration::from_micros(u64::try_from(micros).unwrap_or(0))
+    };
+    seconds(usage.user_time()) + seconds(usage.system_time())
 }
 
 /// A listener serving both connectors over mutual TLS on loopback, and how a host reaches it.
@@ -146,23 +227,23 @@ impl Listener {
     }
 }
 
-/// A run's source and destination, those `mode` names served over `transport` within `options`.
+/// A run's source and destination, those `case` names served as it says within `options`.
 async fn connectors(
-    mode: Mode,
-    transport: Transport,
+    case: Case,
     listener: Option<&Listener>,
     options: &Options,
 ) -> (Arc<dyn Source>, Arc<dyn Destination>) {
+    let (mode, transport, replay) = (case.mode, case.transport, case.frames.replay());
     let source: Arc<dyn Source> = match (mode.serves_source(), transport) {
         (false, _) => Arc::from(
             replay_factory()
-                .connect(replay_config(REPLAY), ConnectContext::new())
+                .connect(replay_config(replay), ConnectContext::new())
                 .await
                 .expect("the replay connects"),
         ),
         (true, Transport::Socket) => {
             let io = served::served(Served::new().with_source(replay_factory()));
-            let config = replay_config(REPLAY);
+            let config = replay_config(replay);
             let connection = Connection::connect(io, Role::Source, &config, *options).await;
             Arc::new(RemoteSource::new(
                 connection.expect("the source handshakes"),
@@ -172,7 +253,7 @@ async fn connectors(
             let listener = listener.expect("a listener serves over TLS");
             let id = replay_factory().spec().id.clone();
             let reference = ConnectorRef::new(id).endpoint(&listener.endpoint);
-            let (remote, config) = (listener.remote(options), replay_config(REPLAY));
+            let (remote, config) = (listener.remote(options), replay_config(replay));
             let placed = remote.source(&reference, &config).await;
             Arc::from(placed.expect("the source is placed").connector)
         }
@@ -198,66 +279,105 @@ async fn connectors(
     (source, destination)
 }
 
-#[expect(
-    clippy::print_stdout,
-    reason = "criterion reports times; the layout is printed beside them"
-)]
+impl Workload {
+    /// The batches of `frames` and a runtime and an engine within `cores` to move them, their
+    /// replay registered.
+    fn new(cores: Cores, frames: Frames) -> Self {
+        let (batches, rows) = frames.shape();
+        let passthrough = Passthrough::try_new(cores, batches, rows).expect("the pool starts");
+        register(
+            frames.replay(),
+            Replayed::Batches(passthrough.batches().to_vec()),
+        );
+        Self {
+            passthrough,
+            listener: None,
+        }
+    }
+
+    /// Runs `case` `runs` times, each with connectors of its own: how long the runs took, and the
+    /// CPU time they took a gigabyte of the `bytes` each moved.
+    fn timed(&mut self, case: Case, runs: u64, bytes: u64) -> (Duration, f64) {
+        let passthrough = &self.passthrough;
+        let listener = match case.transport {
+            Transport::Tls => Some(
+                &*self
+                    .listener
+                    .get_or_insert_with(|| Listener::new(passthrough)),
+            ),
+            Transport::Socket => None,
+        };
+        let options = Options {
+            read_window: case.window,
+            ..Options::default()
+        };
+        let (mut took, mut busy) = (Duration::ZERO, Duration::ZERO);
+        for _ in 0..runs {
+            let connected = connectors(case, listener, &options);
+            let (source, destination) = passthrough.block_on(connected);
+            let (started, before) = (Instant::now(), cpu());
+            black_box(passthrough.run(source, destination));
+            took += started.elapsed();
+            busy += cpu().saturating_sub(before);
+        }
+        #[expect(clippy::cast_precision_loss, reason = "bytes stay far below 2^52")]
+        let gigabytes = bytes as f64 * runs as f64 / 1e9;
+        (took, busy.as_secs_f64() / gigabytes)
+    }
+}
+
 fn served(c: &mut Criterion) {
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let mut passthrough = None;
-    let mut listener = None;
+    let mut workloads: [Option<Workload>; 2] = [None, None];
+    let mut used = Vec::new();
     let mut group = c.benchmark_group("served");
     group.sample_size(10);
-    let bytes = Passthrough::bytes(Passthrough::BATCHES, Passthrough::ROWS);
-    group.throughput(Throughput::Bytes(bytes));
-    for (transport, mode, window) in cases() {
-        let transport_name = match transport {
-            Transport::Socket => "socket",
-            Transport::Tls => "tls",
-        };
-        let id = match mode {
-            Mode::Destination => BenchmarkId::new(transport_name, mode.name()),
-            _ => BenchmarkId::new(
-                transport_name,
-                format!("{}/{}MiB", mode.name(), window >> 20),
-            ),
-        };
-        group.bench_function(id, |b| {
-            let passthrough = passthrough.get_or_insert_with(|| {
-                let made = Passthrough::try_new(cores, Passthrough::BATCHES, Passthrough::ROWS)
-                    .expect("the pool starts");
-                register(REPLAY, Replayed::Batches(made.batches().to_vec()));
-                println!(
-                    "served: {} runtime workers, {} compute threads",
-                    cores.workers(),
-                    cores.compute_threads(),
-                );
-                made
-            });
-            let listener = match transport {
-                Transport::Tls => {
-                    Some(&*listener.get_or_insert_with(|| Listener::new(passthrough)))
-                }
-                Transport::Socket => None,
-            };
-            let options = Options {
-                read_window: window,
-                ..Options::default()
-            };
+    for case in Case::all() {
+        let (batches, rows) = case.frames.shape();
+        let bytes = Passthrough::bytes(batches, rows);
+        group.throughput(Throughput::Bytes(bytes));
+        let mut seconds = Vec::new();
+        group.bench_function(case.id(), |b| {
+            let slot = &mut workloads[usize::from(case.frames == Frames::Small)];
+            let workload = slot.get_or_insert_with(|| Workload::new(cores, case.frames));
             b.iter_custom(|runs| {
-                let mut took = Duration::ZERO;
-                for _ in 0..runs {
-                    let (source, destination) =
-                        passthrough.block_on(connectors(mode, transport, listener, &options));
-                    let started = Instant::now();
-                    black_box(passthrough.run(source, destination));
-                    took += started.elapsed();
-                }
+                let (took, a_gigabyte) = workload.timed(case, runs, bytes);
+                seconds.push(a_gigabyte);
                 took
             });
         });
+        // Only a benchmark that ran has timed its runs, so a listing prints nothing.
+        if !seconds.is_empty() {
+            used.push((case, seconds));
+        }
     }
     group.finish();
+    print(cores, used);
+}
+
+/// Prints the layout, and the CPU time a gigabyte each case that ran took.
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports times; the layout and the CPU time a run takes are printed beside \
+              them"
+)]
+fn print(cores: Cores, used: Vec<(Case, Vec<f64>)>) {
+    if !used.is_empty() {
+        let (workers, threads) = (cores.workers(), cores.compute_threads());
+        println!("served: {workers} runtime workers, {threads} compute threads");
+    }
+    for (case, mut seconds) in used {
+        seconds.sort_by(f64::total_cmp);
+        let (low, high) = (seconds[0], seconds[seconds.len() - 1]);
+        let median = seconds[seconds.len() / 2];
+        println!(
+            "served/{}/{}: {median:.3} CPU seconds a GB, user and system, {low:.3} to {high:.3} \
+             over {} samples",
+            case.transport.name(),
+            case.shape(),
+            seconds.len(),
+        );
+    }
 }
 
 criterion_group!(benches, served);
