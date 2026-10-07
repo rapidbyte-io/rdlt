@@ -144,10 +144,13 @@ pub(crate) async fn check(
             Found::Inapplicable(reason) => Outcome::Inapplicable(reason.into()),
             Found::Unobserved(reason) => Outcome::Unobserved(reason.into()),
         };
+        let note = (matches!(outcome, Outcome::Passed) && clause.id == "P-CREDIT")
+            .then(|| credit::note(target))
+            .flatten();
         let result = ClauseResult {
             clause: *clause,
             outcome,
-            note: None,
+            note,
         };
         observed.tell(result.clone());
         results.push(result);

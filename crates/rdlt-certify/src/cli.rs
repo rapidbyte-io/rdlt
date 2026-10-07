@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, ValueEnum};
 use rdlt_certify::{
-    Observed, Outcome, Probe, RUN_TIMEOUT, Report, Target, Unprobed, Verdict,
+    CREDIT_WATCH, Observed, Outcome, Probe, RUN_TIMEOUT, Report, Target, Unprobed, Verdict,
     certify_destination_observed, certify_source_observed, json, markdown, plain, read_back,
 };
 use rdlt_connector::ConnectorId;
@@ -94,6 +94,11 @@ struct Args {
     /// slower than about two seconds a commit needs more.
     #[arg(long, value_name = "SECONDS")]
     kill_timeout: Option<u64>,
+    /// Watches a read whose credit is spent this many milliseconds after each grant, from 1 to
+    /// 1000, rather than 1000: `P-CREDIT` then takes four times as long, and its pass notes the
+    /// watch.
+    #[arg(long, value_name = "MS", value_parser = clap::value_parser!(u64).range(1..))]
+    credit_watch: Option<u64>,
     /// Ends the certification after this many seconds, rather than 3600, failing every clause
     /// of a role still certifying then.
     #[arg(long, value_name = "SECONDS", conflicts_with = "no_timeout")]
@@ -170,6 +175,7 @@ pub(crate) fn redactions() -> &'static Redactions {
 }
 
 fn run(args: &Args) -> Result<u8, Ended> {
+    let watch = args.credit_watch.map(credit_watch).transpose()?;
     let config = configured::config(args)?;
     let target = target(args)?;
     let target = match args.kill_seed {
@@ -178,6 +184,10 @@ fn run(args: &Args) -> Result<u8, Ended> {
     };
     let target = match args.kill_timeout {
         Some(seconds) => target.kill_timeout(Duration::from_secs(seconds)),
+        None => target,
+    };
+    let target = match watch {
+        Some(watch) => target.credit_watch(watch),
         None => target,
     };
     // Held from before anything is spawned: however the certification ends, a panic of this
@@ -219,6 +229,16 @@ fn until(args: &Args) -> Result<Option<Instant>, Ended> {
         Ended(USAGE, message.to_owned())
     })?;
     Ok(Some(until))
+}
+
+/// A watch of `millis` milliseconds, which is no longer than `P-CREDIT`'s own.
+fn credit_watch(millis: u64) -> Result<Duration, Ended> {
+    let watch = Duration::from_millis(millis);
+    if watch > CREDIT_WATCH {
+        let most = CREDIT_WATCH.as_millis();
+        return Err(Ended(USAGE, format!("--credit-watch is at most {most} ms")));
+    }
+    Ok(watch)
 }
 
 /// The report of each role asked that the connector serves, or of every role when it serves

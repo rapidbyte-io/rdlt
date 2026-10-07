@@ -9,7 +9,7 @@ certification of io.rapidbyte.memory
   pass P-LIMITS
   pass P-HEARTBEAT
   pass P-MALFORMED
-  pass P-CREDIT
+  pass P-CREDIT (watched 50ms after each grant, not 1s)
   pass S-CHECK
   pass S-DISCOVER
   pass S-PLAN

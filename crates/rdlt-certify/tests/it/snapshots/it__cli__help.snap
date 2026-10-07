@@ -24,6 +24,7 @@ Options:
       --tls-ca <TLS_CA>         The CA bundle that issued the connector's certificate, in PEM, for an endpoint
       --kill-seed <SEED>        Kills the connector at the points this seed draws, as a failed kill clause reports, to reproduce the failure
       --kill-timeout <SECONDS>  Gives each kill clause this many seconds for all its loads, rather than 300: a connector slower than about two seconds a commit needs more
+      --credit-watch <MS>       Watches a read whose credit is spent this many milliseconds after each grant, from 1 to 1000, rather than 1000: `P-CREDIT` then takes four times as long, and its pass notes the watch
       --timeout <SECONDS>       Ends the certification after this many seconds, rather than 3600, failing every clause of a role still certifying then
       --no-timeout              Lets the certification take as long as its clauses' own bounds allow
       --require <REQUIRE>       What exits 0: `complete`, every clause that applies seen to be met; `partial`, none failed and one passed, whatever was not observed [default: complete] [possible values: complete, partial]

@@ -13,6 +13,7 @@ mod tests;
 use std::time::Duration;
 
 use rdlt_connector::Role;
+use rdlt_connector::testing::Reason;
 use rdlt_connector::wire::v1;
 use rdlt_host::remote::Client;
 use rdlt_wire::prost::Message as _;
@@ -22,11 +23,8 @@ use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{Found, Violation, handshaken};
+use crate::limits::CREDIT_WATCH;
 use crate::target::Target;
-
-/// How long a read whose credit is spent is watched, at first and after each grant too small to
-/// restore it, for frames it must not send, unless the target chooses.
-const QUIET: Duration = Duration::from_secs(1);
 
 /// How many grants, each too small to restore the credit, a read is watched after.
 const REGRANTS: usize = 3;
@@ -79,11 +77,22 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
         }
         // A frame spends its encoded size, as the host that grants credit counts it.
         let spent = u64::try_from(first.encoded_len()).unwrap_or(u64::MAX);
-        let quiet = target.chosen_watch().unwrap_or(QUIET);
+        let quiet = target.chosen_watch().unwrap_or(CREDIT_WATCH);
         waits_then_resumes(&controls, &mut frames, regrants(spent), quiet).await?;
         Ok(Found::Kept)
     };
     checked.await.into()
+}
+
+/// What a pass says when the read was watched for other than [`CREDIT_WATCH`] after each grant:
+/// a source that sends less often than its watch is not told from one that waits.
+pub(super) fn note(target: &Target) -> Option<Reason> {
+    let watch = target
+        .chosen_watch()
+        .filter(|watch| *watch != CREDIT_WATCH)?;
+    Some(Reason::from(format!(
+        "watched {watch:?} after each grant, not {CREDIT_WATCH:?}"
+    )))
 }
 
 /// The bytes of each of the [`REGRANTS`] grants that leave the credit of a read spent, once
