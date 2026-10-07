@@ -101,10 +101,11 @@ sim-rate floor="3" cores="": sim-archive
 # Measure how much of the engine, connector and host code the simulation alone reaches, and hold
 # it above its floor: left out are test code, the connector's test kit and SQL planner, generated
 # code, and what the simulation never runs (process placement, a served binary's entry, and the
-# write-ahead log's local-directory and in-memory stores: the simulation keeps logs in its own)
-sim-coverage seeds="1000":
+# write-ahead log's local-directory and in-memory stores: the simulation keeps logs in its own).
+# Each sweep's seeds run side by side on the host's cores, or on `cores` when given
+sim-coverage seeds="1000" cores="":
     rustup toolchain install {{ nightly }} --profile minimal --component llvm-tools-preview
-    RDLT_SIM_SEEDS="{{ seeds }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|rdlt-log-store|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|registry|connect|kills|sink|wire)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)\.rs' -E 'package(rdlt-sim) & test(through_faults)'
+    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo +{{ nightly }} llvm-cov nextest --branch --workspace --all-features --json --summary-only --output-path target/sim-coverage.json --ignore-filename-regex '(rdlt-sim|rdlt-testkit|rdlt-connector-reference|rdlt-adopt|rdlt-log-store|xtask)/|/tests?(\.rs|/)|differential|reference\.rs|/bench|/testing|sqlgen|encodings\.rs|/generated/|rdlt-host/src/(local|registry|connect|kills|sink|wire)|rdlt-certify/|serve/(args|binary)|wal/(local|memory)\.rs' -E 'package(rdlt-sim) & test(through_faults)'
     cargo xtask coverage-gate target/sim-coverage.json --lines 81 --branches 73
 
 # Measure line and branch coverage and apply the CI gate. Spawned connectors write profiles too, and
