@@ -65,44 +65,16 @@ test *args:
     cargo nextest run --workspace --all-features --benches -E 'kind(bench)'
     cargo nextest run --package rdlt-connector --features serve -E 'test(serve::probes)'
 
-# Run the simulation suite; pass a seed to replay one run, or an empty seed, a count and the first
-# seed of a shard
-sim seed="" seeds="1000" from="0":
-    RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim
+# Build the simulation's integration tests in the `sim` profile, optimised with its overflow
+# checks and debug assertions kept, into the archive `sim`, `stress` and `sim-rate` run
+sim-archive:
+    cargo nextest archive --package rdlt-sim --all-features --cargo-profile sim --test it --archive-file target/sim.tar.zst
 
-# Run a count of seeds from a first seed as shards side by side, one a core by default; each
-# shard's output is in `target/sim-shards/<shard>.log`, and a failing shard names its seed there
-sim-shards $seeds="100000" $shards=`nproc 2>/dev/null || sysctl -n hw.ncpu` $from="0":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # A count, a number of shards and a first seed, each small enough that no sum below overflows.
-    [[ $seeds =~ ^[1-9][0-9]{0,11}$ ]] || { echo "seeds must be an integer from 1 to 999999999999" >&2; exit 2; }
-    [[ $shards =~ ^[1-9][0-9]{0,3}$ ]] || { echo "shards must be an integer from 1 to 9999" >&2; exit 2; }
-    [[ $from =~ ^(0|[1-9][0-9]{0,11})$ ]] || { echo "from must be a seed from 0 to 999999999999" >&2; exit 2; }
-    cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --no-run
-    rm -rf target/sim-shards && mkdir -p target/sim-shards
-    per=$(( (seeds + shards - 1) / shards ))
-    pids=()
-    for shard in $(seq 0 $(( shards - 1 ))); do
-        first=$(( from + shard * per ))
-        count=$(( from + seeds - first ))
-        (( count > per )) && count=$per
-        (( count > 0 )) || break
-        RDLT_SIM_SEED="" RDLT_SIM_SEEDS="$count" RDLT_SIM_SEEDS_FROM="$first" \
-            cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --test-threads 1 \
-            > "target/sim-shards/$shard.log" 2>&1 &
-        pids+=("$!")
-    done
-    failed=0
-    for shard in "${!pids[@]}"; do
-        if wait "${pids[$shard]}"; then
-            echo "shard $shard passed"
-        else
-            echo "shard $shard failed: $(grep -m1 'failing seed' "target/sim-shards/$shard.log" || echo 'see its log')"
-            failed=1
-        fi
-    done
-    exit "$failed"
+# Run the simulation's two sweeps from its archive, each sweep's seeds side by side on the host's
+# cores, or on `cores` when given; pass a seed to replay one run, or an empty seed, a count and the
+# first seed of a shard. Each seed's timing is a line of `target/sim-timings/<sweep>.jsonl`
+sim seed="" seeds="1000" from="0" cores="": sim-archive
+    RDLT_SIM_SEED="{{ seed }}" RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_SEEDS_FROM="{{ from }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(through_faults)'
 
 # Crash a pipeline run in a process of its own at every durability step, and kill it or its
 # spawned connectors as it loads, then check every row landed once; a seed draws the same kill points
@@ -117,8 +89,14 @@ containers *args:
 
 # Run the simulation on many threads and the real clock, where races the paused single thread
 # never meets can happen; its failures name their seed but do not replay exactly
-stress seeds="20":
-    RDLT_SIM_SEEDS="{{ seeds }}" cargo nextest run --package rdlt-sim --all-features --cargo-profile sim --run-ignored ignored-only -E 'test(many_threads)'
+stress seeds="20" cores="": sim-archive
+    RDLT_SIM_SEEDS="{{ seeds }}" RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . --run-ignored ignored-only -E 'test(many_threads)'
+
+# Measure how many seeds a second the exactly-once sweep runs over seeds 0 to 999, from the
+# simulation's archive, and fail below `floor`; docs/perf/sim.md records the rate and the floor
+sim-rate floor="3" cores="": sim-archive
+    RDLT_SIM_SEED="" RDLT_SIM_SEEDS=1000 RDLT_SIM_SEEDS_FROM=0 RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=exactly_once::every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs)'
+    cargo xtask sim-rate target/sim-timings/exactly_once.jsonl --floor {{ floor }}
 
 # Measure how much of the engine, connector and host code the simulation alone reaches, and hold
 # it above its floor: left out are test code, the connector's test kit and SQL planner, generated
