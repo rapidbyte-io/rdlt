@@ -377,14 +377,22 @@ pub(crate) enum Writing {
 /// Where a [`Writes`] destination's writes wait until a test lets them through.
 pub(crate) struct Gate {
     open: std::sync::atomic::AtomicBool,
+    /// The writes let through before the gate holds the rest.
+    ahead: std::sync::atomic::AtomicUsize,
     /// The writes let through.
     pub(crate) kept: Kept,
 }
 
 impl Gate {
     pub(crate) const fn new() -> Self {
+        Self::after(0)
+    }
+
+    /// A gate that lets `writes` through, then holds the rest until it is opened.
+    pub(crate) const fn after(writes: usize) -> Self {
         Self {
             open: std::sync::atomic::AtomicBool::new(false),
+            ahead: std::sync::atomic::AtomicUsize::new(writes),
             kept: Kept::new(Vec::new()),
         }
     }
@@ -610,7 +618,11 @@ impl DestinationWriter for WrongWriter {
                     Ok(())
                 }
                 Writing::Gated(gate) => {
-                    while !gate.open.load(std::sync::atomic::Ordering::SeqCst) {
+                    use std::sync::atomic::Ordering::SeqCst;
+                    let ahead = gate
+                        .ahead
+                        .fetch_update(SeqCst, SeqCst, |left| left.checked_sub(1));
+                    while ahead.is_err() && !gate.open.load(SeqCst) {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                     let mut kept = gate.kept.lock().expect("the lock is not poisoned");
