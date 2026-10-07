@@ -5,8 +5,9 @@
 //! The timed benches keep the system allocator, since counting every call slows the runs that
 //! allocate most.
 //!
-//! An argument, the name of one of those benches, counts only its workloads; `--names` lists
-//! the benches it counts.
+//! An argument, the name of one of those benches, counts only its workloads; `--list` lists the
+//! benches it counts as a test harness lists its tests, so a test runner counts each bench's
+//! workloads in a process of its own.
 
 #![forbid(unsafe_code)]
 
@@ -34,22 +35,30 @@ const COUNTED: [(&str, fn()); 5] = [
     ("wide", widening),
 ];
 
-#[expect(clippy::print_stdout, reason = "the names are what `--names` asks for")]
+#[expect(clippy::print_stdout, reason = "the names are what `--list` asks for")]
 fn main() {
     let names = COUNTED.map(|(name, _)| name);
-    if std::env::args().any(|arg| arg == "--names") {
-        for name in names {
-            println!("{name}");
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|arg| arg == "--list") {
+        // None of them is ignored.
+        if !args.iter().any(|arg| arg == "--ignored") {
+            for name in names {
+                println!("{name}: test");
+            }
         }
         return;
     }
-    let only = std::env::args().skip(1).find(|arg| !arg.starts_with('-'));
+    let only = args
+        .iter()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-'))
+        .map(String::as_str);
     assert!(
-        only.as_deref().is_none_or(|bench| names.contains(&bench)),
+        only.is_none_or(|bench| names.contains(&bench)),
         "only the workloads of {names:?} are counted, not {only:?}"
     );
     for (name, count) in COUNTED {
-        if only.as_deref().is_none_or(|only| only == name) {
+        if only.is_none_or(|only| only == name) {
             count();
         }
     }
