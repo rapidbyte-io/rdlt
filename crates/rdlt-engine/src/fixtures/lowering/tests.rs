@@ -71,7 +71,10 @@ fn every_case_is_named_once() {
 
 #[test]
 fn the_text_case_stores_every_column_as_text_and_the_native_one_as_it_arrives() {
-    let (text, _) = prepared(LoweringCase::AppendText);
+    let (text, batch) = prepared(LoweringCase::AppendText);
+    let uuids = batch.column_by_name("uuid").unwrap().as_string::<i32>();
+    assert_eq!(uuids.value(0), "00000000-0000-0000-0000-000000000000");
+    assert_eq!(uuids.value(1), "00000000-0000-0000-9e37-79b97f4a7c15");
     let view = text.plan().view();
     assert!(
         view.lowered
