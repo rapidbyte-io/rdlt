@@ -272,8 +272,8 @@ fn read(place: &Place, chunk: Chunk, offset: u64, len: u64) -> io::Result<Bytes>
 }
 
 /// Removes `load`'s log in `place`, durably: the file that marks it open first, then its staged
-/// files and chunks, then its directory; a directory a staging still fills is left, removed, for
-/// a later removal.
+/// files and chunks, then its directory; a directory a staging still fills is left to that
+/// staging's publish or discard, and one a staging never ended fills, to a later removal.
 fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
     let Some(pipeline) = place.pipeline()? else {
         return Ok(());
@@ -304,7 +304,17 @@ fn remove_log(place: &Place, load: LoadId) -> io::Result<()> {
         drop(dir.remove_file(&made));
     }
     dir.sync()?;
-    match pipeline.remove_dir(&name) {
+    remove_emptied(&pipeline, load)
+}
+
+/// Removes `load`'s directory in `pipeline`, durably, where it is empty: a log closed and emptied.
+///
+/// An open log's directory holds the file that marks it open, so only a removed log's goes. A
+/// removal finds the directory full where a staging's file landed or was linked in after its
+/// listing; the publish or discard that then empties it removes it, so whichever of them ends
+/// last finds it empty.
+fn remove_emptied(pipeline: &Dir, load: LoadId) -> io::Result<()> {
+    match pipeline.remove_dir(&names::load(load)) {
         Err(error) if error.raw_os_error() == Some(rustix::io::Errno::NOTEMPTY.raw_os_error()) => {
             return Ok(());
         }

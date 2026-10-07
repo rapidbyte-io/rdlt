@@ -58,7 +58,9 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
   `{chunk:08}.{token:016x}.part`, created exclusive and 0600; publishing syncs it, links it to
   `{chunk:08}.wal` with `linkat`, which fails where that name exists, checks the name is the file
   it staged (device and inode) and the log still open, unlinking it again otherwise, unlinks the
-  staged name and syncs the directory. Each deletion syncs the directory it removed from.
+  staged name and syncs the directory. Each deletion syncs the directory it removed from. A
+  removal that finds a staging's file in the directory once it deleted what it listed leaves the
+  directory to that staging, whose refused publish or discard removes it once it is empty.
 - One durable write per commit: what was logged since the previous commit, the commit's frame
   and an `End` frame go into the chunk published at that commit.
 - Claims are gone. A replay takes a log over by deleting what its load staged, then publishing
