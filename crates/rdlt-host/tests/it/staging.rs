@@ -123,31 +123,37 @@ async fn a_served_write_that_flushes_in_time_stages_as_much_as_it_likes() {
 
 #[tokio::test]
 async fn the_hosts_writer_flushes_before_it_stages_more_than_the_destination_holds() {
-    let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
-    let io = served_within(served, limits());
-    let config = serde_json::json!({ "store": "staged_host" });
-    let connection = Connection::connect(io, Role::Destination, &config, Options::default())
-        .await
-        .expect("the destination handshakes");
-    let destination = RemoteDestination::new(connection).expect("its capabilities are declared");
-    let context = OpenContext {
-        pipeline: PipelineId::parse("staging").expect("a valid pipeline id"),
-        load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
-    };
-    let mut opened = destination.open(&context).await.expect("the session opens");
-    let mut writer = opened
-        .session
-        .writer(&table())
-        .await
-        .expect("the writer opens");
-    // Forty writes with no flush asked for: the writer flushes as the destination's limit nears.
-    for _ in 0..40 {
-        writer
-            .write(SegmentId(1), ids(MEBIBYTE))
+    // Frames of a mebibyte, within the credit floor; and frames of nearly the frame limit, whose
+    // window of two frames leaves credit to spare when the destination's limit nears.
+    let near = i64::try_from(MIN_FRAME_BYTES * 15 / 16 / 8).expect("fits");
+    for (store, rows, writes) in [("staged_host", MEBIBYTE, 40), ("staged_spare", near, 10)] {
+        let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
+        let io = served_within(served, limits());
+        let config = serde_json::json!({ "store": store });
+        let connection = Connection::connect(io, Role::Destination, &config, Options::default())
             .await
-            .expect("the write is staged");
+            .expect("the destination handshakes");
+        let destination =
+            RemoteDestination::new(connection).expect("its capabilities are declared");
+        let context = OpenContext {
+            pipeline: PipelineId::parse("staging").expect("a valid pipeline id"),
+            load_id: LoadId::from_parts(std::time::UNIX_EPOCH, 1),
+        };
+        let mut opened = destination.open(&context).await.expect("the session opens");
+        let mut writer = opened
+            .session
+            .writer(&table())
+            .await
+            .expect("the writer opens");
+        // Writes with no flush asked for: the writer flushes as the destination's limit nears.
+        for _ in 0..writes {
+            writer
+                .write(SegmentId(1), ids(rows))
+                .await
+                .expect("the write is staged");
+        }
+        let stats = writer.flush().await.expect("the flush answers");
+        // The stats of the flushes the writer made itself are in those of the flush asked for.
+        assert_eq!(stats.rows, writes * rows.unsigned_abs(), "{store}");
     }
-    let stats = writer.flush().await.expect("the flush answers");
-    // The stats of the flushes the writer made itself are in those of the flush asked for.
-    assert_eq!(stats.rows, 40 * MEBIBYTE.unsigned_abs());
 }

@@ -25,11 +25,11 @@ use crate::support::connectors::{FLAGGED, Hook, Ticks, Writes, Writing};
 use crate::support::{served, served_within};
 
 /// Rows the source sends as one batch, and the flags beside each row's id: 301 values a row.
-const ROWS: u64 = 5_000;
+const ROWS: u64 = 9_000;
 const FLAGS: usize = 300;
 
 /// The pieces a destination taking the fewest rows a frame gets of the batch.
-const PIECES: usize = 5;
+const PIECES: usize = 9;
 
 /// The source of one batch of [`ROWS`] rows, served, read within `options`.
 async fn ticks(options: &Options) -> RemoteSource {
@@ -190,7 +190,7 @@ async fn a_run_stopped_between_a_batchs_pieces_publishes_none_of_them_and_the_ne
 #[tokio::test(flavor = "multi_thread")]
 async fn a_logged_batch_whose_replay_fails_between_its_pieces_is_replayed_and_cut_again() {
     // The first commit is lost once every piece was staged; its replay stages two pieces and
-    // fails; the replay after it stages all five and commits.
+    // fails; the replay after it stages all nine and commits.
     static HOOK: Hook = Hook::at(PIECES + 2);
     HOOK.failing_commit.store(true, Ordering::SeqCst);
     HOOK.then(|| {
@@ -209,7 +209,7 @@ async fn a_logged_batch_whose_replay_fails_between_its_pieces_is_replayed_and_cu
     succeeded(&outcome, 3);
     assert_eq!(ids("cuts_replayed"), every_row());
     // The rows came from the log, uncut there, and were cut for the destination each time:
-    // the source sent them once, and the destination staged five pieces, two, then five.
+    // the source sent them once, and the destination staged nine pieces, two, then nine.
     assert_eq!(HOOK.writes(), PIECES + 2 + PIECES);
     let sent = FLAGGED.lock().expect("the lock is not poisoned");
     assert_eq!(sent.get("cuts_replayed"), Some(&ROWS));
@@ -263,9 +263,9 @@ impl tokio::io::AsyncWrite for Severed {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next_attempt_all() {
-    // The source's rows reach the host as two pieces, of about 160 and 75 kilobytes, a frame
-    // of credit at a time. Its first connection fails once the host has read 200 kilobytes:
-    // the first piece, and part of the second.
+    // The source's rows reach the host as three pieces, of about 312, 312 and 185 kilobytes,
+    // after a schema of 13; its window is two pieces once the first is taken. Its first
+    // connection fails once the host has read 700 kilobytes: two pieces, and part of the third.
     static SEVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static HOOK: Hook = Hook::at(usize::MAX);
     let options = Options {
@@ -281,7 +281,7 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
         let left = if SEVERED.swap(true, Ordering::SeqCst) {
             usize::MAX
         } else {
-            200_000
+            700_000
         };
         let stream = Severed { inner, left };
         Box::pin(async move { Ok(Box::new(stream) as Box<dyn rdlt_host::Stream>) })
@@ -307,9 +307,9 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
 
 #[tokio::test]
 async fn a_checkpoint_asked_for_between_a_batchs_pieces_follows_its_last_piece() {
-    // The host takes the fewest values a frame the protocol allows, and grants credit for one
-    // frame at a time: the batch's second piece waits for credit when the host, the first in
-    // hand, asks for a checkpoint. The source answers at once; its answer follows the piece.
+    // The host takes the fewest values a frame the protocol allows, so the batch goes as three
+    // pieces, and grants a byte of credit at first: the host asks for a checkpoint with the
+    // first piece in hand, and the source answers at once; its answer follows the last piece.
     let options = Options {
         limits: Limits {
             batch_values: MIN_BATCH_VALUES,
@@ -346,5 +346,5 @@ async fn a_checkpoint_asked_for_between_a_batchs_pieces_follows_its_last_piece()
         .expect("the read does not panic")
         .expect("the read succeeds");
     // 301 values a row: a frame's values hold 3483 rows.
-    assert_eq!(events, [Ok(3_483), Ok(1_517), Err(Some(1))]);
+    assert_eq!(events, [Ok(3_483), Ok(3_483), Ok(2_034), Err(Some(1))]);
 }

@@ -189,7 +189,7 @@ fn ids(count: i64) -> RecordBatch {
 }
 
 /// A writer of `table` in a session of the destination `served` over `store`, within `limits`.
-async fn writer(
+pub(crate) async fn writer(
     served: Served,
     limits: Limits,
     store: &str,
@@ -268,7 +268,8 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
         ..quick()
     };
     let mut writer = writer(served, Limits::default(), "flow_stalls", &options).await;
-    // Batches of about 160 KB, so the transport's windows fill before the connector's credit.
+    // Batches of about 160 KB: 27 of them spend the credit floor, and the first, stalled, is
+    // never taken, so the writer waits for credit that does not come.
     let written = tokio::time::timeout(
         Duration::from_secs(10),
         write_until_failed(writer.as_mut(), &ids(20_000), 40),
@@ -482,7 +483,7 @@ async fn a_batch_is_cut_to_the_connectors_own_frames_for_a_host_that_takes_large
 }
 
 /// A writer of the table `orders` on a fake destination that answers its writes as `fault` says.
-async fn trickled(
+pub(crate) async fn trickled(
     fault: crate::support::fake::Fault,
     options: &Options,
 ) -> Box<dyn DestinationWriter> {
