@@ -1,123 +1,75 @@
-//! Arrow passthrough: the engine against a bare loop writing the same batches to the
-//! same destination; the gate is at most 10 % overhead.
+//! Arrow passthrough: the engine against a bare loop writing the same batches to the same
+//! destination, timed in blocks that run each side first as often as last, so drift between
+//! runs cancels out of their ratio.
 
 #![forbid(unsafe_code)]
 
 use std::hint::black_box;
-use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use arrow_array::{
-    ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
-    TimestampMicrosecondArray,
+use criterion::{
+    BenchmarkId, Criterion, SamplingMode, Throughput, criterion_group, criterion_main,
 };
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter};
-use rdlt_engine::bench::{SinkWriter, ipc_sink, replay};
-use rdlt_engine::{CommitPolicy, Cores, Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
+use rdlt_engine::Cores;
+use rdlt_engine::bench::{Paired, Passthrough, logical_bytes};
 
-/// Rows per batch: about 7 MB of ten mixed columns, as docs/perf/passthrough.md records.
-const ROWS: i64 = 80_000;
-/// Batches per run.
-const BATCHES: usize = 64;
+/// Samples the paired group takes, each the ratio of the blocks it ran.
+const SAMPLES: usize = 30;
 
-fn batch(offset: i64) -> RecordBatch {
-    let ids = offset..offset + ROWS;
-    let int = |factor: i64| -> ArrayRef {
-        Arc::new(Int64Array::from_iter_values(
-            ids.clone().map(|id| id * factor),
-        ))
-    };
-    let float = |factor: f64| -> ArrayRef {
-        Arc::new(Float64Array::from_iter_values(
-            ids.clone()
-                .map(|id| f64::from(u32::try_from(id).unwrap_or(0)) * factor),
-        ))
-    };
-    let text = |prefix: &str| -> ArrayRef {
-        Arc::new(StringArray::from_iter_values(
-            ids.clone().map(|id| format!("{prefix}-{id:08}")),
-        ))
-    };
-    let at: ArrayRef = Arc::new(
-        TimestampMicrosecondArray::from_iter_values(
-            ids.clone().map(|id| 1_790_000_000_000_000 + id),
-        )
-        .with_timezone("UTC"),
-    );
-    let flag: ArrayRef = Arc::new(BooleanArray::from_iter(
-        ids.clone().map(|id| Some(id % 3 == 0)),
-    ));
-    let small: ArrayRef = Arc::new(Int32Array::from_iter_values(
-        ids.clone().map(|id| i32::try_from(id % 1000).unwrap_or(0)),
-    ));
-    RecordBatch::try_from_iter([
-        ("id", int(1)),
-        ("a", int(7)),
-        ("b", int(13)),
-        ("x", float(0.5)),
-        ("y", float(1.25)),
-        ("name", text("user")),
-        ("city", text("city")),
-        ("at", at),
-        ("flag", flag),
-        ("n", small),
-    ])
-    .expect("equal-length columns make a batch")
+/// One side of a pair.
+#[derive(Clone, Copy)]
+enum Side {
+    Bare,
+    Engine,
 }
 
+/// The runs of one block: each side runs first once and last once.
+const BLOCK: [Side; 4] = [Side::Bare, Side::Engine, Side::Engine, Side::Bare];
+
+#[expect(
+    clippy::print_stdout,
+    reason = "criterion reports the engine's time; the ratio is printed beside it"
+)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a benchmark times its runs on the real clock"
+)]
 fn passthrough(c: &mut Criterion) {
-    let batches: Vec<RecordBatch> = (0..BATCHES)
-        .map(|index| batch(i64::try_from(index).unwrap_or(0) * ROWS))
-        .collect();
-    let bytes: usize = batches.iter().map(RecordBatch::get_array_memory_size).sum();
     let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(cores.workers().get())
-        .enable_all()
-        .build()
-        .expect("a runtime starts");
+    let bench = Passthrough::try_new(cores, Passthrough::BATCHES, Passthrough::ROWS)
+        .expect("the pool starts");
+    let (workers, threads) = (cores.workers(), cores.compute_threads());
+    let layout = format!("{workers}+{threads}");
+    let mut ratios = Vec::new();
     let mut group = c.benchmark_group("passthrough");
-    group.sample_size(10);
-    group.throughput(Throughput::Bytes(u64::try_from(bytes).unwrap_or(u64::MAX)));
-    group.bench_function("bare", |b| {
-        b.iter(|| {
-            runtime.block_on(async {
-                let mut writer = SinkWriter::new(Arc::default());
-                for batch in &batches {
-                    writer
-                        .write(SegmentId(1), batch.clone())
-                        .await
-                        .expect("the sink writes");
+    group.sample_size(SAMPLES).sampling_mode(SamplingMode::Flat);
+    group.throughput(Throughput::Bytes(logical_bytes(bench.batches())));
+    group.bench_function(BenchmarkId::new("paired", &layout), |b| {
+        b.iter_custom(|blocks| {
+            if blocks == 0 {
+                return Duration::ZERO;
+            }
+            let mut took = [Duration::ZERO; 2];
+            for _ in 0..blocks {
+                for side in BLOCK {
+                    let started = Instant::now();
+                    black_box(match side {
+                        Side::Bare => bench.bare_loop(),
+                        Side::Engine => bench.engine_run(),
+                    });
+                    took[side as usize] += started.elapsed();
                 }
-                black_box(writer.flush().await.expect("the sink flushes"))
-            })
-        });
-    });
-    let config = EngineConfig::builder()
-        .memory(1 << 30)
-        .commit(CommitPolicy::new(None, None, Some(1 << 40)).expect("a valid policy"))
-        .build()
-        .expect("a valid configuration");
-    let env = SystemEnv::try_from_runtime(runtime.handle()).expect("the pool starts");
-    let engine = Engine::new(config, Arc::new(env));
-    let plan = PipelinePlan::new(
-        PipelineId::parse("passthrough").expect("a valid id"),
-        [StreamPlan::new(
-            StreamName::new("events").expect("a valid name"),
-        )],
-    )
-    .expect("a valid plan");
-    group.bench_function("engine", |b| {
-        b.iter(|| {
-            runtime.block_on(async {
-                let source = replay("passthrough", batches.clone()).await;
-                let outcome = engine.run(plan.clone(), source, ipc_sink().await).await;
-                assert!(outcome.error.is_none(), "{:?}", outcome.error);
-                black_box(outcome.report.rows)
-            })
+            }
+            let [bare, engine] = took;
+            ratios.push(engine.as_secs_f64() / bare.as_secs_f64());
+            engine / 2
         });
     });
     group.finish();
+    println!("passthrough/paired/{layout}: {workers} runtime workers, {threads} compute threads");
+    if let Some(paired) = Paired::of(&ratios[ratios.len().saturating_sub(SAMPLES)..]) {
+        println!("  engine over bare loop: {paired}");
+    }
 }
 
 criterion_group!(benches, passthrough);
