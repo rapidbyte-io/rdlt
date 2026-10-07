@@ -12,6 +12,7 @@ compile_error!(
 pub mod bounded;
 pub mod codec;
 pub mod error;
+pub mod flow;
 pub mod limits;
 pub mod scan;
 #[cfg(feature = "tls")]
