@@ -1,26 +1,31 @@
-//! What one run of each bench workload allocates, a row and a batch, under a counting allocator:
-//! the shred bench's single-core groups, both sides of the passthrough pairs, each batch the
-//! lowering bench prepares, and each run of the normalized and wide benches.
+//! What the engine's hot paths allocate under a counting allocator: what one run of each bench
+//! workload allocates, a row and a batch, and each case the instruction counts run.
 //!
-//! The timed benches keep the system allocator, since counting every call slows the runs that
-//! allocate most.
+//! The workloads are the shred bench's single-core groups, both sides of the passthrough pairs,
+//! each batch the lowering bench prepares, and each run of the normalized and wide benches; the
+//! timed benches keep the system allocator, since counting every call slows the runs that
+//! allocate most. An argument, the name of one of those benches, counts only its workloads.
 //!
-//! An argument, the name of one of those benches, counts only its workloads; `--list` lists the
-//! benches it counts as a test harness lists its tests, so a test runner counts each bench's
-//! workloads in a process of its own.
+//! A case's name, then a count of iterations, as `cargo xtask instructions` runs it under
+//! callgrind, makes the case's inputs, runs its work that many times, once without a count, and
+//! prints the allocations the process made; `--cases` names the cases. `--list` lists the benches
+//! and the cases as a test harness lists its tests, so a test runner runs each in a process of its
+//! own.
 
 #![forbid(unsafe_code)]
 
 use std::alloc::System;
 use std::hint::black_box;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
+use std::process::ExitCode;
 
 use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Lowering, Normalized, Passthrough, Wide, counted,
-    normalize, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Lowering, Normalized, Passthrough, Replayed, Wide,
+    counted, normalize, null_sink, replay, sample_log, scan_log, shred,
 };
+use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 
 #[global_allocator]
@@ -35,33 +40,127 @@ const COUNTED: [(&str, fn()); 5] = [
     ("wide", widening),
 ];
 
-#[expect(clippy::print_stdout, reason = "the names are what `--list` asks for")]
-fn main() {
-    let names = COUNTED.map(|(name, _)| name);
+/// Bytes of JSON each shredding and normalizing case reads.
+const COUNTED_BYTES: usize = 1 << 20;
+/// Batches the passthrough case moves each time.
+const BATCHES: u32 = 8;
+/// Rows of each batch the passthrough, log and codec cases move.
+const ROWS: u32 = 8192;
+/// One runtime worker and one compute thread, whatever the host has: a case counts the same on
+/// every machine only on a layout it fixes, which is a measuring fixture and no deployment's.
+const LAYOUT: Cores = Cores::new(
+    NonZeroUsize::new(2).expect("two is not zero"),
+    NonZeroUsize::MIN,
+);
+
+/// A case's name, and what runs it: its inputs made once, then its work as many times as asked.
+type Case = (&'static str, fn(usize));
+
+/// Every case the instruction counts run.
+const CASES: [Case; 12] = [
+    ("passthrough/null_sink", passed_through),
+    ("shred/nested", |times| shredded(Corpus::Nested, times)),
+    ("shred/with_arrays", |times| {
+        shredded(Corpus::WithArrays, times);
+    }),
+    ("shred/flat_narrow", |times| {
+        shredded(Corpus::FlatNarrow, times);
+    }),
+    ("shred/wide_200", |times| {
+        shredded(Corpus::Wide(200), times);
+    }),
+    ("shred/string_heavy", |times| {
+        shredded(Corpus::StringHeavy, times);
+    }),
+    ("normalize/keyless/nested", |times| {
+        normalized(Corpus::Nested, &[], times);
+    }),
+    ("normalize/keyless/with_arrays", |times| {
+        normalized(Corpus::WithArrays, &[], times);
+    }),
+    ("normalize/keyed/with_arrays", |times| {
+        normalized(Corpus::WithArrays, &["id"], times);
+    }),
+    ("wal/encode", log_encoded),
+    ("wal/scan", log_scanned),
+    ("ipc/roundtrip", round_tripped),
+];
+
+#[expect(
+    clippy::print_stdout,
+    reason = "names and allocation counts are what is asked for"
+)]
+fn main() -> ExitCode {
+    let benches = COUNTED.map(|(name, _)| name);
+    let cases = CASES.map(|(name, _)| name);
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--list") {
         // None of them is ignored.
         if !args.iter().any(|arg| arg == "--ignored") {
-            for name in names {
+            for name in benches.iter().chain(&cases) {
                 println!("{name}: test");
             }
         }
-        return;
+        return ExitCode::SUCCESS;
     }
-    let only = args
+    if args.iter().any(|arg| arg == "--cases") {
+        for name in cases {
+            println!("{name}");
+        }
+        return ExitCode::SUCCESS;
+    }
+    let named: Vec<&str> = args
         .iter()
         .skip(1)
-        .find(|arg| !arg.starts_with('-'))
-        .map(String::as_str);
-    assert!(
-        only.is_none_or(|bench| names.contains(&bench)),
-        "only the workloads of {names:?} are counted, not {only:?}"
-    );
-    for (name, count) in COUNTED {
-        if only.is_none_or(|only| only == name) {
-            count();
+        .filter(|arg| !arg.starts_with('-'))
+        .map(String::as_str)
+        .collect();
+    match named.as_slice() {
+        [] => {
+            for (_, count) in COUNTED {
+                count();
+            }
+            for (_, run) in CASES {
+                run(1);
+            }
         }
+        [bench] if benches.contains(bench) => {
+            COUNTED
+                .iter()
+                .filter(|(name, _)| name == bench)
+                .for_each(|(_, count)| count());
+        }
+        [case] | [case, _] if cases.contains(case) => {
+            let times = match named.get(1) {
+                None => 1,
+                Some(times) => match times.parse() {
+                    Ok(times) => times,
+                    Err(_) => return usage(),
+                },
+            };
+            CASES
+                .iter()
+                .filter(|(name, _)| name == case)
+                .for_each(|(_, run)| run(times));
+            println!("allocations {}", HEAP.stats().allocations);
+        }
+        _ => return usage(),
     }
+    ExitCode::SUCCESS
+}
+
+#[expect(
+    clippy::print_stderr,
+    reason = "the usage is the error a wrong call gets"
+)]
+fn usage() -> ExitCode {
+    eprintln!(
+        "usage: allocations [<bench> | <case> [<iterations>] | --cases | --list]; benches {:?}, \
+         cases {:?}",
+        COUNTED.map(|(name, _)| name),
+        CASES.map(|(name, _)| name)
+    );
+    ExitCode::FAILURE
 }
 
 /// The single-core shred and normalize groups' workloads.
@@ -180,4 +279,75 @@ fn report(id: &str, run: impl FnOnce() -> (usize, usize)) {
         allocated.per(units(rows)),
         allocated.per(units(batches))
     );
+}
+
+/// The engine moving [`BATCHES`] batches of [`ROWS`] rows from a replaying source to the null
+/// sink, on [`LAYOUT`].
+fn passed_through(times: usize) {
+    let passthrough = Passthrough::try_new(LAYOUT, BATCHES, ROWS).expect("the pool starts");
+    for _ in 0..times {
+        let replayed = Replayed::Batches(passthrough.batches().to_vec());
+        let source = passthrough.block_on(replay("passthrough", replayed));
+        black_box(passthrough.run(source, passthrough.block_on(null_sink())));
+    }
+}
+
+/// Shredding [`COUNTED_BYTES`] of `corpus` on the calling thread.
+fn shredded(corpus: Corpus, times: usize) {
+    let pushes = corpus.pushes(COUNTED_BYTES);
+    for _ in 0..times {
+        black_box(shred(&pushes, CHUNK_BYTES).expect("the corpus shreds"));
+    }
+}
+
+/// Normalizing, to depth 8 and with `key`, the batches [`COUNTED_BYTES`] of `corpus` shreds into.
+fn normalized(corpus: Corpus, key: &[&str], times: usize) {
+    let batches = shred(&corpus.pushes(COUNTED_BYTES), CHUNK_BYTES).expect("the corpus shreds");
+    for _ in 0..times {
+        for batch in &batches {
+            black_box(normalize(batch, 8, key).expect("the batch normalizes"));
+        }
+    }
+}
+
+/// A log's frames for one batch of [`ROWS`] rows.
+fn log_encoded(times: usize) {
+    let batch = Passthrough::batch(0, ROWS);
+    for _ in 0..times {
+        black_box(sample_log(batch.clone()));
+    }
+}
+
+/// The scan of that log.
+fn log_scanned(times: usize) {
+    let log = sample_log(Passthrough::batch(0, ROWS));
+    for _ in 0..times {
+        black_box(scan_log(&log).expect("the log reads back"));
+    }
+}
+
+/// The wire codec over one batch of [`ROWS`] rows.
+fn round_tripped(times: usize) {
+    let batch = Passthrough::batch(0, ROWS);
+    for _ in 0..times {
+        black_box(roundtrip(&batch));
+    }
+}
+
+/// `batch` encoded as one sender encodes it, then decoded as its receiver decodes it.
+fn roundtrip(batch: &RecordBatch) -> RecordBatch {
+    let mut encoder = Encoder::default();
+    let schema = encoder.schema(&batch.schema()).expect("the schema encodes");
+    let frames = encoder.batch(batch).expect("the batch encodes");
+    let mut decoder = Decoder::new(Limits::default());
+    decoder.schema(&schema).expect("the schema decodes");
+    let mut received = None;
+    // A batch's dictionaries come before it, so the frames are decoded in the order sent.
+    for frame in &frames {
+        received = decoder
+            .frame(frame)
+            .expect("the frame decodes")
+            .or(received);
+    }
+    received.expect("the last frame is the batch")
 }
