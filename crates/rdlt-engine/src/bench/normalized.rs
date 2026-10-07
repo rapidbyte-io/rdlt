@@ -6,24 +6,17 @@
 mod tests;
 
 use std::num::NonZeroU64;
-use std::sync::Arc;
 
 use bytes::Bytes;
-use rdlt_connector::{PipelineId, StreamName};
-use tokio::runtime::Runtime;
 
+use super::runner::{Runner, stream};
 use super::{CHUNK_BYTES, Corpus, Replayed, null_sink, replay};
-use crate::{
-    CommitPolicy, ComputePoolError, Cores, Engine, EngineConfig, Nested, PipelinePlan,
-    SchemaSettings, StreamPlan, SystemEnv,
-};
+use crate::{ComputePoolError, Cores, Nested, SchemaSettings};
 
 /// The rows of the orders corpus pushed `per_push` a push, normalized through the engine.
 #[derive(Debug)]
 pub struct Normalized {
-    runtime: Runtime,
-    engine: Engine,
-    plan: PipelinePlan,
+    runner: Runner,
     pushes: Vec<Bytes>,
     roots: u64,
 }
@@ -55,27 +48,9 @@ impl Normalized {
         roots: u64,
         per_push: NonZeroU64,
     ) -> Result<Self, ComputePoolError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(cores.workers().get())
-            .enable_all()
-            .build()
-            .expect("a runtime starts");
-        let config = EngineConfig::builder()
-            .memory(1 << 30)
-            .commit(CommitPolicy::new(None, None, Some(1 << 40)).expect("a valid policy"))
-            .build()
-            .expect("a valid configuration");
-        let stream = StreamPlan::new(StreamName::new("events").expect("a valid name"))
-            .schema(SchemaSettings::new().nested(Nested::normalize()));
-        let plan = PipelinePlan::new(
-            PipelineId::parse("normalized").expect("a valid id"),
-            [stream],
-        )
-        .expect("a valid plan");
+        let stream = stream().schema(SchemaSettings::new().nested(Nested::normalize()));
         Ok(Self {
-            runtime,
-            engine: Engine::new(config, Arc::new(SystemEnv::try_new(cores)?)),
-            plan,
+            runner: Runner::try_new(cores, "normalized", stream, None)?,
             pushes: Corpus::Orders.rows(roots, per_push),
             roots,
         })
@@ -126,15 +101,12 @@ impl Normalized {
     ///
     /// Panics where the run fails or loads other rows than [`Normalized::rows`].
     pub fn run(&self) -> u64 {
-        self.runtime.block_on(async {
-            let source = replay("normalized", Replayed::Json(self.pushes.clone())).await;
-            let outcome = self
-                .engine
-                .run(self.plan.clone(), source, null_sink().await)
-                .await;
-            assert!(outcome.error.is_none(), "{:?}", outcome.error);
-            assert_eq!(outcome.report.rows, self.rows());
-            outcome.report.rows
-        })
+        let replayed = Replayed::Json(self.pushes.clone());
+        let (source, destination) = self
+            .runner
+            .block_on(async { (replay("normalized", replayed).await, null_sink().await) });
+        let report = self.runner.load(source, destination);
+        assert_eq!(report.rows, self.rows());
+        report.rows
     }
 }

@@ -9,6 +9,7 @@ mod mix;
 mod normalized;
 mod passthrough;
 mod pools;
+mod runner;
 #[cfg(test)]
 mod tests;
 mod wide;
