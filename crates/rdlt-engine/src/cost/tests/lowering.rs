@@ -24,7 +24,7 @@ use crate::table::convert::{convert, text};
 const ROWS: usize = 2_048;
 
 /// Bytes: what a conversion allocates beside its arrays' values, whatever their rows.
-const SLACK: u64 = 8 << 10;
+pub(super) const SLACK: u64 = 8 << 10;
 
 fn int64s(value: i64) -> ArrayRef {
     Arc::new(Int64Array::from(vec![value; ROWS]))
@@ -290,7 +290,7 @@ fn held_in(from: &LogicalType) -> Vec<LogicalType> {
 }
 
 /// What `run` allocates at its peak, beyond what was allocated when it began.
-fn peak<T>(run: impl FnOnce() -> T) -> (T, u64) {
+pub(super) fn peak<T>(run: impl FnOnce() -> T) -> (T, u64) {
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
     let out = run();

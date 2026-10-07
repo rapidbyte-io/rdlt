@@ -2,6 +2,7 @@
 
 mod connectors;
 mod corpora;
+mod lowering;
 mod measure;
 mod mix;
 mod passthrough;
@@ -24,6 +25,7 @@ pub use connectors::{
     replay_config, replay_factory, sink_factory,
 };
 pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
+pub use lowering::Lowering;
 pub use measure::{Allocations, Paired, counted, logical_bytes};
 pub use mix::Mix;
 pub use passthrough::Passthrough;

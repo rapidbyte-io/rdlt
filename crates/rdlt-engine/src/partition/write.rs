@@ -19,7 +19,7 @@ use parking_lot::Mutex;
 use rdlt_connector::cost::Allocations;
 use rdlt_connector::{ColumnPath, Permit, TableSchema};
 
-use self::changes::{CHANGE_ROW, Ignored, split_changes};
+use self::changes::{Ignored, split_changes};
 use self::held::Held;
 use self::pieces::{Lowered, Piece, Pieces};
 use self::queue::queue;
@@ -27,9 +27,10 @@ use super::coalesce::Flushed;
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
 use crate::compute::run_all;
+use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind};
 use crate::limits::{MAX_PIECE_BYTES, ROW_EXCEEDS_BUDGET};
-use crate::table::{Incoming, LoweringPlan, Prepared, Stamp};
+use crate::table::{Incoming, LoweringPlan, Prepared, Stamp, aligned};
 
 /// Writes pushes gathered together: Arrow batches as one batch, JSON shredded into batches.
 pub(super) async fn write_flushed(
@@ -122,7 +123,7 @@ async fn write(
         unit.incoming.rounding.clone_from(&rounding);
         let plan = context.tables.plan(job.table, unit.incoming).await?;
         let (stored, changes) = match job.changes {
-            Some(_) => (changes::aligned(&unit.parts[0], &plan.stored()), CHANGE_ROW),
+            Some(_) => (aligned(&unit.parts[0], &plan.stored()), CHANGE_ROW),
             None => (plan.stored(), 0),
         };
         let (max, limit) = piece_bounds(shares, times);

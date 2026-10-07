@@ -39,6 +39,10 @@ pub(crate) const LINEAGE_ROW: u64 = 48;
 /// the item's id, its parent's and its root's, and its places among them.
 pub(crate) const LINEAGE_ITEM: u64 = 144;
 
+/// Bytes: what splitting a change row holds beside its data: its op, its position as bytes and
+/// its flags, each with its offset.
+pub(crate) const CHANGE_ROW: u64 = 64;
+
 /// Times what a batch's rows expand to that normalizing them may hold: the items it copies out of
 /// their arrays, and an array of another layout cast to a list first.
 pub(crate) const SPLIT_COPIES: u64 = 2;

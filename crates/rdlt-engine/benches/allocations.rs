@@ -1,10 +1,11 @@
 //! What one run of each bench workload allocates, a row and a batch, under a counting allocator:
-//! the shred bench's single-core groups and both sides of the passthrough pairs.
+//! the shred bench's single-core groups, both sides of the passthrough pairs and each batch the
+//! lowering bench prepares.
 //!
 //! The timed benches keep the system allocator, since counting every call slows the runs that
 //! allocate most.
 //!
-//! An argument, `shred` or `passthrough`, counts only that bench's workloads.
+//! An argument, the name of one of those benches, counts only its workloads.
 
 #![forbid(unsafe_code)]
 
@@ -15,26 +16,31 @@ use std::num::NonZeroU64;
 use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, Passthrough, counted, normalize, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, Lowering, Passthrough, counted, normalize, shred,
 };
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 
 #[global_allocator]
 static HEAP: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
+/// The benches whose workloads this counts, each with what counts them.
+const COUNTED: [(&str, fn()); 3] = [
+    ("shred", shredding),
+    ("passthrough", passing_through),
+    ("lowering", lowering),
+];
+
 fn main() {
     let only = std::env::args().skip(1).find(|arg| !arg.starts_with('-'));
+    let names = COUNTED.map(|(name, _)| name);
     assert!(
-        only.as_deref()
-            .is_none_or(|bench| ["shred", "passthrough"].contains(&bench)),
-        "only shred or passthrough workloads are counted, not {only:?}"
+        only.as_deref().is_none_or(|bench| names.contains(&bench)),
+        "only the workloads of {names:?} are counted, not {only:?}"
     );
-    let counts = |bench: &str| only.as_deref().is_none_or(|only| only == bench);
-    if counts("shred") {
-        shredding();
-    }
-    if counts("passthrough") {
-        passing_through();
+    for (name, count) in COUNTED {
+        if only.as_deref().is_none_or(|only| only == name) {
+            count();
+        }
     }
 }
 
@@ -78,6 +84,19 @@ fn passing_through() {
         black_box(passthrough.engine_run());
         batches
     });
+}
+
+/// Each batch the lowering bench prepares, prepared once.
+fn lowering() {
+    for lowering in Lowering::all(Lowering::ROWS) {
+        report(&format!("lowering/{}", lowering.name()), || {
+            black_box(lowering.prepare());
+            (
+                usize::try_from(lowering.rows()).expect("rows fit in usize"),
+                1,
+            )
+        });
+    }
 }
 
 /// The rows and the count of `batches`.
