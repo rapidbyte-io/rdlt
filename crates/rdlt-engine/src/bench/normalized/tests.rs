@@ -35,3 +35,11 @@ fn a_flush_is_cut_into_one_unit_a_chunk_of_its_json() {
     let (fewest, _) = normalized(100_000, 50_000).units();
     assert!(fewest >= 4, "{fewest}");
 }
+
+#[test]
+fn the_rows_loaded_follow_from_the_roots_alone() {
+    // Roots 0 to 6 hold 0, 1, 2, 3, 0, 1 and 2 items, each item two tags.
+    assert_eq!(Normalized::loaded(7), 7 + 3 * 9);
+    assert_eq!(Normalized::loaded(4), 4 + 3 * 6);
+    assert_eq!(Normalized::loaded(0), 0);
+}
