@@ -63,6 +63,12 @@ pub(super) struct Table {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Digest(u64);
 
+impl crate::seed::Recorded for Digest {
+    fn recorded(&self) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::Map::from_iter([("digest".to_owned(), serde_json::json!(self.0))])
+    }
+}
+
 impl Store {
     /// A digest of everything the store holds.
     pub(crate) fn digest(&self) -> Digest {
