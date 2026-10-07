@@ -25,7 +25,7 @@ pub struct Version {
 
 /// Every version `stream`, timed and of whole rows, leaves under `seed`, sorted, where deletes
 /// and truncates are `soft` or hard: its snapshot's rows at the captured position, then each
-/// change after it, a change equal to its key's live version changing nothing.
+/// change after it, every upsert a version, since each counts its own position.
 pub fn history(seed: u64, stream: &ChangedStream, soft: bool) -> Vec<Version> {
     let mut versions: Vec<Version> = snapshot(seed, stream)
         .into_iter()
@@ -47,10 +47,6 @@ pub fn history(seed: u64, stream: &ChangedStream, soft: bool) -> Vec<Version> {
     for position in stream.captured + 1..=stream.changes {
         let removed: Vec<i64> = match change(seed, stream, position) {
             Change::Upsert { id, value, n } => {
-                let live = current.get(&id).map(|index| &versions[*index]);
-                if live.is_some_and(|live| !live.deleted && live.value == value && live.n == n) {
-                    continue;
-                }
                 if let Some(index) = current.remove(&id) {
                     close(&mut versions[index], position);
                 }

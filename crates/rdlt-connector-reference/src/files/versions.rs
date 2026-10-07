@@ -1,6 +1,9 @@
 //! Numbered versions of one JSON document in a directory: each created at most once, the newest
 //! read, the oldest removed.
 
+#[cfg(test)]
+mod tests;
+
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind, Write as _};
 
@@ -35,12 +38,20 @@ pub(super) fn listed(dir: &Dir) -> io::Result<Vec<u64>> {
 /// A version removed between being listed and being read was superseded: the versions are
 /// listed again.
 pub(super) fn newest(dir: &Dir, limit: Limit) -> io::Result<Option<(u64, Vec<u8>)>> {
+    newest_read(dir, |version| dir.read(name(version), limit))
+}
+
+/// The newest version in `dir` and what `read` reads of it, as [`newest`] reads it.
+fn newest_read(
+    dir: &Dir,
+    mut read: impl FnMut(u64) -> io::Result<Vec<u8>>,
+) -> io::Result<Option<(u64, Vec<u8>)>> {
     let mut gone = None;
     for _ in 0..PUBLISH_ATTEMPTS {
         let Some(version) = listed(dir)?.last().copied() else {
             return Ok(None);
         };
-        match dir.read(name(version), limit) {
+        match read(version) {
             Ok(bytes) => return Ok(Some((version, bytes))),
             Err(error) if error.kind() == ErrorKind::NotFound => gone = Some(error),
             Err(error) => return Err(error),

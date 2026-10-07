@@ -768,3 +768,44 @@ fn a_lock_on_a_lock_file_outlives_every_other_open_and_close_of_it_in_the_proces
     drop(held);
     other.try_lock().unwrap();
 }
+
+#[test]
+fn a_tree_another_removal_took_first_is_no_error_and_any_other_failure_is_one() {
+    let (base, dir) = tree();
+    // A racing removal unlinked the file first: its own is answered as finding nothing.
+    trace::fail_as(0, ErrorKind::NotFound);
+    dir.remove_tree("file").unwrap();
+    trace::fail_at(0);
+    assert!(dir.remove_tree("file").is_err(), "a removal that failed");
+    trace::clear();
+    // A directory others may write is never entered, so neither is it removed.
+    let shared = base.path().join("root").join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(dir.remove_tree("shared").is_err());
+    assert!(shared.is_dir());
+}
+
+#[test]
+fn a_lock_file_another_created_first_is_opened_and_any_other_failure_is_refused() {
+    let (base, dir) = tree();
+    // A racing process created the file between the open that missed it and this create: the
+    // create is answered as taken, and the file is opened.
+    trace::fail_as(0, ErrorKind::AlreadyExists);
+    dir.lock_file("a.lock").unwrap();
+    trace::fail_at(0);
+    assert!(dir.lock_file("b.lock").is_err(), "a create that failed");
+    trace::clear();
+    assert!(!base.path().join("root").join("b.lock").exists());
+}
+
+#[test]
+fn a_root_is_a_directory_held_by_a_descriptor_no_program_it_starts_inherits() {
+    let base = crate::scratch::tempdir().unwrap();
+    let file = base.path().join("file");
+    std::fs::write(&file, b"no directory").unwrap();
+    assert!(Dir::ambient(&file).is_err(), "a file is no root");
+    let root = Dir::ambient(base.path()).unwrap();
+    let flags = rustix::io::fcntl_getfd(&root.file).unwrap();
+    assert!(flags.contains(rustix::io::FdFlags::CLOEXEC), "{flags:?}");
+}

@@ -216,8 +216,13 @@ fn acquire(file: &File, wait: Duration) -> Result<(), Option<stdio::Error>> {
             return Err(None);
         }
         std::thread::sleep(pause.min(left));
-        pause = (pause * 2).min(Duration::from_millis(50));
+        pause = longer(pause);
     }
+}
+
+/// The pause after `pause` between tries of a lock: twice as long, and at most 50 ms.
+fn longer(pause: Duration) -> Duration {
+    (pause * 2).min(Duration::from_millis(50))
 }
 
 /// Removes the catalog of the table `name`, which `pipeline` dropped, as [`release_held`] does,
@@ -248,14 +253,15 @@ pub(super) fn release(
 /// A catalog another pipeline owns by now is left alone. The catalog is first renamed out of
 /// place, so a reader never meets it half removed.
 pub(super) fn release_held(rdlt: &Dir, name: &str, pipeline: &PipelineId) -> Result<()> {
-    if owner(rdlt, name)?.is_some_and(|owner| owner != pipeline.as_str()) {
+    let Some(catalog) = catalog(rdlt, name)? else {
+        return Ok(());
+    };
+    if owner_of(&catalog)?.is_some_and(|owner| owner != pipeline.as_str()) {
         return Ok(());
     }
-    let tables = match rdlt.dir(TABLES) {
-        Ok(tables) => tables,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(io::failed("opening", &rdlt.at(TABLES))(error)),
-    };
+    let tables = rdlt
+        .dir(TABLES)
+        .map_err(io::failed("opening", &rdlt.at(TABLES)))?;
     let trash = rdlt
         .dir_created(TRASH)
         .map_err(io::failed("creating", &rdlt.at(TRASH)))?;

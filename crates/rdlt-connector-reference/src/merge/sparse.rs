@@ -70,11 +70,11 @@ impl Sources {
     }
 
     /// Adds `batch`, whose columns are found by name and converted to the schema's types where
-    /// that keeps every value, and returns its place among the sources.
+    /// that keeps every value.
     ///
     /// A column the batch lacks, or holds no value in, is not held: its rows cost nothing for
     /// it. A value the schema's type cannot hold fails.
-    pub(super) fn add(&mut self, batch: &RecordBatch) -> Result<usize, ArrowError> {
+    pub(super) fn add(&mut self, batch: &RecordBatch) -> Result<(), ArrowError> {
         let mut held = Vec::new();
         for (column, field) in self.schema.fields().iter().enumerate() {
             let Some(values) = batch.column_by_name(field.name()) else {
@@ -89,7 +89,7 @@ impl Sources {
             rows: batch.num_rows(),
             held,
         });
-        Ok(self.list.len() - 1)
+        Ok(())
     }
 
     /// Adds a source of `rows` rows that holds `held` alone, the column at each place given as
