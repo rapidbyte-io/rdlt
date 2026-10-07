@@ -145,7 +145,7 @@ fn with_arrays(index: u64, mix: &mut Mix) -> String {
 fn sparse(index: u64, mix: &mut Mix) -> String {
     let row = nested(index, mix);
     if mix.below(10_000) == 0 {
-        let name = row.find(r#","score""#).unwrap_or(row.len() - 1);
+        let name = row.find(r#","score""#).expect("a nested row has a score");
         format!(
             r#"{},"tag":"t{}"{}"#,
             &row[..name],
