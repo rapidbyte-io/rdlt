@@ -5,6 +5,7 @@ mod corpora;
 mod lowering;
 mod measure;
 mod mix;
+mod normalized;
 mod passthrough;
 mod pools;
 #[cfg(test)]
@@ -28,6 +29,7 @@ pub use corpora::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES};
 pub use lowering::Lowering;
 pub use measure::{Allocations, Paired, counted, logical_bytes};
 pub use mix::Mix;
+pub use normalized::Normalized;
 pub use passthrough::Passthrough;
 pub use pools::pool_cores;
 

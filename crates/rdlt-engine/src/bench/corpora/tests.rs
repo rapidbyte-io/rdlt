@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use super::{Corpus, corpus};
 
 #[test]
@@ -26,6 +28,10 @@ fn each_corpus_is_the_rows_its_seed_draws() {
         (
             Corpus::WithArrays,
             "eed42de58b12801c2a4728190e6cf45ae53b0fd69fd4c5da026b01550f026370",
+        ),
+        (
+            Corpus::Orders,
+            "5b2f71fd1b69c55e9a9dd72a06c7a0746620b2a78020768b3ae2e91d7b0389ab",
         ),
     ] {
         let mut hasher = blake3::Hasher::new();
@@ -74,4 +80,34 @@ fn the_corpora_shredded_on_one_core_are_named_as_their_benchmarks() {
         ]
     );
     assert_eq!(Corpus::WithArrays.name(), "with_arrays");
+}
+
+#[test]
+fn a_corpus_s_first_rows_are_cut_into_pushes_of_a_count_of_lines() {
+    let pushes = Corpus::Nested.rows(10, NonZeroU64::new(4).unwrap());
+    let lines = |push: &bytes::Bytes| String::from_utf8(push.to_vec()).unwrap().lines().count();
+    assert_eq!(pushes.iter().map(lines).collect::<Vec<_>>(), [4, 4, 2]);
+    assert!(pushes.iter().all(|push| push.ends_with(b"\n")));
+    let cut = pushes.concat();
+    let whole = Corpus::Nested.pushes(1 << 12).concat();
+    assert!(whole.starts_with(&cut));
+    assert!(Corpus::Nested.rows(0, NonZeroU64::MIN).is_empty());
+}
+
+#[test]
+fn an_order_holds_as_many_items_as_its_id_modulo_four_each_of_two_tags() {
+    let pushes = Corpus::Orders.rows(8, NonZeroU64::new(8).unwrap());
+    let text = String::from_utf8(pushes.concat()).unwrap();
+    for (id, line) in text.lines().enumerate() {
+        let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(row["id"], id);
+        let items = row["items"].as_array().unwrap();
+        assert_eq!(items.len(), id % 4);
+        assert!(
+            items
+                .iter()
+                .all(|item| item["tags"].as_array().unwrap().len() == 2)
+        );
+    }
+    assert_eq!(Corpus::Orders.name(), "orders");
 }

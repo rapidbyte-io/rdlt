@@ -1,6 +1,6 @@
 //! What one run of each bench workload allocates, a row and a batch, under a counting allocator:
-//! the shred bench's single-core groups, both sides of the passthrough pairs and each batch the
-//! lowering bench prepares.
+//! the shred bench's single-core groups, both sides of the passthrough pairs, each batch the
+//! lowering bench prepares and each run of the normalized bench.
 //!
 //! The timed benches keep the system allocator, since counting every call slows the runs that
 //! allocate most.
@@ -16,7 +16,7 @@ use std::num::NonZeroU64;
 use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    CHUNK_BYTES, CORPUS_BYTES, Corpus, Lowering, Passthrough, counted, normalize, shred,
+    CHUNK_BYTES, CORPUS_BYTES, Corpus, Lowering, Normalized, Passthrough, counted, normalize, shred,
 };
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 
@@ -24,10 +24,11 @@ use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
 static HEAP: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 /// The benches whose workloads this counts, each with what counts them.
-const COUNTED: [(&str, fn()); 3] = [
+const COUNTED: [(&str, fn()); 4] = [
     ("shred", shredding),
     ("passthrough", passing_through),
     ("lowering", lowering),
+    ("normalized", normalizing),
 ];
 
 fn main() {
@@ -94,6 +95,24 @@ fn lowering() {
             (
                 usize::try_from(lowering.rows()).expect("rows fit in usize"),
                 1,
+            )
+        });
+    }
+}
+
+/// Each case of the normalized bench, run once: its rows those of the three tables it loads,
+/// its batches the flushes.
+fn normalizing() {
+    let cores = Cores::try_from_host().expect("the host says how many cores the bench may use");
+    for per_push in Normalized::PUSH_ROWS {
+        let bench =
+            Normalized::try_new(cores, Normalized::ROOTS, per_push).expect("the pool starts");
+        let flushes = Normalized::ROOTS.div_ceil(per_push.get());
+        report(&format!("normalized/keyless/{per_push}"), || {
+            let rows = bench.run();
+            (
+                usize::try_from(rows).expect("rows fit in usize"),
+                usize::try_from(flushes).expect("flushes fit in usize"),
             )
         });
     }

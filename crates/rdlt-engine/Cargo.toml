@@ -110,6 +110,11 @@ harness = false
 required-features = ["bench"]
 
 [[bench]]
+name = "normalized"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
 name = "allocations"
 harness = false
 required-features = ["bench"]
