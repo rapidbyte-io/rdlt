@@ -57,4 +57,5 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
 
 - A listening connector trusts the hosts named to it, among the certificates its CA issued (ADR 0044).
 - Certificates and revocation lists rotate by restarting the listening connector, and by placing the connector again on the host.
+- One call over a link of round trip `r` moves at most its stream window a round trip, 4 MiB (ADR 0016): about 4 GB/s at 1 ms. A test holds that a call over a link of a 50 ms round trip keeps its windows in flight; throughput over a real network is unmeasured.
 - The engine's test suite starts a listening connector per remote run: about 25 s of wall-clock time for the matrix.

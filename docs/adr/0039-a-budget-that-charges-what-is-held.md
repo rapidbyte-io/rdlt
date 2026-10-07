@@ -342,11 +342,14 @@ budget before it is held, or bounded by a limit with a typed refusal.
 ## The bound
 
 A run never reserves more than its memory budget, and its heap stays within the budget, a fifth
-of it and 32 MiB, beside two things that are not reserved: the push each read's source holds
-before it is admitted, and what replay stages. Amended 2026-10-03 (ADR 0045): replay reserves
-what it stages, so only the first is not reserved.
+of it and 32 MiB, beside what is not reserved: the push or frame each read holds before it is
+admitted, and what a remote connector's calls hold in transport.
 
 - The first is one push or one frame a partition, within the wire's limits.
+- The second is each open call's stream window on a remote connection, `CREDIT_FLOOR` (4 MiB),
+  which HTTP/2 enforces on a connector that ignores its credit; the connection's window holds
+  every call's and one more, so no connection holds more than 804 MiB (ADR 0016). A read's
+  frames beyond it wait in the connector.
 - What a JSON push's records become beyond three times their text was a third, bounded only by
   the shredder's limit on cells: a megabyte of records of one key each, three hundred keys in
   turn, became 241 MB under a budget of 16 MiB, of which 10 MiB were reserved. Since ADR 0040
