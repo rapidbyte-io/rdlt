@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::panic;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -5,7 +6,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use rdlt_engine::Env;
-use rdlt_sim::{Seed, run, seeds};
+use rdlt_sim::{Seed, Weight, check_exactly_once, for_each_seed, run};
 use tokio::task::JoinSet;
 
 type Trace = Vec<(u32, u64, Duration)>;
@@ -36,9 +37,9 @@ fn trace(seed: Seed) -> Trace {
 
 #[test]
 fn the_same_seed_replays_identically() {
-    for seed in seeds(64) {
+    for_each_seed("replays", (0..64).map(Seed::new), Weight::One, |seed| {
         assert_eq!(trace(seed), trace(seed), "seed {seed}");
-    }
+    });
 }
 
 #[test]
@@ -94,17 +95,20 @@ fn a_failing_scenario_panics_with_its_payload() {
 
 #[test]
 fn the_same_seed_leaves_the_destination_alike() {
-    // A fixed few, however many seeds the run covers: each replays twice.
-    let digests: Vec<_> = (0..20)
-        .map(Seed::new)
-        .map(|seed| (seed, rdlt_sim::check_exactly_once(seed)))
-        .collect();
-    for (seed, digest) in &digests {
-        assert_eq!(rdlt_sim::check_exactly_once(*seed), *digest, "seed {seed}");
-    }
-    let distinct: std::collections::BTreeSet<String> = digests
+    // A fixed few, each run twice, one run after the other.
+    let checked = for_each_seed(
+        "destinations_alike",
+        (0..20).map(Seed::new),
+        Weight::One,
+        |seed| {
+            let first = check_exactly_once(seed);
+            assert_eq!(check_exactly_once(seed), first, "seed {seed}");
+            first
+        },
+    );
+    let distinct: BTreeSet<String> = checked
         .iter()
-        .map(|(_, digest)| format!("{digest:?}"))
+        .map(|checked| format!("{:?}", checked.digest))
         .collect();
     assert!(
         distinct.len() > 1,
@@ -115,19 +119,18 @@ fn the_same_seed_leaves_the_destination_alike() {
 #[test]
 fn a_seed_over_a_faulty_network_replays_alike() {
     // The first few seeds whose connectors listen on the simulated network, with faults on it.
-    let networked: Vec<Seed> = (0..)
+    let networked = (0..)
         .filter(|seed| {
             let features = rdlt_sim::Features::draw(&mut rdlt_sim::SplitMix64::new(*seed));
             features.network && features.faults
         })
         .take(8)
-        .map(Seed::new)
-        .collect();
-    for seed in networked {
+        .map(Seed::new);
+    for_each_seed("network_replays", networked, Weight::One, |seed| {
         assert_eq!(
-            rdlt_sim::check_exactly_once(seed),
-            rdlt_sim::check_exactly_once(seed),
+            check_exactly_once(seed),
+            check_exactly_once(seed),
             "seed {seed}"
         );
-    }
+    });
 }
