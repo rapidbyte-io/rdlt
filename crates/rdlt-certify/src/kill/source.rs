@@ -167,6 +167,6 @@ async fn same(clean: &str, killed: &str, proof: Proof) -> Result<Loaded, Violati
 }
 
 /// Why the clause is not observed when `table`'s rows cannot be rendered to compare.
-fn uncompared(table: &str, error: &RenderError) -> String {
+pub(super) fn uncompared(table: &str, error: &RenderError) -> String {
     format!("table `{table}` cannot be compared: {error}")
 }
