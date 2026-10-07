@@ -167,9 +167,10 @@ impl LoweringPlan {
 
     /// Whether the schema policy drops some of the rows the plan lowers: those holding a value of
     /// a change it discards, or a value their column cannot hold.
+    ///
+    /// Only a column whose policy discards rows routes values to be dropped with their rows.
     pub(crate) fn drops_rows(&self) -> bool {
-        self.routes.iter().any(|route| route.drops_rows())
-            || self.policies.contains(&SchemaPolicy::DiscardRow)
+        self.policies.contains(&SchemaPolicy::DiscardRow)
     }
 
     /// Which rows of `batch` the schema policy keeps, where it drops some.
