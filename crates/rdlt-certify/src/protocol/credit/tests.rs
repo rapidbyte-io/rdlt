@@ -4,7 +4,8 @@ use rdlt_connector::serve::Served;
 use rdlt_connector::{Role, source_factory};
 use rdlt_connector_reference::GeneratorSource;
 
-use super::{regrants, respected};
+use super::{note, regrants, respected};
+use crate::limits::CREDIT_WATCH;
 use crate::protocol::Found;
 use crate::target::Target;
 
@@ -41,4 +42,12 @@ fn credit_is_granted_again_as_often_whatever_the_first_frame_spent_and_never_res
         let granted: u64 = 1 + regrants(spent).iter().sum::<u64>();
         assert!(granted <= spent.max(1), "{spent}: the credit was restored");
     }
+}
+
+#[test]
+fn a_pass_under_a_watch_other_than_a_second_is_noted_and_one_under_a_second_is_not() {
+    let served = || Target::served(Served::new().with_source(source_factory::<GeneratorSource>()));
+    assert!(note(&served()).is_none());
+    assert!(note(&served().credit_watch(CREDIT_WATCH)).is_none());
+    assert!(note(&served().credit_watch(Duration::from_millis(50))).is_some());
 }

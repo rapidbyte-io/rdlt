@@ -25,6 +25,8 @@ The clauses a connector must pass are therefore those its declarations leave app
 
 A kill clause that passed says beside its `pass`, and as `note` in JSON, what it passed on: `killed`, a connection ended with a process a kill ended, or `cut`, kills cut the connection of a connector the host did not start, and no process was seen to stop.
 
+`P-CREDIT`'s pass says beside its `pass`, and as `note` in JSON, the watch it ran under when `--credit-watch` chose one other than a second.
+
 ## Exit codes
 
 | Code | When |
@@ -107,7 +109,7 @@ A certification cut at its timeout reports what it saw: the clauses already chec
 - A kill clause passes only when a kill landed: the host saw a connection to the connector end after the kill. A spawned connector's ends once no process holds its other end, which a kill of its process group brings about unless a process left the group and holds it. The connection of a connector reached at an endpoint, or served in process, is cut by the host, which proves no process stopped: the report notes which was seen.
 - A kill clause loads in a mode the connector declares: a destination in the first of append, merge and replace it writes, a source each stream in the first of incremental, full and change reads it serves. A destination that keeps history alone leaves `K-DESTINATION` unobserved, and one whose identifiers are shorter than the names `D-NAMES` writes leaves that unobserved.
 - A spawned connector leads a process group the certifier stops, then kills, when the certification ends, is cut at its timeout, panics, or hears a signal. A member that left the group is not reached, and neither is anything when the certifier is killed outright.
-- `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times: a source that ignores credit and sends less often than that is not told from one that waits.
+- `P-CREDIT` watches a read whose credit is spent for four seconds, granting a byte three times, or four times the watch `--credit-watch` chooses: a source that ignores credit and sends less often than that is not told from one that waits.
 
 ## What certification cannot show
 

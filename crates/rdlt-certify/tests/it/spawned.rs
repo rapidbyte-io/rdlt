@@ -80,15 +80,14 @@ async fn a_spawned_source_killed_as_it_loads_is_spawned_again_and_resumes() {
     );
     let note = report.note("K-SOURCE").expect("a note");
     assert!(note.starts_with("killed: "), "{report}");
-    // No other clause is noted.
-    assert_eq!(
-        report
-            .results
-            .iter()
-            .filter(|result| result.note.is_some())
-            .count(),
-        1
-    );
+    // `P-CREDIT`, watched briefly, is noted too, and no other clause.
+    let noted: Vec<&str> = report
+        .results
+        .iter()
+        .filter(|result| result.note.is_some())
+        .map(|result| result.clause.id)
+        .collect();
+    assert_eq!(noted, ["P-CREDIT", "K-SOURCE"], "{report}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

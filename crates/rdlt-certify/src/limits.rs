@@ -31,3 +31,7 @@ pub(crate) const LOADED_BYTES: usize = 64 << 20;
 /// The clauses of a connector that answers take seconds each, and its kill clauses their 300 s
 /// at most; the clauses' own bounds, each for a connector that never answers, add up to hours.
 pub const RUN_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// How long `P-CREDIT` watches a read whose credit is spent after each grant, unless the target
+/// chooses another watch; the `rdlt-certify` binary takes none longer.
+pub const CREDIT_WATCH: Duration = Duration::from_secs(1);

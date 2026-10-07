@@ -130,9 +130,10 @@ impl Target {
         self
     }
 
-    /// Watches a read whose credit is spent for `watch` after each grant, rather than a second:
-    /// `P-CREDIT` then takes four times `watch`, and tells a source that ignores credit only
-    /// when it sends within that.
+    /// Watches a read whose credit is spent for `watch` after each grant, rather than
+    /// [`CREDIT_WATCH`](crate::CREDIT_WATCH): `P-CREDIT` then takes four times `watch`, tells a
+    /// source that ignores credit only when it sends within that, and notes the watch beside
+    /// its pass.
     #[must_use]
     pub fn credit_watch(mut self, watch: Duration) -> Self {
         self.credit_watch = Some(watch);

@@ -32,9 +32,24 @@ async fn certify(args: &[&str]) -> Output {
     certify_given(&given, config.unwrap_or_default(), &[]).await
 }
 
+/// The watch the command-line tests give `P-CREDIT`, as the library's tests give theirs.
+const WATCH: [&str; 2] = ["--credit-watch", "50"];
+
+/// Runs `rdlt-certify` with `args`, `input` on its standard input and `env` in its environment,
+/// watching a read whose credit is spent briefly when it certifies a connector.
+async fn certify_given(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
+    let certifying = args.first().is_some_and(|first| !first.starts_with("--"));
+    let watched = if certifying {
+        [args, &WATCH[..]].concat()
+    } else {
+        args.to_vec()
+    };
+    certify_exactly(&watched, input, env).await
+}
+
 /// Runs `rdlt-certify` with exactly `args`, `input` on its standard input and `env` in its
 /// environment.
-async fn certify_given(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
+async fn certify_exactly(args: &[&str], input: &str, env: &[(&str, &str)]) -> Output {
     use tokio::io::AsyncWriteExt as _;
     let mut certifying = Command::new(env!("CARGO_BIN_EXE_rdlt-certify"))
         .args(args)
@@ -1031,5 +1046,65 @@ async fn a_reference_to_a_secret_the_command_line_does_not_allow_is_refused_unre
             !said.contains("hunter2") && !said.contains("RDLT_TEST") && !said.contains("secret"),
             "{said}"
         );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shortened_credit_watch_is_noted_beside_its_pass_and_a_second_is_not() {
+    let binary = example("serve_reference");
+    let binary = binary.to_str().expect("a UTF-8 path");
+    let args = [
+        binary,
+        "--role",
+        "source",
+        "--trusted",
+        "--config-file",
+        "-",
+        "--env",
+        "LLVM_PROFILE_FILE",
+        "--kill-seed",
+        "515",
+        "--output",
+        "json",
+    ];
+    let shortened = [&args[..], &WATCH[..]].concat();
+    let (watched, shortened) = tokio::join!(
+        certify_exactly(&args, USERS, &[]),
+        certify_exactly(&shortened, USERS, &[]),
+    );
+    let credit = |output: &Output| {
+        let report: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("the report is JSON");
+        report["reports"][0]["clauses"]
+            .as_array()
+            .expect("the clauses are listed")
+            .iter()
+            .find(|clause| clause["id"] == "P-CREDIT")
+            .expect("P-CREDIT is reported")
+            .clone()
+    };
+    let (watched, shortened) = (credit(&watched), credit(&shortened));
+    assert_eq!(watched["outcome"], "passed", "{watched}");
+    assert_eq!(shortened["outcome"], "passed", "{shortened}");
+    assert!(watched["note"].is_null(), "{watched}");
+    assert!(shortened["note"].is_string(), "{shortened}");
+}
+
+#[tokio::test]
+async fn a_credit_watch_outside_one_to_a_thousand_ms_is_a_usage_error() {
+    // A binary that is not there is refused with 74 once the command line is read.
+    let missing = "/nonexistent/rdlt-connector";
+    let cases = [
+        ("0", 64),
+        ("1001", 64),
+        ("-5", 64),
+        ("soon", 64),
+        ("1", 74),
+        ("1000", 74),
+    ];
+    for (watch, expected) in cases {
+        let output =
+            certify_exactly(&[missing, "--trusted", "--credit-watch", watch], "", &[]).await;
+        assert_eq!(code(&output), Some(expected), "--credit-watch {watch}");
     }
 }
