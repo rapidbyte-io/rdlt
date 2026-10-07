@@ -100,6 +100,17 @@ pub const PANIC_TEXT_BYTES: u64 = 256;
 /// Bytes: the credit a receiver grants a sender by default, before the sender's frames spend it.
 pub const CREDIT_WINDOW: u64 = 4 * 1024 * 1024;
 
+/// Bytes: the least window of credit a receiver grants a call, and each call's transport window:
+/// one frame at the least frame limit a peer may set.
+pub const CREDIT_FLOOR: u64 = MIN_FRAME_BYTES;
+
+/// The calls one connection may hold open at once: a host's reads, writes, heartbeat and
+/// control calls.
+pub const MAX_CALLS: u32 = 200;
+
+/// Bytes: the most one transport frame carries; a ping waits for at most one.
+pub const TRANSPORT_FRAME_BYTES: u32 = 1024 * 1024;
+
 /// Bytes: the HTTP/2 connection window either end grants, HTTP/2's largest.
 ///
 /// Credit and each stream's window bound what a peer sends, so frames the engine has not yet
