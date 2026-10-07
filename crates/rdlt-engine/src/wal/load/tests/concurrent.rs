@@ -6,13 +6,17 @@
 //! Room in a full log with partitions and a coordinator running at once, as an attempt runs
 //! them: a commit takes what was sealed while the last one landed, its receipt comes late, and
 //! no partition is starved of room while others checkpoint.
+//!
+//! A partition seals a segment only once the commit of its last seal has its receipt, so it
+//! holds a segment open and at most one sealed, as [`gap`] sizes a load for, however late the
+//! coordinator takes what was sealed.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use rdlt_connector::{CommitSeq, SegmentId};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::room::{Load, loads, started, stored};
 use super::{logged, receipt, sealed_at};
@@ -23,11 +27,14 @@ use crate::wal::load::LoadLog;
 use crate::wal::memory::MemoryWal;
 
 /// How long each commit's frame waits after its seals, and its receipt after it, as `(the
-/// first commit's, every later one's)`.
+/// first commit's, every later one's)`; how long the coordinator takes to begin the first; and
+/// the turns of the scheduler the first partition gives up after each batch beyond the others'.
 #[derive(Clone, Copy, Debug)]
 struct Landing {
     sealed: (Duration, Duration),
     landed: (Duration, Duration),
+    late: Duration,
+    lagging: usize,
 }
 
 impl Landing {
@@ -37,6 +44,18 @@ impl Landing {
         Self {
             sealed: (Duration::ZERO, Duration::ZERO),
             landed: (Duration::from_millis(first), Duration::from_millis(rest)),
+            late: Duration::ZERO,
+            lagging: 0,
+        }
+    }
+
+    /// As `self`, the coordinator beginning the first commit `late` milliseconds after the first
+    /// seal comes, and the first partition giving up `lagging` more turns after each batch.
+    fn late(self, late: u64, lagging: usize) -> Self {
+        Self {
+            late: Duration::from_millis(late),
+            lagging,
+            ..self
         }
     }
 
@@ -52,6 +71,9 @@ impl Landing {
 /// Batches all partitions log at most before the first has sealed its rounds: past them it
 /// counts as starved of room.
 const STARVED: u64 = 20_000;
+
+/// A segment sealed, and what answers once the commit taking it has its receipt.
+type Seal = (u64, oneshot::Sender<()>);
 
 /// Runs `load`'s partitions at once through a log of `limit` bytes, until the first has sealed
 /// `rounds` segments, beside a coordinator committing every seal it holds: the error a partition
@@ -82,8 +104,9 @@ async fn concurrent(
             Arc::clone(&stop),
         );
         let (next, total, load) = (Arc::clone(&next), Arc::clone(&total), load.clone());
+        let lagging = if index == 0 { landing.lagging } else { 0 };
         partitions.push(tokio::spawn(async move {
-            partition(shared, (index, gap, rounds), (next, total), &load).await
+            partition(shared, (index, gap, rounds, lagging), (next, total), &load).await
         }));
     }
     drop(seals);
@@ -112,16 +135,17 @@ async fn concurrent(
     result
 }
 
-/// Logs the partition `index`'s batches, sealing a segment each `gap` of them, until it is
-/// stopped, or as the first, has sealed `rounds` segments.
+/// Logs the partition `index`'s batches, sealing a segment each `gap` of them once the commit of
+/// its last seal has its receipt, until it is stopped, or as the first, has sealed `rounds`
+/// segments, giving up `lagging` more turns of the scheduler after each batch than one.
 async fn partition(
     (log, budget, seals, stop): (
         LoadLog,
         MemoryBudget,
-        mpsc::UnboundedSender<u64>,
+        mpsc::UnboundedSender<Seal>,
         Arc<AtomicBool>,
     ),
-    (index, gap, rounds): (usize, u64, u64),
+    (index, gap, rounds, lagging): (usize, u64, u64, usize),
     (next, total): (Arc<AtomicU64>, Arc<AtomicU64>),
     load: &Load,
 ) -> Result<(), crate::Error> {
@@ -130,6 +154,7 @@ async fn partition(
     let mut done = segment * load.stagger % load.gaps[0];
     let mut sealings = 0;
     let mut from = i64::try_from(index).expect("few") << 40;
+    let mut received: Option<oneshot::Receiver<()>> = None;
     loop {
         if stop.load(Ordering::SeqCst) {
             if index == 0 {
@@ -145,13 +170,25 @@ async fn partition(
         let batch = load.batch_of(index, from);
         from += 1_000;
         logged(&log, &budget, 0, &orders, SegmentId(segment), &batch).await?;
-        tokio::task::yield_now().await;
+        for _ in 0..=lagging {
+            tokio::task::yield_now().await;
+        }
         done += 1;
         if done < gap {
             continue;
         }
+        if let Some(received) = received.take()
+            && received.await.is_err()
+        {
+            // The coordinator ended, as a commit failed: its error is the load's.
+            return Ok(());
+        }
         log.checkpointed();
-        seals.send(segment).expect("the coordinator listens");
+        let (answer, answered) = oneshot::channel();
+        seals
+            .send((segment, answer))
+            .expect("the coordinator listens");
+        received = Some(answered);
         segment = next.fetch_add(1, Ordering::SeqCst);
         done = 0;
         sealings += u64::from(index == 0);
@@ -163,31 +200,36 @@ async fn partition(
 }
 
 /// Commits every seal sent, as a coordinator does, once one comes or a batch finds the log full,
-/// each receipt coming as `landing` says, then a last commit: the next commit's number.
+/// each receipt coming as `landing` says and answering the seals it took, then a last commit:
+/// the next commit's number.
 async fn coordinate(
     log: LoadLog,
     budget: MemoryBudget,
-    mut sealed: mpsc::UnboundedReceiver<u64>,
+    mut sealed: mpsc::UnboundedReceiver<Seal>,
     landing: Landing,
     load: Load,
 ) -> Result<CommitSeq, crate::Error> {
     let mut seq = CommitSeq::FIRST;
     loop {
-        let mut segments = Vec::new();
+        let mut taken = Vec::new();
         tokio::select! {
             biased;
             got = sealed.recv() => match got {
-                Some(segment) => segments.push(segment),
+                Some(seal) => taken.push(seal),
                 None => break,
             },
             () = log.full() => {}
         }
-        while let Ok(segment) = sealed.try_recv() {
-            segments.push(segment);
+        if seq == CommitSeq::FIRST {
+            SystemClock.sleep(landing.late).await;
         }
-        if segments.is_empty() {
+        while let Ok(seal) = sealed.try_recv() {
+            taken.push(seal);
+        }
+        if taken.is_empty() {
             continue;
         }
+        let segments: Vec<u64> = taken.iter().map(|(segment, _)| *segment).collect();
         let commit = load.commit(&segments, seq);
         let committing = log.committing();
         log.took(segments.len());
@@ -203,6 +245,9 @@ async fn coordinate(
         SystemClock.sleep(landed).await;
         log.committed(&receipt(seq)).await?;
         drop(committing);
+        for (_, answer) in taken {
+            answer.send(()).ok();
+        }
         seq = seq.next();
     }
     Ok(seq)
@@ -281,6 +326,29 @@ async fn partitions_running_at_once_load_three_quarters_of_a_log_however_long_a_
     completes(far_apart(), &landings).await;
 }
 
+#[tokio::test(start_paused = true)]
+async fn partitions_running_at_once_load_three_quarters_of_a_log_however_late_the_first_commit_begins()
+ {
+    // While the coordinator is late, the others seal segment after segment and the first, at a
+    // third of their pace, leaves its open frames in every chunk they fill.
+    let mut landings = Vec::new();
+    for landing in [Landing::after(0, 0), Landing::after(50, 50)] {
+        for (late, lagging) in [(100, 0), (100, 2), (2_000, 2)] {
+            landings.push(landing.late(late, lagging));
+        }
+    }
+    every_load_completes(&landings).await;
+}
+
+/// The partitions, the coordinator and the log's writer run on threads of their own, as the system
+/// schedules them; the load stays within what `gap` sizes it for whatever the schedule, as each
+/// partition waits for its last seal's receipt before it seals again.
+///
+/// A partition checkpointing every batch and free to seal on seals some thirty segments while
+/// the system holds the coordinator back. Their frames and the seals of the commit taking them
+/// all, beside the open frames of a partition the system runs slower, fill the log past three
+/// quarters and leave no room to carry those open frames out of the chunks the commit settles:
+/// the engine refuses the next batch, as it may refuse a load past three quarters of its log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partitions_running_at_once_on_the_real_clock_load_three_quarters_of_a_log() {
     every_load_completes(&[
