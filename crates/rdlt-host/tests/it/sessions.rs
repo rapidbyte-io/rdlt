@@ -228,8 +228,9 @@ async fn a_writer_waits_once_its_credit_is_spent() {
     let destination = RemoteDestination::new(connection).unwrap();
     let mut opened = destination.open(&context()).await.unwrap();
     let mut writer = opened.session.writer(&table()).await.unwrap();
-    // The destination stages nothing, so no credit returns: the writes go while the window of
-    // credit lasts, each frame spending its size, and the next waits.
+    // The destination's writer takes the first batch and stalls, so only the credit of the
+    // schema and that batch returns: the writes go while the window of credit and it last, each
+    // frame spending its size, and the next waits.
     let mut written = 0;
     for segment in 1..=20 {
         let wrote = tokio::time::timeout(
@@ -253,8 +254,9 @@ async fn a_writer_waits_once_its_credit_is_spent() {
 /// Rows in each batch written until the credit is spent: about 800 KB a frame.
 const ROWS: i64 = 100_000;
 
-/// How many writes of `ids(ROWS)` go before one waits, with `window` bytes of credit and none
-/// returned: each frame goes while credit remains and spends its encoded size.
+/// How many writes of `ids(ROWS)` go before one waits, with `window` bytes of credit and only
+/// the schema's and the first batch's returned: each frame goes while credit remains and spends
+/// its encoded size.
 fn writes_within(window: u64) -> usize {
     use rdlt_wire::prost::Message as _;
     use v1::write_frame::Frame;
@@ -280,7 +282,7 @@ fn writes_within(window: u64) -> usize {
             }))
         })
         .collect();
-    let mut credit = i64::try_from(window).expect("the window fits an i64");
+    let mut credit = i64::try_from(window).expect("the window fits an i64") + schema + batches[0];
     for written in 0.. {
         let first: Vec<i64> = std::iter::once(schema)
             .chain(batches.iter().copied())
