@@ -94,7 +94,7 @@ stress seeds="20" cores="": sim-archive
 
 # Measure how many seeds a second the exactly-once sweep runs over seeds 0 to 999, from the
 # simulation's archive, and fail below `floor`; docs/perf/sim.md records the rate and the floor
-sim-rate floor="3" cores="": sim-archive
+sim-rate floor="7" cores="": sim-archive
     RDLT_SIM_SEED="" RDLT_SIM_SEEDS=1000 RDLT_SIM_SEEDS_FROM=0 RDLT_SIM_CORES="{{ cores }}" cargo nextest run --archive-file target/sim.tar.zst --workspace-remap . -E 'test(=exactly_once::every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs)'
     cargo xtask sim-rate target/sim-timings/exactly_once.jsonl --floor {{ floor }}
 

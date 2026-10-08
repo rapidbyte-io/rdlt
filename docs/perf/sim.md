@@ -29,8 +29,7 @@ reference rate every night against the floor below.
 | Per seed, seeds 0-399, one thread | 106 ms mean, 1 567 ms max |
 | Network seeds, seeds 0-399 | 25 % of seeds, 49 % of wall time |
 | Coverage run, 1 000 seeds, four P-cores | 7.6 min (456 s) |
-| Exactly-once sweep, a pull request's shard of 5 000 seeds | TODO (controller, from CI) |
-| Test job, Linux / macOS | TODO (controller, from CI) |
-| Archive extraction per shard | TODO (controller, from CI) |
-| Nightly, ubuntu-24.04 | TODO (controller, from the nightly dispatched on the branch): stress, 200 seeds; coverage, 1 000 seeds; reference set |
-| Nightly floor for the reference set | 3 seeds/s until the shards are measured: TODO (controller), half the shards' median |
+| Exactly-once sweep, a pull request's shard of 5 000 seeds, ubuntu-24.04 | 14.2 seeds/s median of 60 shards (12.5-27.6) |
+| Test job, Linux / macOS | 17.1 min (10.9-17.4) / 18.1 min (17.8-18.6), three runs |
+| Archive extraction per shard | 0.1 s |
+| Nightly floor for the reference set | 7 seeds/s, half the shards' median |
