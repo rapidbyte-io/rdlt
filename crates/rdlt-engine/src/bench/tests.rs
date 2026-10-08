@@ -6,12 +6,15 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use bytes::Bytes;
 use rdlt_connector::testing::certify_source;
-use rdlt_connector::{PipelineId, SegmentId, StreamName, TableWriter, WriteStats};
+use rdlt_connector::{
+    ConnectContext, PipelineId, SegmentId, StreamName, StreamState, TableWriter, WriteStats,
+};
 use serde_json::json;
 
 use super::connectors::Replay;
 use super::{
-    Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, replay, shred, shred_on,
+    Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, register, replay,
+    replay_factory, shred, shred_on, split_replay_config,
 };
 use crate::compute::{Cores, RayonPool};
 use crate::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
@@ -84,6 +87,46 @@ async fn the_replay_source_resumes_after_each_checkpoint() {
         .collect();
     replay("certified", Replayed::Batches(batches)).await;
     certify_source::<Replay>(json!({ "name": "certified" }))
+        .await
+        .assert_passed();
+}
+
+/// `count` batches of ten rows, their ids running on from one batch to the next.
+fn ten_row_batches(count: i64) -> Vec<RecordBatch> {
+    (0..count)
+        .map(|batch| {
+            let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(batch * 10..batch * 10 + 10));
+            RecordBatch::try_from_iter([("id", ids)]).unwrap()
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_split_replay_plans_its_partitions_and_pushes_every_batch_once() {
+    register("split", Replayed::Batches(ten_row_batches(8)));
+    let four = NonZeroUsize::new(4).unwrap();
+    let source = replay_factory()
+        .connect(split_replay_config("split", four), ConnectContext::new())
+        .await
+        .unwrap();
+    let stream = StreamName::new("events").unwrap();
+    let planned = source.plan(&stream, &StreamState::default()).await.unwrap();
+    assert_eq!(planned.partitions.len(), 4);
+    let engine = Engine::new(EngineConfig::default(), Arc::new(SystemEnv::one_core()));
+    let plan = PipelinePlan::new(
+        PipelineId::parse("split").unwrap(),
+        [StreamPlan::new(stream)],
+    )
+    .unwrap();
+    let outcome = engine.run(plan, Arc::from(source), ipc_sink().await).await;
+    assert!(outcome.error.is_none(), "{:?}", outcome.error);
+    assert_eq!(outcome.report.rows, 80);
+}
+
+#[tokio::test]
+async fn a_split_replay_resumes_each_partition_after_each_checkpoint() {
+    register("certified-split", Replayed::Batches(ten_row_batches(7)));
+    certify_source::<Replay>(json!({ "name": "certified-split", "partitions": 3 }))
         .await
         .assert_passed();
 }

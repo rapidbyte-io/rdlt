@@ -2,6 +2,7 @@
 //! destinations that encode each batch as Arrow IPC into a buffer they reuse, or discard it.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
 use std::time::UNIX_EPOCH;
 
@@ -10,10 +11,10 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 use rdlt_connector::{
     Capabilities, CommitMeta, ConnectContext, ConnectorError, DestinationConnector,
-    DestinationFactory, Emitter, Epoch, OpenContext, Opened, Partition, ReadMode, ReadStream,
-    Receipt, Result, SegmentId, Session, Source, SourceConnector, SourceFactory, StreamName,
-    StreamSpec, StreamState, Streams, TableChange, TableRef, TableWriter, TypeKind, WriteStats,
-    destination_factory, source_factory,
+    DestinationFactory, Emitter, Epoch, OpenContext, Opened, Partition, PartitionId, ReadMode,
+    ReadStream, Receipt, Result, SegmentId, Session, Source, SourceConnector, SourceFactory,
+    StreamName, StreamSpec, StreamState, Streams, TableChange, TableRef, TableWriter, TypeKind,
+    WriteStats, destination_factory, source_factory,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,12 @@ pub fn replay_config(name: &str) -> Value {
     json!({ "name": name })
 }
 
+/// The configuration of a replay source pushing the replay registered as `name` from
+/// `partitions` partitions, each an even share of its pushes in order.
+pub fn split_replay_config(name: &str, partitions: NonZeroUsize) -> Value {
+    json!({ "name": name, "partitions": partitions })
+}
+
 /// The factory of replay sources, to serve.
 pub fn replay_factory() -> Box<dyn SourceFactory> {
     source_factory::<Replay>()
@@ -67,15 +74,30 @@ pub async fn replay(name: &str, replayed: Replayed) -> Arc<dyn Source> {
     Arc::from(source)
 }
 
-/// Names the registered replay a [`Replay`] pushes.
+/// Names the registered replay a [`Replay`] pushes, and the partitions it pushes from.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ReplayConfig {
     name: String,
+    #[serde(default = "one")]
+    partitions: NonZeroUsize,
+}
+
+fn one() -> NonZeroUsize {
+    NonZeroUsize::MIN
 }
 
 /// The source [`replay`] connects.
 pub(super) struct Replay {
     replayed: Replayed,
+    partitions: NonZeroUsize,
+}
+
+impl Replay {
+    /// The pushes the partition numbered `index` makes: its even share, in order.
+    fn share(&self, index: usize) -> std::ops::Range<usize> {
+        let (pushes, partitions) = (self.replayed.pushes(), self.partitions.get());
+        index * pushes / partitions..(index + 1) * pushes / partitions
+    }
 }
 
 impl SourceConnector for Replay {
@@ -89,7 +111,10 @@ impl SourceConnector for Replay {
             .get(&config.name)
             .cloned()
             .ok_or_else(|| ConnectorError::config("no such replay"))?;
-        Ok(Self { replayed })
+        Ok(Self {
+            replayed,
+            partitions: config.partitions,
+        })
     }
 
     async fn check(&self) -> Result<()> {
@@ -111,18 +136,32 @@ impl ReadStream<Replay> for Events {
         StreamSpec::new(name).with_read_modes([ReadMode::Full])
     }
 
-    async fn partitions(&self, _source: &Replay, _state: &StreamState) -> Result<Vec<Partition>> {
-        Ok(vec![Partition::single()])
+    async fn partitions(&self, source: &Replay, _state: &StreamState) -> Result<Vec<Partition>> {
+        if source.partitions == NonZeroUsize::MIN {
+            return Ok(vec![Partition::single()]);
+        }
+        let id = |index: usize| PartitionId::parse(index.to_string()).expect("a valid partition");
+        Ok((0..source.partitions.get())
+            .map(|index| Partition::new(id(index)))
+            .collect())
     }
 
+    /// Pushes the partition's share from `next`, the index of the push after its last
+    /// checkpoint.
     async fn read(
         &self,
         source: &Replay,
-        _partition: &Partition,
+        partition: &Partition,
         next: usize,
         out: &mut Emitter<usize>,
     ) -> Result<()> {
-        for index in next..source.replayed.pushes() {
+        let index = match partition.id().as_str().parse() {
+            Ok(index) if index < source.partitions.get() => index,
+            _ if source.partitions == NonZeroUsize::MIN => 0,
+            _ => return Err(ConnectorError::config("no such partition")),
+        };
+        let share = source.share(index);
+        for index in next.max(share.start)..share.end {
             match &source.replayed {
                 Replayed::Batches(batches) => out.batch(batches[index].clone()).await?,
                 Replayed::Json(pushes) => out.json(pushes[index].clone()).await?,
