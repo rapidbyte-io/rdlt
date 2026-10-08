@@ -154,7 +154,22 @@ fn launcher(directory: &std::path::Path, detached: bool) -> Target {
     // Its input never ends, as a host's does not while it serves.
     let started = format!("'{}' \"$@\" <> '{}'", connector.display(), fifo.display());
     let script = if detached {
-        format!("#!/bin/sh\n( setsid {started} & )\nexec sleep 86400\n")
+        // The connector stops once the process that started it ends, so it is started by a
+        // process that waits for its own starter to end first: neither that end nor a kill of the
+        // launcher then stops it.
+        let orphan = directory.join("orphan");
+        let waits = "#!/bin/sh\nstarter=$1\nshift\n\
+             while [ \"$(cut -d' ' -f4 /proc/$$/stat)\" = \"$starter\" ]; do sleep 0.01; done\n\
+             exec setsid \"$@\"\n";
+        std::fs::write(&orphan, waits).expect("the orphan writes");
+        std::fs::set_permissions(&orphan, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("the orphan is executable");
+        format!(
+            "#!/bin/sh\nsh -c '\"$0\" $$ \"$@\" <> \"{}\" &' '{}' '{}' \"$@\"\nexec sleep 86400\n",
+            fifo.display(),
+            orphan.display(),
+            connector.display()
+        )
     } else {
         format!("#!/bin/sh\n{started}\n")
     };
