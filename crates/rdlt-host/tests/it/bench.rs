@@ -2,11 +2,18 @@
 //! or both served over the wire protocol, over a `UnixStream` pair and over mutual TLS on
 //! loopback, in frames as large as the default coalescing target makes and in eighths of that.
 //!
-//! Each benchmark prints the process's CPU time a gigabyte its runs moved. The bench lives beside
-//! the integration tests to serve connectors as they do.
+//! Served connectors run in the bench's own process, on the engine's runtime, which measures the
+//! wire path's CPU alone; or each in a process of its own, as in production, the bench's binary
+//! serving as the connector, on the cores [`connector::CORES`] names. Each benchmark prints the
+//! CPU time a gigabyte its runs moved: the bench's process's, and each connector process's.
+//! The bench lives beside the integration tests to serve connectors as they do.
 
 #![forbid(unsafe_code)]
 
+#[path = "bench/connector.rs"]
+mod connector;
+#[path = "bench/processes.rs"]
+mod processes;
 #[expect(
     dead_code,
     reason = "the bench serves connectors as the tests do and needs only some of their helpers"
@@ -15,10 +22,11 @@
 mod served;
 
 use std::hint::black_box;
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
 use nix::sys::time::TimeValLike as _;
 use rdlt_connector::serve::{Listening, Served, serve_listener};
 use rdlt_connector::{ConnectContext, Destination, Role, Source};
@@ -32,6 +40,11 @@ use rdlt_host::{
 };
 use rdlt_testkit::tls::{Files, Pki};
 use rdlt_wire::Limits;
+
+use processes::{Placed, Processes};
+
+/// How long the connectors the bench spawned have to stop once it is done.
+const STOPPING: Duration = Duration::from_secs(20);
 
 /// Which of a run's connectors are served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,6 +92,15 @@ impl Transport {
     }
 }
 
+/// Where served connectors run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    /// In the bench's own process, on the engine's runtime.
+    Shared,
+    /// Each in a process of its own, on the connectors' cores.
+    Processes,
+}
+
 /// The batches a run moves, each a frame on the wire: as large as the default coalescing target
 /// makes them, or an eighth of that, the same rows in all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,30 +125,62 @@ impl Frames {
             Self::Small => "small",
         }
     }
+
+    /// The frames whose replay is `name`.
+    fn named(name: &str) -> Option<Self> {
+        [Self::Large, Self::Small]
+            .into_iter()
+            .find(|frames| frames.replay() == name)
+    }
+
+    /// The frames' place in a pair of slots.
+    fn index(self) -> usize {
+        usize::from(self == Self::Small)
+    }
+
+    /// The batches, as [`Passthrough`] makes them.
+    fn batches(self) -> Vec<arrow_array::RecordBatch> {
+        let (batches, rows) = self.shape();
+        (0..batches)
+            .map(|index| Passthrough::batch(i64::from(index) * i64::from(rows), rows))
+            .collect()
+    }
 }
 
-/// One benchmark: which connectors are served, how, and the frames they move.
+/// One benchmark: where and how its connectors are served, which, and the frames they move.
 #[derive(Clone, Copy, Debug)]
 struct Case {
+    layout: Layout,
     transport: Transport,
     mode: Mode,
     frames: Frames,
 }
 
 impl Case {
-    /// Every mode over each transport in large and in small frames.
+    /// Every mode over each transport in large and in small frames, in each layout.
     fn all() -> Vec<Self> {
         let mut cases = Vec::new();
-        for transport in [Transport::Socket, Transport::Tls] {
-            for frames in [Frames::Large, Frames::Small] {
-                cases.extend(Mode::ALL.map(|mode| Self {
-                    transport,
-                    mode,
-                    frames,
-                }));
+        for layout in [Layout::Shared, Layout::Processes] {
+            for transport in [Transport::Socket, Transport::Tls] {
+                for frames in [Frames::Large, Frames::Small] {
+                    cases.extend(Mode::ALL.map(|mode| Self {
+                        layout,
+                        transport,
+                        mode,
+                        frames,
+                    }));
+                }
             }
         }
         cases
+    }
+
+    /// Where and how its connectors are served: `process/tls`, or `tls` in the bench's process.
+    fn served(self) -> String {
+        match self.layout {
+            Layout::Shared => self.transport.name().to_owned(),
+            Layout::Processes => format!("process/{}", self.transport.name()),
+        }
     }
 
     /// What the case moves: its mode, batches and rows a batch.
@@ -136,51 +190,67 @@ impl Case {
     }
 
     fn id(self) -> BenchmarkId {
-        BenchmarkId::new(self.transport.name(), self.shape())
+        BenchmarkId::new(self.served(), self.shape())
+    }
+
+    /// Whether the source runs in a process of its own.
+    fn source_apart(self) -> bool {
+        self.layout == Layout::Processes && self.mode.serves_source()
+    }
+
+    /// Whether the destination runs in a process of its own.
+    fn destination_apart(self) -> bool {
+        self.layout == Layout::Processes && self.mode.serves_destination()
     }
 }
 
-/// The batches of one size of frame, and the listener serving them over mutual TLS once a case
-/// asks for it, on the batches' runtime.
-struct Workload {
-    passthrough: Passthrough,
-    listener: Option<Listener>,
-}
-
-/// The process's user and system time so far.
-fn cpu() -> Duration {
-    let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
-        .expect("the process's usage reads");
-    let seconds = |time: nix::sys::time::TimeVal| {
-        Duration::from_micros(u64::try_from(time.num_microseconds()).unwrap_or(0))
-    };
-    seconds(usage.user_time()) + seconds(usage.system_time())
-}
-
-/// A listener serving both connectors over mutual TLS on loopback, and how a host reaches it.
-struct Listener {
+/// The certificates of mutual TLS on loopback: a CA, a connector's, and the host's.
+struct Tls {
     pki: Pki,
+    server: Files,
     host: Files,
+}
+
+impl Tls {
+    fn new() -> Self {
+        let pki = Pki::new("ca");
+        let server = pki.server("server", &["localhost"]);
+        let host = pki.client("host");
+        Self { pki, server, host }
+    }
+
+    /// The host's provider reaching a connector of this CA within `options`.
+    fn remote(&self, options: &Options) -> Remote {
+        let identity = Identity {
+            cert: self.host.cert.clone(),
+            key: self.host.key.clone(),
+        };
+        Remote::new(identity, self.pki.ca()).options(*options)
+    }
+}
+
+/// A listener serving both connectors over mutual TLS on loopback, on the engine's runtime.
+struct Listener {
+    tls: Tls,
     endpoint: String,
 }
 
 impl Listener {
     /// Listens on a free loopback port on `passthrough`'s runtime.
     fn new(passthrough: &Passthrough) -> Self {
-        let pki = Pki::new("ca");
-        let server = pki.server("server", &["localhost"]);
+        let tls = Tls::new();
         let accepted = rdlt_wire::tls::Accepted {
-            ca: pki.ca(),
+            ca: tls.pki.ca(),
             hosts: rdlt_wire::tls::Hosts::new(["host"]).expect("a host is named"),
             crl: None,
         };
         let identity = Identity {
-            cert: server.cert.clone(),
-            key: server.key.clone(),
+            cert: tls.server.cert.clone(),
+            key: tls.server.key.clone(),
         };
-        let tls = rdlt_wire::tls::server_config(&identity, &accepted).expect("the server's TLS");
+        let config = rdlt_wire::tls::server_config(&identity, &accepted).expect("the server's TLS");
         let listening =
-            Listening::new(Arc::new(tls), accepted.hosts).expect("a host has its share");
+            Listening::new(Arc::new(config), accepted.hosts).expect("a host has its share");
         let both = Served::new()
             .with_source(replay_factory())
             .with_destination(sink_factory());
@@ -194,38 +264,105 @@ impl Listener {
             tokio::spawn(serve_listener(Arc::new(both), tcp, listening, limits, stop));
             port
         });
-        let host = pki.client("host");
         Self {
-            pki,
-            host,
+            tls,
             endpoint: format!("grpcs://localhost:{port}"),
         }
     }
+}
 
-    /// The host's provider reaching the listener within `options`.
-    fn remote(&self, options: &Options) -> Remote {
-        let identity = Identity {
-            cert: self.host.cert.clone(),
-            key: self.host.key.clone(),
+/// The process's user and system time so far.
+fn cpu() -> Duration {
+    let usage = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)
+        .expect("the process's usage reads");
+    let seconds = |time: nix::sys::time::TimeVal| {
+        Duration::from_micros(u64::try_from(time.num_microseconds()).unwrap_or(0))
+    };
+    seconds(usage.user_time()) + seconds(usage.system_time())
+}
+
+/// The connector processes of a run, for those that have one.
+#[derive(Clone, Copy, Debug, Default)]
+struct Pids {
+    source: Option<u32>,
+    destination: Option<u32>,
+}
+
+/// CPU time: the bench's process, which hosts the engine and every connector served in it, and
+/// each connector process's, where the platform tells it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Usage {
+    host: Duration,
+    source: Option<Duration>,
+    destination: Option<Duration>,
+}
+
+impl Usage {
+    /// What the bench's process and `pids` have taken so far.
+    fn now(pids: Pids) -> Self {
+        Self {
+            host: cpu(),
+            source: pids.source.and_then(processes::cpu),
+            destination: pids.destination.and_then(processes::cpu),
+        }
+    }
+
+    /// What was taken from `before` to `self`, added to `sum`.
+    fn add_since(self, before: Self, sum: &mut Self) {
+        let since = |after: Option<Duration>, before: Option<Duration>| {
+            after
+                .zip(before)
+                .map(|(after, before)| after.saturating_sub(before))
         };
-        Remote::new(identity, self.pki.ca()).options(*options)
+        let plus = |sum: Option<Duration>, more: Option<Duration>| match (sum, more) {
+            (Some(sum), Some(more)) => Some(sum + more),
+            (sum, more) => sum.or(more),
+        };
+        sum.host += self.host.saturating_sub(before.host);
+        sum.source = plus(sum.source, since(self.source, before.source));
+        sum.destination = plus(sum.destination, since(self.destination, before.destination));
     }
 }
 
-/// A run's source and destination, those `case` names served as it says within `options`.
+/// One sample's CPU seconds a gigabyte: every process's together, the bench's, and each
+/// connector process's.
+#[derive(Clone, Copy, Debug)]
+struct Seconds {
+    total: f64,
+    host: f64,
+    source: Option<f64>,
+    destination: Option<f64>,
+}
+
+/// A run's source and destination, those `case` names served as it says within `options`, and
+/// the processes of those served in processes of their own.
 async fn connectors(
     case: Case,
     listener: Option<&Listener>,
+    processes: Option<&mut Processes>,
     options: &Options,
-) -> (Arc<dyn Source>, Arc<dyn Destination>) {
+) -> (Arc<dyn Source>, Arc<dyn Destination>, Pids) {
     let (mode, transport, replay) = (case.mode, case.transport, case.frames.replay());
+    let mut pids = Pids::default();
+    if let Some(processes) = processes {
+        let source = if mode.serves_source() {
+            let Placed { connector, pid } = processes.source(transport, replay, options).await;
+            pids.source = Some(pid);
+            connector
+        } else {
+            in_process_source(replay).await
+        };
+        let destination = if mode.serves_destination() {
+            let Placed { connector, pid } = processes.destination(transport, options).await;
+            pids.destination = Some(pid);
+            connector
+        } else {
+            ipc_sink().await
+        };
+        return (source, destination, pids);
+    }
     let source: Arc<dyn Source> = match (mode.serves_source(), transport) {
-        (false, _) => Arc::from(
-            replay_factory()
-                .connect(replay_config(replay), ConnectContext::new())
-                .await
-                .expect("the replay connects"),
-        ),
+        (false, _) => in_process_source(replay).await,
         (true, Transport::Socket) => {
             let io = served::served(Served::new().with_source(replay_factory()));
             let config = replay_config(replay);
@@ -238,7 +375,7 @@ async fn connectors(
             let listener = listener.expect("a listener serves over TLS");
             let id = replay_factory().spec().id.clone();
             let reference = ConnectorRef::new(id).endpoint(&listener.endpoint);
-            let (remote, config) = (listener.remote(options), replay_config(replay));
+            let (remote, config) = (listener.tls.remote(options), replay_config(replay));
             let placed = remote.source(&reference, &config).await;
             Arc::from(placed.expect("the source is placed").connector)
         }
@@ -256,12 +393,28 @@ async fn connectors(
             let listener = listener.expect("a listener serves over TLS");
             let id = sink_factory().spec().id.clone();
             let reference = ConnectorRef::new(id).endpoint(&listener.endpoint);
-            let (remote, config) = (listener.remote(options), Sinking::Ipc.config());
+            let (remote, config) = (listener.tls.remote(options), Sinking::Ipc.config());
             let placed = remote.destination(&reference, &config).await;
             Arc::from(placed.expect("the destination is placed").connector)
         }
     };
-    (source, destination)
+    (source, destination, pids)
+}
+
+/// The replay source `replay`, in the bench's process.
+async fn in_process_source(replay: &str) -> Arc<dyn Source> {
+    let connected = replay_factory()
+        .connect(replay_config(replay), ConnectContext::new())
+        .await;
+    Arc::from(connected.expect("the replay connects"))
+}
+
+/// The batches of one size of frame, and what serves them once a case asks for it: a listener
+/// over mutual TLS on the batches' runtime, and connectors in processes of their own.
+struct Workload {
+    passthrough: Passthrough,
+    listener: Option<Listener>,
+    processes: Option<Processes>,
 }
 
 impl Workload {
@@ -277,34 +430,53 @@ impl Workload {
         Self {
             passthrough,
             listener: None,
+            processes: None,
         }
     }
 
     /// Runs `case` `runs` times, each with connectors of its own: how long the runs took, and the
     /// CPU time they took a gigabyte of the `bytes` each moved.
-    fn timed(&mut self, case: Case, runs: u64, bytes: u64) -> (Duration, f64) {
+    fn timed(&mut self, case: Case, runs: u64, bytes: u64) -> (Duration, Seconds) {
         let passthrough = &self.passthrough;
-        let listener = match case.transport {
-            Transport::Tls => Some(
+        let listener = match (case.layout, case.transport) {
+            (Layout::Shared, Transport::Tls) => Some(
                 &*self
                     .listener
                     .get_or_insert_with(|| Listener::new(passthrough)),
             ),
-            Transport::Socket => None,
+            _ => None,
+        };
+        let mut processes = match case.layout {
+            Layout::Processes => Some(self.processes.get_or_insert_with(Processes::new)),
+            Layout::Shared => None,
         };
         let options = Options::default();
-        let (mut took, mut busy) = (Duration::ZERO, Duration::ZERO);
+        let (mut took, mut usage) = (Duration::ZERO, Usage::default());
         for _ in 0..runs {
-            let connected = connectors(case, listener, &options);
-            let (source, destination) = passthrough.block_on(connected);
-            let (started, before) = (Instant::now(), cpu());
+            let connected = connectors(case, listener, processes.as_deref_mut(), &options);
+            let (source, destination, pids) = passthrough.block_on(connected);
+            // A connector in a process of its own is held until its CPU time is read: dropped,
+            // it stops.
+            let apart = pids.source.is_some() || pids.destination.is_some();
+            let held = apart.then(|| (Arc::clone(&source), Arc::clone(&destination)));
+            let (started, before) = (Instant::now(), Usage::now(pids));
             black_box(passthrough.run(source, destination));
             took += started.elapsed();
-            busy += cpu().saturating_sub(before);
+            Usage::now(pids).add_since(before, &mut usage);
+            drop(held);
         }
         #[expect(clippy::cast_precision_loss, reason = "bytes stay far below 2^52")]
         let gigabytes = bytes as f64 * runs as f64 / 1e9;
-        (took, busy.as_secs_f64() / gigabytes)
+        let a_gigabyte = |time: Duration| time.as_secs_f64() / gigabytes;
+        let apart = |time: Option<Duration>| time.unwrap_or_default();
+        let total = usage.host + apart(usage.source) + apart(usage.destination);
+        let seconds = Seconds {
+            total: a_gigabyte(total),
+            host: a_gigabyte(usage.host),
+            source: usage.source.map(a_gigabyte),
+            destination: usage.destination.map(a_gigabyte),
+        };
+        (took, seconds)
     }
 }
 
@@ -320,7 +492,7 @@ fn served(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(bytes));
         let mut seconds = Vec::new();
         group.bench_function(case.id(), |b| {
-            let slot = &mut workloads[usize::from(case.frames == Frames::Small)];
+            let slot = &mut workloads[case.frames.index()];
             let workload = slot.get_or_insert_with(|| Workload::new(cores, case.frames));
             b.iter_custom(|runs| {
                 let (took, a_gigabyte) = workload.timed(case, runs, bytes);
@@ -334,7 +506,7 @@ fn served(c: &mut Criterion) {
         }
     }
     group.finish();
-    print(cores, used);
+    print(cores, &used);
 }
 
 /// Prints the layout, and the CPU time a gigabyte each case that ran took.
@@ -343,24 +515,61 @@ fn served(c: &mut Criterion) {
     reason = "criterion reports times; the layout and the CPU time a run takes are printed beside \
               them"
 )]
-fn print(cores: Cores, used: Vec<(Case, Vec<f64>)>) {
+fn print(cores: Cores, used: &[(Case, Vec<Seconds>)]) {
     if !used.is_empty() {
         let (workers, threads) = (cores.workers(), cores.compute_threads());
-        println!("served: {workers} runtime workers, {threads} compute threads");
-    }
-    for (case, mut seconds) in used {
-        seconds.sort_by(f64::total_cmp);
-        let (low, high) = (seconds[0], seconds[seconds.len() - 1]);
-        let median = seconds[seconds.len() / 2];
+        let apart = std::env::var(connector::CORES).map_or_else(
+            |_| "the bench's CPUs".to_owned(),
+            |cpus| format!("CPUs {cpus}"),
+        );
         println!(
-            "served/{}/{}: {median:.3} CPU seconds a GB, user and system, {low:.3} to {high:.3} \
-             over {} samples",
-            case.transport.name(),
+            "served: {workers} runtime workers, {threads} compute threads; connector processes \
+             on {apart}"
+        );
+    }
+    for (case, seconds) in used {
+        let total = spread(seconds.iter().map(|sample| Some(sample.total)));
+        println!(
+            "served/{}/{}: {total} CPU seconds a GB, user and system, over {} samples",
+            case.served(),
             case.shape(),
             seconds.len(),
         );
+        if case.layout == Layout::Processes {
+            let host = spread(seconds.iter().map(|sample| Some(sample.host)));
+            let side = |apart: bool, side: fn(&Seconds) -> Option<f64>| {
+                if apart {
+                    spread(seconds.iter().map(side))
+                } else {
+                    "in the bench's process".to_owned()
+                }
+            };
+            let source = side(case.source_apart(), |sample| sample.source);
+            let destination = side(case.destination_apart(), |sample| sample.destination);
+            println!("  the bench's process {host}; source {source}; destination {destination}");
+        }
     }
 }
 
+/// The median of `samples` and their range, or `unmeasured` where any is unknown.
+fn spread(samples: impl Iterator<Item = Option<f64>>) -> String {
+    let Some(mut samples) = samples.collect::<Option<Vec<f64>>>() else {
+        return "unmeasured".to_owned();
+    };
+    samples.sort_by(f64::total_cmp);
+    let (low, high) = (samples[0], samples[samples.len() - 1]);
+    let median = samples[samples.len() / 2];
+    format!("{median:.3} ({low:.3} to {high:.3})")
+}
+
 criterion_group!(benches, served);
-criterion_main!(benches);
+
+fn main() -> ExitCode {
+    if connector::asked() {
+        return connector::serve();
+    }
+    benches();
+    Criterion::default().configure_from_args().final_summary();
+    rdlt_host::stop_spawned(STOPPING).expect("every connector the bench spawned stops");
+    ExitCode::SUCCESS
+}
