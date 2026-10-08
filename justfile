@@ -192,16 +192,20 @@ bench-package name:
 # this process may use by default, saved as criterion's baseline named after the commit, then each
 # benchmark under `perf stat` for the instructions a cycle and the CPUs kept busy, and once under
 # a count-only `strace -c` for the syscalls a run makes, then the bench's allocation counts, with
-# the commit, load, governor and thread counts. Linux only, which can hold a process to chosen
-# CPUs; the record is in `target/bench`
-bench $name $cores="" $filter="":
+# the commit, load, governor and thread counts. Connectors a bench serves in processes of their
+# own run on the CPUs `connectors` lists, by default every online CPU outside `cores`; their CPU
+# time is in the CPUs kept busy and their syscalls are counted. Linux only, which can hold a
+# process to chosen CPUs; the record is in `target/bench`
+bench $name $cores="" $filter="" $connectors="":
     #!/usr/bin/env bash
     set -euo pipefail
     [[ "$(uname -s)" == Linux ]] || { echo "just bench runs only on Linux, which can hold a process to chosen CPUs" >&2; exit 2; }
     [[ -n $cores ]] || cores=$(taskset -cp $$ | sed 's/.*: //')
     found=$(just --quiet bench-package "$name")
     read -r package features <<< "$found"
-    [[ $cores =~ ^[0-9]{1,4}(-[0-9]{1,4})?(,[0-9]{1,4}(-[0-9]{1,4})?)*$ ]] || { echo "cores must be a CPU list such as 0-3" >&2; exit 2; }
+    list='^[0-9]{1,4}(-[0-9]{1,4})?(,[0-9]{1,4}(-[0-9]{1,4})?)*$'
+    [[ $cores =~ $list ]] || { echo "cores must be a CPU list such as 0-3" >&2; exit 2; }
+    [[ -z $connectors || $connectors =~ $list ]] || { echo "connectors must be a CPU list such as 4-11" >&2; exit 2; }
     for tool in perf strace; do command -v "$tool" > /dev/null || { echo "just bench needs $tool" >&2; exit 2; }; done
     mkdir -p target/bench
     changed=$(git status --porcelain --untracked-files=no)
@@ -211,14 +215,19 @@ bench $name $cores="" $filter="":
     built() { sed -n "s|^ *Executable .* (\(.*/deps/$1-[0-9a-f]*\))\$|\1|p" target/bench/build.log | tail -1; }
     exe=$(built "$name")
     counter=$(built allocations)
-    cpus=()
-    IFS=, read -ra parts <<< "$cores"
-    for part in "${parts[@]}"; do mapfile -t -O "${#cpus[@]}" cpus < <(seq "${part%-*}" "${part#*-}"); done
+    expand() { local part parts; IFS=, read -ra parts <<< "$1"; for part in "${parts[@]}"; do seq "${part%-*}" "${part#*-}"; done; }
+    mapfile -t cpus < <(expand "$cores")
+    if [[ -z $connectors ]]; then
+        connectors=$(expand "$(cat /sys/devices/system/cpu/online)" | grep -vxF -f <(printf '%s\n' "${cpus[@]}") | paste -sd, || true)
+    fi
+    mapfile -t apart < <([[ -z $connectors ]] || expand "$connectors")
+    [[ -z $connectors ]] || export RDLT_BENCH_CONNECTOR_CORES=$connectors
     {
         echo "bench $name${filter:+ matching $filter}, commit $(git rev-parse HEAD)${changed:+ with uncommitted changes}"
         echo "$(rustc -V), $(uname -sr)"
         echo "CPUs $cores ($(taskset -c "$cores" nproc) of $(nproc --all)): $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
-        for cpu in "${cpus[@]}"; do
+        echo "connector processes, where the bench spawns any: CPUs ${connectors:-$cores}"
+        for cpu in "${cpus[@]}" "${apart[@]}"; do
             policy=/sys/devices/system/cpu/cpu$cpu/cpufreq
             echo "governor $(cat "$policy/scaling_governor" 2>/dev/null || echo unknown), energy preference $(cat "$policy/energy_performance_preference" 2>/dev/null || echo unknown)"
         done | sort | uniq -c | sed 's/^ *\([0-9]*\) /CPUs: \1, /'
