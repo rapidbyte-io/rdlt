@@ -182,6 +182,11 @@ unused_async_trait_impl = "allow"            # connectors implement async trait 
 [profile.dev]
 debug = "line-tables-only"
 
+# A backtrace needs file and line in this workspace's frames, not in its dependencies': built
+# without line tables, they leave every test binary less to link.
+[profile.dev.package."*"]
+debug = false
+
 # A spawned connector's digest hashes its binary, which a debug build makes hundreds of megabytes;
 # optimised, the tests that spawn connectors hash it in a fraction of a second, not seconds.
 [profile.dev.package.sha2]
