@@ -22,6 +22,7 @@ mod processes;
 mod served;
 
 use std::hint::black_box;
+use std::num::NonZeroUsize;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,7 +33,8 @@ use rdlt_connector::serve::{Listening, Served, serve_listener};
 use rdlt_connector::{ConnectContext, Destination, Role, Source};
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
-    Passthrough, Replayed, Sinking, ipc_sink, register, replay_config, replay_factory, sink_factory,
+    Passthrough, Replayed, Sinking, ipc_sink, register, replay_factory, sink_factory,
+    split_replay_config,
 };
 use rdlt_host::{
     Connection, ConnectorRef, Identity, Options, Provider as _, Remote, RemoteDestination,
@@ -147,17 +149,21 @@ impl Frames {
     }
 }
 
-/// One benchmark: where and how its connectors are served, which, and the frames they move.
+/// One benchmark: where and how its connectors are served, which, the frames they move, and
+/// the partitions the source reads them from, each an even share.
 #[derive(Clone, Copy, Debug)]
 struct Case {
     layout: Layout,
     transport: Transport,
     mode: Mode,
     frames: Frames,
+    partitions: NonZeroUsize,
 }
 
 impl Case {
-    /// Every mode over each transport in large and in small frames, in each layout.
+    /// Every mode over each transport in large and in small frames, in each layout, read from
+    /// one partition; and in processes of their own, a few of them in large frames read from
+    /// four and from eight.
     fn all() -> Vec<Self> {
         let mut cases = Vec::new();
         for layout in [Layout::Shared, Layout::Processes] {
@@ -168,11 +174,31 @@ impl Case {
                         transport,
                         mode,
                         frames,
+                        partitions: NonZeroUsize::MIN,
                     }));
                 }
             }
         }
+        let split = [
+            (Transport::Socket, Mode::Both),
+            (Transport::Tls, Mode::Destination),
+            (Transport::Tls, Mode::Both),
+        ];
+        for (transport, mode) in split {
+            cases.extend([4, 8].map(|partitions| Self {
+                layout: Layout::Processes,
+                transport,
+                mode,
+                frames: Frames::Large,
+                partitions: NonZeroUsize::new(partitions).expect("a count of partitions"),
+            }));
+        }
         cases
+    }
+
+    /// The configuration of the replay the case's source pushes.
+    fn replay(self) -> serde_json::Value {
+        split_replay_config(self.frames.replay(), self.partitions)
     }
 
     /// Where and how its connectors are served: `process/tls`, or `tls` in the bench's process.
@@ -183,10 +209,15 @@ impl Case {
         }
     }
 
-    /// What the case moves: its mode, batches and rows a batch.
+    /// What the case moves: its mode, batches and rows a batch, and its partitions where it
+    /// has several.
     fn shape(self) -> String {
         let (batches, rows) = self.frames.shape();
-        format!("{}/{batches}x{rows}", self.mode.name())
+        let mode = self.mode.name();
+        match self.partitions.get() {
+            1 => format!("{mode}/{batches}x{rows}"),
+            partitions => format!("{mode}/{batches}x{rows}/{partitions}-partitions"),
+        }
     }
 
     fn id(self) -> BenchmarkId {
@@ -332,6 +363,15 @@ struct Seconds {
     host: f64,
     source: Option<f64>,
     destination: Option<f64>,
+    busy: Busy,
+}
+
+/// The CPUs each process kept busy over a sample's runs: its CPU time over theirs.
+#[derive(Clone, Copy, Debug)]
+struct Busy {
+    host: f64,
+    source: Option<f64>,
+    destination: Option<f64>,
 }
 
 /// A run's source and destination, those `case` names served as it says within `options`, and
@@ -342,31 +382,15 @@ async fn connectors(
     processes: Option<&mut Processes>,
     options: &Options,
 ) -> (Arc<dyn Source>, Arc<dyn Destination>, Pids) {
-    let (mode, transport, replay) = (case.mode, case.transport, case.frames.replay());
-    let mut pids = Pids::default();
     if let Some(processes) = processes {
-        let source = if mode.serves_source() {
-            let Placed { connector, pid } = processes.source(transport, replay, options).await;
-            pids.source = Some(pid);
-            connector
-        } else {
-            in_process_source(replay).await
-        };
-        let destination = if mode.serves_destination() {
-            let Placed { connector, pid } = processes.destination(transport, options).await;
-            pids.destination = Some(pid);
-            connector
-        } else {
-            ipc_sink().await
-        };
-        return (source, destination, pids);
+        return apart(case, processes, options).await;
     }
+    let (mode, transport, replay) = (case.mode, case.transport, case.replay());
     let source: Arc<dyn Source> = match (mode.serves_source(), transport) {
-        (false, _) => in_process_source(replay).await,
+        (false, _) => in_process_source(&replay).await,
         (true, Transport::Socket) => {
             let io = served::served(Served::new().with_source(replay_factory()));
-            let config = replay_config(replay);
-            let connection = Connection::connect(io, Role::Source, &config, *options).await;
+            let connection = Connection::connect(io, Role::Source, &replay, *options).await;
             Arc::new(RemoteSource::new(
                 connection.expect("the source handshakes"),
             ))
@@ -375,8 +399,11 @@ async fn connectors(
             let listener = listener.expect("a listener serves over TLS");
             let id = replay_factory().spec().id.clone();
             let reference = ConnectorRef::new(id).endpoint(&listener.endpoint);
-            let (remote, config) = (listener.tls.remote(options), replay_config(replay));
-            let placed = remote.source(&reference, &config).await;
+            let placed = listener
+                .tls
+                .remote(options)
+                .source(&reference, &replay)
+                .await;
             Arc::from(placed.expect("the source is placed").connector)
         }
     };
@@ -398,13 +425,39 @@ async fn connectors(
             Arc::from(placed.expect("the destination is placed").connector)
         }
     };
+    (source, destination, Pids::default())
+}
+
+/// A run's source and destination, those `case` names served each in a process of its own,
+/// and those processes.
+async fn apart(
+    case: Case,
+    processes: &mut Processes,
+    options: &Options,
+) -> (Arc<dyn Source>, Arc<dyn Destination>, Pids) {
+    let (mode, transport, replay) = (case.mode, case.transport, case.replay());
+    let mut pids = Pids::default();
+    let source = if mode.serves_source() {
+        let Placed { connector, pid } = processes.source(transport, &replay, options).await;
+        pids.source = Some(pid);
+        connector
+    } else {
+        in_process_source(&replay).await
+    };
+    let destination = if mode.serves_destination() {
+        let Placed { connector, pid } = processes.destination(transport, options).await;
+        pids.destination = Some(pid);
+        connector
+    } else {
+        ipc_sink().await
+    };
     (source, destination, pids)
 }
 
-/// The replay source `replay`, in the bench's process.
-async fn in_process_source(replay: &str) -> Arc<dyn Source> {
+/// The replay source configured as `replay`, in the bench's process.
+async fn in_process_source(replay: &serde_json::Value) -> Arc<dyn Source> {
     let connected = replay_factory()
-        .connect(replay_config(replay), ConnectContext::new())
+        .connect(replay.clone(), ConnectContext::new())
         .await;
     Arc::from(connected.expect("the replay connects"))
 }
@@ -470,11 +523,17 @@ impl Workload {
         let a_gigabyte = |time: Duration| time.as_secs_f64() / gigabytes;
         let apart = |time: Option<Duration>| time.unwrap_or_default();
         let total = usage.host + apart(usage.source) + apart(usage.destination);
+        let busy = |time: Duration| time.as_secs_f64() / took.as_secs_f64();
         let seconds = Seconds {
             total: a_gigabyte(total),
             host: a_gigabyte(usage.host),
             source: usage.source.map(a_gigabyte),
             destination: usage.destination.map(a_gigabyte),
+            busy: Busy {
+                host: busy(usage.host),
+                source: usage.source.map(busy),
+                destination: usage.destination.map(busy),
+            },
         };
         (took, seconds)
     }
@@ -536,19 +595,39 @@ fn print(cores: Cores, used: &[(Case, Vec<Seconds>)]) {
             seconds.len(),
         );
         if case.layout == Layout::Processes {
-            let host = spread(seconds.iter().map(|sample| Some(sample.host)));
-            let side = |apart: bool, side: fn(&Seconds) -> Option<f64>| {
-                if apart {
-                    spread(seconds.iter().map(side))
-                } else {
-                    "in the bench's process".to_owned()
-                }
-            };
-            let source = side(case.source_apart(), |sample| sample.source);
-            let destination = side(case.destination_apart(), |sample| sample.destination);
-            println!("  the bench's process {host}; source {source}; destination {destination}");
+            print_sides(*case, seconds);
         }
     }
+}
+
+/// Prints each process's CPU time a gigabyte and the CPUs it kept busy.
+#[expect(
+    clippy::print_stdout,
+    reason = "each process's CPU time is printed beside criterion's times"
+)]
+fn print_sides(case: Case, seconds: &[Seconds]) {
+    let side = |apart: bool, side: &dyn Fn(&Seconds) -> Option<f64>| {
+        if apart {
+            spread(seconds.iter().map(side))
+        } else {
+            "in the bench's process".to_owned()
+        }
+    };
+    let (source, destination) = (case.source_apart(), case.destination_apart());
+    let host = side(true, &|sample| Some(sample.host));
+    let source_seconds = side(source, &|sample| sample.source);
+    let destination_seconds = side(destination, &|sample| sample.destination);
+    println!(
+        "  CPU seconds a GB: the bench's process {host}; source {source_seconds}; destination \
+         {destination_seconds}"
+    );
+    let host = side(true, &|sample| Some(sample.busy.host));
+    let source_busy = side(source, &|sample| sample.busy.source);
+    let destination_busy = side(destination, &|sample| sample.busy.destination);
+    println!(
+        "  CPUs busy: the bench's process {host}; source {source_busy}; destination \
+         {destination_busy}"
+    );
 }
 
 /// The median of `samples` and their range, or `unmeasured` where any is unknown.

@@ -11,7 +11,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use rdlt_connector::{Destination, Source};
-use rdlt_engine::bench::{Sinking, replay_config, replay_factory, sink_factory};
+use rdlt_engine::bench::{Sinking, replay_factory, sink_factory};
 use rdlt_host::{ConnectorRef, Local, Options, Provider as _};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::{Child, Command};
@@ -52,20 +52,19 @@ impl Processes {
         }
     }
 
-    /// A source replaying `replay`, reached over `transport`.
+    /// A source configured as `config`, reached over `transport`.
     pub(crate) async fn source(
         &mut self,
         transport: Transport,
-        replay: &str,
+        config: &serde_json::Value,
         options: &Options,
     ) -> Placed<Arc<dyn Source>> {
         let id = replay_factory().spec().id.clone();
-        let config = replay_config(replay);
         match transport {
             Transport::Socket => {
                 let reference = ConnectorRef::new(id).path(&self.binary);
                 let local = self.local.clone().options(*options);
-                let placed = local.source(&reference, &config).await;
+                let placed = local.source(&reference, config).await;
                 let connector = Arc::from(placed.expect("the source is spawned").connector);
                 let pid = self.spawned();
                 Placed { connector, pid }
@@ -77,7 +76,7 @@ impl Processes {
                 let placed = listeners
                     .tls
                     .remote(options)
-                    .source(&reference, &config)
+                    .source(&reference, config)
                     .await;
                 let connector = Arc::from(placed.expect("the source is placed").connector);
                 Placed { connector, pid }
