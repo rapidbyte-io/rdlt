@@ -352,7 +352,7 @@ async fn a_stream_s_lag_leaves_out_partitions_its_source_retired() {
     assert_eq!(outcome.report.streams["events"].behind, Some(0));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_read_reset_after_rows_it_never_sealed_holds_no_log_chunk_back() {
     // Each poll of the partition reads its new messages, then fails as retention lost and is
     // reset: the rows it read before failing sit in a segment no checkpoint seals.
@@ -603,7 +603,7 @@ async fn retention_resets_that_seal_no_rows_spend_the_retry_budget() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn rows_a_reset_abandons_are_removed_from_staging_by_the_next_commit() {
     // Each poll of the partition reads its new messages, then fails as retention lost and is
     // reset: the rows it read before failing are staged in a segment no checkpoint seals.
