@@ -12,7 +12,7 @@ use super::PREFIX;
 use crate::v1;
 
 /// The key of a length-delimited field numbered 3: a write frame's batch, and a batch's body.
-const THIRD_FIELD: u8 = 3 << 3 | 2;
+const THIRD_FIELD: u8 = 0x1a;
 
 /// A message's bytes as a body sends them: `head`, then `body` where there is one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,13 +25,8 @@ pub struct Chunks {
 
 impl Chunks {
     /// Bytes: the message's length with its prefix.
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.head.len() + self.body.as_ref().map_or(0, Bytes::len)
-    }
-
-    /// Whether the chunks hold no bytes, which no message's do: each has its prefix.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 
@@ -68,12 +63,19 @@ impl Chained for v1::WriteFrame {
         let batch_length = batch.encoded_len();
         let length = 1 + prost::length_delimiter_len(batch_length) + batch_length;
         let body = std::mem::take(&mut batch.data_body);
-        let mut head = prefixed(length, length - body.len());
+        // The head is all of the message but its body.
+        let room = length - body.len();
+        let mut head = prefixed(length, room);
         head.put_u8(THIRD_FIELD);
         delimit(batch_length, &mut head);
         encode(&batch, &mut head);
         head.put_u8(THIRD_FIELD);
         delimit(body.len(), &mut head);
+        debug_assert_eq!(
+            head.len(),
+            PREFIX + room,
+            "the head is the message less its body"
+        );
         Chunks {
             head: head.freeze(),
             body: Some(body),

@@ -55,6 +55,27 @@ impl Plane for Writes {
 #[derive(Clone)]
 struct Echo;
 
+/// A service never ready.
+#[derive(Clone)]
+struct Busy;
+
+impl Service<http::Request<Body>> for Busy {
+    type Response = http::Response<Body>;
+    type Error = Infallible;
+    type Future = BoxFuture<http::Response<Body>, Infallible>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Infallible>> {
+        std::task::Poll::Pending
+    }
+
+    fn call(&mut self, _: http::Request<Body>) -> Self::Future {
+        unreachable!("a service never ready is never called")
+    }
+}
+
 impl Service<http::Request<Body>> for Echo {
     type Response = http::Response<Body>;
     type Error = Infallible;
@@ -245,4 +266,20 @@ async fn writes_still_arriving_hold_the_window_and_the_rest_wait() {
         tokio::task::yield_now().await;
     }
     assert_eq!(window.taken(), 0, "every write's room is given back");
+}
+
+#[test]
+fn the_router_is_ready_when_the_service_beside_the_plane_is() {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    let (told, _reads) = mpsc::unbounded_channel();
+    let window = Window::new(usize::MAX);
+    let mut busy = Router::new(
+        Busy,
+        Arc::new(Writes::Read(told)),
+        &limits(),
+        window.clone(),
+    );
+    assert!(busy.poll_ready(&mut context).is_pending());
+    let mut ready = router(Writes::Refused, window);
+    assert!(ready.poll_ready(&mut context).is_ready());
 }

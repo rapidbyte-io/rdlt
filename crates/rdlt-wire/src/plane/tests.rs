@@ -352,6 +352,33 @@ async fn a_message_beyond_the_limit_fails_the_call_it_would_be_sent_on() {
 }
 
 #[tokio::test]
+async fn a_message_at_the_limit_is_sent_and_a_byte_more_is_not() {
+    let frame = batch_frame(1, b"h", &[0; 100]);
+    let at = frame.encoded_len();
+    let sent_at = |most| {
+        let messages = tonic::codegen::tokio_stream::iter([frame.clone()]);
+        sent(Outgoing::request(messages, most))
+    };
+    let within = sent_at(at).await;
+    assert!(within.iter().all(Result::is_ok), "{within:?}");
+    let beyond = sent_at(at - 1).await;
+    assert!(matches!(beyond[..], [Err(Code::OutOfRange)]), "{beyond:?}");
+}
+
+#[test]
+fn the_reader_and_the_sender_show_which_end_they_are() {
+    let incoming = Incoming::<v1::WriteFrame>::request(requested(chunks(&[])));
+    let shown = format!("{incoming:?}");
+    assert!(
+        shown.contains("Request") && shown.contains("Reading"),
+        "{shown}"
+    );
+    let answers = tonic::codegen::tokio_stream::iter([Ok(credit(1))]);
+    let shown = format!("{:?}", Outgoing::answer(Box::pin(answers), 99));
+    assert!(shown.contains("Answer") && shown.contains("99"), "{shown}");
+}
+
+#[tokio::test]
 async fn what_a_request_sends_is_read_as_the_messages_it_sent() {
     let frames = vec![
         v1::WriteFrame {
