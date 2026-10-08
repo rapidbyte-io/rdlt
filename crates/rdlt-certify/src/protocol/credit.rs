@@ -60,6 +60,7 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
         )
         .await?;
         let mut frames = client
+            .rpc
             .read(ReceiverStream::new(receiver))
             .await
             .map_err(|status| format!("the read failed: {}", super::error(&status)))?
@@ -175,6 +176,7 @@ pub(super) async fn first_partition(
 ) -> Result<Option<(v1::StreamName, String)>, Violation> {
     let failed = |what: &str, status: &Status| format!("{what} failed: {}", super::error(status));
     let catalog = client
+        .rpc
         .discover(v1::DiscoverRequest {})
         .await
         .map_err(|status| failed("the discovery", &status))?
@@ -183,6 +185,7 @@ pub(super) async fn first_partition(
         return Ok(None);
     };
     let planned = client
+        .rpc
         .plan(v1::PlanRequest {
             stream: Some(stream.clone()),
             state: Some(v1::StreamState::default()),

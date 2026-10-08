@@ -1,5 +1,6 @@
 //! `cargo xtask codegen`: generates the wire protocol's Rust code, its messages and its service's
-//! client and server, from its `.proto` files.
+//! client and server, from its `.proto` files; the data plane's calls are left out of the service,
+//! as `rdlt_wire::plane` serves and calls them by hand, and their messages are not.
 //!
 //! The generated code is committed, so building rdlt-wire needs neither `protoc` nor a build
 //! script; `--check` fails when the committed code is stale.
@@ -22,6 +23,9 @@ pub(crate) const GENERATED: &str = "crates/rdlt-wire/src/generated/rdlt.connecto
 
 /// The generated file of the messages' forms, relative to the repository root.
 pub(crate) const FORMS: &str = "crates/rdlt-wire/src/generated/forms.rs";
+
+/// The calls the data plane serves and calls by hand, left out of the generated service.
+const DATA_PLANE: [&str; 1] = ["Write"];
 
 /// Generates the code, writing it, or with `check` comparing it to what is committed.
 #[expect(clippy::print_stdout, reason = "the verdict is the command's output")]
@@ -51,10 +55,21 @@ pub(crate) fn run(root: &Path, check: bool) -> anyhow::Result<ExitCode> {
 pub(crate) fn generate(root: &Path) -> Result<(String, String), anyhow::Error> {
     let proto_dir = root.join(PROTO_DIR);
     let files = protos(&proto_dir)?;
-    let descriptors = protox::compile(&files, [&proto_dir]).context("compiling the protocol")?;
+    let mut descriptors =
+        protox::compile(&files, [&proto_dir]).context("compiling the protocol")?;
     let out = tempfile::tempdir().context("creating a scratch directory")?;
     let forms_file = out.path().join("forms.rs");
+    // The forms are of every call, the data plane's included: its receivers scan its messages.
     fs::write(&forms_file, forms::forms(&descriptors)?).context("writing the forms")?;
+    for service in descriptors
+        .file
+        .iter_mut()
+        .flat_map(|file| &mut file.service)
+    {
+        service
+            .method
+            .retain(|method| !DATA_PLANE.contains(&method.name()));
+    }
     tonic_prost_build::configure()
         .bytes(".")
         .build_client(true)

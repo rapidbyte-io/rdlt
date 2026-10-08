@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::Served;
 use super::super::service::Service;
-use super::{Classed, method};
+use super::{classed, window};
 
 #[test]
 fn each_call_s_request_has_the_class_of_what_it_carries() {
@@ -35,8 +35,7 @@ fn each_call_s_request_has_the_class_of_what_it_carries() {
         ("Unknown", Class::Control),
     ];
     for (name, expected) in expected {
-        let path = format!("/rdlt.connector.v1.Connector/{name}");
-        assert_eq!(Class::of_request(method(&path)), expected, "{name}");
+        assert_eq!(Class::of_request(name), expected, "{name}");
     }
 }
 
@@ -69,8 +68,8 @@ async fn requests_still_arriving_on_a_connection_hold_its_window_and_the_rest_wa
     };
     let stopping = CancellationToken::new();
     let service = Service::new(Arc::new(Served::new()), limits, None, 1, stopping);
-    let mut classed = Classed::new(service, &limits);
-    let window = classed.window.clone();
+    let window = window(&limits);
+    let mut classed = classed(service, &limits, window.clone());
     // Five handshakes, each of a declared length at its class's bound, each only begun.
     let length = u32::try_from(HANDSHAKE_BYTES).unwrap() - 5;
     let message = 5 + usize::try_from(length).unwrap();

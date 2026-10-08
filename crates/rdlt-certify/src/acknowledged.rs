@@ -36,6 +36,7 @@ impl AckProbe {
             .client
             .lock()
             .await
+            .rpc
             .read_acknowledged(asked)
             .await
             .map_err(|status| error(&status))?
@@ -75,7 +76,7 @@ pub(crate) async fn probe(target: &Target, config: &str) -> Result<Option<AckPro
     let mut offered = request(Role::Source, rdlt_wire::PROTOCOL_MAJOR);
     offered.features.push(ACKNOWLEDGED.to_owned());
     let what = "the handshake that asks where the source stands";
-    let answer = target.opened(what, client.handshake(offered)).await?;
+    let answer = target.opened(what, client.rpc.handshake(offered)).await?;
     if !answer
         .accepted_features
         .iter()
@@ -84,7 +85,7 @@ pub(crate) async fn probe(target: &Target, config: &str) -> Result<Option<AckPro
         return Ok(None);
     }
     let what = "the configuration of what asks where the source stands";
-    let configuring = client.configure(configure_request(config));
+    let configuring = client.rpc.configure(configure_request(config));
     target.opened(what, configuring).await?;
     Ok(Some(AckProbe {
         client: Mutex::new(client),

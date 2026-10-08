@@ -9,14 +9,13 @@ use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
-use rdlt_wire::bounded::Charged;
 use rdlt_wire::flow::Spending;
+use rdlt_wire::plane::Incoming;
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::{Cut, Encoder};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::Streaming;
 
 use super::destination::out_of_turn;
 use super::{Connection, lost_error};
@@ -25,9 +24,8 @@ use super::{Connection, lost_error};
 pub(super) struct RemoteWriter {
     connection: Arc<Connection>,
     frames: mpsc::Sender<v1::WriteFrame>,
-    acks: Streaming<v1::WriteAck>,
-    /// The charge of the answer decoded last, released once it is.
-    charged: Charged,
+    /// The connector's answers, each charged until it is decoded.
+    acks: Incoming<v1::WriteAck>,
     /// The credit the connector has left, which the last frame may have taken below zero.
     credit: Spending,
     encoder: Encoder,
@@ -58,19 +56,21 @@ impl RemoteWriter {
             })
             .await
             .ok();
-        let mut client = connection.client.control.clone();
+        let mut channel = connection.client.channel.clone();
+        let most = connection.options.limits.largest();
         let deadline = connection.options.deadlines.write_ack;
-        let (acks, charged) = connection
-            .call(deadline, "opening the writer", async move {
-                let opened = client.write(ReceiverStream::new(receiver)).await;
-                opened.map(super::charged)
-            })
+        let opening = async move {
+            let frames = ReceiverStream::new(receiver);
+            let opened = super::clients::write(&mut channel, most, frames).await;
+            opened.map(tonic::Response::new)
+        };
+        let acks = connection
+            .call(deadline, "opening the writer", opening)
             .await?;
         Ok(Self {
             connection,
             frames,
             acks,
-            charged,
             credit: Spending::default(),
             encoder: Encoder::default(),
             schema: None,
@@ -94,7 +94,7 @@ impl RemoteWriter {
             answer = tokio::time::timeout_at(due, self.acks.message()) => answer,
         };
         // Decoded: its charge goes.
-        self.charged.release();
+        self.acks.release();
         let message = match answer {
             Ok(Ok(Some(ack))) => ack.ack,
             Ok(Ok(None)) => return Err(out_of_turn("the end of the write")),

@@ -639,10 +639,10 @@ async fn a_connector_is_told_which_host_it_serves_in_either_role_and_with_either
             traceparent: String::new(),
             limits: None,
         };
-        let agreed = client.handshake(offered).await.expect("it agrees");
+        let agreed = client.rpc.handshake(offered).await.expect("it agrees");
         assert_eq!(agreed.into_inner().accepted_features, [feature]);
         let config_json = config.to_string();
-        let configured = client.configure(v1::ConfigureRequest { config_json });
+        let configured = client.rpc.configure(v1::ConfigureRequest { config_json });
         configured.await.expect("it is configured");
     }
     let asked = asked.lock().expect("no panic").clone();

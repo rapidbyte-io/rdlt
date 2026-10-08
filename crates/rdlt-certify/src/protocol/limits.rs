@@ -103,10 +103,11 @@ async fn configuration(
         .map_err(Violation::of)?
         .max_encoding_message_size(usize::MAX);
     client
+        .rpc
         .handshake(request(role, PROTOCOL_MAJOR))
         .await
         .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
-    let refused = client.configure(configure_request(&padded)).await;
+    let refused = client.rpc.configure(configure_request(&padded)).await;
     refused_with(
         refused,
         LIMIT_EXCEEDED,
@@ -155,7 +156,7 @@ async fn cursor(
             .ok();
     }
     let mut client = client.max_encoding_message_size(usize::MAX);
-    let read = first_refusal(client.read(ReceiverStream::new(receiver)).await).await;
+    let read = first_refusal(client.rpc.read(ReceiverStream::new(receiver)).await).await;
     refused_with(
         read,
         LIMIT_EXCEEDED,

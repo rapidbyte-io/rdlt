@@ -83,8 +83,7 @@ async fn a_served_write_grows_its_window_to_two_frames_and_answers_a_flush_with_
     let mut acks = client
         .write(ReceiverStream::new(receiver))
         .await
-        .expect("the write starts")
-        .into_inner();
+        .expect("the write starts");
     let mut answers = Vec::new();
     while let Some(ack) = tokio::time::timeout(Duration::from_secs(30), acks.message())
         .await

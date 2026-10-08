@@ -123,13 +123,14 @@ async fn a_shipped_destination_binary_reads_nothing_back_whatever_its_host_offer
         let mut client = client(wire, Options::default())
             .await
             .expect("the binary connects");
-        let agreed = client.handshake(offering_read_back()).await;
+        let agreed = client.rpc.handshake(offering_read_back()).await;
         let agreed = agreed.expect("the handshake succeeds").into_inner();
         assert!(agreed.accepted_features.is_empty(), "{id}");
         let configured = v1::ConfigureRequest {
             config_json: config.to_string(),
         };
         client
+            .rpc
             .configure(configured)
             .await
             .expect("it is configured");
@@ -142,7 +143,7 @@ async fn a_shipped_destination_binary_reads_nothing_back_whatever_its_host_offer
             ..v1::TableRef::default()
         };
         let request = v1::ReadPublishedRequest { table: Some(table) };
-        let Err(refused) = client.read_published(request).await else {
+        let Err(refused) = client.rpc.read_published(request).await else {
             panic!("{id} read a table back");
         };
         assert_eq!(

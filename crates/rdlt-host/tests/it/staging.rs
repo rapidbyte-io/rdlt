@@ -81,8 +81,7 @@ async fn raw_write(
     let mut acks = client
         .write(ReceiverStream::new(receiver))
         .await
-        .expect("the write starts")
-        .into_inner();
+        .expect("the write starts");
     let (mut error, mut flushes) = (None, 0);
     while let Some(ack) = tokio::time::timeout(Duration::from_secs(30), acks.message())
         .await

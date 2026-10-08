@@ -2042,24 +2042,6 @@ pub mod connector_client {
             self.inner.unary(req, path, codec).await
         }
         /// Writes a table's batches.
-        pub async fn write(
-            &mut self,
-            request: impl tonic::IntoStreamingRequest<Message = super::WriteFrame>,
-        ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::WriteAck>>,
-            tonic::Status,
-        > {
-            self.inner.ready().await.map_err(|e| {
-                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
-            })?;
-            let codec = tonic_prost::ProstCodec::default();
-            let path = http::uri::PathAndQuery::from_static("/rdlt.connector.v1.Connector/Write");
-            let mut req = request.into_streaming_request();
-            req.extensions_mut()
-                .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Write"));
-            self.inner.streaming(req, path, codec).await
-        }
-        /// Commits a session's staged segments.
         pub async fn commit(
             &mut self,
             request: impl tonic::IntoRequest<super::CommitRequest>,
@@ -2074,7 +2056,7 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Commit"));
             self.inner.unary(req, path, codec).await
         }
-        /// Closes a session.
+        /// Commits a session's staged segments.
         pub async fn close(
             &mut self,
             request: impl tonic::IntoRequest<super::CloseRequest>,
@@ -2089,7 +2071,7 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Close"));
             self.inner.unary(req, path, codec).await
         }
-        /// Proves both ends are alive.
+        /// Closes a session.
         pub async fn heartbeat(
             &mut self,
             request: impl tonic::IntoStreamingRequest<Message = super::Ping>,
@@ -2106,9 +2088,7 @@ pub mod connector_client {
                 .insert(GrpcMethod::new("rdlt.connector.v1.Connector", "Heartbeat"));
             self.inner.streaming(req, path, codec).await
         }
-        /// Reads back every row a destination published to a table, for certification; served when
-        /// the handshake accepted the "published" feature, which only a connector built and served for
-        /// certification does. The engine never calls it.
+        /// Proves both ends are alive.
         pub async fn read_published(
             &mut self,
             request: impl tonic::IntoRequest<super::ReadPublishedRequest>,
@@ -2129,9 +2109,9 @@ pub mod connector_client {
             ));
             self.inner.server_streaming(req, path, codec).await
         }
-        /// Tells where a source stands for a partition outside the engine, for certification; served
-        /// when the handshake accepted the "acknowledged" feature, which only a connector built and
-        /// served for certification does. The engine never calls it.
+        /// Reads back every row a destination published to a table, for certification; served when
+        /// the handshake accepted the "published" feature, which only a connector built and served for
+        /// certification does. The engine never calls it.
         pub async fn read_acknowledged(
             &mut self,
             request: impl tonic::IntoRequest<super::ReadAcknowledgedRequest>,
@@ -2220,22 +2200,12 @@ pub mod connector_server {
             &self,
             request: tonic::Request<super::ApplySchemaRequest>,
         ) -> std::result::Result<tonic::Response<super::ApplySchemaResponse>, tonic::Status>;
-        /// Server streaming response type for the Write method.
-        type WriteStream: tonic::codegen::tokio_stream::Stream<
-                Item = std::result::Result<super::WriteAck, tonic::Status>,
-            > + std::marker::Send
-            + 'static;
         /// Writes a table's batches.
-        async fn write(
-            &self,
-            request: tonic::Request<tonic::Streaming<super::WriteFrame>>,
-        ) -> std::result::Result<tonic::Response<Self::WriteStream>, tonic::Status>;
-        /// Commits a session's staged segments.
         async fn commit(
             &self,
             request: tonic::Request<super::CommitRequest>,
         ) -> std::result::Result<tonic::Response<super::Receipt>, tonic::Status>;
-        /// Closes a session.
+        /// Commits a session's staged segments.
         async fn close(
             &self,
             request: tonic::Request<super::CloseRequest>,
@@ -2245,7 +2215,7 @@ pub mod connector_server {
                 Item = std::result::Result<super::Pong, tonic::Status>,
             > + std::marker::Send
             + 'static;
-        /// Proves both ends are alive.
+        /// Closes a session.
         async fn heartbeat(
             &self,
             request: tonic::Request<tonic::Streaming<super::Ping>>,
@@ -2255,16 +2225,14 @@ pub mod connector_server {
                 Item = std::result::Result<super::ReadFrame, tonic::Status>,
             > + std::marker::Send
             + 'static;
-        /// Reads back every row a destination published to a table, for certification; served when
-        /// the handshake accepted the "published" feature, which only a connector built and served for
-        /// certification does. The engine never calls it.
+        /// Proves both ends are alive.
         async fn read_published(
             &self,
             request: tonic::Request<super::ReadPublishedRequest>,
         ) -> std::result::Result<tonic::Response<Self::ReadPublishedStream>, tonic::Status>;
-        /// Tells where a source stands for a partition outside the engine, for certification; served
-        /// when the handshake accepted the "acknowledged" feature, which only a connector built and
-        /// served for certification does. The engine never calls it.
+        /// Reads back every row a destination published to a table, for certification; served when
+        /// the handshake accepted the "published" feature, which only a connector built and served for
+        /// certification does. The engine never calls it.
         async fn read_acknowledged(
             &self,
             request: tonic::Request<super::ReadAcknowledgedRequest>,
@@ -2681,45 +2649,6 @@ pub mod connector_server {
                                 max_encoding_message_size,
                             );
                         let res = grpc.unary(method, req).await;
-                        Ok(res)
-                    };
-                    Box::pin(fut)
-                }
-                "/rdlt.connector.v1.Connector/Write" => {
-                    #[allow(non_camel_case_types)]
-                    struct WriteSvc<T: Connector>(pub Arc<T>);
-                    impl<T: Connector> tonic::server::StreamingService<super::WriteFrame> for WriteSvc<T> {
-                        type Response = super::WriteAck;
-                        type ResponseStream = T::WriteStream;
-                        type Future =
-                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
-                        fn call(
-                            &mut self,
-                            request: tonic::Request<tonic::Streaming<super::WriteFrame>>,
-                        ) -> Self::Future {
-                            let inner = Arc::clone(&self.0);
-                            let fut = async move { <T as Connector>::write(&inner, request).await };
-                            Box::pin(fut)
-                        }
-                    }
-                    let accept_compression_encodings = self.accept_compression_encodings;
-                    let send_compression_encodings = self.send_compression_encodings;
-                    let max_decoding_message_size = self.max_decoding_message_size;
-                    let max_encoding_message_size = self.max_encoding_message_size;
-                    let inner = self.inner.clone();
-                    let fut = async move {
-                        let method = WriteSvc(inner);
-                        let codec = tonic_prost::ProstCodec::default();
-                        let mut grpc = tonic::server::Grpc::new(codec)
-                            .apply_compression_config(
-                                accept_compression_encodings,
-                                send_compression_encodings,
-                            )
-                            .apply_max_message_size_config(
-                                max_decoding_message_size,
-                                max_encoding_message_size,
-                            );
-                        let res = grpc.streaming(method, req).await;
                         Ok(res)
                     };
                     Box::pin(fut)

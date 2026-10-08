@@ -193,10 +193,12 @@ async fn handshaken(
 ) -> Result<(Client, v1::HandshakeResponse), Violation> {
     let mut client = target.client().await.map_err(Violation::of)?;
     let answer = client
+        .rpc
         .handshake(request(role, PROTOCOL_MAJOR))
         .await
         .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
     client
+        .rpc
         .configure(configure_request(config))
         .await
         .map_err(|status| format!("the configuration failed: {}", error(&status)))?;

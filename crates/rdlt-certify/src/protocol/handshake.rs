@@ -27,6 +27,7 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
         let mut offered = request(role, PROTOCOL_MAJOR);
         offered.features.push(unknown.clone());
         let answer = client
+            .rpc
             .handshake(offered)
             .await
             .map_err(|status| format!("the handshake failed: {}", error(&status)))?
@@ -44,6 +45,7 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
             .into());
         }
         let configured = client
+            .rpc
             .configure(configure_request(config))
             .await
             .map_err(|status| format!("the configuration failed: {}", error(&status)))?
@@ -64,7 +66,7 @@ pub(super) async fn answered(target: &Target, role: Role, config: &str) -> Found
         }
         for major in OTHER_MAJORS {
             let mut client = target.client().await.map_err(Violation::of)?;
-            let other = client.handshake(request(role, major)).await;
+            let other = client.rpc.handshake(request(role, major)).await;
             let what = format!("a handshake at major version {major}");
             unsupported(&refused_with(other, PROTOCOL_VERSION, &what)?, &what)?;
         }
@@ -87,29 +89,30 @@ pub(super) async fn ordered(target: &Target, role: Role, config: &str) -> Found 
     let checked = async {
         let mut early = target.client().await.map_err(Violation::of)?;
         refused_with(
-            early.check(v1::CheckRequest {}).await,
+            early.rpc.check(v1::CheckRequest {}).await,
             "no_handshake",
             "a check before the handshake",
         )?;
         refused_with(
-            early.configure(configure_request(config)).await,
+            early.rpc.configure(configure_request(config)).await,
             "no_handshake",
             "a configuration before the handshake",
         )?;
         let mut agreed = target.client().await.map_err(Violation::of)?;
         agreed
+            .rpc
             .handshake(request(role, PROTOCOL_MAJOR))
             .await
             .map_err(|status| format!("the handshake failed: {}", error(&status)))?;
         refused_with(
-            agreed.check(v1::CheckRequest {}).await,
+            agreed.rpc.check(v1::CheckRequest {}).await,
             "not_configured",
             "a check before the configuration",
         )?;
         let (mut client, _) = handshaken(target, role, config).await?;
-        let again = client.handshake(request(role, PROTOCOL_MAJOR)).await;
+        let again = client.rpc.handshake(request(role, PROTOCOL_MAJOR)).await;
         refused_with(again, "handshake_repeated", "a second handshake")?;
-        let reconfigured = client.configure(configure_request(config)).await;
+        let reconfigured = client.rpc.configure(configure_request(config)).await;
         refused_with(reconfigured, "configure_repeated", "a second configuration")?;
         Ok(())
     };
@@ -131,7 +134,7 @@ pub(super) async fn roles(target: &Target, role: Role, config: &str) -> Found {
             )));
         }
         let mut client = target.client().await.map_err(Violation::of)?;
-        let refused = client.handshake(request(other, PROTOCOL_MAJOR)).await;
+        let refused = client.rpc.handshake(request(other, PROTOCOL_MAJOR)).await;
         let what = "a handshake as an unserved role";
         unsupported(
             &refused_with(refused, crate::connect::UNSERVED, what)?,
