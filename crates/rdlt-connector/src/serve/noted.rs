@@ -5,10 +5,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use rdlt_wire::plane::Answers;
 use rdlt_wire::tonic::Status;
 use rdlt_wire::tonic::codegen::tokio_stream::Stream;
 
-use super::service::Answer;
 use crate::cursor::Cursor;
 use crate::id::{PartitionId, StreamName};
 use crate::wire::v1;
@@ -24,7 +24,7 @@ pub(super) struct Read {
 /// A read's frames, with what its host may report remembered as they pass: each checkpoint, and
 /// where the read started once its source has accepted it.
 pub(super) struct Noted {
-    frames: Answer<v1::ReadFrame>,
+    frames: Answers<v1::ReadFrame>,
     served: Arc<super::Served>,
     host: Option<Arc<str>>,
     read: Read,
@@ -35,7 +35,7 @@ pub(super) struct Noted {
 impl Noted {
     /// `frames` of `read`, served to `host`.
     pub(super) fn new(
-        frames: Answer<v1::ReadFrame>,
+        frames: Answers<v1::ReadFrame>,
         served: Arc<super::Served>,
         host: Option<Arc<str>>,
         read: Read,

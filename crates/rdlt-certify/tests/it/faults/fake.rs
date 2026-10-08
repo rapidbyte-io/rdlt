@@ -196,6 +196,113 @@ impl Plane for Fake {
     fn write(&self, frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
         Box::pin(async move { Ok(writes::write(self.fault, frames)) })
     }
+
+    fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
+        Box::pin(self.reading(controls))
+    }
+
+    fn read_published(&self, _: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
+        Box::pin(async { self.reading_back() })
+    }
+}
+
+impl Fake {
+    /// A read the host controls with `controls`, as the fault says.
+    async fn reading(
+        &self,
+        mut controls: Incoming<v1::ReadControl>,
+    ) -> Result<Answer<v1::ReadFrame>, Status> {
+        use v1::read_control::Control;
+        let first = controls
+            .message()
+            .await?
+            .and_then(|control| control.control);
+        if !matches!(first, Some(Control::Start(_))) && self.keeps(Fault::Lenient) {
+            return Err(refused(ConnectorErrorKind::Internal, "invalid_message"));
+        }
+        if let Some(Control::Start(start)) = &first {
+            let cursor = start.cursor.as_ref().map_or(0, |cursor| cursor.bytes.len());
+            if cursor > CURSOR_BYTES && self.keeps(Fault::LenientCursor) {
+                return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
+            }
+        }
+        let paced = !self.keeps(Fault::Paced);
+        let greedy = !self.keeps(Fault::Greedy) || paced;
+        let eager = !self.keeps(Fault::Eager);
+        let patient = !self.keeps(Fault::Patient);
+        let (frames, answer) = mpsc::channel(64);
+        tokio::spawn(async move {
+            let log = |line: usize| v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Log(v1::LogFrame {
+                    level: v1::LogLevel::Info as i32,
+                    message: format!("line {line}"),
+                })),
+            };
+            let (mut credit, mut granted_times): (i64, u32) = (0, 0);
+            for line in 0..8 {
+                if paced && line > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                }
+                while credit <= 0 && !greedy {
+                    match controls.message().await {
+                        Ok(Some(v1::ReadControl {
+                            control: Some(Control::Credit(granted)),
+                        })) => {
+                            credit += i64::try_from(granted.bytes).unwrap_or(i64::MAX);
+                            granted_times += 1;
+                            if eager || (patient && granted_times >= 4) {
+                                credit = credit.max(1);
+                            }
+                        }
+                        Ok(Some(_)) => {}
+                        _ => return,
+                    }
+                }
+                credit -= 16;
+                if frames.send(Ok(log(line))).await.is_err() {
+                    return;
+                }
+            }
+            let done = v1::ReadFrame {
+                frame: Some(v1::read_frame::Frame::Done(v1::Done {})),
+            };
+            frames.send(Ok(done)).await.ok();
+        });
+        Ok(Box::pin(ReceiverStream::new(answer)) as Answer<_>)
+    }
+
+    /// A read-back of what it published, as the fault says.
+    fn reading_back(&self) -> Result<Answer<v1::ReadFrame>, Status> {
+        use v1::read_frame::Frame;
+        let frame = |frame| Ok(v1::ReadFrame { frame: Some(frame) });
+        let mut encoder = rdlt_wire::Encoder::default();
+        let rows: Arc<dyn Array> = Arc::new(Int64Array::from(vec![7; 64 * 1024]));
+        let batch = RecordBatch::try_from_iter([("id", rows)]).expect("a batch");
+        let schema = Frame::Schema(v1::SchemaFrame {
+            schema_epoch: 1,
+            ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
+        });
+        let data = encoder.batch(&batch).expect("the batch encodes").remove(0);
+        let rows = Frame::Batch(v1::BatchFrame {
+            schema_epoch: 1,
+            kind: v1::BatchKind::Arrow as i32,
+            data_header: data.header,
+            data_body: data.body,
+        });
+        let frames: Answer<v1::ReadFrame> = match self.fault {
+            Fault::ReadBackEndless => Box::pin(tokio_stream::iter([frame(schema)]).chain(
+                tokio_stream::iter(std::iter::repeat_with(move || frame(rows.clone()))),
+            )),
+            Fault::ReadBackUnfinished => Box::pin(tokio_stream::iter([frame(schema), frame(rows)])),
+            _ => {
+                return Err(status(&ConnectorError::new(
+                    ConnectorErrorKind::Transient,
+                    "refused: the store is unreachable",
+                )));
+            }
+        };
+        Ok(frames)
+    }
 }
 
 /// The fake's spec.
@@ -328,114 +435,11 @@ impl Connector for Fake {
         }))
     }
 
-    type ReadStream = Answer<v1::ReadFrame>;
-
-    async fn read(
-        &self,
-        request: Request<Streaming<v1::ReadControl>>,
-    ) -> Result<Response<Self::ReadStream>, Status> {
-        use v1::read_control::Control;
-        let mut controls = request.into_inner();
-        let first = controls
-            .message()
-            .await?
-            .and_then(|control| control.control);
-        if !matches!(first, Some(Control::Start(_))) && self.keeps(Fault::Lenient) {
-            return Err(refused(ConnectorErrorKind::Internal, "invalid_message"));
-        }
-        if let Some(Control::Start(start)) = &first {
-            let cursor = start.cursor.as_ref().map_or(0, |cursor| cursor.bytes.len());
-            if cursor > CURSOR_BYTES && self.keeps(Fault::LenientCursor) {
-                return Err(refused(ConnectorErrorKind::Data, "limit_exceeded"));
-            }
-        }
-        let paced = !self.keeps(Fault::Paced);
-        let greedy = !self.keeps(Fault::Greedy) || paced;
-        let eager = !self.keeps(Fault::Eager);
-        let patient = !self.keeps(Fault::Patient);
-        let (frames, answer) = mpsc::channel(64);
-        tokio::spawn(async move {
-            let log = |line: usize| v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Log(v1::LogFrame {
-                    level: v1::LogLevel::Info as i32,
-                    message: format!("line {line}"),
-                })),
-            };
-            let (mut credit, mut granted_times): (i64, u32) = (0, 0);
-            for line in 0..8 {
-                if paced && line > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-                }
-                while credit <= 0 && !greedy {
-                    match controls.next().await {
-                        Some(Ok(v1::ReadControl {
-                            control: Some(Control::Credit(granted)),
-                        })) => {
-                            credit += i64::try_from(granted.bytes).unwrap_or(i64::MAX);
-                            granted_times += 1;
-                            if eager || (patient && granted_times >= 4) {
-                                credit = credit.max(1);
-                            }
-                        }
-                        Some(Ok(_)) => {}
-                        _ => return,
-                    }
-                }
-                credit -= 16;
-                if frames.send(Ok(log(line))).await.is_err() {
-                    return;
-                }
-            }
-            let done = v1::ReadFrame {
-                frame: Some(v1::read_frame::Frame::Done(v1::Done {})),
-            };
-            frames.send(Ok(done)).await.ok();
-        });
-        Ok(Response::new(Box::pin(ReceiverStream::new(answer))))
-    }
-
     async fn read_acknowledged(
         &self,
         _: Request<v1::ReadAcknowledgedRequest>,
     ) -> Result<Response<v1::ReadAcknowledgedResponse>, Status> {
         Err(Status::unimplemented("read_acknowledged"))
-    }
-
-    type ReadPublishedStream = Answer<v1::ReadFrame>;
-
-    async fn read_published(
-        &self,
-        _: Request<v1::ReadPublishedRequest>,
-    ) -> Result<Response<Self::ReadPublishedStream>, Status> {
-        use v1::read_frame::Frame;
-        let frame = |frame| Ok(v1::ReadFrame { frame: Some(frame) });
-        let mut encoder = rdlt_wire::Encoder::default();
-        let rows: Arc<dyn Array> = Arc::new(Int64Array::from(vec![7; 64 * 1024]));
-        let batch = RecordBatch::try_from_iter([("id", rows)]).expect("a batch");
-        let schema = Frame::Schema(v1::SchemaFrame {
-            schema_epoch: 1,
-            ipc_schema: encoder.schema(&batch.schema()).expect("the schema encodes"),
-        });
-        let data = encoder.batch(&batch).expect("the batch encodes").remove(0);
-        let rows = Frame::Batch(v1::BatchFrame {
-            schema_epoch: 1,
-            kind: v1::BatchKind::Arrow as i32,
-            data_header: data.header,
-            data_body: data.body,
-        });
-        let frames: Answer<v1::ReadFrame> = match self.fault {
-            Fault::ReadBackEndless => Box::pin(tokio_stream::iter([frame(schema)]).chain(
-                tokio_stream::iter(std::iter::repeat_with(move || frame(rows.clone()))),
-            )),
-            Fault::ReadBackUnfinished => Box::pin(tokio_stream::iter([frame(schema), frame(rows)])),
-            _ => {
-                return Err(status(&ConnectorError::new(
-                    ConnectorErrorKind::Transient,
-                    "refused: the store is unreachable",
-                )));
-            }
-        };
-        Ok(Response::new(frames))
     }
 
     async fn committed(

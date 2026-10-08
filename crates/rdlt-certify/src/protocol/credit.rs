@@ -16,10 +16,10 @@ use rdlt_connector::Role;
 use rdlt_connector::testing::Reason;
 use rdlt_connector::wire::v1;
 use rdlt_host::remote::Client;
+use rdlt_wire::plane::Incoming;
 use rdlt_wire::prost::Message as _;
-use rdlt_wire::tonic::{Status, Streaming};
+use rdlt_wire::tonic::Status;
 use tokio::sync::mpsc;
-use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{Found, Violation, handshaken};
@@ -60,17 +60,15 @@ pub(super) async fn respected(target: &Target, role: Role, config: &str) -> Foun
         )
         .await?;
         let mut frames = client
-            .rpc
             .read(ReceiverStream::new(receiver))
             .await
-            .map_err(|status| format!("the read failed: {}", super::error(&status)))?
-            .into_inner();
+            .map_err(|status| format!("the read failed: {}", super::error(&status)))?;
         // One frame may go while any credit remains, and spend it below zero.
         let first = frames
-            .next()
+            .message()
             .await
-            .ok_or(Violation::from("the read ended without a frame"))?
-            .map_err(|status| failed(&status))?;
+            .map_err(|status| failed(&status))?
+            .ok_or(Violation::from("the read ended without a frame"))?;
         if matches!(first.frame, Some(v1::read_frame::Frame::Done(_))) {
             return Ok(Found::Unobserved(
                 "the read ended within its first credit".to_owned(),
@@ -111,15 +109,15 @@ fn regrants(spent: u64) -> [u64; REGRANTS] {
 
 /// Watches `frames` for `quiet`: a violation when the read, its credit spent, sends a frame.
 async fn stays_quiet(
-    frames: &mut Streaming<v1::ReadFrame>,
+    frames: &mut Incoming<v1::ReadFrame>,
     quiet: Duration,
 ) -> Result<(), Violation> {
-    match tokio::time::timeout(quiet, frames.next()).await {
-        Ok(Some(Ok(_))) => Err(Violation::from(
+    match tokio::time::timeout(quiet, frames.message()).await {
+        Ok(Ok(Some(_))) => Err(Violation::from(
             "the read sent a frame after its credit was spent",
         )),
-        Ok(Some(Err(status))) => Err(failed(&status)),
-        Ok(None) => Err(Violation::from("the read ended without its done frame")),
+        Ok(Err(status)) => Err(failed(&status)),
+        Ok(Ok(None)) => Err(Violation::from("the read ended without its done frame")),
         Err(_) => Ok(()),
     }
 }
@@ -129,7 +127,7 @@ async fn stays_quiet(
 /// more; then stops it, since the rest of the partition, however long, need not be read.
 async fn waits_then_resumes(
     controls: &mpsc::Sender<v1::ReadControl>,
-    frames: &mut Streaming<v1::ReadFrame>,
+    frames: &mut Incoming<v1::ReadFrame>,
     regrants: [u64; REGRANTS],
     quiet: Duration,
 ) -> Result<(), Violation> {
@@ -147,8 +145,8 @@ async fn waits_then_resumes(
         v1::read_control::Control::Credit(v1::Credit { bytes: PLENTY }),
     )
     .await?;
-    match frames.next().await {
-        Some(Ok(_)) => {
+    match frames.message().await {
+        Ok(Some(_)) => {
             let stop = v1::Stop {
                 mode: v1::StopMode::Now as i32,
             };
@@ -158,8 +156,8 @@ async fn waits_then_resumes(
                 .ok();
             Ok(())
         }
-        Some(Err(status)) => Err(failed(&status)),
-        None => Err(Violation::from(
+        Err(status) => Err(failed(&status)),
+        Ok(None) => Err(Violation::from(
             "the read ended without its done frame once credit was granted",
         )),
     }

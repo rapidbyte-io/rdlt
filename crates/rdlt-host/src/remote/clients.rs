@@ -8,7 +8,8 @@
 use rdlt_connector::wire::v1;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::Class;
-use rdlt_wire::plane::{self, Incoming};
+use rdlt_wire::plane::{self, Chained, Incoming};
+use rdlt_wire::prost::Message;
 use rdlt_wire::v1::connector_client::ConnectorClient;
 use tokio_stream::Stream;
 
@@ -58,18 +59,46 @@ impl Client {
         &mut self,
         frames: impl Stream<Item = v1::WriteFrame> + Send + 'static,
     ) -> Result<Incoming<v1::WriteAck>, tonic::Status> {
-        write(&mut self.channel, self.most, frames).await
+        called(&mut self.channel, plane::WRITE, frames, self.most).await
+    }
+
+    /// Starts a read the host controls with `controls`: its frames, once the connector has
+    /// answered.
+    ///
+    /// # Errors
+    ///
+    /// The status the connector refused the read with, or the transport's failure.
+    pub async fn read(
+        &mut self,
+        controls: impl Stream<Item = v1::ReadControl> + Send + 'static,
+    ) -> Result<Incoming<v1::ReadFrame>, tonic::Status> {
+        called(&mut self.channel, plane::READ, controls, self.most).await
+    }
+
+    /// Starts reading back what `request` asks for: its frames, once the connector has
+    /// answered.
+    ///
+    /// # Errors
+    ///
+    /// The status the connector refused the read-back with, or the transport's failure.
+    pub async fn read_published(
+        &mut self,
+        request: v1::ReadPublishedRequest,
+    ) -> Result<Incoming<v1::ReadFrame>, tonic::Status> {
+        let request = tokio_stream::once(request);
+        called(&mut self.channel, plane::READ_PUBLISHED, request, self.most).await
     }
 }
 
-/// Starts a write of `frames` over `channel`, each at most `most` bytes: its answers, once the
-/// connector has answered.
-pub(crate) async fn write(
+/// Calls the data-plane call at `path` over `channel` with `messages`, each at most `most`
+/// bytes: its answers, once the connector has answered.
+pub(crate) async fn called<M: Chained + Send + 'static, A: Message + Default>(
     channel: &mut Checked,
+    path: &'static str,
+    messages: impl Stream<Item = M> + Send + 'static,
     most: usize,
-    frames: impl Stream<Item = v1::WriteFrame> + Send + 'static,
-) -> Result<Incoming<v1::WriteAck>, tonic::Status> {
-    let request = plane::request(plane::WRITE, frames, most);
+) -> Result<Incoming<A>, tonic::Status> {
+    let request = plane::request(path, messages, most);
     Incoming::answer(channel.data(request).await?)
 }
 
@@ -85,8 +114,6 @@ pub(crate) struct Clients {
     pub(crate) catalog: Rpc,
     /// Calls answered with state or positions: a plan and an open.
     pub(crate) state: Rpc,
-    /// A read's frames.
-    pub(crate) data: Rpc,
     /// The data plane's calls, each answer held to its method's bounds.
     pub(crate) channel: Checked,
 }
@@ -100,7 +127,6 @@ impl Clients {
             control: client(Class::Control),
             catalog: client(Class::Catalog),
             state: client(Class::State),
-            data: client(Class::Data),
             channel: channel.clone(),
         }
     }

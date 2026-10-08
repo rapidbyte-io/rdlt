@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use rdlt_wire::Limits;
+use rdlt_wire::plane::Answers;
 use rdlt_wire::tonic::Status;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::read::Outbox;
-use super::service::Answer;
 use crate::destination::{PublishedReader, PublishedRows, TableRef};
 use crate::wire::{status, v1};
 
@@ -26,7 +26,7 @@ pub(super) fn serve(
     reader: Arc<dyn PublishedReader>,
     table: TableRef,
     host: Limits,
-) -> Answer<v1::ReadFrame> {
+) -> Answers<v1::ReadFrame> {
     let (frames, answer) = mpsc::channel(FRAMES);
     tokio::spawn(pump(reader, table, host, frames));
     Box::pin(ReceiverStream::new(answer))

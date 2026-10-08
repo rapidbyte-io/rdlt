@@ -25,7 +25,7 @@ pub(crate) const GENERATED: &str = "crates/rdlt-wire/src/generated/rdlt.connecto
 pub(crate) const FORMS: &str = "crates/rdlt-wire/src/generated/forms.rs";
 
 /// The calls the data plane serves and calls by hand, left out of the generated service.
-const DATA_PLANE: [&str; 1] = ["Write"];
+const DATA_PLANE: [&str; 3] = ["Read", "ReadPublished", "Write"];
 
 /// Generates the code, writing it, or with `check` comparing it to what is committed.
 #[expect(clippy::print_stdout, reason = "the verdict is the command's output")]

@@ -143,7 +143,7 @@ async fn a_shipped_destination_binary_reads_nothing_back_whatever_its_host_offer
             ..v1::TableRef::default()
         };
         let request = v1::ReadPublishedRequest { table: Some(table) };
-        let Err(refused) = client.rpc.read_published(request).await else {
+        let Err(refused) = client.read_published(request).await else {
             panic!("{id} read a table back");
         };
         assert_eq!(

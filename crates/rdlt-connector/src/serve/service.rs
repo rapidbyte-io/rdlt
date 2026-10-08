@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use rdlt_wire::Limits;
-use rdlt_wire::plane::{Incoming, Plane, Serving};
+use rdlt_wire::plane::{Answers, Incoming, Plane, Serving};
 use rdlt_wire::tonic::codegen::tokio_stream::Stream;
 use rdlt_wire::tonic::{self, Request, Response, Status, Streaming};
 use rdlt_wire::v1::connector_server::Connector;
@@ -117,8 +117,8 @@ pub(super) fn invalid(invalid: &Invalid) -> Status {
     )
 }
 
-/// The stream a streaming call answers with.
-pub(super) type Answer<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
+/// The stream the heartbeat answers with.
+type Answer<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 
 #[tonic::async_trait]
 impl Connector for Service {
@@ -199,32 +199,6 @@ impl Connector for Service {
             .await
             .map_err(|error| status(&error))?;
         Ok(Response::new(v1::PlanResponse::from(&planned)))
-    }
-
-    type ReadStream = Answer<v1::ReadFrame>;
-
-    async fn read(
-        &self,
-        request: Request<Streaming<v1::ReadControl>>,
-    ) -> Result<Response<Self::ReadStream>, Status> {
-        let host = self.host.get().copied().unwrap_or_default();
-        let (frames, read) =
-            read::serve(self.source()?, self.limits, host, request.into_inner()).await?;
-        // Where the read starts, and each checkpoint it sends, the host may report committed.
-        let served = Arc::clone(&self.served);
-        let noted = Noted::new(frames, served, self.host_name.clone(), read);
-        Ok(Response::new(Box::pin(noted)))
-    }
-
-    type ReadPublishedStream = Answer<v1::ReadFrame>;
-
-    async fn read_published(
-        &self,
-        request: Request<v1::ReadPublishedRequest>,
-    ) -> Result<Response<Self::ReadPublishedStream>, Status> {
-        let host = self.host.get().copied().unwrap_or_default();
-        let frames = self.probes.read_published(request.into_inner(), host)?;
-        Ok(Response::new(frames))
     }
 
     async fn read_acknowledged(
@@ -364,6 +338,24 @@ impl Connector for Service {
 impl Plane for Service {
     fn write(&self, frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
         Box::pin(write::serve(self, self.limits, frames))
+    }
+
+    fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
+        Box::pin(async move {
+            let host = self.host.get().copied().unwrap_or_default();
+            let (frames, read) = read::serve(self.source()?, self.limits, host, controls).await?;
+            // Where the read starts, and each checkpoint it sends, the host may report committed.
+            let served = Arc::clone(&self.served);
+            let noted = Noted::new(frames, served, self.host_name.clone(), read);
+            Ok(Box::pin(noted) as Answers<_>)
+        })
+    }
+
+    fn read_published(&self, request: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
+        Box::pin(async move {
+            let host = self.host.get().copied().unwrap_or_default();
+            self.probes.read_published(request, host)
+        })
     }
 }
 

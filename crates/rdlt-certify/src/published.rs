@@ -9,7 +9,7 @@ use rdlt_connector::testing::Probe;
 use rdlt_connector::wire::{error, frame_error, v1};
 use rdlt_connector::{BoxFuture, ConnectorError, ConnectorErrorKind, Result, Role, TableRef};
 use rdlt_host::remote::Client;
-use rdlt_wire::tonic::Streaming;
+use rdlt_wire::plane::Incoming;
 use rdlt_wire::{Decoder, IpcFrame, Limits, PUBLISHED};
 
 use crate::limits::{PUBLISHED_BYTES, PUBLISHED_ROWS, READ_BACK_TIME};
@@ -92,11 +92,9 @@ impl ReadBackProbe<'_> {
                 table: Some(v1::TableRef::from(table)),
             };
             let frames = client
-                .rpc
                 .read_published(request)
                 .await
-                .map_err(|status| error(&status))?
-                .into_inner();
+                .map_err(|status| error(&status))?;
             decoded(frames, self.target.limits()).await
         }
     }
@@ -127,7 +125,7 @@ async fn handshaken(target: &Target, config: &str) -> Result<(Client, bool)> {
 
 /// The batches `frames` carry, decoded within `limits`, [`PUBLISHED_BYTES`] and
 /// [`PUBLISHED_ROWS`], once the done frame ends them.
-async fn decoded(mut frames: Streaming<v1::ReadFrame>, limits: Limits) -> Result<Vec<RecordBatch>> {
+async fn decoded(mut frames: Incoming<v1::ReadFrame>, limits: Limits) -> Result<Vec<RecordBatch>> {
     use v1::read_frame::Frame;
     let mut decoder = Decoder::new(limits);
     let (mut batches, mut bytes, mut rows) = (Vec::new(), 0_usize, 0_usize);

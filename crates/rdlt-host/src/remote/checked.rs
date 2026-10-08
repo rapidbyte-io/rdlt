@@ -7,9 +7,9 @@
 //! of the transport. Each message of an answer is passed on whole, within the bounds of its
 //! call's class on the wire and on what it decodes to, before anything reserves or decodes any of
 //! it; and, for a call made within [`rdlt_wire::bounded::charging`], once what decoding it holds
-//! is charged. A data-plane call's answer is its bounded body, whose reader releases each charge
-//! once the message is decoded; a generated call's answer carries its [`Charged`] among its
-//! extensions, for whoever reads a stream of messages to do the same.
+//! is charged. A data-plane call's answer is its bounded body, whose reader releases each
+//! message's charge once it is decoded; a generated call's message holds its charge until the
+//! next is passed on, or the answer ends.
 
 #[cfg(test)]
 mod tests;
@@ -67,7 +67,7 @@ impl Checked {
         let answer = tower::Service::call(channel, request)
             .await
             .map_err(|error| tonic::Status::from_error(Box::new(error)))?;
-        let (parts, body, _) = checked(answer, bounds, charge);
+        let (parts, body) = checked(answer, bounds, charge);
         Ok(http::Response::from_parts(parts, body))
     }
 
@@ -96,8 +96,7 @@ impl tower::Service<http::Request<tonic::body::Body>> for Checked {
         let charge = rdlt_wire::bounded::current();
         let answer = self.channel.call(request);
         Box::pin(async move {
-            let (mut parts, bounded, charged) = checked(answer.await?, bounds, charge);
-            parts.extensions.insert(charged);
+            let (parts, bounded) = checked(answer.await?, bounds, charge);
             Ok(http::Response::from_parts(
                 parts,
                 tonic::body::Body::new(bounded),
@@ -107,18 +106,17 @@ impl tower::Service<http::Request<tonic::body::Body>> for Checked {
 }
 
 /// `answer`, its headers and trailers carrying only status details that decode, its body held
-/// to `bounds` and its messages charged to `charge`, and what holds the charge.
+/// to `bounds` and its messages charged to `charge`.
 fn checked(
     answer: Answer,
     bounds: Bounds,
     charge: Option<std::sync::Arc<dyn rdlt_wire::bounded::Charge>>,
-) -> (http::response::Parts, Bounded, Charged) {
+) -> (http::response::Parts, Bounded) {
     let (mut parts, body) = answer.into_parts();
     check(&mut parts.headers);
     let body = tonic::body::Body::new(CheckedBody(body));
-    let charged = Charged::default();
-    let bounded = Bounded::new(body, bounds, None).charged(charge, charged.clone());
-    (parts, bounded, charged)
+    let bounded = Bounded::new(body, bounds, None).charged(charge, Charged::default());
+    (parts, bounded)
 }
 
 /// An answer's body, whose trailers carry only status details that decode.

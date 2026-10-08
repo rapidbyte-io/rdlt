@@ -11,10 +11,10 @@ mod tests;
 use std::sync::Arc;
 
 use rdlt_wire::Limits;
+use rdlt_wire::plane::Answers;
 use rdlt_wire::tonic::Status;
 
 use super::handshake::unsupported;
-use super::service::Answer;
 use crate::destination::{Destination, DestinationFactory, PUBLISHED_CODE};
 use crate::error::ConnectorError;
 use crate::source::{ACKNOWLEDGED_CODE, Source, SourceFactory};
@@ -125,7 +125,7 @@ impl Probes {
         &self,
         request: v1::ReadPublishedRequest,
         host: Limits,
-    ) -> Result<Answer<v1::ReadFrame>, Status> {
+    ) -> Result<Answers<v1::ReadFrame>, Status> {
         #[cfg(feature = "certify")]
         if let Some(reader) = self.reader.get().cloned() {
             use crate::wire::Invalid;

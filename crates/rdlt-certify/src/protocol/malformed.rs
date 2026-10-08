@@ -25,7 +25,7 @@ pub(super) async fn refused(target: &Target, role: Role, config: &str) -> Found 
                 }]);
                 let what = "a read that begins with credit";
                 refused_with(
-                    first_refusal(client.rpc.read(controls).await).await,
+                    first_refusal(client.read(controls).await).await,
                     INVALID_MESSAGE,
                     what,
                 )?;
@@ -35,8 +35,8 @@ pub(super) async fn refused(target: &Target, role: Role, config: &str) -> Found 
                     frame: Some(v1::write_frame::Frame::Flush(v1::Unit {})),
                 }]);
                 let what = "a write that begins with a flush";
-                let refusal = async { client.write(frames).await?.message().await.map(drop) };
-                refused_with(refusal.await, INVALID_MESSAGE, what)?;
+                let refusal = first_refusal(client.write(frames).await).await;
+                refused_with(refusal, INVALID_MESSAGE, what)?;
                 let garbage = v1::WriteBatch {
                     segment: 1,
                     data_header: Bytes::from_static(b"not an IPC message"),
