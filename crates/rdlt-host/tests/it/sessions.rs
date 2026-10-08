@@ -10,6 +10,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_host::remote::Client;
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
+use rdlt_wire::prost::Message as _;
 use rdlt_wire::{Encoder, Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio::net::UnixStream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -124,6 +125,40 @@ async fn a_closed_session_refuses_later_calls() {
     };
     let status = client.rpc.apply_schema(request).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("no_session"));
+}
+
+#[tokio::test]
+async fn a_raw_client_sends_no_message_beyond_the_size_it_is_held_to() {
+    let served = Served::new().with_destination(Writes::factory(Writing::Fails));
+    let (client, session) = raw_session(served, "held").await;
+    let mut client = client.max_encoding_message_size(16);
+    let context = context();
+    let open = v1::OpenRequest {
+        pipeline: context.pipeline.as_str().to_owned(),
+        load_id: context.load_id.as_bytes().to_vec().into(),
+    };
+    assert!(open.encoded_len() > 16);
+    client
+        .rpc
+        .open(open)
+        .await
+        .expect_err("an open beyond the size is not sent");
+    let start = v1::WriteFrame {
+        frame: Some(v1::write_frame::Frame::Start(v1::WriteStart {
+            session,
+            table: Some(v1::TableRef::from(&table())),
+        })),
+    };
+    assert!(start.encoded_len() > 16);
+    let written = async {
+        let mut acks = client.write(tokio_stream::iter([start])).await?;
+        acks.message().await
+    };
+    let answered = tokio::time::timeout(Duration::from_secs(5), written).await;
+    assert!(
+        matches!(answered, Ok(Err(_))),
+        "a write's start beyond the size is not sent: {answered:?}"
+    );
 }
 
 #[tokio::test]
