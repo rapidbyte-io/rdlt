@@ -256,6 +256,10 @@ impl Dir {
 
     /// Makes the directory's entries durable: a name created or removed in it survives a crash.
     pub(super) fn sync(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(hook) = &*SYNCING.lock() {
+            hook(&self.path)?;
+        }
         self.file.sync_all()?;
         #[cfg(test)]
         SYNCED.lock().push(self.path.clone());
@@ -278,6 +282,15 @@ pub(super) use base::{OPENED, link_followed};
 /// The directories synced, in order, for tests to see which names were made durable.
 #[cfg(test)]
 pub(super) static SYNCED: parking_lot::Mutex<Vec<PathBuf>> = parking_lot::Mutex::new(Vec::new());
+
+/// What a test does as a directory is about to be synced, given its path: an error fails the
+/// sync.
+#[cfg(test)]
+type Syncing = Box<dyn Fn(&Path) -> io::Result<()> + Send>;
+
+/// What a test does as a directory is about to be synced.
+#[cfg(test)]
+pub(super) static SYNCING: parking_lot::Mutex<Option<Syncing>> = parking_lot::Mutex::new(None);
 
 /// Checks that what `owner` owns with `mode`, at `path`, is this user's and grants none of
 /// `reach` to its group or others.

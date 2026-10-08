@@ -418,6 +418,71 @@ async fn a_staging_that_empties_a_removed_log_s_directory_removes_it() {
     }
 }
 
+/// How far a removal running alongside a publish has come when a step of the publish fails.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Removal {
+    NotBegun,
+    Closed,
+    Done,
+}
+
+#[tokio::test]
+async fn a_publish_whose_step_fails_once_its_log_is_closed_is_refused_as_removed() {
+    // A step a removal meets may fail as the platform has it (macOS answers some `EINVAL`): the
+    // publish is refused as `NotFound` where its log is closed, and fails as the step did where
+    // the log is open still.
+    for removal in [Removal::NotBegun, Removal::Closed, Removal::Done] {
+        let base = tempfile::tempdir().expect("a temporary directory");
+        let root = base.path().canonicalize().expect("a real path");
+        let wal = LocalWal::new(root.join("wal"));
+        let orders = pipeline("orders");
+        let load = chunk(1, 0).load;
+        published(&wal, &orders, chunk(1, 0), b"first").await;
+        let mut staged = wal.stage(&orders, chunk(1, 1)).await.expect("stages");
+        staged
+            .append(Bytes::from_static(b"late"))
+            .await
+            .expect("appends");
+        let load_dir = wal.pipeline_dir(&orders).join(names::load(load));
+        let armed = std::sync::atomic::AtomicBool::new(true);
+        *super::dir::SYNCING.lock() = Some(Box::new(move |path: &Path| {
+            if path != load_dir || !armed.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                return Ok(());
+            }
+            match removal {
+                Removal::NotBegun => {}
+                Removal::Closed => std::fs::remove_file(path.join(names::OPEN))?,
+                Removal::Done => std::fs::remove_dir_all(path)?,
+            }
+            Err(std::io::Error::from_raw_os_error(
+                rustix::io::Errno::INVAL.raw_os_error(),
+            ))
+        }));
+        let failed = staged.publish().await.expect_err("a step fails");
+        *super::dir::SYNCING.lock() = None;
+        if removal == Removal::NotBegun {
+            assert_eq!(failed.kind(), std::io::ErrorKind::InvalidInput, "{failed}");
+            continue;
+        }
+        assert_eq!(
+            failed.kind(),
+            std::io::ErrorKind::NotFound,
+            "{removal:?}: {failed}"
+        );
+        let left = if removal == Removal::Closed {
+            vec![(0, 5)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(wal.chunks(&orders, load).await.expect("lists"), left);
+        wal.remove_log(&orders, load).await.expect("removes");
+        assert_eq!(wal.leftovers(&orders).await.expect("lists"), []);
+        let pipeline_dir = wal.pipeline_dir(&orders);
+        let left = std::fs::read_dir(&pipeline_dir).expect("lists").count();
+        assert_eq!(left, 0, "{removal:?}: nothing of the log is left");
+    }
+}
+
 /// The directories synced under `base` since `from` syncs were recorded.
 fn synced_under(base: &Path, from: usize) -> Vec<std::path::PathBuf> {
     SYNCED.lock()[from..]
