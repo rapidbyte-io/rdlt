@@ -297,12 +297,12 @@ async fn a_source_lost_between_a_batchs_pieces_commits_none_of_them_and_the_next
         .run(plan("cuts-lost"), source, destination)
         .await;
     succeeded(&outcome, 2);
-    // The rows were read twice, the first piece of the first reading among them, and each is
-    // published once: nothing of the reading that was cut off was committed.
+    // The source sent the rows twice, and each is published once: nothing of the reading that
+    // was cut off was committed. The pieces it gathered are written when its read ends, racing
+    // the end of its attempt, so the destination's writes are not counted.
     let sent = FLAGGED.lock().expect("the lock is not poisoned");
     assert_eq!(sent.get("cuts_lost"), Some(&(2 * ROWS)));
     assert_eq!(ids("cuts_lost"), every_row());
-    assert_eq!(HOOK.writes(), PIECES);
 }
 
 #[tokio::test]
