@@ -51,6 +51,11 @@ process or each in a process of its own.
   stat`'s figures for these cases are not recorded: a spawned source makes its batches inside
   the window `perf stat` counts, and a listening connector killed as the bench ends takes its
   counts with it.
+- **Partitions.** Most cases read the batches from one partition. Six process cases read the
+  same batches from four and from eight partitions, each an even share in order
+  (`rdlt_engine::bench::split_replay_config`): both connectors served over the socket and over
+  mutual TLS, and the destination served over mutual TLS, in large frames. The engine reads the
+  partitions side by side, and every write goes over the destination's one connection.
 - **Syscalls.** One run of each case in each round, in criterion's test mode under
   `strace -f -c`, its connection's setup included, both ends' threads counted; the median over
   the rounds.
@@ -163,10 +168,10 @@ The cores, their count, the layout and the flow control differ, so only the shap
 
 ## Connectors in processes of their own
 
-Intel Core Ultra X7 358H, mains power, 2026-10-08, `799c06f3749d` with these cases, governor `powersave`
-with energy preference `performance` on all twelve CPUs used, one-minute load average 0.88–0.98
-before the rounds and 2.5–4.0 after. The median of five rounds and their range; a CPU column is
-the CPU seconds a GB moved of that process alone, or `in host` for a connector run in the
+Intel Core Ultra X7 358H, mains power, 2026-10-08, `799c06f3749d` with these cases, governor
+`powersave` with energy preference `performance` on all twelve CPUs used, one-minute load average
+0.88–0.98 before the rounds and 2.5–4.0 after. The median of five rounds and their range; a CPU
+column is the CPU seconds a GB moved of that process alone, or `in host` for a connector run in the
 bench's process. The last column is the in-process case of the same rounds, its CPU the bench's
 `getrusage`, which the in-process results above count with `perf stat` instead.
 
@@ -197,3 +202,35 @@ bench's process. The last column is the in-process case of the same rounds, its 
   socket and 1.12–1.22 over mutual TLS, about two fifths of the pipeline's.
 - Both served over mutual TLS move 1 019–1 294 MB/s, against the 2 500–3 500 MB/s loopback
   target.
+
+### Partitions
+
+The same layout and cores, 2026-10-09, `799c06f3749d` with these cases and partitions, five rounds
+of the nine cases alone. The one-minute load average was 0.94–0.99 before the rounds and 1.7–3.0
+after. The table gives the median of the five rounds and their range, and the median of the CPUs
+each process kept busy.
+
+| Case | Partitions | MB/s | CPU s a GB, all | Host's | Source's | Destination's | CPUs busy: host / source / destination |
+|---|---|---|---|---|---|---|---|
+| `socket/both` | 1 | 1 402 (1 332–1 466) | 2.40 (2.31–2.43) | 0.99 (0.94–0.99) | 0.55 (0.54–0.56) | 0.83 (0.81–0.87) | 1.38 / 0.79 / 1.18 |
+| `socket/both` | 4 | 1 359 (1 304–1 387) | 2.51 (2.42–2.53) | 0.99 (0.97–1.02) | 0.66 (0.65–0.66) | 0.84 (0.81–0.87) | 1.35 / 0.91 / 1.14 |
+| `socket/both` | 8 | 1 283 (1 259–1 336) | 2.56 (2.51–2.59) | 1.00 (0.99–1.05) | 0.70 (0.69–0.71) | 0.84 (0.81–0.90) | 1.34 / 0.92 / 1.08 |
+| `tls/destination` | 1 | 1 086 (1 078–1 110) | 1.41 (1.37–1.43) | 0.52 (0.49–0.53) | in host | 0.89 (0.88–0.91) | 0.56 / – / 0.97 |
+| `tls/destination` | 4 | 1 076 (1 065–1 086) | 1.39 (1.36–1.41) | 0.49 (0.48–0.50) | in host | 0.90 (0.89–0.91) | 0.54 / – / 0.96 |
+| `tls/destination` | 8 | 1 041 (1 024–1 042) | 1.39 (1.37–1.40) | 0.49 (0.48–0.50) | in host | 0.89 (0.88–0.90) | 0.52 / – / 0.93 |
+| `tls/both` | 1 | 1 035 (1 017–1 041) | 2.65 (2.63–2.68) | 1.07 (1.05–1.09) | 0.66 (0.62–0.67) | 0.94 (0.92–0.94) | 1.09 / 0.68 / 0.96 |
+| `tls/both` | 4 | 972 (951–978) | 2.79 (2.75–2.90) | 1.08 (1.05–1.18) | 0.77 (0.74–0.79) | 0.94 (0.92–0.98) | 1.06 / 0.75 / 0.91 |
+| `tls/both` | 8 | 929 (918–949) | 2.82 (2.78–2.91) | 1.09 (1.04–1.17) | 0.82 (0.79–0.85) | 0.93 (0.92–0.93) | 1.01 / 0.77 / 0.87 |
+
+- The destination's process takes the same CPU a GB at every partition count (0.83–0.84 over
+  the socket, 0.89–0.94 over mutual TLS). It keeps under one CPU busy over mutual TLS
+  (0.87–0.97) and about one over the socket (1.08–1.18), though it has eight cores. Its work
+  does not spread over cores as partitions are added.
+- Throughput does not rise with partitions, and falls slightly: 1 035 to 929 MB/s with both
+  served over mutual TLS, 1 402 to 1 283 over the socket. The source's CPU a GB rises with
+  them (0.66 to 0.82 over mutual TLS) while the host's stays the same.
+- With one partition these cases repeat the baseline above within its range.
+- Over mutual TLS, partitions do not spread the destination's work over cores: its process stays
+  under one CPU busy and moves no more as they are added. What holds it there is not shown. One
+  connection task framing TLS and HTTP/2 for every write would give these figures, but only a
+  per-thread profile of the destination's process, which these rounds did not take, can show it.
