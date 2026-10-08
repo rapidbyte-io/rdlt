@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use http_body::{Body, Frame, SizeHint};
+use http_body::{Body, Frame};
 use tonic::Status;
 use tonic::codegen::http::HeaderMap;
 use tonic::codegen::tokio_stream::Stream;
@@ -120,10 +120,6 @@ impl<M: Chained + Send + 'static> Body for Outgoing<M> {
 
     fn is_end_stream(&self) -> bool {
         self.ended && self.body.is_none()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
     }
 }
 
