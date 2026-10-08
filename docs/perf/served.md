@@ -27,86 +27,68 @@ in-process passthrough, over both transports.
   connection's setup included, both ends' threads counted.
 - **Running.** `just bench served 0-3`, five rounds interleaved with five of the merge base, each
   started at a one-minute load average under 1.0 under the measurement lock; release profile.
-  The load after each round, 1.7–3.2, is the bench's own threads.
+  The load after each round, 1.7–2.6, is the bench's own threads.
 
 ## Results
 
-Intel Core Ultra X7 358H, mains power, 2026-10-07, commit `9b7a0ec2bc41`, governor `powersave`
-with energy preference `performance`, one-minute load average 0.27–0.99 before the rounds; the
-median of five rounds and their range, and the merge base `7aea7ae0a0ed` measured in the same
+Intel Core Ultra X7 358H, mains power, 2026-10-08, commit `e5a8df88c235`, governor `powersave`
+with energy preference `performance`, one-minute load average 0.26–0.97 before the rounds; the
+median of five rounds and their range, and the merge base `f52c360f61b9` measured in the same
 interleaved rounds. The passthrough record's in-process engine moves the same batches at about
 15 000 MB/s on the same cores.
 
 | Case | MB/s | CPU s a GB | Instructions a cycle / CPUs busy | Rounds within ±3 % | Merge base, MB/s and CPU s a GB |
 |---|---|---|---|---|---|
-| `socket/destination/64x80000` | 1 814 (1 790–1 831) | 0.87 (0.86–0.90) | 0.56 / 1.61 | 5 of 5 | 1 439, 0.95 |
-| `socket/source/64x80000` | 1 801 (1 752–1 875) | 0.91 (0.89–0.92) | 0.45 / 1.66 | 4 of 5 | 1 432, 1.00 |
-| `socket/both/64x80000` | 1 095 (1 089–1 148) | 1.74 (1.70–1.77) | 0.45 / 1.92 | 4 of 5 | 1 028, 1.85 |
-| `socket/destination/512x10000` | 2 892 (2 878–2 905) | 0.76 (0.76–0.76) | 0.99 / 2.16 | 5 of 5 | 2 123, 1.00 |
-| `socket/source/512x10000` | 2 823 (2 729–2 840) | 0.78 (0.78–0.79) | 0.82 / 2.20 | 4 of 5 | 2 366, 0.95 |
-| `socket/both/512x10000` | 1 573 (1 556–1 585) | 1.46 (1.46–1.47) | 0.79 / 2.30 | 5 of 5 | 1 275, 1.79 |
-| `tls/destination/64x80000` | 1 432 (1 359–1 446) | 1.15 (1.14–1.17) | 1.11 / 1.69 | 3 of 5 | 1 039, 1.17 |
-| `tls/source/64x80000` | 1 540 (1 517–1 567) | 1.16 (1.14–1.19) | 1.01 / 1.83 | 5 of 5 | 1 181, 1.21 |
-| `tls/both/64x80000` | 817 (785–826) | 2.26 (2.20–2.32) | 1.02 / 1.93 | 4 of 5 | 786, 2.33 |
-| `tls/destination/512x10000` | 1 960 (1 941–2 002) | 1.08 (1.05–1.09) | 1.57 / 2.17 | 5 of 5 | 1 653, 1.29 |
-| `tls/source/512x10000` | 1 985 (1 944–1 993) | 1.10 (1.09–1.11) | 1.39 / 2.22 | 5 of 5 | 1 715, 1.26 |
-| `tls/both/512x10000` | 1 056 (1 049–1 067) | 2.05 (2.02–2.07) | 1.42 / 2.22 | 5 of 5 | 945, 2.28 |
+| `socket/destination/64x80000` | 2 077 (1 978–2 130) | 0.78 (0.74–0.81) | 0.81 / 1.61 | 4 of 5 | 1 782, 0.90 |
+| `socket/source/64x80000` | 1 779 (1 758–1 860) | 0.91 (0.88–0.93) | 0.45 / 1.63 | 3 of 5 | 1 742, 0.93 |
+| `socket/both/64x80000` | 1 282 (1 219–1 325) | 1.54 (1.47–1.57) | 0.54 / 1.95 | 3 of 5 | 1 156, 1.68 |
+| `socket/destination/512x10000` | 3 492 (3 441–3 550) | 0.59 (0.57–0.64) | 1.17 / 2.11 | 5 of 5 | 2 862, 0.75 |
+| `socket/source/512x10000` | 2 825 (2 807–2 876) | 0.78 (0.76–0.79) | 0.81 / 2.20 | 5 of 5 | 2 782, 0.79 |
+| `socket/both/512x10000` | 1 767 (1 742–1 787) | 1.30 (1.29–1.33) | 0.94 / 2.30 | 5 of 5 | 1 566, 1.47 |
+| `tls/destination/64x80000` | 1 751 (1 729–1 848) | 0.97 (0.92–0.99) | 1.40 / 1.69 | 4 of 5 | 1 419, 1.18 |
+| `tls/source/64x80000` | 1 549 (1 500–1 570) | 1.18 (1.17–1.21) | 1.02 / 1.82 | 4 of 5 | 1 536, 1.19 |
+| `tls/both/64x80000` | 925 (911–940) | 2.09 (2.04–2.12) | 1.15 / 1.93 | 5 of 5 | 825, 2.30 |
+| `tls/destination/512x10000` | 2 433 (2 399–2 480) | 0.92 (0.90–0.94) | 1.90 / 2.23 | 5 of 5 | 2 012, 1.09 |
+| `tls/source/512x10000` | 1 967 (1 958–1 973) | 1.12 (1.12–1.14) | 1.40 / 2.21 | 5 of 5 | 1 942, 1.14 |
+| `tls/both/512x10000` | 1 174 (1 162–1 181) | 1.92 (1.91–1.93) | 1.62 / 2.25 | 5 of 5 | 1 036, 2.14 |
 
 Syscalls a run, large frames (64 batches), the median of the five rounds:
 
 | Case | `writev` | `recvfrom` | A batch | Merge base, a batch |
 |---|---|---|---|---|
-| `socket/destination` | 4 243 | 3 026 | 66 + 47 | 467 + 899 |
-| `socket/source` | 4 119 | 2 977 | 64 + 47 | 453 + 864 |
-| `socket/both` | 8 698 | 6 113 | 136 + 96 | 953 + 1 813 |
-| `tls/destination` | 7 760 | 29 532 | 121 + 461 | 446 + 474 |
-| `tls/source` | 7 561 | 28 725 | 118 + 449 | 434 + 452 |
-| `tls/both` | 15 407 | 57 802 | 241 + 903 | 879 + 924 |
+| `socket/destination` | 4 185 | 2 994 | 65 + 47 | 67 + 48 |
+| `socket/source` | 4 271 | 3 029 | 67 + 47 | 66 + 47 |
+| `socket/both` | 8 813 | 6 147 | 138 + 96 | 137 + 96 |
+| `tls/destination` | 7 703 | 28 807 | 120 + 450 | 120 + 455 |
+| `tls/source` | 7 525 | 28 333 | 118 + 443 | 118 + 447 |
+| `tls/both` | 15 303 | 56 937 | 239 + 890 | 238 + 894 |
 
-Small frames make about as many syscalls for the same bytes (4 065 `writev` and 3 124 `recvfrom`
+Small frames make about as many syscalls for the same bytes (4 758 `writev` and 3 374 `recvfrom`
 for the served destination over the socket).
 
-- A served destination or source over the socket moves large frames 26 % faster than the merge
-  base, and small frames 19–36 % faster, at less CPU a GB in every case: a frame of 7 MB no
-  longer waits for the one before it to be taken, and HTTP/2 carries it in frames of 1 MiB
-  rather than 16 KiB.
-- Over mutual TLS one served end gains 16–38 %. Both served over mutual TLS in large frames stays
-  within the merge base's range (817 against 786 MB/s).
-- Over mutual TLS the reads a batch are unchanged (461 `recvfrom` against 474): larger HTTP/2
-  frames cut only the writes.
-- Mutual TLS costs 14–25 % of a mode's throughput over the socket in large frames, and about 30 %
-  more CPU a GB.
+- A served destination moves large frames 17 % faster over the socket and 23 % faster over mutual
+  TLS than the merge base, and small frames 21–22 % faster, at 13–21 % less CPU a GB: its
+  connector decodes each write's frame from the bytes the transport's bounded body passes on,
+  and the host sends each frame's body as the bytes the encoder made, so neither end copies it
+  into or out of a gRPC buffer.
+- Both served gain 11–13 % in every case, over mutual TLS too (925 against 825 MB/s in large
+  frames): the write's half of their copies is gone, the read's remains.
+- A served source is unchanged: its frames still go through the generated read.
+- The syscalls are unchanged: the write's frames go out in the same HTTP/2 frames.
+- Mutual TLS costs 13–34 % of a mode's throughput over the socket, and 24–56 % more CPU a GB.
 - Serving both connectors costs close to the sum of serving each in CPU a GB.
-
-On the eight efficient cores (`just bench served 4-11`: 4 runtime workers and 4 compute threads),
-one round of each, so a figure here is one round's, not a median:
-
-| Case | MB/s, CPU s a GB | Merge base | Change |
-|---|---|---|---|
-| `socket/destination/64x80000` | 1 265, 1.35 | 1 166, 1.38 | +8 % |
-| `socket/source/64x80000` | 1 569, 1.45 | 1 122, 1.32 | +40 % |
-| `socket/both/64x80000` | 984, 2.93 | 929, 2.88 | +6 % |
-| `socket/destination/512x10000` | 2 693, 1.17 | 2 295, 1.45 | +17 % |
-| `socket/source/512x10000` | 2 325, 1.32 | 2 154, 1.56 | +8 % |
-| `socket/both/512x10000` | 1 882, 2.11 | 1 473, 2.65 | +28 % |
-| `tls/destination/64x80000` | 939, 1.85 | 782, 1.94 | +20 % |
-| `tls/source/64x80000` | 1 308, 1.85 | 835, 1.87 | +57 % |
-| `tls/both/64x80000` | 753, 3.94 | 685, 3.96 | +10 % |
-| `tls/destination/512x10000` | 1 551, 1.68 | 1 398, 2.00 | +11 % |
-| `tls/source/512x10000` | 1 549, 1.85 | 1 634, 1.99 | −5 % |
-| `tls/both/512x10000` | 1 086, 3.32 | 971, 3.73 | +12 % |
 
 The review's measurements (ARCH_REVIEW.md §3.4) ran the same batches on the eight efficient cores
 with a runtime of a worker for each of those cores beside a pool of four threads, the median of
-seven runs, at the credit and HTTP/2 settings of the merge base:
+seven runs, at the credit, HTTP/2 settings and generated data plane of their day:
 
 | Mode | Review, efficient cores | Here, performance cores |
 |---|---|---|
-| Destination over the socket | 1 113 MB/s, 1.39 CPU s a GB | 1 814 MB/s, 0.87 |
-| Source over the socket | 1 128 MB/s, 1.30 | 1 801 MB/s, 0.91 |
-| Both over the socket | 953 MB/s, 2.92 | 1 095 MB/s, 1.74 |
-| Destination over mutual TLS | 761 MB/s, 2.04 | 1 432 MB/s, 1.15 |
-| Both over mutual TLS | 689 MB/s, 4.38 | 817 MB/s, 2.26 |
-| `writev` + `recvfrom` a batch, destination over the socket | 457 + 891 | 66 + 47 |
+| Destination over the socket | 1 113 MB/s, 1.39 CPU s a GB | 2 077 MB/s, 0.78 |
+| Source over the socket | 1 128 MB/s, 1.30 | 1 779 MB/s, 0.91 |
+| Both over the socket | 953 MB/s, 2.92 | 1 282 MB/s, 1.54 |
+| Destination over mutual TLS | 761 MB/s, 2.04 | 1 751 MB/s, 0.97 |
+| Both over mutual TLS | 689 MB/s, 4.38 | 925 MB/s, 2.09 |
+| `writev` + `recvfrom` a batch, destination over the socket | 457 + 891 | 65 + 47 |
 
 The cores, their count, the layout and the flow control differ, so only the shape compares.
