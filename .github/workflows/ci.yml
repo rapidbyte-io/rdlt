@@ -218,6 +218,45 @@ jobs:
           RDLT_REQUIRE_SANDBOX: "1"
       - run: just miri
 
+  # Each hot path's instructions and allocations on this change and on the base it merges into,
+  # both built here with one toolchain; a case more than 2% above the base fails unless a commit's
+  # `Instructions-Accepted:` trailer names it. A pull request's checkout is the change merged into
+  # its base, so the base is that merge's first parent; on main each push is compared with the
+  # one before. The cache keeps both sides' dependencies, which build into `target/instructions`.
+  instructions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.SETUP_MISE_VERSION }}
+          sha256: ${{ runner.os == 'macOS' && env.SETUP_MISE_SHA256_MACOS || env.SETUP_MISE_SHA256_LINUX }}
+          github_token: ""
+          install_args: --locked just
+          cache_key_prefix: mise-v2-instructions
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # From Ubuntu's archive, which mise cannot lock (ADR 0048); the gate refuses one older
+      # than 3.22.
+      - name: Install valgrind
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends valgrind
+          valgrind --version
+      - run: just instructions "${BASE}"
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || github.event.before }}
+      - name: Show the report
+        if: always()
+        run: if [[ -f target/instructions/report.md ]]; then cat target/instructions/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
   commits:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
