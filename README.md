@@ -122,12 +122,13 @@ to change one.
 ```sh
 mise install --locked # install the tools as `mise.lock` holds them
 just --list         # see every recipe
-just ci             # what the pull-request gate runs: lint, test, coverage, simulation
+just ci             # what the gate runs (Linux): lint, test, coverage, Miri, counts, simulation
 just ready          # before pushing: `just ci` plus mutation testing of your change
 just sim 42         # replay simulation seed 42
 just stress 20      # the simulation on many threads and the real clock
 just sim-coverage   # how much of the engine the simulation alone reaches
 just bench passthrough # a recorded figure: a bench on chosen CPUs, with its commit, load and counts
+just instructions   # instruction and allocation counts against main, as CI takes them (Linux)
 cargo xtask codegen # regenerate the wire protocol's code after changing its .proto files
 ```
 

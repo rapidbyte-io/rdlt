@@ -12,8 +12,13 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
 ## Before you push
 
 - Run `just ready`: lint, tests, and mutation testing of your change. CI runs the rest of the
-  pull-request gate (coverage, Miri, the simulation, macOS) but not mutation testing (ADR 0003), so
-  a missed mutant is caught here or by the nightly pass.
+  pull-request gate (coverage, Miri, the simulation, macOS, instruction and allocation counts
+  against main) but not mutation testing (ADR 0003), so a missed mutant is caught here or by the
+  nightly pass.
+- A change that makes a case of `just instructions` take more than 2% more instructions or
+  allocations than `main` names the case in an `Instructions-Accepted: <case>` trailer of the
+  commit that does it, with the reason in the body; CI fails it otherwise. The counts need
+  valgrind, so `just instructions` and `just ci` run on Linux only.
 - `just mutants-diff` tests each changed crate's mutants against the packages whose tests can
   catch them; the nightly workflow runs the full pass, every crate's tests against every mutant
   (ADR 0025). Fix a mutant the nightly finds the next day, and when the crate's packages in
