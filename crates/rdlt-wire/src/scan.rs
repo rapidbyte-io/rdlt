@@ -120,9 +120,6 @@ impl Count {
         depth: usize,
         merging: bool,
     ) -> Result<(), Unscanned> {
-        if depth > MAX_DEPTH {
-            return Err(Unscanned::Deep);
-        }
         // The fields set so far, by their place in the form.
         let mut set = 0_u64;
         while !bytes.is_empty() && self.held <= self.bound {
@@ -171,7 +168,7 @@ impl Count {
         match field.kind {
             Kind::Message(inner) => {
                 self.hold(entry(inner.size));
-                self.walk(inner, payload, depth + 1, again)
+                self.walk(inner, payload, deeper(depth)?, again)
             }
             // A text or bytes takes at least the least a vector of bytes allocates. A text set
             // again is decoded into the room the last took, which grows to twice that, or to the
@@ -244,9 +241,7 @@ fn skip(key: &Key, bytes: &mut &[u8], depth: usize) -> Result<(), Unscanned> {
             take(bytes, length)?;
         }
         3 => {
-            if depth >= MAX_DEPTH {
-                return Err(Unscanned::Deep);
-            }
+            let within = deeper(depth)?;
             loop {
                 let inner = self::key(bytes)?;
                 if inner.wire == 4 {
@@ -255,7 +250,7 @@ fn skip(key: &Key, bytes: &mut &[u8], depth: usize) -> Result<(), Unscanned> {
                     }
                     break;
                 }
-                skip(&inner, bytes, depth + 1)?;
+                skip(&inner, bytes, within)?;
             }
         }
         // A group's end where none began.
@@ -263,6 +258,14 @@ fn skip(key: &Key, bytes: &mut &[u8], depth: usize) -> Result<(), Unscanned> {
     }
     Ok(())
 }
+/// The level within a message or group at `depth`, where the encoding may nest that deep.
+fn deeper(depth: usize) -> Result<usize, Unscanned> {
+    if depth >= MAX_DEPTH {
+        return Err(Unscanned::Deep);
+    }
+    Ok(depth + 1)
+}
+
 /// Takes a varint from the front of `bytes`.
 fn varint(bytes: &mut &[u8]) -> Result<u64, Unscanned> {
     let mut value = 0_u64;
