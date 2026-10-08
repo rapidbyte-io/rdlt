@@ -14,6 +14,9 @@ wins and the code is fixed.
 - Keep commits small and focused. Every fixed defect gets a regression test in the same change.
 - Run `just ready` before pushing: lint, tests, and mutation testing of your change, which CI does
   not repeat; CI runs the rest of the pull-request gate.
+- A change that makes a case of `just instructions` take more than 2% more instructions or
+  allocations than `main` names it in an `Instructions-Accepted: <case>` trailer, with the reason
+  in the commit body; the `instructions` check fails otherwise.
 
 ## Tools
 

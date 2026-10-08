@@ -161,7 +161,8 @@ follows H1c.
     it finds is fixed the next day; one the branch's packages missed adds the package that caught
     it.
   - `just ready` runs lint, tests and `mutants-diff`. CI's pull-request gate runs the rest:
-    coverage, Miri, the simulation and macOS.
+    coverage, Miri, the simulation, macOS and the instruction and allocation counts against
+    `main`.
   - The reference connectors' tests sync files and SQLite to disk, and four mutants tested at once
     made a one-second test take ten, which counted mutants as caught by no assertion. Those tests
     get thirty seconds before the mutants profile counts them hung.

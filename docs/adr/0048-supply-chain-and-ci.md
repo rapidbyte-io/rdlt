@@ -94,6 +94,14 @@ This record decides what holds each statement, and says where a check ends.
     workflow states for each runner platform. The tool caches have new keys.
   - Locked mode is not a project setting: mise would apply it to a contributor's own tools. A
     plain `mise install` still verifies the lockfile's checksums.
+  - valgrind is the exception, and it is not locked. The `instructions` job installs whatever
+    version the runner image's Ubuntu archive holds, with `apt-get`, since mise has no release
+    archive of it to lock; the gate refuses one older than 3.22 and prints the version it ran. It
+    compares two builds it makes under that one valgrind, so a version change moves both sides
+    alike, and it runs on Linux only. The counts come from the engine's own `allocations` bench
+    under callgrind, not from gungraun: gungraun counts only the benchmark function's thread
+    unless the code calls valgrind's client requests, through a crate built with bindgen and
+    libclang, and its runner would be one more locked tool held to the library's version.
 - **An action's SHA is checked against its version.** `pinact run --check --verify-comment`
   resolves the version in each pin's comment and fails when the SHA is not that release's commit.
 - **Every lockfile is checked for advisories, every day.**
@@ -149,6 +157,7 @@ This record decides what holds each statement, and says where a check ends.
 - The `pins` job's recipe and tools come from the pull request, as the whole workflow does under
   `pull_request`. What bounds it is the token: read-only, for a public repository.
 - `pins` is a new check: the repository's ruleset has to require it beside `lint`.
+- `instructions` is a new check: the repository's ruleset has to require it beside `lint`.
 - The nightly advisory job builds xtask, about two minutes.
 - Each job logs the installer's warning that it has no token.
 - Restricting which actions the repository may run is a repository setting, outside the tree,
