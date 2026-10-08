@@ -1,6 +1,6 @@
-//! Whatever bytes a write's request carries, in whatever chunks, the data plane's reader passes
-//! on only messages held to their bounds, without panicking, and every frame it decodes is sent
-//! again as the bytes prost encodes it to.
+//! Whatever bytes a data-plane call's request or answer carries, in whatever chunks, the data
+//! plane's reader passes on only messages held to their bounds, without panicking, and every
+//! message it decodes is sent again as the bytes prost encodes it to.
 
 #![forbid(unsafe_code)]
 #![no_main]
@@ -15,8 +15,8 @@ use libfuzzer_sys::fuzz_target;
 use rdlt_wire::bounded::{Bounded, Bounds, Window};
 use rdlt_wire::limits::{Class, Limits};
 use rdlt_wire::plane::{Chained, Incoming};
-use rdlt_wire::prost::Message;
 use rdlt_wire::tonic::Status;
+use rdlt_wire::tonic::codegen::http;
 use rdlt_wire::v1;
 
 /// A body of chunks, each ready at once, which then ends.
@@ -56,33 +56,71 @@ fn limits() -> Limits {
     }
 }
 
-fuzz_target!(|input: (Vec<u8>, Vec<u16>)| {
-    let (bytes, cuts) = input;
-    let limits = limits();
-    let bounds = Bounds::of(
-        &limits,
-        Class::of_request("Write"),
-        rdlt_wire::scan::request("Write"),
-    );
-    let window = Window::new(limits.largest() * 4);
-    let body = rdlt_wire::tonic::body::Body::new(Chunked(chunked(&bytes, &cuts)));
-    let mut frames = Incoming::<v1::WriteFrame>::request(Bounded::new(body, bounds, Some(window)));
+/// What `future` comes to, which it does when first polled: every chunk is ready.
+fn ready<F: Future>(future: F) -> F::Output {
     let mut context = Context::from_waker(std::task::Waker::noop());
-    loop {
-        let read = match std::pin::pin!(frames.message()).poll(&mut context) {
-            Poll::Ready(read) => read,
-            Poll::Pending => panic!("a body whose every chunk is ready waits"),
-        };
-        let Ok(Some(frame)) = read else {
-            return;
-        };
-        let chunks = frame.clone().chunks();
-        let mut sent = chunks.head.to_vec();
-        sent.extend(chunks.body.unwrap_or_default());
-        let mut encoded = vec![0];
-        encoded.extend(u32::try_from(frame.encoded_len()).unwrap().to_be_bytes());
-        frame.encode(&mut encoded).unwrap();
-        assert_eq!(sent, encoded, "{frame:?} is sent as prost encodes it");
-        assert_eq!(v1::WriteFrame::decode(&sent[5..]).unwrap(), frame);
+    match std::pin::pin!(future).poll(&mut context) {
+        Poll::Ready(output) => output,
+        Poll::Pending => panic!("a body whose every chunk is ready waits"),
+    }
+}
+
+/// Checks that `message` is sent as prost encodes it, and decodes from what is sent again.
+fn sent_again<M: Chained + Default + Clone + std::fmt::Debug>(message: &M) {
+    let chunks = message.clone().chunks();
+    let mut sent = chunks.head.to_vec();
+    sent.extend(chunks.body.unwrap_or_default());
+    let mut encoded = vec![0];
+    encoded.extend(u32::try_from(message.encoded_len()).unwrap().to_be_bytes());
+    message.encode(&mut encoded).unwrap();
+    assert_eq!(sent, encoded, "{message:?} is sent as prost encodes it");
+    let again = M::decode(&sent[5..]).unwrap();
+    assert_eq!(
+        again.encode_to_vec(),
+        &sent[5..],
+        "{message:?} decodes as sent"
+    );
+}
+
+/// Reads every message of `incoming` until it ends or fails, each sent again.
+fn read<M: Chained + Default + Clone + std::fmt::Debug>(mut incoming: Incoming<M>) {
+    while let Ok(Some(message)) = ready(incoming.message()) {
+        sent_again(&message);
+    }
+}
+
+fuzz_target!(|input: (u8, Vec<u8>, Vec<u16>)| {
+    let (call, bytes, cuts) = input;
+    let limits = limits();
+    let body = || rdlt_wire::tonic::body::Body::new(Chunked(chunked(&bytes, &cuts)));
+    // A request is held to the connection's window, as a served connector holds it.
+    let request = |method| {
+        let bounds = Bounds::of(
+            &limits,
+            Class::of_request(method),
+            rdlt_wire::scan::request(method),
+        );
+        let window = Window::new(limits.largest() * 4);
+        Bounded::new(body(), bounds, Some(window))
+    };
+    match call % 4 {
+        0 => read(Incoming::<v1::WriteFrame>::request(request("Write"))),
+        1 => read(Incoming::<v1::ReadControl>::request(request("Read"))),
+        2 => {
+            let unary = Incoming::<v1::ReadPublishedRequest>::request(request("ReadPublished"));
+            if let Ok(read_back) = ready(unary.unary()) {
+                sent_again(&read_back);
+            }
+        }
+        _ => {
+            let bounds = Bounds::of(
+                &limits,
+                Class::of_answer("Read"),
+                rdlt_wire::scan::response("Read"),
+            );
+            let answer = http::Response::new(Bounded::new(body(), bounds, None));
+            let frames = Incoming::<v1::ReadFrame>::answer(answer).expect("an answer under way");
+            read(frames);
+        }
     }
 });
