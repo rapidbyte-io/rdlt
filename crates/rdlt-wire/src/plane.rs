@@ -11,6 +11,8 @@
 mod chained;
 mod incoming;
 mod outgoing;
+#[cfg(feature = "serve")]
+mod router;
 mod status;
 #[cfg(test)]
 mod tests;
@@ -22,6 +24,8 @@ use tonic::codegen::tokio_stream::Stream;
 pub use self::chained::{Chained, Chunks};
 pub use self::incoming::Incoming;
 pub use self::outgoing::Outgoing;
+#[cfg(feature = "serve")]
+pub use self::router::{Answers, Plane, Router, Serving};
 
 /// The path of the `Write` call.
 pub const WRITE: &str = "/rdlt.connector.v1.Connector/Write";
