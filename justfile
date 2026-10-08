@@ -261,9 +261,11 @@ bench $name $cores="" $filter="":
     if "$counter" --list | grep -qx "$name: test"; then taskset -c "$cores" "$counter" "$name" | tee -a "$record"; fi
     echo "load after: $(cut -d' ' -f1-3 /proc/loadavg)" | tee -a "$record"
 
-# Everything the pull-request gate runs
-ci: lint test coverage miri (sim "" "10000")
+# Everything the pull-request gate runs, instruction and allocation counts against main among it.
+# Linux only: the counts need valgrind
+ci: lint test coverage miri instructions (sim "" "10000")
 
 # Everything to run before pushing: the quick checks of the pull-request gate and mutation testing
-# of the change; CI runs the rest of the gate (coverage, Miri, the simulation, macOS)
+# of the change; CI runs the rest of the gate (coverage, Miri, the simulation, macOS, instruction
+# and allocation counts against main)
 ready base="origin/main": lint test (mutants-diff base)
