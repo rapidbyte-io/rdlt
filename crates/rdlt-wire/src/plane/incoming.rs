@@ -128,8 +128,13 @@ impl<M: Message + Default> Incoming<M> {
     ///
     /// `Internal` where the request has no message, and the status reading it failed with.
     pub async fn unary(mut self) -> Result<M, Status> {
-        self.message().await?;
-        Err(Status::unimplemented("a unary request"))
+        let message = self
+            .message()
+            .await?
+            .ok_or_else(|| Status::internal("a unary request without its message"))?;
+        // Read to its end, as any gRPC server reads a unary request: what follows is dropped.
+        while self.message().await?.is_some() {}
+        Ok(message)
     }
 
     /// Releases the charge of the message passed on last: it has been decoded.
