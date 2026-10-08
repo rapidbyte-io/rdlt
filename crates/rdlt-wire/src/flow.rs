@@ -110,8 +110,8 @@ pub struct Transport {
 
 impl Default for Transport {
     /// The settings both ends set: a stream window of the credit floor, whatever the limits, so a
-    /// sender within it is never held by the transport and a peer that ignores its credit parks
-    /// at most the floor a call.
+    /// peer that ignores its credit parks at most the floor a call; credit above the floor is
+    /// paced by the transport's window updates.
     fn default() -> Self {
         let stream_window = CREDIT_FLOOR;
         let calls = u64::from(MAX_CALLS) + 1;
