@@ -1,14 +1,15 @@
-//! The host's transport, which holds each answer to its bounds before tonic reads it, and drops
-//! status details a connector sent that do not decode.
+//! The host's transport, which holds each answer to its bounds before anything reads it, and
+//! drops status details a connector sent that do not decode.
 //!
 //! tonic decodes a status's details from base64 as it reads an answer's headers or trailers, and
 //! panics on a value that is not base64; what a connector sends is untrusted. The transport drops
-//! such a value before tonic reads it, so the status reads as one without details: a failure of
-//! the transport. Each message of an answer is passed on whole, within the bounds of its call's
-//! class on the wire and on what it decodes to, before tonic reserves or decodes any of it; and,
-//! for a call made within [`rdlt_wire::bounded::charging`], once what decoding it holds is charged.
-//! The answer carries its [`Charged`] among its extensions, for whoever reads a stream of messages
-//! to release each charge once the message is decoded.
+//! such a value before anything reads it, so the status reads as one without details: a failure
+//! of the transport. Each message of an answer is passed on whole, within the bounds of its
+//! call's class on the wire and on what it decodes to, before anything reserves or decodes any of
+//! it; and, for a call made within [`rdlt_wire::bounded::charging`], once what decoding it holds
+//! is charged. A data-plane call's answer is its bounded body, whose reader releases each charge
+//! once the message is decoded; a generated call's answer carries its [`Charged`] among its
+//! extensions, for whoever reads a stream of messages to do the same.
 
 #[cfg(test)]
 mod tests;

@@ -22,8 +22,9 @@ mod testing;
 pub mod tls;
 
 /// The messages of package `rdlt.connector.v1`, and its `Connector` service's client
-/// (`connector_client`) and server (`connector_server`), generated from the `.proto` files under
-/// `proto/` by `cargo xtask codegen`.
+/// (`connector_client`) and server (`connector_server`) for every call but the data plane's,
+/// which [`plane`] serves and calls, generated from the `.proto` files under `proto/` by
+/// `cargo xtask codegen`.
 #[expect(
     clippy::doc_markdown,
     clippy::large_enum_variant,
