@@ -10,7 +10,8 @@ use rdlt_connector::{
     TableSchema,
 };
 use rdlt_host::remote::Client;
-use rdlt_wire::tonic::{Status, Streaming};
+use rdlt_wire::plane::Incoming;
+use rdlt_wire::tonic::Status;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -19,7 +20,7 @@ use super::{Violation, error};
 /// A write of a one-column table, its schema sent, waiting for batches.
 pub(super) struct Writing {
     frames: mpsc::Sender<v1::WriteFrame>,
-    acks: Streaming<v1::WriteAck>,
+    acks: Incoming<v1::WriteAck>,
 }
 
 impl Writing {
@@ -49,8 +50,7 @@ impl Writing {
         let acks = client
             .write(ReceiverStream::new(receiver))
             .await
-            .map_err(|status| Violation::from(format!("the write failed: {}", error(&status))))?
-            .into_inner();
+            .map_err(|status| Violation::from(format!("the write failed: {}", error(&status))))?;
         Ok(Self { frames, acks })
     }
 
@@ -104,6 +104,7 @@ async fn created(client: &mut Client) -> Result<(u64, TableRef), Violation> {
     // Short enough for any destination the destination clauses certify: 32 bytes and more.
     let name = format!("certify_{run:x}_p");
     let opened = client
+        .rpc
         .open(v1::OpenRequest {
             pipeline: name.clone(),
             load_id: LoadId::from_parts(SystemTime::now(), run)
@@ -128,6 +129,7 @@ async fn created(client: &mut Client) -> Result<(u64, TableRef), Violation> {
         schema,
     };
     client
+        .rpc
         .apply_schema(v1::ApplySchemaRequest {
             session: opened.session,
             change: Some(v1::TableChange::from(&create)),

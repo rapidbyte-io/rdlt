@@ -346,11 +346,7 @@ where
 {
     let (cut, spent) = (CancellationToken::new(), CancellationToken::new());
     let channel = channel(io, &options, cut, spent).await?;
-    Ok(clients::sized(
-        &channel,
-        &options.limits,
-        rdlt_wire::limits::Class::Data,
-    ))
+    Ok(Client::new(&channel, &options.limits))
 }
 
 /// A channel over `io`, which fails once `cut` is cancelled, and whose one connection, once
@@ -452,7 +448,7 @@ async fn within<T>(
 /// A connector that ends the stream is stopping: it finishes the calls in flight, and `retired` is
 /// cancelled.
 async fn heartbeat(
-    mut client: Client,
+    mut client: clients::Rpc,
     (every, missed): (Duration, NonZeroU32),
     lost: CancellationToken,
     retired: CancellationToken,

@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use rdlt_wire::Limits;
+use rdlt_wire::plane::{Incoming, Plane, Serving};
 use rdlt_wire::tonic::codegen::tokio_stream::Stream;
 use rdlt_wire::tonic::{self, Request, Response, Status, Streaming};
 use rdlt_wire::v1::connector_server::Connector;
@@ -314,16 +315,6 @@ impl Connector for Service {
         Ok(Response::new(v1::ApplySchemaResponse {}))
     }
 
-    type WriteStream = Answer<v1::WriteAck>;
-
-    async fn write(
-        &self,
-        request: Request<Streaming<v1::WriteFrame>>,
-    ) -> Result<Response<Self::WriteStream>, Status> {
-        let acks = write::serve(self, self.limits, request.into_inner()).await?;
-        Ok(Response::new(acks))
-    }
-
     async fn commit(
         &self,
         request: Request<v1::CommitRequest>,
@@ -367,6 +358,12 @@ impl Connector for Service {
             .map(|ping| ping.map(|ping| v1::Pong { seq: ping.seq }));
         let stopped = self.stopping.clone().cancelled_owned();
         Ok(Response::new(Box::pin(Until::new(pongs, stopped))))
+    }
+}
+
+impl Plane for Service {
+    fn write(&self, frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
+        Box::pin(write::serve(self, self.limits, frames))
     }
 }
 

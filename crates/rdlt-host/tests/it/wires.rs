@@ -39,6 +39,7 @@ async fn a_client_speaks_the_protocol_raw_over_a_spawned_connectors_wire() {
         .await
         .expect("the client connects");
     let answer = client
+        .rpc
         .handshake(handshake())
         .await
         .expect("the connector answers")

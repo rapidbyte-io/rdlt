@@ -3,13 +3,14 @@
 
 use rdlt_wire::flow::Granting;
 use rdlt_wire::limits::CREDIT_FLOOR;
+use rdlt_wire::plane::{Answers, Incoming};
 use rdlt_wire::prost::Message as _;
-use rdlt_wire::tonic::{Status, Streaming};
+use rdlt_wire::tonic::Status;
 use rdlt_wire::{Decoder, IpcFrame, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::service::{Answer, Service, invalid};
+use super::service::{Service, invalid};
 use crate::destination::{DestinationWriter, TableRef};
 use crate::error::ConnectorError;
 use crate::id::SegmentId;
@@ -19,8 +20,8 @@ use crate::wire::{Invalid, frame_error, status, v1};
 pub(super) async fn serve(
     service: &Service,
     limits: Limits,
-    mut frames: Streaming<v1::WriteFrame>,
-) -> Result<Answer<v1::WriteAck>, Status> {
+    mut frames: Incoming<v1::WriteFrame>,
+) -> Result<Answers<v1::WriteAck>, Status> {
     let Some(v1::WriteFrame {
         frame: Some(v1::write_frame::Frame::Start(start)),
     }) = frames.message().await?
@@ -53,7 +54,7 @@ pub(super) async fn serve(
 /// with its credit and then its stats, and a failure with the error, after which the write ends.
 async fn pump(
     mut writer: Box<dyn DestinationWriter>,
-    mut frames: Streaming<v1::WriteFrame>,
+    mut frames: Incoming<v1::WriteFrame>,
     acks: mpsc::Sender<Result<v1::WriteAck, Status>>,
     limits: Limits,
 ) {

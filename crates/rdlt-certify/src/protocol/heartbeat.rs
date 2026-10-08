@@ -20,6 +20,7 @@ pub(super) async fn echoed(target: &Target, role: Role, config: &str) -> Found {
         let failed =
             |status: &Status| Violation(format!("the heartbeat failed: {}", super::error(status)));
         let mut pongs = client
+            .rpc
             .heartbeat(sent)
             .await
             .map_err(|status| failed(&status))?

@@ -2,17 +2,16 @@
 
 use rdlt_connector::wire::{frame_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
+use rdlt_wire::plane::Incoming;
 use rdlt_wire::{Decoder, IpcFrame, Limits};
 use tokio::sync::mpsc;
-use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::Streaming;
 
 use super::{Answer, FRAME_BYTES, Fault};
 
 /// A write that begins with its start, and refuses a batch it cannot decode, or one beyond
 /// [`FRAME_BYTES`], as `fault` has it.
-pub(super) fn write(fault: Fault, mut frames: Streaming<v1::WriteFrame>) -> Answer<v1::WriteAck> {
+pub(super) fn write(fault: Fault, mut frames: Incoming<v1::WriteFrame>) -> Answer<v1::WriteAck> {
     let (acks, answer) = mpsc::channel(4);
     tokio::spawn(async move {
         use v1::write_frame::Frame;
@@ -23,9 +22,10 @@ pub(super) fn write(fault: Fault, mut frames: Streaming<v1::WriteFrame>) -> Answ
         };
         let mut decoder = Decoder::new(limits);
         let first = frames
-            .next()
+            .message()
             .await
-            .and_then(Result::ok)
+            .ok()
+            .flatten()
             .and_then(|frame| frame.frame);
         if !matches!(first, Some(Frame::Start(_))) {
             let refused = ConnectorError::new(ConnectorErrorKind::Internal, "no start")
@@ -35,7 +35,7 @@ pub(super) fn write(fault: Fault, mut frames: Streaming<v1::WriteFrame>) -> Answ
                 .ok();
             return;
         }
-        while let Some(Ok(frame)) = frames.next().await {
+        while let Ok(Some(frame)) = frames.message().await {
             let answered = match frame.frame {
                 Some(Frame::Schema(schema)) => {
                     decoder.schema(&schema.ipc_schema).ok();

@@ -50,6 +50,32 @@ impl Checked {
     pub(crate) fn new(channel: Channel, limits: Limits) -> Self {
         Self { channel, limits }
     }
+
+    /// Calls a method of the data plane with `request`, and returns its answer: its headers
+    /// checked, its messages held to the bounds of the method's answers, and charged as those
+    /// of any call made where the caller is.
+    pub(crate) async fn data(
+        &mut self,
+        request: http::Request<tonic::body::Body>,
+    ) -> Result<http::Response<Bounded>, tonic::Status> {
+        let bounds = self.bounds(request.uri().path());
+        let charge = rdlt_wire::bounded::current();
+        let ready = tower::ServiceExt::ready(&mut self.channel).await;
+        let channel = ready
+            .map_err(|error| tonic::Status::unknown(format!("the channel failed: {error}")))?;
+        let answer = tower::Service::call(channel, request)
+            .await
+            .map_err(|error| tonic::Status::from_error(Box::new(error)))?;
+        let (parts, body, _) = checked(answer, bounds, charge);
+        Ok(http::Response::from_parts(parts, body))
+    }
+
+    /// The bounds of the answers of the method at `path`.
+    fn bounds(&self, path: &str) -> Bounds {
+        let method = path.rsplit('/').next().unwrap_or(path);
+        let form = rdlt_wire::scan::response(method);
+        Bounds::of(&self.limits, Class::of_answer(method), form)
+    }
 }
 
 type Answer = http::Response<tonic::body::Body>;
@@ -64,26 +90,34 @@ impl tower::Service<http::Request<tonic::body::Body>> for Checked {
     }
 
     fn call(&mut self, request: http::Request<tonic::body::Body>) -> Self::Future {
-        let path = request.uri().path();
-        let method = path.rsplit('/').next().unwrap_or(path);
-        let form = rdlt_wire::scan::response(method);
-        let bounds = Bounds::of(&self.limits, Class::of_answer(method), form);
+        let bounds = self.bounds(request.uri().path());
         // Made in the caller's task: what the call is charged to is the caller's.
         let charge = rdlt_wire::bounded::current();
         let answer = self.channel.call(request);
         Box::pin(async move {
-            let (mut parts, body) = answer.await?.into_parts();
-            check(&mut parts.headers);
-            let checked = tonic::body::Body::new(CheckedBody(body));
-            let charged = Charged::default();
-            parts.extensions.insert(charged.clone());
-            let bounded = Bounded::new(checked, bounds, None).charged(charge, charged);
+            let (mut parts, bounded, charged) = checked(answer.await?, bounds, charge);
+            parts.extensions.insert(charged);
             Ok(http::Response::from_parts(
                 parts,
                 tonic::body::Body::new(bounded),
             ))
         })
     }
+}
+
+/// `answer`, its headers and trailers carrying only status details that decode, its body held
+/// to `bounds` and its messages charged to `charge`, and what holds the charge.
+fn checked(
+    answer: Answer,
+    bounds: Bounds,
+    charge: Option<std::sync::Arc<dyn rdlt_wire::bounded::Charge>>,
+) -> (http::response::Parts, Bounded, Charged) {
+    let (mut parts, body) = answer.into_parts();
+    check(&mut parts.headers);
+    let body = tonic::body::Body::new(CheckedBody(body));
+    let charged = Charged::default();
+    let bounded = Bounded::new(body, bounds, None).charged(charge, charged.clone());
+    (parts, bounded, charged)
 }
 
 /// An answer's body, whose trailers carry only status details that decode.

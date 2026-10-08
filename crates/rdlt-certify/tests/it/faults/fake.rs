@@ -13,8 +13,10 @@ use hyper_util::service::TowerToHyperService;
 use rdlt_connector::wire::{status, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_host::Stream;
+use rdlt_wire::bounded::Window;
+use rdlt_wire::plane::{Incoming, Plane, Router, Serving};
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
-use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR, PUBLISHED};
+use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR, PUBLISHED};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
@@ -130,18 +132,22 @@ type Answer<T> = Pin<Box<dyn tokio_stream::Stream<Item = Result<T, Status>> + Se
 /// The host's end of a new socket whose other end serves a fake with `fault`.
 pub(crate) fn served(fault: Fault) -> std::io::Result<Box<dyn Stream>> {
     let (host, connector) = tokio::net::UnixStream::pair()?;
-    let fake = Fake {
+    let fake = Arc::new(Fake {
         fault,
         handshaken: AtomicBool::new(false),
         configured: AtomicBool::new(false),
-    };
+    });
     // A message a little over its frame limit is read, so the fake refuses it by the limit.
-    let message_bytes = usize::try_from(2 * FRAME_BYTES).expect("the limit fits");
-    let service = ConnectorServer::new(fake)
-        .max_decoding_message_size(message_bytes)
-        .map_request(|request: http::Request<hyper::body::Incoming>| {
-            request.map(tonic::body::Body::new)
-        });
+    let limits = Limits {
+        frame_bytes: 2 * FRAME_BYTES,
+        ..Limits::default()
+    };
+    let server =
+        ConnectorServer::from_arc(Arc::clone(&fake)).max_decoding_message_size(limits.largest());
+    let window = Window::new(usize::MAX);
+    let service = Router::new(server, fake, &limits, window).map_request(
+        |request: http::Request<hyper::body::Incoming>| request.map(tonic::body::Body::new),
+    );
     tokio::spawn(
         hyper::server::conn::http2::Builder::new(TokioExecutor::new())
             .timer(TokioTimer::new())
@@ -183,6 +189,12 @@ impl Fake {
         } else {
             ConnectorErrorKind::Internal
         }
+    }
+}
+
+impl Plane for Fake {
+    fn write(&self, frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
+        Box::pin(async move { Ok(writes::write(self.fault, frames)) })
     }
 }
 
@@ -235,7 +247,7 @@ impl Connector for Fake {
             cursor_bytes,
             frame_bytes: FRAME_BYTES,
             batch_rows: u64::from(!self.keeps(Fault::FewRows)),
-            ..rdlt_wire::Limits::default().into()
+            ..Limits::default().into()
         };
         Ok(Response::new(v1::HandshakeResponse {
             spec: Some(spec()),
@@ -461,18 +473,6 @@ impl Connector for Fake {
             return Err(refused(ConnectorErrorKind::Data, "identifier"));
         }
         Ok(Response::new(v1::ApplySchemaResponse {}))
-    }
-
-    type WriteStream = Answer<v1::WriteAck>;
-
-    async fn write(
-        &self,
-        request: Request<Streaming<v1::WriteFrame>>,
-    ) -> Result<Response<Self::WriteStream>, Status> {
-        Ok(Response::new(writes::write(
-            self.fault,
-            request.into_inner(),
-        )))
     }
 
     async fn commit(&self, _: Request<v1::CommitRequest>) -> Result<Response<v1::Receipt>, Status> {

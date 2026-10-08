@@ -92,6 +92,7 @@ impl ReadBackProbe<'_> {
                 table: Some(v1::TableRef::from(table)),
             };
             let frames = client
+                .rpc
                 .read_published(request)
                 .await
                 .map_err(|status| error(&status))?
@@ -109,12 +110,12 @@ async fn handshaken(target: &Target, config: &str) -> Result<(Client, bool)> {
     let mut offered = request(Role::Destination, rdlt_wire::PROTOCOL_MAJOR);
     offered.features.push(PUBLISHED.to_owned());
     let answer = target
-        .opened("the read-back's handshake", client.handshake(offered))
+        .opened("the read-back's handshake", client.rpc.handshake(offered))
         .await?;
     target
         .opened(
             "the read-back's configuration",
-            client.configure(configure_request(config)),
+            client.rpc.configure(configure_request(config)),
         )
         .await?;
     let accepted = answer

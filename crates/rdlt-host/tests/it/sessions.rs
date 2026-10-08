@@ -8,15 +8,14 @@ use rdlt_connector::{
     TablePath, TableRef, destination_factory, source_factory,
 };
 use rdlt_connector_reference::{MemoryDestination, MemorySource};
+use rdlt_host::remote::Client;
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
-use rdlt_wire::v1::connector_client::ConnectorClient;
 use rdlt_wire::{Encoder, Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio::net::UnixStream;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
 
 use crate::support::connectors::{Writes, Writing};
-use crate::support::{Fake, Fault, raw_client, serve_fake, served_within};
+use crate::support::{Fake, Fault, serve_fake, served_within};
 
 pub(crate) fn handshake(role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
@@ -56,7 +55,7 @@ fn ids(count: i64) -> arrow_array::RecordBatch {
 }
 
 /// A raw client of a destination `served` over `store`, handshaken, and a session it opened.
-pub(crate) async fn raw_session(served: Served, store: &str) -> (ConnectorClient<Channel>, u64) {
+pub(crate) async fn raw_session(served: Served, store: &str) -> (Client, u64) {
     raw_session_within(served, store, Limits::default()).await
 }
 
@@ -66,14 +65,21 @@ pub(crate) async fn raw_session_within(
     served: Served,
     store: &str,
     limits: Limits,
-) -> (ConnectorClient<Channel>, u64) {
-    let mut client = raw_client(served_within(served, limits)).await;
+) -> (Client, u64) {
+    let io = served_within(served, limits);
+    let client = rdlt_host::remote::client(io, Options::default()).await;
+    // It sends whatever the size: what refuses a message is the connector.
+    let mut client = client
+        .expect("the client connects")
+        .max_encoding_message_size(usize::MAX);
     let config = serde_json::json!({ "store": store });
     client
+        .rpc
         .handshake(handshake(v1::Role::Destination))
         .await
         .expect("the destination handshakes");
     client
+        .rpc
         .configure(v1::ConfigureRequest {
             config_json: config.to_string(),
         })
@@ -85,6 +91,7 @@ pub(crate) async fn raw_session_within(
         load_id: context.load_id.as_bytes().to_vec().into(),
     };
     let session = client
+        .rpc
         .open(open)
         .await
         .expect("the session opens")
@@ -97,7 +104,11 @@ pub(crate) async fn raw_session_within(
 async fn a_closed_session_refuses_later_calls() {
     let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let (mut client, session) = raw_session(served, "closed").await;
-    client.close(v1::CloseRequest { session }).await.unwrap();
+    client
+        .rpc
+        .close(v1::CloseRequest { session })
+        .await
+        .unwrap();
     let create = rdlt_connector::TableChange::Create {
         table: table(),
         schema: rdlt_connector::TableSchema::new(vec![rdlt_connector::Field::new(
@@ -111,7 +122,7 @@ async fn a_closed_session_refuses_later_calls() {
         session,
         change: Some(v1::TableChange::from(&create)),
     };
-    let status = client.apply_schema(request).await.unwrap_err();
+    let status = client.rpc.apply_schema(request).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("no_session"));
 }
 
@@ -148,11 +159,7 @@ async fn a_failed_write_answers_with_its_error_and_ends_the_write() {
             .await
             .unwrap();
     }
-    let mut acks = client
-        .write(ReceiverStream::new(receiver))
-        .await
-        .unwrap()
-        .into_inner();
+    let mut acks = client.write(ReceiverStream::new(receiver)).await.unwrap();
     let mut error = None;
     while let Some(ack) = tokio::time::timeout(Duration::from_secs(5), acks.message())
         .await
@@ -446,18 +453,21 @@ async fn a_connection_holds_a_few_sessions_open_and_a_further_closes_its_oldest(
             pipeline: format!("pipeline-{pipeline}"),
             load_id: context().load_id.as_bytes().to_vec().into(),
         };
-        let opened = client.open(open).await.expect("the session opens");
+        let opened = client.rpc.open(open).await.expect("the session opens");
         sessions.push(opened.into_inner().session);
     }
     // The newest are served; each older was closed for one of them.
     let (closed, open) = sessions.split_at(sessions.len() - holds);
     for session in closed {
-        let refused = client.close(v1::CloseRequest { session: *session }).await;
+        let refused = client
+            .rpc
+            .close(v1::CloseRequest { session: *session })
+            .await;
         let refused = carried(&refused.expect_err("the session is closed"));
         assert_eq!(refused.code(), Some("no_session"), "{session}");
     }
     for session in open {
-        let closing = client.close(v1::CloseRequest { session: *session });
+        let closing = client.rpc.close(v1::CloseRequest { session: *session });
         closing.await.expect("the session is open");
     }
 }

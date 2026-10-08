@@ -179,8 +179,7 @@ async fn a_served_connector_refuses_a_hosts_frame_no_limit_bounds_as_a_whole() {
         let mut acks = client
             .write(ReceiverStream::new(receiver))
             .await
-            .expect("the write starts")
-            .into_inner();
+            .expect("the write starts");
         let mut error = None;
         while let Some(ack) = tokio::time::timeout(Duration::from_secs(30), acks.message())
             .await

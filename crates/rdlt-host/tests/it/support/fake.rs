@@ -1,14 +1,16 @@
 //! A connector that answers the handshake and then breaks the protocol, as a faulty one would.
 
 use std::pin::Pin;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use rdlt_connector::wire::v1;
+use rdlt_wire::bounded::Window;
+use rdlt_wire::plane::{Incoming, Plane, Router, Serving};
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
 use tokio::net::UnixStream;
 use tokio_stream::{Stream, StreamExt as _};
@@ -112,7 +114,7 @@ impl Polled {
 /// The schema of a column of ids, and a batch frame of a mebibyte of them.
 pub(crate) fn mebibyte() -> (v1::ReadFrame, v1::ReadFrame) {
     let values: Vec<i64> = (0..131_072).collect();
-    let column = std::sync::Arc::new(arrow_array::Int64Array::from(values));
+    let column = Arc::new(arrow_array::Int64Array::from(values));
     let batch = arrow_array::RecordBatch::try_from_iter([("id", column as _)]).expect("a batch");
     let mut encoder = rdlt_wire::Encoder::default();
     let schema = v1::read_frame::Frame::Schema(v1::SchemaFrame {
@@ -170,7 +172,7 @@ type Answer<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send>>;
 pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
     let (host, connector) = UnixStream::pair().expect("a socket pair");
     let garbles = matches!(fake.0, Fault::GarbledDetails);
-    let service = ConnectorServer::new(fake)
+    let service = routed(fake)
         .map_request(|request: http::Request<hyper::body::Incoming>| {
             request.map(tonic::body::Body::new)
         })
@@ -190,6 +192,20 @@ pub(crate) fn serve_fake(fake: Fake) -> UnixStream {
             .serve_connection(TokioIo::new(connector), TowerToHyperService::new(service)),
     );
     host
+}
+
+/// `fake`'s calls, each request held to the default limits, the data plane's served by it as
+/// its generated calls are.
+pub(crate) fn routed(fake: Fake) -> Router<ConnectorServer<Fake>, Fake> {
+    let fake = Arc::new(fake);
+    let limits = rdlt_wire::Limits::default();
+    let window = Window::new(usize::MAX);
+    Router::new(
+        ConnectorServer::from_arc(Arc::clone(&fake)),
+        fake,
+        &limits,
+        window,
+    )
 }
 
 /// The fake's spec, as `id`, a destination where `destination`.
@@ -468,49 +484,6 @@ impl Connector for Fake {
         Err(Status::unimplemented("apply_schema"))
     }
 
-    type WriteStream = Answer<v1::WriteAck>;
-
-    async fn write(
-        &self,
-        request: Request<Streaming<v1::WriteFrame>>,
-    ) -> Result<Response<Self::WriteStream>, Status> {
-        if let Fault::Hoards(bytes) = self.0 {
-            // The frames stay unread for as long as the write is open.
-            let frames = request.into_inner();
-            let credit = v1::WriteAck {
-                ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
-            };
-            let acks = tokio_stream::iter([Ok(credit)])
-                .chain(tokio_stream::pending())
-                .map(move |ack| {
-                    let _ = &frames;
-                    ack
-                });
-            return Ok(Response::new(Box::pin(acks)));
-        }
-        let Fault::Trickles(every, bytes) = self.0 else {
-            return Err(Status::unimplemented("write"));
-        };
-        // The frames are taken and dropped, so the transport's windows never fill.
-        let mut frames = request.into_inner();
-        tokio::spawn(async move { while let Some(Ok(_)) = frames.next().await {} });
-        let (acks, sent) = tokio::sync::mpsc::channel(1);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(every).await;
-                let credit = v1::WriteAck {
-                    ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
-                };
-                if acks.send(Ok(credit)).await.is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(Response::new(Box::pin(
-            tokio_stream::wrappers::ReceiverStream::new(sent),
-        )))
-    }
-
     async fn commit(&self, _: Request<v1::CommitRequest>) -> Result<Response<v1::Receipt>, Status> {
         Err(Status::unimplemented("commit"))
     }
@@ -542,6 +515,45 @@ impl Connector for Fake {
             })
         });
         Ok(Response::new(Box::pin(pongs)))
+    }
+}
+
+impl Plane for Fake {
+    fn write(&self, mut frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck> {
+        let fault = self.0;
+        Box::pin(async move {
+            if let Fault::Hoards(bytes) = fault {
+                // The frames stay unread for as long as the write is open.
+                let credit = v1::WriteAck {
+                    ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
+                };
+                let acks = tokio_stream::iter([Ok(credit)])
+                    .chain(tokio_stream::pending())
+                    .map(move |ack| {
+                        let _ = &frames;
+                        ack
+                    });
+                return Ok(Box::pin(acks) as Answer<_>);
+            }
+            let Fault::Trickles(every, bytes) = fault else {
+                return Err(Status::unimplemented("write"));
+            };
+            // The frames are taken and dropped, so the transport's windows never fill.
+            tokio::spawn(async move { while let Ok(Some(_)) = frames.message().await {} });
+            let (acks, sent) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(every).await;
+                    let credit = v1::WriteAck {
+                        ack: Some(v1::write_ack::Ack::Credit(v1::Credit { bytes })),
+                    };
+                    if acks.send(Ok(credit)).await.is_err() {
+                        return;
+                    }
+                }
+            });
+            Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(sent)) as Answer<_>)
+        })
     }
 }
 
