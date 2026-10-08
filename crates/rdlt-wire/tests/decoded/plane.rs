@@ -44,15 +44,18 @@ fn message() -> Bytes {
         })),
     };
     let mut message = vec![0];
-    message.extend(u32::try_from(frame.encoded_len()).unwrap().to_be_bytes());
-    frame.encode(&mut message).unwrap();
+    let length = u32::try_from(frame.encoded_len()).expect("a frame within a prefix's length");
+    message.extend(length.to_be_bytes());
+    frame
+        .encode(&mut message)
+        .expect("a vector has room for any message");
     Bytes::from(message)
 }
 
 /// `message`, whole in one chunk, held to the bounds of a write's frames.
 fn bounded(message: &Bytes) -> Bounded {
     let limits = Limits {
-        frame_bytes: u64::try_from(2 * BODY).unwrap(),
+        frame_bytes: 2 * BODY as u64,
         ..Limits::default()
     };
     let bounds = Bounds::of(

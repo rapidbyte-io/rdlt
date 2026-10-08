@@ -5,10 +5,14 @@
 //! body is its message's last field, so everything before it is encoded into a head chunk, and
 //! the body follows as a chunk of its own, never copied.
 
-use bytes::Bytes;
+use bytes::{BufMut as _, Bytes, BytesMut};
 use prost::Message;
 
+use super::PREFIX;
 use crate::v1;
+
+/// The key of a length-delimited field numbered 3: a write frame's batch, and a batch's body.
+const THIRD_FIELD: u8 = 3 << 3 | 2;
 
 /// A message's bytes as a body sends them: `head`, then `body` where there is one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,10 +39,72 @@ impl Chunks {
 pub trait Chained: Message + Sized {
     /// The message's chunks, which hold its prefix and the bytes prost encodes it to.
     fn chunks(self) -> Chunks {
-        todo!()
+        Chunks {
+            head: whole(&self),
+            body: None,
+        }
     }
 }
 
 impl Chained for v1::WriteAck {}
 
-impl Chained for v1::WriteFrame {}
+impl Chained for v1::WriteFrame {
+    fn chunks(self) -> Chunks {
+        let Some(v1::write_frame::Frame::Batch(mut batch)) = self.frame else {
+            return Chunks {
+                head: whole(&self),
+                body: None,
+            };
+        };
+        if batch.data_body.is_empty() {
+            let frame = v1::WriteFrame {
+                frame: Some(v1::write_frame::Frame::Batch(batch)),
+            };
+            return Chunks {
+                head: whole(&frame),
+                body: None,
+            };
+        }
+        let batch_length = batch.encoded_len();
+        let length = 1 + prost::length_delimiter_len(batch_length) + batch_length;
+        let body = std::mem::take(&mut batch.data_body);
+        let mut head = prefixed(length, length - body.len());
+        head.put_u8(THIRD_FIELD);
+        delimit(batch_length, &mut head);
+        encode(&batch, &mut head);
+        head.put_u8(THIRD_FIELD);
+        delimit(body.len(), &mut head);
+        Chunks {
+            head: head.freeze(),
+            body: Some(body),
+        }
+    }
+}
+
+/// `message`, its prefix before it.
+fn whole(message: &impl Message) -> Bytes {
+    let length = message.encoded_len();
+    let mut head = prefixed(length, length);
+    encode(message, &mut head);
+    head.freeze()
+}
+
+/// A buffer of room for `room` bytes of a message of `length` bytes, its prefix in it.
+fn prefixed(length: usize, room: usize) -> BytesMut {
+    let mut head = BytesMut::with_capacity(PREFIX + room);
+    head.put_u8(0);
+    // A message beyond what the prefix can say is refused by its length before it is sent.
+    head.put_u32(u32::try_from(length).unwrap_or(u32::MAX));
+    head
+}
+
+fn encode(message: &impl Message, buffer: &mut BytesMut) {
+    message
+        .encode(buffer)
+        .expect("a buffer that grows has room for any message");
+}
+
+fn delimit(length: usize, buffer: &mut BytesMut) {
+    prost::encode_length_delimiter(length, buffer)
+        .expect("a buffer that grows has room for any length");
+}

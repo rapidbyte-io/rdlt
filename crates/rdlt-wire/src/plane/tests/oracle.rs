@@ -32,9 +32,9 @@ enum Fed {
 }
 
 /// A body fed `fed`, which then ends.
-fn body(fed: &[Fed]) -> tonic::body::Body {
-    let (feed, body) = self::fed();
-    for each in fed {
+fn body(events: &[Fed]) -> tonic::body::Body {
+    let (feed, body) = fed();
+    for each in events {
         match each {
             Fed::Data(data) => feed.send(Frame::data(Bytes::from(data.clone()))),
             Fed::Trailers(trailers) => feed.send(Frame::trailers(trailers.clone())),
