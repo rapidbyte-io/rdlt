@@ -1,6 +1,9 @@
 //! A served write: the engine's frames for one table become batches the destination's writer
 //! stages, and each frame's bytes return to the engine as credit once staged.
 
+#[cfg(test)]
+mod tests;
+
 use rdlt_wire::flow::Granting;
 use rdlt_wire::limits::CREDIT_FLOOR;
 use rdlt_wire::plane::{Answers, Incoming};
@@ -34,6 +37,15 @@ pub(super) async fn serve(
         .and_then(TableRef::try_from)
         .map_err(|error| invalid(&error))?;
     let writer = service.writer(start.session, &table).await?;
+    Ok(writing(writer, frames, limits))
+}
+
+/// The answers of a write of `frames` to `writer`.
+fn writing(
+    writer: Box<dyn DestinationWriter>,
+    frames: Incoming<v1::WriteFrame>,
+    limits: Limits,
+) -> Answers<v1::WriteAck> {
     let (acks, answer) = mpsc::channel(16);
     let pumping = tokio::spawn(pump(writer, frames, acks.clone(), limits));
     tokio::spawn(async move {
@@ -47,7 +59,7 @@ pub(super) async fn serve(
             acks.send(Err(status(&error))).await.ok();
         }
     });
-    Ok(Box::pin(ReceiverStream::new(answer)))
+    Box::pin(ReceiverStream::new(answer))
 }
 
 /// Stages the engine's frames until it finishes the write, answering each with credit, a flush

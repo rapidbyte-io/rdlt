@@ -18,7 +18,13 @@ use rdlt_wire::{Encoder, Limits};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::sessions::{raw_session_within, table};
+use crate::support::connectors::{Gate, Writes, Writing};
 use crate::support::served_within;
+
+/// A destination served from memory.
+fn memory() -> Served {
+    Served::new().with_destination(destination_factory::<MemoryDestination>())
+}
 
 /// Limits under which a write may stage four frames of the least bytes a peer may ask for
 /// between flushes: sixteen mebibytes.
@@ -38,15 +44,16 @@ fn ids(count: i64) -> RecordBatch {
         .expect("a valid batch")
 }
 
-/// What a raw write of `batches` frames of a mebibyte of ids answers with, a flush sent after every
-/// `flush_every` of them: the error it ended with, if any, and how many flushes it answered.
+/// What a raw write to `served` of `batches` frames of a mebibyte of ids answers with, a flush
+/// sent after every `flush_every` of them: the error it ended with, if any, and how many flushes
+/// it answered.
 async fn raw_write(
+    served: Served,
     store: &str,
     batches: usize,
     flush_every: usize,
 ) -> (Option<ConnectorError>, usize) {
     use v1::write_frame::Frame;
-    let served = Served::new().with_destination(destination_factory::<MemoryDestination>());
     let (mut client, session) = raw_session_within(served, store, limits()).await;
     let batch = ids(MEBIBYTE);
     let mut encoder = Encoder::default();
@@ -101,7 +108,7 @@ async fn raw_write(
 #[tokio::test]
 async fn a_served_write_refuses_more_than_it_may_stage_between_flushes() {
     // Forty frames of a mebibyte pass the sixteen a write may stage.
-    let (error, flushes) = raw_write("staged_refused", 40, usize::MAX).await;
+    let (error, flushes) = raw_write(memory(), "staged_refused", 40, usize::MAX).await;
     let error = error.expect("the write is refused");
     assert_eq!(error.code(), Some("limit_exceeded"), "{error}");
     let limit = error.limit().expect("a refusal names its limit");
@@ -115,9 +122,31 @@ async fn a_served_write_refuses_more_than_it_may_stage_between_flushes() {
 
 #[tokio::test]
 async fn a_served_write_that_flushes_in_time_stages_as_much_as_it_likes() {
-    let (error, flushes) = raw_write("staged_flushed", 40, 8).await;
+    let (error, flushes) = raw_write(memory(), "staged_flushed", 40, 8).await;
     assert!(error.is_none(), "{error:?}");
     assert_eq!(flushes, 5);
+}
+
+#[tokio::test]
+async fn a_served_write_whose_writer_falls_behind_refuses_the_same_frame() {
+    // The writer takes two frames and then waits, while frames decode ahead of it.
+    static GATE: Gate = Gate::after(2);
+    let (prompt, _) = raw_write(memory(), "staged_prompt", 40, usize::MAX).await;
+    let opening = tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        GATE.open();
+    });
+    let behind = Served::new().with_destination(Writes::factory(Writing::Gated(&GATE)));
+    let (behind, flushes) = raw_write(behind, "staged_behind", 40, usize::MAX).await;
+    opening.await.expect("the gate opens");
+    let (prompt, behind) = (prompt.expect("refused"), behind.expect("refused"));
+    assert_eq!(behind.code(), Some("limit_exceeded"), "{behind}");
+    assert_eq!(behind.limit(), prompt.limit());
+    assert_eq!(flushes, 0);
+    // Every frame before the refused frame is written, and none after it: fifteen frames of a
+    // mebibyte and their headers fit the sixteen mebibytes, and a sixteenth does not.
+    let kept = GATE.kept.lock().expect("the lock is not poisoned");
+    assert_eq!(kept.len(), 15);
 }
 
 #[tokio::test]

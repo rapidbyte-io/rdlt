@@ -268,8 +268,9 @@ async fn a_stalled_writer_fails_once_its_write_ack_deadline_passes() {
         ..quick()
     };
     let mut writer = writer(served, Limits::default(), "flow_stalls", &options).await;
-    // Batches of about 160 KB: 27 of them spend the credit floor, and the first, stalled, is
-    // never taken, so the writer waits for credit that does not come.
+    // Batches of about 160 KB: 27 of them spend the credit floor, and the connector's writer
+    // stalls on the first it takes, so beyond the first's no credit comes back and the writer
+    // waits for credit that does not come.
     let written = tokio::time::timeout(
         Duration::from_secs(10),
         write_until_failed(writer.as_mut(), &ids(20_000), 40),
@@ -291,11 +292,15 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         ..Options::default()
     };
     let mut writer = writer(served, Limits::default(), "flow_gated", &options).await;
-    // One frame beyond the connector's credit, which its writer keeps while it waits.
-    writer
-        .write(SegmentId(1), ids(600_000))
-        .await
-        .expect("the frame goes on the credit left");
+    // Frames of 4.8 MB, the first beyond the credit the connector opens with. Its writer takes
+    // the first and waits, which returns the first's credit and grows the window to two frames:
+    // the second waits decoded for the writer, the third to be decoded, and no credit is left.
+    for _ in 0..3 {
+        writer
+            .write(SegmentId(1), ids(600_000))
+            .await
+            .expect("the frame goes on the credit left");
+    }
     // A batch of another schema: its schema waits for credit, and its deadline passes.
     let texts: ArrayRef = Arc::new(StringArray::from(vec!["some text"; 10]));
     let texts = RecordBatch::try_from_iter([("t", texts)]).expect("a valid batch");
@@ -316,7 +321,7 @@ async fn a_schema_that_could_not_be_sent_is_sent_again_with_the_next_write() {
         .expect("the connector decoded every frame");
     let kept = GATE.kept.lock().expect("the lock is not poisoned");
     let rows: Vec<_> = kept.iter().map(|(_, batch)| batch.num_rows()).collect();
-    assert_eq!(rows, [600_000, 10]);
+    assert_eq!(rows, [600_000, 600_000, 600_000, 10]);
 }
 
 #[tokio::test]
