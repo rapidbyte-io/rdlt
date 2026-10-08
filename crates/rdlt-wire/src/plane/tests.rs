@@ -13,7 +13,7 @@ use tonic::codegen::http::{self, HeaderMap};
 use tonic::{Code, Status};
 
 use super::{Chained, Chunks, Incoming, Outgoing};
-use crate::bounded::{Bounded, Bounds, Charge, Charged, Charging, Held};
+use crate::bounded::{Bounded, Bounds, Charge, Charging, Held};
 use crate::limits::{Class, Limits};
 use crate::testing::{chunks, fed};
 use crate::v1;
@@ -249,7 +249,7 @@ async fn each_message_releases_the_charge_of_the_one_before() {
         &prefixed(&credit(2)),
         &prefixed(&credit(3)),
     ]);
-    let bounded = answered(body).charged(Some(charge), Charged::default());
+    let bounded = answered(body).charged(Some(charge));
     let mut incoming = Incoming::<v1::WriteAck>::answer(under_way(bounded)).unwrap();
     incoming.message().await.unwrap();
     assert_eq!(counts.now(), 1, "held while it is decoded");

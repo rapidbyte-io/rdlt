@@ -1,9 +1,10 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::Semaphore;
 
 use super::{Bounded, Passed, bounds, fed, message, poll};
-use crate::bounded::{Charge, Charged, Charging};
+use crate::bounded::{Charge, Charging};
 use crate::limits::Class;
 
 /// Charges each message's bytes once one of its permits is given, recording each charge and
@@ -11,8 +12,21 @@ use crate::limits::Class;
 struct Gate {
     permits: Arc<Semaphore>,
     asked: Mutex<Vec<(Class, usize, bool)>>,
-    charged: Charged,
+    /// How many of its charges are held now.
+    holding: Arc<AtomicUsize>,
     refuse: bool,
+}
+
+/// One of a gate's charges, held until it is dropped.
+struct Hold {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    holding: Arc<AtomicUsize>,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.holding.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Gate {
@@ -21,23 +35,36 @@ impl Gate {
         Arc::new(Self {
             permits: Arc::new(Semaphore::new(0)),
             asked: Mutex::default(),
-            charged: Charged::default(),
+            holding: Arc::default(),
             refuse,
         })
     }
 }
 
+impl Gate {
+    /// Whether any of its charges is held.
+    fn holds(&self) -> bool {
+        self.holding.load(Ordering::SeqCst) > 0
+    }
+}
+
 impl Charge for Gate {
     fn charge(&self, class: Class, bytes: usize) -> Charging {
-        let held_before = self.charged.holds();
+        let held_before = self.holds();
         self.asked.lock().unwrap().push((class, bytes, held_before));
         let (permits, refuse) = (Arc::clone(&self.permits), self.refuse);
+        let holding = Arc::clone(&self.holding);
         Box::pin(async move {
             if refuse {
                 return Err(tonic::Status::resource_exhausted("no room"));
             }
             let permit = permits.acquire_owned().await.unwrap();
-            Ok(Box::new(permit) as crate::bounded::Held)
+            holding.fetch_add(1, Ordering::SeqCst);
+            let hold = Hold {
+                _permit: permit,
+                holding,
+            };
+            Ok(Box::new(hold) as crate::bounded::Held)
         })
     }
 }
@@ -51,9 +78,8 @@ fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_de
         [first.clone(), second.clone()].concat().into(),
     ))
     .unwrap();
-    let charged = gate.charged.clone();
     let mut body = Bounded::new(body, bounds(1024, 1 << 20), None)
-        .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>), charged.clone());
+        .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>));
     assert_eq!(
         poll(&mut body),
         Passed::Waits,
@@ -62,7 +88,7 @@ fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_de
     gate.permits.add_permits(1);
     assert_eq!(poll(&mut body), Passed::Data(first));
     assert!(
-        charged.holds(),
+        gate.holds(),
         "the charge is held while the message is decoded"
     );
     gate.permits.add_permits(1);
@@ -81,8 +107,8 @@ fn a_message_is_passed_on_once_what_its_scan_counts_is_charged_and_held_until_de
         ],
         "each at its scan's count, the one before released first"
     );
-    charged.release();
-    assert!(!charged.holds());
+    body.release();
+    assert!(!gate.holds());
     gate.permits.add_permits(1);
     drop(feed);
     assert_eq!(poll(&mut body), Passed::End);
@@ -101,10 +127,8 @@ fn an_answer_s_charge_is_given_back_as_it_ends() {
     let (feed, body) = fed();
     feed.send(http_body::Frame::data(message(&[0x0a, 0x00]).into()))
         .unwrap();
-    let mut body = Bounded::new(body, bounds(1024, 1 << 20), None).charged(
-        Some(Arc::clone(&gate) as Arc<dyn Charge>),
-        gate.charged.clone(),
-    );
+    let mut body = Bounded::new(body, bounds(1024, 1 << 20), None)
+        .charged(Some(Arc::clone(&gate) as Arc<dyn Charge>));
     assert!(matches!(poll(&mut body), Passed::Data(_)));
     assert_eq!(gate.permits.available_permits(), 0);
     drop(body);
@@ -117,8 +141,8 @@ fn a_message_whose_charge_is_refused_fails_the_call() {
     let (feed, body) = fed();
     feed.send(http_body::Frame::data(message(&[0x0a, 0x00]).into()))
         .unwrap();
-    let mut body = Bounded::new(body, bounds(1024, 1 << 20), None)
-        .charged(Some(gate as Arc<dyn Charge>), Charged::default());
+    let mut body =
+        Bounded::new(body, bounds(1024, 1 << 20), None).charged(Some(gate as Arc<dyn Charge>));
     assert_eq!(
         poll(&mut body),
         Passed::Failed(tonic::Code::ResourceExhausted)
