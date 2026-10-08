@@ -497,6 +497,7 @@ fn integer(row: &mut Vec<u8>, value: i128) {
 fn float64(row: &mut Vec<u8>, value: f64) {
     let mut text = Vec::with_capacity(32);
     write_float(value, &mut text);
+    let text = std::hint::black_box(text.clone());
     row.push(NUMBER);
     length(row, &text);
 }
