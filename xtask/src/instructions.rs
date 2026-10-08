@@ -372,21 +372,29 @@ fn count_cases(binaries: &[PathBuf; 2], out: &Path) -> anyhow::Result<Vec<Counte
         .collect())
 }
 
-/// The cases `binary` runs.
+/// The cases `binary` runs, from the test list every revision's root prints; a base from before
+/// the cases lists its benches alone, so it has none.
 fn cases(binary: &Path) -> anyhow::Result<Vec<String>> {
     let output = Command::new(binary)
-        .arg("--cases")
+        .arg("--list")
         .output()
         .with_context(|| format!("running {}", binary.display()))?;
     anyhow::ensure!(
         output.status.success(),
-        "{} --cases failed",
+        "{} --list failed",
         binary.display()
     );
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
+    Ok(listed_cases(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// The cases in `list`, a test harness's list of the root's tests: those whose names hold a `/`,
+/// which no bench's does.
+pub(crate) fn listed_cases(list: &str) -> Vec<String> {
+    list.lines()
+        .filter_map(|line| line.strip_suffix(": test"))
+        .filter(|name| name.contains('/'))
         .map(ToOwned::to_owned)
-        .collect())
+        .collect()
 }
 
 /// What one iteration of `case` takes, counted under callgrind with its output kept in `out`.

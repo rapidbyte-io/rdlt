@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    Counted, Counts, VALGRIND, Verdict, accepted, allocations, change, per_iteration, table,
-    totals, unknown, valgrind_version, verdict,
+    Counted, Counts, VALGRIND, Verdict, accepted, allocations, change, listed_cases, per_iteration,
+    table, totals, unknown, valgrind_version, verdict,
 };
 
 const CALLGRIND: &str = "version: 1\ncreator: callgrind-3.25.1\npid: 7\n\
@@ -35,6 +35,23 @@ fn callgrind_output_without_a_total_is_an_error() {
     for text in ["summary: 12\n", "totals:\n", "totals: twelve\n"] {
         assert!(totals(text).is_err(), "{text:?}");
     }
+}
+
+#[test]
+fn the_cases_are_the_listed_tests_whose_names_hold_a_slash() {
+    let list = "shred: test\npassthrough: test\npassthrough/null_sink: test\n\
+        shred/nested: test\nwal/scan: test\n";
+    assert_eq!(
+        listed_cases(list),
+        ["passthrough/null_sink", "shred/nested", "wal/scan"]
+    );
+}
+
+#[test]
+fn a_list_of_benches_alone_has_no_cases() {
+    let list = "shred: test\npassthrough: test\nlowering: test\nnormalized: test\nwide: test\n";
+    assert!(listed_cases(list).is_empty());
+    assert!(listed_cases("").is_empty());
 }
 
 #[test]
