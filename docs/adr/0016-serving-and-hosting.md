@@ -103,7 +103,7 @@ socket will be.
   - `Done.reason` is gone. A read ends with `Done` when the source's read returns, and with its
     error's status when it fails, as the in-process adapter returns. A read the engine stopped
     ends however the source's read returned.
-- **`rdlt-wire` generates the service but its data plane** with tonic-prost-build: the client
+- **`rdlt-wire` generates the service with tonic-prost-build, all but `Write`**: the client
   always, and the server under a `serve` feature. `Write` is hand-written in `rdlt_wire::plane`,
   byte-identical to what gRPC and prost put on the wire, so any gRPC implementation can still
   serve a connector: each end decodes a write's messages from the bytes its bounded body passes

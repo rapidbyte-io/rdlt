@@ -74,7 +74,8 @@ for the served destination over the socket).
 - Both served gain 11–13 % in every case, over mutual TLS too (925 against 825 MB/s in large
   frames): the write's half of their copies is gone, the read's remains.
 - A served source is unchanged: its frames still go through the generated read.
-- The syscalls are unchanged: the write's frames go out in the same HTTP/2 frames.
+- The syscalls a batch barely move (65 + 47 against 67 + 48 for the served destination over the
+  socket): the write's frames go out in the same HTTP/2 frames.
 - Mutual TLS costs 13–34 % of a mode's throughput over the socket, and 24–56 % more CPU a GB.
 - Serving both connectors costs close to the sum of serving each in CPU a GB.
 
