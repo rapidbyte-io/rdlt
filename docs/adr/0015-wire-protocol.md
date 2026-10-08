@@ -45,9 +45,9 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   - Building rdlt-wire needs neither `protoc` nor a build script.
   - `just lint` runs `cargo xtask codegen --check`, which fails when the committed code is stale.
   - `xtask lint`, coverage and mutation testing skip the `generated` directory.
-  - The data plane's calls (`Write`) are left out of the generated service, as `rdlt_wire::plane`
-    serves and calls them by hand; their messages are generated, and the scan's forms describe
-    every call's, the data plane's among them.
+  - The data plane's calls (`Write`, `Read` and `ReadPublished`) are left out of the generated
+    service, as `rdlt_wire::plane` serves and calls them by hand; their messages are generated,
+    and the scan's forms describe every call's, the data plane's among them.
   - The service stubs come with M4b, which uses them.
 - **The conversions live in `rdlt-connector`, under a `wire` feature.** The dependency rule
   (§4.3) gives `rdlt-wire` no workspace dependencies, and `rdlt-connector` depends on it.

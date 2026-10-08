@@ -103,17 +103,19 @@ socket will be.
   - `Done.reason` is gone. A read ends with `Done` when the source's read returns, and with its
     error's status when it fails, as the in-process adapter returns. A read the engine stopped
     ends however the source's read returned.
-- **`rdlt-wire` generates the service with tonic-prost-build, all but `Write`**: the client
-  always, and the server under a `serve` feature. `Write` is hand-written in `rdlt_wire::plane`,
-  byte-identical to what gRPC and prost put on the wire, so any gRPC implementation can still
-  serve a connector: each end decodes a write's messages from the bytes its bounded body passes
-  on, so a batch's body is never copied by the transport's decoder, and sends a batch's body as
-  a chunk of its own after a head prost encodes, so it is never copied into an encoding buffer.
-  A served connection's requests go through `plane::Router`, which holds each to its bounds and
-  sends a write to the plane and every other call to the generated server; it ends calls as
-  tonic does, by trailers, a trailers-only answer, a body's error or a cancelled request, so the
-  host classes a failure by the same code. It re-exports tonic and prost, and states the protocol's version as
-  `PROTOCOL_MAJOR` 1 and `PROTOCOL_MINOR` 0.
+- **`rdlt-wire` generates the service with tonic-prost-build, all but its data plane**: the
+  client always, and the server under a `serve` feature. The data plane, `Write`, `Read` and
+  `ReadPublished`, is hand-written in `rdlt_wire::plane`, byte-identical to what gRPC and prost
+  put on the wire, so any gRPC implementation can still serve a connector: each end decodes a
+  data-plane message from the bytes its bounded body passes on, so a batch's body and a push's
+  JSON are never copied by the transport's decoder, and sends either as a chunk of its own after
+  a head prost encodes, so neither is copied into an encoding buffer. A served connection's
+  requests go through `plane::Router`, which holds each to its bounds, sends a data-plane call
+  to the plane, a read-back once its one request has arrived whole, and every other call to the
+  generated server; it ends calls as tonic does, by trailers, a trailers-only answer, a body's
+  error or a cancelled request, so the host classes a failure by the same code. It re-exports
+  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` 1 and
+  `PROTOCOL_MINOR` 0.
 - **The gates follow the code.**
   - The served end is tested from `rdlt-host`, where a client exists. So mutation testing runs the
     engine's, connector's, wire's and host's tests for every mutant (`--test-package`), and
