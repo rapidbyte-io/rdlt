@@ -5,7 +5,8 @@
 //! message whole into what its fields become. The body passes a message on only once all of it
 //! has arrived: within the wire bound of its call, and counted by its [scan](crate::scan) within
 //! the bound of what it decodes to. A message beyond either, one the scan cannot walk, and one
-//! the body ends within fail the call before anything decodes them.
+//! the body ends within fail the call before anything decodes them. Each message is passed on
+//! whole, prefix and all, as one `Bytes`, which the data plane's reader decodes in place.
 //!
 //! Where a connection shares a window, a message takes room in it for its whole length as its
 //! prefix arrives, and gives it back once passed on. A body that finds no room reads no further,

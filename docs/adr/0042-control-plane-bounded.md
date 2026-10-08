@@ -31,7 +31,9 @@ still taken largely on trust:
   (4 MiB). A configuration, a schema change and a read's start are bounded by their field's
   limit and 64 KiB more; only reads and writes take frames. A connector's configuration schema
   is bounded on its own, at 1 MiB (`MAX_CONFIG_SCHEMA_BYTES`).
-  - Each end passes a message to tonic only once it has arrived whole (`rdlt_wire::bounded`):
+  - Each end passes a message on to be decoded only once it has arrived whole
+    (`rdlt_wire::bounded`), to tonic for a generated call and to the data plane's reader
+    (`rdlt_wire::plane`) for a write, which decodes it from those bytes:
     within its class's bytes on the wire, refused from its prefix, so no decoder reserves a
     length before its bytes arrive; and, every message, frames among them, counted by a scan of
     its encoding (`rdlt_wire::scan`) within what its class may hold decoded: `Limits::decoded`,
@@ -77,9 +79,10 @@ still taken largely on trust:
 - **What decoding a remote connector's answers holds is charged to the run's memory budget
   before it is decoded** (ADR 0039). Every call of a run or a reset into a connector, reads too,
   is made within a charge (`rdlt_wire::bounded::charging`); the host's transport charges each
-  message of its answer at what the scan counts before tonic decodes it, and holds the charge
+  message of its answer at what the scan counts before it is decoded, and holds the charge
   until it is decoded: a read releases a frame's before its event waits for room, a writer each
-  answer's, and a unary answer's ends with the call.
+  answer's, held by the data plane's reader until the writer has decoded it, and a unary
+  answer's ends with the call.
   - A read's frame is charged to what pushes may take, which the batch it carries is admitted to
     next: a frame decodes into twice its bytes at most, 8.5 MB at the least memory, where a read's
     part of the reads' share is 516 KiB, so the reads' share could not hold one; the row bound
