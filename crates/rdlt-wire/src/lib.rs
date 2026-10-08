@@ -14,7 +14,10 @@ pub mod codec;
 pub mod error;
 pub mod flow;
 pub mod limits;
+pub mod plane;
 pub mod scan;
+#[cfg(test)]
+mod testing;
 #[cfg(feature = "tls")]
 pub mod tls;
 

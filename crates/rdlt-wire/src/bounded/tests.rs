@@ -5,51 +5,11 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use http_body::{Body, Frame};
-use tokio::sync::mpsc;
-use tonic::{Code, Status};
+use tonic::Code;
 
 use super::{Bounded, Bounds, Window};
 use crate::scan::response;
-
-/// A body of the frames sent to it, which ends once its sender is dropped.
-struct Fed(mpsc::UnboundedReceiver<Frame<Bytes>>);
-
-impl Body for Fed {
-    type Data = Bytes;
-    type Error = Status;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        context: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Bytes>, Status>>> {
-        self.0.poll_recv(context).map(|frame| frame.map(Ok))
-    }
-}
-
-/// A body and what feeds it.
-fn fed() -> (mpsc::UnboundedSender<Frame<Bytes>>, tonic::body::Body) {
-    let (feed, frames) = mpsc::unbounded_channel();
-    (feed, tonic::body::Body::new(Fed(frames)))
-}
-
-/// A body of `chunks`, which then ends.
-fn chunks(chunks: &[&[u8]]) -> tonic::body::Body {
-    let (feed, body) = fed();
-    for chunk in chunks {
-        feed.send(Frame::data(Bytes::copy_from_slice(chunk)))
-            .unwrap();
-    }
-    body
-}
-
-/// A gRPC message of `payload`.
-fn message(payload: &[u8]) -> Vec<u8> {
-    let length = u32::try_from(payload.len()).unwrap();
-    let mut message = vec![0];
-    message.extend(length.to_be_bytes());
-    message.extend(payload);
-    message
-}
+pub(super) use crate::testing::{chunks, fed, message};
 
 fn bounds(wire: usize, decoded: usize) -> Bounds {
     Bounds {
