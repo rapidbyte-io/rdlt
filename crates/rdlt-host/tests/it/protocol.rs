@@ -565,6 +565,25 @@ async fn status_details_that_do_not_decode_fail_the_call_rather_than_the_host() 
     assert_eq!(error.code(), Some("transport"), "{error}");
 }
 
+#[tokio::test]
+async fn a_write_refused_with_details_that_do_not_decode_fails_without_them() {
+    use crate::support::fake::{Fake, Fault, serve_fake};
+    let io = serve_fake(Fake(Fault::GarbledDetails));
+    let mut client = rdlt_host::remote::client(io, Options::default())
+        .await
+        .expect("the client connects");
+    // The fake refuses every write before any answer, its details not base64.
+    let frames = tokio_stream::iter(Vec::<v1::WriteFrame>::new());
+    let written = tokio::spawn(async move { client.write(frames).await.map(drop) });
+    let refused = tokio::time::timeout(Duration::from_secs(5), written)
+        .await
+        .expect("the write is answered")
+        .expect("the call does not panic")
+        .expect_err("the write is refused");
+    assert_eq!(refused.code(), tonic::Code::Unimplemented);
+    assert!(refused.details().is_empty(), "the details are dropped");
+}
+
 #[test]
 fn every_code_the_host_gives_its_own_findings_is_one_no_connector_may_claim() {
     use rdlt_connector::wire::{HOST_CODES, TRANSPORT};
