@@ -138,7 +138,7 @@ impl<M: Message + Default> Incoming<M> {
     }
 
     /// Releases the charge of the message passed on last: it has been decoded.
-    pub fn release(&self) {
+    pub fn release(&mut self) {
         self.body.release();
     }
 

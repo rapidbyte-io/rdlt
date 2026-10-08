@@ -25,7 +25,7 @@ use base64::engine::general_purpose::{GeneralPurpose, GeneralPurposeConfig};
 use http::HeaderMap;
 use hyper::body::{Body, Bytes, Frame, SizeHint};
 use rdlt_wire::Limits;
-use rdlt_wire::bounded::{Bounded, Bounds, Charged};
+use rdlt_wire::bounded::{Bounded, Bounds};
 use rdlt_wire::limits::Class;
 use tonic::transport::Channel;
 
@@ -115,7 +115,7 @@ fn checked(
     let (mut parts, body) = answer.into_parts();
     check(&mut parts.headers);
     let body = tonic::body::Body::new(CheckedBody(body));
-    let bounded = Bounded::new(body, bounds, None).charged(charge, Charged::default());
+    let bounded = Bounded::new(body, bounds, None).charged(charge);
     (parts, bounded)
 }
 

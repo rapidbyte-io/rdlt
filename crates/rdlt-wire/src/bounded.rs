@@ -31,7 +31,7 @@ use http_body::{Body, Frame, SizeHint};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 use tonic::Status;
 
-pub use self::charge::{Charge, Charged, Charging, Held, charging, current};
+pub use self::charge::{Charge, Charging, Held, charging, current};
 use crate::limits::Class;
 use crate::scan::{Form, decoded};
 
@@ -113,8 +113,8 @@ pub struct Bounded {
     done: bool,
     /// Whoever each message is charged to before it is passed on, where anyone is.
     charge: Option<Arc<dyn Charge>>,
-    /// The charge of the message passed on last.
-    charged: Charged,
+    /// The charge of the message passed on last, held until it is decoded.
+    held: Option<Held>,
     /// A message whole, waiting for its charge.
     charging: Option<(Charging, Bytes)>,
 }
@@ -132,22 +132,22 @@ impl Bounded {
             trailers: None,
             done: false,
             charge: None,
-            charged: Charged::default(),
+            held: None,
             charging: None,
         }
     }
 
-    /// The body, each message charged to `charge` before it is passed on, its charge held in
-    /// `charged`, where a charge is given.
+    /// The body, each message charged to `charge` before it is passed on, where a charge is
+    /// given, and the charge held until the message is decoded.
     #[must_use]
-    pub fn charged(mut self, charge: Option<Arc<dyn Charge>>, charged: Charged) -> Self {
-        (self.charge, self.charged) = (charge, charged);
+    pub fn charged(mut self, charge: Option<Arc<dyn Charge>>) -> Self {
+        self.charge = charge;
         self
     }
 
     /// Releases the charge of the message passed on last: it has been decoded.
-    pub fn release(&self) {
-        self.charged.release();
+    pub fn release(&mut self) {
+        self.held = None;
     }
 
     /// The length the arriving message's prefix declares, where it has arrived, within the wire
@@ -217,7 +217,7 @@ impl Bounded {
             return Some(message);
         };
         // The message before has been decoded: its charge goes before this one's is taken.
-        self.charged.release();
+        self.held = None;
         self.charging = Some((charge.charge(self.bounds.class, held), message));
         None
     }
@@ -234,7 +234,7 @@ impl Bounded {
         let message = self.charging.take().map(|(_, message)| message);
         Poll::Ready(match held {
             Ok(held) => {
-                self.charged.hold(Some(held));
+                self.held = Some(held);
                 message.map(Ok)
             }
             Err(status) => Some(Err(status)),
@@ -312,13 +312,6 @@ impl std::fmt::Debug for Bounded {
             .field("bounds", &self.bounds)
             .field("arriving", &self.arriving.len())
             .finish_non_exhaustive()
-    }
-}
-
-impl Drop for Bounded {
-    fn drop(&mut self) {
-        // The answer ends: whatever it passed on last has been decoded.
-        self.charged.release();
     }
 }
 
