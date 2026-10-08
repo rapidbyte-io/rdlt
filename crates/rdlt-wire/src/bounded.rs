@@ -144,6 +144,11 @@ impl Bounded {
         self
     }
 
+    /// Releases the charge of the message passed on last: it has been decoded.
+    pub fn release(&self) {
+        self.charged.release();
+    }
+
     /// The length the arriving message's prefix declares, where it has arrived, within the wire
     /// bound.
     fn declared(&self) -> Result<Option<usize>, Status> {

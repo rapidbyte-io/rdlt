@@ -1,7 +1,11 @@
 //! What a message decodes to is no more than its scan counts, measured on the heap, for the
-//! shapes of message a hostile peer may send and the shapes a connector sends of its data.
+//! shapes of message a hostile peer may send and the shapes a connector sends of its data; and
+//! what the data plane holds decoding a batch.
 
 #![forbid(unsafe_code)]
+
+#[path = "decoded/plane.rs"]
+mod plane;
 
 use bytes::Bytes;
 use proptest::prelude::*;
