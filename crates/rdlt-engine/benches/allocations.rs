@@ -8,9 +8,9 @@
 //!
 //! A case's name, then a count of iterations, as `cargo xtask instructions` runs it under
 //! callgrind, makes the case's inputs, runs its work that many times, once without a count, and
-//! prints the allocations the process made; `--cases` names the cases. `--list` lists the benches
-//! and the cases as a test harness lists its tests, so a test runner runs each in a process of its
-//! own.
+//! prints the allocations the process made. `--list` lists the benches and the cases as a test
+//! harness lists its tests, so a test runner runs each in a process of its own; a case's name holds
+//! a `/` and a bench's does not, which is how `cargo xtask instructions` tells the cases apart.
 
 #![forbid(unsafe_code)]
 
@@ -95,17 +95,12 @@ fn main() -> ExitCode {
     let cases = CASES.map(|(name, _)| name);
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|arg| arg == "--list") {
-        // None of them is ignored.
+        // None of them is ignored. The instruction counts take the names holding a `/` as the
+        // cases, so a bench's name holds none.
         if !args.iter().any(|arg| arg == "--ignored") {
             for name in benches.iter().chain(&cases) {
                 println!("{name}: test");
             }
-        }
-        return ExitCode::SUCCESS;
-    }
-    if args.iter().any(|arg| arg == "--cases") {
-        for name in cases {
-            println!("{name}");
         }
         return ExitCode::SUCCESS;
     }
@@ -155,7 +150,7 @@ fn main() -> ExitCode {
 )]
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: allocations [<bench> | <case> [<iterations>] | --cases | --list]; benches {:?}, \
+        "usage: allocations [<bench> | <case> [<iterations>] | --list]; benches {:?}, \
          cases {:?}",
         COUNTED.map(|(name, _)| name),
         CASES.map(|(name, _)| name)
