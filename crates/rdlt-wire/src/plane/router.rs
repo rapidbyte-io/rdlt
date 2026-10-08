@@ -12,12 +12,12 @@ use std::task::{Context, Poll};
 
 use tonic::Status;
 use tonic::body::Body;
-use tonic::codegen::http;
+use tonic::codegen::http::{self, HeaderValue};
 use tonic::codegen::{BoxFuture, BoxStream, Service};
 
-use super::Incoming;
-use crate::bounded::Window;
-use crate::limits::Limits;
+use super::{Incoming, Outgoing, WRITE, status};
+use crate::bounded::{Bounded, Bounds, Window};
+use crate::limits::{Class, Limits};
 use crate::v1;
 
 /// The answers of a data-plane call, or the status that ends them.
@@ -39,7 +39,6 @@ pub trait Plane: Send + Sync + 'static {
 /// A connection's service: each request held to its class's bounds and the connection's window
 /// before anything reads it, the data plane's calls served by `P`, and the rest by `S`.
 #[derive(Debug)]
-#[expect(dead_code, reason = "a stub")]
 pub struct Router<S, P> {
     inner: S,
     plane: Arc<P>,
@@ -71,6 +70,11 @@ impl<S, P> Router<S, P> {
     }
 }
 
+/// The method a request of `path` calls.
+fn method(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 impl<S, P> Service<http::Request<Body>> for Router<S, P>
 where
     S: Service<http::Request<Body>, Response = http::Response<Body>, Error = Infallible>,
@@ -86,7 +90,38 @@ where
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        let _ = request;
-        todo!()
+        let path = request.uri().path();
+        let method = method(path);
+        let class = Class::of_request(method);
+        let bounds = Bounds::of(&self.limits, class, crate::scan::request(method));
+        let window = Some(self.window.clone());
+        if path != WRITE {
+            let request = request.map(|body| Body::new(Bounded::new(body, bounds, window)));
+            return Box::pin(self.inner.call(request));
+        }
+        let plane = Arc::clone(&self.plane);
+        let most = self.limits.largest();
+        let (parts, body) = request.into_parts();
+        Box::pin(async move {
+            if let Err(refused) = status::uncompressed(&parts.headers) {
+                return Ok(refused.into_http());
+            }
+            let frames = Incoming::request(Bounded::new(body, bounds, window));
+            Ok(match plane.write(frames).await {
+                Ok(answers) => answered(Outgoing::answer(answers, most)),
+                Err(refused) => refused.into_http(),
+            })
+        })
     }
+}
+
+/// The response whose body is `answers`.
+fn answered<M: super::Chained + Send + 'static>(answers: Outgoing<M>) -> http::Response<Body> {
+    let mut response = http::Response::new(Body::new(answers));
+    *response.version_mut() = http::Version::HTTP_2;
+    response.headers_mut().insert(
+        http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/grpc"),
+    );
+    response
 }
