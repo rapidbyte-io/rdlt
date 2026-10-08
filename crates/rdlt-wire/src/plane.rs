@@ -11,11 +11,12 @@
 mod chained;
 mod incoming;
 mod outgoing;
+mod status;
 #[cfg(test)]
 mod tests;
 
 use tonic::body::Body;
-use tonic::codegen::http;
+use tonic::codegen::http::{self, HeaderValue, Uri};
 use tonic::codegen::tokio_stream::Stream;
 
 pub use self::chained::{Chained, Chunks};
@@ -35,5 +36,15 @@ pub fn request<M: Chained + Send + 'static>(
     messages: impl Stream<Item = M> + Send + 'static,
     most: usize,
 ) -> http::Request<Body> {
-    todo!()
+    let mut request = http::Request::new(Body::new(Outgoing::request(messages, most)));
+    *request.method_mut() = http::Method::POST;
+    *request.uri_mut() = Uri::from_static(path);
+    *request.version_mut() = http::Version::HTTP_2;
+    let headers = request.headers_mut();
+    headers.insert(http::header::TE, HeaderValue::from_static("trailers"));
+    headers.insert(
+        http::header::CONTENT_TYPE,
+        HeaderValue::from_static("application/grpc"),
+    );
+    request
 }

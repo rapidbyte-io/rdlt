@@ -91,7 +91,7 @@ async fn a_message_decodes_from_the_bytes_the_body_passed_on() {
 #[test]
 fn a_batch_s_body_is_a_slice_of_the_bytes_passed_on() {
     let message = Bytes::from(prefixed(&batch_frame(1, b"h", &[3; 4_096])));
-    let decoded = super::incoming::decoded::<v1::WriteFrame>(message.clone()).unwrap();
+    let decoded = super::incoming::decoded::<v1::WriteFrame>(&message).unwrap();
     let Some(v1::write_frame::Frame::Batch(batch)) = decoded.frame else {
         panic!("a batch");
     };
