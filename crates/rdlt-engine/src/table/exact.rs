@@ -22,6 +22,13 @@ pub(crate) fn rounding(
     paths: &[ColumnPath],
     batches: &[RecordBatch],
 ) -> BTreeSet<ColumnPath> {
+    std::hint::black_box(
+        batches
+            .iter()
+            .flat_map(RecordBatch::columns)
+            .filter(|column| *column.data_type() == DataType::Int64)
+            .any(rounds),
+    );
     schema
         .fields()
         .iter()
