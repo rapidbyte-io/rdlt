@@ -113,15 +113,16 @@ async fn a_served_write_grows_its_window_to_two_frames_and_answers_a_flush_with_
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_staged() {
+async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_took() {
     static GATE: Gate = Gate::after(1);
     let served = Served::new().with_destination(Writes::factory(Writing::Gated(&GATE)));
     let options = Options::default();
     let mut writer = crate::flow::writer(served, Limits::default(), "credit_ahead", &options).await;
     let bounded = Duration::from_secs(30);
-    // The first frame goes on the opening credit, the second once it is staged; the third goes
-    // while the destination holds the second, on the window the first grew.
-    for segment in 1..=3 {
+    // The first frame goes on the opening credit, the next two on the window of two frames it
+    // grows, and the fourth on the second's credit, which the gate holds; the third waits
+    // decoded for the writer.
+    for segment in 1..=4 {
         tokio::time::timeout(bounded, writer.write(SegmentId(segment), ids(ROWS)))
             .await
             .expect("the write goes on the credit granted")
@@ -129,12 +130,13 @@ async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_staged()
     }
     let staged = GATE.kept.lock().expect("the lock is not poisoned").len();
     assert_eq!(staged, 1);
-    // A fourth waits: two frames are the window, and the destination took neither.
-    let fourth = tokio::time::timeout(
+    // A fifth waits: two frames are the window, and the writer took neither the third nor the
+    // fourth.
+    let fifth = tokio::time::timeout(
         Duration::from_millis(500),
-        writer.write(SegmentId(4), ids(ROWS)),
+        writer.write(SegmentId(5), ids(ROWS)),
     );
-    assert!(fourth.await.is_err(), "a fourth frame went");
+    assert!(fifth.await.is_err(), "a fifth frame went");
     GATE.open();
     tokio::time::timeout(bounded, writer.flush())
         .await
@@ -142,7 +144,7 @@ async fn a_remote_writer_sends_two_frames_ahead_of_what_its_destination_staged()
         .expect("the flush answers");
     let kept = GATE.kept.lock().expect("the lock is not poisoned");
     let segments: Vec<_> = kept.iter().map(|(segment, _)| *segment).collect();
-    assert_eq!(segments, [1, 2, 3]);
+    assert_eq!(segments, [1, 2, 3, 4]);
 }
 
 /// The schema frame of a column of ids, and three frames of seven megabytes of them.
