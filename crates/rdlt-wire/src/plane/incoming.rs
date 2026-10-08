@@ -55,6 +55,11 @@ impl<M: Message + Default> Incoming<M> {
     ///
     /// The status its headers carry, where they say the call failed before any message, and
     /// `Unimplemented` where they name a compression.
+    ///
+    /// # Panics
+    ///
+    /// Where its headers carry status details that are not base64, as tonic's reading of a
+    /// status does: whoever takes an answer from an untrusted peer drops such details first.
     pub fn answer(answer: http::Response<Bounded>) -> Result<Self, Status> {
         let (parts, body) = answer.into_parts();
         status::uncompressed(&parts.headers)?;
@@ -82,6 +87,11 @@ impl<M: Message + Default> Incoming<M> {
     ///
     /// The status the call failed with: one its peer sent, one its body failed with, or one of
     /// a message that does not decode.
+    ///
+    /// # Panics
+    ///
+    /// Where an answer's trailers carry status details that are not base64, as
+    /// [`answer`](Self::answer) says of its headers.
     pub async fn message(&mut self) -> Result<Option<M>, Status> {
         while let State::Reading = self.state {
             let frame =
