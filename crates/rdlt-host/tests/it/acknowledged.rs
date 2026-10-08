@@ -13,12 +13,11 @@ use rdlt_connector::{
 use rdlt_connector_reference::{ChangesSource, GeneratorSource};
 use rdlt_wire::{ACKNOWLEDGED, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 
-use rdlt_wire::v1::connector_client::ConnectorClient;
+use rdlt_host::remote::Client;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::transport::Channel;
 
-use crate::support::{raw_client, served};
+use crate::support::{plane_client, served};
 
 /// A factory written by hand, which says nothing of where its source stands.
 struct Plain(Box<dyn SourceFactory>);
@@ -75,21 +74,24 @@ fn asked() -> v1::ReadAcknowledgedRequest {
 
 #[tokio::test]
 async fn a_source_that_tells_accepts_the_feature_when_offered_and_tells_what_it_was_told() {
-    let mut client = raw_client(served(
+    let mut client = plane_client(served(
         Served::new().with_source(acknowledging_source_factory::<ChangesSource>()),
     ))
     .await;
     let answer = client
+        .rpc
         .handshake(handshake(&[ACKNOWLEDGED, "unknown"]))
         .await
         .expect("the handshake succeeds")
         .into_inner();
     assert_eq!(answer.accepted_features, [ACKNOWLEDGED]);
     client
+        .rpc
         .configure(changes())
         .await
         .expect("the configuration succeeds");
     let before = client
+        .rpc
         .read_acknowledged(asked())
         .await
         .expect("the source tells")
@@ -99,10 +101,12 @@ async fn a_source_that_tells_accepts_the_feature_when_offered_and_tells_what_it_
         .await
         .remove(0);
     client
+        .rpc
         .committed(committed("accounts", "changes", cursor.clone()))
         .await
         .expect("the commit is heard");
     let after = client
+        .rpc
         .read_acknowledged(asked())
         .await
         .expect("the source tells")
@@ -111,17 +115,13 @@ async fn a_source_that_tells_accepts_the_feature_when_offered_and_tells_what_it_
 }
 
 /// The checkpoints a read of `partition` of `stream` from its start sends, to its end.
-async fn checkpoints(
-    client: &mut ConnectorClient<Channel>,
-    stream: &str,
-    partition: &str,
-) -> Vec<v1::Cursor> {
+async fn checkpoints(client: &mut Client, stream: &str, partition: &str) -> Vec<v1::Cursor> {
     checkpoints_from(client, stream, partition, None).await
 }
 
 /// The checkpoints a read of `partition` of `stream` from `cursor` sends, to its end.
 pub(crate) async fn checkpoints_from(
-    client: &mut ConnectorClient<Channel>,
+    client: &mut Client,
     stream: &str,
     partition: &str,
     cursor: Option<v1::Cursor>,
@@ -133,7 +133,7 @@ pub(crate) async fn checkpoints_from(
 /// The checkpoints a read of `partition` of `stream` from `cursor` sends, to its end, or what
 /// the read failed with.
 pub(crate) async fn read_from(
-    client: &mut ConnectorClient<Channel>,
+    client: &mut Client,
     stream: &str,
     partition: &str,
     cursor: Option<v1::Cursor>,
@@ -160,7 +160,7 @@ pub(crate) async fn read_from(
     });
     let (open, pending) = tokio::sync::mpsc::channel(1);
     let controls = tokio_stream::iter(controls).chain(ReceiverStream::new(pending));
-    let mut frames = client.read(controls).await?.into_inner();
+    let mut frames = client.read(controls).await?;
     let mut checkpoints = Vec::new();
     while let Some(frame) = frames.message().await? {
         match frame.frame {
@@ -205,6 +205,7 @@ fn two_streams() -> v1::ConfigureRequest {
 async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
     let changes = Served::new().with_source(acknowledging_source_factory::<ChangesSource>());
     let mut client = connected(&Arc::new(changes)).await;
+    let mut rpc = client.rpc.clone();
     let refused = |refused: Result<_, tonic::Status>, what: &str| {
         let Err(refused): Result<tonic::Response<v1::CommittedResponse>, _> = refused else {
             panic!("{what} was acknowledged");
@@ -220,24 +221,24 @@ async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
         version: 1,
         bytes: br#"{"next":18446744073709551615,"done":true}"#.to_vec().into(),
     };
-    let unread = client.committed(committed("accounts", "changes", beyond.clone()));
+    let unread = rpc.committed(committed("accounts", "changes", beyond.clone()));
     refused(unread.await, "a position no read was sent");
     let sent = checkpoints(&mut client, "accounts", "changes").await;
     assert!(sent.len() > 1, "{sent:?}");
     // Still refused, though the partition has been read: it is none of what the read was sent.
-    let unsent = client.committed(committed("accounts", "changes", beyond));
+    let unsent = rpc.committed(committed("accounts", "changes", beyond));
     refused(unsent.await, "a position the read was not sent");
     // A checkpoint is its stream's and its partition's, in the format it was sent in.
     let checkpoint = sent[0].clone();
-    let elsewhere = client.committed(committed("accounts", "snapshot-0", checkpoint.clone()));
+    let elsewhere = rpc.committed(committed("accounts", "snapshot-0", checkpoint.clone()));
     refused(elsewhere.await, "another partition's checkpoint");
-    let other = client.committed(committed("orders", "changes", checkpoint.clone()));
+    let other = rpc.committed(committed("orders", "changes", checkpoint.clone()));
     refused(other.await, "another stream's checkpoint");
     let reformatted = v1::Cursor {
         version: checkpoint.version + 1,
         ..checkpoint.clone()
     };
-    let another = client.committed(committed("accounts", "changes", reformatted));
+    let another = rpc.committed(committed("accounts", "changes", reformatted));
     refused(another.await, "a checkpoint in another format");
     // One refused position refuses the report whole: nothing of it is told to the source.
     let mut mixed = committed("accounts", "changes", checkpoint.clone());
@@ -246,10 +247,10 @@ async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
         cursor: Some(checkpoint.clone()),
     });
     refused(
-        client.committed(mixed).await,
+        rpc.committed(mixed).await,
         "a report with a position unread",
     );
-    let standing = client.read_acknowledged(asked()).await;
+    let standing = rpc.read_acknowledged(asked()).await;
     assert_eq!(
         standing.expect("the source tells").into_inner().cursor,
         None
@@ -257,27 +258,29 @@ async fn a_host_acknowledges_only_the_checkpoints_its_reads_were_sent() {
     // A report that names no cursor is no report: a message the source cannot read.
     let mut blank = committed("accounts", "changes", checkpoint.clone());
     blank.cursors[0].cursor = None;
-    let unreadable = client.committed(blank).await.expect_err("refused");
+    let unreadable = rpc.committed(blank).await.expect_err("refused");
     assert_eq!(carried(&unreadable).code(), Some("invalid_message"));
     // Every checkpoint the read was sent is acknowledged, more than once too.
     for cursor in sent.iter().chain(&sent) {
-        let told = client.committed(committed("accounts", "changes", cursor.clone()));
+        let told = rpc.committed(committed("accounts", "changes", cursor.clone()));
         told.await.expect("a checkpoint the read was sent is heard");
     }
 }
 
 /// A client of `served`, over a connection of its own, handshaken and configured with two
 /// streams.
-async fn connected(served: &Arc<Served>) -> ConnectorClient<Channel> {
+async fn connected(served: &Arc<Served>) -> Client {
     let (host, connector) = tokio::net::UnixStream::pair().expect("a socket pair");
     let limits = rdlt_wire::Limits::default();
     tokio::spawn(serve_connection(Arc::clone(served), connector, limits));
-    let mut client = raw_client(host).await;
+    let mut client = plane_client(host).await;
     client
+        .rpc
         .handshake(handshake(&[ACKNOWLEDGED]))
         .await
         .expect("the handshake succeeds");
     client
+        .rpc
         .configure(two_streams())
         .await
         .expect("the configuration succeeds");
@@ -294,12 +297,16 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
     drop(first);
     // Another connection to the connector: what the first was sent is still its host's to report.
     let mut again = connected(&served).await;
-    let told = again.committed(committed("orders", "changes", sent[0].clone()));
+    let told = again
+        .rpc
+        .committed(committed("orders", "changes", sent[0].clone()));
     told.await.expect("the report is heard");
     // The connector started again remembers nothing it sent: the report is refused as transient.
     let restarted = Arc::new(changes());
     let mut fresh = connected(&restarted).await;
-    let unknown = fresh.committed(committed("orders", "changes", sent[1].clone()));
+    let unknown = fresh
+        .rpc
+        .committed(committed("orders", "changes", sent[1].clone()));
     let refused = unknown.await.expect_err("the report is refused");
     let error = carried(&refused);
     assert_eq!(error.kind(), ConnectorErrorKind::Transient, "{error}");
@@ -309,10 +316,12 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
     let last = sent.last().expect("a checkpoint").clone();
     let resent = checkpoints_from(&mut fresh, "orders", "changes", Some(last.clone())).await;
     assert!(!resent.contains(&last), "{resent:?}");
-    let told = fresh.committed(committed("orders", "changes", last.clone()));
+    let told = fresh
+        .rpc
+        .committed(committed("orders", "changes", last.clone()));
     told.await
         .expect("the report of where the read started is heard");
-    let standing = fresh.read_acknowledged(v1::ReadAcknowledgedRequest {
+    let standing = fresh.rpc.read_acknowledged(v1::ReadAcknowledgedRequest {
         stream: Some(v1::StreamName {
             namespace: None,
             name: "orders".to_owned(),
@@ -323,7 +332,9 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
     assert_eq!(standing.cursor, Some(last.clone()));
     // Where a read of another partition, or of another stream, started is not this one's.
     for (stream, partition) in [("orders", "snapshot-0"), ("accounts", "changes")] {
-        let elsewhere = fresh.committed(committed(stream, partition, last.clone()));
+        let elsewhere = fresh
+            .rpc
+            .committed(committed(stream, partition, last.clone()));
         let refused = carried(&elsewhere.await.expect_err("refused"));
         assert_eq!(
             refused.code(),
@@ -336,7 +347,7 @@ async fn a_host_that_dials_again_acknowledges_what_it_was_sent_and_a_connector_s
         version: last.version,
         bytes: br#"{"next":18446744073709551615,"done":true}"#.to_vec().into(),
     };
-    let forged = fresh.committed(committed("orders", "changes", beyond));
+    let forged = fresh.rpc.committed(committed("orders", "changes", beyond));
     let refused = carried(&forged.await.expect_err("refused"));
     assert_eq!(refused.code(), Some("position_unsent"));
     assert_eq!(refused.kind(), ConnectorErrorKind::Transient);
@@ -364,8 +375,9 @@ async fn asking_a_source_the_handshake_did_not_accept_is_refused_as_unsupported(
     ];
     for (factory, offered) in cases {
         let generator = factory.spec().id.as_str() == "io.rapidbyte.generator";
-        let mut client = raw_client(served(Served::new().with_source(factory))).await;
+        let mut client = plane_client(served(Served::new().with_source(factory))).await;
         let answer = client
+            .rpc
             .handshake(handshake(offered))
             .await
             .expect("the handshake succeeds")
@@ -380,10 +392,12 @@ async fn asking_a_source_the_handshake_did_not_accept_is_refused_as_unsupported(
             changes()
         };
         client
+            .rpc
             .configure(config)
             .await
             .expect("the configuration succeeds");
         let refused = client
+            .rpc
             .read_acknowledged(asked())
             .await
             .expect_err("asking is refused");

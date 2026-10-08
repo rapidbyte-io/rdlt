@@ -15,7 +15,9 @@ use rdlt_connector::testing::{Clause, ClauseResult, Observed, Outcome};
 use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorError, Role};
 use rdlt_host::remote::Client;
-use rdlt_wire::tonic::{Response, Status, Streaming};
+use rdlt_wire::plane::Incoming;
+use rdlt_wire::prost::Message;
+use rdlt_wire::tonic::Status;
 use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 
 use crate::target::Target;
@@ -242,9 +244,10 @@ fn refused_with<T>(
 
 /// How a streaming call ended, when it was refused: before its answer's headers, or as the first
 /// message of its answer.
-async fn first_refusal<T>(result: Result<Response<Streaming<T>>, Status>) -> Result<(), Status> {
-    let mut answer = result?.into_inner();
-    answer.message().await.map(drop)
+async fn first_refusal<T: Message + Default>(
+    result: Result<Incoming<T>, Status>,
+) -> Result<(), Status> {
+    result?.message().await.map(drop)
 }
 
 /// Whether `error` is refused as unsupported; `what` names the call.

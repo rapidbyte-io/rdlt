@@ -9,15 +9,14 @@ use rdlt_connector::{
     source_factory,
 };
 use rdlt_connector_reference::MemorySource;
+use rdlt_host::remote::Client;
 use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteSource};
-use rdlt_wire::tonic::transport::Channel;
-use rdlt_wire::v1::connector_client::ConnectorClient;
 use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Denied, SlowCommits};
 use crate::support::{
-    Fake, Fault, memory_destination, raw_client, serve_fake, served, served_within,
+    Fake, Fault, memory_destination, plane_client, serve_fake, served, served_within,
 };
 
 /// Options that notice a lost connector within about a tenth of a second.
@@ -47,12 +46,14 @@ fn configure(config: &str) -> v1::ConfigureRequest {
 }
 
 /// Handshakes as `role` and configures the connector with `config`.
-async fn configured(client: &mut ConnectorClient<Channel>, role: v1::Role, config: &str) {
+async fn configured(client: &mut Client, role: v1::Role, config: &str) {
     client
+        .rpc
         .handshake(handshake(PROTOCOL_MAJOR, role))
         .await
         .expect("the handshake succeeds");
     client
+        .rpc
         .configure(configure(config))
         .await
         .expect("the configuration succeeds");
@@ -71,8 +72,9 @@ fn rows(count: usize) -> serde_json::Value {
 
 #[tokio::test]
 async fn a_host_of_another_major_version_is_refused_at_the_handshake() {
-    let mut client = raw_client(served(memory())).await;
+    let mut client = plane_client(served(memory())).await;
     let status = client
+        .rpc
         .handshake(handshake(PROTOCOL_MAJOR + 1, v1::Role::Source))
         .await
         .unwrap_err();
@@ -98,8 +100,9 @@ async fn a_host_that_sets_no_dictionary_limit_is_refused_at_the_handshake() {
         }),
     ];
     for limits in unset {
-        let mut client = raw_client(served(memory())).await;
+        let mut client = plane_client(served(memory())).await;
         let status = client
+            .rpc
             .handshake(v1::HandshakeRequest {
                 limits,
                 ..handshake(PROTOCOL_MAJOR, v1::Role::Source)
@@ -127,8 +130,8 @@ async fn a_connector_that_says_no_dictionary_limit_is_refused_at_the_handshake()
 
 #[tokio::test]
 async fn a_call_before_the_handshake_is_refused() {
-    let mut client = raw_client(served(memory())).await;
-    let status = client.check(v1::CheckRequest {}).await.unwrap_err();
+    let mut client = plane_client(served(memory())).await;
+    let status = client.rpc.check(v1::CheckRequest {}).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("no_handshake"));
 }
 
@@ -339,7 +342,7 @@ async fn a_call_beyond_its_deadline_fails_with_deadline_exceeded() {
 #[tokio::test]
 async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
     use v1::read_control::Control;
-    let mut client = raw_client(served(memory())).await;
+    let mut client = plane_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(50).to_string()).await;
     let (controls, receiver) = tokio::sync::mpsc::channel(4);
     let control = |control| v1::ReadControl {
@@ -361,11 +364,7 @@ async fn a_served_read_sends_a_frame_only_while_it_has_credit() {
         .send(control(Control::Credit(v1::Credit { bytes: 1 })))
         .await
         .unwrap();
-    let mut frames = client
-        .read(ReceiverStream::new(receiver))
-        .await
-        .unwrap()
-        .into_inner();
+    let mut frames = client.read(ReceiverStream::new(receiver)).await.unwrap();
     // One byte of credit lets one frame go, whatever its size, and then no other.
     let wait = Duration::from_millis(300);
     let first = tokio::time::timeout(Duration::from_secs(5), frames.message())
@@ -425,7 +424,7 @@ async fn slow_commit_within_deadline_succeeds() {
 async fn a_served_read_spends_its_credit_frame_by_frame_until_none_remains() {
     use rdlt_wire::prost::Message as _;
     use v1::read_control::Control;
-    let mut client = raw_client(served(memory())).await;
+    let mut client = plane_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(500).to_string()).await;
     let (controls, receiver) = tokio::sync::mpsc::channel(4);
     let control = |control| v1::ReadControl {
@@ -448,11 +447,7 @@ async fn a_served_read_spends_its_credit_frame_by_frame_until_none_remains() {
         .send(control(Control::Credit(v1::Credit { bytes: grant })))
         .await
         .unwrap();
-    let mut frames = client
-        .read(ReceiverStream::new(receiver))
-        .await
-        .unwrap()
-        .into_inner();
+    let mut frames = client.read(ReceiverStream::new(receiver)).await.unwrap();
     let mut sizes = Vec::new();
     while let Ok(frame) = tokio::time::timeout(Duration::from_millis(300), frames.message()).await {
         sizes.push(u64::try_from(frame.unwrap().expect("the read goes on").encoded_len()).unwrap());
@@ -477,52 +472,58 @@ async fn a_connectors_catalog_crosses_the_wire() {
 
 #[tokio::test]
 async fn a_call_for_the_other_role_is_refused() {
-    let mut client = raw_client(served(memory())).await;
+    let mut client = plane_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let open = v1::OpenRequest {
         pipeline: "p".to_owned(),
         load_id: vec![0; 16].into(),
     };
-    let status = client.open(open).await.unwrap_err();
+    let status = client.rpc.open(open).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("role"));
 }
 
 #[tokio::test]
 async fn a_second_handshake_or_configuration_is_refused_before_it_connects() {
-    let mut client = raw_client(served(memory())).await;
+    let mut client = plane_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let status = client
+        .rpc
         .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source))
         .await
         .unwrap_err();
     assert_eq!(carried(&status).code(), Some("handshake_repeated"));
     // Refused as repeated before its configuration is read, let alone a second connector made.
-    let status = client.configure(configure("not JSON")).await.unwrap_err();
+    let status = client
+        .rpc
+        .configure(configure("not JSON"))
+        .await
+        .unwrap_err();
     assert_eq!(carried(&status).code(), Some("configure_repeated"));
 }
 
 #[tokio::test]
 async fn a_configuration_before_the_handshake_and_a_call_before_the_configuration_are_refused() {
-    let mut client = raw_client(served(memory())).await;
-    let status = client.configure(configure("{}")).await.unwrap_err();
+    let mut client = plane_client(served(memory())).await;
+    let status = client.rpc.configure(configure("{}")).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("no_handshake"));
     client
+        .rpc
         .handshake(handshake(PROTOCOL_MAJOR, v1::Role::Source))
         .await
         .expect("the handshake succeeds");
-    let status = client.check(v1::CheckRequest {}).await.unwrap_err();
+    let status = client.rpc.check(v1::CheckRequest {}).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("not_configured"));
 }
 
 #[tokio::test]
 async fn a_message_that_does_not_decode_is_refused() {
-    let mut client = raw_client(served(memory())).await;
+    let mut client = plane_client(served(memory())).await;
     configured(&mut client, v1::Role::Source, &rows(1).to_string()).await;
     let plan = v1::PlanRequest {
         stream: None,
         state: None,
     };
-    let status = client.plan(plan).await.unwrap_err();
+    let status = client.rpc.plan(plan).await.unwrap_err();
     assert_eq!(carried(&status).code(), Some("invalid_message"));
 }
 

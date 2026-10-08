@@ -30,6 +30,14 @@ pub(crate) async fn raw_client(io: UnixStream) -> ConnectorClient<Channel> {
     ConnectorClient::new(raw_channel(io).await)
 }
 
+/// A client of the connector served on the other end of `io`, which has had no handshake: its
+/// generated calls and the data plane's, as certification speaks the protocol.
+pub(crate) async fn plane_client(io: UnixStream) -> rdlt_host::remote::Client {
+    rdlt_host::remote::client(io, Options::default())
+        .await
+        .expect("the channel connects")
+}
+
 /// A channel to the connector served on the other end of `io`.
 pub(crate) async fn raw_channel(io: UnixStream) -> Channel {
     let slot = std::sync::Mutex::new(Some(io));

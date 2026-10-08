@@ -10,7 +10,7 @@ use rdlt_connector::{
     BoxFuture, ConnectorError, DestinationWriter, SegmentId, TableRef, WriteStats,
 };
 use rdlt_wire::flow::Spending;
-use rdlt_wire::plane::Incoming;
+use rdlt_wire::plane::{Incoming, WRITE};
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::{Cut, Encoder};
 use tokio::sync::mpsc;
@@ -61,7 +61,7 @@ impl RemoteWriter {
         let deadline = connection.options.deadlines.write_ack;
         let opening = async move {
             let frames = ReceiverStream::new(receiver);
-            let opened = super::clients::write(&mut channel, most, frames).await;
+            let opened = super::clients::called(&mut channel, WRITE, frames, most).await;
             opened.map(tonic::Response::new)
         };
         let acks = connection

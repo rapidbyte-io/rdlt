@@ -11,25 +11,25 @@ use rdlt_connector::{
     acknowledging_source_factory,
 };
 use rdlt_connector_reference::{ChangesSource, LogSource};
+use rdlt_host::remote::Client;
 use rdlt_wire::ACKNOWLEDGED;
-use rdlt_wire::v1::connector_client::ConnectorClient;
-use tonic::transport::Channel;
 
 use crate::acknowledged::{checkpoints_from, committed, handshake, read_from};
-use crate::support::raw_client;
+use crate::support::plane_client;
 
 /// A client of `served`, handshaken and configured with `config`.
-async fn configured(served: Served, config: &serde_json::Value) -> ConnectorClient<Channel> {
+async fn configured(served: Served, config: &serde_json::Value) -> Client {
     let (host, connector) = tokio::net::UnixStream::pair().expect("a socket pair");
     let limits = rdlt_wire::Limits::default();
     tokio::spawn(serve_connection(Arc::new(served), connector, limits));
-    let mut client = raw_client(host).await;
-    let greeted = client.handshake(handshake(&[ACKNOWLEDGED])).await;
+    let mut client = plane_client(host).await;
+    let greeted = client.rpc.handshake(handshake(&[ACKNOWLEDGED])).await;
     greeted.expect("the handshake succeeds");
     let request = v1::ConfigureRequest {
         config_json: config.to_string(),
     };
     client
+        .rpc
         .configure(request)
         .await
         .expect("the configuration succeeds");
@@ -44,12 +44,8 @@ fn cursor(bytes: &str) -> v1::Cursor {
 }
 
 /// Where the source keeps `partition` of `stream`.
-async fn standing(
-    client: &mut ConnectorClient<Channel>,
-    stream: &str,
-    partition: &str,
-) -> Option<v1::Cursor> {
-    let asked = client.read_acknowledged(v1::ReadAcknowledgedRequest {
+async fn standing(client: &mut Client, stream: &str, partition: &str) -> Option<v1::Cursor> {
+    let asked = client.rpc.read_acknowledged(v1::ReadAcknowledgedRequest {
         stream: Some(v1::StreamName {
             namespace: None,
             name: stream.to_owned(),
@@ -127,11 +123,7 @@ async fn a_start_no_source_issued_is_refused_and_never_heard_and_moves_nothing()
 
 /// Asserts a read of `partition` of `orders` from `forged` is refused, its host not heard for
 /// it, the source unmoved, and a read from the start served as before.
-async fn refused_and_unheard(
-    mut client: ConnectorClient<Channel>,
-    partition: &str,
-    forged: v1::Cursor,
-) {
+async fn refused_and_unheard(mut client: Client, partition: &str, forged: v1::Cursor) {
     let what = format!("{partition} from {forged:?}");
     let before = standing(&mut client, "orders", partition).await;
     // The source refuses the read before it sends anything.
@@ -144,14 +136,16 @@ async fn refused_and_unheard(
     );
     assert_eq!(refused.code(), Some("cursor_unissued"), "{what}: {refused}");
     // So the host is not heard for it, and the source stays where it stood.
-    let report = client.committed(committed("orders", partition, forged));
+    let report = client.rpc.committed(committed("orders", partition, forged));
     unheard(report.await, &what);
     let after = standing(&mut client, "orders", partition).await;
     assert_eq!(after, before, "{what}");
     // A read from the start is served as before, and its host heard for what it is sent.
     let sent = checkpoints_from(&mut client, "orders", partition, None).await;
     let last = sent.last().expect("a checkpoint").clone();
-    let report = client.committed(committed("orders", partition, last.clone()));
+    let report = client
+        .rpc
+        .committed(committed("orders", partition, last.clone()));
     report
         .await
         .expect("a checkpoint the read was sent is heard");
@@ -234,21 +228,25 @@ async fn a_host_is_heard_for_where_its_source_says_a_read_started_and_for_no_rea
     // The source started from its own position and said so first: that is what is heard.
     let sent = checkpoints_from(&mut client, "kept", "resumes", Some(asked.clone())).await;
     assert_eq!(sent, std::slice::from_ref(&kept));
-    let report = client.committed(committed("kept", "resumes", asked.clone()));
+    let report = client
+        .rpc
+        .committed(committed("kept", "resumes", asked.clone()));
     unheard(report.await, "the cursor the source did not start from");
-    let report = client.committed(committed("kept", "resumes", kept));
+    let report = client.rpc.committed(committed("kept", "resumes", kept));
     report
         .await
         .expect("where the source said it started is heard");
     // A read that failed before it sent anything of its partition leaves its start unheard.
     let failed = read_from(&mut client, "kept", "fails", Some(asked.clone())).await;
     failed.expect_err("the read fails");
-    let report = client.committed(committed("kept", "fails", asked.clone()));
+    let report = client
+        .rpc
+        .committed(committed("kept", "fails", asked.clone()));
     unheard(report.await, "the start of a read that failed");
     // A read that ends cleanly having sent nothing started where it was asked to.
     let idle = checkpoints_from(&mut client, "kept", "idle", Some(asked.clone())).await;
     assert!(idle.is_empty());
-    let report = client.committed(committed("kept", "idle", asked));
+    let report = client.rpc.committed(committed("kept", "idle", asked));
     report.await.expect("where an idle read started is heard");
 }
 
@@ -267,7 +265,7 @@ async fn a_start_a_growing_log_has_yet_to_reach_is_tried_again_and_its_host_not_
     let refused = carried(&read.expect_err("the start is ahead of the log"));
     assert_eq!(refused.kind(), ConnectorErrorKind::Transient, "{refused}");
     assert_eq!(refused.code(), Some("cursor_ahead"), "{refused}");
-    let report = client.committed(committed("orders", "p0", forged));
+    let report = client.rpc.committed(committed("orders", "p0", forged));
     unheard(report.await, "a start the log has yet to reach");
     assert_eq!(standing(&mut client, "orders", "p0").await, before);
 }

@@ -134,20 +134,20 @@ pub(crate) fn mebibyte() -> (v1::ReadFrame, v1::ReadFrame) {
 }
 
 /// Takes a read's controls until the host ends them.
-async fn controlled(mut controls: Streaming<v1::ReadControl>) {
-    while let Some(Ok(_)) = controls.next().await {}
+async fn controlled(mut controls: Incoming<v1::ReadControl>) {
+    while let Ok(Some(_)) = controls.message().await {}
 }
 
 /// Takes a read's controls until the host ends them, keeping each credit in `granted` and
 /// answering it with the next of `frames`.
 async fn granting(
-    mut controls: Streaming<v1::ReadControl>,
+    mut controls: Incoming<v1::ReadControl>,
     frames: Vec<v1::ReadFrame>,
     granted: &Granted,
     sent: tokio::sync::mpsc::Sender<Result<v1::ReadFrame, Status>>,
 ) {
     let mut frames = frames.into_iter();
-    while let Some(Ok(control)) = controls.next().await {
+    while let Ok(Some(control)) = controls.message().await {
         if let Some(v1::read_control::Control::Credit(credit)) = control.control {
             granted
                 .lock()
@@ -402,51 +402,11 @@ impl Connector for Fake {
         }))
     }
 
-    type ReadStream = Answer<v1::ReadFrame>;
-
-    async fn read(
-        &self,
-        request: Request<Streaming<v1::ReadControl>>,
-    ) -> Result<Response<Self::ReadStream>, Status> {
-        if matches!(self.0, Fault::Unstarted) {
-            return Ok(Response::new(Box::pin(answering(request.into_inner()))));
-        }
-        if let Fault::Granted(frames, granted) = self.0 {
-            let (sent, sending) = tokio::sync::mpsc::channel(1);
-            tokio::spawn(granting(request.into_inner(), frames(), granted, sent));
-            let frames = tokio_stream::wrappers::ReceiverStream::new(sending);
-            return Ok(Response::new(Box::pin(frames)));
-        }
-        if let Fault::Floods(polled) = self.0 {
-            tokio::spawn(controlled(request.into_inner()));
-            let (schema, batch) = mebibyte();
-            let frames = std::iter::once(schema).chain(std::iter::repeat(batch));
-            let frames = tokio_stream::iter(frames).map(move |frame| {
-                polled.took(rdlt_wire::prost::Message::encoded_len(&frame));
-                Ok(frame)
-            });
-            return Ok(Response::new(Box::pin(frames)));
-        }
-        let sent = self.read_frames();
-        let frames = tokio_stream::iter(sent)
-            .chain(tokio_stream::pending::<Result<v1::ReadFrame, Status>>());
-        Ok(Response::new(Box::pin(frames)))
-    }
-
     async fn read_acknowledged(
         &self,
         _: Request<v1::ReadAcknowledgedRequest>,
     ) -> Result<Response<v1::ReadAcknowledgedResponse>, Status> {
         Err(Status::unimplemented("read_acknowledged"))
-    }
-
-    type ReadPublishedStream = Answer<v1::ReadFrame>;
-
-    async fn read_published(
-        &self,
-        _: Request<v1::ReadPublishedRequest>,
-    ) -> Result<Response<Self::ReadPublishedStream>, Status> {
-        Err(Status::unimplemented("read_published"))
     }
 
     async fn committed(
@@ -555,17 +515,49 @@ impl Plane for Fake {
             Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(sent)) as Answer<_>)
         })
     }
+
+    fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
+        Box::pin(async move {
+            if matches!(self.0, Fault::Unstarted) {
+                return Ok(Box::pin(answering(controls)) as Answer<_>);
+            }
+            if let Fault::Granted(frames, granted) = self.0 {
+                let (sent, sending) = tokio::sync::mpsc::channel(1);
+                tokio::spawn(granting(controls, frames(), granted, sent));
+                let frames = tokio_stream::wrappers::ReceiverStream::new(sending);
+                return Ok(Box::pin(frames) as Answer<_>);
+            }
+            if let Fault::Floods(polled) = self.0 {
+                tokio::spawn(controlled(controls));
+                let (schema, batch) = mebibyte();
+                let frames = std::iter::once(schema).chain(std::iter::repeat(batch));
+                let frames = tokio_stream::iter(frames).map(move |frame| {
+                    polled.took(rdlt_wire::prost::Message::encoded_len(&frame));
+                    Ok(frame)
+                });
+                return Ok(Box::pin(frames) as Answer<_>);
+            }
+            let sent = self.read_frames();
+            let frames = tokio_stream::iter(sent)
+                .chain(tokio_stream::pending::<Result<v1::ReadFrame, Status>>());
+            Ok(Box::pin(frames) as Answer<_>)
+        })
+    }
+
+    fn read_published(&self, _: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
+        Box::pin(async { Err(Status::unimplemented("read_published")) })
+    }
 }
 
 /// A read with nothing to read: it answers a barrier `controls` ask for before its first credit
 /// with a checkpoint, and ends at that credit.
 fn answering(
-    mut controls: Streaming<v1::ReadControl>,
+    mut controls: Incoming<v1::ReadControl>,
 ) -> impl Stream<Item = Result<v1::ReadFrame, Status>> + Send {
     let (frames, sent) = tokio::sync::mpsc::channel(2);
     tokio::spawn(async move {
         let mut answered = Vec::new();
-        while let Some(Ok(control)) = controls.next().await {
+        while let Ok(Some(control)) = controls.message().await {
             match control.control {
                 Some(v1::read_control::Control::Checkpoint(asked)) => {
                     answered.push(v1::read_frame::Frame::Checkpoint(v1::CheckpointFrame {

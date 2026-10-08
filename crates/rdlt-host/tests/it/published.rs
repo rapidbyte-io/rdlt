@@ -16,7 +16,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::MemoryDestination;
 use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR, PUBLISHED};
 
-use crate::support::{raw_client, served};
+use crate::support::{plane_client, served};
 
 fn handshake(features: &[&str]) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
@@ -55,22 +55,23 @@ fn table() -> v1::ReadPublishedRequest {
 async fn a_destination_that_reads_back_accepts_the_feature_when_offered_and_serves_it() {
     let readable =
         || Served::new().with_destination(readable_destination_factory::<MemoryDestination>());
-    let mut client = raw_client(served(readable())).await;
+    let mut client = plane_client(served(readable())).await;
     let answer = client
+        .rpc
         .handshake(handshake(&[PUBLISHED, "unknown"]))
         .await
         .expect("the handshake succeeds")
         .into_inner();
     assert_eq!(answer.accepted_features, [PUBLISHED]);
     client
+        .rpc
         .configure(configure())
         .await
         .expect("the configuration succeeds");
     let mut frames = client
         .read_published(table())
         .await
-        .expect("the read-back starts")
-        .into_inner();
+        .expect("the read-back starts");
     let first = frames.message().await.expect("a frame");
     assert!(
         matches!(
@@ -98,14 +99,16 @@ async fn a_read_back_the_handshake_did_not_accept_is_refused_as_unsupported() {
         ),
     ];
     for (served_by, offered) in cases {
-        let mut client = raw_client(served(served_by)).await;
+        let mut client = plane_client(served(served_by)).await;
         let answer = client
+            .rpc
             .handshake(handshake(offered))
             .await
             .expect("the handshake succeeds")
             .into_inner();
         assert!(answer.accepted_features.is_empty(), "{offered:?}");
         client
+            .rpc
             .configure(configure())
             .await
             .expect("the configuration succeeds");
@@ -232,7 +235,7 @@ impl DestinationFactory for Large {
 }
 
 /// A client that reads `factory`'s table back: its frames.
-async fn reading_back(factory: Large) -> tonic::Streaming<v1::ReadFrame> {
+async fn reading_back(factory: Large) -> rdlt_wire::plane::Incoming<v1::ReadFrame> {
     reading_back_within(factory, None).await
 }
 
@@ -240,17 +243,19 @@ async fn reading_back(factory: Large) -> tonic::Streaming<v1::ReadFrame> {
 async fn reading_back_within(
     factory: Large,
     limits: Option<v1::Limits>,
-) -> tonic::Streaming<v1::ReadFrame> {
-    let mut client = raw_client(served(Served::new().with_destination(Box::new(factory)))).await;
+) -> rdlt_wire::plane::Incoming<v1::ReadFrame> {
+    let mut client = plane_client(served(Served::new().with_destination(Box::new(factory)))).await;
     let offered = v1::HandshakeRequest {
         limits,
         ..handshake(&[PUBLISHED])
     };
     client
+        .rpc
         .handshake(offered)
         .await
         .expect("the handshake succeeds");
     client
+        .rpc
         .configure(configure())
         .await
         .expect("the configuration succeeds");
@@ -258,7 +263,6 @@ async fn reading_back_within(
         .read_published(table())
         .await
         .expect("the read-back starts")
-        .into_inner()
 }
 
 #[tokio::test]

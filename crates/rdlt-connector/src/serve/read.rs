@@ -8,14 +8,15 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use rdlt_wire::flow::Spending;
+use rdlt_wire::plane::{Answers, Incoming};
 use rdlt_wire::prost::Message as _;
-use rdlt_wire::tonic::{Status, Streaming};
+use rdlt_wire::tonic::Status;
 use rdlt_wire::{Cut, Encoder, Limits};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::noted::Read;
-use super::service::{Answer, invalid};
+use super::service::invalid;
 use crate::Cursor;
 use crate::error::ConnectorErrorKind;
 use crate::id::{PartitionId, StreamName};
@@ -34,8 +35,8 @@ pub(super) async fn serve(
     source: Arc<dyn Source>,
     own: Limits,
     host: Limits,
-    mut controls: Streaming<v1::ReadControl>,
-) -> Result<(Answer<v1::ReadFrame>, Read), Status> {
+    mut controls: Incoming<v1::ReadControl>,
+) -> Result<(Answers<v1::ReadFrame>, Read), Status> {
     let Some(v1::ReadControl {
         control: Some(v1::read_control::Control::Start(start)),
     }) = controls.message().await?
@@ -233,7 +234,7 @@ async fn pump(
     source: Arc<dyn Source>,
     request: ReadRequest,
     barrier: u64,
-    mut controls: Streaming<v1::ReadControl>,
+    mut controls: Incoming<v1::ReadControl>,
     frames: mpsc::Sender<Result<v1::ReadFrame, Status>>,
     host: Limits,
 ) {
