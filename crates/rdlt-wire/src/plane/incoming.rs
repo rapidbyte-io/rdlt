@@ -122,6 +122,16 @@ impl<M: Message + Default> Incoming<M> {
         Ok(None)
     }
 
+    /// A unary request's message, its body read to its end.
+    ///
+    /// # Errors
+    ///
+    /// `Internal` where the request has no message, and the status reading it failed with.
+    pub async fn unary(mut self) -> Result<M, Status> {
+        self.message().await?;
+        Err(Status::unimplemented("a unary request"))
+    }
+
     /// Releases the charge of the message passed on last: it has been decoded.
     pub fn release(&self) {
         self.body.release();

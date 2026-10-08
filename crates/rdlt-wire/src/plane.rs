@@ -30,6 +30,12 @@ pub use self::router::{Answers, Plane, Router, Serving};
 /// The path of the `Write` call.
 pub const WRITE: &str = "/rdlt.connector.v1.Connector/Write";
 
+/// The path of the `Read` call.
+pub const READ: &str = "/rdlt.connector.v1.Connector/Read";
+
+/// The path of the `ReadPublished` call.
+pub const READ_PUBLISHED: &str = "/rdlt.connector.v1.Connector/ReadPublished";
+
 /// Bytes: a message's prefix, a flag and its length.
 const PREFIX: usize = 5;
 

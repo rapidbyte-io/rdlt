@@ -34,6 +34,26 @@ pub trait Plane: Send + Sync + 'static {
     ///
     /// A status the call fails with before any answer.
     fn write(&self, frames: Incoming<v1::WriteFrame>) -> Serving<'_, v1::WriteAck>;
+
+    /// Serves a read the host controls with `controls`.
+    ///
+    /// # Errors
+    ///
+    /// A status the call fails with before any answer.
+    fn read(&self, controls: Incoming<v1::ReadControl>) -> Serving<'_, v1::ReadFrame> {
+        drop(controls);
+        Box::pin(async { Err(Status::unimplemented("read")) })
+    }
+
+    /// Serves a read-back of what `request` asks for.
+    ///
+    /// # Errors
+    ///
+    /// A status the call fails with before any answer.
+    fn read_published(&self, request: v1::ReadPublishedRequest) -> Serving<'_, v1::ReadFrame> {
+        drop(request);
+        Box::pin(async { Err(Status::unimplemented("read_published")) })
+    }
 }
 
 /// A connection's service: each request held to its class's bounds and the connection's window
