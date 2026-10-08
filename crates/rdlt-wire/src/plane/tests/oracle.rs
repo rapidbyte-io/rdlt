@@ -15,6 +15,7 @@ use tonic::codegen::http::{self, HeaderMap, HeaderValue, StatusCode};
 use tonic::codegen::{Service, tokio_stream};
 use tonic::{Code, Status};
 
+use super::reads::{done, json, read_answer, read_batch, read_request};
 use super::{Incoming, answered, batch_frame, credit, prefixed, requested, trailers};
 use crate::bounded::Bounded;
 use crate::testing::fed;
@@ -93,12 +94,44 @@ impl Service<http::Request<tonic::body::Body>> for Answering {
     }
 }
 
-/// An answer of HTTP status `code` and `headers`, its body fed `fed`.
-fn answer(code: StatusCode, headers: &HeaderMap, fed: &[Fed]) -> http::Response<Bounded> {
-    let mut answer = http::Response::new(answered(body(fed)));
+/// An answer of HTTP status `code` and `headers`, its body fed `fed` and held as `bounded`
+/// holds it.
+fn answer(
+    bounded: fn(tonic::body::Body) -> Bounded,
+    code: StatusCode,
+    headers: &HeaderMap,
+    fed: &[Fed],
+) -> http::Response<Bounded> {
+    let mut answer = http::Response::new(bounded(body(fed)));
     *answer.status_mut() = code;
     answer.headers_mut().extend(headers.clone());
     answer
+}
+
+/// How the plane and tonic's client each read an answer of `M` to the call at `path`, of
+/// `code`, `headers` and `fed`, held as `bounded` holds it.
+async fn answers_to<M: Message + Default + Send + 'static>(
+    (path, bounded): (&'static str, fn(tonic::body::Body) -> Bounded),
+    code: StatusCode,
+    headers: &HeaderMap,
+    fed: &[Fed],
+) -> (Read<M>, Read<M>) {
+    let plane = match Incoming::answer(answer(bounded, code, headers, fed)) {
+        Ok(incoming) => read(incoming).await,
+        Err(status) => (Vec::new(), Err(status.code())),
+    };
+    let transport = Answering(Mutex::new(Some(answer(bounded, code, headers, fed))));
+    let mut client = tonic::client::Grpc::new(transport);
+    let codec = tonic_prost::ProstCodec::<v1::Unit, M>::default();
+    let requests = tokio_stream::iter(Vec::<v1::Unit>::new());
+    let tonic = match client
+        .streaming(tonic::Request::new(requests), path.parse().unwrap(), codec)
+        .await
+    {
+        Ok(streaming) => read_tonic(streaming.into_inner()).await,
+        Err(status) => (Vec::new(), Err(status.code())),
+    };
+    (plane, tonic)
 }
 
 /// How the plane and tonic's client each read a write's answer of `code`, `headers` and `fed`.
@@ -107,23 +140,7 @@ async fn answers(
     headers: &HeaderMap,
     fed: &[Fed],
 ) -> (Read<v1::WriteAck>, Read<v1::WriteAck>) {
-    let plane = match Incoming::answer(answer(code, headers, fed)) {
-        Ok(incoming) => read(incoming).await,
-        Err(status) => (Vec::new(), Err(status.code())),
-    };
-    let transport = Answering(Mutex::new(Some(answer(code, headers, fed))));
-    let mut client = tonic::client::Grpc::new(transport);
-    let codec = tonic_prost::ProstCodec::<v1::WriteFrame, v1::WriteAck>::default();
-    let requests = tokio_stream::iter(Vec::<v1::WriteFrame>::new());
-    let path = super::super::WRITE.parse().unwrap();
-    let tonic = match client
-        .streaming(tonic::Request::new(requests), path, codec)
-        .await
-    {
-        Ok(streaming) => read_tonic(streaming.into_inner()).await,
-        Err(status) => (Vec::new(), Err(status.code())),
-    };
-    (plane, tonic)
+    answers_to((super::super::WRITE, answered), code, headers, fed).await
 }
 
 /// Headers of an answer under way.
@@ -234,15 +251,22 @@ async fn an_answer_s_headers_end_it_as_tonic_s_client_reads_them() {
     }
 }
 
+/// How the plane and tonic's `Streaming` each read a request of `M` fed `fed`, held as
+/// `bounded` holds it.
+async fn requests_of<M: Message + Default + Send + 'static>(
+    bounded: fn(tonic::body::Body) -> Bounded,
+    fed: &[Fed],
+) -> (Read<M>, Read<M>) {
+    let plane = read(Incoming::request(bounded(body(fed)))).await;
+    let decoder =
+        tonic::codec::Codec::decoder(&mut tonic_prost::ProstCodec::<v1::Unit, M>::default());
+    let streaming = Streaming::new_request(decoder, bounded(body(fed)), None, None);
+    (plane, read_tonic(streaming).await)
+}
+
 /// How the plane and tonic's `Streaming` each read a write's request fed `fed`.
 async fn requests(fed: &[Fed]) -> (Read<v1::WriteFrame>, Read<v1::WriteFrame>) {
-    let plane = read(Incoming::request(requested(body(fed)))).await;
-    let decoder = tonic::codec::Codec::decoder(&mut tonic_prost::ProstCodec::<
-        v1::WriteAck,
-        v1::WriteFrame,
-    >::default());
-    let streaming = Streaming::new_request(decoder, requested(body(fed)), None, None);
-    (plane, read_tonic(streaming).await)
+    requests_of(requested, fed).await
 }
 
 #[tokio::test]
@@ -297,6 +321,105 @@ async fn a_request_ends_as_tonic_s_server_reads_it() {
     ];
     for (case, fed) in cases {
         let (plane, tonic) = requests(&fed).await;
+        assert_eq!(plane, tonic, "{case}");
+    }
+}
+
+#[tokio::test]
+async fn a_read_s_answer_ends_as_tonic_s_client_reads_it() {
+    let frames = || {
+        [
+            read_batch(1, b"h", &[6; 2_000]),
+            json(br#"[{"a":1}]"#),
+            read_batch(1, b"", b""),
+        ]
+        .iter()
+        .map(|frame| Fed::Data(prefixed(frame)))
+        .collect::<Vec<_>>()
+    };
+    let ending = |end: Vec<Fed>| [frames(), end].concat();
+    let ok = || Fed::Trailers(trailers(&Status::ok("")));
+    let mut cases = vec![
+        (
+            "done, then trailers of success",
+            ending(vec![Fed::Data(prefixed(&done())), ok()]),
+        ),
+        (
+            "done, then no trailers",
+            ending(vec![Fed::Data(prefixed(&done()))]),
+        ),
+        ("no done, trailers of success", ending(vec![ok()])),
+        ("a stream reset", ending(vec![Fed::Fails(Code::Cancelled)])),
+        (
+            "a connection gone",
+            ending(vec![Fed::Fails(Code::Internal)]),
+        ),
+        ("an io error", ending(vec![Fed::FailsInIo])),
+        (
+            "a frame cut short",
+            ending(vec![Fed::Data(
+                prefixed(&read_batch(2, b"", b"b"))[..8].to_vec(),
+            )]),
+        ),
+    ];
+    for code in [
+        Code::Internal,
+        Code::Unavailable,
+        Code::OutOfRange,
+        Code::Unknown,
+    ] {
+        let failed = Fed::Trailers(trailers(&Status::new(code, "the read failed")));
+        cases.push(("a failed read", ending(vec![failed])));
+    }
+    let read = (super::super::READ, read_answer as fn(_) -> _);
+    for (case, fed) in cases {
+        let (plane, tonic) = answers_to::<v1::ReadFrame>(read, StatusCode::OK, &grpc(), &fed).await;
+        assert_eq!(plane, tonic, "{case}");
+    }
+    let mut refused = grpc();
+    refused.extend(trailers(&Status::unimplemented("no read-back")));
+    let read_back = (super::super::READ_PUBLISHED, read_answer as fn(_) -> _);
+    let (plane, tonic) =
+        answers_to::<v1::ReadFrame>(read_back, StatusCode::OK, &refused, &[]).await;
+    assert_eq!(plane, tonic, "a read-back refused trailers-only");
+    assert_eq!(plane.1, Err(Code::Unimplemented));
+}
+
+/// `body` held to the bounds of a read's controls.
+fn controls(body: tonic::body::Body) -> Bounded {
+    read_request(body, "Read")
+}
+
+#[tokio::test]
+async fn a_read_s_controls_end_as_tonic_s_server_reads_them() {
+    let credit = |bytes| v1::ReadControl {
+        control: Some(v1::read_control::Control::Credit(v1::Credit { bytes })),
+    };
+    let sent = || {
+        [credit(1), credit(2)]
+            .iter()
+            .map(|control| Fed::Data(prefixed(control)))
+            .collect::<Vec<_>>()
+    };
+    let ending = |end: Fed| [sent(), vec![end]].concat();
+    let cases = [
+        ("its client's end", sent()),
+        (
+            "cancelled by its client",
+            ending(Fed::Fails(Code::Cancelled)),
+        ),
+        ("a connection gone", ending(Fed::Fails(Code::Internal))),
+        (
+            "a control cut short",
+            ending(Fed::Data(prefixed(&credit(3))[..6].to_vec())),
+        ),
+        (
+            "a compressed control",
+            vec![Fed::Data([&[1][..], &prefixed(&credit(3))[1..]].concat())],
+        ),
+    ];
+    for (case, fed) in cases {
+        let (plane, tonic) = requests_of::<v1::ReadControl>(controls, &fed).await;
         assert_eq!(plane, tonic, "{case}");
     }
 }

@@ -43,6 +43,12 @@ pub trait Chained: Message + Sized {
 
 impl Chained for v1::WriteAck {}
 
+impl Chained for v1::ReadControl {}
+
+impl Chained for v1::ReadPublishedRequest {}
+
+impl Chained for v1::ReadFrame {}
+
 impl Chained for v1::WriteFrame {
     fn chunks(self) -> Chunks {
         let Some(v1::write_frame::Frame::Batch(mut batch)) = self.frame else {
