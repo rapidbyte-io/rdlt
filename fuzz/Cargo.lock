@@ -1082,6 +1082,7 @@ dependencies = [
  "arrow-schema",
  "bytes",
  "crc32c",
+ "http-body",
  "libfuzzer-sys",
  "peak_alloc",
  "rdlt-connector",
