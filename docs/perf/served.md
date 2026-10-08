@@ -3,7 +3,8 @@
 Untrusted connectors run out of process, served over the wire protocol: over a socket pair to a
 connector the host spawned, or over mutual TLS to one listening on the network. This record keeps
 what serving the destination, the source or both costs in throughput and in CPU, against the
-in-process passthrough, over both transports.
+in-process passthrough, over both transports, with the connectors served in the bench's own
+process or each in a process of its own.
 
 ## Method
 
@@ -16,6 +17,24 @@ in-process passthrough, over both transports.
     bench takes their `served.rs`);
   - `tls`: over mutual TLS on loopback, through a listener with certificates from
     `rdlt_testkit::tls`, reached through `Remote`.
+
+  Served there, the host, both connectors, HTTP/2 and rustls share the engine's two runtime
+  workers: these cases measure the wire path's CPU, not what a host moves when its connectors
+  run elsewhere.
+- **Processes.** The `served/process/...` cases run each served connector in a process of its
+  own, as in production. The bench's own binary serves the replay source and the IPC sink when
+  started as a connector (`--rdlt-fd` or `--listen`), through `Served::serve`, a connector
+  binary's `main`; a source process makes the replay's batches, the same as the bench's, when
+  the host first connects to it, before the run.
+  - `process/socket`: the host spawns each served connector through `Local`, as it places a
+    trusted binary: its socket on file descriptor 3, a process group of its own, one process a
+    connector a run.
+  - `process/tls`: a source and a sink each listen over mutual TLS on loopback in a process of
+    their own, started once and reached through `Remote` for every run.
+- **Cores.** `just bench served <cores> <filter> <connectors>` holds the bench to `cores` and
+  each connector process to `connectors`, which a connector process sets on itself
+  (`sched_setaffinity`) before its runtime starts, so its workers are as many as those CPUs; by
+  default `connectors` is every online CPU outside `cores`.
 - **Cases.** Each of `destination`, `source` and `both` served over each transport in both frame
   sizes, at the credit the protocol grants: a window that opens at 4 MiB and grows to two of the
   largest frames taken, over HTTP/2 stream windows of 4 MiB and transport frames of 1 MiB.
@@ -23,13 +42,26 @@ in-process passthrough, over both transports.
   one commit. Only the run is timed, not its connections; every run checks every row arrives.
 - **CPU.** The CPUs `perf stat` counts busy over each case's runs, every thread of the process,
   the served connectors' included, a GB moved; the median and range over the rounds.
+- **CPU of each process.** In the process cases, for each run, the bench's process's user and
+  system time (`getrusage`: the host's engine and wire path, and a connector served in it) and
+  each connector process's (its CPU clock, `clock_getcpuclockid`), read just before and just
+  after the run; a case's CPU a GB is their sum, and each is reported on its own. The CPUs a
+  process keeps busy are its CPU time over the runs' time. Linux alone tells one process
+  another's CPU time without `unsafe`: elsewhere a connector process's is unmeasured. `perf
+  stat`'s figures for these cases are not recorded: a spawned source makes its batches inside
+  the window `perf stat` counts, and a listening connector killed as the bench ends takes its
+  counts with it.
 - **Syscalls.** One run of each case in each round, in criterion's test mode under
   `strace -f -c`, its connection's setup included, both ends' threads counted; the median over
   the rounds.
 - **Running.** `just bench served 0-3`, five rounds interleaved with five of the alternative
   below, each started at a one-minute load average under 1.0 under the measurement lock; release
   profile. The load after each round, 1.9–3.4, is the bench's own threads, but for one round at
-  5.9.
+  5.9. The process cases: `just bench served 0-3 "" 4-11`, the host on the four performance
+  cores and the connectors on the eight efficient cores, which share the performance cores' L3;
+  the four low-power cores, 12–15, which have no L3, run neither. Five rounds of all 24 cases,
+  in process and apart, each started at a one-minute load average under 1.0 under the
+  measurement lock.
 
 ## Results
 
@@ -128,3 +160,40 @@ seven runs, at the credit, HTTP/2 settings and generated data plane of their day
 | `writev` + `recvfrom` a batch, destination over the socket | 457 + 891 | 65 + 46 |
 
 The cores, their count, the layout and the flow control differ, so only the shape compares.
+
+## Connectors in processes of their own
+
+Intel Core Ultra X7 358H, mains power, 2026-10-08, `799c06f3749d` with these cases, governor `powersave`
+with energy preference `performance` on all twelve CPUs used, one-minute load average 0.88–0.98
+before the rounds and 2.5–4.0 after. The median of five rounds and their range; a CPU column is
+the CPU seconds a GB moved of that process alone, or `in host` for a connector run in the
+bench's process. The last column is the in-process case of the same rounds, its CPU the bench's
+`getrusage`, which the in-process results above count with `perf stat` instead.
+
+| Case | MB/s | CPU s a GB, all | Host's process | Source's | Destination's | In process, same rounds: MB/s, CPU s a GB |
+|---|---|---|---|---|---|---|
+| `socket/destination/64x80000` | 1 517 (1 497–1 579) | 1.31 (1.30–1.33) | 0.46 (0.45–0.47) | in host | 0.85 (0.84–0.87) | 2 099, 0.77 |
+| `socket/source/64x80000` | 2 241 (2 100–2 364) | 1.11 (1.07–1.13) | 0.55 (0.53–0.57) | 0.55 (0.53–0.57) | in host | 2 750, 0.66 |
+| `socket/both/64x80000` | 1 394 (1 354–1 410) | 2.38 (2.32–2.43) | 0.96 (0.92–0.98) | 0.57 (0.56–0.57) | 0.86 (0.84–0.90) | 1 353, 1.39 |
+| `socket/destination/512x10000` | 3 098 (2 800–3 189) | 1.03 (1.00–1.15) | 0.50 (0.49–0.56) | in host | 0.52 (0.51–0.59) | 3 474, 0.66 |
+| `socket/source/512x10000` | 2 981 (2 773–3 162) | 1.12 (1.07–1.27) | 0.56 (0.54–0.63) | 0.56 (0.53–0.63) | in host | 3 347, 0.67 |
+| `socket/both/512x10000` | 2 440 (2 265–2 455) | 2.06 (1.98–2.17) | 0.80 (0.78–0.84) | 0.63 (0.61–0.66) | 0.64 (0.59–0.67) | 2 003, 1.16 |
+| `tls/destination/64x80000` | 1 060 (972–1 089) | 1.41 (1.39–1.51) | 0.51 (0.50–0.54) | in host | 0.91 (0.89–0.97) | 1 628, 0.98 |
+| `tls/source/64x80000` | 1 585 (1 456–1 758) | 1.24 (1.16–1.28) | 0.58 (0.58–0.64) | 0.64 (0.57–0.68) | in host | 1 888, 0.93 |
+| `tls/both/64x80000` | 1 019 (909–1 027) | 2.71 (2.66–2.95) | 1.12 (1.05–1.18) | 0.66 (0.60–0.76) | 0.95 (0.94–1.02) | 938, 1.95 |
+| `tls/destination/512x10000` | 1 519 (1 008–1 576) | 1.51 (1.46–2.07) | 0.76 (0.71–0.96) | in host | 0.74 (0.73–1.14) | 2 279, 0.94 |
+| `tls/source/512x10000` | 1 491 (1 068–1 547) | 1.75 (1.66–2.53) | 0.92 (0.90–1.30) | 0.83 (0.77–1.23) | in host | 2 174, 0.98 |
+| `tls/both/512x10000` | 1 294 (1 215–1 328) | 2.90 (2.81–3.20) | 1.22 (1.18–1.25) | 0.88 (0.78–0.97) | 0.84 (0.82–0.97) | 1 198, 1.83 |
+
+- With both connectors served, processes of their own move as much or more than the shared
+  runtime: 2 440 against 2 003 MB/s over the socket in small frames, 1 019 against 938 and
+  1 294 against 1 198 over mutual TLS, and 1 394 against 1 353 over the socket in large frames,
+  within both ranges.
+- With one connector served, they move 11–35 % less. The served connector runs on the
+  efficient cores and the other in the host's process on the performance cores; these rounds do
+  not tell the cores' share of the loss from the separation's.
+- The whole pipeline takes 1.3–1.8 times the CPU a GB that the shared runtime does.
+- The host's own process, both connectors served, takes 0.80–0.96 CPU seconds a GB over the
+  socket and 1.12–1.22 over mutual TLS, about two fifths of the pipeline's.
+- Both served over mutual TLS move 1 019–1 294 MB/s, against the 2 500–3 500 MB/s loopback
+  target.
