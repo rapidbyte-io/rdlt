@@ -389,6 +389,32 @@ fn holds_prost_s_bytes<M: Chained + Clone>(message: &M) -> Result<(), TestCaseEr
     Ok(())
 }
 
+#[test]
+fn a_chained_batch_at_its_edges_is_the_bytes_prost_encodes() {
+    // prost leaves out an empty field, a zero segment among them, and a body of 2^21 bytes or
+    // more takes a length of four bytes.
+    for (segment, header, body) in [
+        (0, 0, 0),
+        (0, 0, 1),
+        (1, 0, 0),
+        (0, 5, 0),
+        (u64::MAX, 127, 127),
+        (7, 128, 128),
+        (7, 16_383, 16_384),
+        (7, 3, (1 << 21) - 1),
+        (7, 3, 1 << 21),
+    ] {
+        let frame = batch_frame(segment, &vec![1; header], &vec![2; body]);
+        holds_prost_s_bytes(&frame).unwrap();
+        let chunks = frame.chunks();
+        assert_eq!(
+            chunks.body.map_or(0, |body| body.len()),
+            body,
+            "{segment} {header} {body}"
+        );
+    }
+}
+
 fn bytes(most: usize) -> impl Strategy<Value = Bytes> {
     proptest::collection::vec(any::<u8>(), 0..most).prop_map(Bytes::from)
 }
