@@ -79,8 +79,10 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
 - **Benchmarks build as shipped binaries.** The `bench` feature exposes the shredder to a
   criterion bench, which builds with the release profile's fat LTO and one codegen unit, as every
   shipped binary does. The comparison, its method and the core scaling live in
-  [docs/perf/shred.md](../perf/shred.md); scaling is measured on cores of one type. The
-  base-against-head instruction-count gate of §21.3 lands with the other §20.14 gates in M9.
+  [docs/perf/shred.md](../perf/shred.md); scaling is measured on cores of one type. Each pull
+  request's instructions and allocations for shredding and normalizing, beside the engine's other
+  hot paths, are counted against the base it merges into, built in the same CI job
+  ([docs/perf/instructions.md](../perf/instructions.md)).
 - **`Emitter::rows` keeps `serde_json`.** The spec serializes rows with sonic-rs, but sonic-rs
   writes `serde_json`'s private tokens (raw values, arbitrary-precision numbers) out as objects,
   so rows holding them would be pushed as different JSON.
