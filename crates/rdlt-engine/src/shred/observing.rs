@@ -15,6 +15,7 @@ use super::build::Scalar;
 use super::meter::{KEY, Meter, OBJECT_SHAPE};
 use super::observe::{Observed, Shape};
 use super::visit::{Context, MAX_DEPTH, Skip, nest};
+use crate::limits::QUOTED_BYTES;
 
 #[cfg(test)]
 mod tests;
@@ -78,7 +79,7 @@ impl<'de> Visitor<'de> for Record<'_> {
     }
 }
 
-/// Observes the object `map`, `depth` levels deep, into `shape`.
+/// Observes the object `map`, `depth` levels deep, into `shape`; a key it names twice is refused.
 fn object<'de, A: MapAccess<'de>>(
     shape: &mut Shape,
     mut map: A,
@@ -86,9 +87,11 @@ fn object<'de, A: MapAccess<'de>>(
     depth: u64,
 ) -> Result<(), A::Error> {
     nest(move || {
+        let object = context.object();
         while let Some(position) = map.next_key_seed(Key {
             shape: &mut *shape,
             context,
+            object,
         })? {
             map.next_value_seed(Look {
                 node: shape.field_mut(position),
@@ -101,10 +104,11 @@ fn object<'de, A: MapAccess<'de>>(
 }
 
 /// The position of an object key among the fields observed, a new field counted among the
-/// chunk's columns.
+/// chunk's columns; a key the object `object` named before is refused.
 struct Key<'a> {
     shape: &'a mut Shape,
     context: &'a Context,
+    object: u64,
 }
 
 impl<'de> DeserializeSeed<'de> for Key<'_> {
@@ -123,17 +127,25 @@ impl Visitor<'_> for Key<'_> {
     }
 
     fn visit_str<E: de::Error>(self, name: &str) -> Result<usize, E> {
-        if let Some(position) = self.shape.position(name) {
-            return Ok(position);
+        match self.shape.name(name, self.object) {
+            Some((position, false)) => return Ok(position),
+            Some((_, true)) => return Err(repeated(self.context, name)),
+            None => {}
         }
         self.context
             .columns
             .add()
             .map_err(|error| self.context.fail(error))?;
         self.context.held(Meter::key(name))?;
-        self.shape.push(name.into(), Observed::Null);
-        Ok(self.shape.fields().len() - 1)
+        Ok(self.shape.push_named(name.into(), self.object))
     }
+}
+
+/// The error of a key an object names again.
+#[cold]
+fn repeated<E: de::Error>(context: &Context, name: &str) -> E {
+    let key = rdlt_connector::text::shown(name, QUOTED_BYTES);
+    context.fail(ShredError::DuplicateKey(key))
 }
 
 /// One value, `depth` levels deep, observed into `node`.

@@ -39,10 +39,18 @@ pub(crate) enum Observed {
 }
 
 /// The fields objects of one column held, in the order first seen.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Shape {
     fields: Vec<(Arc<str>, Observed)>,
-    index: BTreeMap<Arc<str>, usize>,
+    /// Each field's position, and the object of the observing parse that last named it; 0 for
+    /// none.
+    index: BTreeMap<Arc<str>, (usize, u64)>,
+}
+
+impl PartialEq for Shape {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields
+    }
 }
 
 impl Shape {
@@ -58,13 +66,28 @@ impl Shape {
 
     /// The position of the field `name`, if the shape has it.
     pub(crate) fn position(&self, name: &str) -> Option<usize> {
-        self.index.get(name).copied()
+        self.index.get(name).map(|&(position, _)| position)
     }
 
     /// Adds the field `name`, new to the shape, observed as `observed`.
     pub(crate) fn push(&mut self, name: Arc<str>, observed: Observed) {
-        self.index.insert(Arc::clone(&name), self.fields.len());
+        self.index.insert(Arc::clone(&name), (self.fields.len(), 0));
         self.fields.push((name, observed));
+    }
+
+    /// Notes that `object`, numbered by the parse observing the shape, names the field `name`:
+    /// the field's position, if the shape has it, and whether `object` named it before.
+    pub(crate) fn name(&mut self, name: &str, object: u64) -> Option<(usize, bool)> {
+        let (position, named) = self.index.get_mut(name)?;
+        Some((*position, std::mem::replace(named, object) == object))
+    }
+
+    /// Adds the field `name`, new to the shape, as `object` names it: its position.
+    pub(crate) fn push_named(&mut self, name: Arc<str>, object: u64) -> usize {
+        let position = self.fields.len();
+        self.index.insert(Arc::clone(&name), (position, object));
+        self.fields.push((name, Observed::Null));
+        position
     }
 
     /// What the field at `position` held, to observe more values in.
@@ -76,7 +99,7 @@ impl Shape {
     pub(crate) fn join(&mut self, other: &Self) {
         for (name, observed) in &other.fields {
             match self.index.get(name) {
-                Some(&position) => self.fields[position].1.join(observed),
+                Some(&(position, _)) => self.fields[position].1.join(observed),
                 None => self.push(Arc::clone(name), observed.clone()),
             }
         }
