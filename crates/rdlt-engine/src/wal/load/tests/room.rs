@@ -145,7 +145,7 @@ pub(super) fn started(
         origin: load(),
     };
     let bound = NonZeroU64::new(limit).expect("a limit");
-    LoadLog::start(wal, owner, bound, None)
+    LoadLog::start(wal, owner, bound, (None, Arc::default()))
 }
 
 /// Checks neither what `log` counts nor what `store` holds passes `most` bytes.

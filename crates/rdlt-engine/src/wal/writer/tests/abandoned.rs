@@ -38,7 +38,12 @@ async fn a_segment_its_partition_abandons_holds_no_chunk_back() {
 #[test]
 fn settled_segments_are_forgotten_once_no_chunk_holds_them() {
     let shared = Arc::new(Shared::new(u64::MAX));
-    let mut log = Log::new(Arc::new(MemoryWal::default()), owner(), shared);
+    let mut log = Log::new(
+        Arc::new(MemoryWal::default()),
+        owner(),
+        shared,
+        Arc::default(),
+    );
     // Segment 1 has frames in chunk 0 alone, segment 2 in chunks 0 and 1, segment 3 in none.
     log.holds(SegmentId(1));
     log.holds(SegmentId(2));

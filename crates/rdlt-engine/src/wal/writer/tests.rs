@@ -22,6 +22,7 @@ use super::super::memory::MemoryWal;
 use super::super::store::WalStore;
 use super::{Command, Owner, WalWriter};
 use crate::error::{Error, ErrorKind};
+use crate::report::Tally;
 
 fn pipeline() -> PipelineId {
     PipelineId::parse("orders").expect("a valid pipeline")
@@ -80,10 +81,28 @@ fn segments(ids: &[u64]) -> SegmentSet {
     ids.iter().copied().map(SegmentId).collect()
 }
 
+/// The frame of a batch of `count` rows of `segment` for the table at `table`, the `ordinal`th
+/// logged.
+fn batch_frame(segment: u64, table: u32, ordinal: u64, count: u64) -> Bytes {
+    let schema = Schema::new(vec![ArrowField::new("id", DataType::Int64, false)]);
+    let row = i64::try_from(segment).unwrap_or(0);
+    let values: Vec<i64> = (0..count).map(|_| row).collect();
+    let rows = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(Int64Array::from(values))])
+        .expect("a valid batch");
+    encoded(&Frame::Batch(Batch {
+        segment: SegmentId(segment),
+        table,
+        ordinal,
+        batch: rows,
+    }))
+}
+
 /// A writer driven as a load drives one, counting the batches it logs of each segment, each of
 /// one row, so its seals count them.
 struct Driving {
     writer: WalWriter,
+    /// What the writer counts.
+    tally: Arc<Tally>,
     /// The batches and rows logged of each segment.
     logged: BTreeMap<u64, (u64, u64)>,
     /// The ordinal the next batch takes.
@@ -93,9 +112,10 @@ struct Driving {
 }
 
 impl Driving {
-    fn new(writer: WalWriter) -> Self {
+    fn new(writer: WalWriter, tally: Arc<Tally>) -> Self {
         Self {
             writer,
+            tally,
             logged: BTreeMap::new(),
             ordinal: 0,
             schemas: parking_lot::Mutex::default(),
@@ -122,17 +142,7 @@ impl Driving {
 
     /// Logs a batch of `count` rows of `segment` for the table at `table`.
     async fn rows(&mut self, segment: u64, table: u32, count: u64) {
-        let schema = Schema::new(vec![ArrowField::new("id", DataType::Int64, false)]);
-        let row = i64::try_from(segment).unwrap_or(0);
-        let values: Vec<i64> = (0..count).map(|_| row).collect();
-        let rows = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(Int64Array::from(values))])
-            .expect("a valid batch");
-        let frame = encoded(&Frame::Batch(Batch {
-            segment: SegmentId(segment),
-            table,
-            ordinal: self.ordinal,
-            batch: rows,
-        }));
+        let frame = batch_frame(segment, table, self.ordinal, count);
         self.ordinal += 1;
         let logged = self.logged.entry(segment).or_default();
         *logged = (logged.0 + 1, logged.1 + count);
@@ -282,8 +292,9 @@ where
 {
     store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = store;
-    let (writer, task) = WalWriter::start(wal, owner(), u64::MAX);
-    let (ended, ()) = tokio::join!(task, drive(Driving::new(writer)));
+    let tally = Arc::new(Tally::default());
+    let (writer, task) = WalWriter::start(wal, owner(), u64::MAX, Arc::clone(&tally));
+    let (ended, ()) = tokio::join!(task, drive(Driving::new(writer, tally)));
     ended
 }
 

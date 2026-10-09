@@ -20,6 +20,54 @@ pub struct Counters {
     pub phases: CommitPhases,
     /// What each lane of the run waited for and spent its time on, by the lane's place.
     pub lanes: Vec<LaneCounters>,
+    /// What the run asked of its write-ahead log store, and the bytes it wrote and read.
+    pub log: LogCounters,
+}
+
+/// What a run asked of its write-ahead log store, and the bytes that moved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct LogCounters {
+    /// Bytes appended to chunks staged, the carried among them.
+    pub appended: u64,
+    /// Bytes of open segments' frames copied out of older chunks into the chunk staged.
+    pub carried: u64,
+    /// Bytes read from published chunks: a replay's, and a carry's.
+    pub read: u64,
+    /// Chunks a full log published between commits to hold less.
+    pub reliefs: u64,
+    /// The requests made of the store, by operation.
+    pub requests: StoreRequests,
+}
+
+/// Requests made of a write-ahead log store, by operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct StoreRequests {
+    /// Asks for the store's identity.
+    pub identity: u64,
+    /// Logs opened.
+    pub open_log: u64,
+    /// Chunks staged.
+    pub stage: u64,
+    /// Appends to chunks staged.
+    pub append: u64,
+    /// Chunks published.
+    pub publish: u64,
+    /// Chunks staged and discarded.
+    pub discard: u64,
+    /// Listings of a pipeline's logs.
+    pub loads: u64,
+    /// Listings of what removed logs left behind.
+    pub leftovers: u64,
+    /// Listings of a log's chunks.
+    pub chunks: u64,
+    /// Reads of a published chunk.
+    pub read: u64,
+    /// Deletions of what a log staged.
+    pub remove_staged: u64,
+    /// Deletions of a published chunk.
+    pub remove: u64,
+    /// Removals of a whole log.
+    pub remove_log: u64,
 }
 
 /// Jobs on the compute pool, and how long they waited to start and ran.

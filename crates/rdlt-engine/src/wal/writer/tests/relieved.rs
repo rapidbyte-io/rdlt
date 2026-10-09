@@ -65,6 +65,7 @@ async fn a_chunk_published_between_commits_records_the_receipts_and_lets_go_of_w
             chunks(&observed),
             [(1, relieved.map(str::to_owned).to_vec())]
         );
+        assert_eq!(log.tally.counters().log.reliefs, 1);
         // The commit after it takes the batch it holds, which a replay reads from it.
         log.commit(2, &[2]).await.expect("durable");
         assert_eq!(numbers(&observed), [1, 2]);

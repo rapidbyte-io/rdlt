@@ -23,6 +23,7 @@ pub(crate) use self::shared::{Kept, Shared};
 use super::store::{StagedChunk, WalStore};
 use crate::crash::crash_point;
 use crate::error::Error;
+use crate::report::Tally;
 
 /// Frames queued for the writer before a sender waits: a batch's frame holds its whole batch.
 const QUEUED: usize = 16;
@@ -104,19 +105,20 @@ pub(crate) struct WalWriter {
 
 impl WalWriter {
     /// The writer of `owner`'s log in `store`, which may hold `limit` bytes, and the task that
-    /// writes it, for the caller's scope to run; the task ends once every sender is dropped or
-    /// the log is closed.
+    /// writes it, for the caller's scope to run, counting what it carries and relieves into
+    /// `tally`; the task ends once every sender is dropped or the log is closed.
     pub(crate) fn start(
         store: Arc<dyn WalStore>,
         owner: Owner,
         limit: u64,
+        tally: Arc<Tally>,
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
     ) {
         let (commands, receiver) = mpsc::channel(QUEUED);
         let shared = Arc::new(Shared::new(limit));
-        let log = Log::new(store, owner, Arc::clone(&shared));
+        let log = Log::new(store, owner, Arc::clone(&shared), tally);
         (Self { commands, shared }, log.run(receiver))
     }
 
@@ -135,10 +137,12 @@ impl WalWriter {
 }
 
 impl Log {
-    /// The writer of `owner`'s log in `store`, sharing `shared`, before anything is written.
-    fn new(store: Arc<dyn WalStore>, owner: Owner, shared: Arc<Shared>) -> Self {
+    /// The writer of `owner`'s log in `store`, sharing `shared` and counting into `tally`,
+    /// before anything is written.
+    fn new(store: Arc<dyn WalStore>, owner: Owner, shared: Arc<Shared>, tally: Arc<Tally>) -> Self {
         let mut log = Self {
             shared,
+            tally,
             store,
             owner,
             chunk: 0,
@@ -193,6 +197,8 @@ struct Log {
     /// What the log holds on disk, and its first failure: after a failed write, what the log
     /// holds is unknown, and no later frame may be trusted to follow it.
     shared: Arc<Shared>,
+    /// Where what the writer carries and relieves is counted.
+    tally: Arc<Tally>,
 }
 
 impl Log {

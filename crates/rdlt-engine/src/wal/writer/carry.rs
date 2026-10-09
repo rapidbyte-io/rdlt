@@ -189,6 +189,8 @@ impl Log {
         if let Some(written) = self.written.get_mut(&number) {
             written.carried = true;
         }
+        self.tally
+            .add(|counters| counters.log.carried = counters.log.carried.saturating_add(wrote));
         Ok(wrote)
     }
 }

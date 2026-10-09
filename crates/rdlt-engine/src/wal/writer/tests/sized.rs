@@ -112,6 +112,7 @@ fn measuring_the_room_a_log_keeps_allocates_nothing() {
         Arc::new(MemoryWal::default()),
         super::owner(),
         Arc::new(super::super::Shared::new(1 << 20)),
+        Arc::default(),
     );
     let heap = &crate::cost::tests::HEAP;
     heap.reset_peak_usage();

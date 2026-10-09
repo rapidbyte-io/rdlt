@@ -142,7 +142,7 @@ fn unreplayable(
             "a full read starts again from the beginning, which its source cannot read again once \
              it acknowledged it",
         )),
-        ReadMode::Incremental | ReadMode::Cdc if context.env.wal().is_none() => Some((
+        ReadMode::Incremental | ReadMode::Cdc if context.wal.is_none() => Some((
             "wal_required",
             "its source cannot read again what it acknowledged, so its loads keep a write-ahead \
              log, and the engine has nowhere to keep one",
