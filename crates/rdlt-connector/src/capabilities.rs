@@ -1,4 +1,4 @@
-//! What a destination can store and how it commits.
+//! What a destination can store.
 
 #[cfg(test)]
 mod tests;
@@ -12,16 +12,6 @@ use crate::types::TypeKind;
 
 /// The longest identifier [`Capabilities::minimal`] allows, in bytes.
 const MINIMAL_IDENTIFIER_LEN: NonZeroU16 = NonZeroU16::new(63).expect("63 is non-zero");
-
-/// How a destination publishes a commit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CommitKind {
-    /// In one database transaction.
-    Transactional,
-    /// With one conditional write of a manifest that lists published files and state.
-    Manifest,
-}
 
 /// The write modes a destination supports.
 #[expect(
@@ -210,8 +200,6 @@ impl IdentifierRules {
 /// Everything the engine needs to know about a destination before writing to it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
-    /// How commits are published.
-    pub commit: CommitKind,
     /// Supported write modes.
     pub write_modes: WriteModes,
     /// Supported delete modes.
@@ -243,17 +231,14 @@ pub struct Capabilities {
     pub identifiers: IdentifierRules,
     /// Writers the engine may run at once.
     pub max_parallel_writers: NonZeroU16,
-    /// The batch size the destination writes best, in bytes.
-    pub preferred_batch_bytes: Option<u64>,
 }
 
 impl Capabilities {
-    /// A transactional, append-only destination for scalar types that adds columns, with
-    /// case-preserving identifiers of up to 63 ASCII word characters and one writer.
+    /// An append-only destination for scalar types that adds columns, with case-preserving
+    /// identifiers of up to 63 ASCII word characters and one writer.
     pub fn minimal() -> Self {
         use TypeKind as K;
         Self {
-            commit: CommitKind::Transactional,
             write_modes: WriteModes {
                 append: true,
                 ..WriteModes::default()
@@ -291,7 +276,6 @@ impl Capabilities {
                 reserved_table_prefixes: BTreeSet::new(),
             },
             max_parallel_writers: NonZeroU16::MIN,
-            preferred_batch_bytes: None,
         }
     }
 }

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
-use rdlt_connector::{CommitKind, ConnectorErrorKind, IdentifierChars};
+use rdlt_connector::{ConnectorErrorKind, IdentifierChars};
 
 use super::{FaultPoint, World, capabilities};
 use crate::rng::SplitMix64;
@@ -30,16 +30,10 @@ fn some_destinations_cannot_add_columns_until_granted() {
 }
 
 #[test]
-fn destinations_differ_in_commits_and_identifier_rules() {
+fn destinations_differ_in_identifier_rules() {
     let drawn: Vec<_> = (0..300)
         .map(|seed| capabilities(&mut SplitMix64::new(seed), Features::ALL))
         .collect();
-    assert!(drawn.iter().any(|caps| caps.commit == CommitKind::Manifest));
-    assert!(
-        drawn
-            .iter()
-            .any(|caps| caps.commit == CommitKind::Transactional)
-    );
     assert!(
         drawn
             .iter()

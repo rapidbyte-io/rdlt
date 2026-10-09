@@ -8,8 +8,8 @@ use proptest::prelude::*;
 
 use super::{Invalid, v1};
 use crate::capabilities::{
-    Capabilities, CommitKind, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules,
-    NestedSupport, SchemaChanges, WriteModes,
+    Capabilities, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules, NestedSupport,
+    SchemaChanges, WriteModes,
 };
 use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec};
 use crate::commit::{ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentSet};
@@ -151,15 +151,9 @@ fn capabilities() -> impl Strategy<Value = Capabilities> {
         proptest::collection::btree_set((kind(), kind()), 0..5),
         identifier_rules(),
         1..=u16::MAX,
-        proptest::option::of(any::<u64>()),
     )
         .prop_map(
-            |(flags, types, widenings, identifiers, writers, preferred)| Capabilities {
-                commit: if flags[0] {
-                    CommitKind::Manifest
-                } else {
-                    CommitKind::Transactional
-                },
+            |(flags, types, widenings, identifiers, writers)| Capabilities {
                 write_modes: WriteModes {
                     append: flags[1],
                     replace: flags[2],
@@ -185,7 +179,6 @@ fn capabilities() -> impl Strategy<Value = Capabilities> {
                 },
                 identifiers,
                 max_parallel_writers: NonZeroU16::new(writers).unwrap(),
-                preferred_batch_bytes: preferred,
             },
         )
 }

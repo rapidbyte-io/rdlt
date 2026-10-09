@@ -71,16 +71,6 @@ message Catalog {
   repeated StreamSpec streams = 1;
 }
 
-// How a destination makes a commit visible.
-enum CommitKind {
-  // Never sent; a receiver refuses it.
-  COMMIT_KIND_UNSPECIFIED = 0;
-  // In one transaction.
-  COMMIT_KIND_TRANSACTIONAL = 1;
-  // By publishing a manifest.
-  COMMIT_KIND_MANIFEST = 2;
-}
-
 // The write modes a destination supports.
 message WriteModes {
   // Appending rows.
@@ -163,30 +153,26 @@ message IdentifierRules {
   repeated string reserved_table_prefixes = 5;
 }
 
-// What a destination can store and how it commits.
+// What a destination can store.
 message Capabilities {
-  // How it commits.
-  CommitKind commit = 1;
   // The write modes it supports.
-  WriteModes write_modes = 2;
+  WriteModes write_modes = 1;
   // The deletes it supports.
-  DeleteModes delete_modes = 3;
+  DeleteModes delete_modes = 2;
   // Whether it applies partial updates.
-  bool partial_updates = 4;
+  bool partial_updates = 3;
   // The nested values it stores natively.
-  NestedSupport nested = 5;
+  NestedSupport nested = 4;
   // The type kinds it stores.
-  repeated TypeKind types = 6;
+  repeated TypeKind types = 5;
   // The schema changes it applies.
-  SchemaChanges schema_changes = 7;
+  SchemaChanges schema_changes = 6;
   // Its identifier rules.
-  IdentifierRules identifiers = 8;
+  IdentifierRules identifiers = 7;
   // How many writers may stage at once; at least 1.
-  uint32 max_parallel_writers = 9;
-  // The batch size it prefers, in bytes, if it has a preference.
-  optional uint64 preferred_batch_bytes = 10;
+  uint32 max_parallel_writers = 8;
   // Whether it merges change streams: each row in sequence order, only past the row it holds.
-  bool merge_changes = 11;
+  bool merge_changes = 9;
   // Whether it drops the tables a commit names, atomically with the commit.
-  bool drop_tables = 12;
+  bool drop_tables = 10;
 }

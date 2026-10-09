@@ -92,61 +92,51 @@ pub(crate) static CAPABILITIES: Form = Form {
     fields: &[
         Field {
             number: 1,
-            kind: Kind::Scalar(4),
-            repeated: false,
-        },
-        Field {
-            number: 2,
             kind: Kind::Message(&WRITE_MODES),
             repeated: false,
         },
         Field {
-            number: 3,
+            number: 2,
             kind: Kind::Message(&DELETE_MODES),
             repeated: false,
         },
         Field {
-            number: 4,
+            number: 3,
             kind: Kind::Scalar(1),
             repeated: false,
         },
         Field {
-            number: 5,
+            number: 4,
             kind: Kind::Message(&NESTED_SUPPORT),
             repeated: false,
         },
         Field {
-            number: 6,
+            number: 5,
             kind: Kind::Scalar(4),
             repeated: true,
         },
         Field {
-            number: 7,
+            number: 6,
             kind: Kind::Message(&SCHEMA_CHANGES),
             repeated: false,
         },
         Field {
-            number: 8,
+            number: 7,
             kind: Kind::Message(&IDENTIFIER_RULES),
             repeated: false,
         },
         Field {
-            number: 9,
+            number: 8,
             kind: Kind::Scalar(4),
             repeated: false,
         },
         Field {
-            number: 10,
-            kind: Kind::Scalar(8),
-            repeated: false,
-        },
-        Field {
-            number: 11,
+            number: 9,
             kind: Kind::Scalar(1),
             repeated: false,
         },
         Field {
-            number: 12,
+            number: 10,
             kind: Kind::Scalar(1),
             repeated: false,
         },

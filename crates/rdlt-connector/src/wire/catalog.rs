@@ -6,8 +6,8 @@ use std::num::NonZeroU16;
 use super::types::type_kind;
 use super::{Invalid, narrow, required, v1};
 use crate::capabilities::{
-    Capabilities, CommitKind, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules,
-    NestedSupport, SchemaChanges, WriteModes,
+    Capabilities, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules, NestedSupport,
+    SchemaChanges, WriteModes,
 };
 use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec};
 use crate::id::StreamName;
@@ -203,10 +203,6 @@ impl From<&Capabilities> for v1::Capabilities {
         let modes = &capabilities.write_modes;
         let nested = &capabilities.nested;
         Self {
-            commit: match capabilities.commit {
-                CommitKind::Transactional => v1::CommitKind::Transactional,
-                CommitKind::Manifest => v1::CommitKind::Manifest,
-            } as i32,
             write_modes: Some(v1::WriteModes {
                 append: modes.append,
                 replace: modes.replace,
@@ -244,7 +240,6 @@ impl From<&Capabilities> for v1::Capabilities {
             }),
             identifiers: Some(v1::IdentifierRules::from(&capabilities.identifiers)),
             max_parallel_writers: u32::from(capabilities.max_parallel_writers.get()),
-            preferred_batch_bytes: capabilities.preferred_batch_bytes,
         }
     }
 }
@@ -253,13 +248,6 @@ impl TryFrom<v1::Capabilities> for Capabilities {
     type Error = Invalid;
 
     fn try_from(capabilities: v1::Capabilities) -> Result<Self, Invalid> {
-        let commit = match v1::CommitKind::try_from(capabilities.commit) {
-            Ok(v1::CommitKind::Transactional) => CommitKind::Transactional,
-            Ok(v1::CommitKind::Manifest) => CommitKind::Manifest,
-            Ok(v1::CommitKind::Unspecified) | Err(_) => {
-                return Err(Invalid::Unknown("commit kind"));
-            }
-        };
         let modes = required("write modes", capabilities.write_modes)?;
         let deletes = required("delete modes", capabilities.delete_modes)?;
         let nested = required("nested support", capabilities.nested)?;
@@ -271,7 +259,6 @@ impl TryFrom<v1::Capabilities> for Capabilities {
             .collect::<Result<BTreeSet<_>, Invalid>>()?;
         let writers: u16 = narrow("parallel writers", capabilities.max_parallel_writers)?;
         Ok(Self {
-            commit,
             write_modes: WriteModes {
                 append: modes.append,
                 replace: modes.replace,
@@ -305,7 +292,6 @@ impl TryFrom<v1::Capabilities> for Capabilities {
             )?)?,
             max_parallel_writers: NonZeroU16::new(writers)
                 .ok_or(Invalid::OutOfRange("parallel writers"))?,
-            preferred_batch_bytes: capabilities.preferred_batch_bytes,
         })
     }
 }
