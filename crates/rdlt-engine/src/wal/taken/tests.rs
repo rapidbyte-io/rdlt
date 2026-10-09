@@ -245,7 +245,8 @@ async fn a_log_another_replay_removed_since_it_was_listed_is_gone_not_a_failure(
     assert_eq!(second, Taken::Gone);
 }
 
-/// A store in which a rival replay deletes every staging of the log just after it is begun.
+/// A store in which a rival replay deletes every staging of the log just after it is begun, and
+/// removes the log as it is opened.
 #[derive(Debug, Default)]
 struct Rival {
     inner: MemoryWal,
@@ -260,7 +261,11 @@ impl WalStore for Rival {
         pipeline: &'a PipelineId,
         load: LoadId,
     ) -> BoxFuture<'a, io::Result<()>> {
-        self.inner.open_log(pipeline, load)
+        Box::pin(async move {
+            self.inner.open_log(pipeline, load).await?;
+            self.inner.remove_log(pipeline, load).await?;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        })
     }
 
     fn stage<'a>(
@@ -350,4 +355,69 @@ async fn a_fence_whose_staging_a_rival_deletes_is_tried_again_and_never_fails_un
         .await
         .expect("no failure");
     assert!(!released);
+}
+
+#[tokio::test]
+async fn an_open_a_rival_replay_takes_is_running_and_one_refused_otherwise_frees_nothing() {
+    // A rival replay removes the log as it is opened: another attempt runs, and this one waits.
+    let taken = super::open_own(&Rival::default(), &pipeline(), load())
+        .await
+        .expect_err("the log is gone");
+    assert_eq!(taken.code(), Some("wal_running"), "{taken}");
+    assert!(taken.is_retryable());
+    // An open refused for anything but a full disk gives back no staging of another load.
+    let store = MemoryWal::default();
+    store.open(&pipeline(), load());
+    let other = LoadId::from_parts(UNIX_EPOCH, 6);
+    store.open(&pipeline(), other);
+    let staging = store
+        .stage(
+            &pipeline(),
+            Chunk {
+                load: other,
+                number: 0,
+            },
+        )
+        .await
+        .expect("stages");
+    super::open_own(&store, &pipeline(), load())
+        .await
+        .expect_err("the log is open already");
+    assert_eq!(store.disk.stagings(), 1, "the other load's staging stays");
+    assert_eq!(
+        store.loads(&pipeline()).await.expect("lists"),
+        [load(), other]
+    );
+    drop(staging);
+}
+
+#[tokio::test]
+async fn a_release_leaves_a_removed_log_to_its_remover_and_fails_on_any_other_failure() {
+    // Another replay removed the log: the release leaves it to that replay, failing nothing.
+    let store = MemoryWal::default();
+    store.open(&pipeline(), load());
+    store
+        .remove_log(&pipeline(), load())
+        .await
+        .expect("removes");
+    let released = super::release(&store, &pipeline(), load(), 0)
+        .await
+        .expect("left to the replay that removed it");
+    assert!(!released);
+    // A fence the store fails to publish, or to stage, fails the release.
+    let store = MemoryWal::default();
+    store.open(&pipeline(), load());
+    *store.unpublishable.lock() = true;
+    assert!(
+        super::release(&store, &pipeline(), load(), 0)
+            .await
+            .is_err()
+    );
+    *store.unpublishable.lock() = false;
+    *store.failing.lock() = true;
+    assert!(
+        super::release(&store, &pipeline(), load(), 0)
+            .await
+            .is_err()
+    );
 }
