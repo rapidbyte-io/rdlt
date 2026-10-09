@@ -105,3 +105,19 @@ async fn a_chunk_holding_a_commit_s_seals_takes_no_other_frame_before_the_commit
     .await
     .expect("the writer ends");
 }
+
+#[test]
+fn measuring_the_room_a_log_keeps_allocates_nothing() {
+    let log = super::super::Log::new(
+        Arc::new(MemoryWal::default()),
+        super::owner(),
+        Arc::new(super::super::Shared::new(1 << 20)),
+    );
+    let heap = &crate::cost::tests::HEAP;
+    heap.reset_peak_usage();
+    let before = heap.current_usage();
+    let measured = log.ending();
+    let peak = heap.peak_usage().saturating_sub(before);
+    assert!(measured.is_ok());
+    assert_eq!(peak, 0);
+}

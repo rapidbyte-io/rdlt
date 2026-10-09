@@ -698,3 +698,53 @@ fn a_frame_lacking_any_member_it_writes_is_refused() {
     }), "seals": 1, "phases": 0 });
     every_member_required::<Committing>(&commit);
 }
+
+#[test]
+fn a_header_frame_s_length_is_what_it_encodes_to() {
+    let opened = [
+        (0, None),
+        (9, Some((load(), CommitSeq::FIRST))),
+        (10, Some((load(), CommitSeq::FIRST.next()))),
+        (u64::MAX, None),
+    ];
+    for (chunk, opened) in opened {
+        let header = Header {
+            pipeline: PipelineId::parse("orders").unwrap(),
+            load: load(),
+            chunk,
+            epoch: Epoch(3),
+            opened,
+            origin: load(),
+        };
+        let encoded = Frame::Header(header.clone()).encode().unwrap();
+        assert_eq!(
+            super::header_len(&header).unwrap(),
+            u64::try_from(encoded.len()).unwrap(),
+            "{chunk}"
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn an_end_frame_s_length_is_what_it_encodes_to(
+        live in proptest::collection::vec(
+            prop_oneof![Just(0_u64), Just(9), Just(10), Just(u64::MAX), any::<u64>()],
+            0..20,
+        ),
+        received in proptest::collection::vec(
+            prop_oneof![Just(1_u64), Just(9), Just(10), Just(u64::MAX), 1..=u64::MAX],
+            0..20,
+        ),
+    ) {
+        let seqs: Vec<CommitSeq> = received
+            .iter()
+            .map(|seq| serde_json::from_str(&seq.to_string()).unwrap())
+            .collect();
+        let encoded = Frame::End(End { live: live.clone(), received: seqs }).encode().unwrap();
+        prop_assert_eq!(
+            super::end_len(live, received),
+            u64::try_from(encoded.len()).unwrap()
+        );
+    }
+}

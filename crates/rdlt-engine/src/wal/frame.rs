@@ -8,6 +8,7 @@
 //! own schema.
 
 mod arrow;
+mod len;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 
 pub(crate) use self::arrow::limits;
+pub(crate) use self::len::{end_len, header_len};
 
 /// The format of the chunks this engine writes.
 pub(crate) const VERSION: u16 = 4;
@@ -299,8 +301,12 @@ fn framed(kind: u8, payload: &[u8]) -> Result<Bytes, Error> {
 }
 
 fn json(value: &impl Serialize) -> Result<Vec<u8>, Error> {
-    serde_json::to_vec(value)
-        .map_err(|error| Error::internal(format!("encoding a write-ahead log frame: {error}")))
+    serde_json::to_vec(value).map_err(|error| unencoded(&error))
+}
+
+/// The error of a frame whose payload does not encode.
+fn unencoded(error: &serde_json::Error) -> Error {
+    Error::internal(format!("encoding a write-ahead log frame: {error}"))
 }
 
 fn batch_payload(batch: &Batch) -> Result<Vec<u8>, Error> {
