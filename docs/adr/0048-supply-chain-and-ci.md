@@ -102,6 +102,17 @@ This record decides what holds each statement, and says where a check ends.
     under callgrind, not from gungraun: gungraun counts only the benchmark function's thread
     unless the code calls valgrind's client requests, through a crate built with bindgen and
     libclang, and its runner would be one more locked tool held to the library's version.
+- **AWS-LC is built from its locked source, with the C compiler alone.**
+  - aws-lc-rs, rustls's provider (ADR 0018), links AWS-LC, which `aws-lc-sys` compiles from the
+    C and assembly its crate ships, with `cc`, against bindings it ships for Linux and macOS. Off
+    Windows and off FIPS that needs no CMake, NASM, Go or bindgen. A FIPS build needs CMake and
+    Go, and none is made.
+  - `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0`, so a system AWS-LC that `OPENSSL_DIR`
+    or pkg-config names is never linked in its place, and `AWS_LC_SYS_CMAKE_BUILDER=0`, so a
+    build that cannot use `cc` fails rather than turning to CMake. A variable of the same name
+    set outside cargo overrides them.
+  - cargo-deny checks its licence expression against `deny.toml` as any crate's: ISC,
+    Apache-2.0, MIT and BSD-3-Clause terms, and no OpenSSL licence.
 - **An action's SHA is checked against its version.** `pinact run --check --verify-comment`
   resolves the version in each pin's comment and fails when the SHA is not that release's commit.
 - **Every lockfile is checked for advisories, every day.**
@@ -158,6 +169,7 @@ This record decides what holds each statement, and says where a check ends.
   `pull_request`. What bounds it is the token: read-only, for a public repository.
 - `pins` is a new check: the repository's ruleset has to require it beside `lint`.
 - `instructions` is a new check: the repository's ruleset has to require it beside `lint`.
+- Every clean build, each build directory of cargo-mutants included, compiles AWS-LC's C.
 - The nightly advisory job builds xtask, about two minutes.
 - Each job logs the installer's warning that it has no token.
 - Restricting which actions the repository may run is a repository setting, outside the tree,
