@@ -503,6 +503,93 @@ async fn a_reset_fences_the_log_of_a_load_still_running_before_it_reads_it() {
     assert_eq!(published_ids("reset_racing", "events"), every);
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_stream_its_source_reads_again_is_reset_whatever_a_log_holds_of_it() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let wal: Arc<dyn WalStore> = Arc::new(LocalWal::new(base.path()));
+    let (script, source) = Script::new(vec![ScriptStream::new("events", 1, 10, 5)])
+        .connect("reset_replayable")
+        .await;
+    let plan = pipeline(
+        "reset-replayable",
+        [stream("events").read(ReadMode::Incremental)],
+    )
+    .with_wal(true);
+    let run = |destination| {
+        logging_engine(retrying(1), Arc::clone(&wal)).run(
+            plan.clone(),
+            Arc::clone(&source),
+            destination,
+        )
+    };
+    let loaded = run(memory("reset_replayable").await).await;
+    assert_eq!(
+        loaded.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        loaded.error
+    );
+    // The next load logs more rows and never commits them; the source can read them again.
+    script.streams[0].grow(10);
+    let logged = run(failing(memory("reset_replayable").await, Step::Commit)).await;
+    assert_eq!(logged.report.status, RunStatus::Failed);
+    logging_engine(commit_every(16), Arc::clone(&wal))
+        .reset(
+            "reset-replayable",
+            &["events"],
+            ResetScope::Positions,
+            Arc::clone(&source),
+            memory("reset_replayable").await,
+        )
+        .await
+        .expect("the log holds no rows only it holds");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reset_through_another_log_store_than_the_pipeline_s_is_refused() {
+    let (one, two) = (
+        tempfile::tempdir().expect("a temporary directory"),
+        tempfile::tempdir().expect("a temporary directory"),
+    );
+    let mut events = ScriptStream::new("events", 1, 10, 5);
+    events.replayable = false;
+    let (_, source) = Script::new(vec![events]).connect("reset_stores").await;
+    let plan = pipeline(
+        "reset-stores",
+        [stream("events").read(ReadMode::Incremental)],
+    );
+    let store = |base: &std::path::Path| -> Arc<dyn WalStore> { Arc::new(LocalWal::new(base)) };
+    let loaded = logging_engine(commit_every(10), store(one.path()))
+        .run(plan, source, memory("reset_stores").await)
+        .await;
+    assert_eq!(
+        loaded.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        loaded.error
+    );
+    let reset = |base: &std::path::Path| {
+        let engine = logging_engine(commit_every(16), store(base));
+        async move {
+            engine
+                .reset(
+                    "reset-stores",
+                    &["events"],
+                    ResetScope::Positions,
+                    generator(&[("other", 1, 1, 1)]).await,
+                    memory("reset_stores").await,
+                )
+                .await
+        }
+    };
+    // Another store may hold logs of the pipeline that no reset through this one reads.
+    let refused = reset(two.path())
+        .await
+        .expect_err("another store than the pipeline's");
+    assert_eq!(refused.code(), Some("wal_store_other"), "{refused}");
+    reset(one.path()).await.expect("the pipeline's own store");
+}
+
 #[tokio::test]
 async fn a_stream_whose_source_cannot_read_again_is_not_reset() {
     let mut events = ScriptStream::new("events", 1, 10, 5);
