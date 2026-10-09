@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rdlt_connector::{
-    Capabilities, CommitKind, ConnectorError, ConnectorErrorKind, IdentifierCase, IdentifierChars,
+    Capabilities, ConnectorError, ConnectorErrorKind, IdentifierCase, IdentifierChars,
     SchemaChanges, TypeKind,
 };
 use tokio::sync::Notify;
@@ -443,14 +443,11 @@ impl World {
     }
 }
 
-/// Destination capabilities drawn from `rng`: how it commits, which types it stores natively,
-/// whether it stores JSON, which widenings and nested types it stores, whether it adds columns,
-/// and the identifier rules it names tables and columns under.
+/// Destination capabilities drawn from `rng`: which types it stores natively, whether it stores
+/// JSON, which widenings and nested types it stores, whether it adds columns, and the identifier
+/// rules it names tables and columns under.
 fn capabilities(rng: &mut SplitMix64, features: Features) -> Capabilities {
     let mut capabilities = Capabilities::minimal();
-    if rng.chance(500) {
-        capabilities.commit = CommitKind::Manifest;
-    }
     if features.narrow {
         // Text always among them, every other type stored natively or as text.
         capabilities

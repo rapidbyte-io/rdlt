@@ -1,10 +1,9 @@
-use super::{Capabilities, CommitKind, SchemaChanges};
+use super::{Capabilities, SchemaChanges};
 use crate::types::{DecimalType, Field, Fields, LogicalType, TimeUnit, TypeKind};
 
 #[test]
 fn minimal_capabilities_are_append_only_scalars() {
     let minimal = Capabilities::minimal();
-    assert_eq!(minimal.commit, CommitKind::Transactional);
     assert!(minimal.write_modes.append && !minimal.write_modes.merge);
     assert!(minimal.types.contains(&TypeKind::Int64));
     assert!(!minimal.types.contains(&TypeKind::Struct) && !minimal.types.contains(&TypeKind::Json));

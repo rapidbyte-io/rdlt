@@ -451,44 +451,38 @@ pub struct IdentifierRules {
     #[prost(string, repeated, tag = "5")]
     pub reserved_table_prefixes: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
-/// What a destination can store and how it commits.
+/// What a destination can store.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Capabilities {
-    /// How it commits.
-    #[prost(enumeration = "CommitKind", tag = "1")]
-    pub commit: i32,
     /// The write modes it supports.
-    #[prost(message, optional, tag = "2")]
+    #[prost(message, optional, tag = "1")]
     pub write_modes: ::core::option::Option<WriteModes>,
     /// The deletes it supports.
-    #[prost(message, optional, tag = "3")]
+    #[prost(message, optional, tag = "2")]
     pub delete_modes: ::core::option::Option<DeleteModes>,
     /// Whether it applies partial updates.
-    #[prost(bool, tag = "4")]
+    #[prost(bool, tag = "3")]
     pub partial_updates: bool,
     /// The nested values it stores natively.
-    #[prost(message, optional, tag = "5")]
+    #[prost(message, optional, tag = "4")]
     pub nested: ::core::option::Option<NestedSupport>,
     /// The type kinds it stores.
-    #[prost(enumeration = "TypeKind", repeated, tag = "6")]
+    #[prost(enumeration = "TypeKind", repeated, tag = "5")]
     pub types: ::prost::alloc::vec::Vec<i32>,
     /// The schema changes it applies.
-    #[prost(message, optional, tag = "7")]
+    #[prost(message, optional, tag = "6")]
     pub schema_changes: ::core::option::Option<SchemaChanges>,
     /// Its identifier rules.
-    #[prost(message, optional, tag = "8")]
+    #[prost(message, optional, tag = "7")]
     pub identifiers: ::core::option::Option<IdentifierRules>,
     /// How many writers may stage at once; at least 1.
-    #[prost(uint32, tag = "9")]
+    #[prost(uint32, tag = "8")]
     pub max_parallel_writers: u32,
-    /// The batch size it prefers, in bytes, if it has a preference.
-    #[prost(uint64, optional, tag = "10")]
-    pub preferred_batch_bytes: ::core::option::Option<u64>,
     /// Whether it merges change streams: each row in sequence order, only past the row it holds.
-    #[prost(bool, tag = "11")]
+    #[prost(bool, tag = "9")]
     pub merge_changes: bool,
     /// Whether it drops the tables a commit names, atomically with the commit.
-    #[prost(bool, tag = "12")]
+    #[prost(bool, tag = "10")]
     pub drop_tables: bool,
 }
 /// How a stream can be read.
@@ -590,39 +584,6 @@ impl Checkpointing {
             "CHECKPOINTING_UNSPECIFIED" => Some(Self::Unspecified),
             "CHECKPOINTING_NATURAL" => Some(Self::Natural),
             "CHECKPOINTING_ON_DEMAND" => Some(Self::OnDemand),
-            _ => None,
-        }
-    }
-}
-/// How a destination makes a commit visible.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum CommitKind {
-    /// Never sent; a receiver refuses it.
-    Unspecified = 0,
-    /// In one transaction.
-    Transactional = 1,
-    /// By publishing a manifest.
-    Manifest = 2,
-}
-impl CommitKind {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "COMMIT_KIND_UNSPECIFIED",
-            Self::Transactional => "COMMIT_KIND_TRANSACTIONAL",
-            Self::Manifest => "COMMIT_KIND_MANIFEST",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "COMMIT_KIND_UNSPECIFIED" => Some(Self::Unspecified),
-            "COMMIT_KIND_TRANSACTIONAL" => Some(Self::Transactional),
-            "COMMIT_KIND_MANIFEST" => Some(Self::Manifest),
             _ => None,
         }
     }

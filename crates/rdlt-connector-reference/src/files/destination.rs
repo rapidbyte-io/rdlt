@@ -15,8 +15,8 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    CommitKind, DeleteModes, Epoch, IdentifierCase, IdentifierChars, IdentifierRules,
-    NestedSupport, PipelineId, SchemaChanges, TypeKind, WriteModes,
+    DeleteModes, Epoch, IdentifierCase, IdentifierChars, IdentifierRules, NestedSupport,
+    PipelineId, SchemaChanges, TypeKind, WriteModes,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -380,7 +380,6 @@ fn checked(rdlt: &Dir) -> Result<()> {
 fn capabilities(format: FileFormat) -> Capabilities {
     let types = format.types();
     let mut capabilities = Capabilities::minimal();
-    capabilities.commit = CommitKind::Manifest;
     capabilities.write_modes = WriteModes {
         append: true,
         replace: true,

@@ -61,7 +61,6 @@ sequences.
     delivered it last.
   - Keys span two columns: the key and a text tag.
 - **Destinations.**
-  - Commit kind is drawn.
   - Identifiers may use any characters, and some drift names are not ASCII words.
   - Reserved words include base and metadata column names.
   - Tables avoid reserved prefixes.
@@ -101,7 +100,5 @@ sequences.
   only as possible.
 - Seeds that once found a defect are replayed on every change, in the test job; the simulation's
   shards run only the sweeps.
-- The engine does not branch on commit kind. The simulated destination declares either, so a
-  future difference is covered from the start.
 - Faults beyond connector calls, multi-threaded runs, replay and the simulation's own coverage
   are M3h.
