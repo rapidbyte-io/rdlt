@@ -22,7 +22,7 @@ use super::service::{Service, invalid};
 use crate::destination::{DestinationWriter, TableRef};
 use crate::error::{ConnectorError, ConnectorErrorKind};
 use crate::id::SegmentId;
-use crate::wire::{Invalid, frame_error, status, v1};
+use crate::wire::{Invalid, error, frame_error, status, v1};
 
 /// Starts serving the write the engine's first frame asks for.
 pub(super) async fn serve(
@@ -106,14 +106,17 @@ async fn receive(
             () = received.closed() => return,
             frame = frames.message() => frame,
         };
-        // A request that ends, or fails, ends the write after the frames that came before it.
-        let Ok(Some(frame)) = frame else {
-            return;
+        // A request its host ends ends the write; one refused or failed fails it, answered after
+        // the frames before it.
+        let frame = match frame {
+            Ok(Some(frame)) => Ok(frame),
+            Ok(None) => return,
+            Err(status) => Err(error(&status)),
         };
         let Ok(slot) = received.reserve().await else {
             return;
         };
-        let staged = receiving.received(frame);
+        let staged = frame.and_then(|frame| receiving.received(frame));
         let failed = staged.is_err();
         slot.send(staged);
         if failed {
