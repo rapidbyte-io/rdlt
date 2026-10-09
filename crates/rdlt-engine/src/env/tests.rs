@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rdlt_connector::LoadId;
 
-use super::{Clock, Env, Sleep, SystemClock, SystemEnv};
+use super::{Clock, Env, InlineEnv, Sleep, SystemClock, SystemEnv};
 use crate::compute::{ComputePool, Cores};
 use crate::wal::{LocalWal, WalStore};
 
@@ -89,6 +89,11 @@ fn load_ids_take_the_first_random_value_as_the_high_word() {
 fn system_env_random_values_differ() {
     let env = system_env();
     assert_ne!(env.random(), env.random());
+}
+
+#[test]
+fn an_inline_env_s_random_values_differ() {
+    assert_ne!(InlineEnv.random(), InlineEnv.random());
 }
 
 #[tokio::test]

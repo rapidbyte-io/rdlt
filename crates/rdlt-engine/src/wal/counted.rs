@@ -1,6 +1,9 @@
 //! A run's write-ahead log store, each request it makes counted by operation, with the bytes
 //! appended and read.
 
+#[cfg(test)]
+mod tests;
+
 use std::io;
 use std::num::NonZeroU64;
 use std::sync::Arc;
