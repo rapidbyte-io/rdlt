@@ -319,10 +319,9 @@ fn a_row_already_deleted_keeps_when_it_was_deleted() {
     );
 }
 
-#[test]
-fn an_update_keeps_the_published_value_of_each_column_it_flags_unchanged() {
-    let published = apply(&empty(), &[&[row(1, "kept", 1)]], Deletion::Hard);
-    let partial = |id, seq| Row {
+/// An update of `id` at `seq` that flags its value unchanged.
+fn partial(id: i64, seq: u8) -> Row {
+    Row {
         id: Some(id),
         value: None,
         seq,
@@ -330,7 +329,12 @@ fn an_update_keeps_the_published_value_of_each_column_it_flags_unchanged() {
         // Bit 1 of the written batch: the value column.
         unchanged: Some(vec![0b10]),
         at: None,
-    };
+    }
+}
+
+#[test]
+fn an_update_keeps_the_published_value_of_each_column_it_flags_unchanged() {
+    let published = apply(&empty(), &[&[row(1, "kept", 1)]], Deletion::Hard);
     let merged = apply(
         &published,
         &[&[partial(1, 2), partial(2, 3)]],
@@ -340,6 +344,33 @@ fn an_update_keeps_the_published_value_of_each_column_it_flags_unchanged() {
         rows(&merged),
         [(1, Some("kept".into()), 2, None), (2, None, 3, None)]
     );
+}
+
+#[test]
+fn a_row_its_cells_compose_holds_only_the_columns_one_of_them_holds_a_value_in() {
+    // Key 1 keeps its published value; key 2 has none to keep, and neither has a deletion time.
+    let published = apply(&empty(), &[&[row(1, "kept", 1)]], Deletion::Hard);
+    let incoming = written(&[partial(1, 2), partial(2, 3)]);
+    let (schema, key) = (stored_schema(), key(Deletion::Hard));
+    let merged = merge_sparse(
+        &schema,
+        &published.rows,
+        &published.tombstones,
+        &[incoming],
+        &key,
+    )
+    .expect("the rows merge");
+    let mut shapes = Vec::new();
+    for batch in &merged.rows {
+        let schema = batch.schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        for (name, column) in names.iter().zip(batch.columns()) {
+            assert!(column.null_count() < column.len(), "{name} holds no value");
+        }
+        shapes.push(names.join(","));
+    }
+    shapes.sort();
+    assert_eq!(shapes, ["id,seq", "id,value,seq"]);
 }
 
 #[test]
