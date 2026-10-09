@@ -1,6 +1,7 @@
 use std::num::NonZeroU64;
 
-use super::{Corpus, corpus};
+use super::{CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, corpus};
+use crate::config::BatchPolicy;
 
 #[test]
 fn each_corpus_is_the_rows_its_seed_draws() {
@@ -120,4 +121,12 @@ fn a_wide_row_holds_its_columns_integers_and_strings_by_turns() {
     assert_eq!(row.len(), 5_000);
     assert!(row["c4998"].is_u64() && row["c4999"].is_string());
     assert_eq!(Corpus::Wide(5_000).name(), "wide_5000");
+}
+
+#[test]
+fn the_benches_shred_four_pushes_of_the_engine_s_default_sizes() {
+    let policy = BatchPolicy::default();
+    assert_eq!(PUSH_BYTES as u64, policy.target_bytes().get());
+    assert_eq!(CHUNK_BYTES, policy.chunk_bytes().get());
+    assert_eq!(CORPUS_BYTES.div_ceil(PUSH_BYTES), 4);
 }

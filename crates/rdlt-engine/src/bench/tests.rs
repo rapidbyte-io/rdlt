@@ -7,7 +7,8 @@ use arrow_ipc::reader::StreamReader;
 use bytes::Bytes;
 use rdlt_connector::testing::certify_source;
 use rdlt_connector::{
-    ConnectContext, PipelineId, SegmentId, StreamName, StreamState, TableWriter, WriteStats,
+    ConnectContext, ConnectorErrorKind, Partition, PartitionId, PipelineId, ReadRequest, SegmentId,
+    StreamName, StreamState, TableWriter, WriteStats, partition_channel,
 };
 use serde_json::json;
 
@@ -129,6 +130,23 @@ async fn a_split_replay_resumes_each_partition_after_each_checkpoint() {
     certify_source::<Replay>(json!({ "name": "certified-split", "partitions": 3 }))
         .await
         .assert_passed();
+}
+
+#[tokio::test]
+async fn a_split_replay_refuses_a_partition_it_never_planned() {
+    register("unplanned", Replayed::Batches(ten_row_batches(4)));
+    let two = NonZeroUsize::new(2).unwrap();
+    let source = replay_factory()
+        .connect(split_replay_config("unplanned", two), ConnectContext::new())
+        .await
+        .unwrap();
+    for id in ["2", "x"] {
+        let (sink, _feed) = partition_channel(NonZeroUsize::new(16).unwrap());
+        let partition = Partition::new(PartitionId::parse(id).unwrap());
+        let request = ReadRequest::new(StreamName::new("events").unwrap(), partition, None);
+        let error = source.read(request, sink).await.unwrap_err();
+        assert_eq!(error.kind(), ConnectorErrorKind::Config, "{id}");
+    }
 }
 
 #[tokio::test]
