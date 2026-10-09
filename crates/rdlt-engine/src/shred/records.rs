@@ -42,11 +42,12 @@ enum Form {
 }
 
 impl Chunk {
-    /// The records, in order.
-    pub(super) fn records(&self) -> impl Iterator<Item = &[u8]> {
+    /// The records, in order; a span that breaks as its records are found again ends them with
+    /// an internal error, since the scan that cut it found every record in it.
+    pub(super) fn records(&self) -> impl Iterator<Item = Result<&[u8], ShredError>> {
         self.parts.iter().flat_map(|part| {
             let bytes = &part.push[part.span.clone()];
-            Records::within(bytes, part.form).map(|record| &bytes[record])
+            Records::within(bytes, part.form).map(move |record| record.map(|range| &bytes[range]))
         })
     }
 }
@@ -141,8 +142,11 @@ impl<'a> Records<'a> {
     }
 
     /// The records in `bytes`, which a scan of their push cut from its first record's first byte
-    /// to its last record's last.
-    fn within(bytes: &'a [u8], form: Form) -> impl Iterator<Item = Range<usize>> + 'a {
+    /// to its last record's last; a record that does not read ends them with an internal error.
+    fn within(
+        bytes: &'a [u8],
+        form: Form,
+    ) -> impl Iterator<Item = Result<Range<usize>, ShredError>> + 'a {
         let mut records = Self {
             bytes,
             form,
@@ -150,8 +154,15 @@ impl<'a> Records<'a> {
             whole: false,
             found: 0,
         };
-        // The scan that cut the bytes found every record in them.
-        std::iter::from_fn(move || records.next_record().ok().flatten())
+        std::iter::from_fn(move || match records.next_record() {
+            Ok(next) => next.map(Ok),
+            Err(error) => {
+                // Past the bytes, so nothing is read after the record that broke.
+                records.at = records.bytes.len() + 1;
+                let error = format!("a scanned span does not read again: {error}");
+                Some(Err(ShredError::Internal(error)))
+            }
+        })
     }
 
     /// Where the next record lies, without the whitespace around it; `None` after the last.
