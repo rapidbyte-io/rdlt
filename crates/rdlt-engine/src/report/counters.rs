@@ -228,6 +228,15 @@ impl Commits {
     }
 }
 
+impl LaneCounters {
+    /// Adds what `other` counted.
+    pub(crate) fn add(&mut self, other: &Self) {
+        self.blocked = self.blocked.saturating_add(other.blocked);
+        self.writing = self.writing.saturating_add(other.writing);
+        self.flushing = self.flushing.saturating_add(other.flushing);
+    }
+}
+
 impl CommitPhases {
     /// Adds what `other` took.
     pub(crate) fn add(&mut self, other: &Self) {
