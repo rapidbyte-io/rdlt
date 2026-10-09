@@ -328,7 +328,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     (ADR 0029). A frame larger than what was reserved for it reserves the rest before it waits
     to be appended.
   - A served write refuses more than four frames' bytes between two flushes, and the host's
-    writer flushes before it would send more.
+    writer flushes before it would send more. The connector decodes a frame only once its
+    writer has taken the frame before it, so a write holds its staged bound and one decoded
+    frame waiting for its writer.
   - A column a batch holds nothing in is built as the destination stores it. Its nulls are part
     of what each row costs, so a piece is cut by them and reserves them before they are built:
     rows times the table's width is bounded by the budget, through a plan that normalizes too.

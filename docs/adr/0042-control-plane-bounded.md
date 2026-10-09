@@ -103,7 +103,8 @@ still taken largely on trust:
     another is waited for, and none while its holder waits for anything but the answer's bytes.
   - A served connector has no engine budget: its window bounds what it holds of requests
     arriving, and HTTP/2's stream windows what waits for them in transport, a stream window a
-    call.
+    call. A write holds its staged bound and one decoded frame waiting for its writer, beside
+    the frame it received next, which decodes once the writer takes the frame before it.
 - **Lists are bounded and checked in linear time.** A catalog holds at most 65,536 streams and a
   plan 16,384 partitions, in every placement; a plan names each partition once and starts only
   those it names. A destination's identifier rules hold at most 4,096 reserved words and 64
