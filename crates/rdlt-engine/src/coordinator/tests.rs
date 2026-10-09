@@ -471,7 +471,7 @@ async fn a_load_s_first_commit_names_it_to_a_destination_no_commit_reached_yet()
     .await;
     harness.seal(0, 1, 0, PartitionState::Done, None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     let origin = StateEntry::Origin(LoadId::from_parts(UNIX_EPOCH, 1)).to_record();
     assert!(commits[0].state_delta.contains(&StateChange::Put(origin)));
@@ -487,6 +487,24 @@ async fn until(condition: impl Fn() -> bool) {
     tokio::time::timeout(Duration::from_secs(600), waiting)
         .await
         .expect("the condition holds within ten minutes");
+}
+
+/// Waits for the coordinator's next barrier, failing the test, as `what` says, after a minute of
+/// paused time: the barrier raised.
+async fn raised(harness: &mut Harness, what: &str) -> u64 {
+    tokio::time::timeout(Duration::from_secs(60), harness.barrier.changed())
+        .await
+        .unwrap_or_else(|_| panic!("{what} within a minute"))
+        .expect("the coordinator keeps its barrier's sender");
+    harness.barrier.borrow_and_update()
+}
+
+/// Waits for the coordinator to end, failing the test after ten minutes of paused time.
+async fn ended(task: tokio::task::JoinHandle<Result<(), Error>>) -> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(600), task)
+        .await
+        .expect("the coordinator ends within ten minutes")
+        .expect("the coordinator does not panic")
 }
 
 #[tokio::test(start_paused = true)]
@@ -505,7 +523,7 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
     });
     harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert_eq!(commits.len(), 1);
     assert_eq!(
@@ -555,7 +573,7 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
         until(|| harness.commit_count() == expected).await;
     }
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     let sequence: Vec<u64> = commits
         .iter()
@@ -599,14 +617,13 @@ async fn rows_a_partition_abandoned_make_no_commit_due() {
         rows: 4,
         bytes: 32,
     });
-    harness.barrier.changed().await.unwrap();
     assert_eq!(
-        harness.barrier.borrow_and_update(),
+        raised(&mut harness, "a barrier is raised").await,
         1,
         "the rows kept make it due"
     );
     harness.end(0, true);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -630,7 +647,7 @@ async fn rows_that_miss_a_commit_stay_due_until_they_seal() {
     harness.seal(0, 1, 10, PartitionState::Cursor(cursor(10)), None);
     until(|| harness.commit_count() == 1).await;
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -650,7 +667,7 @@ async fn rows_a_commit_passed_by_unsealed_make_none_due_until_they_seal() {
         rows: 10,
         bytes: 80,
     });
-    harness.barrier.changed().await.unwrap();
+    assert_eq!(raised(&mut harness, "a barrier is raised").await, 1);
     // p0's rows can make one commit due, which takes none of them. p1's rows after it each
     // seal at once: they take a commit only once they reach the threshold.
     for segment in 1..=9 {
@@ -685,7 +702,7 @@ async fn rows_a_commit_passed_by_unsealed_make_none_due_until_they_seal() {
     until(|| harness.commit_count() == 2).await;
     harness.end(0, false);
     harness.end(1, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -701,7 +718,7 @@ async fn the_interval_commits_a_quiet_partition() {
     until(|| harness.commit_count() == 1).await;
     assert!(started.elapsed() >= Duration::from_secs(10));
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -727,12 +744,10 @@ async fn rows_of_partitions_that_seal_when_asked_keep_commits_at_the_threshold()
     let mut pending = 10;
     written(&harness, 10);
     for barrier in 1..=5 {
-        let raised = tokio::time::timeout(Duration::from_secs(60), harness.barrier.changed());
-        raised
-            .await
-            .expect("each ten rows raise a barrier")
-            .unwrap();
-        assert_eq!(harness.barrier.borrow_and_update(), barrier);
+        assert_eq!(
+            raised(&mut harness, "each ten rows raise a barrier").await,
+            barrier
+        );
         // p0 answers, then writes a row while the commit still waits for p1.
         segment += 1;
         let state = PartitionState::Cursor(cursor(segment));
@@ -747,15 +762,13 @@ async fn rows_of_partitions_that_seal_when_asked_keep_commits_at_the_threshold()
         written(&harness, 9);
         pending = 10;
     }
-    let raised = tokio::time::timeout(Duration::from_secs(60), harness.barrier.changed());
-    raised
-        .await
-        .expect("the last ten rows raise a barrier")
-        .unwrap();
-    assert_eq!(harness.barrier.borrow_and_update(), 6);
+    assert_eq!(
+        raised(&mut harness, "the last ten rows raise a barrier").await,
+        6
+    );
     harness.end(0, false);
     harness.end(1, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -775,8 +788,7 @@ async fn a_partition_still_owing_when_a_cursor_waits_for_room_is_asked_again() {
         rows: 10,
         bytes: 80,
     });
-    harness.barrier.changed().await.unwrap();
-    assert_eq!(harness.barrier.borrow_and_update(), 1);
+    assert_eq!(raised(&mut harness, "a barrier is raised").await, 1);
     harness.seal(0, 1, 0, PartitionState::Cursor(cursor(1)), Some(1));
     // A cursor finds the cursors' share full while p1 still owes the barrier: the barrier stops
     // waiting long before its wait runs out, and the commit frees the room.
@@ -785,30 +797,32 @@ async fn a_partition_still_owing_when_a_cursor_waits_for_room_is_asked_again() {
     let held = harness.budget.acquire_cursor(share).await.unwrap();
     let budget = harness.budget.clone();
     let waiting = tokio::spawn(async move { budget.acquire_cursor(1).await.map(drop) });
-    while harness.commits.lock().is_empty() {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until(|| !harness.commits.lock().is_empty()).await;
     assert!(
         started.elapsed() < Duration::from_secs(60),
         "the barrier waited its wait out"
     );
     drop(held);
-    waiting.await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(60), waiting)
+        .await
+        .expect("the waiting cursor is admitted within a minute")
+        .unwrap()
+        .unwrap();
     // p1 may still be answering: its rows count, so p0's next row raises the next barrier.
     harness.send(Progress::Written {
         partition: 0,
         rows: 1,
         bytes: 8,
     });
-    let raised = tokio::time::timeout(Duration::from_secs(1), harness.barrier.changed());
-    raised
+    let prompt = tokio::time::timeout(Duration::from_secs(1), harness.barrier.changed());
+    prompt
         .await
         .expect("p1's rows still make a commit due")
         .unwrap();
     assert_eq!(harness.barrier.borrow_and_update(), 2);
     harness.end(0, false);
     harness.end(1, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -831,8 +845,7 @@ async fn a_partition_that_did_not_answer_is_not_asked_again_until_it_writes_more
         });
     };
     written(&harness, 1, 10);
-    harness.barrier.changed().await.unwrap();
-    assert_eq!(harness.barrier.borrow_and_update(), 1);
+    assert_eq!(raised(&mut harness, "a barrier is raised").await, 1);
     harness.seal(0, 1, 0, PartitionState::Cursor(cursor(1)), Some(1));
     // p1's wait runs out. p0's rows after it raise no barrier of their own, nine short of the
     // threshold: p1's rows, unanswered, no longer count.
@@ -853,15 +866,13 @@ async fn a_partition_that_did_not_answer_is_not_asked_again_until_it_writes_more
     );
     // p1 writing more is asked again.
     written(&harness, 1, 10);
-    let raised = tokio::time::timeout(Duration::from_secs(60), harness.barrier.changed());
-    raised
-        .await
-        .expect("p1's new rows raise a barrier")
-        .unwrap();
-    assert_eq!(harness.barrier.borrow_and_update(), 2);
+    assert_eq!(
+        raised(&mut harness, "p1's new rows raise a barrier").await,
+        2
+    );
     harness.end(0, false);
     harness.end(1, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -881,8 +892,7 @@ async fn a_commit_waits_for_on_demand_partitions_to_answer_its_barrier() {
         rows: 1,
         bytes: 8,
     });
-    harness.barrier.changed().await.unwrap();
-    assert_eq!(harness.barrier.borrow_and_update(), 1);
+    assert_eq!(raised(&mut harness, "a barrier is raised").await, 1);
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(
         harness.commit_count(),
@@ -897,7 +907,7 @@ async fn a_commit_waits_for_on_demand_partitions_to_answer_its_barrier() {
     );
     harness.end(0, false);
     harness.end(1, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -922,7 +932,7 @@ async fn an_unanswered_barrier_gives_up_after_its_wait() {
     assert!(started.elapsed() >= Duration::from_secs(30));
     harness.end(0, false);
     harness.end(1, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -935,7 +945,7 @@ async fn empty_segments_record_their_position_without_publishing() {
     .await;
     harness.seal(0, 1, 0, PartitionState::Done, None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert!(commits[0].segments.is_empty());
     assert_eq!(
@@ -957,7 +967,7 @@ async fn nothing_to_publish_or_record_commits_nothing() {
     .start()
     .await;
     harness.end(0, true);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     assert_eq!(harness.commit_count(), 0);
     assert_eq!(harness.log.lock().end, Some(AttemptEnd::Exhausted));
 }
@@ -980,7 +990,7 @@ async fn a_new_table_schema_is_recorded_by_the_first_commit_only() {
     until(|| harness.commit_count() == 1).await;
     harness.seal(0, 2, 1, PartitionState::Cursor(cursor(2)), None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     let path = TablePath::new(["orders"]).unwrap();
     let keys = |index: usize| -> Vec<String> {
@@ -1023,7 +1033,7 @@ async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
         held: CursorHold::default(),
     }));
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let log = harness.log.lock();
     let report = &log.committed.streams[&name()];
     assert_eq!(
@@ -1063,7 +1073,7 @@ async fn a_full_read_is_recorded_when_it_starts_and_completed_when_every_partiti
     until(|| harness.commit_count() == 1).await;
     harness.seal(0, 2, 1, PartitionState::Done, None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     let stale = StateKey::Partition(name(), PartitionId::parse("old").unwrap()).encode();
     let generation = StateEntry::Generation {
@@ -1109,7 +1119,7 @@ async fn a_full_append_completes_without_swapping_a_generation() {
     .await;
     harness.seal(0, 1, 2, PartitionState::Done, None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert!(commits[0].finish_generations.is_empty());
     let completed = StateEntry::Completed {
@@ -1138,7 +1148,7 @@ async fn a_stopped_partition_leaves_its_full_read_unfinished() {
     harness.seal(0, 1, 1, PartitionState::Done, None);
     harness.end(0, false);
     harness.end(1, true);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert!(commits[0].finish_generations.is_empty());
     let completed = StateEntry::Completed {
@@ -1162,11 +1172,13 @@ async fn stopping_raises_a_barrier_stops_reads_and_commits_what_is_sealed() {
     .await;
     harness.send(Progress::Started { partition: 0 });
     harness.stop.cancel();
-    harness.barrier.changed().await.unwrap();
+    assert_eq!(raised(&mut harness, "a barrier is raised").await, 1);
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), Some(1));
-    harness.stop_reads.cancelled().await;
+    tokio::time::timeout(Duration::from_secs(60), harness.stop_reads.cancelled())
+        .await
+        .expect("stopping stops the reads within a minute");
     harness.end(0, true);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     assert_eq!(harness.commit_count(), 1);
     assert_eq!(harness.log.lock().end, Some(AttemptEnd::Stopped));
 }
@@ -1181,10 +1193,7 @@ async fn cancelling_ends_the_coordinator_without_committing() {
     .await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.cancel.cancel();
-    assert_eq!(
-        task.await.unwrap().unwrap_err().kind(),
-        ErrorKind::Cancelled
-    );
+    assert_eq!(ended(task).await.unwrap_err().kind(), ErrorKind::Cancelled);
     assert_eq!(harness.commit_count(), 0);
 }
 
@@ -1197,10 +1206,7 @@ async fn partitions_that_vanish_without_ending_cancel_the_coordinator() {
     .start()
     .await;
     drop(harness.progress);
-    assert_eq!(
-        task.await.unwrap().unwrap_err().kind(),
-        ErrorKind::Cancelled
-    );
+    assert_eq!(ended(task).await.unwrap_err().kind(), ErrorKind::Cancelled);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1214,7 +1220,7 @@ async fn a_failed_commit_ends_the_coordinator_and_acknowledges_nothing() {
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
     assert_eq!(
-        task.await.unwrap().unwrap_err().kind(),
+        ended(task).await.unwrap_err().kind(),
         ErrorKind::Destination
     );
     assert!(harness.acks.lock().is_empty());
@@ -1233,7 +1239,7 @@ async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
-    let error = task.await.unwrap().unwrap_err();
+    let error = ended(task).await.unwrap_err();
     assert_eq!(
         (error.kind(), error.code(), error.is_retryable()),
         (ErrorKind::Destination, Some("receipt_mismatch"), false)
@@ -1273,7 +1279,7 @@ async fn the_byte_threshold_commits_as_bytes_arrive() {
     });
     until(|| harness.commit_count() == 1).await;
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -1288,7 +1294,7 @@ async fn a_completed_read_joins_the_most_recent_sixteen() {
     .await;
     harness.seal(0, 1, 1, PartitionState::Done, None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let kept: Vec<GenerationId> = (1..16).chain([99]).map(GenerationId).collect();
     let completed = StateEntry::Completed {
         stream: name(),
@@ -1311,7 +1317,7 @@ async fn every_commit_records_its_receipt_in_state() {
     .await;
     harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     let Some(StateChange::Put(record)) = commits[0].state_delta.last() else {
         panic!("the commit ends with a put");
@@ -1340,7 +1346,7 @@ async fn a_failed_commit_stays_pending_in_the_log() {
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
-    task.await.unwrap().unwrap_err();
+    ended(task).await.unwrap_err();
     let log = harness.log.lock();
     let pending = log
         .pending
@@ -1362,7 +1368,7 @@ async fn a_seal_without_rows_or_discards_reports_no_stream() {
     .await;
     harness.seal(0, 1, 0, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let log = harness.log.lock();
     assert_eq!(log.committed.commits, 1, "the position still commits");
     assert!(
@@ -1384,7 +1390,7 @@ async fn a_source_that_cannot_read_again_hears_once_the_log_holds_its_commit() {
         let (task, harness) = setup.start().await;
         harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
         harness.end(0, false);
-        let ended = task.await.unwrap();
+        let ended = ended(task).await;
         assert_eq!(ended.is_err(), fail);
         // Heard once, whether or not the destination took the commit: the log holds it.
         assert_eq!(
@@ -1418,7 +1424,7 @@ async fn a_source_that_reads_again_hears_only_of_landed_commits_whatever_the_log
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
-    assert!(task.await.unwrap().is_err());
+    assert!(ended(task).await.is_err());
     assert!(harness.acks.lock().is_empty());
 }
 
@@ -1451,7 +1457,7 @@ async fn each_logged_seal_names_where_its_partition_stood_before_its_commit() {
     harness.seal(1, 4, 1, PartitionState::Done, None);
     harness.end(0, false);
     harness.end(1, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let seals: Vec<_> = store
         .published_frames()
         .into_iter()
@@ -1492,8 +1498,8 @@ async fn a_log_that_fails_to_close_after_every_commit_landed_fails_no_attempt() 
     // Every commit landed; the disk fails only as the log closes, which a replay finds received.
     *store.failing.lock() = true;
     harness.end(0, false);
-    task.await
-        .unwrap()
+    ended(task)
+        .await
         .expect("the attempt ends as its commits did");
     assert_eq!(harness.log.lock().end, Some(AttemptEnd::Exhausted));
 }
@@ -1509,9 +1515,8 @@ async fn a_source_that_cannot_read_again_hears_nothing_of_a_commit_its_log_faile
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, 3, PartitionState::Cursor(cursor(3)), None);
     harness.end(0, false);
-    let error = task
+    let error = ended(task)
         .await
-        .unwrap()
         .expect_err("the commit's frame is not durable");
     assert_eq!(error.kind(), ErrorKind::Wal);
     assert!(
@@ -1541,7 +1546,7 @@ async fn committed_from_five(
     let (task, harness) = setup.start().await;
     harness.seal(0, 1, rows, state, None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     assert_eq!(harness.commit_count(), 1);
     let told = harness.acks.lock();
     let told = told.iter().flat_map(|(_, cursors)| cursors);
@@ -1590,7 +1595,7 @@ async fn a_partition_done_after_its_last_checkpoint_is_still_told_that_checkpoin
     harness.seal(0, 1, 0, PartitionState::Cursor(cursor(3)), None);
     harness.seal(0, 2, 0, PartitionState::Done, None);
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert_eq!(
         without_receipt(&commits[0].state_delta),

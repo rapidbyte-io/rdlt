@@ -3,7 +3,7 @@
 
 use rdlt_connector::{Admission, PartitionState, SegmentId, SourceEvent};
 
-use super::{Setup, cursor, partition, position, stream, without_receipt};
+use super::{Setup, cursor, ended, partition, position, stream, without_receipt};
 use crate::budget::MemoryBudget;
 use crate::coordinator::waiting::WaitingSeals;
 use crate::cost::Charging;
@@ -105,7 +105,7 @@ async fn checkpoints_of_no_rows_commit_only_their_partitions_newest_position() {
         epoch: 0,
     });
     harness.end(0, false);
-    task.await.unwrap().unwrap();
+    ended(task).await.unwrap();
     let commits = harness.commits.lock();
     assert_eq!(commits.len(), 1);
     assert_eq!(
