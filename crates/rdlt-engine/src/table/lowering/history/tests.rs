@@ -232,10 +232,23 @@ fn a_change_time_holding_no_time_in_any_encoding_is_refused() {
 
 #[test]
 fn a_delete_carries_no_hash_and_a_change_without_its_time_is_refused() {
-    let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2])))]);
+    let three = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2, 3])))]);
     let [.., hash] =
-        history_columns(&stream(), &data, arrived(UNIX_EPOCH), &|row| row == 1).unwrap();
-    assert!(hash.is_valid(0) && hash.is_null(1));
+        history_columns(&stream(), &three, arrived(UNIX_EPOCH), &|row| row == 1).unwrap();
+    let hash = hash.as_binary::<i32>();
+    assert_eq!(
+        (
+            hash.null_count(),
+            hash.is_null(1),
+            hash.value(0).len(),
+            hash.value(2).len()
+        ),
+        (1, true, 32, 32)
+    );
+    // Without a delete the column has no nulls at all.
+    let [.., kept] = history_columns(&stream(), &three, arrived(UNIX_EPOCH), &|_| false).unwrap();
+    assert!(kept.nulls().is_none());
+    let data = batch(vec![("id", Arc::new(Int64Array::from(vec![1, 2])))]);
     let time: ArrayRef = Arc::new(TimestampNanosecondArray::from(vec![Some(1), None]));
     let refused =
         history_columns(&stream(), &data, changed(&time, UNIX_EPOCH), &|_| false).unwrap_err();
