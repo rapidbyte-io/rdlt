@@ -85,7 +85,12 @@ fn start(
         opened: None,
         origin: load(),
     };
-    LoadLog::start(wal, owner, std::num::NonZeroU64::MAX, None)
+    LoadLog::start(
+        wal,
+        owner,
+        std::num::NonZeroU64::MAX,
+        (None, Arc::default()),
+    )
 }
 
 /// The view of `table` at `version`.
@@ -715,7 +720,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
     let limit = 4_000;
     let budget = crate::budget::budget(1 << 20);
     let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
-    let (log, task) = LoadLog::start(wal, owner, limit_bytes, None);
+    let (log, task) = LoadLog::start(wal, owner, limit_bytes, (None, Arc::default()));
     let orders = view("orders");
     let written = async {
         let mut refused = None;
@@ -754,7 +759,7 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
     let limit = 80_000;
     let budget = crate::budget::budget(1 << 20);
     let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
-    let (log, task) = LoadLog::start(wal, owner, limit_bytes, None);
+    let (log, task) = LoadLog::start(wal, owner, limit_bytes, (None, Arc::default()));
     let orders = view("orders");
     let written = async {
         let segments = std::sync::atomic::AtomicU64::new(0);
@@ -864,7 +869,7 @@ async fn a_batch_waiting_for_room_takes_it_before_batches_that_come_after_it() {
         origin: load(),
     };
     let limit = std::num::NonZeroU64::new(1 << 20).unwrap();
-    let (log, task) = LoadLog::start(wal, owner, limit, None);
+    let (log, task) = LoadLog::start(wal, owner, limit, (None, Arc::default()));
     let writer = tokio::spawn(task);
     let shared = Arc::clone(log.writer.shared());
     let kept = shared.kept(crate::wal::writer::Kept::All);
@@ -929,7 +934,7 @@ async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() 
     };
     let limit = std::num::NonZeroU64::new(4_000).unwrap();
     let budget = crate::budget::budget(1 << 20);
-    let (log, task) = LoadLog::start(wal, owner, limit, None);
+    let (log, task) = LoadLog::start(wal, owner, limit, (None, Arc::default()));
     let orders = view("orders");
     let written = async {
         // A checkpoint a commit took leaves nothing for the next commit to free.

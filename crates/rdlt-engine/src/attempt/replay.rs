@@ -62,7 +62,7 @@ pub(super) async fn replay(
     load_id: LoadId,
     log: &Mutex<AttemptLog>,
 ) -> Result<(), Error> {
-    let Some(store) = context.env.wal() else {
+    let Some(store) = context.wal.clone() else {
         return Ok(());
     };
     let mut replaying: Option<Replaying> = None;

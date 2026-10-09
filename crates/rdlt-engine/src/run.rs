@@ -25,8 +25,11 @@ use crate::deadline::Waits;
 use crate::env::Env;
 use crate::error::Error;
 use crate::plan::PipelinePlan;
-use crate::report::{AttemptEnd, AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus};
+use crate::report::{
+    AttemptEnd, AttemptLog, AttemptRecord, CommitRecord, Report, RunStatus, Tally,
+};
 use crate::scope::contained;
+use crate::wal::{CountedStore, WalStore};
 
 pub use reset::{ResetReport, ResetScope};
 
@@ -83,6 +86,7 @@ impl Engine {
         .limited(self.config.limits());
         let waits =
             Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
+        let tally = Arc::new(Tally::default());
         let context = RunContext {
             env: Arc::clone(&self.env),
             config: Arc::clone(&self.config),
@@ -90,7 +94,10 @@ impl Engine {
             source: waits.source(source),
             destination: waits.destination(destination),
             budget,
-            tally: Arc::default(),
+            wal: self.env.wal().map(|store| {
+                Arc::new(CountedStore::new(store, Arc::clone(&tally))) as Arc<dyn WalStore>
+            }),
+            tally,
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
         };

@@ -38,7 +38,7 @@ use crate::report::{AttemptEnd, AttemptLog, Tally};
 use crate::scope::TaskScope;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
-use crate::wal::{LoadLog, Owner, Positions, staged_at_most};
+use crate::wal::{LoadLog, Owner, Positions, WalStore, staged_at_most};
 use crate::watch;
 
 pub(crate) use sequences::Keying;
@@ -54,6 +54,9 @@ pub(crate) struct RunContext {
     pub(crate) budget: MemoryBudget,
     /// Where the run's work counts what it waits for and spends its time on.
     pub(crate) tally: Arc<Tally>,
+    /// Where the engine keeps write-ahead logs, each request counted into the tally; none
+    /// where it keeps none.
+    pub(crate) wal: Option<Arc<dyn WalStore>>,
     /// Fires when the run is asked to stop after committing.
     pub(crate) stop: CancellationToken,
     /// The generation of each full read this run started or resumed, so a retry after the read
@@ -91,7 +94,7 @@ pub(crate) async fn run(
     load_id: LoadId,
     log: Arc<Mutex<AttemptLog>>,
 ) -> Result<AttemptEnd, Error> {
-    if context.plan.logs_ahead() && context.env.wal().is_none() {
+    if context.plan.logs_ahead() && context.wal.is_none() {
         return Err(Error::config(format!(
             "pipeline {} keeps a write-ahead log, and the engine has nowhere to keep one",
             context.plan.pipeline()
@@ -100,7 +103,7 @@ pub(crate) async fn run(
     }
     // The load's log opens before any other is read, so a replay that starts later lists it
     // and fences it before it reads the pipeline's logs itself.
-    let Some(store) = context.env.wal() else {
+    let Some(store) = context.wal.clone() else {
         return logged_run(context, load_id, &log).await;
     };
     let pipeline = context.plan.pipeline();
@@ -311,6 +314,7 @@ async fn launch(
         follow: context.plan.until().follows(),
         replan: context.config.replan(),
         tally: Arc::clone(&context.tally),
+        store: context.wal.clone(),
     });
     scope.spawn(coordinator.run());
     scope.join_spawning(spawned).await
@@ -398,7 +402,7 @@ async fn start_log(
 ) -> Result<Option<LoadLog>, Error> {
     let needed =
         context.plan.logs_ahead() || planned.iter().any(|stream| !stream.stream.replayable);
-    let Some(store) = context.env.wal() else {
+    let Some(store) = context.wal.clone() else {
         return Ok(None);
     };
     if !needed {
@@ -428,7 +432,8 @@ async fn start_log(
     let bound = store
         .chunk_bytes()
         .map_or(log_bytes, |most| most.min(log_bytes));
-    let (log, task) = LoadLog::start(store, owner, bound, Some(staging));
+    let tally = Arc::clone(&context.tally);
+    let (log, task) = LoadLog::start(store, owner, bound, (Some(staging), tally));
     scope.spawn(task);
     Ok(Some(log))
 }

@@ -8,7 +8,7 @@ use rdlt_connector::SegmentId;
 use super::super::super::frame::Frame;
 use super::super::super::memory::MemoryWal;
 use super::super::super::scan::scan;
-use super::{Driving, drive, frames, load, numbers, pipeline, table};
+use super::{Driving, batch_frame, drive, frames, length, load, numbers, pipeline, table};
 
 /// The segment and ordinal of every batch frame the store holds, in order.
 fn batches(store: &MemoryWal) -> Vec<(u64, u64)> {
@@ -159,6 +159,9 @@ async fn a_carried_segment_replays_its_batches_in_the_order_they_were_logged() {
         log.batch(1000, 0).await;
         log.committed(1).await;
         log.commit(2, &[1000]).await.expect("durable");
+        // Only the first batch was carried: its table's schema was in the chunk already.
+        let first = length(&batch_frame(1000, 0, 0, 1));
+        assert_eq!(log.tally.counters().log.carried, first);
     })
     .await
     .expect("the writer ends");

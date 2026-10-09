@@ -276,15 +276,14 @@ impl Setup {
         let tables = self.tables(session).await;
         let source = Arc::new(self.listener(acks, commits));
         let wal = self.wal.as_ref().map(|store| started(Arc::clone(store)));
-        let lanes = lanes(&tables);
         let coordinator = Coordinator::new(CoordinatorParts {
             env: Arc::new(SystemEnv::one_core()),
             policy: self.policy,
             barrier_wait: self.barrier_wait,
+            lanes: lanes(&tables),
             tables,
             source,
             pipeline: rdlt_connector::PipelineId::parse("orders").unwrap(),
-            lanes,
             load_id: LoadId::from_parts(UNIX_EPOCH, 1),
             epoch: Epoch(3),
             streams: self.streams,
@@ -304,6 +303,7 @@ impl Setup {
             follow: false,
             replan: Duration::from_secs(60),
             tally: Arc::clone(&harness.tally),
+            store: None,
         });
         (coordinator, harness)
     }
@@ -358,7 +358,12 @@ fn started(store: Arc<MemoryWal>) -> LoadLog {
         opened: None,
         origin: LoadId::from_parts(UNIX_EPOCH, 1),
     };
-    let (log, writer) = LoadLog::start(store, owner, std::num::NonZeroU64::MAX, None);
+    let (log, writer) = LoadLog::start(
+        store,
+        owner,
+        std::num::NonZeroU64::MAX,
+        (None, Arc::default()),
+    );
     tokio::spawn(writer);
     log
 }

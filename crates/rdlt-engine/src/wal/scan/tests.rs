@@ -130,7 +130,12 @@ async fn logged_beginning(received: bool, begun: Vec<BegunPhase>) -> Arc<MemoryW
     store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
     let budget = crate::budget::budget(1 << 20);
-    let (log, task) = LoadLog::start(wal, owner(), std::num::NonZeroU64::MAX, None);
+    let (log, task) = LoadLog::start(
+        wal,
+        owner(),
+        std::num::NonZeroU64::MAX,
+        (None, Arc::default()),
+    );
     let (orders, items) = (view("orders"), view("items"));
     let written = async {
         log_batch(&log, &budget, (0, &orders), SegmentId(1), &ids(0))
@@ -270,7 +275,12 @@ async fn a_commit_s_receipt_noted_in_a_later_chunk_s_end_settles_it() {
     store.open(&pipeline(), load());
     let wal: Arc<dyn WalStore> = Arc::clone(&store) as Arc<dyn WalStore>;
     let budget = crate::budget::budget(1 << 20);
-    let (log, task) = LoadLog::start(wal, owner(), std::num::NonZeroU64::MAX, None);
+    let (log, task) = LoadLog::start(
+        wal,
+        owner(),
+        std::num::NonZeroU64::MAX,
+        (None, Arc::default()),
+    );
     let orders = view("orders");
     let written = async {
         log_batch(&log, &budget, (0, &orders), SegmentId(1), &ids(0))

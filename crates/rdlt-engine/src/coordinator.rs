@@ -43,7 +43,7 @@ use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord, Tally, Trigger};
 use crate::stored::Stored;
 use crate::table::Tables;
-use crate::wal::{LoadLog, Positions};
+use crate::wal::{LoadLog, Positions, WalStore};
 use crate::watch;
 pub(crate) use phases::{Begun, Launcher, Phases, Template, launcher, plan_of};
 use waiting::WaitingSeals;
@@ -193,6 +193,9 @@ pub(crate) struct CoordinatorParts {
     pub(crate) replan: Duration,
     /// Where the commits count what made each due and the time their phases took.
     pub(crate) tally: Arc<Tally>,
+    /// Where the engine keeps write-ahead logs, whose listing bounds what a replay may repeat;
+    /// none where it keeps none.
+    pub(crate) store: Option<Arc<dyn WalStore>>,
 }
 
 pub(crate) struct Coordinator {

@@ -27,6 +27,7 @@ use crate::budget::{Denied, MemoryBudget, Reservation, Shares};
 use crate::compute::Pool;
 use crate::error::Error;
 use crate::limits::{LOG_COPY_BYTES, LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS, RECORDED};
+use crate::report::Tally;
 use crate::table::TableView;
 
 /// A table as a load's log tells its versions apart: its index in the attempt, its schema version
@@ -102,17 +103,18 @@ struct Version {
 impl LoadLog {
     /// The log of `owner`'s load in `store`, holding at most `limit` bytes on disk, and the task
     /// writing it, for the attempt's scope to run until every clone is dropped or the log is
-    /// closed; `staging` holds what the store stages in memory, and what a carry reads at once.
+    /// closed; `staging` holds what the store stages in memory, and what a carry reads at once,
+    /// and the writer counts what it carries and relieves into `tally`.
     pub(crate) fn start(
         store: Arc<dyn WalStore>,
         owner: Owner,
         limit: NonZeroU64,
-        staging: Option<Reservation>,
+        (staging, tally): (Option<Reservation>, Arc<Tally>),
     ) -> (
         Self,
         impl Future<Output = Result<(), Error>> + Send + 'static,
     ) {
-        let (writer, task) = WalWriter::start(store, owner, limit.get());
+        let (writer, task) = WalWriter::start(store, owner, limit.get(), tally);
         writer
             .shared()
             .committed

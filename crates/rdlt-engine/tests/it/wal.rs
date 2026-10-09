@@ -125,6 +125,20 @@ async fn a_logged_load_publishes_every_row_once_and_leaves_no_log() {
         // Each commit's chunk and the closing one are published, after every batch's frame.
         assert_eq!(counted.publishes(), commits + 1);
         assert!(counted.appends() > 2 * commits);
+        // The run's report counts what the store was asked as the store counts it.
+        let counters = &outcome.report.counters;
+        let requests = counters.log.requests;
+        let count = |requests: u64| usize::try_from(requests).expect("a count");
+        assert_eq!(count(requests.append), counted.appends());
+        assert_eq!(count(requests.publish), counted.publishes());
+        assert!(counters.log.appended > 0);
+        let commits_by = counters.commits;
+        let made = commits_by.interval
+            + commits_by.size
+            + commits_by.cursors
+            + commits_by.log
+            + commits_by.end;
+        assert_eq!(made, outcome.report.commits);
         let acked = script.acks.lock().clone();
         for partition in ["p0", "p1"] {
             let last = acked
@@ -163,6 +177,10 @@ async fn a_commit_the_destination_missed_lands_from_the_log_before_the_source_is
     assert_eq!(
         script.early_reads.load(std::sync::atomic::Ordering::SeqCst),
         0
+    );
+    assert!(
+        outcome.report.counters.log.read > 0,
+        "the replay read the log"
     );
     let pipeline = PipelineId::parse("wal-replayed").expect("a valid pipeline");
     assert_eq!(store.loads(&pipeline).await.expect("loads list"), []);
@@ -212,6 +230,10 @@ async fn a_load_that_needs_no_log_keeps_none_though_the_engine_has_a_store() {
     assert_eq!(outcome.report.status, RunStatus::Succeeded);
     assert_eq!(published_ids("wal_unneeded", "events"), ids(2, 30));
     assert_eq!((counted.appends(), counted.publishes()), (0, 0));
+    // The log opened for the load, and removed as it needed none.
+    let log = outcome.report.counters.log;
+    assert_eq!((log.requests.open_log, log.requests.remove_log), (1, 1));
+    assert_eq!((log.requests.append, log.appended, log.read), (0, 0, 0));
 }
 
 #[tokio::test(start_paused = true)]

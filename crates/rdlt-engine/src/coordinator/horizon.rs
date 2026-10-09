@@ -26,7 +26,7 @@ impl Coordinator {
             .wal
             .as_ref()
             .and_then(crate::wal::LoadLog::oldest);
-        let loads = match self.parts.env.wal() {
+        let loads = match &self.parts.store {
             Some(store) => store
                 .loads(&self.parts.pipeline)
                 .await
