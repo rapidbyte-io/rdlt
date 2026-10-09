@@ -204,11 +204,12 @@ fn a_batch_that_is_cut_as_it_is_sent_is_held_to_its_rows_and_schema_alone() {
     assert_eq!((refusal.name, refusal.limit), ("nesting depth", 64));
 }
 
-/// A list of each kind holding `item`, by name.
+/// A list of each kind holding `item`, by name: a map's entries hold a key beside it.
 fn lists(item: &Arc<Field>) -> Vec<(&'static str, DataType)> {
+    let key = Arc::new(Field::new("key", DataType::Utf8, false));
     let entries = Field::new(
         "entries",
-        DataType::Struct(Fields::from(vec![Arc::clone(item)])),
+        DataType::Struct(Fields::from(vec![key, Arc::clone(item)])),
         false,
     );
     vec![
@@ -240,8 +241,15 @@ fn refused_by(kind: DataType, columns: u64, depth: u64) -> Option<&'static str> 
 #[test]
 fn every_kind_of_list_counts_its_columns_and_levels() {
     for (name, kind) in lists(&Arc::new(Field::new("item", DataType::Int8, true))) {
-        // The list and its items: two levels and two columns, three of each for a map's entries.
-        let (columns, depth) = if name == "map" { (3, 3) } else { (2, 2) };
+        // The list and its items: two levels and two columns; a map's entries are a level more,
+        // and a column more with their keys beside the values.
+        let (columns, depth) = if name == "map" { (4, 3) } else { (2, 2) };
+        // Each is a type an array holds.
+        assert_eq!(
+            arrow_array::new_empty_array(&kind).data_type(),
+            &kind,
+            "{name}"
+        );
         assert_eq!(refused_by(kind.clone(), columns, depth), None, "{name}");
         assert_eq!(
             refused_by(kind.clone(), columns, depth - 1),
