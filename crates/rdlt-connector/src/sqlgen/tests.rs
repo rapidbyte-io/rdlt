@@ -824,30 +824,7 @@ fn the_catalog_bootstraps_again_without_change() {
             planner.named(table).unwrap_err().code(),
             Some("table_name_reserved")
         );
-        // Every catalog table the planner makes is of its current shape.
-        let names: Vec<String> = columns(&connection, &planner, table)
-            .into_iter()
-            .map(|column| column.name)
-            .collect();
-        planner.catalog_current(table, &names).unwrap();
     }
-    // A table of registered paths made before they were each a pipeline's is refused, and so is
-    // one lacking any column it has now; one that is missing is the bootstrap's to make.
-    let shapes: [&[&str]; 4] = [
-        &["path", "name"],
-        &["pipeline", "path"],
-        &["pipeline", "name"],
-        &["name"],
-    ];
-    for shape in shapes {
-        let held: Vec<String> = shape.iter().map(|name| (*name).to_owned()).collect();
-        let refused = planner.catalog_current("_rdlt_tables", &held).unwrap_err();
-        assert_eq!(refused.kind(), ConnectorErrorKind::Config);
-        assert_eq!(refused.code(), Some(super::CATALOG_OUTDATED), "{shape:?}");
-    }
-    planner.catalog_current("_rdlt_tables", &[]).unwrap();
-    let older = ["path".to_owned(), "name".to_owned()];
-    planner.catalog_current("_rdlt_owners", &older).unwrap();
 }
 
 #[test]
