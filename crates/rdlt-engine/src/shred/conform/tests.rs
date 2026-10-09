@@ -103,3 +103,19 @@ fn objects_and_lists_are_fitted_field_by_field_and_item_by_item() {
         .clone();
     assert_eq!(items.values().as_ref(), [1.0, 2.0]);
 }
+
+#[test]
+fn a_column_of_nulls_is_fitted_as_nulls_of_the_joined_type() {
+    let nulls: ArrayRef = Arc::new(arrow_array::NullArray::new(2));
+    let joined = object(&[("x", Observed::Bool)]);
+    for joined in [
+        Observed::Text,
+        Observed::Float,
+        joined.clone(),
+        list(joined),
+    ] {
+        let fitted = fit(&nulls, &Observed::Null, &joined).unwrap();
+        assert_eq!(fitted.data_type(), &joined.logical_type().to_arrow());
+        assert_eq!(fitted.null_count(), 2, "{joined:?}");
+    }
+}
