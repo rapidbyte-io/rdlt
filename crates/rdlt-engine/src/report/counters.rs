@@ -29,7 +29,8 @@ pub struct Counters {
 pub struct LogCounters {
     /// Bytes appended to chunks staged, the carried among them.
     pub appended: u64,
-    /// Bytes of open segments' frames copied out of older chunks into the chunk staged.
+    /// Bytes of open segments' frames that completed carries copied out of older chunks into the
+    /// chunk staged.
     pub carried: u64,
     /// Bytes read from published chunks: a replay's, and a carry's.
     pub read: u64,
@@ -71,6 +72,8 @@ pub struct StoreRequests {
 }
 
 /// Jobs on the compute pool, and how long they waited to start and ran.
+///
+/// A job counts once its caller takes its result, so a job a cancelled caller left is not counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct PoolCounters {
     /// Jobs run.
@@ -82,6 +85,9 @@ pub struct PoolCounters {
 }
 
 /// Commits that landed, by what made each due.
+///
+/// A commit counts once its cursors are acknowledged, so one whose acknowledgement fails is not
+/// counted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Commits {
     /// Made due by the commit policy's interval.
