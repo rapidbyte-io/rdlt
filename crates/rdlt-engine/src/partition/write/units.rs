@@ -8,7 +8,6 @@ use rdlt_connector::Permit;
 use super::held::{self, Held};
 use super::reserving;
 use crate::budget::TooLarge;
-use crate::compute::run_all;
 use crate::error::{Error, ErrorKind};
 use crate::json::{self, NotJson};
 use crate::limits::JSON_EXCEEDS_BUDGET;
@@ -49,10 +48,11 @@ async fn checked(
     batches: &[RecordBatch],
 ) -> Result<(), Error> {
     let batches = batches.to_vec();
-    let compute = context.env.compute();
     let measured = batches.clone();
     let measure = move || measured.iter().map(json::held_by_check).max();
-    let held = run_all(compute, [measure])
+    let held = context
+        .pool
+        .run_all([measure])
         .await
         .pop()
         .flatten()
@@ -66,7 +66,7 @@ async fn checked(
         }
     };
     let check = move || batches.iter().try_for_each(json::check_batch);
-    let checked = run_all(compute, [check]).await.pop();
+    let checked = context.pool.run_all([check]).await.pop();
     match checked {
         Some(Err(refused)) => Err(not_json(job, refused)),
         _ => Ok(()),
@@ -100,11 +100,11 @@ async fn shredded(
     permits: Vec<Permit>,
 ) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
     let failed = |error: ShredError| shred_failed(job, error);
-    let compute = context.env.compute();
+    let pool = &context.pool;
     let chunk_bytes = context.batch.chunk_bytes().get();
     let limits = ShredLimits::new(context.budget.limits().schema_columns);
     let observe = || async {
-        shred::observe(compute, &pushes, chunk_bytes, limits)
+        shred::observe(pool, &pushes, chunk_bytes, limits)
             .await
             .map_err(failed)
     };
@@ -125,7 +125,7 @@ async fn shredded(
         }
         room = excess;
     };
-    let batches = observed.build(compute).await.map_err(failed)?;
+    let batches = observed.build(pool).await.map_err(failed)?;
     drop(pushes);
     let held = held::shredded(permits, beyond, &batches);
     Ok(batches

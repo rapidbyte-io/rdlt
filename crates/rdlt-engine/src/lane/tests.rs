@@ -5,6 +5,7 @@
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
 use parking_lot::Mutex;
@@ -16,7 +17,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Lanes, Write};
 use crate::budget::MemoryBudget;
+use crate::env::{Env, InlineEnv};
 use crate::error::ErrorKind;
+use crate::report::{LaneCounters, Tally};
 use crate::table::{Model, SharedSession, Tables, testing::resolver};
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -27,11 +30,14 @@ struct Recording {
     log: Log,
     fail_write: bool,
     fail_flush: bool,
+    /// How long a write takes; a flush takes twice as long.
+    pace: Duration,
 }
 
 impl DestinationWriter for Recording {
     fn write(&mut self, segment: SegmentId, batch: RecordBatch) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
+            tokio::time::sleep(self.pace).await;
             if self.fail_write {
                 return Err(ConnectorError::data("write refused"));
             }
@@ -49,6 +55,7 @@ impl DestinationWriter for Recording {
 
     fn flush(&mut self) -> BoxFuture<'_, Result<WriteStats>> {
         Box::pin(async move {
+            tokio::time::sleep(self.pace * 2).await;
             if self.fail_flush {
                 return Err(ConnectorError::data("flush refused"));
             }
@@ -72,6 +79,7 @@ struct Session {
     fail_open: bool,
     fail_write: bool,
     fail_flush: bool,
+    pace: Duration,
 }
 
 impl DestinationSession for Session {
@@ -92,6 +100,7 @@ impl DestinationSession for Session {
             log: Arc::clone(&self.log),
             fail_write: self.fail_write,
             fail_flush: self.fail_flush,
+            pace: self.pace,
         });
         let entry = format!("open {} v{}", table.name, table.version.0);
         self.log.lock().push(entry);
@@ -139,7 +148,19 @@ fn budgeted(
         fail_open,
         fail_write,
         fail_flush,
+        pace: Duration::ZERO,
     };
+    over(session, (count, tables, window), budget, &Arc::default())
+}
+
+/// `count` lanes over `tables` tables of `session`, queueing `window` writes each, counting into
+/// `tally`.
+fn over(
+    session: Session,
+    (count, tables, window): (usize, usize, usize),
+    budget: &MemoryBudget,
+    tally: &Arc<Tally>,
+) -> (Lanes, Vec<super::Lane>) {
     let all = Tables::new(SharedSession::new(Box::new(session)));
     for table in 0..tables {
         let name = format!("t{table}");
@@ -153,11 +174,13 @@ fn budgeted(
         all.add(resolver(&name), &table, Model::default()).unwrap();
     }
     let writers = crate::config::GrowthLimits::default().writers();
+    let env: Arc<dyn Env> = Arc::new(InlineEnv);
     Lanes::new(
         (NonZeroUsize::new(count).unwrap(), writers),
         &Arc::new(all),
         NonZeroUsize::new(window).unwrap(),
         budget,
+        (&env, tally),
     )
 }
 
@@ -372,7 +395,7 @@ async fn a_flush_reaches_only_the_writers_written_since_the_last() {
 
 /// Waits until `log` holds `entry`.
 async fn logged(log: &Log, entry: &str) {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         while !log.lock().iter().any(|logged| logged == entry) {
             tokio::task::yield_now().await;
         }
@@ -408,7 +431,7 @@ async fn a_lane_flushes_its_writers_once_the_budget_is_pressed() {
     write(&lanes, &budget, 0, 0, 1, 4).await.unwrap();
     logged(&log, "t0 v0 s1 r4").await;
     // A request that waits for the written bytes gets them once the lane flushes on its own.
-    let waiting = tokio::time::timeout(std::time::Duration::from_secs(5), budget.acquire(10))
+    let waiting = tokio::time::timeout(Duration::from_secs(5), budget.acquire(10))
         .await
         .expect("the lane releases what it flushed");
     assert!(log.lock().iter().any(|entry| entry == "t0 v0 flush"));
@@ -469,4 +492,38 @@ async fn a_lane_holds_no_more_writers_than_its_share() {
     }
     drop(lanes);
     lane.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lane_counts_the_time_a_full_queue_blocks_and_its_writes_and_flushes_take() {
+    let log = Log::default();
+    let budget = crate::budget::budget(1_000);
+    let tally = Arc::new(Tally::default());
+    let session = Session {
+        log: Arc::clone(&log),
+        fail_open: false,
+        fail_write: false,
+        fail_flush: false,
+        pace: Duration::from_secs(1),
+    };
+    let (lanes, tasks) = over(session, (2, 1, 1), &budget, &tally);
+    let running: Vec<_> = tasks
+        .into_iter()
+        .map(|lane| tokio::spawn(lane.run(CancellationToken::new())))
+        .collect();
+    // The queue holds one write: the third waits while the first is written, a second.
+    for segment in 1..=3 {
+        write(&lanes, &budget, 1, 0, segment, 1).await.unwrap();
+    }
+    lanes.flush().await.unwrap();
+    let second = LaneCounters {
+        blocked: Duration::from_secs(1),
+        writing: Duration::from_secs(3),
+        flushing: Duration::from_secs(2),
+    };
+    assert_eq!(tally.counters().lanes, [LaneCounters::default(), second]);
+    drop(lanes);
+    for lane in running {
+        lane.await.unwrap().unwrap();
+    }
 }

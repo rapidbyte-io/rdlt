@@ -90,6 +90,7 @@ impl Engine {
             source: waits.source(source),
             destination: waits.destination(destination),
             budget,
+            tally: Arc::default(),
             stop: control.after_commit.clone(),
             cycles: Mutex::new(BTreeMap::new()),
         };
@@ -343,6 +344,7 @@ async fn drive(context: RunContext, control: RunControl) -> RunOutcome {
     report.status = status;
     report.elapsed = context.env.instant().saturating_duration_since(started);
     report.peak_memory = context.budget.peak();
+    report.counters = context.tally.counters();
     report.counters.waits = context.budget.waited();
     RunOutcome { report, error }
 }

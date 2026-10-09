@@ -12,7 +12,8 @@ use serde::Serialize;
 
 use crate::error::{Error, ErrorKind, ErrorReport};
 
-pub use counters::{Counters, Waited, Waits};
+pub use counters::{CommitPhases, Commits, Counters, LaneCounters, PoolCounters, Waited, Waits};
+pub(crate) use counters::{Tally, Trigger};
 
 /// How a run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

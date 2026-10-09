@@ -17,7 +17,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use rdlt_engine::bench::{
     CHUNK_BYTES, CORPUS_BYTES, Corpus, PUSH_BYTES, normalize, pool_cores, shred, shred_on,
 };
-use rdlt_engine::{Cores, RayonPool};
+use rdlt_engine::{Cores, Env, SystemEnv};
 
 fn single_core(c: &mut Criterion) {
     let mut corpora: Vec<(String, Vec<Bytes>)> = Corpus::SHREDDED
@@ -74,7 +74,9 @@ fn many_cores(c: &mut Criterion) {
                     "shred_cores/{count}: 1 runtime worker, {} compute threads",
                     cores.compute_threads()
                 );
-                RayonPool::try_new(cores).expect("the pool starts")
+                let env: Arc<dyn Env> =
+                    Arc::new(SystemEnv::try_new(cores).expect("the pool starts"));
+                env
             });
             b.iter(|| {
                 let batches = runtime.block_on(shred_on(pool, &pushes, CHUNK_BYTES));

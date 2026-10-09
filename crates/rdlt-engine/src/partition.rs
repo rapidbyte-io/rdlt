@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
+use crate::compute::Pool;
 use crate::config::BatchPolicy;
 use crate::cost::{Admitted, Charging};
 use crate::env::Env;
@@ -108,8 +109,10 @@ pub(crate) struct PartitionContext {
     /// When the attempt started, which every row it loads carries, and when each batch is
     /// received.
     pub(crate) clock: Arc<LoadClock>,
-    /// The clock the coalescer's deadlines follow, and the pool JSON is shredded on.
+    /// The clock the coalescer's deadlines follow.
     pub(crate) env: Arc<dyn Env>,
+    /// The pool JSON is shredded, and batches checked and lowered, on.
+    pub(crate) pool: Pool,
     /// How pushes are coalesced and JSON is shredded.
     pub(crate) batch: BatchPolicy,
     /// How long a read asked to stop may take to end.

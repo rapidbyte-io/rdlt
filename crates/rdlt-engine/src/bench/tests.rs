@@ -17,7 +17,8 @@ use super::{
     Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, register, replay,
     replay_factory, shred, shred_on, split_replay_config,
 };
-use crate::compute::{Cores, RayonPool};
+use crate::compute::Cores;
+use crate::env::Env;
 use crate::{Engine, EngineConfig, PipelinePlan, StreamPlan, SystemEnv};
 
 #[test]
@@ -27,12 +28,12 @@ fn shredding_inline_and_on_a_pool_gives_the_same_batches() {
         Bytes::from_static(b"[{\"a\":3}]"),
     ];
     let inline = shred(&pushes, 8).unwrap();
-    let pool =
-        RayonPool::try_new(Cores::new(NonZeroUsize::new(3).unwrap(), NonZeroUsize::MIN)).unwrap();
+    let cores = Cores::new(NonZeroUsize::new(3).unwrap(), NonZeroUsize::MIN);
+    let env: Arc<dyn Env> = Arc::new(SystemEnv::try_new(cores).unwrap());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    let pooled = runtime.block_on(shred_on(&pool, &pushes, 8)).unwrap();
+    let pooled = runtime.block_on(shred_on(&env, &pushes, 8)).unwrap();
     assert_eq!(inline, pooled);
     assert_eq!(inline.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
 }

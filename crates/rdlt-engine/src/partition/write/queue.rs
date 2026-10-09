@@ -45,10 +45,9 @@ pub(super) async fn queue(
     if let (Some(log), Some(frame)) = (&context.wal, frame) {
         // Queued for the log before the partition can seal the segment, so the frame of the
         // commit that takes the segment, queued after the seal, follows this batch's.
-        let compute = context.env.compute();
         let (view, batch) = (&prepared.view, &prepared.batch);
         log.batch(
-            compute,
+            &context.pool,
             &context.budget,
             frame,
             (table, view),

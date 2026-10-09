@@ -14,7 +14,7 @@ use rdlt_connector::{CommitMeta, Cursor, PartitionState, SegmentId, StateChange,
 
 use super::{frames, ids, meta, sealed_at, start};
 use crate::budget::MemoryBudget;
-use crate::compute::Inline;
+use crate::compute::Pool;
 use crate::error::ErrorKind;
 use crate::table::testing::view;
 use crate::wal::load::{LoadLog, Sealed};
@@ -38,7 +38,7 @@ async fn described(
     );
     let orders = view("orders");
     load.batch(
-        &Inline,
+        &Pool::inline(),
         log,
         held,
         (table, &orders),

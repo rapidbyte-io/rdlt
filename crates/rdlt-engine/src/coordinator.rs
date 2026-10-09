@@ -40,7 +40,7 @@ use crate::error::{Error, Side};
 use crate::lane::Lanes;
 use crate::partition::{Latest, Progress};
 use crate::plan::WriteMode;
-use crate::report::{AttemptEnd, AttemptLog, CommitRecord};
+use crate::report::{AttemptEnd, AttemptLog, CommitRecord, Tally, Trigger};
 use crate::stored::Stored;
 use crate::table::Tables;
 use crate::wal::{LoadLog, Positions};
@@ -191,6 +191,8 @@ pub(crate) struct CoordinatorParts {
     /// every `replan`.
     pub(crate) follow: bool,
     pub(crate) replan: Duration,
+    /// Where the commits count what made each due and the time their phases took.
+    pub(crate) tally: Arc<Tally>,
 }
 
 pub(crate) struct Coordinator {
@@ -247,7 +249,7 @@ impl Coordinator {
     pub(crate) async fn run(mut self) -> Result<(), Error> {
         loop {
             self.load().await?;
-            self.commit().await?;
+            self.commit(Trigger::End).await?;
             self.advance_phases().await?;
             if self.done() {
                 break;
@@ -294,33 +296,35 @@ impl Coordinator {
                     replan = self.replan_timer();
                 }
                 // The interval comes before data, so a busy source still commits on time.
-                () = &mut timer => timer = self.commit_now().await?,
+                () = &mut timer => timer = self.commit_now(Trigger::Interval).await?,
                 // A cursor that finds its share full waits for a commit, which is then due:
                 // once, since a commit that frees it nothing is not tried again before more
                 // arrives.
                 () = self.parts.budget.cursor_waits(), if self.cursors_may_free => {
-                    timer = self.commit_now().await?;
+                    timer = self.commit_now(Trigger::Cursors).await?;
                 }
                 progress = self.parts.progress.recv() => {
                     self.observe(progress.ok_or_else(cancelled)?);
                     self.replan_signalled().await?;
-                    if self.commit_due() {
-                        timer = self.commit_now().await?;
+                    if let Some(trigger) = self.commit_due() {
+                        timer = self.commit_now(trigger).await?;
                     }
                 }
                 // A batch that finds the log full waits for a commit, which is then due; every
                 // progress sent before it, its seals among them, is seen first.
-                () = log_full(self.parts.wal.as_ref()) => timer = self.commit_now().await?,
+                () = log_full(self.parts.wal.as_ref()) => {
+                    timer = self.commit_now(Trigger::Log).await?;
+                }
             }
         }
         Ok(())
     }
 
-    /// Commits what is sealed behind a barrier and advances the phases: the timer of the commit
-    /// after it.
-    async fn commit_now(&mut self) -> Result<Sleep, Error> {
+    /// Commits what is sealed behind a barrier, as `trigger` made due, and advances the phases:
+    /// the timer of the commit after it.
+    async fn commit_now(&mut self, trigger: Trigger) -> Result<Sleep, Error> {
         self.raise_barrier().await?;
-        self.commit().await?;
+        self.commit(trigger).await?;
         self.advance_phases().await?;
         self.cursors_may_free = false;
         if let Some(log) = &self.parts.wal {
@@ -329,14 +333,20 @@ impl Coordinator {
         Ok(self.timer())
     }
 
-    /// Whether a commit is due: by the policy's rows and bytes, by the cursors of the seals
-    /// waiting, which hold budget only a commit releases, once they take half their share, or by
-    /// what the load's log holds on disk, which only a commit lets go.
-    fn commit_due(&self) -> bool {
+    /// What makes a commit due, where something does: the policy's rows and bytes, the cursors
+    /// of the seals waiting, which hold budget only a commit releases, once they take half their
+    /// share, or what the load's log holds on disk, which only a commit lets go.
+    fn commit_due(&self) -> Option<Trigger> {
         let cursors = (self.parts.budget.shares().cursors / 2).max(1);
-        self.parts.policy.is_due(self.due.rows(), self.due.bytes())
-            || self.sealed.cursor_bytes() >= cursors
-            || self.parts.wal.as_ref().is_some_and(LoadLog::due)
+        if self.parts.policy.is_due(self.due.rows(), self.due.bytes()) {
+            Some(Trigger::Size)
+        } else if self.sealed.cursor_bytes() >= cursors {
+            Some(Trigger::Cursors)
+        } else if self.parts.wal.as_ref().is_some_and(LoadLog::due) {
+            Some(Trigger::Log)
+        } else {
+            None
+        }
     }
 
     fn timer(&self) -> Sleep {

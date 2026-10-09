@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::RecordBatch;
 use rdlt_connector::{DestinationWriter, PartitionId, Permit, SchemaVersion, SegmentId, TableRef};
@@ -15,7 +16,9 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::MemoryBudget;
+use crate::env::Env;
 use crate::error::{Error, Side};
+use crate::report::Tally;
 use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment and the schema version it was lowered for; the
@@ -37,6 +40,10 @@ enum Message {
 #[derive(Clone)]
 pub(crate) struct Lanes {
     senders: Vec<mpsc::Sender<Message>>,
+    /// The clock a write waiting for room in a lane's queue is timed on.
+    env: Arc<dyn Env>,
+    /// Where each lane's waits and times are counted.
+    tally: Arc<Tally>,
 }
 
 /// One lane's end: its queue, a writer for each table and schema version it writes, which of
@@ -55,6 +62,12 @@ pub(crate) struct Lane {
     share: NonZeroUsize,
     /// Counts the lane's writes, so the writer written longest ago is found.
     writes: u64,
+    /// The lane's place among the attempt's lanes.
+    index: usize,
+    /// The clock the lane's writes and flushes are timed on.
+    env: Arc<dyn Env>,
+    /// Where the lane counts its times.
+    tally: Arc<Tally>,
 }
 
 /// An open writer, and the count of the lane's writes when it was last written.
@@ -68,16 +81,18 @@ impl Lanes {
     /// equal share of `writers` open, one at least.
     ///
     /// A lane opens a table's writer when it first writes to the table, since normalized streams
-    /// add child tables as their rows arrive.
+    /// add child tables as their rows arrive. Each lane's waits and times are counted into
+    /// `tally`, on `env`'s clock.
     pub(crate) fn new(
         (count, writers): (NonZeroUsize, NonZeroUsize),
         tables: &Arc<Tables>,
         window: NonZeroUsize,
         budget: &MemoryBudget,
+        (env, tally): (&Arc<dyn Env>, &Arc<Tally>),
     ) -> (Self, Vec<Lane>) {
         let share = NonZeroUsize::new(writers.get() / count.get()).unwrap_or(NonZeroUsize::MIN);
         let (senders, lanes) = (0..count.get())
-            .map(|_| {
+            .map(|index| {
                 let (sender, receiver) = mpsc::channel(window.get());
                 let lane = Lane {
                     receiver,
@@ -88,11 +103,19 @@ impl Lanes {
                     budget: budget.clone(),
                     share,
                     writes: 0,
+                    index,
+                    env: Arc::clone(env),
+                    tally: Arc::clone(tally),
                 };
                 (sender, lane)
             })
             .unzip();
-        (Self { senders }, lanes)
+        let ends = Self {
+            senders,
+            env: Arc::clone(env),
+            tally: Arc::clone(tally),
+        };
+        (ends, lanes)
     }
 
     /// The lane for `partition`'s writes to `table`, so they stay in order on one writer.
@@ -103,12 +126,23 @@ impl Lanes {
         usize::try_from(hash % lanes).unwrap_or(0)
     }
 
-    /// Queues `write` on `lane`, waiting while the lane's queue is full.
+    /// Queues `write` on `lane`, waiting while the lane's queue is full; the wait is counted as
+    /// the lane's.
     pub(crate) async fn write(&self, lane: usize, write: Write) -> Result<(), Error> {
-        self.senders[lane]
-            .send(Message::Write(write))
-            .await
-            .map_err(|_| stopped())
+        let sender = &self.senders[lane];
+        let message = match sender.try_send(Message::Write(write)) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Full(message)) => message,
+            Err(mpsc::error::TrySendError::Closed(_)) => return Err(stopped()),
+        };
+        let began = self.env.instant();
+        let sent = sender.send(message).await;
+        let blocked = self.env.instant().saturating_duration_since(began);
+        self.tally.add(|counters| {
+            let lane = counters.lane(lane);
+            lane.blocked = lane.blocked.saturating_add(blocked);
+        });
+        sent.map_err(|_| stopped())
     }
 
     /// Waits until every lane has staged and flushed every write queued before this call.
@@ -179,11 +213,18 @@ impl Lane {
         for key in older {
             self.retire(key).await?;
         }
+        let env = Arc::clone(&self.env);
         let writer = self.writer(write.table, write.version).await?;
+        let began = env.instant();
         writer
             .write(write.segment, write.batch)
             .await
             .map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
+        let writing = env.instant().saturating_duration_since(began);
+        self.tally.add(|counters| {
+            let lane = counters.lane(self.index);
+            lane.writing = lane.writing.saturating_add(writing);
+        });
         self.written.insert((write.table, write.version));
         self.held.push(write.reservation);
         Ok(())
@@ -196,10 +237,19 @@ impl Lane {
             let Some(open) = self.writers.get_mut(&key) else {
                 continue;
             };
-            flush(open.writer.as_mut()).await?;
+            let flushing = flush(open.writer.as_mut(), self.env.as_ref()).await?;
+            self.flushed(flushing);
         }
         self.held.clear();
         Ok(())
+    }
+
+    /// Counts a flush of `flushing` as the lane's.
+    fn flushed(&self, flushing: Duration) {
+        self.tally.add(|counters| {
+            let lane = counters.lane(self.index);
+            lane.flushing = lane.flushing.saturating_add(flushing);
+        });
     }
 
     /// Closes the writer at `key`, having flushed what it was written since the last flush, so
@@ -209,19 +259,21 @@ impl Lane {
             return Ok(());
         };
         if self.written.remove(&key) {
-            flush(open.writer.as_mut()).await?;
+            let flushing = flush(open.writer.as_mut(), self.env.as_ref()).await?;
+            self.flushed(flushing);
         }
         Ok(())
     }
 }
 
-/// Flushes `writer`.
-async fn flush(writer: &mut dyn DestinationWriter) -> Result<(), Error> {
+/// Flushes `writer`: how long the flush took on `env`'s clock.
+async fn flush(writer: &mut dyn DestinationWriter, env: &dyn Env) -> Result<Duration, Error> {
+    let began = env.instant();
     writer
         .flush()
         .await
-        .map(drop)
-        .map_err(|error| Error::connector(Side::Destination, "flushing staged writes", error))
+        .map_err(|error| Error::connector(Side::Destination, "flushing staged writes", error))?;
+    Ok(env.instant().saturating_duration_since(began))
 }
 
 impl Lane {

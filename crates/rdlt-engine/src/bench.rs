@@ -20,7 +20,8 @@ use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
 use bytes::Bytes;
 
-use crate::compute::{ComputePool, Inline, ready};
+use crate::compute::{Pool, ready};
+use crate::env::Env;
 use crate::normalize::{self, Shape};
 use crate::shred::{self, ShredError};
 
@@ -58,12 +59,23 @@ impl From<ShredError> for Refused {
 
 /// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`.
 pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, Refused> {
-    ready(shred_on(&Inline, pushes, chunk_bytes))
+    ready(shredded(&Pool::inline(), pushes, chunk_bytes))
 }
 
-/// Shreds the JSON `pushes` on `pool`, in chunks of `chunk_bytes`, as a partition does.
+/// Shreds the JSON `pushes` on `env`'s compute pool, in chunks of `chunk_bytes`, as a partition
+/// does.
 pub async fn shred_on(
-    pool: &dyn ComputePool,
+    env: &Arc<dyn Env>,
+    pushes: &[Bytes],
+    chunk_bytes: usize,
+) -> Result<Vec<RecordBatch>, Refused> {
+    let pool = Pool::new(Arc::clone(env), Arc::default());
+    shredded(&pool, pushes, chunk_bytes).await
+}
+
+/// Shreds the JSON `pushes` on `pool`, in chunks of `chunk_bytes`.
+async fn shredded(
+    pool: &Pool,
     pushes: &[Bytes],
     chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, Refused> {

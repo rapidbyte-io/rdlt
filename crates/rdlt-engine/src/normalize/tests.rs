@@ -13,7 +13,7 @@ use serde_json::{Value as Json, json};
 
 use super::reference::{self, Row, canonical_text};
 use super::{Part, Shape, normalize};
-use crate::compute::{Inline, ready};
+use crate::compute::{Pool, ready};
 use crate::shred::shred;
 
 fn shape(max_depth: u8) -> Shape {
@@ -29,7 +29,7 @@ fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch> {
     let lines: Vec<String> = records.iter().map(Json::to_string).collect();
     let push = Bytes::from(lines.join("\n"));
     ready(shred(
-        &Inline,
+        &Pool::inline(),
         &[push],
         chunk_bytes,
         crate::shred::ShredLimits::new(rdlt_connector::limits::MAX_COLUMNS),

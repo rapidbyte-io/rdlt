@@ -8,6 +8,7 @@ use crate::coordinator::waiting::WaitingSeals;
 use crate::cost::Charging;
 use crate::partition::{CursorHold, Progress, Seal};
 use crate::plan::WriteMode;
+use crate::report::Trigger;
 
 fn seal(partition: usize, segment: u64, rows: u64, next: u64, answers: Option<u64>) -> Seal {
     Seal {
@@ -126,14 +127,14 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
     for segment in 1..=2 {
         coordinator.observe(Progress::Sealed(seal(0, segment, 1, segment, None)));
         assert!(
-            !coordinator.commit_due(),
+            coordinator.commit_due().is_none(),
             "{segment} cursors of a limit of three"
         );
     }
     coordinator.observe(Progress::Sealed(seal(0, 3, 1, 3, None)));
-    assert!(coordinator.commit_due());
+    assert_eq!(coordinator.commit_due(), Some(Trigger::Cursors));
     coordinator.sealed.take();
-    assert!(!coordinator.commit_due());
+    assert!(coordinator.commit_due().is_none());
     // A share of nothing, as a budget of a few bytes has, is not due without a cursor.
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
@@ -141,7 +142,7 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
     );
     setup.budget = 8;
     let (coordinator, _harness) = setup.coordinator().await;
-    assert!(!coordinator.commit_due());
+    assert!(coordinator.commit_due().is_none());
 }
 
 #[tokio::test(start_paused = true)]

@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::budget::{Denied, MemoryBudget, Reservation};
+use crate::compute::Pool;
 use crate::config::EngineConfig;
 use crate::coordinator::{Coordinator, CoordinatorParts, PartitionRun, StreamRun, launcher};
 use crate::env::Env;
@@ -30,10 +31,10 @@ use crate::lane::Lanes;
 use crate::limits::{LOG_COPY_BYTES, WAL_STAGING_EXCEEDS_BUDGET};
 use crate::naming::{Naming, recorded};
 use crate::partition::{
-    self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Slots,
+    self, ChangeMode, Latest, LoadClock, PartitionContext, PartitionJob, Progress, Slots,
 };
 use crate::plan::PipelinePlan;
-use crate::report::{AttemptEnd, AttemptLog};
+use crate::report::{AttemptEnd, AttemptLog, Tally};
 use crate::scope::TaskScope;
 use crate::stored::{StateLimits, Stored};
 use crate::table::{SharedSession, Tables};
@@ -51,6 +52,8 @@ pub(crate) struct RunContext {
     pub(crate) source: Arc<dyn Source>,
     pub(crate) destination: Arc<dyn Destination>,
     pub(crate) budget: MemoryBudget,
+    /// Where the run's work counts what it waits for and spends its time on.
+    pub(crate) tally: Arc<Tally>,
     /// Fires when the run is asked to stop after committing.
     pub(crate) stop: CancellationToken,
     /// The generation of each full read this run started or resumed, so a retry after the read
@@ -271,27 +274,14 @@ async fn launch(
     let ((progress, progress_feed), (barrier, barrier_feed)) =
         (mpsc::unbounded_channel(), watch::channel(0));
     let (stop_reads, latest) = (CancellationToken::new(), Arc::new(Latest::default()));
-    let partition_context = Arc::new(PartitionContext {
-        source: Arc::clone(&context.source),
-        lanes: lanes.clone(),
-        tables: Arc::clone(&tables),
-        budget: context.budget.clone(),
-        rendering: Arc::new(crate::cost::rendering(context.destination.capabilities())),
+    let ends = Ends {
         progress,
         latest: Arc::clone(&latest),
         barrier: barrier_feed,
         stop: stop_reads.clone(),
         cancel: scope.token().clone(),
-        slots: Slots::new(context.config.partitions()),
-        segments: Arc::new(AtomicU64::new(1)),
-        buffer: context.config.partition_buffer(),
-        load_id,
-        clock: Arc::new(LoadClock::new(context.env.now())),
-        env: Arc::clone(&context.env),
-        batch: *context.config.batch(),
-        stop_wait: context.config.stop_wait(),
-        wal: wal.clone(),
-    });
+    };
+    let partition_context = shared_by_partitions(context, load_id, (&lanes, &tables, &wal), ends);
     let (tasks, spawned) = mpsc::unbounded_channel();
     let (streams, partitions) = spawn_partitions(&mut scope, planned, &partition_context);
     let coordinator = Coordinator::new(CoordinatorParts {
@@ -320,9 +310,50 @@ async fn launch(
         stored: opened.stored,
         follow: context.plan.until().follows(),
         replan: context.config.replan(),
+        tally: Arc::clone(&context.tally),
     });
     scope.spawn(coordinator.run());
     scope.join_spawning(spawned).await
+}
+
+/// The partitions' ends of what ties them to the attempt's coordinator.
+struct Ends {
+    progress: mpsc::UnboundedSender<Progress>,
+    latest: Arc<Latest>,
+    barrier: watch::Receiver<u64>,
+    stop: CancellationToken,
+    cancel: CancellationToken,
+}
+
+/// What the attempt's partitions share: its `lanes`, `tables` and `wal`, and their `ends`.
+fn shared_by_partitions(
+    context: &RunContext,
+    load_id: LoadId,
+    (lanes, tables, wal): (&Lanes, &Arc<Tables>, &Option<LoadLog>),
+    ends: Ends,
+) -> Arc<PartitionContext> {
+    Arc::new(PartitionContext {
+        source: Arc::clone(&context.source),
+        lanes: lanes.clone(),
+        tables: Arc::clone(tables),
+        budget: context.budget.clone(),
+        rendering: Arc::new(crate::cost::rendering(context.destination.capabilities())),
+        progress: ends.progress,
+        latest: ends.latest,
+        barrier: ends.barrier,
+        stop: ends.stop,
+        cancel: ends.cancel,
+        slots: Slots::new(context.config.partitions()),
+        segments: Arc::new(AtomicU64::new(1)),
+        buffer: context.config.partition_buffer(),
+        load_id,
+        clock: Arc::new(LoadClock::new(context.env.now())),
+        env: Arc::clone(&context.env),
+        pool: Pool::new(Arc::clone(&context.env), Arc::clone(&context.tally)),
+        batch: *context.config.batch(),
+        stop_wait: context.config.stop_wait(),
+        wal: wal.clone(),
+    })
 }
 
 /// The attempt's lanes, their tasks started in `scope`.
@@ -338,6 +369,7 @@ fn start_lanes(context: &RunContext, tables: &Arc<Tables>, scope: &mut TaskScope
         tables,
         context.config.lane_window(),
         &context.budget,
+        (&context.env, &context.tally),
     );
     let cancel = scope.token().clone();
     // A change of a table's schema reserves what its commit records, until the attempt ends.

@@ -1,6 +1,6 @@
 //! Injected sources of time and randomness, and the cores a run may use.
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 mod inline;
 mod system;
 #[cfg(test)]
@@ -17,7 +17,7 @@ use rdlt_connector::LoadId;
 use crate::compute::ComputePool;
 use crate::wal::WalStore;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 pub(crate) use inline::InlineEnv;
 pub use system::{SystemClock, SystemEnv};
 

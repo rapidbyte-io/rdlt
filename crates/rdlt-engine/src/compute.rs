@@ -5,10 +5,15 @@ mod tests;
 
 use std::num::NonZeroUsize;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
 #[cfg(any(test, feature = "bench"))]
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use tokio::sync::oneshot;
+
+use crate::env::Env;
+use crate::report::Tally;
 
 /// A unit of CPU-bound work.
 pub type Job = Box<dyn FnOnce() + Send + 'static>;
@@ -157,37 +162,76 @@ pub(crate) fn ready<F: Future>(future: F) -> F::Output {
     }
 }
 
-/// Runs every job of `work` on `pool`, all at once, and returns their results in `work`'s order.
-///
-/// A panic inside a job resumes in the caller once the jobs before it have finished.
-pub(crate) async fn run_all<T, F>(
-    pool: &dyn ComputePool,
-    work: impl IntoIterator<Item = F>,
-) -> Vec<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> T + Send + 'static,
-{
-    let receivers: Vec<_> = work
-        .into_iter()
-        .map(|job| {
-            let (sender, receiver) = oneshot::channel();
-            pool.execute(Box::new(move || {
-                // The caller may have stopped waiting; its result is then not needed.
-                drop(sender.send(panic::catch_unwind(AssertUnwindSafe(job))));
-            }));
-            receiver
-        })
-        .collect();
-    let mut values = Vec::with_capacity(receivers.len());
-    for receiver in receivers {
-        match receiver
-            .await
-            .expect("compute pools run every job they accept")
-        {
-            Ok(value) => values.push(value),
-            Err(payload) => panic::resume_unwind(payload),
-        }
+/// A run's compute pool, each job's wait to start and its run timed on the run's clock.
+#[derive(Clone)]
+pub(crate) struct Pool {
+    env: Arc<dyn Env>,
+    tally: Arc<Tally>,
+}
+
+impl Pool {
+    /// The pool of `env`, counting into `tally`.
+    pub(crate) fn new(env: Arc<dyn Env>, tally: Arc<Tally>) -> Self {
+        Self { env, tally }
     }
-    values
+
+    /// A pool that runs each job at once, on the calling thread, counting into a tally of its
+    /// own.
+    #[cfg(any(test, feature = "bench"))]
+    pub(crate) fn inline() -> Self {
+        Self::new(Arc::new(crate::env::InlineEnv), Arc::default())
+    }
+
+    /// Runs every job of `work` on the pool, all at once, and returns their results in `work`'s
+    /// order.
+    ///
+    /// A panic inside a job resumes in the caller once the jobs before it have finished.
+    pub(crate) async fn run_all<T, F>(&self, work: impl IntoIterator<Item = F>) -> Vec<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+    {
+        let receivers: Vec<_> = work
+            .into_iter()
+            .map(|job| {
+                let (sender, receiver) = oneshot::channel();
+                let env = Arc::clone(&self.env);
+                let queued = env.instant();
+                self.env.compute().execute(Box::new(move || {
+                    let started = env.instant();
+                    let done = panic::catch_unwind(AssertUnwindSafe(job));
+                    let ran = Ran {
+                        queued: started.saturating_duration_since(queued),
+                        running: env.instant().saturating_duration_since(started),
+                    };
+                    // The caller may have stopped waiting; its result is then not needed.
+                    drop(sender.send((done, ran)));
+                }));
+                receiver
+            })
+            .collect();
+        let mut values = Vec::with_capacity(receivers.len());
+        for receiver in receivers {
+            let (done, ran) = receiver
+                .await
+                .expect("compute pools run every job they accept");
+            self.tally.add(|counters| {
+                let pool = &mut counters.pool;
+                pool.jobs = pool.jobs.saturating_add(1);
+                pool.queued = pool.queued.saturating_add(ran.queued);
+                pool.running = pool.running.saturating_add(ran.running);
+            });
+            match done {
+                Ok(value) => values.push(value),
+                Err(payload) => panic::resume_unwind(payload),
+            }
+        }
+        values
+    }
+}
+
+/// How long a job waited to start, and ran.
+struct Ran {
+    queued: Duration,
+    running: Duration,
 }
