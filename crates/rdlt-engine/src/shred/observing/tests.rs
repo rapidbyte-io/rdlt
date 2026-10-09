@@ -25,6 +25,7 @@ fn every_observing_visitor_says_what_it_expects() {
         expected(&Key {
             shape: &mut shape,
             context: &context,
+            object: 1,
         }),
         "an object key"
     );

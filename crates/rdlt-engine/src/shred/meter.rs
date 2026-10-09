@@ -14,9 +14,10 @@ use super::ShredError;
 const TEXT_PER_ROW: usize = 8;
 
 /// Bytes a column's entry in a chunk's record or shape takes beside its name: its name's
-/// allocation, its place in the record's or shape's vectors and its index's node, as they stand
-/// just after the vectors doubled to hold it, the buffer they grew from not yet freed.
-pub(crate) const KEY: u64 = 360;
+/// allocation, its place in the record's or shape's vectors and its index's node, with a shape's
+/// mark of the object that last named it, as they stand just after the vectors doubled to hold
+/// it, the buffer they grew from not yet freed.
+pub(crate) const KEY: u64 = 368;
 
 /// Bytes a leaf's or a list's builder takes beside what grows with its rows: the builder and
 /// its buffers' rounding to 64 bytes.

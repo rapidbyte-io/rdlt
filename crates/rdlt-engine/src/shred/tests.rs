@@ -1157,6 +1157,27 @@ fn an_observation_refuses_records_that_are_not_objects_and_notes_floats_only_in_
 }
 
 #[test]
+fn an_observation_refuses_a_key_one_object_repeats_at_any_depth() {
+    // An object first, which trips the build: the records after it are observed.
+    for record in [
+        r#"{"b":1,"b":2}"#,
+        r#"{"o":{"b":1,"b":1}}"#,
+        r#"{"l":[{"b":1,"b":1}]}"#,
+    ] {
+        assert!(
+            matches!(
+                observed_only(&format!("{{\"a\":1}}\n{record}")),
+                Err(super::ShredError::DuplicateKey(_))
+            ),
+            "{record}"
+        );
+    }
+    // Each object may name a key once, whatever other objects name.
+    let distinct = "{\"a\":1}\n{\"b\":1}\n{\"b\":2,\"o\":{\"b\":1},\"l\":[{\"b\":1},{\"b\":2}]}";
+    assert!(observed_only(distinct).is_ok());
+}
+
+#[test]
 fn an_observation_past_its_chunk_s_room_and_the_flush_s_is_refused_naming_the_flush_s() {
     // Ten columns of 400-byte names take more than the room of ten columns' shapes.
     let fields: Vec<String> = (0..10)

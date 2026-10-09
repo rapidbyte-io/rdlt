@@ -46,6 +46,8 @@ pub(crate) struct Context {
     json_floats: Cell<bool>,
     /// The text of the number the exact parse visits, which JSON text renders as it is.
     number: RefCell<Option<String>>,
+    /// How many objects the observing parse has opened.
+    objects: Cell<u64>,
     pub(crate) meter: Meter,
     pub(crate) columns: Columns,
 }
@@ -70,6 +72,7 @@ impl Context {
             zeroed: Cell::new(false),
             json_floats: Cell::new(false),
             number: RefCell::new(None),
+            objects: Cell::new(0),
             meter,
             columns,
         }
@@ -127,6 +130,13 @@ impl Context {
             let limit = self.meter.beyond_limit();
             self.fail(ShredError::ColumnsBeyondText(limit))
         })
+    }
+
+    /// Opens an object of the observing parse: its number, never 0 before 2^64 objects.
+    pub(crate) fn object(&self) -> u64 {
+        let object = self.objects.get().wrapping_add(1);
+        self.objects.set(object);
+        object
     }
 
     /// Notes that the chunk must be parsed again exactly.
