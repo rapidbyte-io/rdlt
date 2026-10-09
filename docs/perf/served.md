@@ -147,9 +147,10 @@ destination gains beyond noise; the source does not, so the room keeps growing.
   rounds over the socket spread 15 % on their own.
 - **Not measured.** Budget memory waits, the share of `realloc` in a profile, and rounds on
   CPUs 4–11.
-- **When to measure again.** Once a served write runs in two stages, on the process bench:
-  `tls/destination` and `tls/both` in large frames, and the destination process's CPU a GB, where
-  the destination's core is what limits throughput. The same rule decides.
+- **Measured again** once a served write ran in two stages, on the process bench (below): with
+  the two stages, reserving once moved `process/socket/destination/64x80000` 1 474 against
+  1 460 MB/s and `process/tls/destination/64x80000` 1 286 against 1 268, within the rounds'
+  ranges, so the room still grows.
 
 The review's measurements (ARCH_REVIEW.md §3.4) ran the same batches on the eight efficient cores
 with a runtime of a worker for each of those cores beside a pool of four threads, the median of
@@ -234,3 +235,68 @@ each process kept busy.
   under one CPU busy and moves no more as they are added. What holds it there is not shown. One
   connection task framing TLS and HTTP/2 for every write would give these figures, but only a
   per-thread profile of the destination's process, which these rounds did not take, can show it.
+
+## A served write in two stages
+
+A served write ran one pump: it read a frame, decoded it, and waited for the destination's writer
+before it read the next. Now one task receives and decodes the frames while another has the writer
+stage them, joined by a channel of one: a frame decodes once the writer has taken the frame before
+it, so a write holds its staged bound and one decoded frame waiting for its writer. Credit returns
+as the writer takes each frame.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-09, `799c06f3749d` against the two stages on it,
+and for the process cases `1c3357a8` with these cases against the two stages on it; five rounds
+interleaved with the base, one-minute load average 0.25–0.98 before each round and 1.6–3.5 after.
+The median of five rounds and their range. The rule set before measuring asked
+`socket/destination/64x80000` on CPUs 4–11 to gain at least 10 % with no case lower.
+
+In process, every case within the rounds' ranges of the base or above them:
+
+| Case | CPUs | Base, MB/s | Two stages, MB/s | Median | Ranges apart | CPU s a GB | CPUs busy |
+|---|---|---|---|---|---|---|---|
+| `socket/destination/64x80000` | 0–3 | 1 973 (1 916–2 110) | 2 121 (1 816–2 345) | +7.5 % | no | 0.82 → 0.82 | 1.60 → 1.80 |
+| `socket/both/64x80000` | 0–3 | 1 364 (1 334–1 430) | 1 345 (1 275–1 489) | −1.4 % | no | 1.38 → 1.38 | 1.87 → 1.94 |
+| `socket/destination/512x10000` | 0–3 | 3 495 (3 466–3 556) | 3 477 (3 459–3 520) | −0.5 % | no | 0.65 → 0.68 | 2.13 → 2.21 |
+| `tls/destination/64x80000` | 0–3 | 1 755 (1 625–1 805) | 1 788 (1 692–1 912) | +1.9 % | no | 0.93 → 0.95 | 1.67 → 1.79 |
+| `socket/destination/64x80000` | 4–11 | 1 553 (1 493–1 613) | 1 623 (1 573–1 699) | +4.5 % | no | 1.11 → 1.21 | 1.65 → 1.96 |
+| `socket/both/64x80000` | 4–11 | 1 302 (1 259–1 309) | 1 329 (1 233–1 359) | +2.1 % | no | 2.19 → 2.32 | 2.82 → 3.14 |
+| `socket/destination/512x10000` | 4–11 | 3 380 (3 347–3 472) | 3 439 (3 408–3 460) | +1.7 % | no | 1.00 → 1.07 | 3.17 → 3.47 |
+| `tls/destination/64x80000` | 4–11 | 1 156 (1 121–1 176) | 1 298 (1 243–1 335) | +12.3 % | yes | 1.56 → 1.66 | 1.88 → 2.20 |
+
+With the connectors in processes of their own, the host on CPUs 0–3 and the connectors on 4–11;
+the destination's CPU a GB and CPUs busy are its process's alone:
+
+| Case | Base, MB/s | Two stages, MB/s | Median | Ranges apart | Destination's CPU s a GB | Destination's CPUs busy |
+|---|---|---|---|---|---|---|
+| `tls/destination/64x80000` | 1 121 (1 100–1 134) | 1 286 (1 222–1 304) | +14.8 % | yes | 0.87 → 0.89 | 0.96 → 1.14 |
+| `tls/destination/64x80000/4-partitions` | 1 103 (1 082–1 144) | 1 281 (1 247–1 306) | +16.2 % | yes | 0.88 → 0.88 | 0.97 → 1.13 |
+| `tls/both/64x80000` | 1 043 (1 014–1 062) | 1 167 (1 147–1 181) | +11.9 % | yes | 0.93 → 0.96 | 0.96 → 1.12 |
+| `tls/both/64x80000/4-partitions` | 981 (952–996) | 1 102 (1 087–1 140) | +12.4 % | yes | 0.92 → 0.94 | 0.91 → 1.05 |
+| `socket/both/512x10000` | 2 581 (2 456–2 673) | 2 850 (2 820–2 878) | +10.4 % | yes | 0.57 → 0.52 | 1.45 → 1.50 |
+| `socket/destination/64x80000` | 1 590 (1 552–1 654) | 1 463 (1 377–1 517) | −8.0 % | yes, lower | 0.80 → 1.06 | 1.32 → 1.53 |
+
+- **Over mutual TLS** the destination's process now keeps 1.12–1.14 CPUs busy where it kept
+  0.96, at the same CPU a GB, and moves 12–16 % more, at one partition and at four. A sample of
+  its threads during `tls/destination/64x80000/4-partitions` shows no thread saturated: four
+  runtime workers each 20–33 % busy, `memmove` about half the cycles and AES-GCM about a fifth.
+- **A spawned destination over the socket, in large frames, moves 8 % less**, at 1.06 against
+  0.80 CPU seconds a GB in its process. Each run spawns that destination afresh, and its process
+  takes 93 000 page faults a run of 441 MB against 44 000, all in `memmove`: with a frame decoding
+  while the one before is written, two frames' buffers are alive, freed on another worker than
+  the one that made them, and glibc's allocator gives more of what is freed back to the kernel,
+  so more of each next frame is written to fresh pages. With the destination on two performance
+  cores (host on 0–1, connectors on 2–3) the faults rise 14 % instead of 71 %. The long-lived
+  destination listening over mutual TLS takes almost none.
+- **The allocator, measured.** In process on CPUs 4–11, `socket/destination/64x80000`, one run
+  each: with glibc's defaults the base moves 1 401 MB/s at 1.22 CPU seconds a GB and the two
+  stages 1 551 at 1.26, with 2.2 and 2.6 million page faults a run of the bench; with heap
+  trimming off and the mmap threshold fixed at 32 MiB
+  (`GLIBC_TUNABLES=glibc.malloc.trim_threshold=268435456:glibc.malloc.mmap_threshold=33554432`)
+  the base moves 1 635 at 1.01 and the two stages 2 007 at 1.03, with 0.2 million faults each.
+  The allocator's returning memory costs both layouts, and the two stages more.
+- **Against the rule.** `socket/destination/64x80000` on CPUs 4–11 gained 4.5 %, short of the
+  10 % asked, and the spawned socket destination in large frames is lower. The two stages land
+  for the production layout, a connector in a process of its own over mutual TLS, with the
+  regression confined to a spawned connector over the socket in large frames under glibc's
+  allocator defaults; the allocator is a decision of its own.
+
