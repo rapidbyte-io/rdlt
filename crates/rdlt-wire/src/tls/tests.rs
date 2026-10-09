@@ -78,6 +78,131 @@ fn a_host_and_a_connector_of_one_ca_handshake_tls_1_3_for_http2() {
 }
 
 #[test]
+fn both_ends_agree_on_tls_1_3_with_a_post_quantum_key_exchange() {
+    let pki = Pki::new("ca");
+    let server = server_config(
+        &identity(&pki.server("server", &["localhost"])),
+        &accepted(&pki, &["client"]),
+    )
+    .expect("the server's configuration builds");
+    let client = client_config(&identity(&pki.client("client")), &pki.ca())
+        .expect("the client's configuration builds");
+    let (client, server) = handshake(client, server, "localhost").expect("they handshake");
+    let ends: [&rustls::CommonState; 2] = [&client, &server];
+    for end in ends {
+        assert_eq!(
+            end.protocol_version(),
+            Some(rustls::ProtocolVersion::TLSv1_3)
+        );
+        assert_eq!(
+            end.negotiated_cipher_suite().map(|suite| suite.suite()),
+            Some(rustls::CipherSuite::TLS13_AES_256_GCM_SHA384)
+        );
+        assert_eq!(
+            end.negotiated_key_exchange_group()
+                .map(rustls::crypto::SupportedKxGroup::name),
+            Some(rustls::NamedGroup::X25519MLKEM768)
+        );
+    }
+}
+
+/// The CA bundle of `pki`, as roots a client trusts.
+fn trusted(pki: &Pki) -> rustls::RootCertStore {
+    super::roots(&pki.ca()).expect("the CA reads")
+}
+
+/// A client presenting `files` that speaks `versions` with the `suites` of `provider`.
+fn speaking(
+    provider: rustls::crypto::CryptoProvider,
+    versions: &[&'static rustls::SupportedProtocolVersion],
+    pki: &Pki,
+    files: &Files,
+) -> ClientConfig {
+    let mut config = ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(versions)
+        .expect("the versions are the provider's")
+        .with_root_certificates(trusted(pki))
+        .with_client_auth_cert(
+            super::certificates(&files.cert).expect("the chain reads"),
+            super::key(&files.key).expect("the key reads"),
+        )
+        .expect("the client's configuration builds");
+    config.alpn_protocols = vec![ALPN.to_vec()];
+    config
+}
+
+#[test]
+fn neither_end_speaks_tls_1_2() {
+    let pki = Pki::new("ca");
+    let (server_files, client_files) = (pki.server("server", &["localhost"]), pki.client("client"));
+    let server = server_config(&identity(&server_files), &accepted(&pki, &["client"]))
+        .expect("the server's configuration builds");
+    let old_host = speaking(
+        rustls::crypto::ring::default_provider(),
+        &[&rustls::version::TLS12],
+        &pki,
+        &client_files,
+    );
+    assert!(matches!(
+        handshake(old_host, server, "localhost"),
+        Err(rustls::Error::PeerIncompatible(_))
+    ));
+    let old_connector =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_protocol_versions(&[&rustls::version::TLS12])
+            .expect("TLS 1.2")
+            .with_no_client_auth()
+            .with_single_cert(
+                super::certificates(&server_files.cert).expect("the chain reads"),
+                super::key(&server_files.key).expect("the key reads"),
+            )
+            .expect("the server's configuration builds");
+    let host = client_config(&identity(&client_files), &pki.ca())
+        .expect("the client's configuration builds");
+    assert!(matches!(
+        handshake(host, old_connector, "localhost"),
+        Err(rustls::Error::PeerIncompatible(_))
+    ));
+}
+
+#[test]
+fn a_host_offering_only_a_suite_the_connector_lacks_is_refused() {
+    let pki = Pki::new("ca");
+    let server = server_config(
+        &identity(&pki.server("server", &["localhost"])),
+        &accepted(&pki, &["client"]),
+    )
+    .expect("the server's configuration builds");
+    let mut provider = rustls::crypto::ring::default_provider();
+    let rustls::SupportedCipherSuite::Tls13(gcm) =
+        rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256
+    else {
+        unreachable!("a TLS 1.3 suite");
+    };
+    // A real TLS 1.3 suite that neither end implements, offered under that name alone.
+    let ccm: &'static rustls::Tls13CipherSuite = Box::leak(Box::new(rustls::Tls13CipherSuite {
+        common: rustls::crypto::CipherSuiteCommon {
+            suite: rustls::CipherSuite::TLS13_AES_128_CCM_SHA256,
+            ..gcm.common
+        },
+        ..*gcm
+    }));
+    provider.cipher_suites = vec![rustls::SupportedCipherSuite::Tls13(ccm)];
+    let host = speaking(
+        provider,
+        &[&rustls::version::TLS13],
+        &pki,
+        &pki.client("client"),
+    );
+    assert!(matches!(
+        handshake(host, server, "localhost"),
+        Err(rustls::Error::PeerIncompatible(
+            rustls::PeerIncompatible::NoCipherSuitesInCommon
+        ))
+    ));
+}
+
+#[test]
 fn a_host_whose_certificate_another_ca_issued_is_refused() {
     let (pki, other) = (Pki::new("ca"), Pki::new("other"));
     let server = server_config(
