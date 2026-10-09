@@ -190,6 +190,7 @@ proptest! {
     fn parsed_ids_round_trip_through_json(text in "[A-Za-z0-9._-]{1,128}") {
         let id = PipelineId::parse(&text).unwrap();
         let json = serde_json::to_string(&id).unwrap();
+        prop_assert_eq!(&json, &serde_json::to_string(&text).unwrap());
         prop_assert_eq!(serde_json::from_str::<PipelineId>(&json).unwrap(), id);
     }
 

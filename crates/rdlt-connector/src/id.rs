@@ -77,8 +77,8 @@ pub(crate) fn printable(c: char) -> bool {
 macro_rules! text_id {
     ($(#[$doc:meta])* $name:ident, $kind:literal, $max:literal, $allowed:expr) => {
         $(#[$doc])*
-        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        #[serde(try_from = "String", into = "String")]
+        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+        #[serde(try_from = "String")]
         pub struct $name(Arc<str>);
 
         impl $name {
@@ -109,9 +109,9 @@ macro_rules! text_id {
             }
         }
 
-        impl From<$name> for String {
-            fn from(id: $name) -> String {
-                id.0.to_string()
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&self.0)
             }
         }
     };
