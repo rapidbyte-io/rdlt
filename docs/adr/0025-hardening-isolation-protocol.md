@@ -67,7 +67,7 @@ follows H1c.
     than the policy's first delay.
   - `Options::missed` is a `NonZeroU32`, and `Connection::handshake` refuses a zero heartbeat
     interval as `options_invalid` before any I/O.
-- **The handshake answers who the connector is before it sees its configuration** (protocol 2).
+- **The handshake answers who the connector is before it sees its configuration.**
   - `Handshake` agrees the version, role and features, and answers the spec without the
     capabilities that configuration decides.
   - A new `Configure` call carries the configuration, connects the connector, and answers the
@@ -79,9 +79,8 @@ follows H1c.
     - a second `Configure`: `configure_repeated`.
 
     `P-ORDER` checks all three.
-  - `HandshakeRequest.config_json` is reserved.
-  - The protocol's major version is 2, so a peer of version 1 is refused at the handshake rather
-    than misread.
+  - The protocol's major version is checked first, so a peer of another version is refused at
+    the handshake rather than misread.
   - The host checks the handshake's spec against the reference before configuring. On a respawn
     or redial, the spec must be the id and version first placed, or the connector is refused as
     `connector_changed` before it sees the configuration.

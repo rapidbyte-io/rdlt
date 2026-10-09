@@ -91,10 +91,8 @@ fn a_connector_is_servable_by_its_type_in_its_role() {
 fn offering_read_back() -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: rdlt_wire::PROTOCOL_MAJOR,
-        protocol_minor: rdlt_wire::PROTOCOL_MINOR,
         features: vec![rdlt_wire::PUBLISHED.to_owned()],
         role: v1::Role::Destination as i32,
-        traceparent: String::new(),
         limits: None,
     }
 }

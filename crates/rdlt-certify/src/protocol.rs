@@ -15,10 +15,10 @@ use rdlt_connector::testing::{Clause, ClauseResult, Observed, Outcome};
 use rdlt_connector::wire::v1;
 use rdlt_connector::{ConnectorError, Role};
 use rdlt_host::remote::Client;
+use rdlt_wire::PROTOCOL_MAJOR;
 use rdlt_wire::plane::Incoming;
 use rdlt_wire::prost::Message;
 use rdlt_wire::tonic::Status;
-use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
 
 use crate::target::Target;
 
@@ -171,10 +171,8 @@ async fn within(checking: impl Future<Output = Found>) -> Found {
 pub(crate) fn request(role: Role, major: u32) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: major,
-        protocol_minor: PROTOCOL_MINOR,
         features: Vec::new(),
         role: wire_role(role) as i32,
-        traceparent: String::new(),
         limits: Some(rdlt_wire::Limits::default().into()),
     }
 }

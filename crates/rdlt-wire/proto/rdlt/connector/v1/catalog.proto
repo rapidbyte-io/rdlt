@@ -190,6 +190,3 @@ message Capabilities {
   // Whether it drops the tables a commit names, atomically with the commit.
   bool drop_tables = 12;
 }
-
-// What a source declares about itself; it declares nothing yet.
-message SourceCapabilities {}

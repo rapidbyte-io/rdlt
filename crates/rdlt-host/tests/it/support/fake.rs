@@ -220,7 +220,6 @@ fn spec(id: &str, destination: bool) -> v1::ConnectorSpec {
             v1::Role::Source
         } as i32],
         config_schema_json: "{}".to_owned(),
-        source_capabilities: (!destination).then_some(v1::SourceCapabilities {}),
         destination_capabilities: destination.then(|| v1::Capabilities::from(&capabilities)),
     }
 }
@@ -328,7 +327,6 @@ impl Connector for Fake {
                 ..rdlt_wire::Limits::default().into()
             }),
             protocol_major: rdlt_wire::PROTOCOL_MAJOR,
-            protocol_minor: rdlt_wire::PROTOCOL_MINOR,
         };
         if let Fault::Handshakes(change) = self.0 {
             change(&mut answer);

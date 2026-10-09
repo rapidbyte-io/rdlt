@@ -11,7 +11,7 @@ use rdlt_connector::{
     acknowledging_source_factory, source_factory,
 };
 use rdlt_connector_reference::{ChangesSource, GeneratorSource};
-use rdlt_wire::{ACKNOWLEDGED, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use rdlt_wire::{ACKNOWLEDGED, PROTOCOL_MAJOR};
 
 use rdlt_host::remote::Client;
 use tokio_stream::StreamExt as _;
@@ -39,13 +39,11 @@ impl SourceFactory for Plain {
 pub(crate) fn handshake(features: &[&str]) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
-        protocol_minor: PROTOCOL_MINOR,
         features: features
             .iter()
             .map(|feature| (*feature).to_owned())
             .collect(),
         role: v1::Role::Source as i32,
-        traceparent: String::new(),
         limits: None,
     }
 }

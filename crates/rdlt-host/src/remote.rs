@@ -19,7 +19,7 @@ use hyper_util::rt::TokioIo;
 use rdlt_connector::wire::{Invalid, error as status_error, v1};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Role};
 use rdlt_wire::flow::Transport;
-use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -178,14 +178,12 @@ impl Connection {
         let client = Clients::new(&channel, &options.limits);
         let request = v1::HandshakeRequest {
             protocol_major: PROTOCOL_MAJOR,
-            protocol_minor: PROTOCOL_MINOR,
             // A host offers no feature: certification's read-back is the only one.
             features: Vec::new(),
             role: match role {
                 Role::Source => v1::Role::Source,
                 Role::Destination => v1::Role::Destination,
             } as i32,
-            traceparent: String::new(),
             limits: Some(options.limits.into()),
         };
         let deadline = options.deadlines.connect;
