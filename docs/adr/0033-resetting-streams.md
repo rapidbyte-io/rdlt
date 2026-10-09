@@ -34,12 +34,12 @@ streams, which need the write-ahead log to know phases, are **M5d4**: the M5 exi
     command that deletes never passes silently. The source's catalog decides nothing here: a stream
     the source no longer serves can be reset. A stream is recorded only by state keyed by its own
     name, never by a table path its displayed name begins (ADR 0045), and one whose displayed name
-    another recorded stream shares is refused as `stream_ambiguous`. An incremental stream none
-    of whose partitions has had a position committed is recorded nowhere, though a run may have
-    created its table, and its reset is refused alike; a partition that never held a row can
-    still have a position, which a read that follows it sends as it waits. The simulation
-    requires the refusal exactly where the pipeline's state at the destination records nothing of
-    the stream.
+    another recorded stream shares is refused as `stream_ambiguous`. An incremental stream that no
+    earlier reset marked and none of whose partitions has had a position committed is recorded
+    nowhere, though a run may have created its table, and its reset is refused alike; a partition
+    that never held a row can still have a position, which a read that follows it sends as it waits.
+    The simulation requires the refusal exactly where the pipeline's state at the destination
+    records nothing of the stream.
   - A stream whose source cannot read again is refused as `reset_unreplayable`. Read from its
     beginning, it would wait for rows its source forgot. The simulation found that a source
     starting such a read where it last acknowledged instead is unsafe: a commit it acknowledged
