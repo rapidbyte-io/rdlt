@@ -1809,6 +1809,42 @@ fn integers_convert_to_floats_only_where_a_float_holds_every_one_exactly() {
 }
 
 #[test]
+fn a_value_a_conversion_cannot_hold_fails_it_rather_than_turning_null() {
+    let wide: ArrayRef = Arc::new(Int64Array::from(vec![1, i64::MAX]));
+    assert!(convert(&wide, &LogicalType::Int64, &LogicalType::Int32).is_err());
+}
+
+#[test]
+fn a_list_view_of_maps_normalizes_as_the_list_it_views() {
+    use arrow_array::builder::{Int64Builder, MapBuilder, StringBuilder};
+    use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+    let mut maps = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
+    for (key, value) in [("a", 1), ("b", 2)] {
+        maps.keys().append_value(key);
+        maps.values().append_value(value);
+        maps.append(true).unwrap();
+    }
+    let maps: ArrayRef = Arc::new(maps.finish());
+    let item = Arc::new(ArrowField::new("item", maps.data_type().clone(), true));
+    let list: ArrayRef = Arc::new(ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::from_lengths([2]),
+        Arc::clone(&maps),
+        None,
+    ));
+    let view: ArrayRef = Arc::new(arrow_array::ListViewArray::new(
+        item,
+        ScalarBuffer::from(vec![0_i32]),
+        ScalarBuffer::from(vec![2_i32]),
+        maps,
+        None,
+    ));
+    let field = Field::from_arrow(&ArrowField::new("m", list.data_type().clone(), true)).unwrap();
+    let normalize = |array| super::convert::normalize(array, field.logical_type()).unwrap();
+    assert_eq!(normalize(&view).as_ref(), normalize(&list).as_ref());
+}
+
+#[test]
 fn a_column_widened_to_64_bit_integers_is_exact_only_where_its_integers_are() {
     for (rounding, exact) in [(false, true), (true, false)] {
         for key in [&[][..], &["n"][..]] {
