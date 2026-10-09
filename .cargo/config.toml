@@ -1,2 +1,8 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# aws-lc-rs builds AWS-LC from the source the lockfile holds, with the C compiler alone: never a
+# system AWS-LC that OPENSSL_DIR or pkg-config finds, and never CMake.
+[env]
+AWS_LC_SYS_USE_SYSTEM = "0"
+AWS_LC_SYS_CMAKE_BUILDER = "0"
