@@ -213,13 +213,13 @@ async fn wide_records_in_small_chunks_are_held_within_the_bound() {
     assert!(peak <= bound(BUDGET), "the heap held {peak} bytes");
 }
 
-/// Loads `chunks` chunks of a megabyte, each with all seven thousand columns, under the default
+/// Loads `chunks` chunks of two megabytes, each with all seven thousand columns, under the default
 /// budget: their columns' parts a chunk are charged, so the heap stays within what the budget
 /// held, a fifth and 32 MiB, and what takes more than a request is refused before it is built.
 async fn wide_full_chunks(chunks: usize) -> RunOutcome {
     const BUDGET: u64 = 256 << 20;
     let name = format!("wide_full_chunks_{chunks}");
-    let (peak, outcome) = run_chunked(&name, BUDGET, 1 << 20, wide_chunks(chunks, 1 << 20)).await;
+    let (peak, outcome) = run_chunked(&name, BUDGET, 2 << 20, wide_chunks(chunks, 2 << 20)).await;
     let held = outcome.report.peak_memory;
     let within = usize::try_from(held + held / 5 + (32 << 20)).expect("a bound in memory");
     assert!(
@@ -231,13 +231,13 @@ async fn wide_full_chunks(chunks: usize) -> RunOutcome {
 
 #[tokio::test(start_paused = true)]
 async fn wide_records_in_a_few_full_chunks_load_charged_what_they_hold() {
-    let outcome = wide_full_chunks(8).await;
+    let outcome = wide_full_chunks(4).await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
 }
 
 #[tokio::test(start_paused = true)]
 async fn wide_records_in_many_full_chunks_are_refused_charged_what_they_hold() {
-    let outcome = wide_full_chunks(26).await;
+    let outcome = wide_full_chunks(13).await;
     let error = outcome
         .error
         .expect("their batches take more than a request");
@@ -247,12 +247,12 @@ async fn wide_records_in_many_full_chunks_are_refused_charged_what_they_hold() {
 #[tokio::test(start_paused = true)]
 async fn observing_a_push_reserves_what_its_columns_may_hold_beyond_its_text() {
     // However small, a push's chunks may hold a shape of every column the records may hold
-    // beyond what the push was admitted for: 576 bytes a column, of the 7,489 a schema may hold
+    // beyond what the push was admitted for: 744 bytes a column, of the 7,489 a schema may hold
     // under the default budget, reserved while the push is observed.
     let (_, outcome) = run("observing_reserved", 256 << 20, "{\"a\":1}".to_owned()).await;
     assert!(outcome.error.is_none(), "{:?}", outcome.error);
     assert!(
-        outcome.report.peak_memory >= 7_489 * 576,
+        outcome.report.peak_memory >= 7_489 * 744,
         "the budget held at most {} bytes",
         outcome.report.peak_memory
     );

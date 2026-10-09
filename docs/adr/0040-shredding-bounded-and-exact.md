@@ -38,14 +38,16 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   it for its batches. Each chunk may build within twice its own text: its builders charge a meter
   their presized capacity as they are made and what they grow by as they grow (values, offsets,
   validity bits, text and list items), and each column the fixed parts it takes a chunk, whatever
-  its rows: its entry in the chunk's record (192 bytes and its name), and its builder (256 bytes,
-  a struct's 1,536), its buffers' rounding included. A chunk that would pass its allowance stops
-  building and is read again observing: kinds, counts of rows, items and text, no cells, nothing
-  that grows with its rows. An observation charges each column's entry in its shape the same way,
-  and an object its own shape (384 bytes). A chunk smaller than its records' columns, the last of
-  a flush, may observe them past its allowance: what a flush's observations hold so is limited
-  to one shape of every column a schema may hold, objects all (576 bytes a column, 4.3 MB at the
-  default budget), reserved before the pushes are observed and refused past it, `limit_exceeded`.
+  its rows: its entry in the chunk's record (360 bytes and its name, enough for the vectors
+  holding the entries just as they double, when they hold the old buffer and the new), and its
+  builder (256 bytes, a struct's 1,536), its buffers' rounding included. A chunk that would pass
+  its allowance stops building and is read again observing: kinds, counts of rows, items and
+  text, no cells, nothing that grows with its rows. An observation charges each column's entry
+  in its shape the same way, and an object its own shape (384 bytes). A chunk smaller than its
+  records' columns, the last of a flush, may observe them past its allowance: what a flush's
+  observations hold so is limited to one shape of every column a schema may hold, objects all
+  (744 bytes a column, 5.6 MB at the default budget), reserved before the pushes are observed
+  and refused past it, `limit_exceeded`.
   What building then takes is reserved without a wait while that is held, from it where it is
   enough; where it must wait, the observation and its reservation are let go first, so the
   partition waits holding nothing but its pushes, and the pushes are observed again once it is
@@ -147,9 +149,9 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 - No JSON push builds or observes what it was not admitted or reserved for, and no check of an
   Arrow column of JSON holds what was not, so ADR 0039's bound holds for JSON without exception;
   a JSON flush whose batches take more than a quarter of the budget beyond twice its text is
-  refused. Twenty-six records of 7,480 keys, each in a chunk of 1 MiB, are refused so; eight load.
+  refused. Thirteen records of 7,480 keys, each in a chunk of 2 MiB, are refused so; four load.
 - Every JSON flush reserves the room its observations may hold beyond its text while it is
-  observed, 4.3 MB at the default budget.
+  observed, 5.6 MB at the default budget.
 - JSON records that held up to 10,000 columns in an object are refused past the derived limit.
 - Narrow records that widen a column past a chunk's allowance are parsed twice more; dense data
   still parses once. Shredding and normalizing run 3 to 8 % slower on one core than before the
