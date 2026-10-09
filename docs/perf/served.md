@@ -67,8 +67,8 @@ process or each in a process of its own.
   the four low-power cores, 12–15, which have no L3, run neither. Five rounds of all 24 cases,
   in process and apart, each started at a one-minute load average under 1.0 under the
   measurement lock.
-- **Provider.** Every figure here was taken with rustls on `ring`. The TLS cases have not been
-  measured on aws-lc-rs, the provider TLS now runs on (ADR 0018).
+- **Provider.** Every figure here but the allocator's was taken with rustls on `ring`. Only the
+  allocator's TLS cases were measured on aws-lc-rs, the provider TLS now runs on (ADR 0018).
 
 ## Results
 
@@ -302,3 +302,88 @@ the destination's CPU a GB and CPUs busy are its process's alone:
   regression confined to a spawned connector over the socket in large frames under glibc's
   allocator defaults; the allocator is a decision of its own.
 
+
+## Allocator
+
+Each served connector's process and the bench's own ran on glibc's allocator, whose returning of
+freed memory to the kernel cost the spawned socket destination its pages above. Two allocators
+were tried in its place, each set as the bench binaries' `#[global_allocator]`, so the host, the
+connector processes the bench spawns from its own binary, and the engine benches all ran on it:
+mimalloc 0.1.52 (mimalloc v3) and tikv-jemallocator 0.7.0 (jemalloc 5.3.1), default features.
+
+The rule set before measuring: an allocator lands only if, against glibc, it moves more beyond
+the rounds' noise (ranges apart) on `process/socket/destination/64x80000` and
+`process/tls/both/64x80000`, no measured case is lower beyond noise, no process of any case
+peaks more than 10 % higher in resident memory, `cargo deny` passes, and it builds on Linux and
+macOS with a C compiler alone. jemalloc fails the last before any round: its build script runs
+`configure` and `make`.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-09, `39ee5153` (aws-lc-rs), governor `powersave`
+with energy preference `performance`; rounds interleaved by candidate in a rotating order, each
+case a process of its own, the host on CPUs 0–3 and connector processes on 4–11. Each group of
+cases started after a minute's pause at a one-minute load average of 0.77–2.70 (the desktop
+kept it mostly above 1.0 with the CPUs idle). Five rounds were planned; they stopped after glibc's
+three, mimalloc's two and jemalloc's three, by the owner's decision, once every mimalloc and
+jemalloc round fell below glibc's lowest on `process/tls/both/64x80000`. Each round's figure, in
+round order:
+
+| Case | CPUs | glibc | mimalloc | jemalloc |
+|---|---|---|---|---|
+| `process/socket/destination/64x80000`, MB/s | 0–3, 4–11 | 1 421 / 1 868 / 2 019 | 2 073 / 1 940 | 1 407 / 1 547 / 1 425 |
+| `process/tls/destination/64x80000`, MB/s | 0–3, 4–11 | 1 262 / 1 243 / 1 291 | 1 192 / 1 089 | 1 202 / 1 186 / 1 146 |
+| `process/tls/both/64x80000`, MB/s | 0–3, 4–11 | 1 159 / 1 133 / 1 136 | 1 008 / 924 | 960 / 975 / 882 |
+| `process/socket/both/512x10000`, MB/s | 0–3, 4–11 | 2 714 / 2 483 / 2 656 | 2 136 / 2 192 | 3 091 / 2 956 / 2 968 |
+| `socket/destination/64x80000`, MB/s | 0–3 | 1 884 / 2 591 / 2 373 | 2 816 / 2 892 | 1 689 / 1 692 / 1 568 |
+| `tls/both/64x80000`, MB/s | 0–3 | 829 / 869 / 738 | 901 / 877 | 583 / 704 / 614 |
+| `shred/nested`, MB/s | 0 | 617 / 629 / 602 | 613 / 612 | 577 / 604 / 624 |
+| `normalize/keyless`, MB/s | 0 | 179 / 174 / 174 | 168 / 175 | 160 / 175 / 179 |
+| `shred_cores/4`, MB/s | 0–3 | 1 551 / 1 466 / 1 403 | 1 467 / 1 359 | 1 432 / 1 278 / 1 449 |
+| `passthrough/paired/1+1`, MB/s | 0 | 12 568 / 11 813 / 11 972 | 11 551 / 12 277 | 11 862 / 11 166 / 12 260 |
+| `passthrough/paired/2+2`, MB/s | 0–3 | 15 451 / 14 130 / 12 633 | 14 143 / 12 965 | 13 865 / 13 911 / 14 065 |
+| `normalized/keyless/2000`, million rows/s | 0 | 3.53 / 3.42 / 3.24 | 3.78 / 3.73 | 3.57 / 3.72 / 3.83 |
+| `normalized/keyless/10000`, million rows/s | 0 | 2.29 / 2.01 / 2.02 | 2.27 / 2.26 | 2.30 / 1.98 / 2.34 |
+| `normalized/keyless/50000`, million rows/s | 0 | 2.38 / 2.23 / 2.07 | 2.27 / 2.25 | 2.21 / 1.89 / 2.33 |
+| `normalized/keyless/2000`, million rows/s | 0–3 | 2.95 / 2.78 | 3.00 / 2.86 | 2.84 / 2.95 / 2.97 |
+| `normalized/keyless/10000`, million rows/s | 0–3 | 2.30 / 2.08 | 2.27 / 2.33 | 1.99 / 2.29 / 2.44 |
+| `normalized/keyless/50000`, million rows/s | 0–3 | 2.50 / 1.92 | 2.24 / 2.37 | 2.39 / 2.36 / 2.28 |
+
+Peak resident memory of each process (`VmHWM`, sampled every 10 ms), MiB, the lowest and highest
+over the rounds that recorded it; the sampler missed some runs' bench process, so a cell rests on
+the rounds named:
+
+| Case | Process | glibc | mimalloc | jemalloc |
+|---|---|---|---|---|
+| `process/socket/destination/64x80000` | host | 518–520 (2) | 501–512 (2) | 487 (1) |
+| | destination | 128–129 (3) | 98–99 (2) | 96–136 (3) |
+| `process/tls/destination/64x80000` | host | 513–525 (3) | 521–524 (2) | 496–526 (3) |
+| | destination | 155–176 (3) | 159–182 (2) | 128–147 (3) |
+| `process/tls/both/64x80000` | host | 743–768 (3) | 648–657 (2) | 537–570 (3) |
+| | source | 523–553 (3) | 484–489 (2) | 500–501 (3) |
+| | destination | 164–174 (3) | 145–146 (2) | 109–128 (3) |
+| `process/socket/both/512x10000` | host | 509–520 (3) | 521–526 (2) | 515–557 (3) |
+| | source | 457–458 (3) | 471–491 (2) | 512–546 (3) |
+| | destination | 32–36 (3) | 27–32 (2) | 30–31 (3) |
+| `socket/destination/64x80000` | host | 578–586 (3) | 589–612 (2) | 517–552 (3) |
+| `tls/both/64x80000` | host | 766–790 (3) | 712–753 (2) | 662–697 (3) |
+| `shred/nested`, CPU 0 | host | 188–202 (2) | 253 (1) | 243 (2) |
+| `normalize/keyless`, CPU 0 | host | 174–181 (3) | 234–250 (2) | 186–236 (3) |
+| `shred_cores/4`, CPUs 0–3 | host | 176–182 (3) | 253 (2) | 198–234 (3) |
+| `passthrough/paired/1+1`, CPU 0 | host | 452–458 (3) | – | 450–474 (3) |
+| `passthrough/paired/2+2`, CPUs 0–3 | host | 468 (2) | 496–498 (2) | 485–502 (3) |
+| `normalized/keyless/*`, CPU 0 | host | 57 (3) | – | 82–96 (3) |
+| `normalized/keyless/*`, CPUs 0–3 | host | 67–68 (2) | 155 (1) | 127–135 (3) |
+
+- **Neither qualifies.** On `process/tls/both/64x80000`, the production layout, every mimalloc
+  and jemalloc round is below glibc's lowest (924–1 008 and 882–975 against 1 133–1 159 MB/s),
+  and so is `process/tls/destination/64x80000`. mimalloc is also below on
+  `process/socket/both/512x10000` (2 136–2 192 against 2 483–2 714), and jemalloc on the
+  in-process `tls/both/64x80000` (583–704 against 738–869) and `socket/destination/64x80000`.
+- **Memory.** Both peak higher in the engine's own benches: the 4-core normalize's process at
+  155 (mimalloc) and 127–135 MiB (jemalloc) against 67–68, and `shred_cores/4`'s at 253 and
+  198–234 against 176–182. With both connectors served over mutual TLS, every process peaks
+  lower with either.
+- **mimalloc does take away the large-frame cost of a socket destination**: 2 816–2 892 against
+  1 884–2 591 MB/s in process, and 1 940–2 073 against 1 421–2 019 spawned, at 98–99 MiB of
+  peak memory in that process against 128–129. It loses that and more over mutual TLS and in
+  small frames, so glibc's allocator stays, and the regression the two stages recorded for a
+  spawned socket destination in large frames remains.
