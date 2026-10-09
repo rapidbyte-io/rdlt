@@ -176,3 +176,86 @@ async fn the_contract_refuses_a_store_that_takes_a_chunk_of_the_same_bytes_for_i
     .await;
     assert!(alike.is_err(), "the suite let it pass");
 }
+
+fn orders() -> PipelineId {
+    PipelineId::parse("orders").expect("a valid pipeline")
+}
+
+fn load(n: u128) -> LoadId {
+    LoadId::from_parts(std::time::UNIX_EPOCH, n)
+}
+
+#[tokio::test]
+async fn every_call_fails_as_the_store_is_told_to_while_it_is_failing_or_interrupted() {
+    let (pipeline, chunk) = (
+        orders(),
+        Chunk {
+            load: load(1),
+            number: 0,
+        },
+    );
+    for (interrupted, expected) in [
+        (false, io::ErrorKind::Other),
+        (true, io::ErrorKind::Interrupted),
+    ] {
+        let store = MemoryWal::default();
+        store.open(&pipeline, load(1));
+        let fault = if interrupted {
+            &store.interrupted
+        } else {
+            &store.failing
+        };
+        *fault.lock() = true;
+        let failed = |result: io::Result<()>| result.expect_err("the call fails").kind();
+        let calls = [
+            failed(store.open_log(&pipeline, load(2)).await),
+            failed(store.stage(&pipeline, chunk).await.map(drop)),
+            failed(store.loads(&pipeline).await.map(drop)),
+            failed(store.leftovers(&pipeline).await.map(drop)),
+            failed(store.chunks(&pipeline, load(1)).await.map(drop)),
+            failed(store.read(&pipeline, chunk, 0, 1).await.map(drop)),
+            failed(store.remove_staged(&pipeline, load(1)).await),
+            failed(store.remove(&pipeline, chunk).await),
+            failed(store.remove_log(&pipeline, load(1)).await),
+        ];
+        assert_eq!(calls, [expected; 9]);
+    }
+}
+
+#[tokio::test]
+async fn leftovers_are_the_logs_no_longer_open_that_still_hold_chunks() {
+    let (pipeline, store) = (orders(), MemoryWal::default());
+    // An open log holding a chunk, and one a removal a crash cut short left closed with two.
+    store.open(&pipeline, load(1));
+    let mut staged = store
+        .stage(
+            &pipeline,
+            Chunk {
+                load: load(1),
+                number: 0,
+            },
+        )
+        .await
+        .expect("stages");
+    staged
+        .append(Bytes::from_static(b"held"))
+        .await
+        .expect("appends");
+    staged.publish().await.expect("publishes");
+    store.logs.lock().insert((pipeline.clone(), load(2)), false);
+    for number in [0, 1] {
+        let left = (
+            pipeline.clone(),
+            Chunk {
+                load: load(2),
+                number,
+            },
+        );
+        store
+            .chunks
+            .lock()
+            .insert(left, Bytes::from_static(b"left"));
+    }
+    let leftovers = store.leftovers(&pipeline).await.expect("lists");
+    assert_eq!(leftovers, [load(2)]);
+}
