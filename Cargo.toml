@@ -83,7 +83,6 @@ ryu = "1.0.23" # the shortest text of a float, which row identity encodes exactl
 rustls = { version = "0.23.45", default-features = false, features = [
   "aws_lc_rs",
   "prefer-post-quantum",
-  "ring",
   "std",
 ] } # TLS 1.3 for connectors reached over the network
 webpki = { package = "rustls-webpki", version = "0.103.15", default-features = false, features = [
