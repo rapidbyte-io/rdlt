@@ -259,3 +259,41 @@ async fn leftovers_are_the_logs_no_longer_open_that_still_hold_chunks() {
     let leftovers = store.leftovers(&pipeline).await.expect("lists");
     assert_eq!(leftovers, [load(2)]);
 }
+
+#[tokio::test]
+async fn a_store_takes_what_exactly_fills_its_capacity_and_refuses_a_byte_more() {
+    let (pipeline, store) = (
+        orders(),
+        MemoryWal {
+            disk: Arc::new(super::Disk::of(10)),
+            ..MemoryWal::default()
+        },
+    );
+    store.open(&pipeline, load(1));
+    let chunk = |number| Chunk {
+        load: load(1),
+        number,
+    };
+    let mut published = store.stage(&pipeline, chunk(0)).await.expect("stages");
+    published
+        .append(Bytes::from_static(&[0; 4]))
+        .await
+        .expect("appends");
+    published.publish().await.expect("publishes");
+    let mut held = store.stage(&pipeline, chunk(1)).await.expect("stages");
+    held.append(Bytes::from_static(&[0; 3]))
+        .await
+        .expect("appends");
+    // Four bytes published and three staged leave room for three more, and no more.
+    let mut filling = store.stage(&pipeline, chunk(2)).await.expect("stages");
+    filling
+        .append(Bytes::from_static(&[0; 3]))
+        .await
+        .expect("the store has room for it");
+    let refused = filling
+        .append(Bytes::from_static(&[0; 1]))
+        .await
+        .expect_err("the store is full");
+    assert_eq!(refused.kind(), io::ErrorKind::StorageFull);
+    assert_eq!(store.disk.staged(), 6);
+}
