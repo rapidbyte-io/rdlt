@@ -14,7 +14,7 @@ use crate::commit::{CommitMeta, Receipt};
 use crate::config;
 use crate::error::{ConnectorError, Result};
 use crate::id::{ConnectorId, SegmentId};
-use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
+use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 
 pub(super) struct DestinationAdapter<C> {
     pub(super) connector: Arc<C>,
@@ -145,7 +145,6 @@ pub(super) fn factory<C: DestinationConnector>() -> Factory<C> {
     let spec = ConnectorSpec {
         id: ConnectorId::parse(C::ID).expect("the connector's ID is a valid connector id"),
         version: C::VERSION.to_owned(),
-        role: Role::Destination,
         config_schema: config::schema::<C::Config>(),
     };
     Factory::<C> {

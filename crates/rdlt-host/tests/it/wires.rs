@@ -67,12 +67,9 @@ async fn a_client_speaks_the_protocol_raw_over_a_listening_connectors_wire() {
     .await
     .expect("the connector handshakes");
     let spec = connection
-        .connector_spec(Role::Source)
+        .connector_spec()
         .expect("the spec is the contract's");
-    assert_eq!(
-        (spec.id.as_str(), spec.role),
-        ("test.scripted", Role::Source)
-    );
+    assert_eq!(spec.id.as_str(), "test.scripted");
 }
 
 #[tokio::test]

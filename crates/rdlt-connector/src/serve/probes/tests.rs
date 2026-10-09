@@ -15,11 +15,10 @@ fn offering(feature: &str) -> v1::HandshakeRequest {
     }
 }
 
-fn spec(role: crate::spec::Role) -> crate::spec::ConnectorSpec {
+fn spec() -> crate::spec::ConnectorSpec {
     crate::spec::ConnectorSpec {
         id: crate::ConnectorId::parse("io.test.probed").expect("a valid id"),
         version: "0.0.1".to_owned(),
-        role,
         config_schema: serde_json::Value::Null,
     }
 }
@@ -58,12 +57,12 @@ impl DestinationFactory for NoDestination {
 
 #[test]
 fn a_build_without_the_probes_accepts_neither_whatever_is_offered() {
-    let source = NoSource(spec(crate::spec::Role::Source));
+    let source = NoSource(spec());
     assert!(!Probes::of_source(
         &offering(rdlt_wire::ACKNOWLEDGED),
         &source
     ));
-    let destination = NoDestination(spec(crate::spec::Role::Destination));
+    let destination = NoDestination(spec());
     assert!(!Probes::of_destination(
         &offering(rdlt_wire::PUBLISHED),
         &destination

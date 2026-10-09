@@ -10,7 +10,7 @@ use crate::emitter::Emitter;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{ConnectorId, PartitionId, StreamName};
 use crate::sink::PartitionSink;
-use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec, Role};
+use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 use crate::state::StreamState;
 
 /// A [`ReadStream`] with its cursor type erased, so streams of one source fit in one list.
@@ -231,7 +231,6 @@ pub(super) fn factory<C: SourceConnector>() -> Factory<C> {
     let spec = ConnectorSpec {
         id: ConnectorId::parse(C::ID).expect("the connector's ID is a valid connector id"),
         version: C::VERSION.to_owned(),
-        role: Role::Source,
         config_schema: config::schema::<C::Config>(),
     };
     Factory::<C> {

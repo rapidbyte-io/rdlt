@@ -71,7 +71,7 @@ impl<'a> Factory<'a> {
                 Unmet::Failed(error)
             }
         })?;
-        let spec = connection.connector_spec(role).map_err(Unmet::Failed)?;
+        let spec = connection.connector_spec().map_err(Unmet::Failed)?;
         Ok(Self { target, spec })
     }
 }

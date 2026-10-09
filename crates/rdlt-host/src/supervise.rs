@@ -139,7 +139,7 @@ impl Supervisor {
         let admit = |spec: &v1::ConnectorSpec| gate.admit(spec).map_err(Spawned::Refused);
         let redactions = Redactions::new();
         let running = begin(&start, role, &configured, options, &admit, &redactions).await?;
-        let checked = crate::remote::contract_spec(running.connection.spec(), role)
+        let checked = crate::remote::contract_spec(running.connection.spec())
             .map_err(|error| Spawned::Refused(gate.refused(error)))?;
         Ok(Self {
             start,
@@ -152,7 +152,7 @@ impl Supervisor {
         })
     }
 
-    /// The spec the connector was checked to serve, for its role.
+    /// The spec the connector was checked to serve.
     pub(crate) fn spec(&self) -> ConnectorSpec {
         self.checked.clone()
     }
@@ -202,7 +202,7 @@ impl Supervisor {
     /// its configuration declares.
     fn same(&self, connection: &Connection) -> Result<(), ConnectorError> {
         let checked = &self.checked;
-        let spec = crate::remote::contract_spec(connection.spec(), self.role)?;
+        let spec = crate::remote::contract_spec(connection.spec())?;
         if spec == *checked {
             return Ok(());
         }
