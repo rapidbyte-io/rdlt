@@ -154,23 +154,18 @@ follows H1c.
     | `rdlt-host` | `rdlt-host`, `rdlt-certify` |
     | `rdlt-certify` | `rdlt-certify` |
 
-  - The nightly workflow runs the full pass, every crate's tests against every mutant, in forty
-    shards on CI's runners, where the weekly workflow ran it once a week. Amended 2026-09-29: eight
-    shards took over three hours each, past the jobs' limit. Amended 2026-10-01: after M5, twenty
-    shards took up to that limit too, and one was cancelled with its mutants untested. A mutant
-    it finds is fixed the next day; one the branch's packages missed adds the package that caught
-    it.
-    - Amended 2026-10-06: the forty shards ran past their limit every night, and their
-      baselines failed on tests that took longer than the profile's limits on four-core runners.
-      Every crate's mutants now run against the tests of every package that links the crate,
-      which are all the tests that can catch them, the crate's own first through a nextest
-      profile of its own, where most mutants are caught. Dependencies are optimised in the
-      mutation build, builds link with mold, and two mutants run at once on two threads each.
-      A mutant still takes about half a minute on CI's runners, so the whole pass, some sixty
-      runner-hours, runs over four nights: the large crates' shards are taken a quarter a night,
-      and the small crates run whole every night. A missed mutant is found within four nights.
-      - Limits are taken from what each test took on the nightly's runners: twenty seconds for
-        any test, more for those named in the profile, each with what it took.
+  - The nightly workflow runs the full pass: every crate's mutants against the tests of every
+    package that links the crate, which are all the tests that can catch them, the crate's own
+    first through a nextest profile of its own, where most mutants are caught. Dependencies are
+    optimised in the mutation build, builds link with mold, and two mutants run at once on two
+    threads each. The whole pass is some sixty runner-hours, more than a night's runners hold
+    beside the simulation, so it runs over four nights: each crate's mutants are cut into shards
+    that finish within their limit, the large crates' shards are taken a quarter a night, and the
+    small crates run whole every night. A missed mutant is found within four nights, fixed the
+    next day, and, where the branch's packages missed it, adds the package that caught it.
+    - A test's limit in the mutants profile sits far enough above what it takes on the nightly's
+      runners, beside another mutant's tests, that only a test hung on its mutant reaches it:
+      twenty seconds for any test, more for those the profile names.
   - `just ready` runs lint, tests and `mutants-diff`. CI's pull-request gate runs the rest:
     coverage, Miri, the simulation, macOS and the instruction and allocation counts against
     `main`.

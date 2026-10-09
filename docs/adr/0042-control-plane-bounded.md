@@ -47,14 +47,14 @@ still taken largely on trust:
     files, each message's size and the kind of each field. It counts each message its size, four
     times for an entry of a repeated field and eight for one of one-byte numbers, as a vector
     first allocates room for four and holds its old entries beside twice as many as it grows;
-    each string or bytes its length, or the eight bytes a vector of bytes first allocates; and a
-    field the form does not know, groups among them, its bytes. Tests hold this to the decoder:
-    for repeated messages, nested single entries, strings and numbers, packed and not, the heap
-    peak of decoding stays within the count; a property test and a fuzz target (`scan`) decode
-    random encodings as every message the calls carry, and whatever decodes, the scan takes and
-    counts no less than its peak. Amended 2026-10-06: the fuzz target found a string set twice,
-    which the decoder reads into the room the first took, grown to twice that beside it; a string
-    its message, or a message it is decoded into, set before counts twice its length.
+    each string or bytes its length, or the eight bytes a vector of bytes first allocates, and a
+    string its message, or a message it is decoded into, set before twice its length, since the
+    decoder reads it into the room the first took, grown to twice that beside it; and a field the
+    form does not know, groups among them, its bytes. Tests hold this to the decoder: for
+    repeated messages, nested single entries, strings set once and again, and numbers, packed and
+    not, the heap peak of decoding stays within the count; a property test and a fuzz target
+    (`scan`) decode random encodings as every message the calls carry, and whatever decodes, the
+    scan takes and counts no less than its peak.
   - A message the scan cannot walk, which protocol buffers would not decode either, fails its
     call as `InvalidArgument` and never reaches the decoder; so does a call whose body ends within
     a message.
