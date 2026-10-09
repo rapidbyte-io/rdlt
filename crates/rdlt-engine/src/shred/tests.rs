@@ -1178,6 +1178,15 @@ fn an_observation_refuses_a_key_one_object_repeats_at_any_depth() {
 }
 
 #[test]
+fn observed_shapes_are_equal_by_their_fields_whatever_objects_named_them() {
+    // A second record names the same fields from other objects, which the shape marks.
+    let shape = |text: &str| observed_only(text).unwrap().shape;
+    let once = shape(r#"{"a":1}"#);
+    assert_eq!(once, shape("{\"a\":1}\n{\"a\":2}"));
+    assert_ne!(once, shape(r#"{"b":1}"#));
+}
+
+#[test]
 fn an_observation_past_its_chunk_s_room_and_the_flush_s_is_refused_naming_the_flush_s() {
     // Ten columns of 400-byte names take more than the room of ten columns' shapes.
     let fields: Vec<String> = (0..10)

@@ -134,4 +134,20 @@ fn a_span_that_breaks_when_it_is_found_again_is_an_error_not_an_end() {
         matches!(found.as_slice(), [Err(ShredError::Internal(_))]),
         "{found:?}"
     );
+    // Its second element breaks, after one it found: nothing follows the error.
+    let chunk = Chunk {
+        parts: vec![Part {
+            push: Bytes::from_static(b"[{},{}}]"),
+            form: Form::Elements,
+            span: 1..7,
+        }],
+        rows: 2,
+        before: 0,
+        bytes: 6,
+    };
+    let found: Vec<_> = chunk.records().take(3).collect();
+    assert!(
+        matches!(found.as_slice(), [Ok(b"{}"), Err(ShredError::Internal(_))]),
+        "{found:?}"
+    );
 }
