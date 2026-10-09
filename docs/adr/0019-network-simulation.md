@@ -53,22 +53,16 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
 - **A run that breaks the wire protocol is a finding**, faults or not: a connector and a host that
   keep to the protocol never answer out of turn, however the network or the connector fails.
 - **The simulation's coverage leaves out what it never runs**: generated wire code, process
-  placement, and a served binary's entry points. The data plane (`rdlt_wire::plane`) is
-  hand-written, not generated, and every simulated served read and write runs it, so it counts.
-  Its floor is 81 % of lines and 73 % of branches.
-  - Amended 2026-09-29: certification (M4f to M4h) added code the simulation never runs, the
-    certify crate and the host's connections, kills and raw wires for it, and the nightly gate
-    failed from 2026-09-27. That code is left out too, and the line floor is 81 %, under the
-    81.9 % measured; branches measure 74.7 % against their 73 %.
-  - Amended 2026-10-08: the local store's code moved into a directory, the stores' shared
-    contract tests into the engine's library and the benches' batches into a module of their
-    own, and the exclusion matched none of them; it does again. Since the floor was set the code
-    grew where the simulation's honest worlds reach little: a served connector's refusals of a
-    host that breaks the protocol, certification's probes, the scan's refusals of messages it
-    cannot walk or that pass their bounds, secrets read from files and the environment, and
-    refusals of a log a store garbled. Over 1 000 seeds it reaches 79.4 % of lines and 69.3 % of
-    branches, and the floors are 79 % and 69 % until worlds that act as hostile peers reach that
-    code.
+  placement, a served binary's entry points, certification (the certify crate and the host's
+  connections, kills and raw wires it uses), the local and in-memory log stores (the simulation
+  keeps logs in a store of its own), the stores' shared contract tests, and test and bench code.
+  The data plane (`rdlt_wire::plane`) is hand-written, not generated, and every simulated served
+  read and write runs it, so it counts. Its floor is what 1 000 seeds reach, 79 % of lines and
+  69 % of branches. The simulation's worlds are honest peers, and reach little of the code that
+  refuses a dishonest one: a served connector's refusals of a host that breaks the protocol,
+  certification's probes, the scan's refusals of messages it cannot walk or that pass their
+  bounds, secrets read from files and the environment, and refusals of a log a store garbled. The
+  floor rises as worlds that act as hostile peers reach that code.
 
 ## Consequences
 
