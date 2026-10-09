@@ -392,6 +392,7 @@ impl Harness {
             discarded_values: 0,
             deletes_ignored: 0,
             truncates_ignored: 0,
+            shred: crate::report::ShredCounts::default(),
             held: CursorHold::default(),
         }));
     }
@@ -567,6 +568,40 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
     assert_eq!(log.committed.commits, 1);
     assert_eq!(log.committed.streams[&name()].rows, 5);
     assert!(harness.closed.load(Ordering::SeqCst));
+}
+
+#[tokio::test(start_paused = true)]
+async fn what_shredding_a_segment_took_is_reported_with_its_stream_once_committed() {
+    let (task, harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .start()
+    .await;
+    let shred = crate::report::ShredCounts {
+        parsed: 3,
+        tripped: 1,
+        observed: 1,
+        rebuilt: 2,
+        exact: 1,
+    };
+    harness.send(Progress::Sealed(Seal {
+        partition: 0,
+        segment: SegmentId(1),
+        rows: 5,
+        bytes: 40,
+        state: PartitionState::Cursor(cursor(5)),
+        answers: None,
+        discarded_rows: 0,
+        discarded_values: 0,
+        deletes_ignored: 0,
+        truncates_ignored: 0,
+        shred,
+        held: CursorHold::default(),
+    }));
+    harness.end(0, false);
+    ended(task).await.unwrap();
+    assert_eq!(harness.log.lock().committed.streams[&name()].shred, shred);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1087,6 +1122,7 @@ async fn discards_are_reported_with_the_commit_that_publishes_their_segment() {
         discarded_values: 3,
         deletes_ignored: 0,
         truncates_ignored: 0,
+        shred: crate::report::ShredCounts::default(),
         held: CursorHold::default(),
     }));
     harness.end(0, false);

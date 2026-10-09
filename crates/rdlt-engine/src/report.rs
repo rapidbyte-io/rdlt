@@ -13,8 +13,8 @@ use serde::Serialize;
 use crate::error::{Error, ErrorKind, ErrorReport};
 
 pub use counters::{
-    CommitPhases, Commits, Counters, LaneCounters, LogCounters, PoolCounters, StoreRequests,
-    Waited, Waits,
+    CommitPhases, Commits, Counters, LaneCounters, LogCounters, PoolCounters, ShredCounts,
+    StoreRequests, Waited, Waits,
 };
 pub(crate) use counters::{Tally, Trigger};
 
@@ -114,6 +114,8 @@ pub struct StreamReport {
     /// Partitions read to their end whose done markers commits deleted to keep stored state
     /// within its limit: a plan that names one again reads it again from its beginning.
     pub forgotten: Forgotten,
+    /// What shredding the JSON of committed segments took, over every flush of them.
+    pub shred: ShredCounts,
 }
 
 /// How many of the partitions a stream's commits forgot during a run its report names.
@@ -219,6 +221,7 @@ impl StreamReport {
         self.discarded_values += other.discarded_values;
         self.deletes_ignored += other.deletes_ignored;
         self.truncates_ignored += other.truncates_ignored;
+        self.shred.add(&other.shred);
     }
 }
 

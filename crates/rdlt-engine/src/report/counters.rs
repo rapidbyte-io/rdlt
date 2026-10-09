@@ -132,6 +132,52 @@ pub struct LaneCounters {
     pub flushing: Duration,
 }
 
+/// What shredding JSON took, in passes over chunks of its records.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ShredCounts {
+    /// Passes that parsed a chunk building its columns as they went; a chunk parsed again with
+    /// exact numbers counts again.
+    pub parsed: u64,
+    /// Of those, the passes whose builders would have taken more than the chunk was admitted
+    /// for.
+    pub tripped: u64,
+    /// Passes that read a chunk only to observe its values, once its parse tripped.
+    pub observed: u64,
+    /// Chunks built again against their flush's shape.
+    pub rebuilt: u64,
+    /// Of every pass above, those that read numbers exactly.
+    pub exact: u64,
+}
+
+impl ShredCounts {
+    /// Adds what `other` counts.
+    pub(crate) fn add(&mut self, other: &Self) {
+        self.parsed = self.parsed.saturating_add(other.parsed);
+        self.tripped = self.tripped.saturating_add(other.tripped);
+        self.observed = self.observed.saturating_add(other.observed);
+        self.rebuilt = self.rebuilt.saturating_add(other.rebuilt);
+        self.exact = self.exact.saturating_add(other.exact);
+    }
+
+    /// Counts one more pass that parsed, exactly where `exact` says.
+    pub(crate) fn parse(&mut self, exact: bool) {
+        self.parsed = self.parsed.saturating_add(1);
+        self.exact = self.exact.saturating_add(u64::from(exact));
+    }
+
+    /// Counts one more pass that only observed, exactly where `exact` says.
+    pub(crate) fn observe(&mut self, exact: bool) {
+        self.observed = self.observed.saturating_add(1);
+        self.exact = self.exact.saturating_add(u64::from(exact));
+    }
+
+    /// Counts one more chunk built again, exactly where `exact` says.
+    pub(crate) fn rebuild(&mut self, exact: bool) {
+        self.rebuilt = self.rebuilt.saturating_add(1);
+        self.exact = self.exact.saturating_add(u64::from(exact));
+    }
+}
+
 /// Waits for room in a memory budget, by the share waited for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Waits {

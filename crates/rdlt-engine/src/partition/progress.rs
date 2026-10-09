@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::budget::{Denied, MemoryBudget};
 use crate::cost::Admitted;
 use crate::error::Error;
+use crate::report::ShredCounts;
 
 /// What a partition tells the commit coordinator.
 #[derive(Debug, PartialEq)]
@@ -87,6 +88,8 @@ pub(crate) struct Seal {
     pub(crate) deletes_ignored: u64,
     /// Truncates the stream ignores, dropped from the segment.
     pub(crate) truncates_ignored: u64,
+    /// What shredding the segment's JSON took.
+    pub(crate) shred: ShredCounts,
     /// What holds the cursor's bytes in the budget until the seal's commit lands.
     pub(crate) held: CursorHold,
 }

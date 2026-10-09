@@ -156,6 +156,9 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 - Narrow records that widen a column past a chunk's allowance are parsed twice more; dense data
   still parses once. Shredding and normalizing run 3 to 8 % slower on one core than before the
   charges, past the spec's gate still (docs/perf/shred.md).
+- A run's report counts each stream's passes over the chunks of its committed flushes: those
+  parsed, those whose meter tripped, those only observed, those built again, and those that read
+  numbers exactly.
 - Row ids of floats whose shortest text is a tie, and of JSON numbers a float rounded, differ from
   earlier runs.
 - `1.50` and `1.5` stay distinct texts in a destination's column of JSON, one value to identity.

@@ -11,7 +11,7 @@ use rdlt_connector::{
 use super::{Coordinator, KEPT_COMPLETIONS};
 use crate::partition::{CursorHold, Seal};
 use crate::plan::WriteMode;
-use crate::report::StreamReport;
+use crate::report::{ShredCounts, StreamReport};
 use crate::wal::Sealed;
 
 /// What the sealed segments of a commit add up to.
@@ -70,6 +70,14 @@ impl Coordinator {
                 let counts = collected.streams.entry(stream).or_default();
                 counts.deletes_ignored += seal.deletes_ignored;
                 counts.truncates_ignored += seal.truncates_ignored;
+            }
+            if seal.shred != ShredCounts::default() {
+                collected
+                    .streams
+                    .entry(stream)
+                    .or_default()
+                    .shred
+                    .add(&seal.shred);
             }
             if let PartitionState::Cursor(cursor) = &seal.state {
                 collected.reported.insert(seal.partition, cursor.clone());
