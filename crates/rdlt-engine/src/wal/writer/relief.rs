@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 
 use rdlt_connector::CommitSeq;
 
-use super::super::frame::{self, End, Frame};
+use super::super::frame::{self, Frame};
 use super::{Log, count};
 use crate::error::Error;
 
@@ -54,32 +54,33 @@ impl Log {
     /// after it writes: a preamble and header where the chunk is not staged yet, a closing frame,
     /// and an end naming every chunk and commit the log then holds.
     pub(super) fn ending(&self) -> Result<(u64, u64), Error> {
-        let closing = count(Frame::Relieved.encode()?.len());
-        let ended = |live: &[u64], received: &[CommitSeq]| {
-            let end = Frame::End(End {
-                live: live.to_vec(),
-                received: received.to_vec(),
-            });
-            Ok::<u64, Error>(count(end.encode()?.len()).saturating_add(closing))
+        let closing = count(frame::HEAD);
+        let staged = |chunk: u64| -> Result<u64, Error> {
+            let header = frame::header_len(&self.chunk_header(chunk))?;
+            Ok(count(frame::PREAMBLE).saturating_add(header))
         };
-        let staged =
-            |chunk: u64| Ok::<u64, Error>(count(frame::PREAMBLE + self.header(chunk)?.len()));
-        let mut live: Vec<u64> = self.written.keys().copied().collect();
-        let mut received: Vec<CommitSeq> = self
-            .written
-            .values()
-            .flat_map(|written| written.commits.iter().copied())
-            .collect();
+        let live = || self.written.keys().copied();
+        let received = || {
+            self.written
+                .values()
+                .flat_map(|written| written.commits.iter().copied().map(CommitSeq::get))
+        };
         let staging = if self.staged.is_some() {
             0
         } else {
             staged(self.chunk)?
         };
-        let ending = staging.saturating_add(ended(&live, &received)?);
+        let ending = staging
+            .saturating_add(frame::end_len(live(), received()))
+            .saturating_add(closing);
         // The chunk after names this one too, and the commit that may end this one.
-        live.push(self.chunk);
-        received.push(self.last.map_or(CommitSeq::FIRST, CommitSeq::next));
-        let next = staged(self.chunk.saturating_add(1))?.saturating_add(ended(&live, &received)?);
+        let after = self.last.map_or(CommitSeq::FIRST, CommitSeq::next).get();
+        let next = staged(self.chunk.saturating_add(1))?
+            .saturating_add(frame::end_len(
+                live().chain([self.chunk]),
+                received().chain([after]),
+            ))
+            .saturating_add(closing);
         Ok((ending, next))
     }
 }

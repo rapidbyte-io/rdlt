@@ -231,17 +231,21 @@ impl Log {
         }
     }
 
-    /// The header frame of chunk `chunk`.
-    pub(super) fn header(&self, chunk: u64) -> Result<Bytes, Error> {
-        Frame::Header(Header {
+    /// The header of chunk `chunk`.
+    pub(super) fn chunk_header(&self, chunk: u64) -> Header {
+        Header {
             pipeline: self.owner.pipeline.clone(),
             load: self.owner.load,
             chunk,
             epoch: self.owner.epoch,
             opened: self.owner.opened,
             origin: self.owner.origin,
-        })
-        .encode()
+        }
+    }
+
+    /// The header frame of chunk `chunk`.
+    pub(super) fn header(&self, chunk: u64) -> Result<Bytes, Error> {
+        Frame::Header(self.chunk_header(chunk)).encode()
     }
 
     /// Writes `frame`, a batch frame of `segment` for the table at `table`, counted with
