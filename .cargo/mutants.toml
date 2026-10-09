@@ -31,7 +31,6 @@ exclude_re = [
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
 # this; cargo-mutants' own timeout would count it as a timeout instead. It is above what a mutant
-# no test catches takes, every tested package's whole suite, about six minutes on the nightly's
-# runners beside another mutant's: a shard's baseline tests only the packages it mutates, and the
-# timeout cargo-mutants derives from it can fall short of that.
+# no test catches takes, every tested package's whole suite beside another mutant's: a shard's
+# baseline tests only the packages it mutates, and the timeout derived from it can fall short.
 minimum_test_timeout = 900
