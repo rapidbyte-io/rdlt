@@ -38,7 +38,7 @@ use bytes::Bytes;
 use rdlt_connector::TableSchema;
 use serde::de::DeserializeSeed;
 
-use crate::compute::{ComputePool, run_all};
+use crate::compute::Pool;
 use crate::limits::MAX_CELLS;
 
 use build::Record;
@@ -137,10 +137,7 @@ impl Shredding {
     /// # Errors
     ///
     /// A refusal a chunk's second parse makes, or a bug.
-    pub(crate) async fn build(
-        self,
-        pool: &dyn ComputePool,
-    ) -> Result<Vec<RecordBatch>, ShredError> {
+    pub(crate) async fn build(self, pool: &Pool) -> Result<Vec<RecordBatch>, ShredError> {
         let Self {
             parsed,
             plans,
@@ -148,13 +145,10 @@ impl Shredding {
             schema,
             ..
         } = self;
-        run_all(
-            pool,
-            parsed.into_iter().zip(plans).map(|(chunk, plan)| {
-                let (shape, schema) = (Arc::clone(&shape), Arc::clone(&schema));
-                move || job(|| batch(chunk, plan, &shape, schema))
-            }),
-        )
+        pool.run_all(parsed.into_iter().zip(plans).map(|(chunk, plan)| {
+            let (shape, schema) = (Arc::clone(&shape), Arc::clone(&schema));
+            move || job(|| batch(chunk, plan, &shape, schema))
+        }))
         .await
         .into_iter()
         .collect()
@@ -453,29 +447,28 @@ pub(crate) fn job<T>(work: impl FnOnce() -> T) -> T {
 ///
 /// Why the pushes cannot be shredded.
 pub(crate) async fn observe(
-    pool: &dyn ComputePool,
+    pool: &Pool,
     pushes: &[Bytes],
     chunk_bytes: usize,
     limits: ShredLimits,
 ) -> Result<Shredding, ShredError> {
     let scanned = pushes.to_vec();
-    let chunks = run_all(pool, [move || chunks(&scanned, chunk_bytes)])
+    let chunks = pool
+        .run_all([move || chunks(&scanned, chunk_bytes)])
         .await
         .pop()
         .ok_or_else(|| {
             ShredError::Internal("the scan of the pushes returned nothing".to_owned())
         })??;
     let beyond = limits.beyond();
-    let parsed: Vec<Parsed> = run_all(
-        pool,
-        chunks.into_iter().map(|chunk| {
+    let parsed: Vec<Parsed> = pool
+        .run_all(chunks.into_iter().map(|chunk| {
             let beyond = Arc::clone(&beyond);
             move || job(|| parse(chunk, limits, &beyond))
-        }),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<_, _>>()?;
+        }))
+        .await
+        .into_iter()
+        .collect::<Result<_, _>>()?;
     let (shape, plans, excess) = join(&parsed, limits)?;
     let schema = TableSchema::new(shape.logical_fields())
         .map_err(|error| ShredError::Internal(format!("naming the columns: {error}")))?;
@@ -492,7 +485,7 @@ pub(crate) async fn observe(
 /// takes: for a caller with no budget to reserve it from.
 #[cfg(any(test, feature = "bench"))]
 pub(crate) async fn shred(
-    pool: &dyn ComputePool,
+    pool: &Pool,
     pushes: &[Bytes],
     chunk_bytes: usize,
     limits: ShredLimits,

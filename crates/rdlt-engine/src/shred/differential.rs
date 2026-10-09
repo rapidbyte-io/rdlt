@@ -11,12 +11,17 @@ use rdlt_connector::{Field, LogicalType};
 
 use super::reference::{self, Code, Json};
 use super::shred;
-use crate::compute::{Inline, ready};
+use crate::compute::{Pool, ready};
 
 /// The batches of `pushes`, shredded in chunks of `chunk_bytes`, as one, or the error's code.
 pub(super) fn shredded(pushes: &[Bytes], chunk_bytes: usize) -> Result<Option<RecordBatch>, Code> {
-    let batches = ready(shred(&Inline, pushes, chunk_bytes, super::tests::limits()))
-        .map_err(|error| Code(error.code()))?;
+    let batches = ready(shred(
+        &Pool::inline(),
+        pushes,
+        chunk_bytes,
+        super::tests::limits(),
+    ))
+    .map_err(|error| Code(error.code()))?;
     let Some(first) = batches.first() else {
         return Ok(None);
     };

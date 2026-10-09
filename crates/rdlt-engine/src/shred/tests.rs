@@ -12,7 +12,7 @@ use super::differential::shredded;
 use super::meter::{KEY, OBJECT_SHAPE};
 use super::reference::Code;
 use super::{Parsed, ShredLimits, chunks, parse, shred};
-use crate::compute::{Cores, RayonPool};
+use crate::compute::Cores;
 
 thread_local! {
     /// How many chunks this thread built again.
@@ -522,8 +522,9 @@ fn a_column_that_changes_type_within_a_chunk_is_built_again_as_their_join() {
 
 #[tokio::test]
 async fn parallel_shredding_keeps_the_pushes_order() {
-    let pool =
-        RayonPool::try_new(Cores::new(NonZeroUsize::new(5).unwrap(), NonZeroUsize::MIN)).unwrap();
+    let cores = Cores::new(NonZeroUsize::new(5).unwrap(), NonZeroUsize::MIN);
+    let env = crate::env::SystemEnv::try_new(cores).unwrap();
+    let pool = crate::compute::Pool::new(Arc::new(env), Arc::default());
     let pushes: Vec<Bytes> = (0..40)
         .map(|push| {
             let lines: Vec<String> = (0..50)
@@ -677,7 +678,7 @@ fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
     // The invalid record after it, which adds no field, is never reached.
     let push = format!("{}\n{{\"c0\":", wide_object(0, columns + 1));
     let error = crate::compute::ready(shred(
-        &crate::compute::Inline,
+        &crate::compute::Pool::inline(),
         &[Bytes::from(push)],
         1 << 20,
         limits(),
@@ -788,7 +789,7 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
     let secret = "hunter2-card-4111111111111111";
     let push = format!("{{\"a\":1}}\n{{\"password\":\"{secret}\",\"b\":}}");
     let error = crate::compute::ready(shred(
-        &crate::compute::Inline,
+        &crate::compute::Pool::inline(),
         &[Bytes::from(push)],
         1 << 20,
         limits(),
@@ -807,8 +808,8 @@ fn a_refusal_names_where_the_json_broke_without_quoting_the_data() {
         Bytes::from("{\"a\":1}\n{\"a\":2}"),
         Bytes::from("{\"a\":3}\n{\"a\":}"),
     ];
-    let later =
-        crate::compute::ready(shred(&crate::compute::Inline, &pushes, 1, limits())).unwrap_err();
+    let later = crate::compute::ready(shred(&crate::compute::Pool::inline(), &pushes, 1, limits()))
+        .unwrap_err();
     assert!(later.to_string().contains("record 4:"), "{later}");
 }
 
@@ -837,7 +838,7 @@ fn only_json_whitespace_surrounds_records() {
 fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
     let shred_here = |push: String| {
         crate::compute::ready(shred(
-            &crate::compute::Inline,
+            &crate::compute::Pool::inline(),
             &[Bytes::from(push)],
             1 << 20,
             limits(),
@@ -875,7 +876,7 @@ fn a_refusal_quotes_a_key_or_a_number_cut_to_its_limit() {
         format!("{{\"a\":{digits}e999999999}}"),
     ] {
         let error = crate::compute::ready(shred(
-            &crate::compute::Inline,
+            &crate::compute::Pool::inline(),
             &[Bytes::from(push)],
             1 << 30,
             limits(),
@@ -936,7 +937,7 @@ fn a_push_takes_more_than_it_was_admitted_for_only_where_its_batches_hold_more()
     let excess = |text: String| {
         let pushes = [Bytes::from(text)];
         crate::compute::ready(super::observe(
-            &crate::compute::Inline,
+            &crate::compute::Pool::inline(),
             &pushes,
             1 << 20,
             limits(),
@@ -969,7 +970,8 @@ fn the_column_limit_counts_every_column_a_chunk_holds_and_the_join_of_all() {
             columns,
             ..limits()
         };
-        crate::compute::ready(shred(&crate::compute::Inline, &pushes, 1, limits)).map(|_| ())
+        crate::compute::ready(shred(&crate::compute::Pool::inline(), &pushes, 1, limits))
+            .map(|_| ())
     };
     // An object and its fields, a list and its items, at any depth.
     let nested = r#"{"o":{"a":1,"l":[{"b":1}]}}"#;
@@ -1047,7 +1049,7 @@ fn held_within_charge(keys: usize, value: &str) {
     heap.reset_peak_usage();
     let before = heap.current_usage();
     let batches = crate::compute::ready(shred(
-        &crate::compute::Inline,
+        &crate::compute::Pool::inline(),
         std::slice::from_ref(&records),
         1 << 20,
         limits(),

@@ -34,7 +34,7 @@ use crate::naming::Naming;
 use crate::partition::{CursorHold, Latest, Progress, Seal};
 use crate::plan::StreamPlan;
 use crate::plan::WriteMode;
-use crate::report::{AttemptEnd, AttemptLog};
+use crate::report::{AttemptEnd, AttemptLog, CommitPhases, Tally};
 use crate::table::{Incoming, MetaNames, Model, Resolver, Settings, SharedSession, Tables};
 use crate::wal::frame::Frame;
 use crate::wal::memory::MemoryWal;
@@ -50,6 +50,8 @@ struct Recorder {
     fail: bool,
     /// Whether each receipt names the commit after the commit it answers.
     skewed: bool,
+    /// How long a commit takes.
+    pace: Duration,
 }
 
 impl DestinationSession for Recorder {
@@ -70,6 +72,7 @@ impl DestinationSession for Recorder {
 
     fn commit<'a>(&'a mut self, meta: &'a CommitMeta) -> BoxFuture<'a, Result<Receipt>> {
         Box::pin(async move {
+            tokio::time::sleep(self.pace).await;
             if self.fail {
                 return Err(ConnectorError::data("commit refused"));
             }
@@ -100,6 +103,8 @@ struct Listener {
     commits: Commits,
     /// Streams that cannot read again, which hear before their commit lands.
     early: Vec<StreamName>,
+    /// How long hearing of a commit takes.
+    pace: Duration,
 }
 
 impl Source for Listener {
@@ -129,6 +134,7 @@ impl Source for Listener {
         cursors: &'a [(PartitionId, Cursor)],
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            tokio::time::sleep(self.pace).await;
             assert!(
                 self.early.contains(stream) || !self.commits.lock().is_empty(),
                 "acknowledged before any commit landed"
@@ -152,6 +158,7 @@ struct Harness {
     closed: Arc<AtomicBool>,
     latest: Arc<Latest>,
     budget: crate::budget::MemoryBudget,
+    tally: Arc<Tally>,
 }
 
 struct Setup {
@@ -169,6 +176,8 @@ struct Setup {
     /// The memory budget's bytes, a quarter of which waiting cursors may hold before a commit
     /// is due.
     budget: u64,
+    /// How long the destination takes to commit; the source takes twice as long to hear of it.
+    pace: Duration,
 }
 
 impl Setup {
@@ -187,6 +196,7 @@ impl Setup {
             schema: None,
             wal: None,
             budget: u64::MAX,
+            pace: Duration::ZERO,
         }
     }
 
@@ -254,12 +264,14 @@ impl Setup {
             closed: Arc::clone(&closed),
             latest: Arc::default(),
             budget: crate::budget::budget(self.budget),
+            tally: Arc::default(),
         };
         let session = SharedSession::new(Box::new(Recorder {
             commits: Arc::clone(&commits),
             closed,
             fail: self.fail_commit,
             skewed: self.skew_receipts,
+            pace: self.pace,
         }));
         let tables = self.tables(session).await;
         let source = Arc::new(self.listener(acks, commits));
@@ -291,6 +303,7 @@ impl Setup {
             stored: stored(harness.budget.limits().state_bytes),
             follow: false,
             replan: Duration::from_secs(60),
+            tally: Arc::clone(&harness.tally),
         });
         (coordinator, harness)
     }
@@ -310,6 +323,7 @@ impl Setup {
             acks,
             commits,
             early,
+            pace: self.pace * 2,
         }
     }
 }
@@ -318,11 +332,13 @@ impl Setup {
 fn lanes(tables: &Arc<Tables>) -> Lanes {
     let budget = crate::budget::budget(1 << 30);
     let writers = crate::config::GrowthLimits::default().writers();
+    let env: Arc<dyn crate::env::Env> = Arc::new(crate::env::InlineEnv);
     let (lanes, tasks) = Lanes::new(
         (NonZeroUsize::MIN, writers),
         tables,
         NonZeroUsize::MIN,
         &budget,
+        (&env, &Arc::default()),
     );
     for lane in tasks {
         tokio::spawn(lane.run(CancellationToken::new()));
@@ -549,6 +565,32 @@ async fn sealed_segments_commit_with_their_positions_and_the_source_hears_afterw
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_commit_of_what_was_left_at_the_end_counts_as_such_with_the_time_of_each_phase() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    setup.pace = Duration::from_secs(1);
+    let (task, harness) = setup.start().await;
+    harness.seal(0, 1, 5, PartitionState::Cursor(cursor(5)), None);
+    harness.end(0, false);
+    ended(task).await.unwrap();
+    let counters = harness.tally.counters();
+    let end = crate::report::Commits {
+        end: 1,
+        ..crate::report::Commits::default()
+    };
+    assert_eq!(counters.commits, end);
+    // The lanes hold nothing to flush and no log lists anything, at once.
+    let phases = CommitPhases {
+        commit: Duration::from_secs(1),
+        ack: Duration::from_secs(2),
+        ..CommitPhases::default()
+    };
+    assert_eq!(counters.phases, phases);
+}
+
+#[tokio::test(start_paused = true)]
 async fn commits_follow_the_row_threshold_and_count_their_sequence() {
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
@@ -580,6 +622,11 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
         .map(|commit| commit.commit_seq.get())
         .collect();
     assert_eq!(sequence[..3], [1, 2, 3]);
+    let size = crate::report::Commits {
+        size: 3,
+        ..crate::report::Commits::default()
+    };
+    assert_eq!(harness.tally.counters().commits, size);
     assert!(
         commits
             .iter()
@@ -719,6 +766,11 @@ async fn the_interval_commits_a_quiet_partition() {
     assert!(started.elapsed() >= Duration::from_secs(10));
     harness.end(0, false);
     ended(task).await.unwrap();
+    let interval = crate::report::Commits {
+        interval: 1,
+        ..crate::report::Commits::default()
+    };
+    assert_eq!(harness.tally.counters().commits, interval);
 }
 
 #[tokio::test(start_paused = true)]

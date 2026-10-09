@@ -94,11 +94,10 @@ fn system_env_random_values_differ() {
 #[tokio::test]
 async fn system_env_runs_compute_jobs_on_its_pool() {
     let env = system_env();
-    let threads = crate::compute::run_all(
-        env.compute(),
-        [|| std::thread::current().name().map(str::to_owned)],
-    )
-    .await;
+    let pool = crate::compute::Pool::new(Arc::new(env), Arc::default());
+    let threads = pool
+        .run_all([|| std::thread::current().name().map(str::to_owned)])
+        .await;
     assert!(threads[0].as_deref().unwrap().starts_with("rdlt-compute-"));
 }
 

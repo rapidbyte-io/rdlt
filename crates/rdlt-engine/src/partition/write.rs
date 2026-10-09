@@ -26,7 +26,6 @@ use self::queue::queue;
 use super::coalesce::Flushed;
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
-use crate::compute::run_all;
 use crate::cost::CHANGE_ROW;
 use crate::error::{Error, ErrorKind};
 use crate::limits::{MAX_PIECE_BYTES, ROW_EXCEEDS_BUDGET};
@@ -190,7 +189,9 @@ async fn next(
         let piece = cutting.next();
         (cutting, piece)
     };
-    let (cutting, piece) = run_all(context.env.compute(), [cut])
+    let (cutting, piece) = context
+        .pool
+        .run_all([cut])
         .await
         .pop()
         .ok_or_else(|| Error::internal("the pool returned no piece"))?;
@@ -269,7 +270,9 @@ impl Window {
             std::mem::take(&mut self.held),
         );
         let times = reserved_times(context);
-        let lowered: Vec<_> = run_all(context.env.compute(), runs)
+        let lowered: Vec<_> = context
+            .pool
+            .run_all(runs)
             .await
             .into_iter()
             .zip(held)

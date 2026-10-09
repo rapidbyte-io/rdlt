@@ -19,7 +19,6 @@ use super::{
     schema_of, stamp,
 };
 use crate::budget::Shares;
-use crate::compute::run_all;
 use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
 use crate::limits::MIN_PIECE;
@@ -123,7 +122,7 @@ async fn lower(
         return on_pool(context, move || pieces.into_iter().map(lowering).collect()).await;
     }
     let lowerings = pieces.into_iter().map(|piece| move || lowering(piece));
-    run_all(context.env.compute(), lowerings).await
+    context.pool.run_all(lowerings).await
 }
 
 /// Bytes: the most the rows of a piece cut before its split may take as they arrive, and a row's
@@ -380,7 +379,9 @@ async fn on_pool<T: Send + 'static>(
     context: &PartitionContext,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> T {
-    run_all(context.env.compute(), [work])
+    context
+        .pool
+        .run_all([work])
         .await
         .into_iter()
         .next()

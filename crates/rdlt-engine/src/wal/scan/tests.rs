@@ -14,7 +14,7 @@ use rdlt_connector::cost::Allocations;
 
 use super::{batch, scan};
 use crate::budget::MemoryBudget;
-use crate::compute::Inline;
+use crate::compute::Pool;
 use crate::error::ErrorKind;
 use crate::table::TableView;
 use crate::table::testing::view;
@@ -102,8 +102,15 @@ async fn log_batch(
     segment: SegmentId,
     batch: &RecordBatch,
 ) -> Result<(), crate::Error> {
-    log.batch(&Inline, budget, frame(budget), table, segment, batch)
-        .await
+    log.batch(
+        &Pool::inline(),
+        budget,
+        frame(budget),
+        table,
+        segment,
+        batch,
+    )
+    .await
 }
 
 /// The owner of the logs these tests write.

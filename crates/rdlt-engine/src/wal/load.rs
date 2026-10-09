@@ -24,7 +24,7 @@ use super::store::WalStore;
 pub(crate) use super::writer::Owner;
 use super::writer::{Command, WalWriter};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares};
-use crate::compute::{ComputePool, run_all};
+use crate::compute::Pool;
 use crate::error::Error;
 use crate::limits::{LOG_COPY_BYTES, LOG_FRAME_EXCEEDS_BUDGET, LOG_PARTS, RECORDED};
 use crate::table::TableView;
@@ -161,11 +161,11 @@ impl LoadLog {
     }
 
     /// Logs `batch` of `segment`, lowered for `view` of the attempt's table `table`, encoded on
-    /// `compute`; `held` holds the frame's bytes until it is appended, and `budget` its table's
+    /// `pool`; `held` holds the frame's bytes until it is appended, and `budget` its table's
     /// schema frame where it is the first.
     pub(crate) async fn batch(
         &self,
-        compute: &dyn ComputePool,
+        pool: &Pool,
         budget: &MemoryBudget,
         mut held: Permit,
         (table, view): (usize, &Arc<TableView>),
@@ -188,7 +188,7 @@ impl LoadLog {
             ordinal: self.batches.fetch_add(1, Ordering::Relaxed),
             batch: batch.clone(),
         };
-        let mut encoded = run_all(compute, [move || Frame::Batch(batch).encode()]).await;
+        let mut encoded = pool.run_all([move || Frame::Batch(batch).encode()]).await;
         let frame = encoded
             .pop()
             .ok_or_else(|| Error::internal("a batch frame's job returned nothing"))??;

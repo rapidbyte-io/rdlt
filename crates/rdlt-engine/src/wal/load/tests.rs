@@ -14,7 +14,7 @@ use rdlt_connector::{
 
 use super::{LoadLog, Owner, Sealed};
 use crate::budget::MemoryBudget;
-use crate::compute::Inline;
+use crate::compute::Pool;
 use crate::table::TableView;
 use crate::table::testing::view;
 use crate::wal::frame::{self, Frame};
@@ -404,7 +404,7 @@ async fn logged(
     batch: &RecordBatch,
 ) -> Result<(), crate::Error> {
     let held = frame(budget);
-    log.batch(&Inline, budget, held, (table, view), segment, batch)
+    log.batch(&Pool::inline(), budget, held, (table, view), segment, batch)
         .await
 }
 
