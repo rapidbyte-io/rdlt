@@ -165,11 +165,16 @@ fn the_suggested_split_gives_the_runtime_half_the_cores_and_two_workers_at_least
 
 #[cfg(target_os = "linux")]
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the count the engine's cores must agree with is the standard library's own"
+)]
 fn the_host_s_cores_are_those_its_affinity_mask_leaves() {
     use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
     let allowed = sched_getaffinity(None).unwrap();
-    // A cgroup CPU quota also caps the count, so the mask can only lower what the host reported.
-    let before = Cores::try_from_host().unwrap().count().get();
+    // A cgroup CPU quota also caps the count, so the mask can only lower what the host reports.
+    let before = std::thread::available_parallelism().unwrap().get();
+    assert_eq!(Cores::try_from_host().unwrap().count().get(), before);
     let mut two = CpuSet::new();
     let chosen: Vec<usize> = (0..CpuSet::MAX_CPU)
         .filter(|cpu| allowed.is_set(*cpu))
