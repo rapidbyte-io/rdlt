@@ -75,8 +75,17 @@ fn a_flag_on_a_key_the_sequence_or_no_stored_column_is_refused_under_its_code() 
     ]));
     let checked = admitted(&flagged(1), Some(&narrow), &key(Deletion::Hard));
     assert_eq!(refusal(checked), Some("flag_on_missing_column"));
-    // Where the table's columns are not known, a stored field's flag is taken.
+    // Where the table's columns are not known, a stored field's flag is taken, and one on the
+    // op or the flags themselves is still refused.
     admitted(&flagged(1), None, &key(Deletion::Hard)).expect("a flag on the value");
+    for bit in [4, 5] {
+        let checked = admitted(&flagged(bit), None, &key(Deletion::Hard));
+        assert_eq!(
+            refusal(checked),
+            Some("flag_on_missing_column"),
+            "bit {bit}"
+        );
+    }
     admitted(&flagged(3), Some(&stored_schema()), &key(Deletion::Hard)).expect("on the time");
     // Bits past the batch's fields name nothing.
     let merged = apply(
