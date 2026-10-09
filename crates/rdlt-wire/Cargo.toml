@@ -35,6 +35,8 @@ tls = ["dep:nix", "dep:rustls", "dep:webpki"]
 peak_alloc.workspace = true
 proptest.workspace = true
 rdlt-testkit.workspace = true
+# A host or connector speaking TLS 1.2, which both ends refuse.
+rustls = { workspace = true, features = ["tls12"] }
 
 [lints]
 workspace = true
