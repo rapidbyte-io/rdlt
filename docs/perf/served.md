@@ -67,6 +67,8 @@ process or each in a process of its own.
   the four low-power cores, 12–15, which have no L3, run neither. Five rounds of all 24 cases,
   in process and apart, each started at a one-minute load average under 1.0 under the
   measurement lock.
+- **Provider.** Every figure here was taken with rustls on `ring`. The TLS cases have not been
+  measured on aws-lc-rs, the provider TLS now runs on (ADR 0018).
 
 ## Results
 

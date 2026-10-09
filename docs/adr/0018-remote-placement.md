@@ -21,14 +21,19 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
   - M4d (this record) is remote placement.
   - M4e is the network simulation of the host.
   - M4f is `rdlt-certify` and the `K` kill matrix, which ADR 0017 called M4e.
-- **The TLS policy is the owner's** (2026-09-26):
-  - rustls on the `ring` provider, TLS 1.3 alone, no OpenSSL.
+- **The TLS policy is the owner's** (2026-09-26; the provider, 2026-10-09):
+  - rustls, TLS 1.3 alone, on aws-lc-rs, and no OpenSSL or other system library. aws-lc-rs is
+    rustls's own default provider and the production standard: a FIPS-capable build of it
+    exists, and it has the X25519MLKEM768 post-quantum hybrid key exchange, which both ends
+    prefer. Its cipher suites, key exchange groups and signature schemes are its defaults.
   - Mutual authentication always: a host presents a certificate, and a listening connector requires one. There is no plaintext mode, not even behind a flag.
   - A host verifies the connector's certificate against its CA bundle and the endpoint's host name. A connector verifies each host's certificate against its own CA bundle, and accepts it only where it names a host the connector was told to accept (ADR 0044).
   - Neither end resumes a session: every connection is a full handshake, so a certificate is verified, and must be valid, each time it is presented. A connector may be given revocation lists.
   - Certificates and keys come from PEM files named by path; secret references come with M7's secrets. A private key is read only from a regular file of the user's alone.
   - Tests make their CA at test time; no key is ever committed.
 - **The policy is in one place: `rdlt_wire::tls`**, behind `rdlt-wire`'s `tls` feature.
+  - `provider` is the cryptography of every TLS connection: both ends of the protocol, and the
+    S3 log store's.
   - `server_config` and `client_config` build both ends' configurations, with ALPN `h2` alone. `server_config` takes the hosts accepted: their CA bundle, their names and their revocation lists.
   - `TlsError` names the file a failure came from.
 - **A served binary listens with `--listen <address>`**, and needs `--tls-cert`, `--tls-key`, `--tls-client-ca` and a `--tls-allow-host` for each host it accepts. `--listen` and `--rdlt-fd` exclude each other.
@@ -55,6 +60,9 @@ TLS is security-sensitive, so the owner decided its policy before this milestone
 
 ## Consequences
 
+- AWS-LC is C, which `aws-lc-sys` builds with the C compiler alone (ADR 0048).
+- `ring` remains in the build through `object_store`'s request signing and `rcgen`'s test CA,
+  and no TLS connection uses it.
 - A listening connector trusts the hosts named to it, among the certificates its CA issued (ADR 0044).
 - Certificates and revocation lists rotate by restarting the listening connector, and by placing the connector again on the host.
 - One call over a link of round trip `r` moves at most its stream window a round trip, 4 MiB (ADR 0016): about 4 GB/s at 1 ms. A test holds that a call over a link of a 50 ms round trip keeps its windows in flight; throughput over a real network is unmeasured.
