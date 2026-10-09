@@ -251,3 +251,20 @@ fn a_list_s_items_that_are_all_null_take_nothing_as_it_grows() {
     // Nulls of no type hold no buffer: doubling past the single item it was sized for is free.
     assert_eq!(meter.spent(), made);
 }
+
+#[test]
+fn integers_a_float_cannot_hold_and_floats_never_share_a_column() {
+    let meter = Meter::new(u64::MAX);
+    let inexact = 9_007_199_254_740_993;
+    // Exact integers after one a float would round leave the column unfit for floats.
+    let mut integers = Column::Null(0);
+    for value in [inexact, 1] {
+        assert_eq!(integers.scalar(Scalar::Int(value), 4, &meter), Ok(true));
+    }
+    assert_eq!(integers.scalar(Scalar::Float(0.5), 4, &meter), Ok(false));
+    // A column of floats takes an integer only where a float holds it exactly.
+    let mut floats = Column::Null(0);
+    assert_eq!(floats.scalar(Scalar::Float(0.5), 4, &meter), Ok(true));
+    assert_eq!(floats.scalar(Scalar::Int(1), 4, &meter), Ok(true));
+    assert_eq!(floats.scalar(Scalar::Int(inexact), 4, &meter), Ok(false));
+}
