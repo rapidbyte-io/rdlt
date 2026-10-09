@@ -186,8 +186,7 @@ pub(super) fn history_columns(
         .map_err(|error| unread(stream, "preparing history columns", &error))?;
     let (offsets, values, nulls) = hashes.into_parts();
     let kept = NullBuffer::new(BooleanBuffer::collect_bool(rows, |row| !deleting(row)));
-    let nulls =
-        NullBuffer::union(nulls.as_ref(), Some(&kept)).filter(|nulls| nulls.null_count() > 0);
+    let nulls = NullBuffer::union(nulls.as_ref(), Some(&kept));
     let hashes = BinaryArray::try_new(offsets, values, nulls)
         .map_err(|error| unread(stream, "preparing history columns", &error))?;
     Ok([valid_from, valid_to, current, Arc::new(hashes)])
