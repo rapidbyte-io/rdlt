@@ -9,7 +9,7 @@ use rdlt_connector::{
     SegmentSet, StateChange, StateRecord,
 };
 
-use super::{Setup, name, partition, position, stream};
+use super::{Setup, ended, name, partition, position, stream};
 use crate::partition::Progress;
 use crate::plan::WriteMode;
 use crate::stored::{StateLimits, Stored};
@@ -37,9 +37,9 @@ async fn sealing(bytes: usize) -> (Result<(), crate::error::Error>, usize) {
     });
     harness.seal(0, 1, 1, PartitionState::Cursor(padded(bytes)), None);
     harness.end(0, false);
-    let ended = task.await.unwrap();
+    let outcome = ended(task).await;
     let commits = harness.commits.lock().len();
-    (ended, commits)
+    (outcome, commits)
 }
 
 #[tokio::test(start_paused = true)]
@@ -79,10 +79,7 @@ async fn state_is_bounded_with_all_the_commits_before_it() {
         );
         harness.end(partition, false);
     }
-    let refused = task
-        .await
-        .unwrap()
-        .expect_err("the second commit is refused");
+    let refused = ended(task).await.expect_err("the second commit is refused");
     assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
     assert_eq!(harness.commits.lock().len(), 1, "the first landed");
 }
