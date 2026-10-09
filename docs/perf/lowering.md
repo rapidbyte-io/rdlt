@@ -72,3 +72,54 @@ Allocation counts are the same in every round. One CPU is busy throughout every 
 The wall times of the cases under 30 ms fall outside ±3 % in one or more of five rounds on this
 shared machine, as the counts above say; the review's protocol compares changes in interleaved
 pairs, which cancels that drift, and the allocation counts and instructions are exact.
+
+## History columns
+
+A history table's lowering adds four columns to each batch: when each version begins, its end,
+whether it is current, and the hash of its data, null for a row that deletes. The hashes are
+computed into one column and a delete's is nulled by a null buffer over them, so a deleted row
+keeps its 32 bytes in the column's values; a row is charged 72 bytes in a metadata column of
+bytes (`META_BYTES`), which holds them.
+
+- **Signal.** User-space instructions (`perf stat -e cpu_core/instructions/u`) of one
+  `history_columns` call over 65 536 rows of one `id` column, every other row deleting: a test's
+  count with 20 calls less its count with none, over 20. Beside it, the heap's peak during a call
+  over 4 096 such rows and what its columns hold after it, as `peak_alloc` counts them.
+- **Probe.** A test appended to `table/lowering/history/tests.rs` for the run and never
+  committed:
+
+  ```rust
+  #[test]
+  fn history_probe() {
+      let iterations: usize = std::env::var("ITER").map_or(0, |n| n.parse().unwrap());
+      let heap = &crate::cost::tests::HEAP;
+      let small = batch(vec![("id", Arc::new(Int64Array::from_iter_values(0..4_096)) as ArrayRef)]);
+      heap.reset_peak_usage();
+      let before = heap.current_usage();
+      let columns =
+          history_columns(&stream(), &small, arrived(UNIX_EPOCH), &|row| row % 2 == 1).unwrap();
+      let (peak, held) = (heap.peak_usage() - before, heap.current_usage() - before);
+      println!("PROBE history rows 4096 peak {peak} held {held}");
+      drop(columns);
+      let data = batch(vec![("id", Arc::new(Int64Array::from_iter_values(0..65_536)) as ArrayRef)]);
+      for _ in 0..iterations {
+          std::hint::black_box(
+              history_columns(&stream(), &data, arrived(UNIX_EPOCH), &|row| row % 2 == 1)
+                  .unwrap(),
+          );
+      }
+  }
+  ```
+
+- **Build and run.** `cargo test --release` of rdlt-engine's library tests, the binary run on
+  performance core 2 (`taskset -c 2`), three rounds, the first started at a one-minute load
+  average of 0.84.
+
+Intel Core Ultra X7 358H, 2026-10-09, commit `b149181b8695`, Rust 1.98.1, governor `powersave`;
+the median of three rounds, which differ by under 0.001 %.
+
+| Measurement | Figure |
+|---|---|
+| Instructions a call, 65 536 rows | 94 410 507 |
+| Heap peak, 4 096 rows | 412 562 bytes |
+| Held by the columns after the call, 4 096 rows | 215 496 bytes |
