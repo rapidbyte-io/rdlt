@@ -38,7 +38,8 @@ pub(super) async fn write_flushed(
     open: &mut OpenSegment,
     flushed: Flushed,
 ) -> Result<(), Error> {
-    let units = units::of(job, context, flushed).await?;
+    let (units, shred) = units::of(job, context, flushed).await?;
+    open.shred.add(&shred);
     write(job, context, open, units).await
 }
 

@@ -16,6 +16,7 @@ fn moved(partition: usize, next: u64, answers: Option<u64>) -> Seal {
         discarded_values: 0,
         deletes_ignored: 0,
         truncates_ignored: 0,
+        shred: crate::report::ShredCounts::default(),
         held: CursorHold::default(),
     }
 }

@@ -31,6 +31,7 @@ use crate::cost::{Admitted, Charging};
 use crate::env::Env;
 use crate::error::{Error, ErrorKind, Side};
 use crate::lane::Lanes;
+use crate::report::ShredCounts;
 use crate::table::Tables;
 use crate::wal::LoadLog;
 use crate::watch;
@@ -312,6 +313,8 @@ struct OpenSegment {
     /// Deletes and truncates the stream ignores, dropped from the segment.
     deletes_ignored: u64,
     truncates_ignored: u64,
+    /// What shredding the segment's JSON took.
+    shred: ShredCounts,
 }
 
 impl OpenSegment {
@@ -340,6 +343,7 @@ impl OpenSegment {
             discarded_values: self.discarded_values,
             deletes_ignored: self.deletes_ignored,
             truncates_ignored: self.truncates_ignored,
+            shred: self.shred,
             held,
         }
     }

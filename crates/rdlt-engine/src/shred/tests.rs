@@ -13,11 +13,7 @@ use super::meter::{KEY, OBJECT_SHAPE};
 use super::reference::Code;
 use super::{Parsed, ShredLimits, chunks, parse, shred};
 use crate::compute::Cores;
-
-thread_local! {
-    /// How many chunks this thread built again.
-    pub(super) static BUILT_AGAIN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
+use crate::report::ShredCounts;
 
 /// The limits of pushes whose records may hold as many columns as the wire's schemas.
 pub(crate) fn limits() -> ShredLimits {
@@ -1067,10 +1063,15 @@ fn held_within_charge(keys: usize, value: &str) {
 }
 
 /// How many chunks shredding `push` in one chunk builds again, and the batch.
-fn built_again(push: &str) -> (usize, RecordBatch) {
-    let before = BUILT_AGAIN.with(std::cell::Cell::get);
-    let batch = batch_of(&[push], 1 << 20);
-    (BUILT_AGAIN.with(std::cell::Cell::get) - before, batch)
+fn built_again(push: &str) -> (u64, RecordBatch) {
+    let pool = crate::compute::Pool::inline();
+    let pushes = [Bytes::from(push.to_owned())];
+    let observed = crate::compute::ready(super::observe(&pool, &pushes, 1 << 20, limits()));
+    let observed = observed.unwrap();
+    let rebuilt = observed.counts().rebuilt;
+    let mut batches = crate::compute::ready(observed.build(&pool)).unwrap();
+    assert_eq!(batches.len(), 1, "one chunk");
+    (rebuilt, batches.remove(0))
 }
 
 /// A hundred records of `first` and a hundred of `then`, each `{"a": value}` beside a note:
@@ -1119,6 +1120,44 @@ fn observed_only(text: &str) -> Result<Parsed, super::ShredError> {
         tight,
         &tight.beyond(),
     )
+}
+
+#[test]
+fn each_pass_over_a_chunk_is_counted_as_what_it_was() {
+    let counts = |parsed: Parsed| parsed.counts;
+    let vast = "1".repeat(30);
+    let cases = [
+        // Built as it is parsed, once.
+        (
+            counts(parsed("{\"a\":1}")),
+            ShredCounts {
+                parsed: 1,
+                ..ShredCounts::default()
+            },
+        ),
+        // Parsed again exactly, for an integer beyond 64 bits.
+        (
+            counts(parsed(&format!("{{\"a\":{vast}}}"))),
+            ShredCounts {
+                parsed: 2,
+                exact: 1,
+                ..ShredCounts::default()
+            },
+        ),
+        // Tripped at once, then only observed.
+        (
+            counts(observed_only("{\"a\":1}").unwrap()),
+            ShredCounts {
+                parsed: 1,
+                tripped: 1,
+                observed: 1,
+                ..ShredCounts::default()
+            },
+        ),
+    ];
+    for (counted, expected) in cases {
+        assert_eq!(counted, expected);
+    }
 }
 
 #[test]

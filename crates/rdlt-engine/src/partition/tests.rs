@@ -81,6 +81,7 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
         discarded_values: 1,
         deletes_ignored: 0,
         truncates_ignored: 0,
+        shred: crate::report::ShredCounts::default(),
     };
     let seal = open.seal(2, PartitionState::Done, Some(3), CursorHold::default());
     assert_eq!(

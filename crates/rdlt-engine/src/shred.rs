@@ -40,6 +40,7 @@ use serde::de::DeserializeSeed;
 
 use crate::compute::Pool;
 use crate::limits::MAX_CELLS;
+use crate::report::ShredCounts;
 
 use build::Record;
 use meter::{Beyond, Columns, Meter};
@@ -105,6 +106,8 @@ struct Parsed {
     json_floats: bool,
     /// Bytes the speculative build took.
     spent: u64,
+    /// The passes over the chunk's records.
+    counts: ShredCounts,
 }
 
 /// How a chunk's batch is built.
@@ -123,6 +126,7 @@ pub(crate) struct Shredding {
     shape: Arc<Shape>,
     schema: SchemaRef,
     excess: u64,
+    counts: ShredCounts,
 }
 
 impl Shredding {
@@ -130,6 +134,11 @@ impl Shredding {
     /// reserved before [`Shredding::build`].
     pub(crate) fn excess(&self) -> u64 {
         self.excess
+    }
+
+    /// The passes over the chunks' records observing them took, and building them will.
+    pub(crate) fn counts(&self) -> ShredCounts {
+        self.counts
     }
 
     /// The batches, one per chunk, built on `pool`.
@@ -161,8 +170,9 @@ impl Shredding {
 /// A chunk the fast parse finds a float that may be a rounded integer in is parsed again with its
 /// numbers exact.
 fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Parsed, ShredError> {
-    let mut exact = false;
+    let (mut exact, mut counts) = (false, ShredCounts::default());
     loop {
+        counts.parse(exact);
         let allowance = count(chunk.bytes).saturating_mul(limits.admitted);
         let context = Context::new(Meter::new(allowance), Columns::new(limits.columns));
         let mut record = Record::empty(chunk.rows);
@@ -175,7 +185,8 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
         })?;
         if appended.tripped {
             drop(record);
-            return observed(chunk, exact, limits, beyond);
+            counts.tripped = counts.tripped.saturating_add(1);
+            return observed(chunk, (exact, counts), limits, beyond);
         }
         if appended.imprecise && !exact {
             exact = true;
@@ -189,20 +200,21 @@ fn parse(chunk: Chunk, limits: ShredLimits, beyond: &Arc<Beyond>) -> Result<Pars
             json_floats: context.json_floats(),
             spent: context.meter.spent(),
             chunk,
+            counts,
         });
     }
 }
 
 /// Observes `chunk`'s values, exactly where `exact` says or where the fast parse finds a float
-/// that may be a rounded integer, building nothing.
+/// that may be a rounded integer, building nothing; `counts` are the passes over it before.
 fn observed(
     chunk: Chunk,
-    exact: bool,
+    (mut exact, mut counts): (bool, ShredCounts),
     limits: ShredLimits,
     beyond: &Arc<Beyond>,
 ) -> Result<Parsed, ShredError> {
-    let mut exact = exact;
     loop {
+        counts.observe(exact);
         let allowance = count(chunk.bytes).saturating_mul(limits.admitted);
         let meter = Meter::observing(allowance, beyond);
         let context = Context::new(meter, Columns::new(limits.columns));
@@ -226,6 +238,7 @@ fn observed(
             exact,
             json_floats: context.json_floats(),
             spent: context.meter.spent(),
+            counts,
         });
     }
 }
@@ -401,8 +414,6 @@ fn again(
     shape: &Shape,
     exact: bool,
 ) -> Result<Vec<arrow_array::ArrayRef>, ShredError> {
-    #[cfg(test)]
-    tests::BUILT_AGAIN.with(|built| built.set(built.get() + 1));
     let unbuilt = |what: &str| ShredError::Internal(format!("building a chunk again: {what}"));
     let context = Context::new(Meter::reserved(), Columns::new(u64::MAX));
     let mut record =
@@ -472,12 +483,20 @@ pub(crate) async fn observe(
     let (shape, plans, excess) = join(&parsed, limits)?;
     let schema = TableSchema::new(shape.logical_fields())
         .map_err(|error| ShredError::Internal(format!("naming the columns: {error}")))?;
+    let mut counts = ShredCounts::default();
+    for (chunk, plan) in parsed.iter().zip(&plans) {
+        counts.add(&chunk.counts);
+        if plan.again {
+            counts.rebuild(plan.exact);
+        }
+    }
     Ok(Shredding {
         parsed,
         plans,
         shape: Arc::new(shape),
         schema: Arc::new(schema.to_arrow()),
         excess,
+        counts,
     })
 }
 

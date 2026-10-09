@@ -13,12 +13,16 @@ use crate::json::{self, NotJson};
 use crate::limits::JSON_EXCEEDS_BUDGET;
 use crate::partition::coalesce::{Flushed, Unit};
 use crate::partition::{PartitionContext, PartitionJob};
+use crate::report::ShredCounts;
 use crate::shred::{self, ShredError, ShredLimits};
 
 /// Bytes: the most of a column's name an error quotes.
 const NAME_SHOWN: usize = 256;
 
-/// The units `flushed` is written as, each some batches of one schema and the memory they hold.
+/// Some batches of one schema, and the memory they hold.
+pub(super) type Units = Vec<(Vec<RecordBatch>, Held)>;
+
+/// The units `flushed` is written as, and what shredding them took.
 ///
 /// # Errors
 ///
@@ -28,13 +32,13 @@ pub(super) async fn of(
     job: &PartitionJob,
     context: &PartitionContext,
     flushed: Flushed,
-) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
+) -> Result<(Units, ShredCounts), Error> {
     let permits = flushed.permits;
     match flushed.unit {
         Unit::Arrow(batches) => {
             checked(job, context, &batches).await?;
             let held = Held::of(permits, &batches);
-            Ok(vec![(batches, held)])
+            Ok((vec![(batches, held)], ShredCounts::default()))
         }
         Unit::Json(pushes) => shredded(job, context, pushes, permits).await,
     }
@@ -88,7 +92,8 @@ pub(super) fn not_json(job: &PartitionJob, refused: NotJson) -> Error {
         .with_source(error)
 }
 
-/// The JSON `pushes`, admitted with `permits`, shredded into a unit a batch.
+/// The JSON `pushes`, admitted with `permits`, shredded into a unit a batch, and what every
+/// observation of them and building them took.
 ///
 /// The pushes were admitted for their text and twice it for the batches it becomes; what building
 /// the batches takes beyond that is reserved before they are built, as lowering reserves its
@@ -98,7 +103,7 @@ async fn shredded(
     context: &PartitionContext,
     pushes: Vec<Bytes>,
     permits: Vec<Permit>,
-) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
+) -> Result<(Units, ShredCounts), Error> {
     let failed = |error: ShredError| shred_failed(job, error);
     let pool = &context.pool;
     let chunk_bytes = context.batch.chunk_bytes().get();
@@ -110,11 +115,12 @@ async fn shredded(
     };
     // Observing reserves its room first; building's bytes are taken without a wait while that
     // is held, or else waited for holding only the pushes, which are then observed again.
-    let mut room = limits.beyond_bytes();
+    let (mut room, mut counts) = (limits.beyond_bytes(), ShredCounts::default());
     let (beyond, observed) = loop {
         let too_large = |large: TooLarge| beyond_a_request(job, &large);
         let mut observing = reserving(job, context, room, too_large).await?;
         let observed = observe().await?;
+        counts.add(&observed.counts());
         let excess = observed.excess();
         if excess <= observing.bytes() {
             observing.shrink(excess);
@@ -128,11 +134,12 @@ async fn shredded(
     let batches = observed.build(pool).await.map_err(failed)?;
     drop(pushes);
     let held = held::shredded(permits, beyond, &batches);
-    Ok(batches
+    let units = batches
         .into_iter()
         .zip(held)
         .map(|(batch, held)| (vec![batch], held))
-        .collect())
+        .collect();
+    Ok((units, counts))
 }
 
 /// The error for an Arrow push whose columns of JSON take more to check than one request may

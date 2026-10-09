@@ -82,8 +82,8 @@ pub use plan::{DeleteMode, OnTruncate, PipelinePlan, RetentionLoss, StreamPlan, 
 pub use policy::{Nested, OnUnsupported, SchemaPolicy, SchemaSettings};
 pub use report::{
     AttemptReport, CommitPhases, Commits, Counters, Forgotten, LaneCounters, LogCounters,
-    PoolCounters, REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, Report, RunStatus, StoreRequests,
-    StreamReport, Waited, Waits,
+    PoolCounters, REPORTED_ATTEMPTS, REPORTED_FORGOTTEN, Report, RunStatus, ShredCounts,
+    StoreRequests, StreamReport, Waited, Waits,
 };
 pub use run::{Engine, ResetReport, ResetScope, RunControl, RunHandle, RunOutcome, StopMode};
 pub use wal::{Chunk, LocalWal, StagedChunk, WalStore};
