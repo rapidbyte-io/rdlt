@@ -8,7 +8,7 @@ use serde_json::json;
 use super::reference::{Piece, pieces};
 use super::{
     Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault,
-    SecretKind, SecretReference, SecretResolver, Secrets,
+    SecretKind, SecretReference, SecretResolver, Secrets, wipe,
 };
 use crate::limits::{CONFIG_BYTES, SECRET_BYTES, SECRET_NAME_BYTES, SECRET_REFERENCES};
 
@@ -745,4 +745,24 @@ fn a_text_that_is_one_reference_and_nothing_else_parses_as_it() {
     ] {
         assert_eq!(SecretReference::parse(text), Err(fault), "{text}");
     }
+}
+
+#[test]
+fn wiping_a_document_empties_every_text_it_holds_at_every_depth() {
+    let mut document = json!({
+        "token": "s3cret",
+        "nested": ["one", {"deeper": "two", "count": 3}],
+        "flag": true,
+        "none": null,
+    });
+    wipe(&mut document);
+    assert_eq!(
+        document,
+        json!({
+            "token": "",
+            "nested": ["", {"deeper": "", "count": 3}],
+            "flag": true,
+            "none": null,
+        })
+    );
 }
