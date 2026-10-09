@@ -74,16 +74,12 @@ pub async fn replay(name: &str, replayed: Replayed) -> Arc<dyn Source> {
     Arc::from(source)
 }
 
-/// Names the registered replay a [`Replay`] pushes, and the partitions it pushes from.
+/// Names the registered replay a [`Replay`] pushes, and the partitions it pushes from: one
+/// where it names none.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct ReplayConfig {
     name: String,
-    #[serde(default = "one")]
-    partitions: NonZeroUsize,
-}
-
-fn one() -> NonZeroUsize {
-    NonZeroUsize::MIN
+    partitions: Option<NonZeroUsize>,
 }
 
 /// The source [`replay`] connects.
@@ -113,7 +109,7 @@ impl SourceConnector for Replay {
             .ok_or_else(|| ConnectorError::config("no such replay"))?;
         Ok(Self {
             replayed,
-            partitions: config.partitions,
+            partitions: config.partitions.unwrap_or(NonZeroUsize::MIN),
         })
     }
 
