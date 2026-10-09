@@ -136,13 +136,9 @@ given:
   any other. A database that is missing is not created. A name the destination keeps, the
   catalog's among them, is refused as `table_name_reserved`, and a table no pipeline owns as
   `table_unowned`. Read-back names no pipeline, so any pipeline's published table is read.
-- **A catalog of an earlier shape is refused, not converted.** The catalog's table of
-  registered paths keys each path by its pipeline now. The catalog is created only where it is
-  missing, so a database an earlier build of the destination wrote keeps the earlier table; a
-  catalog table that lacks a column it has now is refused where the destination checks or
-  opens the database, as `catalog_outdated` (`Config`), before anything of the catalog is
-  written. The catalog's shape is this project's own and has no release to carry forward: a
-  database from before is recreated or its tables loaded again.
+- **The catalog has one shape.** It is this project's own and has no release to carry forward:
+  it is created where it is missing, and a database written in another shape is recreated or
+  its tables loaded again; nothing detects or converts it.
 - **SQLite stages a row at a time and refuses a float it would change.** A float that is no
   number, or negative zero, is a `Data` error coded `float_unstorable` before its row is bound,
   and nothing of its batch stays. Storing them exactly needs a column without `REAL` affinity,

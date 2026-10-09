@@ -30,7 +30,7 @@ use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{Epoch, PipelineId};
 use crate::types::LogicalType;
 
-pub use catalog::{CATALOG_OUTDATED, micros, receipt};
+pub use catalog::{micros, receipt};
 pub use changes::staged_changes;
 pub use owned::{Check, Owned, Standing};
 pub use publish::{Staged, merge_key};
