@@ -279,36 +279,6 @@ pub struct TableState {
     pub exact: BTreeSet<Arc<str>>,
 }
 
-impl TableState {
-    /// Pushes to `entries` the entries that record this table, at `path`.
-    fn record(&self, path: &TablePath, entries: &mut Vec<StateEntry>) {
-        if let Some((version, schema)) = &self.schema {
-            entries.push(StateEntry::Schema {
-                table: path.clone(),
-                version: *version,
-                schema: schema.clone(),
-                exact: self.exact.clone(),
-            });
-        }
-        if let Some(physical) = &self.physical {
-            entries.push(StateEntry::Names {
-                table: path.clone(),
-                physical: Arc::clone(physical),
-                names: self.names.clone(),
-            });
-        }
-        if let Some(sequences) = self.sequences {
-            entries.push(StateEntry::Sequences {
-                table: path.clone(),
-                sequences,
-                history: self.history,
-                key: self.key.clone(),
-                change_time: self.change_time.clone(),
-            });
-        }
-    }
-}
-
 /// Everything a pipeline has committed: epoch, cursors, schemas, names and the last receipt.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PipelineState {
@@ -348,71 +318,6 @@ impl PipelineState {
             state.put(StateEntry::from_record(record)?);
         }
         Ok(state)
-    }
-
-    /// The entries of `stream`'s partitions, named `name`; a position no load is known to have
-    /// recorded, as in a state built by hand, records as the earliest load's.
-    fn positions<'a>(
-        &'a self,
-        name: &'a StreamName,
-        stream: &'a StreamState,
-    ) -> impl Iterator<Item = StateEntry> + 'a {
-        stream.partitions.iter().map(move |(partition, state)| {
-            let load = self
-                .recorded_by
-                .get(&(name.clone(), partition.clone()))
-                .copied()
-                .unwrap_or_else(|| LoadId::from_parts(std::time::UNIX_EPOCH, 0));
-            StateEntry::Partition {
-                stream: name.clone(),
-                partition: partition.clone(),
-                state: state.clone(),
-                load,
-            }
-        })
-    }
-
-    /// The records that store this state.
-    pub fn to_records(&self) -> Vec<StateRecord> {
-        let mut entries = vec![StateEntry::Epoch(self.epoch)];
-        for (name, stream) in &self.streams {
-            entries.push(StateEntry::Phase {
-                stream: name.clone(),
-                phase: stream.phase,
-            });
-            entries.extend(self.positions(name, stream));
-            if let Some(generation) = stream.generation {
-                entries.push(StateEntry::Generation {
-                    stream: name.clone(),
-                    generation,
-                });
-            }
-            if !stream.completed.is_empty() {
-                entries.push(StateEntry::Completed {
-                    stream: name.clone(),
-                    generations: stream.completed.clone(),
-                });
-            }
-        }
-        for (stream, epoch) in &self.resets {
-            entries.push(StateEntry::Reset {
-                stream: stream.clone(),
-                epoch: *epoch,
-            });
-        }
-        for (path, table) in &self.tables {
-            table.record(path, &mut entries);
-        }
-        if let Some(receipt) = &self.last_receipt {
-            entries.push(StateEntry::Receipt(receipt.clone()));
-        }
-        if let Some(origin) = self.origin {
-            entries.push(StateEntry::Origin(origin));
-        }
-        if let Some(store) = self.log_store {
-            entries.push(StateEntry::LogStore(store));
-        }
-        entries.iter().map(StateEntry::to_record).collect()
     }
 
     /// Applies one committed change.

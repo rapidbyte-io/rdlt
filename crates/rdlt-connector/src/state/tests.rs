@@ -92,11 +92,110 @@ fn sample_state() -> PipelineState {
     state
 }
 
+/// The records that store `state`, one a key.
+fn records_of(state: &PipelineState) -> Vec<StateRecord> {
+    let mut entries = vec![StateEntry::Epoch(state.epoch)];
+    for (name, stream) in &state.streams {
+        entries.push(StateEntry::Phase {
+            stream: name.clone(),
+            phase: stream.phase,
+        });
+        entries.extend(partition_entries(state, name, stream));
+        if let Some(generation) = stream.generation {
+            entries.push(StateEntry::Generation {
+                stream: name.clone(),
+                generation,
+            });
+        }
+        if !stream.completed.is_empty() {
+            entries.push(StateEntry::Completed {
+                stream: name.clone(),
+                generations: stream.completed.clone(),
+            });
+        }
+    }
+    for (stream, epoch) in &state.resets {
+        entries.push(StateEntry::Reset {
+            stream: stream.clone(),
+            epoch: *epoch,
+        });
+    }
+    for (path, table) in &state.tables {
+        entries.extend(table_entries(path, table));
+    }
+    if let Some(receipt) = &state.last_receipt {
+        entries.push(StateEntry::Receipt(receipt.clone()));
+    }
+    if let Some(origin) = state.origin {
+        entries.push(StateEntry::Origin(origin));
+    }
+    if let Some(store) = state.log_store {
+        entries.push(StateEntry::LogStore(store));
+    }
+    entries.iter().map(StateEntry::to_record).collect()
+}
+
+/// The entries of `stream`'s partitions, named `name`; a position no load is known to have
+/// recorded, as in a state built by hand, records as the earliest load's.
+fn partition_entries(
+    state: &PipelineState,
+    name: &StreamName,
+    stream: &StreamState,
+) -> Vec<StateEntry> {
+    stream
+        .partitions
+        .iter()
+        .map(|(partition, position)| {
+            let load = state
+                .recorded_by
+                .get(&(name.clone(), partition.clone()))
+                .copied()
+                .unwrap_or_else(|| LoadId::from_parts(UNIX_EPOCH, 0));
+            StateEntry::Partition {
+                stream: name.clone(),
+                partition: partition.clone(),
+                state: position.clone(),
+                load,
+            }
+        })
+        .collect()
+}
+
+/// The entries that record `table`, at `path`.
+fn table_entries(path: &TablePath, table: &TableState) -> Vec<StateEntry> {
+    let mut entries = Vec::new();
+    if let Some((version, schema)) = &table.schema {
+        entries.push(StateEntry::Schema {
+            table: path.clone(),
+            version: *version,
+            schema: schema.clone(),
+            exact: table.exact.clone(),
+        });
+    }
+    if let Some(physical) = &table.physical {
+        entries.push(StateEntry::Names {
+            table: path.clone(),
+            physical: Arc::clone(physical),
+            names: table.names.clone(),
+        });
+    }
+    if let Some(sequences) = table.sequences {
+        entries.push(StateEntry::Sequences {
+            table: path.clone(),
+            sequences,
+            history: table.history,
+            key: table.key.clone(),
+            change_time: table.change_time.clone(),
+        });
+    }
+    entries
+}
+
 #[test]
 fn state_round_trips_through_records() {
     let state = sample_state();
     assert_eq!(
-        PipelineState::from_records(&state.to_records()).unwrap(),
+        PipelineState::from_records(&records_of(&state)).unwrap(),
         state
     );
     assert_eq!(
@@ -110,8 +209,7 @@ fn a_schema_record_without_its_exact_columns_is_refused_and_deleting_it_forgets_
     let mut state = sample_state();
     let table = TablePath::new(["orders"]).unwrap();
     let key = StateKey::Schema(table.clone()).encode();
-    let record = state
-        .to_records()
+    let record = records_of(&state)
         .into_iter()
         .find(|record| record.key == key)
         .expect("the schema is recorded");
@@ -335,7 +433,7 @@ fn applying_changes_puts_and_deletes_entries() {
         .unwrap();
     assert_eq!(state.streams[&stream("orders")], StreamState::default());
     let mut full = sample_state();
-    for record in full.clone().to_records() {
+    for record in records_of(&full) {
         full.apply(&StateChange::Delete(record.key)).unwrap();
     }
     assert_eq!(full.epoch, Epoch::default());
@@ -553,7 +651,7 @@ fn tables() -> impl Strategy<Value = std::collections::BTreeMap<TablePath, Table
 proptest! {
     #[test]
     fn generated_states_round_trip_through_records(state in states()) {
-        prop_assert_eq!(PipelineState::from_records(&state.to_records()).unwrap(), state);
+        prop_assert_eq!(PipelineState::from_records(&records_of(&state)).unwrap(), state);
     }
 
     #[test]
@@ -721,7 +819,7 @@ fn objects(value: &serde_json::Value, at: String, found: &mut Vec<String>) {
 
 #[test]
 fn a_state_record_with_a_field_this_build_does_not_know_is_refused() {
-    for record in sample_state().to_records() {
+    for record in records_of(&sample_state()) {
         let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
         let mut found = Vec::new();
         objects(&value, String::new(), &mut found);
@@ -750,7 +848,7 @@ fn a_state_record_with_a_field_this_build_does_not_know_is_refused() {
 
 #[test]
 fn a_state_record_of_the_previous_format_is_refused() {
-    for record in sample_state().to_records() {
+    for record in records_of(&sample_state()) {
         let mut value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
         value["v"] = serde_json::json!(1);
         let previous = StateRecord {
@@ -773,7 +871,7 @@ fn a_state_record_lacking_any_member_it_writes_is_refused() {
     if let Some(table) = state.tables.values_mut().next() {
         table.sequences = Some(Sequences::Engine);
     }
-    for record in state.to_records() {
+    for record in records_of(&state) {
         let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
         crate::required::every_member_required::<super::VersionedEntry>(&value);
     }
