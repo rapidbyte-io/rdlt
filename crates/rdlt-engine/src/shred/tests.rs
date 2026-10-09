@@ -1083,6 +1083,24 @@ fn hundreds(first: &str, then: &str) -> String {
 }
 
 #[test]
+fn an_observation_counts_its_passes_apart_from_the_chunks_building_will_build_again() {
+    let pool = crate::compute::Pool::inline();
+    let pushes = [Bytes::from(hundreds("1", "\"x\""))];
+    let observed = crate::compute::ready(super::observe(&pool, &pushes, 1 << 20, limits()));
+    let observed = observed.unwrap();
+    let passes = ShredCounts {
+        parsed: 1,
+        ..ShredCounts::default()
+    };
+    assert_eq!(observed.passes(), passes);
+    let counts = ShredCounts {
+        rebuilt: 1,
+        ..passes
+    };
+    assert_eq!(observed.counts(), counts);
+}
+
+#[test]
 fn a_chunk_whose_columns_fit_is_built_once_and_one_whose_column_spoiled_twice() {
     // Integers widen to floats and to 256-bit decimals where they are built.
     let (again, batch) = built_again(&hundreds("1", "1.5"));

@@ -126,6 +126,9 @@ pub(crate) struct Shredding {
     shape: Arc<Shape>,
     schema: SchemaRef,
     excess: u64,
+    /// The passes observing the chunks took.
+    passes: ShredCounts,
+    /// Those, and the chunks building will build again.
     counts: ShredCounts,
 }
 
@@ -134,6 +137,11 @@ impl Shredding {
     /// reserved before [`Shredding::build`].
     pub(crate) fn excess(&self) -> u64 {
         self.excess
+    }
+
+    /// The passes over the chunks' records observing them took.
+    pub(crate) fn passes(&self) -> ShredCounts {
+        self.passes
     }
 
     /// The passes over the chunks' records observing them took, and building them will.
@@ -483,12 +491,13 @@ pub(crate) async fn observe(
     let (shape, plans, excess) = join(&parsed, limits)?;
     let schema = TableSchema::new(shape.logical_fields())
         .map_err(|error| ShredError::Internal(format!("naming the columns: {error}")))?;
-    let mut counts = ShredCounts::default();
-    for (chunk, plan) in parsed.iter().zip(&plans) {
-        counts.add(&chunk.counts);
-        if plan.again {
-            counts.rebuild(plan.exact);
-        }
+    let mut passes = ShredCounts::default();
+    for chunk in &parsed {
+        passes.add(&chunk.counts);
+    }
+    let mut counts = passes;
+    for plan in plans.iter().filter(|plan| plan.again) {
+        counts.rebuild(plan.exact);
     }
     Ok(Shredding {
         parsed,
@@ -496,6 +505,7 @@ pub(crate) async fn observe(
         shape: Arc::new(shape),
         schema: Arc::new(schema.to_arrow()),
         excess,
+        passes,
         counts,
     })
 }
