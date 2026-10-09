@@ -35,11 +35,8 @@ pub(crate) static HEAP: peak_alloc::PeakAlloc = peak_alloc::PeakAlloc;
 
 /// What `column` expands to, as the engine charges it for a destination storing `native` kinds.
 fn expanded(column: &ArrayRef, native: &[TypeKind]) -> u64 {
-    Rendering::new(native.iter().copied()).expanded_array(
-        column.as_ref(),
-        0..column.len(),
-        u64::MAX,
-    )
+    let batch = RecordBatch::try_from_iter([("column", Arc::clone(column))]).unwrap();
+    Rendering::new(native.iter().copied()).expanded(&batch, 0..column.len(), u64::MAX)
 }
 
 /// The bytes a consumer added making `produced` of `column`: what `produced`'s rows take, or
@@ -47,7 +44,9 @@ fn expanded(column: &ArrayRef, native: &[TypeKind]) -> u64 {
 /// its input's buffers added none of them.
 fn materialized(column: &ArrayRef, produced: &ArrayRef) -> u64 {
     let rows = produced.to_data().get_slice_memory_size().unwrap();
-    let added = Allocations::of_array(column.as_ref()).add_array(produced.as_ref());
+    let mut held = Allocations::default();
+    held.add_array(column.as_ref());
+    let added = held.add_array(produced.as_ref());
     u64::try_from(rows).unwrap().min(added)
 }
 

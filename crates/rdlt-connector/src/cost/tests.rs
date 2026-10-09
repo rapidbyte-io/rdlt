@@ -49,7 +49,7 @@ pub(crate) fn batch(column: ArrayRef) -> RecordBatch {
 }
 
 fn expanded(rendering: &Rendering, column: &ArrayRef) -> u64 {
-    rendering.expanded_array(column.as_ref(), 0..column.len(), u64::MAX)
+    rendering.expanded(&batch(Arc::clone(column)), 0..column.len(), u64::MAX)
 }
 
 pub(crate) fn item(data_type: DataType) -> Arc<Field> {
@@ -234,17 +234,18 @@ pub(crate) fn every_type() -> Vec<ArrayRef> {
 fn every_type_costs_at_least_a_byte_a_row_and_grows_with_its_rows() {
     for rendering in [native(), Rendering::text()] {
         for column in every_type() {
+            let rows = batch(Arc::clone(&column));
             let whole = expanded(&rendering, &column);
             assert!(whole >= 4, "{}", column.data_type());
             let mut running = 0;
             for end in 1..=column.len() {
-                let prefix = rendering.expanded_array(column.as_ref(), 0..end, u64::MAX);
+                let prefix = rendering.expanded(&rows, 0..end, u64::MAX);
                 assert!(prefix > running, "{}", column.data_type());
                 running = prefix;
             }
             // A range beyond the rows costs what the rows do.
             assert_eq!(
-                rendering.expanded_array(column.as_ref(), 0..column.len() + 9, u64::MAX),
+                rendering.expanded(&rows, 0..column.len() + 9, u64::MAX),
                 whole
             );
         }
@@ -364,9 +365,9 @@ fn measuring_stops_at_its_limit_however_an_encoding_multiplies() {
     const ROWS: usize = 1_000_000;
     // A million rows each naming a list of a hundred thousand views: 10^11 views to visit.
     let column = multiplied(ROWS, 100_000, 1_000);
-    let cost = native().expanded_array(column.as_ref(), 0..column.len(), 1 << 20);
-    assert!(cost > 1 << 20);
     let (batch, rendering) = (batch(Arc::clone(&column)), native());
+    let cost = rendering.expanded(&batch, 0..column.len(), 1 << 20);
+    assert!(cost > 1 << 20);
     let mut measure = rendering.measure(&batch, 1 << 20);
     let cuts = measure.cuts();
     assert_eq!(cuts.len(), ROWS);
@@ -459,7 +460,7 @@ fn a_batch_holds_every_allocation_it_pins_once() {
     let whole = Int64Array::new(ScalarBuffer::new(values, 0, 1 << 20), None);
     let slice: ArrayRef = Arc::new(whole.slice(5, 1));
     // One row keeps the whole buffer alive, and two columns sharing it hold it once.
-    assert_eq!(Allocations::of_array(slice.as_ref()).bytes(), bytes);
+    assert_eq!(Allocations::default().add_array(slice.as_ref()), bytes);
     let shared = RecordBatch::try_from_iter([("a", Arc::clone(&slice)), ("b", slice)]).unwrap();
     // The batch holds its schema beside: two fields named in a byte each.
     let held = bytes + schema_bytes(&shared.schema());
@@ -486,7 +487,8 @@ fn a_dictionary_column_holds_values_no_key_names() {
 fn allocations_count_only_what_a_set_did_not_hold() {
     let first: ArrayRef = Arc::new(Int64Array::from(vec![1; 1_000]));
     let second: ArrayRef = Arc::new(Int64Array::from(vec![2; 1_000]));
-    let mut held = Allocations::of_array(first.as_ref());
+    let mut held = Allocations::default();
+    held.add_array(first.as_ref());
     let before = held.bytes();
     assert_eq!(held.add_array(first.slice(3, 4).as_ref()), 0);
     let added = held.add_array(second.as_ref());
@@ -505,7 +507,7 @@ fn an_allocation_arrow_did_not_make_counts_whole() {
         ScalarBuffer::new(Buffer::from(owner), 4_000, 96),
         None,
     ));
-    assert_eq!(Allocations::of_array(column.as_ref()).bytes(), 4_096);
+    assert_eq!(Allocations::default().add_array(column.as_ref()), 4_096);
 }
 
 /// A batch of one column nested `levels` deep, a top-level column being the first level.

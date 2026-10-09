@@ -30,13 +30,6 @@ impl Allocations {
         allocations
     }
 
-    /// The allocations `array` keeps alive.
-    pub fn of_array(array: &dyn Array) -> Self {
-        let mut allocations = Self::default();
-        allocations.add_array(array);
-        allocations
-    }
-
     /// Bytes: every allocation in the set.
     pub fn bytes(&self) -> u64 {
         self.bytes

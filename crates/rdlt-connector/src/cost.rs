@@ -102,13 +102,6 @@ impl Rendering {
         self.measure(batch, limit).expanded(rows)
     }
 
-    /// What `rows` of `array`, a column of its own, expand to, measured up to `limit`.
-    pub fn expanded_array(&self, array: &dyn Array, rows: Range<usize>, limit: u64) -> u64 {
-        let mut meter = Meter::new(self, limit);
-        meter.column(array, rows, None);
-        meter.spent()
-    }
-
     /// A measure of what rows of `batch` expand to, up to `limit`, for measuring many stretches
     /// of them: a value many rows name is measured once for all of them.
     pub fn measure(&self, batch: &RecordBatch, limit: u64) -> Measure {
