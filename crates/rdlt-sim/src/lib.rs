@@ -45,7 +45,7 @@ pub use changes::{
 pub use destination::{
     Cells, Digest, SimDestination, SimDestinationConfig, SimSession, SimWriter, Stored, completions,
 };
-pub use env::{InlinePool, SimEnv};
+pub use env::SimEnv;
 pub use oracle::{Checked, check_changes, check_exactly_once, stress};
 pub use rng::SplitMix64;
 pub use seed::{

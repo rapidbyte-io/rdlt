@@ -159,13 +159,3 @@ impl ComputePool for SimPool {
         });
     }
 }
-
-/// A [`ComputePool`] that runs each job immediately on the calling thread.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct InlinePool;
-
-impl ComputePool for InlinePool {
-    fn execute(&self, job: Job) {
-        job();
-    }
-}
