@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch};
@@ -10,8 +12,8 @@ use rdlt_wire::flow::Granting;
 use rdlt_wire::limits::{CREDIT_FLOOR, Class, MIN_FRAME_BYTES};
 use rdlt_wire::plane::{Incoming, Outgoing};
 use rdlt_wire::prost::Message as _;
-use rdlt_wire::tonic::Code;
 use rdlt_wire::tonic::body::Body;
+use rdlt_wire::tonic::{Code, Status};
 use rdlt_wire::{Encoder, Limits};
 use tokio::time::Instant;
 use tokio_stream::{Stream, StreamExt as _};
@@ -196,7 +198,22 @@ async fn answers(
     frames: impl Stream<Item = v1::WriteFrame> + Send + 'static,
 ) -> Vec<std::result::Result<Ack, Code>> {
     let body = Body::new(Outgoing::request(frames, limits.largest()));
-    let bounds = Bounds::of(&limits, Class::Data, rdlt_wire::scan::request("Write"));
+    answered(limits, bounds(&limits), writer, body).await
+}
+
+/// The bounds a served write's request is held to within `limits`.
+fn bounds(limits: &Limits) -> Bounds {
+    Bounds::of(limits, Class::Data, rdlt_wire::scan::request("Write"))
+}
+
+/// The answers of a write of the frames `body` carries, held to `bounds`, as [`answers`] gives
+/// them.
+async fn answered(
+    limits: Limits,
+    bounds: Bounds,
+    writer: Recording,
+    body: Body,
+) -> Vec<std::result::Result<Ack, Code>> {
     let incoming = Incoming::request(Bounded::new(body, bounds, None));
     let mut answers = writing(Box::new(writer), incoming, limits);
     let mut all = Vec::new();
@@ -208,6 +225,32 @@ async fn answers(
         all.push(answer.map_err(|status| status.code()));
     }
     all
+}
+
+/// A request's body of `frames`, each a gRPC message, which then fails with `status`.
+struct Cut {
+    frames: VecDeque<v1::WriteFrame>,
+    status: Option<Status>,
+}
+
+impl http_body::Body for Cut {
+    type Data = Bytes;
+    type Error = Status;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<std::result::Result<http_body::Frame<Bytes>, Status>>> {
+        let Some(frame) = self.frames.pop_front() else {
+            return Poll::Ready(self.status.take().map(Err));
+        };
+        let encoded = frame.encode_to_vec();
+        let length = u32::try_from(encoded.len()).expect("a message's length fits");
+        let mut message = vec![0];
+        message.extend(length.to_be_bytes());
+        message.extend(encoded);
+        Poll::Ready(Some(Ok(http_body::Frame::data(Bytes::from(message)))))
+    }
 }
 
 /// Waits of up to 30 milliseconds, the same for the same `seed`.
@@ -363,4 +406,63 @@ async fn the_staged_bound_refuses_a_frame_before_it_decodes_with_one_waiting() {
     assert_eq!(error.code.as_deref(), Some("limit_exceeded"), "{error:?}");
     let limit = error.limit.as_ref().expect("a refusal names its limit");
     assert_eq!(limit.name, "staged bytes");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_frame_its_bounds_refuse_fails_the_write_with_its_refusal_after_the_frames_before_it() {
+    let limits = Limits::default();
+    let good = vec![schema(), batch(1, 10), batch(1, 20)];
+    let mut sent = good.clone();
+    sent.push(batch(1, 100_000));
+    // Bounds that hold the small frames and refuse the large one, beyond the wire bound.
+    let bounds = Bounds {
+        wire: 64 * 1024,
+        ..bounds(&limits)
+    };
+    let (writer, log) = Recording::new([Turn::Takes(Duration::from_millis(50)); 2]);
+    let body = Body::new(Outgoing::request(
+        tokio_stream::iter(sent),
+        limits.largest(),
+    ));
+    let answers = answered(limits, bounds, writer, body).await;
+    assert_eq!(log.events(), ["write 1:10", "write 1:20"]);
+    let (refused, credited) = answers.split_last().expect("the write answers");
+    let credited: Vec<_> = credited.iter().cloned().map(Result::unwrap).collect();
+    assert_eq!(credited, credits(&limits, &good));
+    let Ok(Ack::Error(refused)) = refused else {
+        panic!("the write fails with the frame's refusal: {refused:?}");
+    };
+    assert_eq!(refused.code.as_deref(), Some(crate::wire::TRANSPORT));
+    assert!(refused.message.contains("too large"), "{refused:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_whose_body_fails_fails_the_write_after_the_frames_before_it() {
+    let limits = Limits::default();
+    let body = Cut {
+        frames: VecDeque::from([schema(), batch(1, 10)]),
+        status: Some(Status::unknown("the stream was reset")),
+    };
+    let (writer, log) = Recording::new([]);
+    let answers = answered(limits, bounds(&limits), writer, Body::new(body)).await;
+    assert_eq!(log.events(), ["write 1:10"]);
+    let Some(Ok(Ack::Error(failed))) = answers.last() else {
+        panic!("the write fails with its body's error: {answers:?}");
+    };
+    assert_eq!(failed.code.as_deref(), Some(crate::wire::TRANSPORT));
+    assert!(failed.message.contains("reset"), "{failed:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_its_host_cancels_ends_the_write_after_the_frames_before_it() {
+    let limits = Limits::default();
+    let body = Cut {
+        frames: VecDeque::from([schema(), batch(1, 10)]),
+        status: Some(Status::cancelled("the host cancelled the write")),
+    };
+    let (writer, log) = Recording::new([]);
+    let answers = answered(limits, bounds(&limits), writer, Body::new(body)).await;
+    assert_eq!(log.events(), ["write 1:10"]);
+    let answers: Vec<_> = answers.into_iter().map(Result::unwrap).collect();
+    assert_eq!(answers, credits(&limits, &[schema(), batch(1, 10)]));
 }
