@@ -1,4 +1,4 @@
-use super::{Edge, Violation, check};
+use super::{Edge, Violation, absent, check};
 
 fn edge(from: &str, to: &str, dev: bool) -> Edge {
     Edge {
@@ -34,7 +34,6 @@ fn forbidden_edges_are_reported() {
     let cases = [
         edge("rdlt-engine", "rdlt-host", false),
         edge("rdlt-connector", "rdlt-engine", false),
-        edge("rdlt-engine", "rdlt-cli", true),
         edge("rdlt-sim", "xtask", true),
         edge("rdlt-engine", "rdlt-sim", true),
     ];
@@ -54,6 +53,20 @@ fn a_crate_missing_from_the_rules_is_reported() {
         check(&names, &[]),
         vec![Violation::Unlisted("rdlt-new".to_owned())]
     );
+}
+
+#[test]
+fn a_crate_the_rules_name_that_the_workspace_lacks_is_reported() {
+    let rules: &[(&str, &[&str])] = &[
+        ("rdlt-a", &["rdlt-b"]),
+        ("rdlt-b", &[]),
+        ("rdlt-c", &["rdlt-gone"]),
+    ];
+    let leaves = ["rdlt-a", "rdlt-leaf"];
+    let every = crates(&["rdlt-a", "rdlt-b", "rdlt-c", "rdlt-gone", "rdlt-leaf"]);
+    assert_eq!(absent(&every, rules, &leaves), Vec::<&str>::new());
+    let lacking = crates(&["rdlt-a", "rdlt-b", "rdlt-c"]);
+    assert_eq!(absent(&lacking, rules, &leaves), ["rdlt-gone", "rdlt-leaf"]);
 }
 
 // The audited crate's functions are sound only as their callers use them: the connector crate

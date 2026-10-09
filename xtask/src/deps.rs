@@ -25,12 +25,6 @@ const RULES: &[(&str, &[&str])] = &[
         "rdlt-log-store",
         &["rdlt-engine", "rdlt-connector", "rdlt-host", "rdlt-wire"],
     ),
-    ("rdlt-sql", &["rdlt-engine", "rdlt-connector"]),
-    (
-        "rdlt",
-        &["rdlt-engine", "rdlt-connector", "rdlt-host", "rdlt-sql"],
-    ),
-    ("rdlt-cli", &["rdlt"]),
     (
         "rdlt-certify",
         &[
@@ -41,7 +35,6 @@ const RULES: &[(&str, &[&str])] = &[
             "rdlt-wire",
         ],
     ),
-    ("rdlt-python", &["rdlt", "rdlt-connector"]),
     ("rdlt-connector-reference", &["rdlt-connector", "rdlt-wire"]),
     (
         "rdlt-sim",
@@ -59,7 +52,7 @@ const RULES: &[(&str, &[&str])] = &[
 
 /// Crates nothing may use as a dev-dependency: those nothing depends on at all, and the audited
 /// `unsafe` crate, which only the crates [`RULES`] names may use.
-const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-cli", "rdlt-sim", "xtask"];
+const LEAVES: &[&str] = &["rdlt-adopt", "rdlt-sim", "xtask"];
 
 /// A dependency of one workspace crate on another.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +98,24 @@ fn allowed(krate: &str) -> Option<&'static [&'static str]> {
         .map(|(_, deps)| *deps)
 }
 
+/// The crates `rules` and `leaves` name that are not among `crates`: a crate's rule lands with
+/// the crate.
+pub(crate) fn absent<'a>(
+    crates: &[String],
+    rules: &[(&'a str, &[&'a str])],
+    leaves: &[&'a str],
+) -> Vec<&'a str> {
+    let named: BTreeSet<&'a str> = rules
+        .iter()
+        .flat_map(|(name, deps)| std::iter::once(*name).chain(deps.iter().copied()))
+        .chain(leaves.iter().copied())
+        .collect();
+    named
+        .into_iter()
+        .filter(|name| !crates.iter().any(|krate| krate == name))
+        .collect()
+}
+
 /// Checks the workspace rooted at `root` and prints every violation.
 #[expect(clippy::print_stdout, reason = "violations are the command's output")]
 pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
@@ -127,7 +138,8 @@ pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
             }
         }
     }
-    let violations = check(&names.into_iter().collect::<Vec<_>>(), &edges);
+    let crates: Vec<String> = names.into_iter().collect();
+    let violations = check(&crates, &edges);
     for violation in &violations {
         match violation {
             Violation::Unlisted(krate) => {
@@ -138,7 +150,11 @@ pub(crate) fn run(root: &Path) -> anyhow::Result<ExitCode> {
             }
         }
     }
-    Ok(if violations.is_empty() {
+    let unknown = absent(&crates, RULES, LEAVES);
+    for krate in &unknown {
+        println!("error: xtask's RULES name `{krate}`, which is no workspace crate");
+    }
+    Ok(if violations.is_empty() && unknown.is_empty() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
