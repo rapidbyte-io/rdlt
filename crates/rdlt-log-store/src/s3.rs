@@ -31,7 +31,7 @@ pub(crate) struct Connector {
 impl Connector {
     /// A connector reaching a store through TLS, or in plaintext where `plaintext`.
     pub(crate) fn new(plaintext: bool) -> Result<Self, LogStoreError> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let provider = rdlt_wire::tls::provider();
         let verifier = rustls_platform_verifier::Verifier::new(Arc::clone(&provider))
             .map_err(|error| LogStoreError::Client(Box::new(error)))?;
         Self::verifying(provider, verifier, plaintext)
@@ -44,7 +44,7 @@ impl Connector {
         roots: Vec<rustls::pki_types::CertificateDer<'static>>,
         resolves: Vec<(String, std::net::SocketAddr)>,
     ) -> Self {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let provider = rdlt_wire::tls::provider();
         let verifier =
             rustls_platform_verifier::Verifier::new_with_extra_roots(roots, Arc::clone(&provider))
                 .expect("a verifier of the test's roots");

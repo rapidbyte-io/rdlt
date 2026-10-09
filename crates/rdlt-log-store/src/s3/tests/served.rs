@@ -56,8 +56,7 @@ pub(super) async fn serve(certificate: Option<rdlt_testkit::tls::Files>, answer:
             .collect::<Result<_, _>>()
             .expect("certificates");
         let key = PrivateKeyDer::from_pem_file(&files.key).expect("a key");
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let tls = rustls::ServerConfig::builder_with_provider(provider)
+        let tls = rustls::ServerConfig::builder_with_provider(rdlt_wire::tls::provider())
             .with_safe_default_protocol_versions()
             .expect("TLS versions")
             .with_no_client_auth()

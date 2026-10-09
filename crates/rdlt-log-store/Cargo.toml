@@ -17,6 +17,7 @@ object_store = { workspace = true, features = ["aws-base", "reqwest", "ring"] }
 rdlt-connector.workspace = true
 rdlt-engine = { workspace = true, features = ["object-store"] }
 rdlt-host.workspace = true
+rdlt-wire = { workspace = true, features = ["tls"] }
 reqwest = { workspace = true, features = ["rustls-no-provider"] }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true

@@ -65,7 +65,7 @@ impl Server {
 
     /// The server started, with [`BUCKET`] made in it.
     pub(crate) async fn start(self) -> Running {
-        rustls::crypto::ring::default_provider()
+        Arc::unwrap_or_clone(rdlt_wire::tls::provider())
             .install_default()
             .ok();
         let container = self
