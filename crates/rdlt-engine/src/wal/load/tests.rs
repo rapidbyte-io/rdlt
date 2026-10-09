@@ -99,7 +99,7 @@ fn at(table: &TableView, version: u32) -> Arc<TableView> {
 async fn each_table_version_is_described_once_before_its_first_batch() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let (orders, items) = (view("orders"), view("items"));
     let written = async {
         // Two partitions write the first version at once; the table then changes.
@@ -161,7 +161,7 @@ async fn each_table_version_is_described_once_before_its_first_batch() {
 async fn a_logged_load_reads_back_as_it_was_written() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let orders = view("orders");
     let observed = Arc::clone(&store);
     let state = PartitionState::Cursor(Cursor::new(1, b"{\"next\":3}").expect("a cursor"));
@@ -223,7 +223,7 @@ async fn a_second_writer_of_one_log_is_fenced_at_its_first_commit() {
     let store = Arc::new(MemoryWal::default());
     let (first, first_task) = start(&store);
     let (second, second_task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let written = async {
         first
             .commit(&budget, Vec::new(), Vec::new(), &meta(&[]), 0)
@@ -258,7 +258,7 @@ fn sealed_at(segment: u64) -> Sealed {
 async fn a_long_load_keeps_only_the_chunks_its_receipts_do_not_cover_empty_segments_or_not() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let orders = view("orders");
     let observed = Arc::clone(&store);
     let written = async {
@@ -311,7 +311,7 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
             state: PartitionState::Cursor(cursor),
             ..sealed_at(1)
         };
-        let sealing = MemoryBudget::new(1 << 20);
+        let sealing = crate::budget::budget(1 << 20);
         log.commit(&sealing, vec![large], Vec::new(), &meta(&[1]), 0)
             .await
             .expect("durable");
@@ -330,7 +330,7 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
         assert_eq!(sealing.peak(), 2 * 10_000 + 4_096);
         assert_eq!(sealing.reserved(), 0, "released once appended");
         // A commit of no seals is charged what its frame may take, more than it takes.
-        let committing = MemoryBudget::new(1 << 20);
+        let committing = crate::budget::budget(1 << 20);
         let mut second = meta(&[2]);
         second.commit_seq = CommitSeq::FIRST.next();
         log.commit(&committing, Vec::new(), Vec::new(), &second, 0)
@@ -349,7 +349,7 @@ async fn seal_and_commit_frames_are_charged_until_they_are_appended() {
 async fn a_tables_schema_frame_is_charged_from_the_log_until_it_is_appended() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let orders = at(&view("orders"), 1);
     let written = async {
         logged(&log, &budget, 0, &orders, SegmentId(0), &ids(0))
@@ -371,7 +371,7 @@ async fn a_tables_schema_frame_beyond_the_log_s_share_fails_the_batch_that_needs
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
     // The log's share, a 16th of the budget, is less than any schema frame takes.
-    let budget = MemoryBudget::new(64_000);
+    let budget = crate::budget::budget(64_000);
     let orders = at(&view("orders"), 1);
     let written = async {
         let refused = logged(&log, &budget, 0, &orders, SegmentId(0), &ids(0)).await;
@@ -435,7 +435,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
             phase: 1,
             changes: vec![StateChange::Delete("d".repeat(5_000))],
         }];
-        let recording = MemoryBudget::new(1 << 20);
+        let recording = crate::budget::budget(1 << 20);
         let estimate = super::commit::commit_bytes(&begun, &third);
         // Each record twice over and what a record takes beside, a segment, and two frames.
         assert_eq!(
@@ -451,7 +451,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
         // What a commit records of tables, which their changes reserved, it does not again.
         let mut prepaid = third.clone();
         prepaid.commit_seq = third.commit_seq.next();
-        let paid = MemoryBudget::new(1 << 20);
+        let paid = crate::budget::budget(1 << 20);
         log.commit(&paid, Vec::new(), Vec::new(), &prepaid, 20_000)
             .await
             .expect("durable");
@@ -460,7 +460,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
             super::commit::commit_bytes(&[], &prepaid) - 20_000
         );
         // A frame beyond the log's share of the budget is refused, and nothing is reserved.
-        let small = MemoryBudget::new(64_000);
+        let small = crate::budget::budget(64_000);
         let mut fourth = third.clone();
         fourth.commit_seq = prepaid.commit_seq.next();
         let refused = log.commit(&small, Vec::new(), Vec::new(), &fourth, 0).await;
@@ -487,7 +487,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
 async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part_s_staging() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(256 << 20);
+    let budget = crate::budget::budget(256 << 20);
     // Held, as an attempt holds it, for as long as the log is written.
     let part = u64::try_from(crate::limits::OBJECT_PART_BYTES).expect("a size");
     let held = part + crate::limits::LOG_COPY_BYTES;
@@ -527,7 +527,7 @@ async fn a_commit_s_seals_hold_the_log_s_share_of_memory_one_after_another() {
     let (log, task) = start(&store);
     // The log's share holds what one seal is reserved before it is encoded, and a few seals
     // beside it, not all eight.
-    let budget = MemoryBudget::new(16 * (4_096 + 512));
+    let budget = crate::budget::budget(16 * (4_096 + 512));
     let written = async {
         let sealed: Vec<Sealed> = (1..=8).map(sealed_at).collect();
         let commit = meta(&[]);
@@ -547,7 +547,7 @@ async fn a_commit_s_seals_hold_the_log_s_share_of_memory_one_after_another() {
 
 #[tokio::test]
 async fn a_frame_keeps_what_it_takes_of_its_reservation_and_reserves_what_it_takes_beyond() {
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let settle = |frame: usize| {
         let budget = budget.clone();
         async move {
@@ -582,7 +582,7 @@ async fn a_frame_keeps_what_it_takes_of_its_reservation_and_reserves_what_it_tak
 async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let orders = view("orders");
     let described = Arc::clone(&log.tables);
     let written = async {
@@ -644,7 +644,7 @@ async fn a_superseded_schema_frame_is_forgotten_once_no_batch_of_it_can_follow()
 async fn a_version_stays_described_while_any_view_of_it_lives() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let orders = view("orders");
     let described = Arc::clone(&log.tables);
     let written = async {
@@ -713,7 +713,7 @@ async fn a_batch_that_would_take_the_log_past_what_it_may_hold_is_refused() {
         origin: load(),
     };
     let limit = 4_000;
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
     let (log, task) = LoadLog::start(wal, owner, limit_bytes, None);
     let orders = view("orders");
@@ -752,7 +752,7 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
         origin: load(),
     };
     let limit = 80_000;
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let limit_bytes = std::num::NonZeroU64::new(limit).unwrap();
     let (log, task) = LoadLog::start(wal, owner, limit_bytes, None);
     let orders = view("orders");
@@ -791,7 +791,7 @@ async fn a_log_makes_a_commit_due_at_half_what_it_may_hold_and_at_each_eighth_af
 async fn a_failed_write_fails_the_batches_after_it_at_once() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let orders = view("orders");
     let failing = Arc::clone(&store);
     let written = async {
@@ -818,7 +818,7 @@ async fn a_failed_write_fails_the_batches_after_it_at_once() {
 async fn what_was_counted_of_a_segment_goes_with_its_seal_or_its_abandonment() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let orders = view("orders");
     let written = async {
         for segment in [1, 2] {
@@ -928,7 +928,7 @@ async fn a_batch_finding_the_log_full_waits_only_while_a_commit_can_free_room() 
         origin: load(),
     };
     let limit = std::num::NonZeroU64::new(4_000).unwrap();
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let (log, task) = LoadLog::start(wal, owner, limit, None);
     let orders = view("orders");
     let written = async {

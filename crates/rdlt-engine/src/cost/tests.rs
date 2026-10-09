@@ -424,7 +424,7 @@ fn clock() -> Arc<dyn Env> {
 /// A budget of `capacity` bytes whose requests wait an hour at most, and an admission charging
 /// it for one of `reads` reads.
 fn charging(capacity: u64, reads: usize) -> (MemoryBudget, Charging) {
-    let budget = MemoryBudget::new(capacity).within(clock(), WAIT);
+    let budget = MemoryBudget::new(capacity, clock(), WAIT);
     let admission = Charging::new(budget.clone().read_by(reads));
     (budget, admission)
 }
@@ -578,7 +578,7 @@ async fn a_read_keeps_no_more_than_its_part_of_what_reads_may_keep() {
 #[tokio::test(start_paused = true)]
 async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing() {
     // The default budget and the default sixteen partitions read at once.
-    let budget = MemoryBudget::new(256 << 20);
+    let budget = crate::budget::budget(256 << 20);
     let reads: Vec<_> = (0..16)
         .map(|_| Charging::new(budget.clone().read_by(16)))
         .collect();
@@ -629,7 +629,7 @@ async fn a_push_that_waits_until_the_deadline_is_refused_and_remembered_as_the_b
 
 #[test]
 fn what_admitted_an_event_shows_the_bytes_it_was_charged() {
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let admitted = Admitted::new(5, budget.try_acquire_working(5).unwrap());
     assert_eq!(format!("{admitted:?}"), "Admitted(5)");
 }

@@ -17,7 +17,11 @@ use crate::env::SystemEnv;
 const BUDGET: u64 = 6_400;
 
 fn budget() -> MemoryBudget {
-    MemoryBudget::new(BUDGET).within(Arc::new(SystemEnv::one_core()), Duration::from_secs(3_600))
+    MemoryBudget::new(
+        BUDGET,
+        Arc::new(SystemEnv::one_core()),
+        Duration::from_secs(3_600),
+    )
 }
 
 #[tokio::test(start_paused = true)]

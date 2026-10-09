@@ -10,7 +10,7 @@ mod tests;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 
@@ -19,6 +19,7 @@ pub(crate) use self::decoding::Decoding;
 pub(crate) use self::ledger::{Class, Denied, Exhausted, Shares, TooLarge};
 use self::ledger::{Ledger, admit_waiting};
 use crate::env::Env;
+use crate::report::Waits;
 
 /// Bytes the engine may hold, divided into shares, each its holders' alone.
 ///
@@ -40,24 +41,44 @@ use crate::env::Env;
 #[derive(Clone)]
 pub(crate) struct MemoryBudget {
     shared: Arc<Mutex<Ledger>>,
-    deadline: Option<Deadline>,
+    /// The clock a wait is measured on.
+    env: Arc<dyn Env>,
+    /// How long a request waits at most.
+    wait: Duration,
     /// How many reads share what reads may keep.
     readers: usize,
     /// The limits on what a read sends, where they are fewer than what the budget admits.
     limits: Option<rdlt_wire::Limits>,
 }
 
-/// How long a request waits, and the clock that says so.
-#[derive(Clone)]
-struct Deadline {
-    env: Arc<dyn Env>,
-    wait: Duration,
-}
-
 /// A request's place among those waiting, given up when dropped.
 struct Queued<'a> {
     shared: &'a Arc<Mutex<Ledger>>,
     id: u64,
+}
+
+/// A wait of a request of a class, counted with its time once it ends, however it ends.
+struct Waiting<'a> {
+    budget: &'a MemoryBudget,
+    class: Class,
+    began: Instant,
+}
+
+impl Waiting<'_> {
+    /// How long the request has waited.
+    fn waited(&self) -> Duration {
+        self.budget
+            .env
+            .instant()
+            .saturating_duration_since(self.began)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        let waited = self.waited();
+        self.budget.shared.lock().count_wait(self.class, waited);
+    }
 }
 
 impl Drop for Queued<'_> {
@@ -70,20 +91,16 @@ impl Drop for Queued<'_> {
 }
 
 impl MemoryBudget {
-    /// A budget of `capacity` bytes whose requests wait until they are admitted.
-    pub(crate) fn new(capacity: u64) -> Self {
+    /// A budget of `capacity` bytes, each of its requests waiting `wait` at most on `env`'s
+    /// clock.
+    pub(crate) fn new(capacity: u64, env: Arc<dyn Env>, wait: Duration) -> Self {
         Self {
             shared: Arc::new(Mutex::new(Ledger::new(capacity))),
-            deadline: None,
+            env,
+            wait,
             readers: 1,
             limits: None,
         }
-    }
-
-    /// The budget, each of its requests waiting `wait` at most on `env`'s clock.
-    pub(crate) fn within(mut self, env: Arc<dyn Env>, wait: Duration) -> Self {
-        self.deadline = Some(Deadline { env, wait });
-        self
     }
 
     /// The budget, what its reads may keep divided among `readers` reads at once at most.
@@ -219,45 +236,45 @@ impl MemoryBudget {
             };
             (queued, receiver)
         };
-        let answered = |reservation: Result<Reservation, _>| {
-            reservation.expect("the ledger answers every waiter it keeps")
-        };
-        let Some(deadline) = &self.deadline else {
-            return Ok(answered(receiver.await));
-        };
-        let began = deadline.env.instant();
+        let waiting = self.waiting(class);
         tokio::select! {
             biased;
-            reservation = receiver => Ok(answered(reservation)),
-            () = deadline.env.sleep(deadline.wait) => {
-                let waited = deadline.env.instant().saturating_duration_since(began);
-                let exhausted = self.shared.lock().exhausted(class, bytes, waited);
+            reservation = receiver => {
+                Ok(reservation.expect("the ledger answers every waiter it keeps"))
+            }
+            () = self.env.sleep(self.wait) => {
+                let exhausted = self.shared.lock().exhausted(class, bytes, waiting.waited());
                 drop(queued);
                 Err(exhausted.into())
             }
         }
     }
 
-    /// Waits for `slot`, one of the places among which what reads keep is divided, for no longer
-    /// than a request waits for bytes.
+    /// A wait of a request of `class` that begins now.
+    fn waiting(&self, class: Class) -> Waiting<'_> {
+        Waiting {
+            budget: self,
+            class,
+            began: self.env.instant(),
+        }
+    }
+
+    /// Waits for `slot`, one of the places among which what reads keep is divided, which was not
+    /// free, for no longer than a request waits for bytes.
     ///
     /// # Errors
     ///
     /// [`Exhausted`] for what reads keep, with the part a slot holds, once the wait reaches the
     /// budget's deadline.
     pub(crate) async fn read_slot<T>(&self, slot: impl Future<Output = T>) -> Result<T, Exhausted> {
-        let Some(deadline) = &self.deadline else {
-            return Ok(slot.await);
-        };
-        let began = deadline.env.instant();
+        let waiting = self.waiting(Class::Read);
         tokio::select! {
             biased;
             taken = slot => Ok(taken),
-            () = deadline.env.sleep(deadline.wait) => {
-                let waited = deadline.env.instant().saturating_duration_since(began);
+            () = self.env.sleep(self.wait) => {
                 let readers = u64::try_from(self.readers).unwrap_or(u64::MAX);
                 let part = self.shares().reads / readers.max(1);
-                Err(self.shared.lock().exhausted(Class::Read, part, waited))
+                Err(self.shared.lock().exhausted(Class::Read, part, waiting.waited()))
             }
         }
     }
@@ -309,8 +326,8 @@ impl MemoryBudget {
         self.shared.lock().reserved()
     }
 
-    /// How many requests for pushes or lowering have waited for room, and how many cursors.
-    pub(crate) fn waits(&self) -> (u64, u64) {
+    /// The requests that have waited for room, and for how long, by share.
+    pub(crate) fn waited(&self) -> Waits {
         self.shared.lock().waited
     }
 
@@ -318,6 +335,16 @@ impl MemoryBudget {
     pub(crate) fn peak(&self) -> u64 {
         self.shared.lock().peak
     }
+}
+
+/// A budget of `capacity` bytes whose requests wait a day at most, on a test's clock.
+#[cfg(test)]
+pub(crate) fn budget(capacity: u64) -> MemoryBudget {
+    MemoryBudget::new(
+        capacity,
+        Arc::new(crate::env::InlineEnv),
+        Duration::from_hours(24),
+    )
 }
 
 impl fmt::Debug for MemoryBudget {

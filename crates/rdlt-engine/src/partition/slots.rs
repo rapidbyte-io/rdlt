@@ -61,7 +61,7 @@ impl Slots {
         })
     }
 
-    /// A slot, waited for as long as `budget` waits for bytes.
+    /// A slot, at once where one is free, or waited for as long as `budget` waits for bytes.
     ///
     /// # Errors
     ///
@@ -71,6 +71,9 @@ impl Slots {
         budget: &MemoryBudget,
         job: &PartitionJob,
     ) -> Result<SemaphorePermit<'_>, Error> {
+        if let Ok(slot) = self.reads.try_acquire() {
+            return Ok(slot);
+        }
         let slot = budget.read_slot(self.reads.acquire()).await;
         let slot = slot.map_err(|exhausted| Error::memory(exhausted).with_stream(&job.stream))?;
         slot.map_err(|_| Error::internal("partition slots closed"))

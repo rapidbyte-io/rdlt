@@ -109,7 +109,7 @@ async fn nothing(budget: &MemoryBudget) -> crate::budget::Reservation {
 
 #[tokio::test]
 async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_admitted_for() {
-    let budget = MemoryBudget::new(1 << 24);
+    let budget = crate::budget::budget(1 << 24);
     // Two pushes of text, each admitted for its text and the batches it becomes.
     let pushed = vec![json(&budget, 40_000).await, json(&budget, 2_000).await];
     assert_eq!(budget.reserved(), 3 * 42_000);
@@ -133,7 +133,7 @@ async fn shredded_batches_hold_what_they_keep_alive_of_what_their_pushes_were_ad
 
 #[tokio::test]
 async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_admitted() {
-    let budget = MemoryBudget::new(1 << 24);
+    let budget = crate::budget::budget(1 << 24);
     let pushed = vec![json(&budget, 100).await, json(&budget, 100).await];
     let batch = ids(1000);
     assert!(allocated(&batch) > 600);
@@ -154,7 +154,7 @@ async fn shredded_batches_keeping_more_alive_than_was_admitted_hold_what_was_adm
 
 #[tokio::test]
 async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_they_keep_alive() {
-    let budget = MemoryBudget::new(1 << 24);
+    let budget = crate::budget::budget(1 << 24);
     let pushed = vec![json(&budget, 100).await];
     let batch = ids(1000);
     let alive = allocated(&batch);
@@ -171,7 +171,7 @@ async fn shredded_batches_hold_what_was_reserved_beyond_their_pushes_for_what_th
 
 #[tokio::test]
 async fn a_piece_reserved_twice_over_gives_half_to_its_frame_in_the_log() {
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let mut piece = budget.acquire_working(1_000).await.unwrap();
     assert!(super::frame_part(&mut piece, 1).is_none());
     assert_eq!(piece.bytes(), 1_000);
@@ -432,7 +432,7 @@ fn windowed(window: &mut super::Window, budget: &MemoryBudget, bytes: u64) {
 
 #[test]
 fn a_window_reserves_a_piece_beside_those_it_holds_only_where_the_budget_has_room_at_once() {
-    let budget = MemoryBudget::new(64 << 20);
+    let budget = crate::budget::budget(64 << 20);
     let mut window = super::Window::default();
     // An empty window reserves nothing: its piece waits for the budget like any request.
     assert!(window.reserve(&budget, 1).is_none());

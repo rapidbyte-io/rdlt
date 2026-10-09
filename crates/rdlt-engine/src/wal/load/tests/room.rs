@@ -162,7 +162,7 @@ fn bounded(store: &MemoryWal, log: &LoadLog, most: u64) {
 /// the frames of a commit larger than a quarter of it, and what ends a chunk.
 async fn interleaved(limit: u64, load: &Load, rounds: u64) -> Result<(), crate::Error> {
     let store = Arc::new(MemoryWal::default());
-    let budget = MemoryBudget::new(64 << 20);
+    let budget = crate::budget::budget(64 << 20);
     let (log, task) = started(&store, limit);
     let orders = view("orders");
     let past = if load.committed() > limit / 4 {
@@ -306,7 +306,7 @@ async fn a_chunk_a_burst_between_commits_fills_with_two_partitions_is_carried_al
         let load = Load::new(&[1, 1]);
         let limit = 60 * load.frame();
         let store = Arc::new(MemoryWal::default());
-        let budget = MemoryBudget::new(64 << 20);
+        let budget = crate::budget::budget(64 << 20);
         let (log, task) = started(&store, limit);
         let orders = view("orders");
         let slow = gap(&load, limit, (3, 4));
@@ -348,7 +348,7 @@ async fn a_carry_gathers_open_frames_into_chunks_no_larger_than_an_eighth_of_the
     let load = Load::new(&[1]);
     let limit = 200 * load.frame();
     let store = Arc::new(MemoryWal::default());
-    let budget = MemoryBudget::new(64 << 20);
+    let budget = crate::budget::budget(64 << 20);
     let (log, task) = started(&store, limit);
     let observed = Arc::clone(&store);
     let written = async move {

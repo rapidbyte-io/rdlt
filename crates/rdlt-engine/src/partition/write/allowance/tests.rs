@@ -12,7 +12,6 @@ use rdlt_connector::{ColumnPath, StreamName, TableSchema};
 use tokio_util::sync::CancellationToken;
 
 use super::{Cutter, PartPiece, UNIT};
-use crate::budget::MemoryBudget;
 use crate::error::ErrorKind;
 use crate::normalize::{Shape, normalize};
 use crate::table::{Incoming, LoweringPlan};
@@ -126,7 +125,7 @@ fn an_allowance_holds_every_piece_whole_and_never_more_than_is_available() {
 
 #[tokio::test(start_paused = true)]
 async fn a_piece_waits_for_those_before_it_to_be_written_and_presses_for_it() {
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let cancel = CancellationToken::new();
     let cutter = Cutter::new(1 << 20, 16 << 10, 2);
     let pieces = cut(cutter, 10_000);
@@ -166,7 +165,7 @@ async fn a_piece_waits_for_those_before_it_to_be_written_and_presses_for_it() {
 
 #[tokio::test(start_paused = true)]
 async fn a_piece_waiting_for_its_allowance_stops_when_the_attempt_is_cancelled() {
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let cancel = CancellationToken::new();
     let cutter = Cutter::new(16 << 10, 16 << 10, 1);
     let pieces = cut(cutter, 10_000);

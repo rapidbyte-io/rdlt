@@ -59,7 +59,7 @@ fn rows() -> RecordBatch {
 /// Writes one batch of each of `tables` in order through writers a [`Staged`] of `limit` holds,
 /// then flushes them; what the writers were asked to do.
 async fn staged(limit: usize, tables: &[TableRef]) -> Vec<String> {
-    let log = staged_within(limit, &MemoryBudget::new(1 << 20), 100, tables).await;
+    let log = staged_within(limit, &crate::budget::budget(1 << 20), 100, tables).await;
     log.into_iter()
         .filter(|line| !line.starts_with("reserved"))
         .collect()
@@ -164,7 +164,7 @@ async fn beyond_its_limit_the_writer_written_longest_ago_closes_once_flushed() {
 async fn what_staged_batches_hold_stays_charged_until_their_writers_flush_and_never_passes_it() {
     // Of 64 MiB the data's share is 37 MiB: two batches of a request's 16 MiB fit, and the third
     // makes every writer flush first.
-    let budget = MemoryBudget::new(64 << 20);
+    let budget = crate::budget::budget(64 << 20);
     let tables = [
         table("a", 1, None),
         table("b", 1, None),
@@ -196,7 +196,7 @@ async fn what_staged_batches_hold_stays_charged_until_their_writers_flush_and_ne
 
 #[tokio::test]
 async fn a_logged_batch_beyond_what_a_request_may_take_is_refused() {
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let mut staged = Staged::new(NonZeroUsize::MIN, budget.clone());
     let error = staged
         .reserve((1 << 20) / 4 + 1)

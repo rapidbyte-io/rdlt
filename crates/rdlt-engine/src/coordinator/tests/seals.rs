@@ -4,7 +4,6 @@
 use rdlt_connector::{Admission, PartitionState, SegmentId, SourceEvent};
 
 use super::{Setup, cursor, ended, partition, position, stream, without_receipt};
-use crate::budget::MemoryBudget;
 use crate::coordinator::waiting::WaitingSeals;
 use crate::cost::Charging;
 use crate::partition::{CursorHold, Progress, Seal};
@@ -147,7 +146,7 @@ async fn a_commit_is_due_once_waiting_cursors_reach_their_limit() {
 
 #[tokio::test(start_paused = true)]
 async fn a_seals_cursor_stays_charged_until_its_commit_has_it() {
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let admission = Charging::new(budget.clone().read_by(1));
     let checkpoint = SourceEvent::Checkpoint {
         cursor: cursor(7),

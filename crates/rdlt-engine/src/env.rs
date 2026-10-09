@@ -1,5 +1,7 @@
 //! Injected sources of time and randomness, and the cores a run may use.
 
+#[cfg(test)]
+mod inline;
 mod system;
 #[cfg(test)]
 mod tests;
@@ -15,6 +17,8 @@ use rdlt_connector::LoadId;
 use crate::compute::ComputePool;
 use crate::wal::WalStore;
 
+#[cfg(test)]
+pub(crate) use inline::InlineEnv;
 pub use system::{SystemClock, SystemEnv};
 
 /// A future that completes after a duration measured on an [`Env`]'s clock.

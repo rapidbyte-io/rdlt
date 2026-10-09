@@ -78,7 +78,7 @@ fn ids(pieces: &[(Vec<RecordBatch>, Held)]) -> Vec<i64> {
 
 #[test]
 fn a_unit_larger_than_a_slice_is_cut_in_order_and_holds_its_permits_to_the_last_piece() {
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let parts = vec![encoded(0, 5_000), encoded(5_000, 3_000)];
     let unit = (parts, held(&budget, 64));
     let max = 200_000;
@@ -99,7 +99,7 @@ fn a_unit_larger_than_a_slice_is_cut_in_order_and_holds_its_permits_to_the_last_
 
 #[test]
 fn a_unit_within_a_slice_stays_whole_and_a_row_larger_than_one_is_its_own_piece() {
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let small = vec![encoded(0, 10), encoded(10, 10)];
     let pieces = sliced(vec![(small, held(&budget, 64))], 1 << 20);
     assert_eq!(pieces.len(), 1);
@@ -112,7 +112,7 @@ fn a_unit_within_a_slice_stays_whole_and_a_row_larger_than_one_is_its_own_piece(
 #[test]
 fn pieces_fill_a_slice_to_its_last_byte() {
     // Two batches of ten 8-byte integers are one piece of exactly 160 bytes.
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let plain = |first: i64| {
         let ids: Vec<i64> = (first..first + 10).collect();
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as ArrayRef)]).unwrap()
@@ -143,7 +143,7 @@ fn a_skewed_run_is_cut_by_each_row_s_own_value() {
         ("run", Arc::new(runs) as ArrayRef),
     ])
     .unwrap();
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let max = 64 << 10;
     let pieces = sliced(vec![(vec![skewed], held(&budget, 64))], max);
     assert_eq!(ids(&pieces), (0..3_000).collect::<Vec<_>>());
@@ -163,7 +163,7 @@ fn a_skewed_run_is_cut_by_each_row_s_own_value() {
 #[test]
 fn rows_fill_each_slice_to_its_last_byte() {
     // Twenty 8-byte integers over a slice of 80 bytes are two slices of ten.
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let numbers: Vec<i64> = (0..20).collect();
     let plain =
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(numbers)) as ArrayRef)])
@@ -178,7 +178,7 @@ fn rows_fill_each_slice_to_its_last_byte() {
 
 #[test]
 fn a_row_expanding_beyond_what_a_row_may_take_is_refused_and_one_within_it_is_its_own_piece() {
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     // Three rows of a 1 KB value, in slices of 100 bytes.
     let cut = |limit: u64| {
         super::sliced(
@@ -266,7 +266,7 @@ fn a_unit_is_cut_by_what_lowering_it_into_its_table_holds() {
 
 #[test]
 fn a_piece_of_a_unit_shares_the_allocations_the_unit_holds() {
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let parts = vec![encoded(0, 100)];
     let unit = Held::of(held(&budget, 64).permits, &parts);
     let pieces = sliced(vec![(parts, unit)], 2_000);
@@ -279,7 +279,7 @@ fn a_piece_of_a_unit_shares_the_allocations_the_unit_holds() {
 
 #[test]
 fn each_piece_says_what_it_was_measured_to_take_and_items_cost_what_they_are_told() {
-    let budget = MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let cut = super::sliced(
         vec![encoded(0, 3)],
         held(&budget, 64),

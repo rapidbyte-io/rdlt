@@ -414,8 +414,9 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
 - A destination whose calls may take longer than an hour needs `memory_wait` raised with them.
 - `ErrorKind` gained `Memory`, and `Admission::admit` and `Admission::charge` return a
   `Result`; an `Admission` says the limits it admits within, and a `PartitionSink` holds what
-  is sent to them. A run's report counts the waits of pushes and lowering, and of cursors, on
-  the budget. The wire's limits gained `dictionary_bytes`, with a least of 256 KiB.
+  is sent to them. A run's report counts every wait on the budget and its time on the engine's
+  clock, by share, a read's wait for a slot among them; every budget has a clock and a deadline.
+  The wire's limits gained `dictionary_bytes`, with a least of 256 KiB.
 - A cut costs a trip to the compute pool a piece.
 - The dictionary and staged limits follow the frame limit: one and four frames' bytes.
 - An array-form JSON push is scanned for its elements twice: once to chunk it, once as each

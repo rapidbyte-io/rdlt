@@ -71,7 +71,10 @@ fn sealed_with(segment: u64, cursor: usize) -> Sealed {
 async fn a_commit_s_frame_takes_memory_that_schema_frames_sent_after_its_seals_would_hold() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let (budget, frames_held) = (MemoryBudget::new(1 << 20), MemoryBudget::new(1 << 30));
+    let (budget, frames_held) = (
+        crate::budget::budget(1 << 20),
+        crate::budget::budget(1 << 30),
+    );
     let share = budget.shares().log;
     let commit = recording(&[0], 20_000);
     let estimate = super::super::commit::commit_bytes(&[], &commit);
@@ -107,7 +110,10 @@ async fn a_commit_s_frame_takes_memory_that_schema_frames_sent_after_its_seals_w
 async fn a_commit_s_later_seal_takes_memory_that_schema_frames_sent_after_its_first_would_hold() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let (budget, frames_held) = (MemoryBudget::new(1 << 20), MemoryBudget::new(1 << 30));
+    let (budget, frames_held) = (
+        crate::budget::budget(1 << 20),
+        crate::budget::budget(1 << 30),
+    );
     let commit = meta(&[0, 1]);
     let written = async {
         let held = (&frames_held, &budget);
@@ -140,7 +146,10 @@ async fn a_commit_s_later_seal_takes_memory_that_schema_frames_sent_after_its_fi
 async fn a_seal_is_not_held_behind_a_schema_frame_waiting_for_memory_during_its_commit() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let (budget, frames_held) = (MemoryBudget::new(1 << 20), MemoryBudget::new(1 << 30));
+    let (budget, frames_held) = (
+        crate::budget::budget(1 << 20),
+        crate::budget::budget(1 << 30),
+    );
     let share = budget.shares().log;
     let commit = meta(&[0, 1]);
     let written = async {
@@ -181,7 +190,7 @@ async fn a_seal_is_not_held_behind_a_schema_frame_waiting_for_memory_during_its_
 async fn a_close_that_comes_after_seals_without_their_commit_fails_the_log() {
     let store = Arc::new(MemoryWal::default());
     let (log, task) = start(&store);
-    let budget = MemoryBudget::new(1 << 24);
+    let budget = crate::budget::budget(1 << 24);
     let written = async {
         described(&log, (&budget, &budget), 0, 1)
             .await

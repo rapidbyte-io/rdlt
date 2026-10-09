@@ -88,7 +88,7 @@ async fn concurrent(
     landing: Landing,
 ) -> Result<(), crate::Error> {
     let store = Arc::new(MemoryWal::default());
-    let budget = MemoryBudget::new(64 << 20);
+    let budget = crate::budget::budget(64 << 20);
     let (log, task) = started(&store, limit);
     let writer = tokio::spawn(task);
     let (seals, sealed) = mpsc::unbounded_channel();

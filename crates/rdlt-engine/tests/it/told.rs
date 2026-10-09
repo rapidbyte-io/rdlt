@@ -144,7 +144,11 @@ async fn barriers_answered_with_cursors_as_large_as_told_never_wait_on_the_budge
     }
     // Every barrier's answers fit beside the cursors waiting: no cursor waits, and the load
     // takes no barrier's wait longer than one of small cursors.
-    assert_eq!(large.report.cursor_waits, 0);
+    assert_eq!(large.report.counters.waits.cursors.count, 0);
+    assert_eq!(
+        large.report.counters.waits.reads.count, 0,
+        "a slot for every read"
+    );
     assert_eq!(large.report.commits, small.report.commits);
     assert!(
         large.report.elapsed < small.report.elapsed + Duration::from_secs(1),
@@ -463,7 +467,7 @@ async fn a_cursor_waiting_for_room_commits_without_waiting_on_a_barrier_slow_to_
         "{:?}",
         outcome.error
     );
-    assert!(outcome.report.cursor_waits > 0);
+    assert!(outcome.report.counters.waits.cursors.count > 0);
     // Each commit a waiting cursor makes due takes what is sealed at once, rather than after the
     // barrier's twenty seconds: the partitions of `own` read to their end in less than one.
     let elapsed = started.elapsed();

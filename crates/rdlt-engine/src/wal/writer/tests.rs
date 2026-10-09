@@ -21,7 +21,6 @@ use super::super::frame::{Batch, Committing, End, Frame, Seal, Table};
 use super::super::memory::MemoryWal;
 use super::super::store::WalStore;
 use super::{Command, Owner, WalWriter};
-use crate::budget::MemoryBudget;
 use crate::error::{Error, ErrorKind};
 
 fn pipeline() -> PipelineId {
@@ -623,7 +622,7 @@ async fn a_retired_table_s_schema_frame_is_kept_no_more() {
 #[tokio::test]
 async fn a_retired_table_never_written_releases_what_its_frame_held() {
     let store = Arc::new(MemoryWal::default());
-    let budget = MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let observed = budget.clone();
     drive(Arc::clone(&store), |mut log| async move {
         let Command::Table { index, frame, .. } = table(0) else {

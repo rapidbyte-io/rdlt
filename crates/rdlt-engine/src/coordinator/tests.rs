@@ -253,7 +253,7 @@ impl Setup {
             log: Arc::default(),
             closed: Arc::clone(&closed),
             latest: Arc::default(),
-            budget: crate::budget::MemoryBudget::new(self.budget),
+            budget: crate::budget::budget(self.budget),
         };
         let session = SharedSession::new(Box::new(Recorder {
             commits: Arc::clone(&commits),
@@ -316,7 +316,7 @@ impl Setup {
 
 /// One lane over `tables`, running.
 fn lanes(tables: &Arc<Tables>) -> Lanes {
-    let budget = crate::budget::MemoryBudget::new(1 << 30);
+    let budget = crate::budget::budget(1 << 30);
     let writers = crate::config::GrowthLimits::default().writers();
     let (lanes, tasks) = Lanes::new(
         (NonZeroUsize::MIN, writers),

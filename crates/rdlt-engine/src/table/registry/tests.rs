@@ -678,7 +678,7 @@ async fn a_rounding_batch_planned_beside_floats_leaves_no_column_exact_whichever
 #[tokio::test]
 async fn a_tables_records_are_reserved_at_its_change_until_a_commit_records_them() {
     let (tables, _) = tables(None, Model::default());
-    let budget = crate::budget::MemoryBudget::new(64 << 20);
+    let budget = crate::budget::budget(64 << 20);
     tables.charge(budget.clone(), tokio_util::sync::CancellationToken::new());
     tables
         .fit(0, &schema(&[("id", LogicalType::Int64)]))
@@ -704,7 +704,7 @@ async fn a_tables_records_are_reserved_at_its_change_until_a_commit_records_them
 async fn a_table_whose_records_pass_the_tables_share_is_refused_before_the_destination_sees_it() {
     let (tables, changes) = tables(None, Model::default());
     // A budget whose tables' share holds two hundred bytes.
-    let budget = crate::budget::MemoryBudget::new(6_400);
+    let budget = crate::budget::budget(6_400);
     tables.charge(budget.clone(), tokio_util::sync::CancellationToken::new());
     let error = tables
         .fit(0, &schema(&[("id", LogicalType::Int64)]))

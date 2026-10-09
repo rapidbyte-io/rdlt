@@ -99,7 +99,7 @@ fn a_sealed_segment_carries_its_rows_state_and_discards() {
 
 #[tokio::test]
 async fn a_cursors_hold_shows_the_bytes_it_holds() {
-    let budget = crate::budget::MemoryBudget::new(1 << 20);
+    let budget = crate::budget::budget(1 << 20);
     let cursor = Cursor::new(1, b"abc").unwrap();
     let cancel = tokio_util::sync::CancellationToken::new();
     let held = CursorHold::reserve(&budget, &cancel, &PartitionState::Cursor(cursor))

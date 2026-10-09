@@ -1,5 +1,6 @@
 //! What a run reports: its attempts and what they committed, counted only from receipts.
 
+mod counters;
 #[cfg(test)]
 mod tests;
 
@@ -10,6 +11,8 @@ use rdlt_connector::{CommitSeq, LoadId, PartitionId, PipelineId, Receipt, Stream
 use serde::Serialize;
 
 use crate::error::{Error, ErrorKind, ErrorReport};
+
+pub use counters::{Counters, Waited, Waits};
 
 /// How a run ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -51,10 +54,8 @@ pub struct Report {
     /// Bytes: the most the run reserved of its memory budget at once, across all its shares, the
     /// log store's staging included.
     pub peak_memory: u64,
-    /// How many times a push or a piece being lowered waited for room in the memory budget.
-    pub memory_waits: u64,
-    /// How many times a checkpoint's cursor waited for a commit to make room for it.
-    pub cursor_waits: u64,
+    /// What the run waited for and spent its time on; no decision reads them.
+    pub counters: Counters,
     /// What each stream committed, by stream name.
     pub streams: BTreeMap<String, StreamReport>,
 }
@@ -268,8 +269,7 @@ impl Report {
             bytes: 0,
             commits: 0,
             peak_memory: 0,
-            memory_waits: 0,
-            cursor_waits: 0,
+            counters: Counters::default(),
             streams: BTreeMap::new(),
         }
     }

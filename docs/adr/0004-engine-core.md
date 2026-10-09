@@ -54,6 +54,9 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
 - **Every commit records its own receipt** in state. A run credits a commit whose response was lost
   to the attempt that made it once a later attempt reads that receipt back, so the report matches
   what the destination published.
+- **The report's counters are written, never read.** What a run waited for and spent its time on
+  is counted as it happens and summed into its report; no decision of the engine reads a
+  counter, so measuring a run never changes what it does.
 - **The budget is charged before a push enters its partition channel.** The contract's
   `admitted_partition_channel` waits for admission of each push's bytes, so data a source has
   handed over but the engine has not read stays within the budget (spec §7.5).
