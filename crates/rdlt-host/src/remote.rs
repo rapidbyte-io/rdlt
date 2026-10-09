@@ -205,16 +205,13 @@ impl Connection {
         })
     }
 
-    /// The contract's spec of the connector, in `role`, from what its handshake answered.
+    /// The contract's spec of the connector, from what its handshake answered.
     ///
     /// # Errors
     ///
     /// An internal error when the connector's id or configuration schema is malformed.
-    pub fn connector_spec(
-        &self,
-        role: Role,
-    ) -> Result<rdlt_connector::ConnectorSpec, ConnectorError> {
-        contract_spec(&self.spec, role)
+    pub fn connector_spec(&self) -> Result<rdlt_connector::ConnectorSpec, ConnectorError> {
+        contract_spec(&self.spec)
     }
 
     /// The connector's spec, as its handshake answered.
@@ -388,10 +385,9 @@ where
     Ok(checked::Checked::new(channel, options.limits))
 }
 
-/// The contract's spec of the connector the handshake's `spec` describes, in `role`.
+/// The contract's spec of the connector the handshake's `spec` describes.
 pub(crate) fn contract_spec(
     spec: &v1::ConnectorSpec,
-    role: Role,
 ) -> Result<rdlt_connector::ConnectorSpec, ConnectorError> {
     use rdlt_connector::wire::Invalid;
     let id = rdlt_connector::ConnectorId::parse(&spec.id)
@@ -401,7 +397,6 @@ pub(crate) fn contract_spec(
     Ok(rdlt_connector::ConnectorSpec {
         id,
         version: spec.version.clone(),
-        role,
         config_schema,
     })
 }

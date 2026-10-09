@@ -17,7 +17,7 @@ use crate::commit::{CommitMeta, Receipt, SegmentSet};
 use crate::error::{ConnectorError, Result};
 use crate::id::{CommitSeq, Epoch, LoadId, PipelineId, SchemaVersion, SegmentId, TablePath};
 use crate::schema::TableSchema;
-use crate::spec::{ConnectContext, Role};
+use crate::spec::ConnectContext;
 use crate::state::StateRecord;
 use crate::types::{Field, LogicalType};
 
@@ -264,7 +264,6 @@ async fn a_failed_discard_closes_the_session_and_reports_the_discard_error() {
 #[tokio::test]
 async fn the_factory_publishes_identity_and_capabilities() {
     let factory = destination_factory::<Recorder>();
-    assert_eq!(factory.spec().role, Role::Destination);
     assert_eq!(factory.spec().id.as_str(), "io.test.recorder");
     assert_eq!(factory.spec().config_schema["required"], json!(["journal"]));
     let destination = factory

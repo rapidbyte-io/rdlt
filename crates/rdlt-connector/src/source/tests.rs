@@ -15,7 +15,7 @@ use crate::emitter::Emitter;
 use crate::error::{ConnectorError, ConnectorErrorKind, Result};
 use crate::id::{PartitionId, StreamName};
 use crate::sink::{Push, SourceEvent, partition_channel};
-use crate::spec::{ConnectContext, Role};
+use crate::spec::ConnectContext;
 use crate::state::StreamState;
 
 #[derive(Deserialize, JsonSchema)]
@@ -163,7 +163,6 @@ fn the_factory_publishes_the_connector_identity_and_config_schema() {
     let spec = factory.spec();
     assert_eq!(spec.id.as_str(), "io.test.counter");
     assert_eq!(spec.version, "1.2.3");
-    assert_eq!(spec.role, Role::Source);
     assert_eq!(spec.config_schema["properties"]["limit"]["type"], "integer");
 }
 

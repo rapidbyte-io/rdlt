@@ -467,7 +467,6 @@ async fn read_through_a_kill_clause(
     let spec = rdlt_connector::ConnectorSpec {
         id: id.clone(),
         version: "0.0.0".to_owned(),
-        role: rdlt_connector::Role::Source,
         config_schema: serde_json::json!({}),
     };
     let served = rdlt_connector::serve::Served::new().with_source(Box::new(CursorsFactory(spec)));

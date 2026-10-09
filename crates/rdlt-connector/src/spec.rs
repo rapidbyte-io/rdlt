@@ -27,8 +27,6 @@ pub struct ConnectorSpec {
     pub id: ConnectorId,
     /// The connector's version.
     pub version: String,
-    /// The side it serves.
-    pub role: Role,
     /// The JSON Schema its configuration must satisfy.
     pub config_schema: serde_json::Value,
 }
