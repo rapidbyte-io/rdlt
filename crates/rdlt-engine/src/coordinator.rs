@@ -387,9 +387,7 @@ impl Coordinator {
                     .is_some_and(|run| run.on_demand);
                 self.due.written(partition, asked, rows, bytes);
             }
-            Progress::Abandoned {
-                partition, segment, ..
-            } => {
+            Progress::Abandoned { partition, segment } => {
                 self.due.abandoned(partition);
                 self.abandoned.insert(segment);
             }

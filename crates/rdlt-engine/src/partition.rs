@@ -201,8 +201,6 @@ async fn abandon(
     context.report(Progress::Abandoned {
         partition,
         segment: open.id,
-        rows: open.rows,
-        bytes: open.bytes,
     })?;
     if let Some(log) = &context.wal {
         log.abandon(open.id).await?;

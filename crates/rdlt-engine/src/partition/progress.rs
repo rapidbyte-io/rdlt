@@ -54,10 +54,6 @@ pub(crate) enum Progress {
         partition: usize,
         /// The segment it abandoned.
         segment: SegmentId,
-        /// Rows abandoned.
-        rows: u64,
-        /// Their bytes in memory.
-        bytes: u64,
     },
     /// The partition stopped reading; a partition that was not stopped sealed its end first.
     Ended {
