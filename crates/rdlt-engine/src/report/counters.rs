@@ -132,9 +132,9 @@ pub(crate) enum Trigger {
 pub struct LaneCounters {
     /// The time partitions waited for room in the lane's queue, summed.
     pub blocked: Duration,
-    /// The time its destination writers took to write batches, summed.
+    /// The time its destination writers took to write batches, a failed write's included, summed.
     pub writing: Duration,
-    /// The time its destination writers took to flush, summed.
+    /// The time its destination writers took to flush, a failed flush's included, summed.
     pub flushing: Duration,
 }
 

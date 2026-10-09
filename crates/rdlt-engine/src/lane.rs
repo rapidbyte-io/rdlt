@@ -219,12 +219,10 @@ impl Lane {
         }
         let (writer, env) = self.writer(write.table, write.version).await?;
         let began = env.instant();
-        writer
-            .write(write.segment, write.batch)
-            .await
-            .map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
+        let written = writer.write(write.segment, write.batch).await;
         let writing = env.instant().saturating_duration_since(began);
         self.counted.writing = self.counted.writing.saturating_add(writing);
+        written.map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
         self.written.insert((write.table, write.version));
         self.held.push(write.reservation);
         Ok(())
@@ -237,8 +235,9 @@ impl Lane {
             let Some(open) = self.writers.get_mut(&key) else {
                 continue;
             };
-            let flushing = flush(open.writer.as_mut(), self.env.as_ref()).await?;
+            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref()).await;
             self.flushed(flushing);
+            flushed?;
         }
         self.held.clear();
         Ok(())
@@ -256,21 +255,24 @@ impl Lane {
             return Ok(());
         };
         if self.written.remove(&key) {
-            let flushing = flush(open.writer.as_mut(), self.env.as_ref()).await?;
+            let (flushing, flushed) = flush(open.writer.as_mut(), self.env.as_ref()).await;
             self.flushed(flushing);
+            flushed?;
         }
         Ok(())
     }
 }
 
 /// Flushes `writer`: how long the flush took on `env`'s clock.
-async fn flush(writer: &mut dyn DestinationWriter, env: &dyn Env) -> Result<Duration, Error> {
+async fn flush(writer: &mut dyn DestinationWriter, env: &dyn Env) -> (Duration, Result<(), Error>) {
     let began = env.instant();
-    writer
-        .flush()
-        .await
-        .map_err(|error| Error::connector(Side::Destination, "flushing staged writes", error))?;
-    Ok(env.instant().saturating_duration_since(began))
+    let flushed = writer.flush().await.map(drop);
+    let flushing = env.instant().saturating_duration_since(began);
+    (
+        flushing,
+        flushed
+            .map_err(|error| Error::connector(Side::Destination, "flushing staged writes", error)),
+    )
 }
 
 impl Drop for Lane {

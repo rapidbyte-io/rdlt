@@ -562,3 +562,37 @@ async fn a_cancelled_lane_adds_what_it_counted() {
     };
     assert_eq!(tally.counters().lanes, [counted]);
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_write_or_flush_counts_its_time() {
+    // A write takes one second and a flush two; the lane fails at the refused call.
+    for (fail_write, fail_flush, counted) in [(true, false, (1, 0)), (false, true, (1, 2))] {
+        let budget = crate::budget::budget(1_000);
+        let tally = Arc::new(Tally::default());
+        let session = Session {
+            log: Log::default(),
+            fail_open: false,
+            fail_write,
+            fail_flush,
+            pace: Duration::from_secs(1),
+        };
+        let (lanes, mut tasks) = over(session, (1, 1, 1), &budget, &tally);
+        let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
+        write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
+        if fail_flush {
+            let flushed = tokio::time::timeout(Duration::from_secs(60), lanes.flush()).await;
+            assert!(flushed.expect("a refused flush ends").is_err());
+        }
+        let ended = tokio::time::timeout(Duration::from_secs(60), lane)
+            .await
+            .expect("a failed lane ends");
+        assert!(ended.unwrap().is_err());
+        let (writing, flushing) = counted;
+        let counted = LaneCounters {
+            blocked: Duration::ZERO,
+            writing: Duration::from_secs(writing),
+            flushing: Duration::from_secs(flushing),
+        };
+        assert_eq!(tally.counters().lanes, [counted], "fail_write {fail_write}");
+    }
+}
