@@ -1,11 +1,19 @@
 //! The state a commit leaves: never more decoded than an open may answer, so a pipeline can open
 //! again whatever it committed.
 
-use rdlt_connector::{Cursor, PartitionState};
+use std::collections::BTreeMap;
+use std::time::UNIX_EPOCH;
 
-use super::{Setup, partition, stream};
+use rdlt_connector::{
+    CommitMeta, CommitSeq, Cursor, Epoch, LoadId, PartitionId, PartitionState, PipelineState,
+    SegmentSet, StateChange, StateRecord,
+};
+
+use super::{Setup, name, partition, position, stream};
 use crate::partition::Progress;
 use crate::plan::WriteMode;
+use crate::stored::{StateLimits, Stored};
+use crate::wal::Positions;
 
 /// A cursor of `bytes` padding.
 fn padded(bytes: usize) -> Cursor {
@@ -77,4 +85,60 @@ async fn state_is_bounded_with_all_the_commits_before_it() {
         .expect_err("the second commit is refused");
     assert_eq!(refused.code(), Some("state_bytes_exceeded"), "{refused}");
     assert_eq!(harness.commits.lock().len(), 1, "the first landed");
+}
+
+/// The record of `id`'s done marker.
+fn done(id: &str) -> StateRecord {
+    let StateChange::Put(record) = position(id, PartitionState::Done) else {
+        panic!("a position is put");
+    };
+    record
+}
+
+#[tokio::test(start_paused = true)]
+async fn done_markers_make_room_for_state_and_never_for_new_child_tables() {
+    let (marker, born) = (done("d0"), done("d1"));
+    // State holds the marker of a partition no plan names; the commit's record passes the limit
+    // beside it and fits without it.
+    let unlimited = StateLimits {
+        stored: u64::MAX,
+        request: u64::MAX,
+    };
+    let both = Stored::of(&[marker.clone(), born.clone()], unlimited).total();
+    let limits = StateLimits {
+        stored: both - 1,
+        request: u64::MAX,
+    };
+    let (mut coordinator, _harness) = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    )
+    .coordinator()
+    .await;
+    let state = PipelineState::from_records(std::slice::from_ref(&marker)).unwrap();
+    coordinator.parts.positions = Positions::of(&state);
+    coordinator.parts.stored = Stored::of(&[marker], limits);
+    let commit = || CommitMeta {
+        load_id: LoadId::from_parts(UNIX_EPOCH, 1),
+        commit_seq: CommitSeq::FIRST,
+        epoch: Epoch(3),
+        segments: SegmentSet::new(),
+        abandoned: SegmentSet::new(),
+        state_delta: vec![StateChange::Put(born.clone())],
+        finish_generations: Vec::new(),
+        child_tables: Vec::new(),
+        drop_tables: Vec::new(),
+        horizon: None,
+    };
+    // A new child table's record is refused as one; no marker goes for it.
+    let mut meta = commit();
+    let children = [(name(), born.key.clone())];
+    assert!(coordinator.relieve(&mut meta, &children).is_empty());
+    assert_eq!(meta.state_delta, commit().state_delta);
+    // Any other record takes the marker's room.
+    let mut meta = commit();
+    let forgotten = coordinator.relieve(&mut meta, &[]);
+    let d0 = PartitionId::parse("d0").unwrap();
+    assert_eq!(forgotten, BTreeMap::from([(name(), vec![d0])]));
+    assert!(coordinator.parts.stored.admit(&meta, &[]).is_ok());
 }
