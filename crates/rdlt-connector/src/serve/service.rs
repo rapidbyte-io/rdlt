@@ -140,7 +140,6 @@ impl Connector for Service {
             accepted_features,
             limits: Some(self.limits.into()),
             protocol_major: rdlt_wire::PROTOCOL_MAJOR,
-            protocol_minor: rdlt_wire::PROTOCOL_MINOR,
         }))
     }
 

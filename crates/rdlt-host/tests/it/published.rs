@@ -14,20 +14,18 @@ use rdlt_connector::{
     readable_destination_factory,
 };
 use rdlt_connector_reference::MemoryDestination;
-use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR, PUBLISHED};
+use rdlt_wire::{PROTOCOL_MAJOR, PUBLISHED};
 
 use crate::support::{plane_client, served};
 
 fn handshake(features: &[&str]) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
-        protocol_minor: PROTOCOL_MINOR,
         features: features
             .iter()
             .map(|feature| (*feature).to_owned())
             .collect(),
         role: v1::Role::Destination as i32,
-        traceparent: String::new(),
         limits: None,
     }
 }

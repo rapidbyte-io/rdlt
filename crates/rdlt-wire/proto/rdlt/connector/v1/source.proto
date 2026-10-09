@@ -49,17 +49,14 @@ message ReadStart {
   string partition = 2;
   // Where to resume; absent reads from the start.
   optional Cursor cursor = 3;
-  // The contract's read carries no mode: the stream's committed state and the cursor say how.
-  reserved 4;
-  reserved "mode";
   // The newest barrier pending when the read starts, which the source answers as one requested
   // during the read; 0 for none.
-  uint64 barrier = 5;
+  uint64 barrier = 4;
   // Whether the partition never ends, as the plan said.
-  bool unbounded = 6;
+  bool unbounded = 5;
   // Whether a read of an unbounded partition follows it once caught up, until asked to stop;
   // otherwise it returns once caught up to where the source stood when the read started.
-  bool follow = 7;
+  bool follow = 6;
 }
 
 // Asks for a checkpoint answering a barrier.
@@ -202,10 +199,7 @@ message MetricFrame {
 
 // The end of a read: the source's read returned. A read that fails ends with the error's status
 // instead, and one the host stopped ends however the source's read returned.
-message Done {
-  reserved 1;
-  reserved "reason";
-}
+message Done {}
 
 // Reports cursors a destination committed.
 message CommittedRequest {

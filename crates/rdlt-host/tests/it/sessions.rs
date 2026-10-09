@@ -11,7 +11,7 @@ use rdlt_connector_reference::{MemoryDestination, MemorySource};
 use rdlt_host::remote::Client;
 use rdlt_host::{Connection, Options, RemoteDestination, RemoteSource};
 use rdlt_wire::prost::Message as _;
-use rdlt_wire::{Encoder, Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use rdlt_wire::{Encoder, Limits, PROTOCOL_MAJOR};
 use tokio::net::UnixStream;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -21,10 +21,8 @@ use crate::support::{Fake, Fault, serve_fake, served_within};
 pub(crate) fn handshake(role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
-        protocol_minor: PROTOCOL_MINOR,
         features: Vec::new(),
         role: role as i32,
-        traceparent: String::new(),
         limits: None,
     }
 }

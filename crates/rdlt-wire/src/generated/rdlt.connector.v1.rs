@@ -491,9 +491,6 @@ pub struct Capabilities {
     #[prost(bool, tag = "12")]
     pub drop_tables: bool,
 }
-/// What a source declares about itself; it declares nothing yet.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct SourceCapabilities {}
 /// How a stream can be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -928,14 +925,14 @@ pub struct ReadStart {
     pub cursor: ::core::option::Option<Cursor>,
     /// The newest barrier pending when the read starts, which the source answers as one requested
     /// during the read; 0 for none.
-    #[prost(uint64, tag = "5")]
+    #[prost(uint64, tag = "4")]
     pub barrier: u64,
     /// Whether the partition never ends, as the plan said.
-    #[prost(bool, tag = "6")]
+    #[prost(bool, tag = "5")]
     pub unbounded: bool,
     /// Whether a read of an unbounded partition follows it once caught up, until asked to stop;
     /// otherwise it returns once caught up to where the source stood when the read started.
-    #[prost(bool, tag = "7")]
+    #[prost(bool, tag = "6")]
     pub follow: bool,
 }
 /// Asks for a checkpoint answering a barrier.
@@ -1684,20 +1681,14 @@ pub struct HandshakeRequest {
     /// The protocol's major version; it must match.
     #[prost(uint32, tag = "1")]
     pub protocol_major: u32,
-    /// The protocol's minor version.
-    #[prost(uint32, tag = "2")]
-    pub protocol_minor: u32,
     /// The optional features the host can use.
-    #[prost(string, repeated, tag = "3")]
+    #[prost(string, repeated, tag = "2")]
     pub features: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// The role the host wants.
-    #[prost(enumeration = "Role", tag = "4")]
+    #[prost(enumeration = "Role", tag = "3")]
     pub role: i32,
-    /// The host's W3C trace context.
-    #[prost(string, tag = "6")]
-    pub traceparent: ::prost::alloc::string::String,
     /// The limits the host enforces.
-    #[prost(message, optional, tag = "7")]
+    #[prost(message, optional, tag = "4")]
     pub limits: ::core::option::Option<Limits>,
 }
 /// Who the connector is and what it can do.
@@ -1715,11 +1706,8 @@ pub struct ConnectorSpec {
     /// The JSON Schema its configuration must satisfy.
     #[prost(string, tag = "4")]
     pub config_schema_json: ::prost::alloc::string::String,
-    /// What it declares as a source, if it is one.
+    /// What it can store, once configured as a destination.
     #[prost(message, optional, tag = "5")]
-    pub source_capabilities: ::core::option::Option<SourceCapabilities>,
-    /// What it can store as a destination, if it is one.
-    #[prost(message, optional, tag = "6")]
     pub destination_capabilities: ::core::option::Option<Capabilities>,
 }
 /// The connector's answer to a handshake.
@@ -1737,9 +1725,6 @@ pub struct HandshakeResponse {
     /// The protocol's major version the connector speaks; the host refuses another.
     #[prost(uint32, tag = "4")]
     pub protocol_major: u32,
-    /// The protocol's minor version the connector speaks.
-    #[prost(uint32, tag = "5")]
-    pub protocol_minor: u32,
 }
 /// Configures the connector.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

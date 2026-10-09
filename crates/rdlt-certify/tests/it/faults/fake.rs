@@ -16,7 +16,7 @@ use rdlt_host::Stream;
 use rdlt_wire::bounded::Window;
 use rdlt_wire::plane::{Incoming, Plane, Router, Serving};
 use rdlt_wire::v1::connector_server::{Connector, ConnectorServer};
-use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR, PUBLISHED};
+use rdlt_wire::{Limits, PROTOCOL_MAJOR, PUBLISHED};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
 use tokio_stream::wrappers::ReceiverStream;
@@ -312,7 +312,6 @@ fn spec() -> v1::ConnectorSpec {
         version: "0.0.0".to_owned(),
         roles: vec![v1::Role::Source as i32],
         config_schema_json: "{}".to_owned(),
-        source_capabilities: Some(v1::SourceCapabilities {}),
         destination_capabilities: None,
     }
 }
@@ -373,7 +372,6 @@ impl Connector for Fake {
             } else {
                 0
             },
-            protocol_minor: PROTOCOL_MINOR,
         }))
     }
 

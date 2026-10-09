@@ -633,10 +633,8 @@ async fn a_connector_is_told_which_host_it_serves_in_either_role_and_with_either
             .expect("it connects");
         let offered = v1::HandshakeRequest {
             protocol_major: rdlt_wire::PROTOCOL_MAJOR,
-            protocol_minor: rdlt_wire::PROTOCOL_MINOR,
             features: vec![feature.to_owned()],
             role: role as i32,
-            traceparent: String::new(),
             limits: None,
         };
         let agreed = client.rpc.handshake(offered).await.expect("it agrees");

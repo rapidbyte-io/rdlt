@@ -98,13 +98,11 @@ socket will be.
   - Arrow batches open a new schema epoch when their schema changes, and the host requires
     epochs to grow.
   - JSON pushes, cursors, log lines and metric names are admitted against the host's limits.
-- **The protocol changes in two places.** Neither field could be filled truthfully:
-  - `ReadStart.mode` is gone: the contract's read carries no mode.
-  - `Done.reason` is gone. A read ends with `Done` when the source's read returns, and with its
-    error's status when it fails, as the in-process adapter returns. A read the engine stopped
-    ends however the source's read returned.
+- **A read ends with `Done` when the source's read returns**, and with its error's status when
+  it fails, as the in-process adapter returns. A read the engine stopped ends however the
+  source's read returned.
 - **`rdlt-wire` generates the service with tonic-prost-build, all but its data plane**: the
-  client always, and the server under a `serve` feature. The data plane, `Write`, `Read` and
+  client and server stubs; `serve` adds tonic's server support. The data plane, `Write`, `Read` and
   `ReadPublished`, is hand-written in `rdlt_wire::plane`, byte-identical to what gRPC and prost
   put on the wire, so any gRPC implementation can still serve a connector: each end decodes a
   data-plane message from the bytes its bounded body passes on, so a batch's body and a push's
@@ -114,8 +112,8 @@ socket will be.
   to the plane, a read-back once its one request has arrived whole, and every other call to the
   generated server; it ends calls as tonic does, by trailers, a trailers-only answer, a body's
   error or a cancelled request, so the host classes a failure by the same code. It re-exports
-  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` 1 and
-  `PROTOCOL_MINOR` 0.
+  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` (3), which both ends
+  must match.
 - **The gates follow the code.**
   - The served end is tested from `rdlt-host`, where a client exists. So mutation testing runs the
     engine's, connector's, wire's and host's tests for every mutant (`--test-package`), and

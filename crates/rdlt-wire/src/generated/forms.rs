@@ -456,11 +456,6 @@ pub(crate) static CONNECTOR_SPEC: Form = Form {
         },
         Field {
             number: 5,
-            kind: Kind::Message(&SOURCE_CAPABILITIES),
-            repeated: false,
-        },
-        Field {
-            number: 6,
             kind: Kind::Message(&CAPABILITIES),
             repeated: false,
         },
@@ -686,26 +681,16 @@ pub(crate) static HANDSHAKE_REQUEST: Form = Form {
         },
         Field {
             number: 2,
-            kind: Kind::Scalar(4),
-            repeated: false,
-        },
-        Field {
-            number: 3,
             kind: Kind::String,
             repeated: true,
         },
         Field {
-            number: 4,
+            number: 3,
             kind: Kind::Scalar(4),
             repeated: false,
         },
         Field {
-            number: 6,
-            kind: Kind::String,
-            repeated: false,
-        },
-        Field {
-            number: 7,
+            number: 4,
             kind: Kind::Message(&LIMITS),
             repeated: false,
         },
@@ -734,11 +719,6 @@ pub(crate) static HANDSHAKE_RESPONSE: Form = Form {
         },
         Field {
             number: 4,
-            kind: Kind::Scalar(4),
-            repeated: false,
-        },
-        Field {
-            number: 5,
             kind: Kind::Scalar(4),
             repeated: false,
         },
@@ -1331,17 +1311,17 @@ pub(crate) static READ_START: Form = Form {
             repeated: false,
         },
         Field {
-            number: 5,
+            number: 4,
             kind: Kind::Scalar(8),
             repeated: false,
         },
         Field {
-            number: 6,
+            number: 5,
             kind: Kind::Scalar(1),
             repeated: false,
         },
         Field {
-            number: 7,
+            number: 6,
             kind: Kind::Scalar(1),
             repeated: false,
         },
@@ -1463,13 +1443,6 @@ pub(crate) static SEGMENT_RANGE: Form = Form {
             repeated: false,
         },
     ],
-};
-
-/// The form of `SourceCapabilities`.
-pub(crate) static SOURCE_CAPABILITIES: Form = Form {
-    name: "SourceCapabilities",
-    size: size_of::<v1::SourceCapabilities>(),
-    fields: &[],
 };
 
 /// The form of `StateChange`.

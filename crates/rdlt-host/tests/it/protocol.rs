@@ -11,7 +11,7 @@ use rdlt_connector::{
 use rdlt_connector_reference::MemorySource;
 use rdlt_host::remote::Client;
 use rdlt_host::{CONNECTOR_LOST, Connection, DEADLINE_EXCEEDED, Deadlines, Options, RemoteSource};
-use rdlt_wire::{Limits, PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use rdlt_wire::{Limits, PROTOCOL_MAJOR};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::support::connectors::{Denied, SlowCommits};
@@ -31,10 +31,8 @@ fn quick() -> Options {
 fn handshake(major: u32, role: v1::Role) -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: major,
-        protocol_minor: PROTOCOL_MINOR,
         features: Vec::new(),
         role: role as i32,
-        traceparent: String::new(),
         limits: None,
     }
 }
@@ -72,17 +70,20 @@ fn rows(count: usize) -> serde_json::Value {
 
 #[tokio::test]
 async fn a_host_of_another_major_version_is_refused_at_the_handshake() {
-    let mut client = plane_client(served(memory())).await;
-    let status = client
-        .rpc
-        .handshake(handshake(PROTOCOL_MAJOR + 1, v1::Role::Source))
-        .await
-        .unwrap_err();
-    let error = carried(&status);
-    assert_eq!(
-        (error.kind(), error.code()),
-        (ConnectorErrorKind::Unsupported, Some("protocol_version"))
-    );
+    for major in [PROTOCOL_MAJOR - 1, PROTOCOL_MAJOR + 1] {
+        let mut client = plane_client(served(memory())).await;
+        let status = client
+            .rpc
+            .handshake(handshake(major, v1::Role::Source))
+            .await
+            .unwrap_err();
+        let error = carried(&status);
+        assert_eq!(
+            (error.kind(), error.code()),
+            (ConnectorErrorKind::Unsupported, Some("protocol_version")),
+            "{major}"
+        );
+    }
 }
 
 #[tokio::test]

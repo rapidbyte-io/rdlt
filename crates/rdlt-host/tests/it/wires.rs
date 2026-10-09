@@ -6,7 +6,7 @@ use rdlt_connector::{ConnectorId, Role};
 use rdlt_host::remote::client;
 use rdlt_host::{Connection, ConnectorRef, Local, Options, ProviderError, Remote};
 use rdlt_testkit::tls::Pki;
-use rdlt_wire::{PROTOCOL_MAJOR, PROTOCOL_MINOR};
+use rdlt_wire::PROTOCOL_MAJOR;
 
 use crate::network::{identity, listening, port};
 use crate::process::example;
@@ -19,10 +19,8 @@ fn scripted() -> ConnectorRef {
 fn handshake() -> v1::HandshakeRequest {
     v1::HandshakeRequest {
         protocol_major: PROTOCOL_MAJOR,
-        protocol_minor: PROTOCOL_MINOR,
         features: Vec::new(),
         role: v1::Role::Source as i32,
-        traceparent: String::new(),
         limits: None,
     }
 }

@@ -139,7 +139,7 @@ impl Service {
     }
 
     /// The spec the handshake and the configuration answer with: the connector's, the roles the
-    /// binary serves, and, once connected, what the connected role declares.
+    /// binary serves, and, once configured as a destination, what it can store.
     fn spec(
         &self,
         spec: &crate::spec::ConnectorSpec,
@@ -152,20 +152,17 @@ impl Service {
         if self.served.destination.is_some() {
             roles.push(v1::Role::Destination as i32);
         }
-        let (source_capabilities, destination_capabilities) = match connected {
-            None => (None, None),
-            Some(Connected::Source(_)) => (Some(v1::SourceCapabilities {}), None),
-            Some(Connected::Destination(destination)) => (
-                None,
-                Some(v1::Capabilities::from(destination.capabilities())),
-            ),
+        let destination_capabilities = match connected {
+            Some(Connected::Destination(destination)) => {
+                Some(v1::Capabilities::from(destination.capabilities()))
+            }
+            Some(Connected::Source(_)) | None => None,
         };
         v1::ConnectorSpec {
             id: spec.id.to_string(),
             version: spec.version.clone(),
             roles,
             config_schema_json: spec.config_schema.to_string(),
-            source_capabilities,
             destination_capabilities,
         }
     }

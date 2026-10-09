@@ -26,7 +26,8 @@ tonic-prost.workspace = true
 webpki = { workspace = true, optional = true }
 
 [features]
-# The service's server stub, for a connector that serves the protocol.
+# tonic's server support and the data plane's router, for a connector that serves the
+# protocol; the server stub is generated in every build.
 serve = ["tonic/server"]
 # The protocol's TLS, for connectors reached over the network.
 tls = ["dep:nix", "dep:rustls", "dep:webpki"]
