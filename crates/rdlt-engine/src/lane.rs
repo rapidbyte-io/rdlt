@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::budget::MemoryBudget;
 use crate::env::Env;
 use crate::error::{Error, Side};
-use crate::report::Tally;
+use crate::report::{LaneCounters, Tally};
 use crate::table::Tables;
 
 /// A batch for one table, tagged with its segment and the schema version it was lowered for; the
@@ -50,7 +50,8 @@ pub(crate) struct Lanes {
 /// them it wrote since its last flush, and the reservations of those writes.
 ///
 /// A lane holds at most `share` writers open, and a table's writer of a version older than one
-/// it writes is retired: each is a call into a served destination.
+/// it writes is retired: each is a call into a served destination. What it times is added to the
+/// run's tally once, when the lane is dropped, so a cancelled lane adds what it counted.
 pub(crate) struct Lane {
     receiver: mpsc::Receiver<Message>,
     tables: Arc<Tables>,
@@ -66,7 +67,9 @@ pub(crate) struct Lane {
     index: usize,
     /// The clock the lane's writes and flushes are timed on.
     env: Arc<dyn Env>,
-    /// Where the lane counts its times.
+    /// What the lane's writes and flushes took so far.
+    counted: LaneCounters,
+    /// Where the lane adds what it counted.
     tally: Arc<Tally>,
 }
 
@@ -105,6 +108,7 @@ impl Lanes {
                     writes: 0,
                     index,
                     env: Arc::clone(env),
+                    counted: LaneCounters::default(),
                     tally: Arc::clone(tally),
                 };
                 (sender, lane)
@@ -213,18 +217,14 @@ impl Lane {
         for key in older {
             self.retire(key).await?;
         }
-        let env = Arc::clone(&self.env);
-        let writer = self.writer(write.table, write.version).await?;
+        let (writer, env) = self.writer(write.table, write.version).await?;
         let began = env.instant();
         writer
             .write(write.segment, write.batch)
             .await
             .map_err(|error| Error::connector(Side::Destination, "writing a batch", error))?;
         let writing = env.instant().saturating_duration_since(began);
-        self.tally.add(|counters| {
-            let lane = counters.lane(self.index);
-            lane.writing = lane.writing.saturating_add(writing);
-        });
+        self.counted.writing = self.counted.writing.saturating_add(writing);
         self.written.insert((write.table, write.version));
         self.held.push(write.reservation);
         Ok(())
@@ -245,11 +245,8 @@ impl Lane {
     }
 
     /// Counts a flush of `flushing` as the lane's.
-    fn flushed(&self, flushing: Duration) {
-        self.tally.add(|counters| {
-            let lane = counters.lane(self.index);
-            lane.flushing = lane.flushing.saturating_add(flushing);
-        });
+    fn flushed(&mut self, flushing: Duration) {
+        self.counted.flushing = self.counted.flushing.saturating_add(flushing);
     }
 
     /// Closes the writer at `key`, having flushed what it was written since the last flush, so
@@ -276,15 +273,23 @@ async fn flush(writer: &mut dyn DestinationWriter, env: &dyn Env) -> Result<Dura
     Ok(env.instant().saturating_duration_since(began))
 }
 
+impl Drop for Lane {
+    fn drop(&mut self) {
+        let (lane, counted) = (self.index, self.counted);
+        self.tally.add(|counters| counters.lane(lane).add(&counted));
+    }
+}
+
 impl Lane {
-    /// The lane's writer for `table`'s batches lowered for `version`, opened on the first of them:
-    /// a writer's table names the schema its writes follow, and a partition may still write
-    /// batches of an older version after the table changes.
+    /// The lane's writer for `table`'s batches lowered for `version`, opened on the first of them,
+    /// and the clock its writes are timed on: a writer's table names the schema its writes
+    /// follow, and a partition may still write batches of an older version after the table
+    /// changes.
     async fn writer(
         &mut self,
         table: usize,
         version: SchemaVersion,
-    ) -> Result<&mut Box<dyn DestinationWriter>, Error> {
+    ) -> Result<(&mut dyn DestinationWriter, &dyn Env), Error> {
         self.writes = self.writes.saturating_add(1);
         let key = (table, version);
         if !self.writers.contains_key(&key) && self.writers.len() >= self.share.get() {
@@ -297,7 +302,7 @@ impl Lane {
             Entry::Occupied(open) => {
                 let open = open.into_mut();
                 open.used = self.writes;
-                Ok(&mut open.writer)
+                Ok((open.writer.as_mut(), self.env.as_ref()))
             }
             Entry::Vacant(vacant) => {
                 let view = self.tables.view(table);
@@ -318,7 +323,7 @@ impl Lane {
                     writer,
                     used: self.writes,
                 });
-                Ok(&mut open.writer)
+                Ok((open.writer.as_mut(), self.env.as_ref()))
             }
         }
     }

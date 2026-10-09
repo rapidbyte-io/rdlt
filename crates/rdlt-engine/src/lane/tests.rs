@@ -516,14 +516,49 @@ async fn a_lane_counts_the_time_a_full_queue_blocks_and_its_writes_and_flushes_t
         write(&lanes, &budget, 1, 0, segment, 1).await.unwrap();
     }
     lanes.flush().await.unwrap();
+    drop(lanes);
+    for lane in running {
+        lane.await.unwrap().unwrap();
+    }
     let second = LaneCounters {
         blocked: Duration::from_secs(1),
         writing: Duration::from_secs(3),
         flushing: Duration::from_secs(2),
     };
     assert_eq!(tally.counters().lanes, [LaneCounters::default(), second]);
-    drop(lanes);
-    for lane in running {
-        lane.await.unwrap().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_lane_adds_what_it_counted() {
+    let log = Log::default();
+    let budget = crate::budget::budget(1_000);
+    let tally = Arc::new(Tally::default());
+    let session = Session {
+        log: Arc::clone(&log),
+        fail_open: false,
+        fail_write: false,
+        fail_flush: false,
+        pace: Duration::from_secs(1),
+    };
+    let cancel = CancellationToken::new();
+    let (lanes, mut tasks) = over(session, (1, 1, 1), &budget, &tally);
+    let lane = tokio::spawn(tasks.remove(0).run(cancel.clone()));
+    for segment in 1..=2 {
+        write(&lanes, &budget, 0, 0, segment, 1).await.unwrap();
     }
+    lanes.flush().await.unwrap();
+    // The third write is cancelled halfway, so its time is not counted.
+    write(&lanes, &budget, 0, 0, 3, 1).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    cancel.cancel();
+    let ended = tokio::time::timeout(Duration::from_secs(60), lane)
+        .await
+        .expect("a cancelled lane ends");
+    assert_eq!(ended.unwrap().unwrap_err().kind(), ErrorKind::Cancelled);
+    let counted = LaneCounters {
+        blocked: Duration::ZERO,
+        writing: Duration::from_secs(2),
+        flushing: Duration::from_secs(2),
+    };
+    assert_eq!(tally.counters().lanes, [counted]);
 }
