@@ -120,7 +120,6 @@ async fn shredded(
         let too_large = |large: TooLarge| beyond_a_request(job, &large);
         let mut observing = reserving(job, context, room, too_large).await?;
         let observed = observe().await?;
-        counts.add(&observed.counts());
         let excess = observed.excess();
         if excess <= observing.bytes() {
             observing.shrink(excess);
@@ -129,8 +128,11 @@ async fn shredded(
         if let Some(reserved) = context.budget.try_acquire_working(excess) {
             break (reserved, observed);
         }
+        // This observation is dropped, its chunks never built.
+        counts.add(&observed.passes());
         room = excess;
     };
+    counts.add(&observed.counts());
     let batches = observed.build(pool).await.map_err(failed)?;
     drop(pushes);
     let held = held::shredded(permits, beyond, &batches);
