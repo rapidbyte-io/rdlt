@@ -111,7 +111,7 @@ fn trusted(pki: &Pki) -> rustls::RootCertStore {
     super::roots(&pki.ca()).expect("the CA reads")
 }
 
-/// A client presenting `files` that speaks `versions` with the `suites` of `provider`.
+/// A client presenting `files` that speaks `versions` with `provider`.
 fn speaking(
     provider: rustls::crypto::CryptoProvider,
     versions: &[&'static rustls::SupportedProtocolVersion],
@@ -138,7 +138,7 @@ fn neither_end_speaks_tls_1_2() {
     let server = server_config(&identity(&server_files), &accepted(&pki, &["client"]))
         .expect("the server's configuration builds");
     let old_host = speaking(
-        rustls::crypto::ring::default_provider(),
+        Arc::unwrap_or_clone(super::provider()),
         &[&rustls::version::TLS12],
         &pki,
         &client_files,
@@ -147,16 +147,15 @@ fn neither_end_speaks_tls_1_2() {
         handshake(old_host, server, "localhost"),
         Err(rustls::Error::PeerIncompatible(_))
     ));
-    let old_connector =
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_protocol_versions(&[&rustls::version::TLS12])
-            .expect("TLS 1.2")
-            .with_no_client_auth()
-            .with_single_cert(
-                super::certificates(&server_files.cert).expect("the chain reads"),
-                super::key(&server_files.key).expect("the key reads"),
-            )
-            .expect("the server's configuration builds");
+    let old_connector = ServerConfig::builder_with_provider(super::provider())
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .expect("TLS 1.2")
+        .with_no_client_auth()
+        .with_single_cert(
+            super::certificates(&server_files.cert).expect("the chain reads"),
+            super::key(&server_files.key).expect("the key reads"),
+        )
+        .expect("the server's configuration builds");
     let host = client_config(&identity(&client_files), &pki.ca())
         .expect("the client's configuration builds");
     assert!(matches!(
@@ -173,12 +172,19 @@ fn a_host_offering_only_a_suite_the_connector_lacks_is_refused() {
         &accepted(&pki, &["client"]),
     )
     .expect("the server's configuration builds");
-    let mut provider = rustls::crypto::ring::default_provider();
-    let rustls::SupportedCipherSuite::Tls13(gcm) =
-        rustls::crypto::ring::cipher_suite::TLS13_AES_128_GCM_SHA256
-    else {
-        unreachable!("a TLS 1.3 suite");
-    };
+    let mut provider = Arc::unwrap_or_clone(super::provider());
+    let gcm = provider
+        .cipher_suites
+        .iter()
+        .find_map(|suite| match suite {
+            rustls::SupportedCipherSuite::Tls13(suite)
+                if suite.common.suite == rustls::CipherSuite::TLS13_AES_128_GCM_SHA256 =>
+            {
+                Some(*suite)
+            }
+            _ => None,
+        })
+        .expect("the provider has AES-128-GCM");
     // A real TLS 1.3 suite that neither end implements, offered under that name alone.
     let ccm: &'static rustls::Tls13CipherSuite = Box::leak(Box::new(rustls::Tls13CipherSuite {
         common: rustls::crypto::CipherSuiteCommon {
@@ -230,8 +236,7 @@ fn a_host_without_a_certificate_is_refused() {
     for certificate in super::certificates(&pki.ca()).expect("the CA reads") {
         roots.add(certificate).expect("a valid anchor");
     }
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut anonymous = ClientConfig::builder_with_provider(provider)
+    let mut anonymous = ClientConfig::builder_with_provider(super::provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .expect("TLS 1.3")
         .with_root_certificates(roots)
@@ -605,8 +610,7 @@ fn naming_hosts_changes_nothing_else_of_how_a_certificate_is_verified() {
     use rustls::server::danger::ClientCertVerifier as _;
     let pki = Pki::new("ca");
     let roots = Arc::new(super::roots(&pki.ca()).expect("the CA reads"));
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let inner = WebPkiClientVerifier::builder_with_provider(roots, provider)
+    let inner = WebPkiClientVerifier::builder_with_provider(roots, super::provider())
         .build()
         .expect("a verifier");
     let hosts = Hosts::new(["client"]).expect("a host is named");
@@ -687,8 +691,7 @@ fn naming_hosts_demands_a_certificate_though_what_it_wraps_would_take_none() {
     use rustls::server::danger::ClientCertVerifier as _;
     let pki = Pki::new("ca");
     let roots = Arc::new(super::roots(&pki.ca()).expect("the CA reads"));
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let lenient = WebPkiClientVerifier::builder_with_provider(roots, provider)
+    let lenient = WebPkiClientVerifier::builder_with_provider(roots, super::provider())
         .allow_unauthenticated()
         .build()
         .expect("a verifier");

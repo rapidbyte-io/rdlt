@@ -1,5 +1,5 @@
 //! The protocol's TLS for connectors reached over the network: TLS 1.3 alone, with mutual
-//! authentication, on the `ring` provider, from certificates and keys in PEM files.
+//! authentication, on rustls's aws-lc-rs provider, from certificates and keys in PEM files.
 //!
 //! Both ends take their configuration from here, so the policy is in one place: a host verifies
 //! the connector's certificate against its CA bundle and the endpoint's name, and a connector
@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rustls::client::Resumption;
+use rustls::crypto::CryptoProvider;
 use rustls::server::{NoServerSessionStorage, WebPkiClientVerifier};
 use rustls::{ClientConfig, ServerConfig};
 
@@ -25,6 +26,13 @@ use hosts::Named;
 
 /// The application protocol spoken over the TLS, and no other: HTTP/2, for gRPC.
 pub const ALPN: &[u8] = b"h2";
+
+/// The cryptography of every TLS connection: rustls's aws-lc-rs provider, with its cipher suites,
+/// key exchange groups and signature schemes, a post-quantum hybrid exchange preferred.
+#[must_use]
+pub fn provider() -> Arc<CryptoProvider> {
+    Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+}
 
 /// A certificate chain and its private key, in PEM files.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,7 +144,7 @@ pub enum TlsError {
 /// A [`TlsError`] when a file cannot be read, holds nothing usable, the key file is not the
 /// user's alone, or the key does not match.
 pub fn server_config(identity: &Identity, accepted: &Accepted) -> Result<ServerConfig, TlsError> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = provider();
     let roots = Arc::new(roots(&accepted.ca)?);
     let mut verifier = WebPkiClientVerifier::builder_with_provider(roots, Arc::clone(&provider));
     if let Some(crl) = &accepted.crl {
@@ -167,8 +175,7 @@ pub fn server_config(identity: &Identity, accepted: &Accepted) -> Result<ServerC
 /// A [`TlsError`] when a file cannot be read, holds nothing usable, the key file is not the
 /// user's alone, or the key does not match.
 pub fn client_config(identity: &Identity, ca: &std::path::Path) -> Result<ClientConfig, TlsError> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut config = ClientConfig::builder_with_provider(provider)
+    let mut config = ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(TlsError::Config)?
         .with_root_certificates(roots(ca)?)

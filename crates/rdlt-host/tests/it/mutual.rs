@@ -19,8 +19,7 @@ fn anonymous(pki: &Pki) -> rustls::ClientConfig {
             .add(certificate.expect("a certificate"))
             .expect("a valid anchor");
     }
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+    let mut config = rustls::ClientConfig::builder_with_provider(rdlt_wire::tls::provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .expect("TLS 1.3")
         .with_root_certificates(roots)
