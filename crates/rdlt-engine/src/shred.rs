@@ -270,6 +270,7 @@ fn each(
     mut record: impl FnMut(&[u8]) -> Result<(), sonic_rs::Error>,
 ) -> Result<Appended, ShredError> {
     for (index, bytes) in chunk.records().enumerate() {
+        let bytes = bytes?;
         let parsed = record(bytes);
         // The fast parse reads a float of a vast negative exponent as zero, as it reads `0.0`:
         // a record where it read a zero and that may hold such a number is parsed exactly.

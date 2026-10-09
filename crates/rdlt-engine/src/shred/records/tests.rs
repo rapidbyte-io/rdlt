@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use proptest::prelude::*;
 
-use super::chunks;
+use super::{Chunk, Form, Part, chunks};
 use crate::shred::ShredError;
 
 /// The records of each chunk of `pushes`, as text.
@@ -16,7 +16,9 @@ fn found(pushes: &[&str], chunk_bytes: usize) -> Vec<Vec<String>> {
         .map(|chunk| {
             let records: Vec<String> = chunk
                 .records()
-                .map(|record| String::from_utf8(record.to_vec()).unwrap())
+                .map(|record| {
+                    String::from_utf8(record.expect("the scan finds it again").to_vec()).unwrap()
+                })
                 .collect();
             assert_eq!(records.len(), chunk.rows);
             records
@@ -43,7 +45,7 @@ fn a_chunk_keeps_a_span_of_each_push_however_many_records_it_holds() {
     assert_eq!(chunks[0].parts.len(), 2, "one span a push");
     assert_eq!((chunks[0].rows, chunks[0].before), (200_000, 0));
     assert_eq!(chunks[0].records().count(), 200_000);
-    assert!(chunks[0].records().all(|record| record == b"{}"));
+    assert!(chunks[0].records().all(|record| record == Ok(&b"{}"[..])));
 }
 
 #[test]
@@ -112,4 +114,24 @@ proptest! {
         let found: Vec<String> = found(&[push.as_str()], chunk_bytes).concat();
         prop_assert_eq!(found, records);
     }
+}
+
+#[test]
+fn a_span_that_breaks_when_it_is_found_again_is_an_error_not_an_end() {
+    // A span no scan of a whole push cuts: its first element closes a bracket it never opened.
+    let chunk = Chunk {
+        parts: vec![Part {
+            push: Bytes::from_static(b"[{}},{}]"),
+            form: Form::Elements,
+            span: 1..7,
+        }],
+        rows: 2,
+        before: 0,
+        bytes: 6,
+    };
+    let found: Vec<_> = chunk.records().collect();
+    assert!(
+        matches!(found.as_slice(), [Err(ShredError::Internal(_))]),
+        "{found:?}"
+    );
 }
