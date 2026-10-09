@@ -18,7 +18,6 @@ rdlt-connector-macros = { path = "crates/rdlt-connector-macros", version = "0.0.
 rdlt-connector-reference = { path = "crates/rdlt-connector-reference", version = "0.0.0" } # reference connectors
 rdlt-engine = { path = "crates/rdlt-engine", version = "0.0.0" }                           # the engine, for rdlt-sim
 rdlt-host = { path = "crates/rdlt-host", version = "0.0.0" }                               # connectors out of process
-rdlt-log-store = { path = "crates/rdlt-log-store", version = "0.0.0" }                     # where a pipeline keeps its write-ahead logs: a directory or an S3 bucket
 rdlt-testkit = { path = "crates/rdlt-testkit" }                                            # drawn data and the value model, for tests and rdlt-sim
 rdlt-wire = { path = "crates/rdlt-wire", version = "0.0.0" }                               # the wire protocol: messages, the Arrow codec and limits
 
