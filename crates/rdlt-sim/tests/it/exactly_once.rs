@@ -68,8 +68,14 @@ fn every_row_lands_exactly_once_through_faults_crashes_and_concurrent_runs() {
     // their cursors for a commit. The test job's twenty seeds are too few to hold the share; the
     // shards' and the nightly's thousands hold it.
     if checked.len() >= 100 {
-        let pushes = checked.iter().filter(|run| run.memory_waits > 0).count();
-        let cursors = checked.iter().filter(|run| run.cursor_waits > 0).count();
+        let pushes = checked
+            .iter()
+            .filter(|run| run.waits.intake.count + run.waits.work.count > 0)
+            .count();
+        let cursors = checked
+            .iter()
+            .filter(|run| run.waits.cursors.count > 0)
+            .count();
         assert!(
             pushes * 5 >= checked.len() && cursors * 10 >= checked.len(),
             "of {} seeds, {pushes} made pushes wait and {cursors} cursors",

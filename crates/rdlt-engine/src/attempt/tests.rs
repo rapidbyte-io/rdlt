@@ -124,7 +124,7 @@ fn lanes_never_exceed_the_writers_an_attempt_holds_open() {
 #[tokio::test]
 async fn the_default_part_stages_within_the_default_budget_and_a_byte_more_than_it_leaves_is_refused()
  {
-    let budget = crate::budget::MemoryBudget::new(256 << 20);
+    let budget = crate::budget::budget(256 << 20);
     let part = u64::try_from(crate::limits::OBJECT_PART_BYTES).expect("a size");
     let held = super::staged(&budget, part)
         .await

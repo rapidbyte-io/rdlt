@@ -40,7 +40,7 @@ async fn windowed(window: u64, gap: u64) -> Result<(), crate::Error> {
     load.rows = 2_000;
     let limit = 60 * load.frame();
     let store = Arc::new(MemoryWal::default());
-    let budget = MemoryBudget::new(64 << 20);
+    let budget = crate::budget::budget(64 << 20);
     let (log, task) = started(&store, limit);
     let written = async move {
         let orders = view("orders");

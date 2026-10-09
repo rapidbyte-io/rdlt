@@ -4,9 +4,12 @@
 )]
 
 use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
-use super::{Denied, Exhausted, MemoryBudget, Shares, TooLarge};
+use super::{Denied, Exhausted, MemoryBudget, Reservation, Shares, TooLarge, budget};
+use crate::env::InlineEnv;
+use crate::report::{Waited, Waits};
 
 /// A budget whose shares are round: 100 for cursors, 400 for the log, 200 for tables' records,
 /// 1,600 for reads, 400 for answers, and 3,700 for data, of which a request for lowering takes
@@ -17,8 +20,7 @@ const HOUR: Duration = Duration::from_secs(3600);
 
 /// A budget of `capacity` whose requests wait an hour at most.
 fn bounded(capacity: u64) -> MemoryBudget {
-    let env = std::sync::Arc::new(crate::env::SystemEnv::one_core());
-    MemoryBudget::new(capacity).within(env, HOUR)
+    MemoryBudget::new(capacity, std::sync::Arc::new(InlineEnv), HOUR)
 }
 
 /// Whether `request` is still waiting after a second.
@@ -87,7 +89,7 @@ fn the_shares_of_a_budget_never_pass_it() {
 
 #[tokio::test]
 async fn requests_that_fit_are_admitted_at_once_and_released_when_dropped() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let first = budget.acquire(1_000).await.unwrap();
     let second = budget.acquire(700).await.unwrap();
     assert_eq!((first.bytes(), second.bytes()), (1_000, 700));
@@ -177,7 +179,7 @@ async fn requests_for_lowering_never_pass_the_budget_however_many_ask() {
 
 #[tokio::test(start_paused = true)]
 async fn a_request_waits_until_enough_is_released() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let held = budget.acquire(1_200).await.unwrap();
     let waiting = budget.acquire(1_000);
     tokio::pin!(waiting);
@@ -189,7 +191,7 @@ async fn a_request_waits_until_enough_is_released() {
 
 #[tokio::test(start_paused = true)]
 async fn waiting_requests_are_admitted_in_arrival_order() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let held = budget.acquire(2_100).await.unwrap();
     let order = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
     let large = {
@@ -220,7 +222,7 @@ async fn waiting_requests_are_admitted_in_arrival_order() {
 
 #[tokio::test(start_paused = true)]
 async fn pushes_leave_a_request_for_lowering_its_room() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     // Pushes take all they may.
     let pushes = budget.acquire(2_100).await.unwrap();
     let more = budget.acquire(1);
@@ -238,7 +240,7 @@ async fn pushes_leave_a_request_for_lowering_its_room() {
 
 #[tokio::test(start_paused = true)]
 async fn a_push_never_takes_the_room_a_request_for_lowering_waits_for() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let pushes = budget.acquire(800).await.unwrap();
     let first = budget.acquire_working(1_600).await.unwrap();
     let second = budget.acquire_working(1_200).await.unwrap();
@@ -320,12 +322,12 @@ async fn sixteen_reads_keeping_all_they_may_leave_pushes_and_checkpoints_flowing
 
 #[tokio::test(start_paused = true)]
 async fn a_cursor_that_waits_calls_for_a_commit_and_presses_no_one() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let held = budget.acquire_cursor(60).await.unwrap();
     assert!(!due(&budget).await, "no cursor waits");
     let waiting = budget.acquire_cursor(60);
     tokio::pin!(waiting);
-    assert_eq!(budget.waits(), (0, 0));
+    assert_eq!(budget.waited(), Waits::default());
     tokio::select! {
         biased;
         _ = &mut waiting => panic!("two cursors of 60 pass a share of 100"),
@@ -335,12 +337,21 @@ async fn a_cursor_that_waits_calls_for_a_commit_and_presses_no_one() {
     drop(held);
     assert_eq!(waiting.await.unwrap().bytes(), 60);
     assert!(!due(&budget).await, "the cursor was admitted");
-    assert_eq!(budget.waits(), (0, 1));
+    // It waited out the second no write released it in.
+    let cursors = Waited {
+        count: 1,
+        time: Duration::from_secs(1),
+    };
+    let waited = Waits {
+        cursors,
+        ..Waits::default()
+    };
+    assert_eq!(budget.waited(), waited);
 }
 
 #[tokio::test(start_paused = true)]
 async fn an_abandoned_request_releases_what_it_was_granted() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let held = budget.acquire(2_100).await.unwrap();
     {
         let abandoned = budget.acquire(1_000);
@@ -357,7 +368,7 @@ async fn an_abandoned_request_releases_what_it_was_granted() {
 
 #[tokio::test(start_paused = true)]
 async fn a_waiter_that_gave_up_never_counts_toward_the_peak() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let held = budget.acquire(1_000).await.unwrap();
     {
         let abandoned = budget.acquire(1_500);
@@ -371,7 +382,7 @@ async fn a_waiter_that_gave_up_never_counts_toward_the_peak() {
 
 #[tokio::test]
 async fn debug_output_shows_capacity_and_use() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let reservation = budget.acquire(3).await.unwrap();
     assert!(format!("{budget:?}").contains("capacity: 6400"));
     assert!(format!("{budget:?}").contains("reserved: 3"));
@@ -380,7 +391,7 @@ async fn debug_output_shows_capacity_and_use() {
 
 #[tokio::test(start_paused = true)]
 async fn pressure_is_felt_while_a_request_waits_and_eases_once_it_is_admitted() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let held = budget.acquire(1_500).await.unwrap();
     assert!(!felt(&budget).await, "nothing waits");
     let waiting = budget.acquire(900);
@@ -393,7 +404,8 @@ async fn pressure_is_felt_while_a_request_waits_and_eases_once_it_is_admitted() 
     drop(held);
     let admitted = waiting.await.unwrap();
     assert!(!felt(&budget).await, "the request was admitted");
-    assert_eq!(budget.waits(), (1, 0));
+    assert_eq!(budget.waited().intake.count, 1);
+    assert_eq!(budget.waited().work, Waited::default());
     // A request for lowering presses as a push does.
     let work = (
         budget.acquire_working(1_600).await.unwrap(),
@@ -411,7 +423,7 @@ async fn pressure_is_felt_while_a_request_waits_and_eases_once_it_is_admitted() 
 
 #[tokio::test(start_paused = true)]
 async fn a_holder_of_queued_pieces_presses_for_their_writes_while_it_waits() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     assert!(!felt(&budget).await);
     let first = budget.pressing();
     let second = budget.pressing();
@@ -510,7 +522,7 @@ async fn a_request_admitted_before_the_deadline_is_not_failed_by_it() {
 
 #[tokio::test(start_paused = true)]
 async fn a_request_nobody_waits_for_leaves_the_queue_at_once() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let held = budget.acquire(1_200).await.unwrap();
     {
         let abandoned = budget.acquire(1_000);
@@ -531,7 +543,7 @@ async fn a_request_nobody_waits_for_leaves_the_queue_at_once() {
 
 #[tokio::test(start_paused = true)]
 async fn a_reservation_shrinks_and_never_grows() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let mut piece = budget.acquire(1_600).await.unwrap();
     let waiting = budget.acquire(700);
     tokio::pin!(waiting);
@@ -549,7 +561,7 @@ async fn a_reservation_shrinks_and_never_grows() {
 
 #[tokio::test(start_paused = true)]
 async fn a_part_split_off_a_reservation_is_released_on_its_own() {
-    let budget = MemoryBudget::new(BUDGET);
+    let budget = budget(BUDGET);
     let mut whole = budget.acquire_working(1_000).await.unwrap();
     let part = whole.split(300);
     assert_eq!(
@@ -571,7 +583,7 @@ async fn a_part_split_off_a_reservation_is_released_on_its_own() {
 
 #[tokio::test]
 async fn a_waiter_gone_before_it_is_admitted_gives_back_what_it_was_admitted() {
-    let budget = MemoryBudget::new(6_400);
+    let budget = budget(6_400);
     // The cursors' share, a hundred bytes, held whole while a waiter queues behind it.
     let holding = budget.acquire_cursor(100).await.unwrap();
     let (_, receiver) = budget
@@ -595,4 +607,114 @@ async fn a_waiter_gone_before_it_is_admitted_gives_back_what_it_was_admitted() {
     assert_eq!(budget.peak(), 100);
     let again = tokio::time::timeout(Duration::from_secs(5), budget.acquire_cursor(100));
     assert_eq!(again.await.unwrap().unwrap().bytes(), 100);
+}
+
+/// A request of each share, the requests that fill the share, and where its waits are counted.
+type Waiter = (
+    &'static str,
+    fn(&MemoryBudget, u64) -> Pin<Box<dyn Future<Output = Result<Reservation, Denied>> + '_>>,
+    &'static [u64],
+    fn(&Waits) -> Waited,
+);
+
+const WAITERS: [Waiter; 6] = [
+    (
+        "a push",
+        |budget, bytes| Box::pin(budget.acquire(bytes)),
+        &[2_100],
+        |waits| waits.intake,
+    ),
+    (
+        "lowering",
+        |budget, bytes| Box::pin(budget.acquire_working(bytes)),
+        &[1_600, 1_600, 500],
+        |waits| waits.work,
+    ),
+    (
+        "a cursor",
+        |budget, bytes| Box::pin(budget.acquire_cursor(bytes)),
+        &[100],
+        |waits| waits.cursors,
+    ),
+    (
+        "the log",
+        |budget, bytes| Box::pin(budget.acquire_log(bytes)),
+        &[400],
+        |waits| waits.log,
+    ),
+    (
+        "a table's records",
+        |budget, bytes| Box::pin(budget.acquire_tables(bytes)),
+        &[200],
+        |waits| waits.tables,
+    ),
+    (
+        "an answer",
+        |budget, bytes| Box::pin(budget.acquire_control(bytes)),
+        &[400],
+        |waits| waits.control,
+    ),
+];
+
+#[tokio::test(start_paused = true)]
+async fn a_waiting_request_records_its_shares_count_and_the_time_it_waited() {
+    for (what, request, fill, of) in WAITERS {
+        let budget = budget(BUDGET);
+        let mut held = Vec::new();
+        for bytes in fill {
+            held.push(request(&budget, *bytes).await.unwrap());
+        }
+        let waiting = request(&budget, 1);
+        let release = async {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            drop(held);
+        };
+        let (admitted, ()) = tokio::join!(waiting, release);
+        assert_eq!(admitted.unwrap().bytes(), 1, "{what}");
+        let waited = Waited {
+            count: 1,
+            time: Duration::from_secs(3),
+        };
+        assert_eq!(of(&budget.waited()), waited, "{what}");
+        let total: u64 = WAITERS
+            .iter()
+            .map(|(_, _, _, of)| of(&budget.waited()).count)
+            .sum();
+        assert_eq!(total, 1, "{what}: no other share waited");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_that_stops_waiting_or_waits_out_the_deadline_records_its_wait() {
+    let budget = bounded(BUDGET);
+    let held = budget.acquire(2_100).await.unwrap();
+    {
+        let abandoned = budget.acquire(1);
+        tokio::pin!(abandoned);
+        assert!(waits(&mut abandoned).await);
+    }
+    let Err(Denied::Exhausted(exhausted)) = budget.acquire(1).await else {
+        panic!("a push waits out the deadline");
+    };
+    assert_eq!(exhausted.waited, HOUR);
+    let intake = Waited {
+        count: 2,
+        time: HOUR + Duration::from_secs(1),
+    };
+    assert_eq!(budget.waited().intake, intake);
+    drop(held);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_read_waiting_for_a_slot_records_the_time_it_waited() {
+    let budget = bounded(BUDGET);
+    let slot = budget.read_slot(tokio::time::sleep(Duration::from_secs(2)));
+    assert_eq!(slot.await, Ok(()));
+    let late = budget.read_slot(std::future::pending::<()>()).await;
+    assert_eq!(late.unwrap_err().waited, HOUR);
+    let reads = Waited {
+        count: 2,
+        time: HOUR + Duration::from_secs(2),
+    };
+    assert_eq!(budget.waited().reads, reads);
 }

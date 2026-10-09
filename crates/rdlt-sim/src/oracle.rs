@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rdlt_connector::{ColumnPath, PartitionId, PipelineId, ReadMode, StreamName};
-use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until};
+use rdlt_engine::{Engine, Env as _, PipelinePlan, Report, StreamPlan, Until, Waits};
 
 use crate::destination::{committed_next, completions, reads_in_progress};
 use crate::env::SimEnv;
@@ -93,7 +93,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
         world,
         name,
         budget,
-        waits: (0, 0),
+        waits: Waits::default(),
     };
     let stopped = simulation.load(&mut rng).await;
     // What the destination holds once the workload is loaded; the checks that follow load
@@ -107,8 +107,7 @@ async fn simulate(seed: Seed, env: Arc<SimEnv>, net: Option<Arc<Net>>) -> Checke
     assert!(violations.is_empty(), "seed {seed}: {violations:#?}");
     Checked {
         digest,
-        memory_waits: simulation.waits.0,
-        cursor_waits: simulation.waits.1,
+        waits: simulation.waits,
         simulated: clock.instant() - started,
         features: simulation.world.workload.features,
     }
@@ -126,8 +125,8 @@ struct Simulation {
     relaxed: Vec<Relaxed>,
     /// Bytes: the engine's memory budget, which no run reserves more than.
     budget: u64,
-    /// How many times its runs' pushes and pieces, and their cursors, waited on the budget.
-    waits: (u64, u64),
+    /// How often and how long its runs waited on the budget, by share.
+    waits: Waits,
 }
 
 impl Simulation {

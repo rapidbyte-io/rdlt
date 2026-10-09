@@ -121,7 +121,7 @@ fn lanes(
         log,
         fails,
         window,
-        &MemoryBudget::new(1 << 30),
+        &crate::budget::budget(1 << 30),
     )
 }
 
@@ -230,7 +230,7 @@ fn routing_is_stable_and_spreads_partitions_across_lanes() {
 #[tokio::test]
 async fn a_lane_stages_writes_in_order_and_flushes_every_table_before_answering() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000);
+    let budget = crate::budget::budget(1_000);
     let (lanes, mut tasks) = lanes(1, 2, &log, [false, false, false], 8);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     write(&lanes, &budget, 0, 1, 1, 3).await.unwrap();
@@ -260,7 +260,7 @@ async fn a_lane_stages_writes_in_order_and_flushes_every_table_before_answering(
 #[tokio::test]
 async fn a_failed_write_ends_the_lane_with_a_destination_error() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000);
+    let budget = crate::budget::budget(1_000);
     let (lanes, mut tasks) = lanes(1, 1, &log, [false, true, false], 1);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
@@ -277,7 +277,7 @@ async fn a_failed_write_ends_the_lane_with_a_destination_error() {
 #[tokio::test]
 async fn a_failed_flush_ends_the_lane_and_the_flush_is_not_answered() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000);
+    let budget = crate::budget::budget(1_000);
     let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, true], 1);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
@@ -307,7 +307,7 @@ async fn cancelling_a_lane_ends_it() {
 #[tokio::test]
 async fn a_lane_that_cannot_open_a_writer_ends_with_a_destination_error() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000);
+    let budget = crate::budget::budget(1_000);
     let (lanes, mut tasks) = lanes(1, 1, &log, [true, false, false], 1);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     write(&lanes, &budget, 0, 0, 1, 1).await.unwrap();
@@ -322,7 +322,7 @@ async fn a_lane_that_cannot_open_a_writer_ends_with_a_destination_error() {
 #[tokio::test]
 async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_for() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000);
+    let budget = crate::budget::budget(1_000);
     let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     let at = |version| (0, 0, SchemaVersion(version));
@@ -354,7 +354,7 @@ async fn each_write_goes_through_a_writer_of_the_schema_version_it_was_lowered_f
 #[tokio::test]
 async fn a_flush_reaches_only_the_writers_written_since_the_last() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000);
+    let budget = crate::budget::budget(1_000);
     let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     let at = |version| (0, 0, SchemaVersion(version));
@@ -385,7 +385,7 @@ async fn logged(log: &Log, entry: &str) {
 async fn a_write_holds_its_bytes_until_its_writer_flushes_them() {
     // A writer may buffer what it stages until it flushes, so the bytes stay charged till then.
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000);
+    let budget = crate::budget::budget(1_000);
     let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
@@ -401,7 +401,7 @@ async fn a_write_holds_its_bytes_until_its_writer_flushes_them() {
 async fn a_lane_flushes_its_writers_once_the_budget_is_pressed() {
     let log = Log::default();
     // Pushes may take 27 bytes of this budget: two writes of ten and no third.
-    let budget = MemoryBudget::new(64);
+    let budget = crate::budget::budget(64);
     let (lanes, mut tasks) = budgeted(1, 1, &log, [false, false, false], 8, &budget);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     write(&lanes, &budget, 0, 0, 1, 3).await.unwrap();
@@ -431,7 +431,7 @@ fn open(log: &Log) -> usize {
 #[tokio::test]
 async fn a_lane_retires_the_writer_of_a_superseded_version() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000_000);
+    let budget = crate::budget::budget(1_000_000);
     let (lanes, mut tasks) = lanes(1, 1, &log, [false, false, false], 8);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));
     for version in 1..=50 {
@@ -452,7 +452,7 @@ async fn a_lane_retires_the_writer_of_a_superseded_version() {
 #[tokio::test]
 async fn a_lane_holds_no_more_writers_than_its_share() {
     let log = Log::default();
-    let budget = MemoryBudget::new(1_000_000);
+    let budget = crate::budget::budget(1_000_000);
     let tables = 200;
     let (lanes, mut tasks) = lanes(1, tables, &log, [false, false, false], 8);
     let lane = tokio::spawn(tasks.remove(0).run(CancellationToken::new()));

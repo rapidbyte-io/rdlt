@@ -207,6 +207,8 @@ async fn a_following_run_reads_bounded_partitions_no_more_at_once_than_it_has_sl
     );
     assert!(shaped.busiest.load(Ordering::SeqCst) <= 2);
     assert!(contiguous("slotted", 6).iter().all(|count| *count >= 3));
+    // Four of the six first reads wait for one of the two slots.
+    assert!(outcome.report.counters.waits.reads.count >= 4);
 }
 
 #[tokio::test(start_paused = true)]

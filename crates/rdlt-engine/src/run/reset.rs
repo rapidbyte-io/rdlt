@@ -69,8 +69,11 @@ impl Engine {
     ) -> Result<ResetReport, Error> {
         // A reset holds nothing but what decoding the connectors' answers takes: a budget of the
         // run's memory holds it.
-        let budget = crate::budget::MemoryBudget::new(self.config.memory().get())
-            .within(Arc::clone(&self.env), self.config.memory_wait());
+        let budget = crate::budget::MemoryBudget::new(
+            self.config.memory().get(),
+            Arc::clone(&self.env),
+            self.config.memory_wait(),
+        );
         let waits =
             Waits::new(Arc::clone(&self.env), self.config.connector_wait()).charging(&budget);
         let (source, destination) = (waits.source(source), waits.destination(destination));

@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use rdlt_engine::Report;
+use rdlt_engine::{Report, Waited, Waits};
 use serde_json::{Map, Value, json};
 
 use super::refusals::{Failure, Prediction, unexplained};
@@ -17,10 +17,8 @@ use crate::swarm::Features;
 pub struct Checked {
     /// What the destination holds.
     pub digest: Digest,
-    /// How many times a push or a piece being lowered waited for room in the budget.
-    pub memory_waits: u64,
-    /// How many times a cursor waited for a commit.
-    pub cursor_waits: u64,
+    /// How often and how long its runs waited for room in the budget, by share.
+    pub waits: Waits,
     /// How long the simulation took on its own clock.
     pub simulated: Duration,
     /// The features its seed turned on.
@@ -35,8 +33,7 @@ impl Recorded for Checked {
             json!(self.simulated.as_secs_f64() * 1e3),
         );
         fields.insert("features".to_owned(), json!(self.features));
-        fields.insert("memory_waits".to_owned(), json!(self.memory_waits));
-        fields.insert("cursor_waits".to_owned(), json!(self.cursor_waits));
+        fields.insert("waits".to_owned(), json!(self.waits));
         fields
     }
 }
@@ -60,9 +57,27 @@ impl super::Simulation {
                 "seed {seed}: phase {phase}: a run reserved {} bytes of a budget of {budget}",
                 report.peak_memory
             );
-            self.waits.0 += report.memory_waits;
-            self.waits.1 += report.cursor_waits;
+            added(&mut self.waits, &report.counters.waits);
         }
+    }
+}
+
+/// `total` with the waits of `more` added, share by share.
+fn added(total: &mut Waits, more: &Waits) {
+    let shares = [
+        (&mut total.intake, more.intake),
+        (&mut total.work, more.work),
+        (&mut total.cursors, more.cursors),
+        (&mut total.log, more.log),
+        (&mut total.tables, more.tables),
+        (&mut total.control, more.control),
+        (&mut total.reads, more.reads),
+    ];
+    for (total, more) in shares {
+        *total = Waited {
+            count: total.count + more.count,
+            time: total.time + more.time,
+        };
     }
 }
 

@@ -12,6 +12,7 @@ use crate::limits::{
     CONTROL_SHARE, CURSOR_SHARE, LOG_SHARE, MIN_PIECE, PIECE_SHARE, READ_SHARE, REQUEST_SHARE,
     TABLE_SHARE,
 };
+use crate::report::Waits;
 use crate::watch;
 
 /// Whose bytes a reservation holds: which share they are of.
@@ -184,8 +185,8 @@ pub(super) struct Ledger {
     pub(super) pressed: watch::Sender<bool>,
     /// Whether a cursor or a table's records wait for what a commit releases.
     pub(super) cursor_waits: watch::Sender<bool>,
-    /// How many requests for pushes or lowering waited, and how many cursors.
-    pub(super) waited: (u64, u64),
+    /// The requests that waited, and for how long, by share.
+    pub(super) waited: Waits,
 }
 
 /// The classes that wait, in the order their waiters are admitted: cursors, the log's frames,
@@ -218,7 +219,7 @@ impl Ledger {
             pressing: 0,
             pressed: watch::Sender::new(false),
             cursor_waits: watch::Sender::new(false),
-            waited: (0, 0),
+            waited: Waits::default(),
         }
     }
 
@@ -317,13 +318,22 @@ impl Ledger {
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         self.queue(class)?.push_back(Waiter { id, bytes, sender });
-        match class {
-            Class::Cursor => self.waited.1 = self.waited.1.saturating_add(1),
-            Class::Intake | Class::Work => self.waited.0 = self.waited.0.saturating_add(1),
-            Class::Log | Class::Tables | Class::Read | Class::Control => {}
-        }
         self.press();
         Some((id, receiver))
+    }
+
+    /// Notes that a request of `class` waited `time`.
+    pub(super) fn count_wait(&mut self, class: Class, time: Duration) {
+        let waited = match class {
+            Class::Intake => &mut self.waited.intake,
+            Class::Work => &mut self.waited.work,
+            Class::Cursor => &mut self.waited.cursors,
+            Class::Log => &mut self.waited.log,
+            Class::Tables => &mut self.waited.tables,
+            Class::Read => &mut self.waited.reads,
+            Class::Control => &mut self.waited.control,
+        };
+        waited.add(time);
     }
 
     /// Forgets the request waiting at place `id`, where it still waits.
