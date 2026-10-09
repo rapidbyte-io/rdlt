@@ -14,7 +14,7 @@ mod runner;
 mod tests;
 mod wide;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
@@ -59,7 +59,9 @@ impl From<ShredError> for Refused {
 
 /// Shreds the JSON `pushes` on the calling thread, in chunks of `chunk_bytes`.
 pub fn shred(pushes: &[Bytes], chunk_bytes: usize) -> Result<Vec<RecordBatch>, Refused> {
-    ready(shredded(&Pool::inline(), pushes, chunk_bytes))
+    // One pool for every call, so a call allocates nothing for it.
+    static INLINE: LazyLock<Pool> = LazyLock::new(Pool::inline);
+    ready(shredded(&INLINE, pushes, chunk_bytes))
 }
 
 /// Shreds the JSON `pushes` on `env`'s compute pool, in chunks of `chunk_bytes`, as a partition
