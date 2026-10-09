@@ -24,7 +24,10 @@ async fn a_host_that_sends_part_of_its_preface_in_time_fails_to_read_once_the_ti
         .expect("what arrived reads");
     assert_eq!(buffer.filled().len(), PREFACE / 2 + PREFACE - 1);
     let mut rest = [0; PREFACE];
-    let failed = speaking.read(&mut rest).await.expect_err("the time passes");
+    let failed = tokio::time::timeout(WITHIN * 2, speaking.read(&mut rest))
+        .await
+        .expect("the read ends once the time passes")
+        .expect_err("the time passes");
     assert_eq!(failed.kind(), std::io::ErrorKind::TimedOut);
 }
 
