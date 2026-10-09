@@ -19,9 +19,11 @@ all_features = true
 # So is one that joins a directory's open flags, each a bit of its own, with `^` for `|`; and one
 # that takes every widen a destination refuses for a column not yet kept from widening: the
 # resolver widens no column kept from it on any path, so a refusal never names one, and the guard
-# only bounds the loop were that to change.
+# only bounds the loop were that to change. A JSON lines reader's `Debug` names the type and
+# nothing else, since its decoder has none: what it writes is no behaviour a test can hold.
 exclude_re = [
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
+  "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-connector-reference/src/rooted\\.rs:.*replace \\| with \\^ in Dir::(resolved|dir|opened|create)$",
   "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
