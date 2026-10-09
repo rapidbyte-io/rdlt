@@ -182,22 +182,31 @@ struct Written<'a> {
     phases: u32,
 }
 
-/// The kind a commit frame is marked with.
+/// The kinds frames are marked with.
+const HEADER: u8 = 1;
+const SCHEMA: u8 = 2;
+pub(crate) const BATCH: u8 = 3;
+const SEAL: u8 = 4;
 const COMMIT: u8 = 5;
+const CLOSED: u8 = 7;
+const BEGUN: u8 = 8;
+const END: u8 = 9;
+const FENCE: u8 = 10;
+const RELIEVED: u8 = 11;
 
 impl Frame {
     fn kind(&self) -> u8 {
         match self {
-            Self::Header(_) => 1,
-            Self::Schema(_) => 2,
-            Self::Batch(_) => 3,
-            Self::Seal(_) => 4,
+            Self::Header(_) => HEADER,
+            Self::Schema(_) => SCHEMA,
+            Self::Batch(_) => BATCH,
+            Self::Seal(_) => SEAL,
             Self::Commit(_) => COMMIT,
-            Self::Closed => 7,
-            Self::Begun(_) => 8,
-            Self::End(_) => 9,
-            Self::Fence(_) => 10,
-            Self::Relieved => 11,
+            Self::Closed => CLOSED,
+            Self::Begun(_) => BEGUN,
+            Self::End(_) => END,
+            Self::Fence(_) => FENCE,
+            Self::Relieved => RELIEVED,
         }
     }
 
@@ -340,9 +349,6 @@ fn opened(bytes: &[u8]) -> Result<(u8, &[u8]), Error> {
     Ok((head[0], payload))
 }
 
-/// The kind of a batch's frame.
-pub(crate) const BATCH: u8 = 3;
-
 /// A frame's checksum, summed over its head and its payload as the payload is read a piece at a
 /// time.
 pub(crate) struct Summing {
@@ -398,7 +404,7 @@ pub(crate) enum Skimmed {
 pub(crate) fn skim(bytes: &[u8]) -> Result<Skimmed, Error> {
     let (kind, payload) = opened(bytes)?;
     match kind {
-        3 => batch_header(payload).map(|(header, _)| Skimmed::Batch(header)),
+        BATCH => batch_header(payload).map(|(header, _)| Skimmed::Batch(header)),
         kind => parsed(kind, payload).map(|frame| Skimmed::Other(Box::new(frame))),
     }
 }
@@ -412,7 +418,7 @@ pub(crate) fn skim(bytes: &[u8]) -> Result<Skimmed, Error> {
 #[cfg(test)]
 pub(crate) fn decode(bytes: &Bytes, limits: rdlt_wire::Limits) -> Result<Frame, Error> {
     let (kind, payload) = opened(bytes)?;
-    if kind != 3 {
+    if kind != BATCH {
         return parsed(kind, payload);
     }
     pending(bytes, limits)?.decode().map(Frame::Batch)
@@ -457,7 +463,7 @@ impl Pending {
 /// not hold together or passes `limits`.
 pub(crate) fn pending(bytes: &Bytes, limits: rdlt_wire::Limits) -> Result<Pending, Error> {
     let (kind, payload) = opened(bytes)?;
-    if kind != 3 {
+    if kind != BATCH {
         return Err(garbled(&format!("a frame of kind {kind} is no batch")));
     }
     let (header, end) = batch_header(payload)?;
@@ -482,15 +488,15 @@ fn batch_header(payload: &[u8]) -> Result<(BatchHeader, usize), Error> {
 /// The frame of `kind` that is no batch, holding `payload`.
 fn parsed(kind: u8, payload: &[u8]) -> Result<Frame, Error> {
     match kind {
-        1 => parse(payload).map(Frame::Header),
-        2 => parse(payload).map(Frame::Schema),
-        4 => parse(payload).map(Frame::Seal),
+        HEADER => parse(payload).map(Frame::Header),
+        SCHEMA => parse(payload).map(Frame::Schema),
+        SEAL => parse(payload).map(Frame::Seal),
         COMMIT => parse(payload).map(|commit| Frame::Commit(Box::new(commit))),
-        7 if payload.is_empty() => Ok(Frame::Closed),
-        8 => parse(payload).map(Frame::Begun),
-        9 => parse(payload).map(Frame::End),
-        10 => parse(payload).map(Frame::Fence),
-        11 if payload.is_empty() => Ok(Frame::Relieved),
+        CLOSED if payload.is_empty() => Ok(Frame::Closed),
+        BEGUN => parse(payload).map(Frame::Begun),
+        END => parse(payload).map(Frame::End),
+        FENCE => parse(payload).map(Frame::Fence),
+        RELIEVED if payload.is_empty() => Ok(Frame::Relieved),
         other => Err(garbled(&format!("no frame is of kind {other}"))),
     }
 }
