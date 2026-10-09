@@ -18,6 +18,10 @@ const TABLES: &str = "_rdlt_tables";
 pub(super) const GENERATIONS: &str = "_rdlt_generations";
 pub(super) const SEGMENTS: &str = "_rdlt_segments";
 
+/// The index a commit finds the segments it publishes or forgets by, and a discard the
+/// segments older sessions staged.
+const SEGMENTS_STAGED: &str = "_rdlt_segments_staged";
+
 /// Every table of the catalog.
 pub(super) const CATALOG: [&str; 7] = [
     EPOCHS,
@@ -30,7 +34,8 @@ pub(super) const CATALOG: [&str; 7] = [
 ];
 
 impl<D: SqlDialect> SqlPlanner<D> {
-    /// Creates the catalog tables where they are missing.
+    /// Creates the catalog tables, and the index commits find their segments by, where they are
+    /// missing.
     pub fn bootstrap(&self) -> Vec<Statement> {
         let (text, integer, blob) = (&self.text, &self.integer, &self.blob);
         [
@@ -66,6 +71,12 @@ impl<D: SqlDialect> SqlPlanner<D> {
             sql: format!("CREATE TABLE IF NOT EXISTS {table}"),
             params: Vec::new(),
         })
+        .chain(std::iter::once(Statement {
+            sql: self
+                .dialect
+                .create_index(SEGMENTS_STAGED, SEGMENTS, "pipeline, epoch, segment"),
+            params: Vec::new(),
+        }))
         .collect()
     }
 

@@ -23,8 +23,8 @@ and building them surfaced decisions the spec leaves open.
   rows, so a fenced writer's late rows are never published, and `discard_staged` removes only
   what older sessions staged, so a discard that waits behind a newer session and lands late
   never removes its staging (the memory destination keys its staging by epoch for the same
-  reason). A catalog of staged segments gives each commit its tables, rows and bytes
-  without scanning staging.
+  reason). A catalog of staged segments, indexed by pipeline, epoch and segment, gives each
+  commit its tables, rows and bytes without scanning staging or other pipelines' segments.
 - **Merges delete and insert.** A commit ranks its staged rows per key by sequence, deletes the
   published rows of those keys and inserts the first of each. The writer's `TableRef` decides:
   each staged segment records its merge key, so a table that switches between append and merge

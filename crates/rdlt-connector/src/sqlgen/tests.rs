@@ -828,6 +828,51 @@ fn the_catalog_bootstraps_again_without_change() {
 }
 
 #[test]
+fn a_commit_finds_its_segments_in_as_many_steps_however_many_others_the_catalog_holds() {
+    let (connection, planner) = database();
+    let mine = pipeline("mine");
+    let committed = segments(&[1]);
+    // The steps forgetting a commit's segment and discarding older sessions' take beside
+    // `others` rows of another pipeline's segments.
+    let steps = |others: u32| {
+        connection
+            .execute_batch("DELETE FROM _rdlt_segments")
+            .unwrap();
+        connection
+            .execute_batch(&format!(
+                "{} INSERT INTO _rdlt_segments (pipeline, epoch, segment, name, generation, \
+                 merge_key, merge_seq, rows, bytes) \
+                 SELECT 'theirs', 1, i, 'orders', NULL, NULL, NULL, 1, 1 FROM _n",
+                counting(others)
+            ))
+            .unwrap();
+        [
+            planned(&connection, &[planner.forget(&mine, Epoch(2), &committed)]),
+            planned(&connection, &planner.discard_of(&mine, Epoch(2), &[])),
+        ]
+    };
+    let (few, many) = (steps(10), steps(10_000));
+    assert_eq!(many, few, "steps beside 10,000 rows, then beside 10");
+    let staged = planner.staged(&mine, Epoch(2), &segments(&[1, 2, 4, 5]));
+    let explain = Statement {
+        sql: format!("EXPLAIN QUERY PLAN {}", staged.sql),
+        params: staged.params.clone(),
+    };
+    let plan: Vec<String> = query(&connection, &explain)
+        .into_iter()
+        .map(|row| match &row[3] {
+            Value::Text(step) => step.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert!(
+        plan.iter()
+            .all(|step| !step.starts_with("SCAN _rdlt_segments")),
+        "{plan:?}"
+    );
+}
+
+#[test]
 fn each_open_increments_the_epoch_and_only_the_latest_epoch_fences_through() {
     let (connection, planner) = database();
     let orders = pipeline("orders");
