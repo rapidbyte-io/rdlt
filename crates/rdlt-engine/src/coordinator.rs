@@ -41,7 +41,7 @@ use crate::lane::Lanes;
 use crate::partition::{Latest, Progress};
 use crate::plan::WriteMode;
 use crate::report::{AttemptEnd, AttemptLog, CommitRecord, Tally, Trigger};
-use crate::stored::Stored;
+use crate::stored::{Measured, Stored};
 use crate::table::Tables;
 use crate::wal::{LoadLog, Positions, WalStore};
 use crate::watch;
@@ -446,8 +446,9 @@ impl Coordinator {
         self.sealed.push(seal);
     }
 
-    /// Commits `meta` in the destination's session, and records its receipt in the log.
-    async fn committed(&mut self, meta: &CommitMeta) -> Result<Receipt, Error> {
+    /// Commits `meta`, whose state changes are `measured`, in the destination's session, and
+    /// records its receipt in the log.
+    async fn committed(&mut self, meta: &CommitMeta, measured: Measured) -> Result<Receipt, Error> {
         crash_point!("engine.commit.before");
         let receipt = self
             .parts
@@ -457,7 +458,7 @@ impl Coordinator {
             .await?
             .map_err(|error| Error::connector(Side::Destination, "committing", error))?;
         crash_point!("engine.commit.after");
-        self.parts.stored.apply(&meta.state_delta);
+        self.parts.stored.apply(measured);
         self.parts.positions.apply(&meta.state_delta);
         if let Some(log) = &self.parts.wal {
             log.committed(&receipt).await?;
