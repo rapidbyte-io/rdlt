@@ -395,15 +395,14 @@ The host starts each connector it spawns with
 keeping any tunable the operator passes (in `GLIBC_TUNABLES`, or in glibc's older
 `MALLOC_TRIM_THRESHOLD_` and `MALLOC_MMAP_THRESHOLD_`). The faults recorded above come from
 glibc returning the memory a connector frees, frames freed on another thread than their
-maker's, so each next frame is written to fresh pages; no heap trimming and a fixed 32 MiB mmap
-threshold keep that memory for the next frame.
+maker's, so each next frame is written to fresh pages; trimming only past 256 MiB free and a fixed
+32 MiB mmap threshold keep that memory for the next frame.
 
 The rule set before measuring: `process/socket/destination/64x80000`, the spawned destination, at
 least +10 % in MB/s or at least 10 % lower in CPU seconds a GB; no served case lower beyond
 noise; the connector's peak resident memory rising by no more than the frames it keeps. The
 `process/tls/*` connectors listen in processes the bench starts itself, not the host, so they
-carry no tunables and serve as controls; the rule was judged on
-`process/socket/destination/64x80000`.
+carry no tunables and serve as controls.
 
 Intel Core Ultra X7 358H, 2026-10-10, `1f8449b1` against `67a04794`, governor `powersave` with
 energy preference `performance`, `just bench served 0-3 '<filter>' 4-11`: the 10 cases of
@@ -414,8 +413,9 @@ own perf and strace runs, so absolute figures carry noise of about ±15 % round 
 sampler read each connector process's `/proc` page faults (minor plus major) and `VmHWM` every
 10 ms. It missed base round 1 and the branch's first two rounds of the TLS listeners (its first
 versions were still being fixed), so faults and peak memory rest on base rounds 2–3 and branch
-rounds 1–3 (the TLS listeners' on branch round 3 alone). Every sampled branch connector
-process had the tunables in its environment, and no base process did. Each round's figure, in
+rounds 1–3 (the TLS listeners' on branch round 3 alone). Every sampled spawned connector
+process on the branch had the tunables in its environment, and no base process did (the TLS
+listeners, which the host does not spawn, had none, as expected). Each round's figure, in
 round order (the unit is MB/s, converted from criterion's MiB/s):
 
 | Case | Base, MB/s | Branch, MB/s |
@@ -447,7 +447,7 @@ The destination's CPU seconds a GB, for the cases with a destination process:
 Page faults a spawned connector process, the median over the processes a case spawned, then
 the median of the rounds and their range:
 
-| Case | Base | Branch | Median |
+| Case | Base | Branch | Change |
 |---|---|---|---|
 | `process/socket/destination/64x80000` | 94 512 (92 666–96 358) | 28 099 (11 550–28 604) | −70 % |
 | `process/socket/source/64x80000` | 137 010 (135 067–138 954) | 129 914 (121 304–130 669) | −5 % |
@@ -485,8 +485,16 @@ processes a case spawned and the largest process, each the median of the rounds,
   base's in each.
 - **Peak memory rises in every spawned case**: the median process by 2–42 MiB, the largest
   process by 1–67 MiB, the largest being the 4-partition case's, 582 → 649 MiB, about 12 %.
-  That is what the frames freed and kept for the next one cost. The 8-partition case's largest
-  process rises 64 MiB, 668 → 733.
+  The 8-partition case's largest process rises 64 MiB, 668 → 733. The rule's memory clause, in
+  the frames of the Method (6.9 MB, 6.6 MiB, and 0.86 MB, 0.82 MiB), case by case, median
+  process: destination 64×80 000 +26.8 MiB, about 4 frames; source 64×80 000 +30.6, about 5;
+  both 64×80 000 +20.4, about 3; destination 512×10 000 +1.9, about 2; source 512×10 000
+  +26.7, about 33; both 512×10 000 +14.9, about 18; 4 partitions +41.6, about 6; 8
+  partitions +37.8, about 6. The largest process of the partition cases rises +67.2 and
+  +64.3 MiB, about 10 frames each. The clause holds for the destinations and for the large-frame
+  source and both cases, a few frames each. It does not hold for `process/socket/source/512x10000`
+  and `process/socket/both/512x10000`, whose medians rise by tens of small frames, nor for
+  the partition cases, whose largest processes rise by about ten large ones.
 - **The TLS controls stay within noise.** They carry no tunables, yet their medians read +14 %
   (destination) and +9 % (both) with every range overlapping the base's, and the base's own
   destination ranged 951–1 106 MB/s across its rounds; the round-to-round noise is about

@@ -84,7 +84,10 @@ only at its end. The owner also asked for the host to be simulated over a networ
     passes (in a passed `GLIBC_TUNABLES`, or glibc's `MALLOC_TRIM_THRESHOLD_` and
     `MALLOC_MMAP_THRESHOLD_`). They are a no-op where glibc is not the connector's allocator.
     The host's own process is unchanged: an operator running the host, or a listening
-    connector it does not spawn, may set the same `GLIBC_TUNABLES` for that process. The
+    connector it does not spawn, may set the same `GLIBC_TUNABLES` for that process. A spawned
+    connector keeps the memory it frees (a heap is trimmed only past 256 MiB free at its top)
+    and peaks higher, by up to 67 MiB (about 12 %) in the bench; an operator bounding a
+    connector's memory (ADR 0043) can pass its own `GLIBC_TUNABLES`, which overrides these. The
     figures are in `docs/perf/served.md`, in "Malloc tunables for spawned connectors".
   - Standard output is drained into `tracing` as warnings, and standard error as information,
     with the connector's id and process id. A line goes in pieces of at most 8 KiB, so a
