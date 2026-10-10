@@ -87,13 +87,21 @@ pub(crate) struct Parent {
     pub(crate) row: ArrayRef,
 }
 
-/// The rows of a table whose arrays become child tables: their part's path, each row's id, its
-/// root's id and the position of its root row.
+/// The rows of a table whose arrays become child tables: their part's path, each row's id, and
+/// their roots where they are not roots themselves.
 #[derive(Clone, Copy)]
 struct Rows<'a> {
     path: &'a [Arc<str>],
     ids: &'a BinaryArray,
-    roots: &'a BinaryArray,
+    /// `None` for the stream's own rows, each its own root.
+    roots: Option<Roots<'a>>,
+}
+
+/// The roots of a child table's rows: each one's id, and the position of its row among the
+/// stream's rows the batch holds.
+#[derive(Clone, Copy)]
+struct Roots<'a> {
+    ids: &'a BinaryArray,
     positions: &'a UInt32Array,
 }
 
@@ -133,8 +141,7 @@ pub(crate) fn normalize(batch: &RecordBatch, shape: &Shape) -> Result<Vec<Part>,
     let rows = Rows {
         path: &[],
         ids: &ids,
-        roots: &ids,
-        positions: &root_rows,
+        roots: None,
     };
     for (path, array, depth) in arrays {
         expand(&path, &array, depth, rows, shape.max_depth, &mut parts)?;
@@ -296,12 +303,19 @@ fn expand(
     let Some(items) = Items::of(&list) else {
         return Ok(());
     };
-    let values = arrow_select::take::take(list.values(), &items.values, None)?;
+    let values = items.values(&list)?;
     let parent_ids = arrow_select::take::take(parents.ids, &items.parents, None)?;
-    let root_ids = arrow_select::take::take(parents.roots, &items.parents, None)?;
-    let root_ids = root_ids.as_binary::<i32>().clone();
-    let root_rows = arrow_select::take::take(parents.positions, &items.parents, None)?;
-    let root_rows = root_rows.as_primitive::<UInt32Type>().clone();
+    let item_rows = Arc::new(items.parents.clone()) as ArrayRef;
+    // A root's items take its id as their root's and its row as their root row.
+    let (root_ids, root_rows) = match parents.roots {
+        Some(roots) => (
+            arrow_select::take::take(roots.ids, &items.parents, None)?,
+            arrow_select::take::take(roots.positions, &items.parents, None)?,
+        ),
+        None => (Arc::clone(&parent_ids), Arc::clone(&item_rows)),
+    };
+    let root_binary = root_ids.as_binary::<i32>().clone();
+    let root_positions = root_rows.as_primitive::<UInt32Type>().clone();
     let ids = identity::child_ids(parent_ids.as_binary::<i32>(), &items.idx);
     let item = match list.data_type() {
         DataType::List(item) => Arc::clone(item),
@@ -311,21 +325,23 @@ fn expand(
     let arrays = std::mem::take(&mut table.arrays);
     let lineage = Lineage {
         id: Arc::new(ids.clone()),
-        root_row: Arc::new(root_rows.clone()),
+        root_row: root_rows,
         parent: Some(Parent {
             id: parent_ids,
-            root: Arc::new(root_ids.clone()),
+            root: root_ids,
             idx: Arc::new(items.idx),
             path: parents.path.to_vec(),
-            row: Arc::new(items.parents),
+            row: item_rows,
         }),
     };
     parts.push(table.part(path.to_vec(), values.len(), lineage)?);
     let rows = Rows {
         path,
         ids: &ids,
-        roots: &root_ids,
-        positions: &root_rows,
+        roots: Some(Roots {
+            ids: &root_binary,
+            positions: &root_positions,
+        }),
     };
     for (child, array, child_depth) in arrays {
         let child_path = [path, &child].concat();
@@ -337,7 +353,9 @@ fn expand(
 /// The items of an array column's non-null arrays: where each sits among the values, its row
 /// and its position in its array.
 struct Items {
-    values: UInt32Array,
+    /// Where each sits among the list's values, or `None` where they are the values from the
+    /// first array's start on, in order, as when no null array spans any.
+    taken: Option<UInt32Array>,
     parents: UInt32Array,
     idx: Int64Array,
 }
@@ -346,22 +364,42 @@ impl Items {
     /// The items of `list`, or `None` where it holds none.
     fn of(list: &ListArray) -> Option<Self> {
         let offsets = list.value_offsets();
-        let (mut parents, mut values, mut idx) = (Vec::new(), Vec::new(), Vec::new());
-        for row in 0..list.len() {
-            if list.is_null(row) {
-                continue;
-            }
-            for (position, item) in (offsets[row]..offsets[row + 1]).enumerate() {
+        let span = |row: usize| offsets[row]..offsets[row + 1];
+        let count: usize = (0..list.len())
+            .filter(|row| list.is_valid(*row))
+            .map(|row| span(row).len())
+            .sum();
+        if count == 0 {
+            return None;
+        }
+        let spanned = usize::try_from(offsets[list.len()] - offsets[0]);
+        let together = spanned.is_ok_and(|spanned| spanned == count);
+        let (mut parents, mut idx) = (Vec::with_capacity(count), Vec::with_capacity(count));
+        let mut taken = (!together).then(|| Vec::with_capacity(count));
+        for row in (0..list.len()).filter(|row| list.is_valid(*row)) {
+            for (position, item) in span(row).enumerate() {
                 parents.push(u32::try_from(row).unwrap_or(u32::MAX));
-                values.push(u32::try_from(item).unwrap_or(u32::MAX));
                 idx.push(i64::try_from(position).unwrap_or(i64::MAX));
+                if let Some(taken) = taken.as_mut() {
+                    taken.push(u32::try_from(item).unwrap_or(u32::MAX));
+                }
             }
         }
-        (!values.is_empty()).then(|| Self {
-            values: UInt32Array::from(values),
+        Some(Self {
+            taken: taken.map(UInt32Array::from),
             parents: UInt32Array::from(parents),
             idx: Int64Array::from(idx),
         })
+    }
+
+    /// The items' values: a slice of `list`'s where they lie together, or else taken from them.
+    fn values(&self, list: &ListArray) -> Result<ArrayRef, ArrowError> {
+        if let Some(taken) = &self.taken {
+            return arrow_select::take::take(list.values(), taken, None);
+        }
+        let first =
+            usize::try_from(list.value_offsets()[0]).expect("a list's offsets are not negative");
+        Ok(list.values().slice(first, self.parents.len()))
     }
 }
 

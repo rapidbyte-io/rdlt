@@ -13,6 +13,7 @@ use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field as ArrowField, Fields, UnionFields};
 use bytes::Bytes;
 use proptest::prelude::*;
+use rdlt_connector::cost::Allocations;
 use serde_json::{Value as Json, json};
 
 use super::reference::{self, Row, canonical_text};
@@ -244,6 +245,111 @@ fn null_and_empty_arrays_hold_no_rows_and_null_items_are_rows() {
     let idx = scores.lineage.parent.as_ref().expect("child").idx.clone();
     assert_eq!(idx.as_primitive::<Int64Type>().values(), &[0, 1]);
     assert!(scores.batch.column(0).is_null(0));
+}
+
+/// The child table of a batch whose only column, `l`, is `list`: its items, and the bytes it
+/// keeps alive beyond the batch's.
+fn child_of(list: ListArray) -> (Vec<i64>, u64) {
+    let batch = RecordBatch::try_from_iter([("l", Arc::new(list) as ArrayRef)]).unwrap();
+    let parts = normalize(&batch, &shape(8)).unwrap();
+    let column = parts[1].batch.column(0);
+    let items = column
+        .as_primitive::<Int64Type>()
+        .values()
+        .iter()
+        .copied()
+        .take(16)
+        .collect();
+    let mut held = Allocations::of(&batch);
+    (items, held.add_array(column.as_ref()))
+}
+
+#[test]
+fn items_that_lie_together_are_their_arrays_values_and_others_are_copied() {
+    let item = Arc::new(ArrowField::new("item", DataType::Int64, true));
+    let values: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6]));
+    // Rows [1, 2], [3] and [4, 5, 6].
+    let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3, 6]));
+    // The last two rows: their offsets start at 2.
+    let sliced = ListArray::new(
+        Arc::clone(&item),
+        offsets.clone(),
+        Arc::clone(&values),
+        None,
+    );
+    assert_eq!(child_of(sliced.slice(1, 2)), (vec![3, 4, 5, 6], 0));
+    // A null row whose span holds an item: no row holds 3, so the items are copied.
+    let nulls = NullBuffer::from(vec![true, false, true]);
+    let (items, grown) = child_of(ListArray::new(item, offsets, values, Some(nulls)));
+    assert_eq!(items, [1, 2, 4, 5, 6]);
+    assert!(grown > 0, "items apart are copied out of their array");
+    // A null row whose span is empty holds no item, so the items still lie together.
+    let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 5]));
+    let values: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5]));
+    let nulls = NullBuffer::from(vec![true, false, true]);
+    let item = Arc::new(ArrowField::new("item", DataType::Int64, true));
+    let (items, grown) = child_of(ListArray::new(item, offsets, values, Some(nulls)));
+    assert_eq!(items, [1, 2, 3, 4, 5]);
+    assert_eq!(grown, 0);
+}
+
+#[test]
+fn a_sliced_batch_normalizes_as_the_rows_it_keeps() {
+    let records = [
+        json!({"id": 1, "items": [{"sku": "a", "tags": ["x"]}]}),
+        json!({"id": 2, "items": [{"sku": "b", "tags": ["y", "z"]}, {"sku": "c", "tags": []}]}),
+        json!({"id": 3, "items": [{"sku": "d", "tags": ["w"]}]}),
+    ];
+    let batch = shredded(&records, 1 << 20).remove(0);
+    let sliced = normalize(&batch.slice(1, 2), &shape(8)).unwrap();
+    assert_eq!(
+        tables_of(&sliced),
+        tables_of(&parts(&records[1..], &shape(8)))
+    );
+    // Each table's values are the batch's own, at every depth.
+    let mut held = Allocations::of(&batch);
+    for part in &sliced[1..] {
+        assert_eq!(
+            held.add(&part.batch),
+            rdlt_connector::cost::schema_bytes(&part.batch.schema())
+        );
+    }
+}
+
+#[test]
+fn a_roots_items_name_their_root_by_their_parents_id_and_row() {
+    let parts = parts(
+        &[
+            json!({"id": 1, "items": [{"sku": "a"}, {"sku": "b"}]}),
+            json!({"id": 2, "items": [{"sku": "c"}]}),
+        ],
+        &shape(8),
+    );
+    let lineage = &parts[1].lineage;
+    let parent = lineage.parent.as_ref().expect("a child has parents");
+    let mut held = Allocations::default();
+    held.add_array(parent.id.as_ref());
+    held.add_array(parent.row.as_ref());
+    assert_eq!(
+        held.add_array(parent.root.as_ref()),
+        0,
+        "a root's id is its items' root's"
+    );
+    assert_eq!(
+        held.add_array(lineage.root_row.as_ref()),
+        0,
+        "and its row their root row"
+    );
+}
+
+#[test]
+fn an_arrays_items_are_listed_in_buffers_of_exactly_their_count() {
+    let rows = (0..100_i64).map(|row| Some(vec![Some(row); usize::try_from(row % 4).unwrap()]));
+    let list = ListArray::from_iter_primitive::<Int64Type, _, _>(rows);
+    let items = super::Items::of(&list).expect("the list holds items");
+    // 25 rows each of 0, 1, 2 and 3 items.
+    assert_eq!(items.parents.values().inner().capacity(), 150 * 4);
+    assert_eq!(items.idx.values().inner().capacity(), 150 * 8);
 }
 
 #[test]
