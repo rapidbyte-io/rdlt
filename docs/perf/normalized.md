@@ -23,23 +23,21 @@ several.
 
 ## Results
 
-Intel Core Ultra X7 358H, mains power, 2026-10-07, commit `28726685db15`, governor `powersave`
-with energy preference `performance`, one-minute load average 0.88–0.95 before the runs; the
+Intel Core Ultra X7 358H, mains power, 2026-10-10, commit `5cdd64947d40`, governor `powersave`
+with energy preference `performance`, one-minute load average 0.64–0.92 before the runs; the
 median of five rounds and their range.
 
 | Rows a push | Units a flush | Time a run | Rounds within ±3 % | Rows a second | JSON | CPUs busy |
 |---|---|---|---|---|---|---|
-| 2 000 | 1 | 183.9 ms (181.5–184.5 ms) | 5 of 5 | 2.99 M | 101 MB/s | 1.09 |
-| 10 000 | 2 | 239.8 ms (238.9–243.9 ms) | 5 of 5 | 2.29 M | 77.8 MB/s | 1.08 |
-| 50 000 | 9 | 221.6 ms (215.6–232.4 ms) | 3 of 5 | 2.48 M | 84.2 MB/s | 1.07 |
+| 2 000 | 1 | 182.2 ms (176.6–189.2 ms) | 3 of 5 | 3.02 M | 102 MB/s | 1.10 |
+| 10 000 | 2 | 141.9 ms (138.0–146.7 ms) | 4 of 5 | 3.88 M | 131 MB/s | 1.16 |
+| 50 000 | 9 | 126.4 ms (124.9–131.7 ms) | 4 of 5 | 4.35 M | 148 MB/s | 1.14 |
 
 | Rows a push | Allocations a row | Bytes a row | Allocations a flush |
 |---|---|---|---|
-| 2 000 | 0.997 | 246 | 10 966 |
-| 10 000 | 1.410 | 468 | 77 552 |
-| 50 000 | 1.405 | 480 | 386 311 |
+| 2 000 | 1.000 | 246 | 11 005 |
+| 10 000 | 0.947 | 260 | 52 066 |
+| 50 000 | 0.942 | 266 | 259 129 |
 
-A flush of two or more units takes 20–30 % longer than flushes of one unit moving the same rows,
-and allocates 40 % more a row and nearly twice the bytes: the difference the review's ablation
-found judging a flush across its units to make. A run keeps barely more than one CPU busy, at
-3.7–3.8 instructions a cycle in every case.
+A flush of two or more units takes 22–31 % less time than flushes of one unit moving the same
+rows, and allocates 5–6 % fewer times a row for 6–8 % more bytes. A run keeps 1.10–1.16 CPUs busy.
