@@ -499,7 +499,9 @@ perf record -e task-clock -c 1000000 --call-graph fp -- \
 ```
 
 and, apart, `RDLT_BENCH_CONNECTOR_CORES=4-11 taskset -c 0-3` over the process case. A sample is one
-millisecond of a thread's user-mode CPU. The one-minute load averages around the profiles were
+millisecond of a thread's user-mode CPU, so a share of samples is a share of CPU time, which
+stands in for the rule's cycles only as far as the cores' clocks held steady; the verdict rests on
+the cores condition, which fails either way. The one-minute load averages around the profiles were
 2.2–3.2. One `just bench served` round of each layout (`just bench served 4-11
 '^served/socket/destination/64x80000$'` and `just bench served 0-3
 '^served/process/socket/destination/64x80000$' 4-11`) gives the throughput; its load average
