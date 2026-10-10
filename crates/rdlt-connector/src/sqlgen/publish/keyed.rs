@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests;
 
-use super::super::{Column, Sql, SqlDialect, SqlPlanner};
+use super::super::{Column, Sql, SqlDialect, SqlPlanner, SqlValue, integer};
 use super::Staged;
 use crate::commit::SegmentSet;
 use crate::destination::{Deletion, MergeKey, TableRef};
@@ -17,6 +17,25 @@ pub(super) struct Of<'a> {
     pub(super) pipeline: &'a PipelineId,
     pub(super) epoch: Epoch,
     pub(super) segments: &'a SegmentSet,
+}
+
+impl Of<'_> {
+    /// The values of the staging columns of a row the commit computes, `code` the expression of
+    /// its last: who staged the commit's rows, in one of its segments, bound to `sql`.
+    pub(super) fn staged_by<D: SqlDialect>(&self, sql: &mut Sql<'_, D>, code: &str) -> String {
+        let segment = self
+            .segments
+            .ranges()
+            .first()
+            .map_or(0, |range| range.first.0);
+        let values = [
+            SqlValue::Text(self.pipeline.to_string()),
+            integer(self.epoch.0),
+            integer(segment),
+        ]
+        .map(|value| sql.bind(value));
+        format!("{}, {code}", values.join(", "))
+    }
 }
 
 /// The error for a merge key naming no column: a `Data` error coded `merge_key_invalid`.
