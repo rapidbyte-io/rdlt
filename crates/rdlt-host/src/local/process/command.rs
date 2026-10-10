@@ -148,7 +148,7 @@ struct Tunable {
 ///
 /// Without them glibc gives back to the kernel the memory a connector frees, often on another
 /// thread than its maker's. Each next frame is then written to fresh pages, a page
-/// fault each; no heap trimming and a fixed 32 MiB mmap threshold stop that.
+/// fault each; trimming only past 256 MiB free and a fixed 32 MiB mmap threshold stop that.
 ///
 /// It is set whatever libc this host links, since the connector's libc is what reads it, and
 /// is ignored where glibc is not the connector's allocator: musl, macOS, a connector with an
