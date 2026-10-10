@@ -17,9 +17,13 @@
 //!
 //! Rows encode one at a time into one buffer, through encoders worked out once per batch: other
 //! string, binary and array types are cast to the plain ones first, maps are arrays of their
-//! entries, and dictionaries and run-end encodings are their values. Dates, times, timestamps and
-//! durations encode as their kind and nanoseconds, so a value's unit, zone or date type does not
-//! change its encoding; a `Date64` holding part of a day is the day it is within.
+//! entries, and dictionaries and run-end encodings are their values. An interval or a union, which
+//! no table holds, has no encoder: a normalized flush holding one is refused before it is split.
+//! Every value but a JSON text's is written into the row's buffer where it goes, its digits
+//! included.
+//! Dates, times, timestamps and durations encode as their kind and nanoseconds, so a value's unit,
+//! zone or date type does not change its encoding; a `Date64` holding part of a day is the day it
+//! is within.
 //!
 //! JSON text is read a token at a time, never recursed into, and its numbers are read exactly:
 //! each encodes as the canonical text of its value, as an integer, a decimal or a float of that
@@ -38,7 +42,6 @@ use arrow_array::{
     StringArray, UInt64Array,
 };
 use arrow_buffer::NullBuffer;
-use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
 use rdlt_connector::{LogicalType, instants};
 
@@ -168,7 +171,6 @@ const FALSE: u8 = b'f';
 const NUMBER: u8 = b'd';
 const STRING: u8 = b's';
 const BYTES: u8 = b'b';
-const OTHER: u8 = b'x';
 const INSTANT: u8 = b'i';
 const TIME_OF_DAY: u8 = b'c';
 const ELAPSED: u8 = b'e';
@@ -200,8 +202,6 @@ enum Encoder {
     /// Dates, timestamps, times of day or durations: their kind's tag, and the values as their
     /// type stores them, encoded as the nanoseconds they denote.
     Temporal(u8, ArrayRef, Stored),
-    /// Values of any other type, as their type and text.
-    Other(ArrayRef, String),
 }
 
 impl Encoder {
@@ -265,7 +265,7 @@ impl Encoder {
             DataType::Dictionary(..) | DataType::RunEndEncoded(..) => {
                 Self::new(field, &decoded(array)?)?
             }
-            other => Self::Other(Arc::clone(array), other.to_string()),
+            other => return Err(no_table_holds(other)),
         })
     }
 
@@ -298,8 +298,7 @@ impl Encoder {
             Self::Boolean(values) => values.is_null(index),
             Self::Integer(values, _)
             | Self::Decimal(values, ..)
-            | Self::Temporal(_, values, ..)
-            | Self::Other(values, _) => values.is_null(index),
+            | Self::Temporal(_, values, ..) => values.is_null(index),
             Self::Unsigned(values) => values.is_null(index),
             Self::Float(values) => values.is_null(index),
             Self::Text(values) | Self::Json(values) => values.is_null(index),
@@ -362,11 +361,6 @@ impl Encoder {
                     items.write(usize::try_from(item).unwrap_or(usize::MAX), out)?;
                 }
                 out.push(ARRAY_END);
-            }
-            Self::Other(values, kind) => {
-                out.push(OTHER);
-                length(out, kind.as_bytes());
-                length(out, formatted(values, index).as_bytes());
             }
         }
         Ok(())
@@ -458,12 +452,11 @@ fn object(members: &mut [(String, Vec<u8>)]) -> Vec<u8> {
     encoded
 }
 
-/// The text of the value at `index` of `values`, as Arrow displays it.
-fn formatted(values: &ArrayRef, index: usize) -> String {
-    ArrayFormatter::try_new(values.as_ref(), &FormatOptions::default()).map_or_else(
-        |error| error.to_string(),
-        |format| format.value(index).to_string(),
-    )
+/// The refusal of a value of `data_type`, which identity has no encoder for.
+fn no_table_holds(data_type: &DataType) -> ArrowError {
+    ArrowError::InvalidArgumentError(format!(
+        "identity encodes no value of {data_type}, which no table holds"
+    ))
 }
 
 /// Appends an integer, as its decimal digits, with a minus sign where it is negative.
