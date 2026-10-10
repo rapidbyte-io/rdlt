@@ -561,6 +561,35 @@ fn splits_and_lowers_within_what_is_reserved(tenth: usize) {
     );
 }
 
+in_tenths!(a_column_of_a_normalized_flush_is_judged_holding_nothing_a_row: judges_holding_nothing);
+
+/// Judges each column of `tenth` in every encoding as a normalized flush's, failing where
+/// judging allocates beyond what any array takes beside its values.
+fn judges_holding_nothing(tenth: usize) {
+    use crate::normalize::Shape;
+    use crate::normalize::rounding::{Rounding, judge};
+    let shape = Shape {
+        max_depth: 8,
+        whole: std::collections::BTreeSet::new(),
+        key: Vec::new(),
+    };
+    let (mut judged, mut beyond) = (0, Vec::new());
+    for (field, column) in in_tenth(every_column(), tenth) {
+        let kind = column.data_type().clone();
+        let schema = Arc::new(arrow_schema::Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
+        let mut rounding = Rounding::new();
+        let (judging, peak) = peak(|| judge(std::slice::from_ref(&batch), &shape, &mut rounding));
+        judging.expect("every column has a table schema");
+        judged += 1;
+        if peak > SLACK {
+            beyond.push(format!("judging {kind}: allocated {peak}"));
+        }
+    }
+    assert!(judged > 10, "{judged} columns were judged");
+    assert!(beyond.is_empty(), "{}", beyond.join("\n"));
+}
+
 /// Columns of JSON text whose values mix kinds: integers, floats, strings, objects and lists;
 /// those holding every kind in every text type and encoding.
 fn mixed_json() -> Vec<ArrayRef> {

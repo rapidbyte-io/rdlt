@@ -53,8 +53,7 @@ fn unplanned(max: u64, limit: u64) -> Lowered {
 /// `units` cut into pieces of at most `max` bytes, under a budget no row exceeds.
 fn sliced(units: Vec<(Vec<RecordBatch>, Held)>, max: u64) -> Vec<(Vec<RecordBatch>, Held)> {
     let cut = |(parts, held)| super::sliced(parts, held, unplanned(max, u64::MAX)).unwrap();
-    let pieces = units.into_iter().flat_map(cut);
-    pieces.map(|(parts, held, _)| (parts, held)).collect()
+    units.into_iter().flat_map(cut).collect()
 }
 
 /// What `batch` expands to.
@@ -278,18 +277,11 @@ fn a_piece_of_a_unit_shares_the_allocations_the_unit_holds() {
 }
 
 #[test]
-fn each_piece_says_what_it_was_measured_to_take_and_items_cost_what_they_are_told() {
-    let budget = crate::budget::budget(1 << 30);
-    let cut = super::sliced(
-        vec![encoded(0, 3)],
-        held(&budget, 64),
-        unplanned(100, u64::MAX),
-    )
-    .unwrap();
+fn each_piece_takes_what_its_rows_were_measured_to_and_items_cost_what_they_are_told() {
     let row = native().expanded(&encoded(0, 1), 0..1, u64::MAX);
     assert_eq!(
-        cut.iter().map(|(_, _, bytes)| *bytes).collect::<Vec<_>>(),
-        [row, row, row]
+        pieces(encoded(0, 3), unplanned(100, u64::MAX)),
+        [(1, row), (1, row), (1, row)]
     );
     // A list's items take what each is said to take beside itself, where they become rows.
     let lists = arrow_array::ListArray::from_iter_primitive::<Int32Type, _, _>(

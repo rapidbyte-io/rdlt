@@ -3,25 +3,26 @@
 
 mod keys;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
 use arrow_schema::ArrowError;
 use parking_lot::Mutex;
 use rdlt_connector::cost::Allocations;
-use rdlt_connector::{ColumnPath, Permit, StreamName};
+use rdlt_connector::{Permit, StreamName};
 
 use super::allowance::{Cutter, PartPiece};
 use super::pieces::{self, Lowered};
 use super::{
     Held, OpenSegment, PartitionContext, PartitionJob, full, queue, reserve, row_too_large,
-    schema_of, stamp,
+    schema_invalid, schema_of, stamp,
 };
 use crate::budget::Shares;
 use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
 use crate::limits::MIN_PIECE;
+use crate::normalize::rounding::Rounding;
 use crate::normalize::{self, Dropped, Part, Pruned, Shape};
 use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp, key_values, with_columns};
 
@@ -37,8 +38,8 @@ use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp, key_value
 /// - The parts' pieces are lowered inside the allowance: the partition waits for its own pieces
 ///   to be written, never for the budget, while it holds any of them.
 ///
-/// The units are one flush, so each table's integers are judged over all of them, as the rows
-/// arrive: where the flush was cut decides no column's type.
+/// The units are one flush, so each table's integers are judged over all of them where they lie,
+/// before any is split: where the flush was cut decides no column's type.
 pub(super) async fn write_normalized(
     job: &PartitionJob,
     context: &PartitionContext,
@@ -47,12 +48,9 @@ pub(super) async fn write_normalized(
     shape: &Arc<Shape>,
 ) -> Result<(), Error> {
     let pieces = sliced(job, context, units).await?;
-    let cut = pieces
-        .iter()
-        .map(|(parts, _, bytes)| (parts.clone(), *bytes));
-    let rounding = judged(job, context, cut.collect(), shape).await?;
+    let rounding = judged(job, &pieces, shape)?;
     let request = context.budget.shares().request;
-    for (parts, held, _) in pieces {
+    for (parts, held) in pieces {
         let mut reserved = reserve(job, context, request).await?;
         let (shape, stream) = (Arc::clone(shape), job.stream.clone());
         let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
@@ -142,7 +140,7 @@ async fn sliced(
     job: &PartitionJob,
     context: &PartitionContext,
     units: Vec<(Vec<RecordBatch>, Held)>,
-) -> Result<Vec<(Vec<RecordBatch>, Held, u64)>, Error> {
+) -> Result<Vec<(Vec<RecordBatch>, Held)>, Error> {
     let (max, limit) = split_bounds(context.budget.shares());
     let lowered = Lowered {
         rendering: context.rendering.as_ref().clone(),
@@ -208,8 +206,7 @@ async fn plan_parts(
     let mut discarded = Discarded::default();
     let mut planned = Vec::with_capacity(admitted.len());
     for (part, fate) in admitted {
-        let mut rounding = rounding_of(job, &part)?;
-        rounding.extend(judged.get(&part.path).into_iter().flatten().cloned());
+        let rounding = judged.get(&part.path).cloned().unwrap_or_default();
         let pruned = if dropped.is_empty() {
             Pruned::whole(part)
         } else {
@@ -244,12 +241,11 @@ async fn plan_parts(
         } else {
             context.tables.child(job.table, path).await?
         };
-        let mut incoming = Incoming::of(
-            schema_of(job, &pruned.part.batch)?,
-            pruned.part.columns.clone(),
-            &[],
-        );
-        incoming.rounding = rounding;
+        let incoming = Incoming {
+            schema: schema_of(job, &pruned.part.batch)?,
+            paths: pruned.part.columns.clone(),
+            rounding,
+        };
         let plan = context.tables.plan(table, incoming).await?;
         if plan.drops_rows() {
             unkept(job, context, &plan, &pruned, &mut dropped).await?;
@@ -328,48 +324,17 @@ fn admit(
     (admitted, dropped)
 }
 
-/// The columns of 64-bit integers holding a value a float would round, by the path of their table.
-pub(super) type Rounding = BTreeMap<Vec<Arc<str>>, BTreeSet<ColumnPath>>;
-
-/// The columns of `part`'s table holding, in its rows, a value a 64-bit float would round.
-fn rounding_of(job: &PartitionJob, part: &Part) -> Result<BTreeSet<ColumnPath>, Error> {
-    let schema = schema_of(job, &part.batch)?;
-    let paths = part.columns.clone();
-    Ok(Incoming::of(schema, paths, std::slice::from_ref(&part.batch)).rounding)
-}
-
-/// Where a flush was cut into several pieces, the columns of each table holding, in any piece's
-/// rows, a value a 64-bit float would round.
-///
-/// Each piece is split to judge it and its parts dropped, one at a time: a piece reserves what
-/// its split makes before it is split, and holds nothing of it while the next waits.
-async fn judged(
+/// The columns of each table holding, in any of `pieces`' rows, a value a 64-bit float would
+/// round, judged where the rows lie, inline, before any piece is split.
+fn judged(
     job: &PartitionJob,
-    context: &PartitionContext,
-    pieces: Vec<(Vec<RecordBatch>, u64)>,
-    shape: &Arc<Shape>,
+    pieces: &[(Vec<RecordBatch>, Held)],
+    shape: &Shape,
 ) -> Result<Rounding, Error> {
     let mut rounding = Rounding::new();
-    if pieces.len() < 2 {
-        return Ok(rounding);
-    }
-    for (parts, bytes) in pieces {
-        let _held = reserve(job, context, bytes.saturating_mul(SPLIT_COPIES)).await?;
-        let (shape, stream) = (Arc::clone(shape), job.stream.clone());
-        let parts = on_pool(context, move || split(&stream, &parts, &shape)).await?;
-        for (path, columns) in judge(job, parts)? {
-            rounding.entry(path).or_default().extend(columns);
-        }
-    }
-    Ok(rounding)
-}
-
-/// The columns of each table holding, in any of `parts`, a value a 64-bit float would round.
-pub(super) fn judge(job: &PartitionJob, parts: Vec<Part>) -> Result<Rounding, Error> {
-    let mut rounding = Rounding::new();
-    for part in parts {
-        let columns = rounding_of(job, &part)?;
-        rounding.entry(part.path).or_default().extend(columns);
+    for (parts, _) in pieces {
+        normalize::rounding::judge(parts, shape, &mut rounding)
+            .map_err(|error| schema_invalid(job, &error))?;
     }
     Ok(rounding)
 }

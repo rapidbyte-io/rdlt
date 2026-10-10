@@ -244,7 +244,7 @@ fn viewed(
     if !field_holds_json(item) {
         return Ok(());
     }
-    if views.ordered(len) {
+    if views.ordered(&named) {
         return items(item, values, &Rows::Viewed(Rc::new(named), views));
     }
     // A span a row at most, gathered in place: what `held` charges.

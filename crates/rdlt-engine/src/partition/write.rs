@@ -17,7 +17,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use parking_lot::Mutex;
 use rdlt_connector::cost::Allocations;
-use rdlt_connector::{ColumnPath, Permit, TableSchema};
+use rdlt_connector::{ColumnPath, Permit, SchemaError, TableSchema};
 
 use self::changes::{Ignored, split_changes};
 use self::held::Held;
@@ -362,14 +362,17 @@ fn judged(
 
 /// The table schema of `batch`'s columns.
 fn schema_of(job: &PartitionJob, batch: &RecordBatch) -> Result<TableSchema, Error> {
-    TableSchema::from_arrow(&batch.schema()).map_err(|error| {
-        Error::schema(format!(
-            "stream {}: a batch has no table schema: {error}",
-            job.stream
-        ))
-        .with_code("batch_schema_invalid")
-        .with_stream(&job.stream)
-    })
+    TableSchema::from_arrow(&batch.schema()).map_err(|error| schema_invalid(job, &error))
+}
+
+/// The error for a batch of `job`'s stream holding a column with no table schema.
+pub(super) fn schema_invalid(job: &PartitionJob, error: &SchemaError) -> Error {
+    Error::schema(format!(
+        "stream {}: a batch has no table schema: {error}",
+        job.stream
+    ))
+    .with_code("batch_schema_invalid")
+    .with_stream(&job.stream)
 }
 
 /// The stamp of the next `received` rows written to `open`, which counts them.

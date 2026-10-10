@@ -181,3 +181,49 @@ async fn a_normalized_push_s_integers_are_judged_together_however_its_records_ar
         ]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_normalized_push_of_one_unit_has_its_integers_judged_as_they_lie() {
+    let plan = || {
+        stream("events")
+            .read(ReadMode::Incremental)
+            .schema(SchemaSettings::new().nested(Nested::Normalize { max_depth: 2 }))
+    };
+    let floats = json("{\"n\":0.5,\"items\":[{\"m\":0.5}]}");
+    run_as(
+        "normalized_unit",
+        commit_every(1000),
+        plan(),
+        vec![floats.clone()],
+    )
+    .await;
+    let integers = json(
+        "{\"n\":9007199254740993,\"items\":[{\"m\":9007199254740993}]}\n\
+         {\"n\":1,\"items\":[{\"m\":1}]}",
+    );
+    run_as(
+        "normalized_unit",
+        commit_every(1000),
+        plan(),
+        vec![floats, integers],
+    )
+    .await;
+    let rows = published_json("normalized_unit", "events");
+    assert_eq!(
+        rows,
+        [
+            json!({"n": 0.5}),
+            json!({"n__json": "1"}),
+            json!({"n__json": "9007199254740993"})
+        ]
+    );
+    let items = published_json("normalized_unit", "events__items");
+    assert_eq!(
+        items,
+        [
+            json!({"m": 0.5}),
+            json!({"m__json": "1"}),
+            json!({"m__json": "9007199254740993"})
+        ]
+    );
+}
