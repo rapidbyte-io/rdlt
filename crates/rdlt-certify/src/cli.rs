@@ -74,7 +74,8 @@ struct Args {
     /// Lets the sandboxed connector reach the network.
     #[arg(long)]
     grant_network: bool,
-    /// An environment variable a spawned connector keeps; it otherwise starts with none.
+    /// An environment variable a spawned connector keeps; it otherwise starts with glibc's
+    /// malloc tunables alone.
     #[arg(long = "env", value_name = "NAME")]
     env: Vec<String>,
     /// The host's certificate chain, in PEM, for an endpoint.

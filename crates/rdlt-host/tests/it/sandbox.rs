@@ -158,6 +158,8 @@ pub(crate) mod bubblewrap {
         let (name, value) = ("CARGO_MANIFEST_DIR", env!("CARGO_MANIFEST_DIR"));
         // What the host states, where the launcher put it, and what the binary adds itself.
         let mut whole_env = own_env();
+        let tuned = "glibc.malloc.trim_threshold=268435456:glibc.malloc.mmap_threshold=33554432";
+        whole_env.insert("GLIBC_TUNABLES".to_owned(), tuned.into());
         assert!(!whole_env.contains_key(name), "{whole_env:?}");
         whole_env.insert(name.to_owned(), value.into());
         whole_env.insert("PWD".to_owned(), "/".into());

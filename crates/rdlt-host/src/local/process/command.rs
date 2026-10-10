@@ -4,6 +4,7 @@
 
 use std::ffi::OsString;
 use std::os::fd::{OwnedFd, RawFd};
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -85,7 +86,9 @@ pub(crate) fn command(
     }
     let args = arguments(launch);
     let kept = |name: &String| Some((OsString::from(name), std::env::var_os(name)?));
-    let env: Vec<(OsString, OsString)> = launch.env_passthrough.iter().filter_map(kept).collect();
+    let mut env: Vec<(OsString, OsString)> =
+        launch.env_passthrough.iter().filter_map(kept).collect();
+    tuned(&mut env);
     let mut given = vec![(socket, SOCKET_FD)];
     let (mut command, stops, held, marking) = if let Some(confinement) = &launch.confinement {
         if !marks_at_once() {
@@ -130,6 +133,72 @@ pub(crate) fn command(
         stops,
         held,
     })
+}
+
+/// A glibc malloc tunable, the variable glibc reads it from by its older name, and the value
+/// connectors start with.
+struct Tunable {
+    name: &'static str,
+    variable: &'static str,
+    value: &'static str,
+}
+
+/// The malloc tunables each connector starts with, which keep the memory it frees for its next
+/// frame.
+///
+/// Without them glibc gives back to the kernel the memory a connector frees, frames freed on
+/// another thread than its maker's, so each next frame is written to fresh pages,
+/// a page fault each; no heap trimming and a fixed 32 MiB mmap threshold stop that.
+///
+/// It is set whatever libc this host links, since the connector's libc is what reads it, and
+/// is ignored where glibc is not the connector's allocator: musl, macOS, a connector with an
+/// allocator of its own.
+const TUNABLES: [Tunable; 2] = [
+    Tunable {
+        name: "glibc.malloc.trim_threshold",
+        variable: "MALLOC_TRIM_THRESHOLD_",
+        value: "268435456",
+    },
+    Tunable {
+        name: "glibc.malloc.mmap_threshold",
+        variable: "MALLOC_MMAP_THRESHOLD_",
+        value: "33554432",
+    },
+];
+
+/// Adds to `env` a `GLIBC_TUNABLES` of the [`TUNABLES`] it does not already name, by that
+/// variable or by glibc's older one, after the entries it has.
+pub(super) fn tuned(env: &mut Vec<(OsString, OsString)>) {
+    const VARIABLE: &str = "GLIBC_TUNABLES";
+    let at = env.iter().position(|(name, _)| name == VARIABLE);
+    let mut value = at.map_or_else(Vec::new, |at| env[at].1.as_bytes().to_vec());
+    let operators = |tunable: &Tunable| {
+        let entry = |entry: &[u8]| {
+            entry
+                .strip_prefix(tunable.name.as_bytes())
+                .is_some_and(|rest| rest.starts_with(b"="))
+        };
+        value.split(|byte| *byte == b':').any(entry)
+            || env.iter().any(|(name, _)| name == tunable.variable)
+    };
+    let missing: Vec<&Tunable> = TUNABLES
+        .iter()
+        .filter(|tunable| !operators(tunable))
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    for tunable in missing {
+        if !value.is_empty() {
+            value.push(b':');
+        }
+        value.extend_from_slice(format!("{}={}", tunable.name, tunable.value).as_bytes());
+    }
+    let value = OsString::from_vec(value);
+    match at {
+        Some(at) => env[at].1 = value,
+        None => env.push((OsString::from(VARIABLE), value)),
+    }
 }
 
 /// Gives `command`'s process each of `given` at its number, and no other descriptor of this

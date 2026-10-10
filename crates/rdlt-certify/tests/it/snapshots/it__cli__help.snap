@@ -18,7 +18,7 @@ Options:
       --grant-read <PATH>       A path the sandboxed connector may read
       --grant-write <PATH>      A path the sandboxed connector may read and write
       --grant-network           Lets the sandboxed connector reach the network
-      --env <NAME>              An environment variable a spawned connector keeps; it otherwise starts with none
+      --env <NAME>              An environment variable a spawned connector keeps; it otherwise starts with glibc's malloc tunables alone
       --tls-cert <TLS_CERT>     The host's certificate chain, in PEM, for an endpoint
       --tls-key <TLS_KEY>       The host's private key, in PEM, for an endpoint
       --tls-ca <TLS_CA>         The CA bundle that issued the connector's certificate, in PEM, for an endpoint

@@ -226,6 +226,14 @@ async fn env_passthrough_reaches_connector() {
 }
 
 #[tokio::test]
+async fn a_connector_starts_with_glibcs_malloc_tunables() {
+    let tuned = "glibc.malloc.trim_threshold=268435456:glibc.malloc.mmap_threshold=33554432";
+    let script = serde_json::json!({ "env": { "GLIBC_TUNABLES": tuned } });
+    let source = spawned(&local(), script).await;
+    source.check().await.expect("the tunables are the defaults");
+}
+
+#[tokio::test]
 async fn a_connectors_own_children_do_not_inherit_the_hosts_socket() {
     let source = spawned(&local(), serde_json::json!({ "probe_fd_3": true })).await;
     source

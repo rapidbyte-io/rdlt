@@ -1,7 +1,8 @@
 # ADR 0017: Placing connectors in processes of their own
 
 Status: accepted, 2026-09-26; where the audited `unsafe` lives and what forbids the rest are
-amended by ADR 0048; lookup, trust, descriptors and output are amended by ADR 0043.
+amended by ADR 0048; lookup, trust, descriptors and output are amended by ADR 0043; the connector's
+environment, amended 2026-10-10.
 
 ## Context
 
@@ -77,7 +78,14 @@ only at its end. The owner also asked for the host to be simulated over a networ
     stated to be trusted.
   - The connector starts with its socket on file descriptor 3 (`--rdlt-fd=3`) and a piped
     standard input. Its environment is cleared, keeping only the variables `env_passthrough`
-    names; the host sets no `RDLT_*` variables yet.
+    names, and the host sets no `RDLT_*` variables yet. Amended 2026-10-10: the host also sets
+    glibc's malloc tunables, `glibc.malloc.trim_threshold=268435456` and
+    `glibc.malloc.mmap_threshold=33554432`, in `GLIBC_TUNABLES`, keeping any the operator
+    passes (in a passed `GLIBC_TUNABLES`, or glibc's `MALLOC_TRIM_THRESHOLD_` and
+    `MALLOC_MMAP_THRESHOLD_`). They are a no-op where glibc is not the connector's allocator.
+    The host's own process is unchanged: an operator running the host, or a listening
+    connector it does not spawn, may set the same `GLIBC_TUNABLES` for that process. The
+    figures are in `docs/perf/served.md`.
   - Standard output is drained into `tracing` as warnings, and standard error as information,
     with the connector's id and process id. A line goes in pieces of at most 8 KiB, so a
     connector that never ends a line cannot grow the host's memory.
