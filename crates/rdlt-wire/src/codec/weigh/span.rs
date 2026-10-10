@@ -1,9 +1,10 @@
 //! Weighs a stretch of a column's items: by arithmetic on widths and offsets where a layout
 //! allows, and item by item only where each names something of its own.
 
-use super::build::{VALID, wide};
+use super::build::VALID;
 use super::column::Column;
 use super::{State, Weight};
+use crate::limits::count;
 
 /// Adds a column's own `values` and `bits` to `weight`.
 fn own(weight: &mut Weight, values: u64, bits: u64) {
@@ -23,13 +24,13 @@ impl Column {
             return;
         }
         state.visit();
-        let count = wide(end - start);
+        let items = count(end - start);
         match self {
-            Self::Fixed { bits } | Self::Keyed { bits, .. } => each(weight, count, *bits),
+            Self::Fixed { bits } | Self::Keyed { bits, .. } => each(weight, items, *bits),
             Self::Bytes { bits, offset } => {
-                let bytes = wide(offset(end).saturating_sub(offset(start)));
-                let bits = count.saturating_mul(*bits);
-                own(weight, count, bits.saturating_add(bytes.saturating_mul(8)));
+                let bytes = count(offset(end).saturating_sub(offset(start)));
+                let bits = items.saturating_mul(*bits);
+                own(weight, items, bits.saturating_add(bytes.saturating_mul(8)));
             }
             Self::Views { views } => {
                 for index in start..end {
@@ -41,12 +42,12 @@ impl Column {
                 }
             }
             Self::Sized { size, item } => {
-                each(weight, count, VALID);
+                each(weight, items, VALID);
                 let (start, end) = (start.saturating_mul(*size), end.saturating_mul(*size));
                 item.span(start, end, state, weight);
             }
             Self::Each { bits, children } => {
-                each(weight, count, *bits);
+                each(weight, items, *bits);
                 for child in children {
                     child.span(start, end, state, weight);
                 }
@@ -57,7 +58,7 @@ impl Column {
 
     /// As [`Column::span`], for the layouts whose items name others.
     fn named(&self, start: usize, end: usize, state: &mut State, weight: &mut Weight) {
-        let count = wide(end - start);
+        let items = count(end - start);
         match self {
             Self::List {
                 bits,
@@ -65,7 +66,7 @@ impl Column {
                 nulls: None,
                 item,
             } => {
-                each(weight, count, *bits);
+                each(weight, items, *bits);
                 item.span(offset(start), offset(end), state, weight);
             }
             Self::List {
@@ -74,7 +75,7 @@ impl Column {
                 nulls: Some(nulls),
                 item,
             } => {
-                each(weight, count, *bits);
+                each(weight, items, *bits);
                 // The rows that are not null, a stretch at a time.
                 let valid = nulls.inner().slice(start, end - start);
                 for (from, to) in valid.set_slices() {
@@ -89,7 +90,7 @@ impl Column {
                         return;
                     }
                     let (from, to) = range(row);
-                    own(weight, 1 + wide(to.saturating_sub(from)), *bits);
+                    own(weight, 1 + count(to.saturating_sub(from)), *bits);
                     item.span(from, to, state, weight);
                     state.visit();
                 }
@@ -131,7 +132,7 @@ impl Column {
                 return;
             }
             let upto = at.saturating_add(rows);
-            own(weight, wide(rows), 0);
+            own(weight, count(rows), 0);
             // A run's end and value are in the frame once, with the first row of the piece in
             // the run.
             let last = state.runs.get_mut(*place);

@@ -8,9 +8,10 @@ use arrow_array::types::{ArrowDictionaryKeyType, RunEndIndexType};
 use arrow_array::{Array, OffsetSizeTrait};
 use arrow_buffer::ArrowNativeType;
 use arrow_schema::DataType;
+use rdlt_wire::limits::count;
 
 use super::{JSON, Meter, Within, clamp, item};
-use crate::cost::widths::{BRACKETS, OFFSET, count, null_slot, scalar};
+use crate::cost::widths::{BRACKETS, OFFSET, null_slot, scalar};
 
 /// Bytes: the index of a row's run, which decoding a run-end encoding takes a row.
 const RUN: u64 = 4;

@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use arrow_array::{Array as _, ArrayRef, RecordBatch};
 use arrow_schema::{ArrowError, Schema, SchemaRef};
+use rdlt_wire::limits::count;
 
 use super::sparse::{Nulls, every_column};
 use crate::limits::{FOLD_CELLS, MAX_SHAPES};
@@ -118,8 +119,4 @@ fn sized(batch: &RecordBatch) -> (u64, u64) {
     let valued = |column: &ArrayRef| column.len() - column.logical_null_count();
     let cells: usize = batch.columns().iter().map(valued).sum();
     (count(batch.num_rows()), count(cells))
-}
-
-fn count(of: usize) -> u64 {
-    u64::try_from(of).unwrap_or(u64::MAX)
 }

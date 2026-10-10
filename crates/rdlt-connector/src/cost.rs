@@ -17,6 +17,7 @@ use std::ops::Range;
 use arrow_array::cast::AsArray as _;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::DataType;
+use rdlt_wire::limits::count;
 
 pub use held::{Allocations, schema_bytes};
 
@@ -93,7 +94,7 @@ impl Rendering {
     pub fn charge(&self, push: &Push, limit: u64) -> u64 {
         match push {
             Push::Arrow(batch) | Push::Changes(batch) => self.cost(batch, limit).charge(),
-            Push::Json(text) => widths::count(text.len()),
+            Push::Json(text) => count(text.len()),
         }
     }
 
@@ -275,7 +276,7 @@ impl Measure {
 /// Strings and bytes are measured exactly, a value of a fixed width at the longest text its
 /// type renders to, and a nested value as the cost model measures its JSON text.
 pub fn text_bytes(array: &dyn Array, json: bool) -> u64 {
-    let rows = widths::count(array.len());
+    let rows = count(array.len());
     let quotes = if json {
         rows.saturating_mul(widths::BRACKETS)
     } else {
@@ -291,7 +292,7 @@ pub fn text_bytes(array: &dyn Array, json: bool) -> u64 {
             let range = usize::try_from(first).unwrap_or(0)..usize::try_from(last).unwrap_or(0);
             let bytes = text.value_data().get(range).unwrap_or_default();
             let escapes = if json { widths::escapes(bytes) } else { 0 };
-            widths::count(bytes.len())
+            count(bytes.len())
                 .saturating_add(escapes)
                 .saturating_add(quotes)
         }
@@ -311,7 +312,7 @@ pub fn text_bytes(array: &dyn Array, json: bool) -> u64 {
 
 /// The bytes `rows` nulls of `data_type` take once built as an array of it.
 pub fn nulls(data_type: &DataType, rows: usize) -> u64 {
-    let rows = widths::count(rows);
+    let rows = count(rows);
     rows.saturating_mul(widths::null_slot(data_type))
         .saturating_add(rows.div_ceil(8))
 }

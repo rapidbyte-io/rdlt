@@ -112,6 +112,11 @@ pub const TRANSPORT_FRAME_BYTES: u32 = 1024 * 1024;
 /// its error, whose message is at most [`CONTROL_STRING_BYTES`], in base64.
 pub const HEADER_LIST_BYTES: u32 = 256 * 1024;
 
+/// A count or a length as the `u64` every limit is in, saturating where a `usize` is wider.
+pub fn count(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 /// The code of every refusal.
 pub const LIMIT_EXCEEDED: &str = "limit_exceeded";
 
@@ -384,7 +389,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the frame exceeds [`Limits::frame_bytes`].
     pub fn admit_frame(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("frame bytes", self.frame_bytes, len(bytes))
+        Self::admit("frame bytes", self.frame_bytes, count(bytes))
     }
 
     /// The lesser of each of these limits and of `other`'s: what a sender keeps within, of its
@@ -446,7 +451,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the message exceeds [`Limits::schema_bytes`].
     pub fn admit_schema(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("schema bytes", self.schema_bytes, len(bytes))
+        Self::admit("schema bytes", self.schema_bytes, count(bytes))
     }
 
     /// Admits a string field of a control message.
@@ -458,7 +463,7 @@ impl Limits {
         Self::admit(
             "control string bytes",
             self.control_string_bytes,
-            len(value.len()),
+            count(value.len()),
         )
     }
 
@@ -468,7 +473,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the push exceeds [`Limits::json_push_bytes`].
     pub fn admit_json(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("json push bytes", self.json_push_bytes, len(bytes))
+        Self::admit("json push bytes", self.json_push_bytes, count(bytes))
     }
 
     /// Admits a cursor.
@@ -477,7 +482,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the cursor exceeds [`Limits::cursor_bytes`].
     pub fn admit_cursor(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("cursor bytes", self.cursor_bytes, len(bytes))
+        Self::admit("cursor bytes", self.cursor_bytes, count(bytes))
     }
 
     /// Admits a configuration document.
@@ -486,13 +491,8 @@ impl Limits {
     ///
     /// A [`Refusal`] when the document exceeds [`Limits::config_bytes`].
     pub fn admit_config(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("config bytes", self.config_bytes, len(bytes))
+        Self::admit("config bytes", self.config_bytes, count(bytes))
     }
-}
-
-/// A length as the `u64` limits count in.
-fn len(bytes: usize) -> u64 {
-    u64::try_from(bytes).unwrap_or(u64::MAX)
 }
 
 impl From<Limits> for v1::Limits {

@@ -6,10 +6,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rdlt_wire::limits::count;
 use tokio::sync::{Notify, oneshot};
 
 use super::super::writer::Kept;
-use super::{Command, LoadLog, count};
+use super::{Command, LoadLog};
 use crate::error::Error;
 use crate::limits::LOG_BYTES_EXCEEDED;
 

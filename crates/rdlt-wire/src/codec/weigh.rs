@@ -13,6 +13,7 @@ use arrow_array::RecordBatch;
 
 use self::column::{Column, Counts};
 use super::compact::plain;
+use crate::limits::count;
 
 /// What rows weigh.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -201,8 +202,7 @@ impl Weigher {
     /// Bytes: the most a frame of this batch's schema takes beside what its rows weigh: each
     /// buffer's padding, an offset more than rows in each buffer of offsets, and its header.
     pub fn overhead(&self) -> u64 {
-        let wide = |count: usize| u64::try_from(count).unwrap_or(u64::MAX);
-        let (nodes, buffers) = (wide(self.counts.nodes), wide(self.counts.buffers));
+        let (nodes, buffers) = (count(self.counts.nodes), count(self.counts.buffers));
         // A buffer is padded to 64 bytes and described in 16; a node is described in 16.
         (PADDING + 16 + 8) * buffers + 16 * nodes + HEADER
     }

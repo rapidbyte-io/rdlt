@@ -6,6 +6,7 @@ use arrow_array::RecordBatch;
 use rdlt_connector::prelude::*;
 use rdlt_connector::sqlgen::{self, SqlPlanner, Sqlite};
 use rdlt_connector::{Epoch, PipelineId, SegmentId};
+use rdlt_wire::limits::count;
 
 use rusqlite::Transaction;
 
@@ -97,8 +98,8 @@ impl TableWriter for SqliteWriter {
                         .collect();
                     let statement = planner.stage(&staging, &table, epoch, *segment, &names)?;
                     values::stage(transaction, &statement, batch)?;
-                    let rows = counted(batch.num_rows());
-                    let bytes = counted(batch.get_array_memory_size());
+                    let rows = count(batch.num_rows());
+                    let bytes = count(batch.get_array_memory_size());
                     let record =
                         planner.record_segment(&staging, &table, epoch, *segment, [rows, bytes])?;
                     run(transaction, &record)?;
@@ -109,9 +110,4 @@ impl TableWriter for SqliteWriter {
             })
             .await
     }
-}
-
-/// A count of rows or bytes as a receipt carries it.
-fn counted(count: usize) -> u64 {
-    u64::try_from(count).unwrap_or(u64::MAX)
 }

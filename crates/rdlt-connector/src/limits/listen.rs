@@ -6,6 +6,8 @@ mod tests;
 
 use std::time::Duration;
 
+use rdlt_wire::limits::count;
+
 /// How many connections a listening connector holds, and for how long.
 ///
 /// A connection is unauthenticated until its TLS handshake has shown a certificate naming an
@@ -133,12 +135,11 @@ impl ListenLimits {
     /// waiting connection, each session's share, and the connector's own. Unauthenticated peers
     /// hold the first two terms at most, so they cannot take a descriptor a session needs.
     pub fn descriptors(&self) -> u64 {
-        let wide = |count: usize| u64::try_from(count).unwrap_or(u64::MAX);
-        wide(self.unauthenticated)
+        count(self.unauthenticated)
             .saturating_add(1)
-            .saturating_add(wide(self.waiting))
-            .saturating_add(wide(self.sessions).saturating_mul(wide(self.session_descriptors)))
-            .saturating_add(wide(self.own_descriptors))
+            .saturating_add(count(self.waiting))
+            .saturating_add(count(self.sessions).saturating_mul(count(self.session_descriptors)))
+            .saturating_add(count(self.own_descriptors))
     }
 
     /// Sessions: how many destination sessions one connection holds open at once, which is as

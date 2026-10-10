@@ -1,6 +1,7 @@
 //! What one value of each type takes: stored in its plain Arrow type, and rendered as text.
 
 use arrow_schema::{DataType, Fields, IntervalUnit, UnionFields};
+use rdlt_wire::limits::count;
 
 use crate::types::TypeKind;
 
@@ -209,9 +210,4 @@ pub(super) fn escapes(text: &[u8]) -> u64 {
         })
         .sum();
     count(extra)
-}
-
-/// A count as the `u64` costs are measured in.
-pub(super) fn count(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }

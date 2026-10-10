@@ -47,14 +47,9 @@ fn count(
     });
 }
 
-/// A count of bytes as the counters hold it.
-fn bytes(len: usize) -> u64 {
-    u64::try_from(len).unwrap_or(u64::MAX)
-}
-
 impl StagedChunk for CountedChunk {
     fn append(&mut self, bytes: Bytes) -> BoxFuture<'_, io::Result<()>> {
-        let len = self::bytes(bytes.len());
+        let len = rdlt_wire::limits::count(bytes.len());
         count(
             &self.tally,
             |requests| &mut requests.append,
@@ -139,7 +134,7 @@ impl WalStore for CountedStore {
         count(&self.tally, |requests| &mut requests.read, |_| {});
         Box::pin(async move {
             let read = self.store.read(pipeline, chunk, offset, len).await?;
-            let len = bytes(read.len());
+            let len = rdlt_wire::limits::count(read.len());
             self.tally
                 .add(|counters| counters.log.read = counters.log.read.saturating_add(len));
             Ok(read)

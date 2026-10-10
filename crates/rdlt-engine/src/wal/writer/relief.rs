@@ -3,9 +3,11 @@
 use std::sync::atomic::Ordering;
 
 use rdlt_connector::CommitSeq;
+use rdlt_wire::limits::count;
 
 use super::super::frame::{self, Frame};
-use super::{Log, count};
+
+use super::Log;
 use crate::error::Error;
 
 impl Log {

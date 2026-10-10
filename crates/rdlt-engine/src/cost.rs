@@ -14,6 +14,7 @@ use rdlt_connector::{
     Admission, BoxFuture, Capabilities, ConnectorError, ConnectorErrorKind, LimitExceeded, Permit,
     Push, SourceEvent,
 };
+use rdlt_wire::limits::count;
 
 use crate::budget::{Denied, Exhausted, MemoryBudget, Reservation, TooLarge};
 use crate::limits::PUSH_EXCEEDS_BUDGET;
@@ -124,7 +125,6 @@ impl Admission for Charging {
         event: &'a SourceEvent,
     ) -> BoxFuture<'a, rdlt_connector::Result<Option<Permit>>> {
         Box::pin(async move {
-            let count = |bytes: usize| u64::try_from(bytes).unwrap_or(u64::MAX);
             let (bytes, admitted) = match event {
                 SourceEvent::Push(Push::Arrow(batch) | Push::Changes(batch)) => {
                     let bytes = Allocations::of(batch).bytes();

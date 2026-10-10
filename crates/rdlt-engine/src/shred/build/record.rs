@@ -7,8 +7,9 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, StructArray};
 use arrow_buffer::NullBufferBuilder;
 use arrow_schema::Fields;
+use rdlt_wire::limits::count;
 
-use super::{Column, count, rows_of};
+use super::{Column, rows_of};
 use crate::limits::QUOTED_BYTES;
 use crate::shred::ShredError;
 use crate::shred::meter::{Columns, Meter, Over};

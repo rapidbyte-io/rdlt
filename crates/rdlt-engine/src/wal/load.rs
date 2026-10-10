@@ -17,6 +17,7 @@ use rdlt_connector::{
     CommitSeq, GenerationId, PartitionId, PartitionState, Permit, Receipt, SchemaVersion,
     SegmentId, StreamName,
 };
+use rdlt_wire::limits::count;
 use tokio::sync::{Mutex, oneshot};
 
 use super::frame::{self, Frame};
@@ -380,8 +381,4 @@ async fn settled(
     }
     held.shrink(frame);
     Ok((held, None))
-}
-
-fn count(bytes: usize) -> u64 {
-    u64::try_from(bytes).unwrap_or(u64::MAX)
 }

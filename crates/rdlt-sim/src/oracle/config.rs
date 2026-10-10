@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use rdlt_connector::Checkpointing;
 use rdlt_engine::{CommitPolicy, EngineConfig, GrowthLimits, RetryPolicy};
+use rdlt_wire::limits::count;
 
 use crate::rng::SplitMix64;
 use crate::seed::Seed;
@@ -111,7 +112,7 @@ fn tiny(workload: &Workload) -> Option<u64> {
     let open: u64 = workload
         .streams
         .iter()
-        .map(|stream| to_u64(stream.partitions.len()).saturating_mul(stream.checkpoint_every))
+        .map(|stream| count(stream.partitions.len()).saturating_mul(stream.checkpoint_every))
         .sum();
     plain.then(|| open.saturating_mul(2 * PLAIN_FRAME).max(16 << 10))
 }
@@ -158,10 +159,6 @@ pub(super) fn pressed(
 /// Whether an engine of `config` keeps a log smaller than the default.
 pub(super) fn small_log(config: &EngineConfig) -> bool {
     config.growth().log_bytes() < GrowthLimits::default().log_bytes()
-}
-
-fn to_u64(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn to_usize(value: u64) -> usize {

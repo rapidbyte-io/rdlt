@@ -8,13 +8,10 @@ use arrow_schema::{DataType, UnionFields, UnionMode};
 
 use super::column::{Column, Counts, Named};
 use crate::codec::compact::plain;
+use crate::limits::count;
 
 /// Bits: a validity bit, which Arrow's writer sends for every value of a column that has one.
 pub(super) const VALID: u64 = 1;
-
-pub(super) fn wide(count: usize) -> u64 {
-    u64::try_from(count).unwrap_or(u64::MAX)
-}
 
 /// Where item `index` begins by `offsets`; nowhere where they do not reach.
 fn offset<O: OffsetSizeTrait>(offsets: &OffsetBuffer<O>) -> Named<usize> {
@@ -31,13 +28,13 @@ pub(super) fn fixed(data_type: &DataType) -> Column {
         fixed => fixed.primitive_width().unwrap_or(0),
     };
     Column::Fixed {
-        bits: 8 * wide(bytes) + VALID,
+        bits: 8 * count(bytes) + VALID,
     }
 }
 
 pub(super) fn bytes<O: OffsetSizeTrait>(offsets: &OffsetBuffer<O>) -> Column {
     Column::Bytes {
-        bits: 8 * wide(size_of::<O>()) + VALID,
+        bits: 8 * count(size_of::<O>()) + VALID,
         offset: offset(offsets),
     }
 }
@@ -61,7 +58,7 @@ pub(super) fn listed<O: OffsetSizeTrait>(
 ) -> Column {
     let nulls = nulls.filter(|nulls| rebuilt && nulls.null_count() > 0);
     Column::List {
-        bits: 8 * wide(size_of::<O>()) + VALID,
+        bits: 8 * count(size_of::<O>()) + VALID,
         offset: offset(offsets),
         nulls: nulls.cloned(),
         item: Box::new(Column::of(items, rebuilt, counts)),
@@ -104,7 +101,7 @@ pub(super) fn list_views<O: OffsetSizeTrait>(
         }
     };
     Column::ListView {
-        bits: 16 * wide(size_of::<O>()) + VALID,
+        bits: 16 * count(size_of::<O>()) + VALID,
         range: Box::new(range),
         item: Box::new(Column::of(lists.values().as_ref(), rebuilt, counts)),
     }
@@ -165,7 +162,7 @@ pub(super) fn runs<R: RunEndIndexType>(
         (run, end.saturating_sub(ends.offset()))
     };
     Column::Runs {
-        bits: 8 * wide(size_of::<R::Native>()) + VALID,
+        bits: 8 * count(size_of::<R::Native>()) + VALID,
         reach: Box::new(reach),
         place,
         values: Box::new(Column::of(runs.values().as_ref(), rebuilt, counts)),
@@ -183,7 +180,7 @@ pub(super) fn keyed<K: ArrowDictionaryKeyType>(array: &dyn Array, counts: &mut C
     let column = Column::of(values.as_ref(), !plain(values.data_type()), &mut apart);
     counts.runs = apart.runs;
     Column::Keyed {
-        bits: 8 * wide(size_of::<K::Native>()) + VALID,
+        bits: 8 * count(size_of::<K::Native>()) + VALID,
         length: values.len(),
         values: Box::new(column),
     }

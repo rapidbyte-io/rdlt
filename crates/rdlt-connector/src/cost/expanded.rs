@@ -29,11 +29,10 @@ use arrow_array::types::{
     Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow_schema::{DataType, Fields};
+use rdlt_wire::limits::count;
 
 use self::named::{Named, Place};
-use super::widths::{
-    BRACKETS, OFFSET, Scalar, count, item_slot, key, keys, null_slot, null_text, scalar,
-};
+use super::widths::{BRACKETS, OFFSET, Scalar, item_slot, key, keys, null_slot, null_text, scalar};
 use super::{Rendering, Stored};
 use crate::types::{self, LogicalType, TypeKind};
 

@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, ListArray};
 use arrow_buffer::{NullBufferBuilder, OffsetBuffer};
+use rdlt_wire::limits::count;
 
-use super::{Column, count, rows_of};
+use super::{Column, rows_of};
 use crate::shred::ShredError;
 use crate::shred::meter::{Meter, Over};
 use crate::shred::observe::Observed;
