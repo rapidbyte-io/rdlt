@@ -1,20 +1,22 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray;
 use arrow_array::types::Int32Type;
 use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, Int32Array, Int64Array, LargeListArray,
-    LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, RunArray, StructArray,
-    UnionArray,
+    LargeListViewArray, ListArray, ListViewArray, MapArray, RecordBatch, RecordBatchOptions,
+    RunArray, StructArray, UnionArray,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field, Fields, UnionFields};
+use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, UnionFields};
 use proptest::prelude::*;
 use rdlt_connector::{SchemaError, TableSchema};
 
 use super::{Rounding, judge};
-use crate::normalize::encodings::batch;
-use crate::normalize::{Shape, normalize};
+use crate::normalize::encodings::{batch, wrapped};
+use crate::normalize::placement::Container;
+use crate::normalize::{Part, Shape, normalize};
 use crate::table::Incoming;
 
 const EDGE: i64 = 1 << 53;
@@ -359,6 +361,57 @@ fn a_container_beyond_the_depth_limit_or_kept_whole_is_one_column() {
     );
 }
 
+/// The path, columns and rows of each part, at most [`SHOWN`] of each.
+fn tables(parts: &[Part]) -> Vec<(Vec<Arc<str>>, Vec<String>, usize)> {
+    parts
+        .iter()
+        .take(SHOWN)
+        .map(|part| {
+            let columns = part.columns.iter().take(SHOWN).map(ToString::to_string);
+            (part.path.clone(), columns.collect(), part.batch.num_rows())
+        })
+        .collect()
+}
+
+#[test]
+fn an_encoded_container_under_an_object_with_nulls_stays_a_column() {
+    // An object and an array, each in runs, then in a dictionary.
+    let containers = || -> [ArrayRef; 4] {
+        let objects = object("a", integers(vec![1 << 60, 2]), None);
+        let arrays = list(integers(vec![1 << 60, 2]), vec![0, 1, 2], None);
+        [
+            wrapped(&objects, true),
+            wrapped(&arrays, true),
+            wrapped(&objects, false),
+            wrapped(&arrays, false),
+        ]
+    };
+    // The objects holding it, as the stream's column or a list's items, with no nulls or with
+    // the second null.
+    let batch = |container: ArrayRef, nulls: Option<NullBuffer>, item: bool| {
+        let objects = object("r", container, nulls);
+        let column = if item {
+            list(objects, vec![0, 2], None)
+        } else {
+            objects
+        };
+        RecordBatch::try_from_iter([("s", column)]).unwrap()
+    };
+    for item in [false, true] {
+        for (plain, nulled) in containers().into_iter().zip(containers()) {
+            let kind = plain.data_type().clone();
+            let plain = batch(plain, None, item);
+            let nulled = batch(nulled, Some(NullBuffer::from(vec![true, false])), item);
+            let parts = |batch: &RecordBatch| tables(&normalize(batch, &shape(8)).unwrap());
+            assert_eq!(parts(&nulled), parts(&plain), "{kind}, item {item}");
+            let mut walked = Rounding::new();
+            judge(std::slice::from_ref(&nulled), &shape(8), &mut walked).unwrap();
+            let split = split_rounding(std::slice::from_ref(&nulled), &shape(8));
+            assert_eq!(shown(&walked), shown(&split), "{kind}, item {item}");
+        }
+    }
+}
+
 #[test]
 fn a_column_with_no_logical_type_is_refused_wherever_normalizing_puts_it() {
     let unions = |len: usize| -> ArrayRef {
@@ -429,6 +482,49 @@ fn split_rounding(batches: &[RecordBatch], shape: &Shape) -> Rounding {
     rounding
 }
 
+/// `batch` with the first object or array that is a field of one of its objects held in runs or
+/// a dictionary, as `runs` says.
+fn wrapped_below(batch: &RecordBatch, runs: bool) -> RecordBatch {
+    let schema = batch.schema();
+    let mut fields: Vec<Field> = schema
+        .fields()
+        .iter()
+        .take(SHOWN)
+        .map(|f| f.as_ref().clone())
+        .collect();
+    let mut columns = batch.columns().to_vec();
+    for (field, column) in fields.iter_mut().zip(&mut columns) {
+        let Some(object) = column.as_struct_opt() else {
+            continue;
+        };
+        let inner = object.fields();
+        let container =
+            |field: &FieldRef| Container::of_arrow(field.data_type()) != Container::Other;
+        let Some(index) = inner.iter().position(container) else {
+            continue;
+        };
+        let mut values = object.columns().to_vec();
+        values[index] = wrapped(&values[index], runs);
+        let mut inner: Vec<Field> = inner
+            .iter()
+            .take(SHOWN)
+            .map(|f| f.as_ref().clone())
+            .collect();
+        inner[index] = inner[index]
+            .clone()
+            .with_data_type(values[index].data_type().clone());
+        let nulls = object.nulls().cloned();
+        let object = StructArray::try_new(Fields::from(inner), values, nulls)
+            .expect("a wrapped field holds the values it wraps");
+        *field = field.clone().with_data_type(object.data_type().clone());
+        *column = Arc::new(object);
+        break;
+    }
+    let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    RecordBatch::try_new_with_options(Arc::new(Schema::new(fields)), columns, &options)
+        .expect("a wrapped batch keeps its rows")
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(512)))]
 
@@ -439,6 +535,7 @@ proptest! {
         keyed in proptest::collection::vec(any::<bool>(), 3),
         whole in proptest::collection::vec(any::<bool>(), 3),
         cut in 0_usize..7,
+        below in proptest::option::of(any::<bool>()),
     ) {
         let names = |chosen: &[bool]| -> Vec<Arc<str>> {
             drawn.0.iter().zip(chosen).filter(|(_, chosen)| **chosen)
@@ -450,6 +547,11 @@ proptest! {
             key: names(&keyed),
         };
         let flush = batch(&drawn, Clone::clone);
+        // An object or array held in runs or a dictionary, below an object with nulls.
+        let flush = match below {
+            Some(runs) => wrapped_below(&flush, runs),
+            None => flush,
+        };
         let cut = cut.min(flush.num_rows());
         let batches = [flush.slice(0, cut), flush.slice(cut, flush.num_rows() - cut)];
         let mut walked = Rounding::new();

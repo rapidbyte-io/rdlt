@@ -590,6 +590,43 @@ fn judges_holding_nothing(tenth: usize) {
     assert!(beyond.is_empty(), "{}", beyond.join("\n"));
 }
 
+#[test]
+fn a_run_end_encoded_field_under_a_nullable_object_splits_within_what_is_reserved() {
+    use crate::normalize::{Shape, normalize};
+    let rows = i32::try_from(ROWS).unwrap();
+    let runs =
+        RunArray::<Int32Type>::try_new(&Int32Array::from(vec![rows]), &Int64Array::from(vec![7]))
+            .unwrap();
+    let keyed = DictionaryArray::<Int32Type>::try_new(
+        Int32Array::from(vec![1, 0, 1]),
+        Arc::new(Int64Array::from(vec![5, 6])),
+    )
+    .unwrap();
+    let ends = Int32Array::from(vec![rows / 2, rows, rows + rows / 2]);
+    let keyed_runs = RunArray::<Int32Type>::try_new(&ends, &keyed).unwrap();
+    let sliced = keyed_runs.slice(ROWS / 4, ROWS);
+    let shape = Shape {
+        max_depth: 8,
+        whole: std::collections::BTreeSet::new(),
+        key: Vec::new(),
+    };
+    for values in [Arc::new(runs) as ArrayRef, Arc::new(sliced) as ArrayRef] {
+        let field = ArrowField::new("r", values.data_type().clone(), true);
+        let valid: Vec<bool> = (0..ROWS).map(|row| row % 2 == 0).collect();
+        let nulls = arrow_buffer::NullBuffer::from(valid);
+        let fields = Fields::from(vec![field]);
+        let object = StructArray::try_new(fields, vec![values], Some(nulls)).unwrap();
+        let batch = RecordBatch::try_from_iter([("s", Arc::new(object) as ArrayRef)]).unwrap();
+        let estimate = split_estimate(&batch);
+        let (parts, peak) = peak(|| normalize(&batch, &shape));
+        parts.expect("the batch normalizes");
+        assert!(
+            peak <= estimate + SLACK,
+            "reserved {estimate}, allocated {peak}"
+        );
+    }
+}
+
 /// Columns of JSON text whose values mix kinds: integers, floats, strings, objects and lists;
 /// those holding every kind in every text type and encoding.
 fn mixed_json() -> Vec<ArrayRef> {
