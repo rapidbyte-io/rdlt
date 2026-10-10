@@ -163,6 +163,10 @@ impl EngineConfig {
     }
 
     /// Partitions read at once.
+    ///
+    /// Each read is held to an equal part of the shares reads draw on, so the cursor, schema,
+    /// column and dictionary limits [`EngineConfig::limits`] gives fall as this rises; past the
+    /// most the memory admits, [`EngineConfig::least_memory`] says how much it needs.
     pub fn partitions(&self) -> NonZeroUsize {
         self.partitions
     }
@@ -307,7 +311,8 @@ impl EngineConfigBuilder {
         self
     }
 
-    /// Partitions read at once (default 16).
+    /// Partitions read at once (default 16); more lower what each read may send, as
+    /// [`EngineConfig::partitions`] says.
     #[must_use]
     pub fn partitions(mut self, partitions: usize) -> Self {
         self.partitions = Some(partitions);

@@ -174,6 +174,58 @@ fn the_limits_are_the_lesser_of_those_configured_and_those_the_memory_admits() {
 }
 
 #[test]
+fn reading_more_partitions_at_once_lowers_what_each_read_may_send() {
+    let memory = EngineConfig::default().memory().get();
+    let build = |partitions| {
+        EngineConfig::builder()
+            .memory(memory)
+            .partitions(partitions)
+            .build()
+    };
+    let mut prev_limits = build(1).unwrap().limits();
+    let mut partitions = 2;
+    // The most partitions the default memory admits is far below this.
+    while partitions <= 4_096 {
+        let Ok(config) = build(partitions) else {
+            break;
+        };
+        let limits = config.limits();
+        assert!(
+            limits.cursor_bytes <= prev_limits.cursor_bytes,
+            "{partitions}"
+        );
+        assert!(
+            limits.schema_columns <= prev_limits.schema_columns,
+            "{partitions}"
+        );
+        assert!(
+            limits.dictionary_bytes <= prev_limits.dictionary_bytes,
+            "{partitions}"
+        );
+        assert!(
+            limits.schema_bytes <= prev_limits.schema_bytes,
+            "{partitions}"
+        );
+        prev_limits = limits;
+        partitions += 1;
+    }
+    assert!((17..4_096).contains(&partitions), "{partitions}");
+    let refused = build(partitions).unwrap_err();
+    assert_eq!(refused.code(), Some("memory_below_minimum"));
+    let least = EngineConfig::least_memory(partitions);
+    assert!(least > memory, "{least}");
+    assert!(
+        refused.to_string().contains(&format!("is {least} bytes")),
+        "{refused}"
+    );
+    // Sixteen and sixty-four partitions: a cursor is the cursors' share over twice one more
+    // than the partitions.
+    let cursors = memory / 64;
+    assert_eq!(build(16).unwrap().limits().cursor_bytes, cursors / 34);
+    assert_eq!(build(64).unwrap().limits().cursor_bytes, cursors / 130);
+}
+
+#[test]
 fn a_retry_policy_whose_first_delay_is_its_longest_is_valid() {
     let equal = RetryPolicy::default()
         .initial(Duration::from_secs(5))
