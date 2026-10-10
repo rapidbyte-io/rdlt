@@ -5,7 +5,7 @@
 mod tests;
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, RecordBatch, TimestampMicrosecondArray,
@@ -14,6 +14,7 @@ use arrow_buffer::{BooleanBuffer, NullBuffer};
 use arrow_schema::{DataType, TimeUnit};
 use rdlt_connector::StreamName;
 
+use super::constants::micros_of;
 use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
 use crate::error::Error;
 use crate::normalize::identity::{unread, version_hashes};
@@ -161,10 +162,9 @@ pub(super) fn history_columns(
     let rows = data.num_rows();
     let micros = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
     let arrived = || {
-        micros_of(begun.received).ok_or_else(|| {
-            Error::internal(format!(
-                "stream {stream}: the clock reads a time microseconds since the epoch cannot hold"
-            ))
+        micros_of(begun.received).map_err(|error| {
+            Error::internal(format!("stream {stream}: dating where a version begins"))
+                .with_source(error)
         })
     };
     let valid_from: ArrayRef = match begun.from {
@@ -200,20 +200,6 @@ pub(super) struct Begins<'a> {
     pub(super) from: Option<&'a ArrayRef>,
     pub(super) received: SystemTime,
     pub(super) fallback: bool,
-}
-
-/// The microseconds since the epoch of `time`, before it negative, a time between two the
-/// earlier; `None` beyond what an `i64` holds.
-fn micros_of(time: SystemTime) -> Option<i64> {
-    match time.duration_since(UNIX_EPOCH) {
-        Ok(since) => i64::try_from(since.as_micros()).ok(),
-        Err(before) => {
-            let before = before.duration();
-            let part = u128::from(!before.subsec_nanos().is_multiple_of(1_000));
-            let micros = i64::try_from(before.as_micros() + part).ok()?;
-            Some(-micros)
-        }
-    }
 }
 
 /// When the version of each row whose change time `from` holds begins, in microseconds: a

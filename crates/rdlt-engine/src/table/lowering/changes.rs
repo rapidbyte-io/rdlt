@@ -6,7 +6,6 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int8Type, TimestampMicrosecondType};
@@ -21,7 +20,7 @@ use rdlt_connector::{
 };
 
 use super::merge::compact;
-use super::{LoweringPlan, Source, Stamp, lower_array};
+use super::{LoweringPlan, Source, lower_array};
 use crate::table::lower::loaded_at_type;
 
 /// The change columns of a change stream's batch, split from its data.
@@ -222,12 +221,13 @@ impl LoweringPlan {
         lower_array(&seq, &LogicalType::Binary, lowered)
     }
 
-    /// Pushes to `columns` the change columns a change stream's table stores: a log's op and
-    /// unchanged flags, and a soft-deleting table's deletion time, each lowered.
+    /// Pushes to `columns` the change columns a change stream's table stores, each lowered: a
+    /// log's op and unchanged flags, and a soft-deleting table's deletion time, `loaded_at`, the
+    /// load's start in microseconds since the epoch.
     pub(super) fn stored_changes(
         &self,
         changes: &ChangeRows,
-        stamp: &Stamp,
+        loaded_at: i64,
         columns: &mut Vec<ArrayRef>,
     ) -> Result<(), ArrowError> {
         let Some(names) = &self.view.meta.changes else {
@@ -240,7 +240,7 @@ impl LoweringPlan {
             stored.push((changes.unchanged_over(&written), LogicalType::Binary));
         }
         if names.deleted_at.is_some() {
-            stored.push((changes.deleted_at(micros(stamp)), loaded_at_type()));
+            stored.push((changes.deleted_at(loaded_at), loaded_at_type()));
         }
         for (array, logical) in stored {
             let lowered = self.view.physical[columns.len()].logical_type();
@@ -280,14 +280,4 @@ impl LoweringPlan {
         }
         written
     }
-}
-
-/// When the load `stamp` names started, in microseconds since the epoch.
-fn micros(stamp: &Stamp) -> i64 {
-    stamp
-        .loaded_at
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_micros()).unwrap_or(i64::MAX)
-        })
 }

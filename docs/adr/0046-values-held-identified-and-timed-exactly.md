@@ -108,10 +108,11 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   deleted. The SQL planner, the reference merge and the simulation follow the rule, and
   `D-HIST` requires it of every history destination. A stream naming no change time begins its
   versions by a load clock read from the engine's environment that never reads earlier than the
-  load's start or an earlier reading, with times before the epoch exact and one beyond what
-  microseconds hold refused. Where a destination stores no timestamps, validity is the
-  microseconds since the epoch, which order as the instants do; a history stream into a
-  destination storing neither timestamps nor 64-bit integers is refused,
+  load's start or an earlier reading. Each time the engine stamps on a row (a load's start,
+  a deletion's time, a version's start) is exact before the epoch, the earlier microsecond
+  between two, and refused beyond what microseconds hold. Where a destination stores no
+  timestamps, validity is the microseconds since the epoch, which order as the instants do; a
+  history stream into a destination storing neither timestamps nor 64-bit integers is refused,
   `history_validity_unsupported`.
 - **No row is matched or identified by a key that cannot match.** Every keyed table, merge,
   history and a normalized stream's identity key alike, refuses before any destination sees
