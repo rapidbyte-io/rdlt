@@ -4,6 +4,7 @@
 mod barriers;
 mod clock;
 mod coalesce;
+mod due;
 mod latest;
 mod progress;
 mod retention;
@@ -39,6 +40,7 @@ use crate::watch;
 use barriers::Barriers;
 pub(crate) use clock::LoadClock;
 use coalesce::{Coalescer, Pushed};
+use due::Due;
 pub(crate) use latest::Latest;
 pub(crate) use progress::{CursorHold, Progress, Seal};
 use retention::read_resetting;
@@ -362,19 +364,12 @@ async fn ingest(
         stopped: false,
         coalescer: Coalescer::new(context.batch),
     };
+    let mut due = Due::default();
     loop {
         let deadline = ingested.coalescer.deadline();
         let pending = deadline.is_some();
+        due.follow(deadline, context.env.as_ref());
         let pressed = context.budget.pressed();
-        let due = async {
-            match deadline {
-                Some(deadline) => {
-                    let wait = deadline.saturating_duration_since(context.env.instant());
-                    context.env.sleep(wait).await;
-                }
-                None => std::future::pending().await,
-            }
-        };
         let event = tokio::select! {
             biased;
             // A stop request goes to the read first, even while events keep arriving.
@@ -396,7 +391,7 @@ async fn ingest(
                 continue;
             }
             // Pushes that waited long enough are written even while more keep arriving.
-            () = due => {
+            () = due.passed() => {
                 ingested.flush(job, context).await?;
                 continue;
             }
