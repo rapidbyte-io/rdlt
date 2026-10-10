@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::Arc;
@@ -217,4 +218,66 @@ async fn a_panic_while_a_connector_is_launched_is_raised_where_it_was_asked_for(
     // What it spawned before the panic is stopped with every connector.
     let stopping = tokio::task::spawn_blocking(|| super::stop_spawned(Duration::from_secs(20)));
     assert_eq!(stopping.await.expect("it returns"), Ok(()));
+}
+
+/// The `GLIBC_TUNABLES` a connector is started with, given the environment passed through.
+fn tunables(passed: &[(&str, &str)]) -> String {
+    let mut env: Vec<(OsString, OsString)> = passed
+        .iter()
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        .collect();
+    super::command::tuned(&mut env);
+    let found: Vec<_> = env
+        .iter()
+        .filter(|(name, _)| name == "GLIBC_TUNABLES")
+        .collect();
+    assert_eq!(found.len(), 1, "{env:?}");
+    found[0].1.to_str().expect("text").to_owned()
+}
+
+const TRIM: &str = "glibc.malloc.trim_threshold=268435456";
+const MMAP: &str = "glibc.malloc.mmap_threshold=33554432";
+
+#[test]
+fn a_connector_starts_with_the_malloc_tunables_the_operator_has_not_set() {
+    assert_eq!(tunables(&[]), format!("{TRIM}:{MMAP}"));
+    assert_eq!(
+        tunables(&[("GLIBC_TUNABLES", "")]),
+        format!("{TRIM}:{MMAP}")
+    );
+    assert_eq!(
+        tunables(&[("GLIBC_TUNABLES", "glibc.malloc.trim_threshold=1")]),
+        format!("glibc.malloc.trim_threshold=1:{MMAP}")
+    );
+    let both = "glibc.malloc.mmap_threshold=7:glibc.malloc.trim_threshold=1";
+    assert_eq!(tunables(&[("GLIBC_TUNABLES", both)]), both);
+    assert_eq!(
+        tunables(&[("GLIBC_TUNABLES", "glibc.malloc.arena_max=2")]),
+        format!("glibc.malloc.arena_max=2:{TRIM}:{MMAP}")
+    );
+    // A tunable is the operator's by glibc's own variable for it too.
+    assert_eq!(tunables(&[("MALLOC_MMAP_THRESHOLD_", "4096")]), TRIM);
+    assert_eq!(
+        tunables(&[
+            ("MALLOC_TRIM_THRESHOLD_", "4096"),
+            ("GLIBC_TUNABLES", "glibc.malloc.arena_max=2")
+        ]),
+        format!("glibc.malloc.arena_max=2:{MMAP}")
+    );
+}
+
+#[test]
+fn a_connector_whose_operator_set_every_malloc_tunable_is_not_given_the_variable() {
+    let mut env = vec![
+        (
+            OsString::from("MALLOC_TRIM_THRESHOLD_"),
+            OsString::from("1"),
+        ),
+        (
+            OsString::from("MALLOC_MMAP_THRESHOLD_"),
+            OsString::from("2"),
+        ),
+    ];
+    super::command::tuned(&mut env);
+    assert_eq!(env.len(), 2, "{env:?}");
 }
