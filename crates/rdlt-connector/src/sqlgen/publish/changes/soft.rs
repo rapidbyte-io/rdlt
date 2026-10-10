@@ -25,7 +25,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
         let (seq, q, target) = (&changed.seq, &changed.q, &changed.target);
         let mut sql = self.computing(changed);
         sql.push(&marking(changed, &at, at_ordinal));
-        let staged = changed.staged_by(&mut sql);
+        let staged = changed.of.staged_by(&mut sql, "NULL");
         sql.push(&format!(
             "{staged}, {}, CASE WHEN _rdlt_l.{q} IS NULL THEN {MARKED} ELSE {MERGED} END FROM \
              _rdlt_seqs _rdlt_x LEFT JOIN _rdlt_last _rdlt_l ON {} LEFT JOIN _rdlt_upserts _rdlt_u \

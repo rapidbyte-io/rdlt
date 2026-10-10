@@ -138,14 +138,14 @@ fn outcomes<D: SqlDialect>(sql: &mut Sql<'_, D>, versioned: &Versioned<'_>) {
     } = versioned;
     let (kind, next, pos, q) = (&aliases.kind, &aliases.next, &aliases.pos, &aliases.q);
     let code = format!("CASE WHEN _rdlt_a.{kind} = 0 THEN {CLOSED} ELSE {OPENED} END");
-    let staged = versioned.staged_by(sql, &code);
+    let staged = versioned.of.staged_by(sql, &code);
     sql.push(&format!(
         " SELECT {staged}, {} FROM _rdlt_acting _rdlt_a WHERE _rdlt_a.{kind} = 1 OR \
          (_rdlt_a.{kind} = 0 AND _rdlt_a.{next} IS NOT NULL)",
         versioned.version(|column| format!("_rdlt_a.{column}"))
     ));
     if let Some(at) = &versioned.at {
-        let staged = versioned.staged_by(sql, &OPENED.to_string());
+        let staged = versioned.of.staged_by(sql, &OPENED.to_string());
         let deleting = [seq, valid_from, at];
         sql.push(&format!(
             " UNION ALL SELECT {staged}, {} FROM _rdlt_acting _rdlt_a JOIN _rdlt_acting \
@@ -162,7 +162,7 @@ fn outcomes<D: SqlDialect>(sql: &mut Sql<'_, D>, versioned: &Versioned<'_>) {
         return;
     };
     let keys = versioned.keys.join(", ");
-    let staged = versioned.staged_by(sql, &BURIED.to_string());
+    let staged = versioned.of.staged_by(sql, &BURIED.to_string());
     sql.push(&format!(
         " UNION ALL SELECT {staged}, {} FROM (SELECT {keys}, MAX({seq}) AS {q} FROM \
          _rdlt_admitted _rdlt_x WHERE _rdlt_x.{op} = 2 AND NOT EXISTS (SELECT 1 FROM \
@@ -172,7 +172,7 @@ fn outcomes<D: SqlDialect>(sql: &mut Sql<'_, D>, versioned: &Versioned<'_>) {
         versioned.removal(Some("_rdlt_d")),
         versioned.on("_rdlt_u", "_rdlt_x"),
     ));
-    let staged = versioned.staged_by(sql, &BOUND.to_string());
+    let staged = versioned.of.staged_by(sql, &BOUND.to_string());
     sql.push(&format!(
         " UNION ALL SELECT {staged}, {} FROM (SELECT MAX({seq}) AS {q} FROM _rdlt_truncates) \
          _rdlt_d WHERE _rdlt_d.{q} IS NOT NULL",

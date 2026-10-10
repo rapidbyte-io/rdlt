@@ -12,7 +12,7 @@ mod soft;
 mod tests;
 
 use super::super::tables::STAGING_COLUMNS;
-use super::super::{Column, Sql, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
+use super::super::{Column, Sql, SqlDialect, SqlPlanner, Statement};
 use super::keyed::{Of, unused};
 use crate::destination::{ChangeColumns, Deletion, MergeKey};
 use crate::error::{ConnectorError, Result};
@@ -306,24 +306,6 @@ impl<'a> Changed<'a> {
 }
 
 impl Changed<'_> {
-    /// The values of the staging columns of a computed row: who staged the commit's rows, in one
-    /// of its segments, bound to `sql`.
-    fn staged_by<D: SqlDialect>(&self, sql: &mut Sql<'_, D>) -> String {
-        let of = self.of;
-        let segment = of
-            .segments
-            .ranges()
-            .first()
-            .map_or(0, |range| range.first.0);
-        let values = [
-            SqlValue::Text(of.pipeline.to_string()),
-            integer(of.epoch.0),
-            integer(segment),
-        ]
-        .map(|value| sql.bind(value));
-        format!("{}, NULL", values.join(", "))
-    }
-
     /// The table's columns, each qualified by `alias` where there is one.
     fn names(&self, alias: &str) -> String {
         let prefix = if alias.is_empty() {

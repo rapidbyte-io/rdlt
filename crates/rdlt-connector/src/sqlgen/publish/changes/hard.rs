@@ -32,7 +32,7 @@ impl<D: SqlDialect> SqlPlanner<D> {
             on_dl = changed.on("_rdlt_d", "_rdlt_l"),
             flags = kept(changed),
         ));
-        let staged = changed.staged_by(&mut sql);
+        let staged = changed.of.staged_by(&mut sql, "NULL");
         sql.push(&format!(
             "{staged}, {}, {MERGED} FROM _rdlt_last _rdlt_m JOIN _rdlt_upserts _rdlt_u ON {} AND \
              _rdlt_u.{seq} = _rdlt_m.{q}{} UNION ALL SELECT ",
@@ -50,14 +50,14 @@ impl<D: SqlDialect> SqlPlanner<D> {
                 String::new()
             },
         ));
-        let staged = changed.staged_by(&mut sql);
+        let staged = changed.of.staged_by(&mut sql, "NULL");
         sql.push(&format!(
             "{staged}, {}, {BURIED} FROM _rdlt_deleted _rdlt_d WHERE NOT EXISTS (SELECT 1 FROM \
              _rdlt_upserts _rdlt_u WHERE {}) UNION ALL SELECT ",
             removed(changed, Some("_rdlt_d")),
             changed.on("_rdlt_u", "_rdlt_d"),
         ));
-        let staged = changed.staged_by(&mut sql);
+        let staged = changed.of.staged_by(&mut sql, "NULL");
         sql.push(&format!(
             "{staged}, {}, {BOUND} FROM _rdlt_cut _rdlt_c WHERE _rdlt_c.{q} IS NOT NULL",
             removed(changed, None),

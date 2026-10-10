@@ -14,7 +14,7 @@ mod chain;
 mod tests;
 
 use super::super::tables::STAGING_COLUMNS;
-use super::super::{Column, Sql, SqlDialect, SqlPlanner, SqlValue, Statement, integer};
+use super::super::{Column, Sql, SqlDialect, SqlPlanner, Statement};
 use super::changes::Changed;
 use super::keyed::{Of, unused};
 use crate::destination::{Deletion, HistoryColumns, MergeKey};
@@ -321,23 +321,5 @@ impl<'a> Versioned<'a> {
             .map(|key| format!("{left}.{key} = {right}.{key}"))
             .collect();
         pairs.join(" AND ")
-    }
-
-    /// The values of the staging columns of a row computed as `code`, an expression: who staged
-    /// the commit's rows, in one of its segments, bound to `sql`.
-    fn staged_by<D: SqlDialect>(&self, sql: &mut Sql<'_, D>, code: &str) -> String {
-        let of = self.of;
-        let segment = of
-            .segments
-            .ranges()
-            .first()
-            .map_or(0, |range| range.first.0);
-        let values = [
-            SqlValue::Text(of.pipeline.to_string()),
-            integer(of.epoch.0),
-            integer(segment),
-        ]
-        .map(|value| sql.bind(value));
-        format!("{}, {code}", values.join(", "))
     }
 }
