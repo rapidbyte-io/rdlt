@@ -292,7 +292,7 @@ fn a_destinations_factory_debugs_as_its_role_and_id() {
 fn a_table_ref_lacking_any_member_it_writes_is_refused() {
     use super::{ChangeColumns, Deletion, HistoryColumns, MergeKey, RootKey};
     use crate::id::GenerationId;
-    use crate::required::every_member_required;
+    use rdlt_testkit::required::every_member_required;
     let history = HistoryColumns {
         valid_from: "from".into(),
         valid_to: "to".into(),

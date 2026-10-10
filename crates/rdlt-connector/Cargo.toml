@@ -73,6 +73,7 @@ rdlt-adopt = { workspace = true, optional = true }
 [dev-dependencies]
 http-body.workspace = true
 proptest.workspace = true
+rdlt-testkit.workspace = true
 regex.workspace = true
 prost.workspace = true
 rusqlite.workspace = true

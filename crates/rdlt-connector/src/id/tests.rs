@@ -247,6 +247,8 @@ fn a_stream_name_lacking_any_member_it_writes_is_refused() {
         StreamName::new("orders").unwrap(),
         StreamName::with_namespace("public", "orders").unwrap(),
     ] {
-        crate::required::every_member_required::<StreamName>(&serde_json::to_value(&name).unwrap());
+        rdlt_testkit::required::every_member_required::<StreamName>(
+            &serde_json::to_value(&name).unwrap(),
+        );
     }
 }

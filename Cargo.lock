@@ -3060,6 +3060,7 @@ dependencies = [
  "prost",
  "rdlt-adopt",
  "rdlt-connector-macros",
+ "rdlt-testkit",
  "rdlt-wire",
  "regex",
  "regex-syntax",

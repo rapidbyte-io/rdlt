@@ -873,6 +873,6 @@ fn a_state_record_lacking_any_member_it_writes_is_refused() {
     }
     for record in records_of(&state) {
         let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
-        crate::required::every_member_required::<super::VersionedEntry>(&value);
+        rdlt_testkit::required::every_member_required::<super::VersionedEntry>(&value);
     }
 }
