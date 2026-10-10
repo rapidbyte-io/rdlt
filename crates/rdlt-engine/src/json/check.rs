@@ -20,10 +20,9 @@ use arrow_schema::{DataType, Field};
 use rdlt_connector::LogicalType;
 
 use super::{JsonError, check};
-use rows::{Ends, Offsets, Rows, Views};
+use crate::named::{self, Ends, Offsets, Rows, Views};
 
 mod held;
-mod rows;
 #[cfg(test)]
 mod tests;
 
@@ -257,7 +256,7 @@ fn viewed(
             .map(|row| views.span(row))
             .filter(|span| !span.is_empty()),
     );
-    rows::disjoint(&mut spans);
+    named::disjoint(&mut spans);
     items(item, values, &Rows::Ranges(Rc::new(spans)))
 }
 

@@ -13,7 +13,7 @@ mod tests;
 
 /// The ends of a run-end encoded array's runs, of any width.
 #[derive(Clone, Copy)]
-pub(super) enum Ends<'a> {
+pub(crate) enum Ends<'a> {
     I16(&'a RunEndBuffer<i16>),
     I32(&'a RunEndBuffer<i32>),
     I64(&'a RunEndBuffer<i64>),
@@ -21,7 +21,7 @@ pub(super) enum Ends<'a> {
 
 impl Ends<'_> {
     /// The run holding the array's row `row`.
-    fn physical(self, row: usize) -> usize {
+    pub(crate) fn physical(self, row: usize) -> usize {
         match self {
             Self::I16(ends) => ends.get_physical_index(row),
             Self::I32(ends) => ends.get_physical_index(row),
@@ -32,7 +32,7 @@ impl Ends<'_> {
 
 /// A list's offsets, of either width.
 #[derive(Clone, Copy)]
-pub(super) enum Offsets<'a> {
+pub(crate) enum Offsets<'a> {
     Small(&'a [i32]),
     Large(&'a [i64]),
 }
@@ -48,14 +48,14 @@ impl Offsets<'_> {
 
 /// A list view's offsets and sizes, of either width.
 #[derive(Clone, Copy)]
-pub(super) enum Views<'a> {
+pub(crate) enum Views<'a> {
     Small(&'a [i32], &'a [i32]),
     Large(&'a [i64], &'a [i64]),
 }
 
 impl Views<'_> {
     /// The items row `row` names.
-    pub(super) fn span(self, row: usize) -> Range<usize> {
+    pub(crate) fn span(self, row: usize) -> Range<usize> {
         let (first, size) = match self {
             Self::Small(offsets, sizes) => (offsets[row].as_usize(), sizes[row].as_usize()),
             Self::Large(offsets, sizes) => (offsets[row].as_usize(), sizes[row].as_usize()),
@@ -65,7 +65,7 @@ impl Views<'_> {
 
     /// Whether the items its `rows` rows name lie in row order, none named twice: its rows then
     /// name its items as a list's do.
-    pub(super) fn ordered(self, rows: usize) -> bool {
+    pub(crate) fn ordered(self, rows: usize) -> bool {
         let mut end = 0;
         (0..rows).map(|row| self.span(row)).all(|span| {
             let ordered = span.is_empty() || span.start >= end;
@@ -79,7 +79,7 @@ impl Views<'_> {
 
 /// The rows of an array that something names.
 #[derive(Clone)]
-pub(super) enum Rows<'a> {
+pub(crate) enum Rows<'a> {
     /// Every row, below the length.
     All(usize),
     /// The rows of others valid in a null buffer of the same array.
@@ -105,7 +105,7 @@ pub(super) enum Rows<'a> {
 
 impl Rows<'_> {
     /// The rows, as sorted, disjoint, non-empty ranges.
-    pub(super) fn ranges(&self) -> Box<dyn Iterator<Item = Range<usize>> + '_> {
+    pub(crate) fn ranges(&self) -> Box<dyn Iterator<Item = Range<usize>> + '_> {
         match self {
             Self::All(len) => Box::new((*len > 0).then_some(0..*len).into_iter()),
             Self::Valid(rows, nulls) => Box::new(rows.ranges().flat_map(move |range| {
@@ -153,7 +153,7 @@ impl Rows<'_> {
 
 /// Sorts `spans` and merges those that overlap or touch, in place: what they name, as sorted,
 /// disjoint ranges, so a list view naming its items many times reads each once.
-pub(super) fn disjoint(spans: &mut Vec<Range<usize>>) {
+pub(crate) fn disjoint(spans: &mut Vec<Range<usize>>) {
     spans.sort_unstable_by_key(|span| span.start);
     let mut kept: usize = 0;
     for at in 0..spans.len() {
