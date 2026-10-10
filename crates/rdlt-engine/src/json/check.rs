@@ -57,31 +57,23 @@ pub(crate) fn check_batch(batch: &RecordBatch) -> Result<(), NotJson> {
 
 /// Whether `field` is a column of JSON, or holds one at any depth.
 fn field_holds_json(field: &Field) -> bool {
-    is_json(field)
-        || children(field.data_type())
-            .iter()
-            .any(|child| field_holds_json(child))
+    is_json(field) || holds_json(field.data_type())
+}
+
+/// Whether a value of `data_type` holds a column of JSON at any depth: a dictionary's or a
+/// run-end encoding's values hold what their column holds, and a union holds none.
+fn holds_json(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Union(..) => false,
+        DataType::Dictionary(_, values) => holds_json(values),
+        DataType::RunEndEncoded(_, values) => holds_json(values.data_type()),
+        other => rdlt_wire::child_fields(other).any(field_holds_json),
+    }
 }
 
 /// Whether `field` is a column of JSON: the JSON extension over text, as it is or encoded.
 fn is_json(field: &Field) -> bool {
     rdlt_connector::Field::extension_type(field) == Some(LogicalType::Json)
-}
-
-/// The fields a value of `data_type` holds others in.
-fn children(data_type: &DataType) -> Vec<&Field> {
-    match data_type {
-        DataType::Struct(fields) => fields.iter().map(AsRef::as_ref).collect(),
-        DataType::List(item)
-        | DataType::LargeList(item)
-        | DataType::ListView(item)
-        | DataType::LargeListView(item)
-        | DataType::FixedSizeList(item, _)
-        | DataType::Map(item, _) => vec![item.as_ref()],
-        DataType::Dictionary(_, values) => children(values),
-        DataType::RunEndEncoded(_, values) => children(values.data_type()),
-        _ => Vec::new(),
-    }
 }
 
 /// Checks the values of `array`, of a field holding JSON, at the rows `rows` names: text there is

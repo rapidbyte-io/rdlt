@@ -167,18 +167,7 @@ fn twice_keyed(data_type: &DataType) -> bool {
         DataType::Dictionary(_, values) => {
             matches!(values.as_ref(), DataType::Dictionary(..)) || twice_keyed(values)
         }
-        DataType::Struct(fields) => fields.iter().any(|field| twice_keyed(field.data_type())),
-        DataType::Union(fields, _) => fields
-            .iter()
-            .any(|(_, field)| twice_keyed(field.data_type())),
-        DataType::List(item)
-        | DataType::LargeList(item)
-        | DataType::ListView(item)
-        | DataType::LargeListView(item)
-        | DataType::FixedSizeList(item, _)
-        | DataType::Map(item, _) => twice_keyed(item.data_type()),
-        DataType::RunEndEncoded(_, values) => twice_keyed(values.data_type()),
-        _ => false,
+        other => child_fields(other).any(|field| twice_keyed(field.data_type())),
     }
 }
 
@@ -197,27 +186,33 @@ fn nesting(schema: &Schema) -> u64 {
         .collect();
     while let Some((field, depth)) = fields.pop() {
         deepest = deepest.max(depth);
-        let below = children(field.data_type()).map(|child| (child, depth.saturating_add(1)));
+        let below = child_fields(field.data_type()).map(|child| (child, depth.saturating_add(1)));
         fields.extend(below);
     }
     deepest
 }
 
-/// The fields one level below a field of `data_type`.
-fn children(data_type: &DataType) -> Box<dyn Iterator<Item = &arrow_schema::Field> + '_> {
-    match data_type {
-        DataType::Struct(fields) => Box::new(fields.iter().map(AsRef::as_ref)),
-        DataType::Union(fields, _) => Box::new(fields.iter().map(|(_, field)| field.as_ref())),
-        DataType::List(item)
-        | DataType::LargeList(item)
-        | DataType::ListView(item)
-        | DataType::LargeListView(item)
-        | DataType::FixedSizeList(item, _)
-        | DataType::Map(item, _) => Box::new(std::iter::once(item.as_ref())),
-        DataType::RunEndEncoded(ends, values) => {
-            Box::new([ends.as_ref(), values.as_ref()].into_iter())
-        }
-        DataType::Dictionary(_, values) => children(values),
-        _ => Box::new(std::iter::empty()),
+/// The fields one level below a field of `data_type`: a struct's or a union's fields, a list's or
+/// a map's item, a run-end encoding's run ends and values, and for a dictionary those of its
+/// values' type.
+pub fn child_fields(mut data_type: &DataType) -> impl Iterator<Item = &arrow_schema::Field> + '_ {
+    while let DataType::Dictionary(_, values) = data_type {
+        data_type = values;
     }
+    (0..).map_while(move |index| match (data_type, index) {
+        (DataType::Struct(fields), _) => fields.get(index).map(AsRef::as_ref),
+        (DataType::Union(fields, _), _) => fields.get(index).map(|(_, field)| field.as_ref()),
+        (
+            DataType::List(item)
+            | DataType::LargeList(item)
+            | DataType::ListView(item)
+            | DataType::LargeListView(item)
+            | DataType::FixedSizeList(item, _)
+            | DataType::Map(item, _)
+            | DataType::RunEndEncoded(item, _),
+            0,
+        )
+        | (DataType::RunEndEncoded(_, item), 1) => Some(item.as_ref()),
+        _ => None,
+    })
 }

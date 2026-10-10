@@ -5,9 +5,9 @@
 mod tests;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{Field, Schema};
 use rdlt_wire::limits::{FRAME_BYTES, count};
-use rdlt_wire::{Limits, Weigher, Weight};
+use rdlt_wire::{Limits, Weigher, Weight, child_fields};
 
 use crate::cost::Allocations;
 use crate::error::LimitExceeded;
@@ -79,40 +79,16 @@ fn check(name: &'static str, actual: u64, limit: u64) -> Result<(), LimitExceede
 /// being the first level; a type nested beyond the limit is not looked into.
 fn columns(schema: &Schema, limits: &Limits) -> Result<(), LimitExceeded> {
     let mut columns = 0_u64;
-    let mut pending: Vec<(&DataType, u64)> = schema
+    let mut pending: Vec<(&Field, u64)> = schema
         .fields()
         .iter()
-        .map(|field| (field.data_type(), 1))
+        .map(|field| (field.as_ref(), 1))
         .collect();
-    while let Some((data_type, depth)) = pending.pop() {
+    while let Some((field, depth)) = pending.pop() {
         check("nesting depth", depth, limits.nesting_depth)?;
         columns += 1;
         check("batch columns", columns, limits.schema_columns)?;
-        let below = depth + 1;
-        match data_type {
-            DataType::List(item)
-            | DataType::LargeList(item)
-            | DataType::ListView(item)
-            | DataType::LargeListView(item)
-            | DataType::FixedSizeList(item, _)
-            | DataType::Map(item, _) => pending.push((item.data_type(), below)),
-            DataType::Struct(fields) => {
-                pending.extend(fields.iter().map(|field| (field.data_type(), below)));
-            }
-            DataType::Union(fields, _) => {
-                pending.extend(fields.iter().map(|(_, field)| (field.data_type(), below)));
-            }
-            DataType::RunEndEncoded(ends, values) => {
-                pending.push((ends.data_type(), below));
-                pending.push((values.data_type(), below));
-            }
-            // A dictionary's values are its column, encoded.
-            DataType::Dictionary(_, values) => {
-                columns -= 1;
-                pending.push((values, depth));
-            }
-            _ => {}
-        }
+        pending.extend(child_fields(field.data_type()).map(|child| (child, depth + 1)));
     }
     Ok(())
 }

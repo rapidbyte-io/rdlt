@@ -1095,3 +1095,46 @@ fn a_schema_nested_to_the_limit_through_unions_or_dictionaries_is_sent_and_one_l
         }
     }
 }
+
+#[test]
+fn a_type_s_child_fields_are_the_fields_one_level_below_it_whatever_encodes_it() {
+    use arrow_schema::{UnionFields, UnionMode};
+    let item = Arc::new(Field::new("item", DataType::Int64, true));
+    let pair = Fields::from(vec![
+        Field::new("a", DataType::Utf8, true),
+        Field::new("b", DataType::Int8, true),
+    ]);
+    let entries = Arc::new(Field::new("entries", DataType::Struct(pair.clone()), false));
+    let ends = Arc::new(Field::new("run_ends", DataType::Int32, false));
+    let values = Arc::new(Field::new("values", DataType::Struct(pair.clone()), true));
+    let union = UnionFields::from_fields(vec![
+        Field::new("x", DataType::Int8, true),
+        Field::new("y", DataType::Utf8, true),
+    ]);
+    let keyed = DataType::Dictionary(
+        Box::new(DataType::Int8),
+        Box::new(DataType::Struct(pair.clone())),
+    );
+    let twice_keyed = DataType::Dictionary(Box::new(DataType::Int8), Box::new(keyed.clone()));
+    let cases: Vec<(DataType, Vec<&str>)> = vec![
+        (DataType::Int64, vec![]),
+        (DataType::List(Arc::clone(&item)), vec!["item"]),
+        (DataType::LargeListView(Arc::clone(&item)), vec!["item"]),
+        (DataType::FixedSizeList(Arc::clone(&item), 2), vec!["item"]),
+        (DataType::Map(entries, false), vec!["entries"]),
+        (DataType::Struct(pair), vec!["a", "b"]),
+        (keyed, vec!["a", "b"]),
+        (twice_keyed, vec!["a", "b"]),
+        (
+            DataType::RunEndEncoded(ends, values),
+            vec!["run_ends", "values"],
+        ),
+        (DataType::Union(union, UnionMode::Dense), vec!["x", "y"]),
+    ];
+    for (data_type, expected) in cases {
+        let names: Vec<&str> = crate::child_fields(&data_type)
+            .map(|field| field.name().as_str())
+            .collect();
+        assert_eq!(names, expected, "{data_type}");
+    }
+}
