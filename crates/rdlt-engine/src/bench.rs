@@ -81,7 +81,7 @@ async fn shredded(
     pushes: &[Bytes],
     chunk_bytes: usize,
 ) -> Result<Vec<RecordBatch>, Refused> {
-    let limits = shred::ShredLimits::new(rdlt_connector::limits::MAX_COLUMNS);
+    let limits = shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS);
     Ok(shred::shred(pool, pushes, chunk_bytes, limits).await?)
 }
 

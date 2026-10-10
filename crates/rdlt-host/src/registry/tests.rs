@@ -352,8 +352,7 @@ async fn a_linked_connector_s_configuration_beyond_its_limit_is_refused() {
     let registry = Registry::trusted()
         .trusted_source::<MemorySource>()
         .trusted_destination::<MemoryDestination>();
-    let limit = usize::try_from(rdlt_connector::limits::MAX_CONFIG_BYTES).expect("a size");
-    assert_eq!(limit, crate::limits::CONFIG_BYTES);
+    let limit = usize::try_from(rdlt_wire::limits::CONFIG_BYTES).expect("a size");
     // One string's JSON, its quotes and the object around it, of `bytes` in all.
     let config = |bytes: usize| serde_json::json!({ "store": "x".repeat(bytes - 12) });
     assert_eq!(config(limit + 1).to_string().len(), limit + 1);
@@ -367,7 +366,7 @@ async fn a_linked_connector_s_configuration_beyond_its_limit_is_refused() {
             ProviderError::Secret {
                 source: SecretError::TooLarge { limit: found },
                 ..
-            } if found == limit
+            } if found == rdlt_wire::limits::CONFIG_BYTES
         ),
         "{refused}"
     );

@@ -115,7 +115,8 @@ it replaced; a new ADR is written for a new decision, never for a change to an o
   one binary is `tests/decoded.rs`.
 - Crate roots hold a crate doc with one example, `mod` declarations and an explicit `pub use`
   list. No glob re-exports.
-- Every numeric limit a crate enforces lives in that crate's `limits.rs`.
+- Every numeric limit a crate enforces lives in that crate's `limits.rs`; a limit of the protocol
+  lives in `rdlt_wire::limits` alone, and every crate that enforces it names it there.
 
 ## Naming
 

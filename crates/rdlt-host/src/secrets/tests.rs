@@ -10,7 +10,8 @@ use super::{
     Config, EnvSecrets, FileSecrets, Redactions, ReferenceFault, SecretError, SecretFault,
     SecretKind, SecretReference, SecretResolver, Secrets, wipe,
 };
-use crate::limits::{CONFIG_BYTES, SECRET_BYTES, SECRET_NAME_BYTES, SECRET_REFERENCES};
+use crate::limits::{SECRET_BYTES, SECRET_NAME_BYTES, SECRET_REFERENCES};
+use rdlt_wire::limits::CONFIG_BYTES;
 
 /// Secrets by the name each kind knows them by.
 #[derive(Debug, Default)]
@@ -224,20 +225,21 @@ async fn a_configuration_holds_a_bounded_number_of_references_and_bytes() {
     // One text of many references counts each.
     let (beyond, _) = resolved(&json!("${secret:api-key}".repeat(SECRET_REFERENCES + 1))).await;
     assert_eq!(beyond.expect_err("refused").code(), "config_invalid");
-    let large = "x".repeat(CONFIG_BYTES);
+    let bytes = usize::try_from(CONFIG_BYTES).unwrap();
+    let large = "x".repeat(bytes);
     assert!(matches!(Config::parse(large), Err(SecretError::NotJson)));
-    let large = format!("\"{}\"", "x".repeat(CONFIG_BYTES - 1));
+    let large = format!("\"{}\"", "x".repeat(bytes - 1));
     assert!(
         matches!(Config::parse(large), Err(SecretError::TooLarge { limit }) if limit == CONFIG_BYTES)
     );
-    let fits = format!("\"{}\"", "x".repeat(CONFIG_BYTES - 2));
+    let fits = format!("\"{}\"", "x".repeat(bytes - 2));
     assert!(Config::parse(fits).is_ok());
     // A configuration within the bound whose secrets take it beyond is refused as it is sent:
     // a text of its quotes, the secret and the rest, in exactly the bound and one beyond.
     let around = |rest: usize| json!(format!("{}${{secret:long}}", "x".repeat(rest)));
-    let exactly = CONFIG_BYTES - 2 - LONG.len();
+    let exactly = bytes - 2 - LONG.len();
     let (sent, _) = resolved(&around(exactly)).await;
-    assert_eq!(sent.expect("within the bound").len(), CONFIG_BYTES);
+    assert_eq!(sent.expect("within the bound").len(), bytes);
     let (beyond, _) = resolved(&around(exactly + 1)).await;
     assert!(matches!(beyond, Err(SecretError::TooLarge { limit }) if limit == CONFIG_BYTES));
 }

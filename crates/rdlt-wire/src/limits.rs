@@ -6,10 +6,12 @@ mod tests;
 
 use crate::v1;
 
-/// Bytes: bounds one frame, its header and body together.
+/// Bytes: bounds one frame, its header and body together, and a batch a source pushes in its
+/// host's process twice: as the frame of its rows would weigh, the bytes its views name included,
+/// and by the allocations it keeps alive.
 pub const FRAME_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Rows: bounds one Arrow batch.
+/// Rows: bounds one Arrow or change batch.
 pub const BATCH_ROWS: u64 = 1024 * 1024;
 
 /// Values: bounds what one frame's columns hold together, nested values and the items of list
@@ -36,10 +38,12 @@ pub const MIN_BATCH_VALUES: u64 = 1024 * 1024;
 /// dictionary of some thousands of short values.
 pub const MIN_DICTIONARY_BYTES: u64 = 256 * 1024;
 
-/// Columns: bounds one schema's width, counting nested fields.
+/// Columns: bounds one schema's width, counting nested fields, and the columns a JSON push's
+/// records are shredded into.
 pub const SCHEMA_COLUMNS: u64 = 10_000;
 
-/// Levels: bounds how deep a schema's types nest, counting a top-level column as the first.
+/// Levels: bounds how deep a schema's types or a JSON value nest, counting a top-level column,
+/// or the record itself, as the first.
 pub const NESTING_DEPTH: u64 = 64;
 
 /// Bytes: bounds one schema message, and the names, metadata and time zones it carries, counted

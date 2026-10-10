@@ -335,7 +335,7 @@ fn json_ids(values: &[&str]) -> Vec<Vec<u8>> {
 
 #[test]
 fn json_text_nested_past_the_limit_is_refused_on_a_small_stack() {
-    let limit = usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH).unwrap();
+    let limit = usize::try_from(rdlt_wire::limits::NESTING_DEPTH).unwrap();
     let nested = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
     let hashing = std::thread::Builder::new()
         .stack_size(256 << 10)

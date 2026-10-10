@@ -5,8 +5,9 @@ use std::fmt;
 
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
-use super::{Context, MAX_DEPTH, nest};
+use super::{Context, nest};
 use crate::shred::ShredError;
+use rdlt_wire::limits::NESTING_DEPTH;
 
 /// One value, `depth` levels deep, of a column that stopped building.
 pub(crate) struct Skip<'a> {
@@ -18,7 +19,7 @@ impl<'de> DeserializeSeed<'de> for Skip<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > MAX_DEPTH {
+        if self.depth > NESTING_DEPTH {
             return Err(self.context.fail(ShredError::TooDeep));
         }
         deserializer.deserialize_any(self)

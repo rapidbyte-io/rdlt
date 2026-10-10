@@ -2,11 +2,11 @@ use std::num::NonZeroUsize;
 
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
-use rdlt_connector::limits::MAX_BATCH_ROWS;
 use rdlt_connector::{
     ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, Partition, PartitionId, Push,
     ReadRequest, Source, SourceEvent, StreamName, partition_channel, source_factory,
 };
+use rdlt_wire::limits::BATCH_ROWS;
 use serde_json::json;
 
 use super::{Generated, GeneratedStream, GeneratorSource, NextRow, mix};
@@ -100,10 +100,10 @@ async fn read_as(
 #[tokio::test]
 async fn a_stream_of_more_partitions_or_rows_a_batch_than_a_source_holds_is_refused() {
     let at_limits = json!({
-        "name": "rows", "rows": 1, "partitions": MAX_PARTITIONS, "batch_rows": MAX_BATCH_ROWS,
+        "name": "rows", "rows": 1, "partitions": MAX_PARTITIONS, "batch_rows": BATCH_ROWS,
     });
     connect(at_limits).await.expect("a stream at its limits");
-    for (partitions, batch_rows) in [(MAX_PARTITIONS + 1, 1), (1, MAX_BATCH_ROWS + 1)] {
+    for (partitions, batch_rows) in [(MAX_PARTITIONS + 1, 1), (1, BATCH_ROWS + 1)] {
         let stream = json!({
             "name": "rows", "rows": 1, "partitions": partitions, "batch_rows": batch_rows,
         });

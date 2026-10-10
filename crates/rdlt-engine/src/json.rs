@@ -11,7 +11,7 @@ mod tests;
 
 use std::borrow::Cow;
 
-use rdlt_connector::limits::MAX_NESTING_DEPTH;
+use rdlt_wire::limits::{NESTING_DEPTH, count};
 
 pub(crate) use check::{NotJson, check_batch, held as held_by_check};
 #[cfg(test)]
@@ -29,7 +29,7 @@ pub(crate) enum JsonError {
     #[error("the text is not JSON: {0}")]
     Invalid(&'static str),
     /// A value nests deeper than the limit.
-    #[error("a value nests deeper than {MAX_NESTING_DEPTH} levels")]
+    #[error("a value nests deeper than {NESTING_DEPTH} levels")]
     TooDeep,
     /// A number's exponent has more digits than the limit.
     #[error("a number's exponent has more than {EXPONENT_DIGITS} digits")]
@@ -166,7 +166,7 @@ impl<'a> Reader<'a> {
         self.next = Next::Separator;
         match byte {
             b'{' | b'[' => {
-                if u64::try_from(self.open.len()).unwrap_or(u64::MAX) >= MAX_NESTING_DEPTH {
+                if count(self.open.len()) >= NESTING_DEPTH {
                     return Err(JsonError::TooDeep);
                 }
                 let object = byte == b'{';
@@ -383,7 +383,7 @@ pub(crate) fn too_deep(text: &[u8]) -> bool {
             b'"' => in_string = true,
             b'[' | b'{' => {
                 depth += 1;
-                if depth > MAX_NESTING_DEPTH {
+                if depth > NESTING_DEPTH {
                     return true;
                 }
             }

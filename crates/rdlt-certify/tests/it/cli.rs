@@ -850,7 +850,7 @@ async fn a_configuration_is_read_up_to_its_bound_and_refused_as_too_large_beyond
     let binary = example("serve_reference");
     let binary = binary.to_str().expect("a UTF-8 path");
     let args = [binary, "--trusted", "--config-file", "-"];
-    let bound = rdlt_host::limits::CONFIG_BYTES;
+    let bound = usize::try_from(rdlt_wire::limits::CONFIG_BYTES).expect("a size");
     // An object of one text field, `{"pad":"…"}`, of `bytes` in all.
     let padded = |bytes: usize| format!(r#"{{"pad":"{}"}}"#, "x".repeat(bytes - 10));
     let within = certify_given(&args, &padded(bound), &[]).await;

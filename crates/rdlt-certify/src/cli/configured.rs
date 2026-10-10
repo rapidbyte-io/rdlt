@@ -6,7 +6,7 @@ use std::io::Read as _;
 use super::{Args, Ended, IO, USAGE, redactions};
 
 /// Bytes read of a configuration at most, one beyond what a configuration may hold.
-const CONFIG_READ: u64 = rdlt_host::limits::CONFIG_BYTES as u64 + 1;
+const CONFIG_READ: u64 = rdlt_wire::limits::CONFIG_BYTES + 1;
 
 /// The configuration the command line names, from its file or from standard input, with each
 /// secret it refers to resolved, and kept from everything printed from here on.

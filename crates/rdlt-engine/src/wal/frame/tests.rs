@@ -552,7 +552,7 @@ fn a_seal_frame_writes_its_cursor_once_as_base64_within_what_it_is_reserved() {
 
 /// The deepest a table's types may nest.
 fn limit() -> usize {
-    usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH).expect("a small limit")
+    usize::try_from(rdlt_wire::limits::NESTING_DEPTH).expect("a small limit")
 }
 
 /// A table of an id and a column nested `depth` levels deep, as `nesting` says.

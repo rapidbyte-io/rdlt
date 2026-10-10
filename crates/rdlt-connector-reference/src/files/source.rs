@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use rdlt_connector::limits::MAX_JSON_PUSH_BYTES;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Partitioning, StreamName};
+use rdlt_wire::limits::JSON_PUSH_BYTES;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -107,11 +107,11 @@ impl SourceConnector for FilesSource {
             line_bytes: config.max_line_bytes.get(),
             file_bytes: config.max_file_bytes.get(),
         };
-        if limits.line_bytes > MAX_JSON_PUSH_BYTES - LINE_ENDING {
+        if limits.line_bytes > JSON_PUSH_BYTES - LINE_ENDING {
             return Err(ConnectorError::config(format!(
                 "max_line_bytes is {}; one JSON push holds lines of at most {} bytes",
                 limits.line_bytes,
-                MAX_JSON_PUSH_BYTES - LINE_ENDING
+                JSON_PUSH_BYTES - LINE_ENDING
             )));
         }
         let (root, streams) = blocking(move || {
@@ -459,7 +459,7 @@ impl JsonLines {
     /// The next records, as they are written: at most the rows of one batch, and the bytes one
     /// JSON push may hold.
     fn next(&mut self) -> Result<Option<Pushed>> {
-        let most = usize::try_from(MAX_JSON_PUSH_BYTES).unwrap_or(usize::MAX);
+        let most = usize::try_from(JSON_PUSH_BYTES).unwrap_or(usize::MAX);
         let (mut push, mut records) = (Vec::new(), 0_u64);
         while usize::try_from(records).unwrap_or(usize::MAX) < self.batch_rows {
             if !std::mem::take(&mut self.carried) && !self.record()? {

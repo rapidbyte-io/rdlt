@@ -32,7 +32,7 @@ fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch> {
         &Pool::inline(),
         &[push],
         chunk_bytes,
-        crate::shred::ShredLimits::new(rdlt_connector::limits::MAX_COLUMNS),
+        crate::shred::ShredLimits::new(rdlt_wire::limits::SCHEMA_COLUMNS),
     ))
     .expect("the records shred")
 }

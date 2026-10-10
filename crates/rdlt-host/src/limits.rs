@@ -30,10 +30,6 @@ pub const OUTPUT_BYTES_PER_SECOND: u64 = 1024 * 1024;
 /// How long the errors of a lost connector wait for its standard error to close.
 pub const LAST_WORDS: Duration = Duration::from_secs(1);
 
-/// Bytes: bounds a connector's configuration as its host holds and sends it, the limit a
-/// connector applies to what it receives.
-pub const CONFIG_BYTES: usize = 8 * 1024 * 1024;
-
 /// References: bounds the secret references one configuration holds.
 pub const SECRET_REFERENCES: usize = 1024;
 

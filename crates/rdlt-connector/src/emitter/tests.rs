@@ -5,15 +5,12 @@ use arrow_array::{ArrayRef, Int64Array, ListArray, NullArray, RecordBatch, Struc
 use arrow_buffer::OffsetBuffer;
 use arrow_schema::{DataType, Field, Fields};
 use bytes::Bytes;
+use rdlt_wire::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES, JSON_PUSH_BYTES, SCHEMA_COLUMNS};
 use serde::Serialize;
 
 use super::Emitter;
 use crate::cursor::Cursor;
 use crate::error::ConnectorErrorKind;
-use crate::limits::{
-    MAX_BATCH_BYTES, MAX_BATCH_ROWS, MAX_BATCH_VALUES, MAX_COLUMNS, MAX_JSON_PUSH_BYTES,
-    MAX_VIEW_BYTES,
-};
 use crate::sink::{LogLevel, PartitionFeed, Push, SourceEvent, partition_channel};
 
 #[derive(Serialize)]
@@ -144,10 +141,7 @@ async fn replan_and_lag_signals_are_forwarded() {
 #[tokio::test]
 async fn json_over_the_limit_is_refused_before_it_is_sent() {
     let (mut out, feed) = emitter();
-    let too_big = Bytes::from(vec![
-        b' ';
-        usize::try_from(MAX_JSON_PUSH_BYTES).unwrap() + 1
-    ]);
+    let too_big = Bytes::from(vec![b' '; usize::try_from(JSON_PUSH_BYTES).unwrap() + 1]);
     let error = out.json(too_big).await.unwrap_err();
     assert_eq!(error.limit().unwrap().name, "json push bytes");
     assert!(drain(out, feed).await.is_empty());
@@ -175,21 +169,21 @@ async fn emitting_after_a_stop_request_fails_with_stopped() {
 #[tokio::test]
 async fn a_json_push_exactly_at_the_limit_is_accepted() {
     let (mut out, _feed) = emitter();
-    let at_limit = Bytes::from(vec![b' '; usize::try_from(MAX_JSON_PUSH_BYTES).unwrap()]);
+    let at_limit = Bytes::from(vec![b' '; usize::try_from(JSON_PUSH_BYTES).unwrap()]);
     out.json(at_limit).await.unwrap();
 }
 
 #[tokio::test]
 async fn batches_over_the_row_or_column_limit_are_refused() {
     let (mut out, feed) = emitter();
-    let rows = usize::try_from(MAX_BATCH_ROWS).unwrap() + 1;
+    let rows = usize::try_from(BATCH_ROWS).unwrap() + 1;
     let tall = RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![0; rows])) as _)])
         .unwrap();
     assert_eq!(
         out.batch(tall).await.unwrap_err().limit().unwrap().name,
         "batch rows"
     );
-    let columns = usize::try_from(MAX_COLUMNS).unwrap() + 1;
+    let columns = usize::try_from(SCHEMA_COLUMNS).unwrap() + 1;
     let wide = RecordBatch::try_from_iter((0..columns).map(|index| {
         (
             format!("c{index}"),
@@ -242,10 +236,7 @@ async fn a_batch_of_more_values_than_a_frame_may_hold_is_refused() {
     );
     let batch = RecordBatch::try_from_iter([("bomb", Arc::new(nulls) as ArrayRef)]).unwrap();
     let limit = out.batch(batch).await.unwrap_err().limit().unwrap();
-    assert_eq!(
-        (limit.name, limit.limit),
-        ("batch values", MAX_BATCH_VALUES)
-    );
+    assert_eq!((limit.name, limit.limit), ("batch values", BATCH_VALUES));
     assert!(drain(out, feed).await.is_empty());
 }
 
@@ -254,7 +245,7 @@ async fn a_served_reads_batch_beyond_a_frame_is_sent_on_to_be_cut() {
     let (sink, feed) = partition_channel(NonZeroUsize::new(16).unwrap());
     let mut out: Emitter<u64> = Emitter::new(sink.cut(), 7, false);
     // Three rows of a buffer beyond a frame keep all of it alive: the cut copies what they name.
-    let bytes = usize::try_from(MAX_BATCH_BYTES).unwrap() + 1;
+    let bytes = usize::try_from(FRAME_BYTES).unwrap() + 1;
     let whole = arrow_array::UInt8Array::from(vec![0_u8; bytes]);
     let slice: ArrayRef = Arc::new(whole.slice(0, 3));
     let batch = RecordBatch::try_from_iter([("pinned", slice)]).unwrap();
@@ -265,13 +256,13 @@ async fn a_served_reads_batch_beyond_a_frame_is_sent_on_to_be_cut() {
 #[tokio::test]
 async fn a_batch_keeping_more_alive_than_a_frame_may_hold_is_refused() {
     let (mut out, feed) = emitter();
-    let bytes = usize::try_from(MAX_BATCH_BYTES).unwrap() + 1;
+    let bytes = usize::try_from(FRAME_BYTES).unwrap() + 1;
     // Three rows of a buffer keep all of it alive.
     let whole = arrow_array::UInt8Array::from(vec![0_u8; bytes]);
     let slice: ArrayRef = Arc::new(whole.slice(0, 3));
     let batch = RecordBatch::try_from_iter([("pinned", slice)]).unwrap();
     let limit = out.batch(batch).await.unwrap_err().limit().unwrap();
-    assert_eq!((limit.name, limit.limit), ("batch bytes", MAX_BATCH_BYTES));
+    assert_eq!((limit.name, limit.limit), ("batch bytes", FRAME_BYTES));
     let mut views = arrow_array::builder::BinaryViewBuilder::new();
     let block = views.append_block(vec![7_u8; 1 << 20].into());
     for _ in 0..65 {
@@ -280,7 +271,7 @@ async fn a_batch_keeping_more_alive_than_a_frame_may_hold_is_refused() {
     let batch =
         RecordBatch::try_from_iter([("views", Arc::new(views.finish()) as ArrayRef)]).unwrap();
     let limit = out.batch(batch).await.unwrap_err().limit().unwrap();
-    assert_eq!((limit.name, limit.limit), ("view bytes", MAX_VIEW_BYTES));
+    assert_eq!((limit.name, limit.limit), ("view bytes", FRAME_BYTES));
     assert!(drain(out, feed).await.is_empty());
 }
 

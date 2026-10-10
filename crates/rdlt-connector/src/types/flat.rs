@@ -12,7 +12,7 @@ use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{DecimalType, Field, Fields, LogicalType, TimeUnit};
-use crate::limits::MAX_NESTING_DEPTH;
+use rdlt_wire::limits::NESTING_DEPTH;
 
 #[cfg(test)]
 mod tests;
@@ -120,9 +120,9 @@ fn below(field: &Field) -> (Option<(&Arc<str>, bool)>, &LogicalType) {
 /// Reads the field or type the next node of `nodes` begins, at `depth` levels of nesting.
 fn read<E: serde::de::Error>(nodes: &mut std::vec::IntoIter<Node>, depth: u64) -> Result<Read, E> {
     use LogicalType as T;
-    if depth > MAX_NESTING_DEPTH {
+    if depth > NESTING_DEPTH {
         return Err(E::custom(format!(
-            "a stored type nests beyond the limit of {MAX_NESTING_DEPTH} levels"
+            "a stored type nests beyond the limit of {NESTING_DEPTH} levels"
         )));
     }
     let node = nodes

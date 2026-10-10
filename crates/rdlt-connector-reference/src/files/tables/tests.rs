@@ -417,7 +417,7 @@ fn a_catalog_version_that_is_no_schema_is_a_data_error_no_retry_reads_differentl
 #[test]
 fn a_catalog_nested_to_the_limit_is_read_and_changed_again() {
     use rdlt_testkit::nested;
-    let depth = usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH).unwrap();
+    let depth = usize::try_from(rdlt_wire::limits::NESTING_DEPTH).unwrap();
     for nesting in nested::NESTINGS {
         let (_root, rdlt) = private();
         let deep =

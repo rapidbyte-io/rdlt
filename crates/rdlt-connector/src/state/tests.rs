@@ -767,7 +767,7 @@ const NESTINGS: [Nesting; 4] = [
 
 #[test]
 fn a_schema_nested_to_the_limit_is_stored_and_read_back() {
-    let limit = usize::try_from(crate::limits::MAX_NESTING_DEPTH).unwrap();
+    let limit = usize::try_from(rdlt_wire::limits::NESTING_DEPTH).unwrap();
     for nesting in NESTINGS {
         let schema = TableSchema::new(nested(limit, nesting)).unwrap();
         let entry = StateEntry::Schema {
@@ -787,7 +787,7 @@ fn a_schema_nested_to_the_limit_is_stored_and_read_back() {
 
 #[test]
 fn a_schema_nested_past_the_limit_is_refused() {
-    let limit = usize::try_from(crate::limits::MAX_NESTING_DEPTH).unwrap();
+    let limit = usize::try_from(rdlt_wire::limits::NESTING_DEPTH).unwrap();
     for nesting in NESTINGS {
         assert!(
             matches!(

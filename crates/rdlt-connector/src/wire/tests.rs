@@ -786,7 +786,7 @@ fn nested(levels: usize) -> crate::types::LogicalType {
 
 #[test]
 fn a_type_nested_to_the_protocols_depth_crosses_the_wire_and_one_deeper_is_refused() {
-    let depth = usize::try_from(crate::limits::MAX_NESTING_DEPTH).unwrap();
+    let depth = usize::try_from(rdlt_wire::limits::NESTING_DEPTH).unwrap();
     let schema = TableSchema::new(vec![Field::new("deep", nested(depth), true)]).unwrap();
     assert_eq!(crossed::<_, v1::TableSchema>(&schema).unwrap(), schema);
     // Inside the deepest message that carries a schema.
@@ -1038,7 +1038,7 @@ fn a_catalog_beyond_its_stream_limit_is_refused_before_its_streams_are_read() {
 #[test]
 fn a_schema_of_more_columns_than_its_limit_is_refused_before_it_is_built() {
     use v1::type_node::Kind;
-    let limit = usize::try_from(crate::limits::MAX_COLUMNS).unwrap();
+    let limit = usize::try_from(rdlt_wire::limits::SCHEMA_COLUMNS).unwrap();
     let int = || one_node(Kind::Int64(v1::Unit {}));
     let field = |name: String, logical: v1::LogicalType| v1::Field {
         name,

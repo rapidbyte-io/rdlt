@@ -6,12 +6,11 @@ mod tests;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
-use rdlt_wire::limits::count;
+use rdlt_wire::limits::{FRAME_BYTES, count};
 use rdlt_wire::{Limits, Weigher, Weight};
 
 use crate::cost::Allocations;
 use crate::error::LimitExceeded;
-use crate::limits::{MAX_BATCH_BYTES, MAX_VIEW_BYTES};
 
 /// Rows: how many are weighed between two checks of the limits.
 const STRETCH: usize = 1024;
@@ -61,8 +60,8 @@ pub(super) fn admit(
 /// rows become is lowered a piece at a time.
 fn within(weight: &Weight, limits: &Limits) -> Result<(), LimitExceeded> {
     check("batch values", weight.values, limits.batch_values)?;
-    check("view bytes", weight.view_bytes, MAX_VIEW_BYTES)?;
-    check("batch bytes", weight.frame_bytes(), MAX_BATCH_BYTES)
+    check("view bytes", weight.view_bytes, FRAME_BYTES)?;
+    check("batch bytes", weight.frame_bytes(), FRAME_BYTES)
 }
 
 fn check(name: &'static str, actual: u64, limit: u64) -> Result<(), LimitExceeded> {

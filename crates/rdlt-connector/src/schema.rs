@@ -9,11 +9,11 @@ use std::sync::Arc;
 use arrow_schema::Schema;
 use serde::{Deserialize, Serialize};
 
-use crate::limits::MAX_NESTING_DEPTH;
 use crate::types::{Field, Fields, LogicalType, TypeError, TypeKind, UnsupportedType};
+use rdlt_wire::limits::NESTING_DEPTH;
 
 /// The ordered, uniquely named fields of a table, nested no deeper than
-/// [`MAX_NESTING_DEPTH`] levels, counting a top-level column as the first.
+/// [`NESTING_DEPTH`] levels, counting a top-level column as the first.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "StoredSchema", into = "StoredSchema")]
 pub struct TableSchema {
@@ -42,10 +42,10 @@ impl TableSchema {
     /// A schema of `fields`, which must have distinct names and nest no deeper than the limit.
     pub fn new(fields: Vec<Field>) -> Result<Self, TypeError> {
         let depth = depth(&fields);
-        if depth > MAX_NESTING_DEPTH {
+        if depth > NESTING_DEPTH {
             return Err(TypeError::TooDeep {
                 depth,
-                limit: MAX_NESTING_DEPTH,
+                limit: NESTING_DEPTH,
             });
         }
         Ok(Self {

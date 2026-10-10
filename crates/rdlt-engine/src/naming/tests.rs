@@ -320,13 +320,14 @@ fn collision_hashes_are_fixed_by_the_exact_source_identity() {
 #[test]
 #[expect(clippy::disallowed_methods, reason = "the test times real work")]
 fn names_are_checked_against_every_reserved_word_once_folded() {
-    use rdlt_connector::limits::{MAX_COLUMNS, MAX_RESERVED_WORDS};
+    use rdlt_connector::limits::MAX_RESERVED_WORDS;
+    use rdlt_wire::limits::SCHEMA_COLUMNS;
     let mut reserving = rules(IdentifierCase::Upper, IdentifierChars::AsciiWord, 63);
     reserving.reserved = (0..MAX_RESERVED_WORDS)
         .map(|word| format!("word{word}"))
         .collect();
     let naming = Naming::new(reserving);
-    let columns = usize::try_from(MAX_COLUMNS).unwrap();
+    let columns = usize::try_from(SCHEMA_COLUMNS).unwrap();
     let keys: Vec<ColumnKey> = (0..columns)
         .map(|column| source(&[format!("column{column}").as_str()]))
         .chain([source(&["Word7"])])

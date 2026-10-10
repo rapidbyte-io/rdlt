@@ -332,7 +332,7 @@ async fn integer_keys_beyond_64_bits_stay_distinct() {
 pub(crate) fn deepest(id: i64, nesting: rdlt_testkit::nested::Nesting) -> String {
     // A JSON value's levels count the record as the first and the integer as the last: the
     // column's own is the second.
-    let depth = usize::try_from(rdlt_connector::limits::MAX_NESTING_DEPTH - 1).expect("small");
+    let depth = usize::try_from(rdlt_wire::limits::NESTING_DEPTH - 1).expect("small");
     json!({ "id": id, "c": rdlt_testkit::nested::value(depth, nesting) }).to_string()
 }
 

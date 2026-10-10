@@ -1,7 +1,7 @@
 //! What a change stream's configuration and the partitions it is asked for are checked against.
 
-use rdlt_connector::limits::MAX_BATCH_ROWS;
 use rdlt_connector::{ConnectorError, PartitionId};
+use rdlt_wire::limits::BATCH_ROWS;
 
 use super::{CHANGES_PARTITION, ChangedStream};
 use crate::limits::{MAX_CHANGES, MAX_PARTITIONS, MAX_SNAPSHOT_KEYS, MAX_TRUNCATES, within};
@@ -23,7 +23,7 @@ impl ChangedStream {
                 self.snapshot_partitions,
                 MAX_PARTITIONS,
             ),
-            ("batch_rows", self.batch_rows, MAX_BATCH_ROWS),
+            ("batch_rows", self.batch_rows, BATCH_ROWS),
             ("keys", self.keys, MAX_SNAPSHOT_KEYS),
             ("captured", self.captured, MAX_SNAPSHOT_KEYS),
             ("changes", self.changes, MAX_CHANGES),

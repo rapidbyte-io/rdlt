@@ -6,9 +6,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::{Invalid, narrow, required, v1};
 use crate::cursor::Cursor;
 use crate::id::{StreamName, TablePath};
-use crate::limits::MAX_NESTING_DEPTH;
 use crate::schema::{ColumnPath, TableSchema};
 use crate::types::{DecimalType, Field, Fields, LogicalType, TimeUnit, TypeKind};
+use rdlt_wire::limits::{NESTING_DEPTH, count};
 
 impl From<TimeUnit> for v1::TimeUnit {
     fn from(unit: TimeUnit) -> Self {
@@ -117,7 +117,7 @@ fn node(
     depth: u64,
 ) -> Result<(String, bool, LogicalType), Invalid> {
     use v1::type_node::Kind;
-    if depth > MAX_NESTING_DEPTH {
+    if depth > NESTING_DEPTH {
         return Err(Invalid::OutOfRange("nesting depth"));
     }
     let next = required("type node", nodes.next())?;
@@ -207,7 +207,7 @@ impl TryFrom<v1::TableSchema> for TableSchema {
                     .map_or(1, |logical| logical.nodes.len())
             })
             .fold(0_usize, usize::saturating_add);
-        if u64::try_from(columns).unwrap_or(u64::MAX) > crate::limits::MAX_COLUMNS {
+        if count(columns) > rdlt_wire::limits::SCHEMA_COLUMNS {
             return Err(Invalid::OutOfRange("schema columns"));
         }
         let fields = schema
