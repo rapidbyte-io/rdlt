@@ -156,3 +156,6 @@ fn retain(part: Part, kept: &BooleanArray) -> Result<Part, ArrowError> {
         },
     })
 }
+
+#[cfg(test)]
+mod tests;

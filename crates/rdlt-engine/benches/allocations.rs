@@ -23,7 +23,7 @@ use arrow_array::RecordBatch;
 use rdlt_engine::Cores;
 use rdlt_engine::bench::{
     CHUNK_BYTES, CORPUS_BYTES, Corpus, Form, Lowering, Normalized, Passthrough, Replayed, Wide,
-    counted, normalize, null_sink, replay, sample_log, scan_log, shred,
+    counted, normalize, null_sink, pruned, replay, sample_log, scan_log, shred,
 };
 use rdlt_wire::{Decoder, Encoder, Limits};
 use stats_alloc::{INSTRUMENTED_SYSTEM, StatsAlloc};
@@ -57,7 +57,7 @@ const LAYOUT: Cores = Cores::new(
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 12] = [
+const CASES: [Case; 13] = [
     ("passthrough/null_sink", passed_through),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
@@ -80,6 +80,9 @@ const CASES: [Case; 12] = [
     }),
     ("normalize/keyed/with_arrays", |times| {
         normalized(Corpus::WithArrays, &["id"], times);
+    }),
+    ("normalize/dropped/with_arrays", |times| {
+        dropped(Corpus::WithArrays, times);
     }),
     ("wal/encode", log_encoded),
     ("wal/scan", log_scanned),
@@ -301,6 +304,18 @@ fn normalized(corpus: Corpus, key: &[&str], times: usize) {
     for _ in 0..times {
         for batch in &batches {
             black_box(normalize(batch, 8, key).expect("the batch normalizes"));
+        }
+    }
+}
+
+/// Normalizing `corpus`'s batches keyless with one root row in ten dropped, and their children
+/// with them.
+fn dropped(corpus: Corpus, times: usize) {
+    let batches = shred(&corpus.pushes(COUNTED_BYTES), CHUNK_BYTES).expect("the corpus shreds");
+    let every = NonZeroUsize::new(10).expect("ten is not zero");
+    for _ in 0..times {
+        for batch in &batches {
+            black_box(pruned(batch, 8, every).expect("the batch normalizes"));
         }
     }
 }
