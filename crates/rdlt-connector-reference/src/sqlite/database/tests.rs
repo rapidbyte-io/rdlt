@@ -1,13 +1,14 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rdlt_connector::sqlgen::Statement;
+use rdlt_connector::sqlgen::{SqlValue, Statement};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rusqlite::config::DbConfig;
 use rusqlite::limits::Limit;
+use rusqlite::types::Value;
 use rusqlite::{Connection, TransactionBehavior, ffi};
 
-use super::{connect, connect_waiting, failed, run};
+use super::{connect, connect_waiting, failed, query, run};
 use crate::limits::JOURNAL_BYTES;
 
 fn refusal<T: std::fmt::Debug>(
@@ -25,7 +26,7 @@ fn statement(sql: &str) -> Statement {
 }
 
 /// What the pragma `name` answers on `connection`.
-fn pragma(connection: &Connection, name: &str) -> rusqlite::types::Value {
+fn pragma(connection: &Connection, name: &str) -> Value {
     connection
         .pragma_query_value(None, name, |row| row.get(0))
         .expect("the pragma answers")
@@ -33,7 +34,6 @@ fn pragma(connection: &Connection, name: &str) -> rusqlite::types::Value {
 
 #[test]
 fn a_connection_is_opened_hardened() {
-    use rusqlite::types::Value;
     let directory = tempfile::tempdir().expect("a temporary directory");
     let connection = connect(&directory.path().join("hard.db")).expect("the database opens");
     let set = |config| connection.db_config(config).expect("the setting reads");
@@ -292,4 +292,54 @@ fn a_statement_sqlite_cannot_read_fails_without_its_text() {
         assert!(!found.to_string().contains("secret_table"), "{found}");
         cause = found.source();
     }
+}
+
+#[test]
+fn a_statement_run_again_binds_its_own_values() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let connection = connect(&directory.path().join("bound.db")).expect("the database opens");
+    run(
+        &connection,
+        &statement("CREATE TABLE t (a TEXT, b BLOB, c INTEGER, d)"),
+    )
+    .expect("a table is created");
+    let insert = |text: &str, blob: &[u8], integer: i64| Statement {
+        sql: "INSERT INTO t VALUES (?1, ?2, ?3, ?4)".to_owned(),
+        params: vec![
+            SqlValue::Text(text.to_owned()),
+            SqlValue::Blob(blob.to_vec()),
+            SqlValue::Integer(integer),
+            SqlValue::Null,
+        ],
+    };
+    assert_eq!(
+        run(&connection, &insert("x", b"\x00\x01", 7)).expect("a row"),
+        1
+    );
+    assert_eq!(
+        run(&connection, &insert("y", b"\x02", -1)).expect("another"),
+        1
+    );
+    let rows = query(
+        &connection,
+        &statement("SELECT a, b, c, d FROM t ORDER BY c"),
+    )
+    .expect("the rows");
+    assert_eq!(
+        rows,
+        vec![
+            vec![
+                Value::Text("y".into()),
+                Value::Blob(vec![2]),
+                Value::Integer(-1),
+                Value::Null
+            ],
+            vec![
+                Value::Text("x".into()),
+                Value::Blob(vec![0, 1]),
+                Value::Integer(7),
+                Value::Null
+            ],
+        ]
+    );
 }
