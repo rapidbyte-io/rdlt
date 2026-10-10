@@ -82,7 +82,7 @@ leaves open, and one it words otherwise.
 ## Consequences
 
 A normalized stream's rows land in several tables committed together, each row naming its parent
-and root. Shredding and normalizing takes, on one core, 1.3× the shredding time for keyed rows and
-2.0× for keyless ones, whose canonical encoding is the extra cost (docs/perf/shred.md). The simulation's
-oracle checks the child tables of normalized streams, through crashes and concurrent runs, against
-the rows their parents hold.
+and root. Normalizing costs more than shredding alone, most for keyless rows, whose canonical
+encoding is the extra cost; [docs/perf/shred.md](../perf/shred.md) records the figures. The
+simulation's oracle checks the child tables of normalized streams, through crashes and concurrent
+runs, against the rows their parents hold.

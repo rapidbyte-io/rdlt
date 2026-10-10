@@ -154,8 +154,8 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   observed, 5.6 MB at the default budget.
 - JSON records that held up to 10,000 columns in an object are refused past the derived limit.
 - Narrow records that widen a column past a chunk's allowance are parsed twice more; dense data
-  still parses once. Shredding and normalizing run 3 to 8 % slower on one core than before the
-  charges, past the spec's gate still (docs/perf/shred.md).
+  still parses once. [docs/perf/shred.md](../perf/shred.md) records the meter's share of a
+  profile and the shredder's throughput against the spec's bound.
 - A run's report counts each stream's passes over the chunks of its committed flushes: those
   parsed, those whose meter tripped, those only observed, those built again, and those that read
   numbers exactly.

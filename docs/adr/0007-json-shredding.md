@@ -91,8 +91,8 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
 
 ## Consequences
 
-JSON pushes load, in parallel, at over five times the old engine on one core. Integers load
-exactly at any width, as decimals within 76 digits and as JSON text beyond. A chunk whose shape
-drifts is parsed twice, so drift costs throughput where it happens and nowhere else. The engine's
-integration tests run compute jobs inline, since the paused test clock would otherwise advance
-while a job runs on another thread.
+JSON pushes load in parallel; [docs/perf/shred.md](../perf/shred.md) records their throughput
+against the old engine on one core. Integers load exactly at any width, as decimals within 76
+digits and as JSON text beyond. A chunk whose shape drifts is parsed twice, so drift costs
+throughput where it happens and nowhere else. The engine's integration tests run compute jobs
+inline, since the paused test clock would otherwise advance while a job runs on another thread.
