@@ -87,16 +87,17 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   built by the exact parse, which renders each number as its text was written; rendering a float
   without its text is an internal error, never a rounding. Columns of floats keep spec §8.2's
   typing: a number with a fraction or exponent is a 64-bit float.
-- **Every value of an Arrow push's columns of JSON is checked before it is used.** On the
-  compute pool, at any depth and in every encoding (dictionaries, runs, views, structs, lists,
-  list views and maps), only the values rows name, each once: text that is not JSON fails the
-  write, `json_invalid`, and nesting past the limit `limit_exceeded`. Which rows are named is
-  read as ranges, each level mapping its parent's (a list's rows to its items by their offsets, a
-  run's rows to its values, a struct's through its nulls), so nothing is held a row or an item.
-  Only a dictionary's named values (a bit a value, or the keys named where that is less) and the
-  spans of a list view naming its items out of order are held, and what they take is reserved
-  before the check runs. Lowering then only splices checked text. An object repeating a key is valid JSON there, and kept; only records of JSON pushes
-  refuse one.
+- **Every value of an Arrow push's columns of JSON is checked before it is used.** On the compute
+  pool, at any depth and in every encoding (dictionaries, runs, views, structs, lists, list views
+  and maps), only the values rows name, each once: text that is not JSON fails the write,
+  `json_invalid`, and nesting past the limit `limit_exceeded`. Which rows are named is read as
+  ranges, each level mapping its parent's (a list's rows to its items by their offsets, a run's rows
+  to its values, a struct's through its nulls), so nothing is held a row or an item. Only a
+  dictionary's named values (a bit a value, or the keys named where that is less) and the spans of a
+  list view naming its items out of order are held, and what they take is reserved before the check
+  runs. A push whose schema holds no column of JSON at any depth is not sent to the pool. Lowering
+  then only splices checked text. An object repeating a key is valid JSON there, and kept; only
+  records of JSON pushes refuse one.
 - **A merge key stored as JSON on a normalized stream is refused** when its table is created,
   `merge_key_json` (`ErrorKind::Schema`). Its rows would merge by the text the destination stores,
   where `1` and `1.0` differ, while their child rows follow the root id the values give, where

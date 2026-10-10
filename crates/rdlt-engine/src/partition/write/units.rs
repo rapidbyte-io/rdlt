@@ -46,11 +46,20 @@ pub(super) async fn of(
 
 /// Checks, on the compute pool, that every value the columns of JSON of `batches` hold is JSON
 /// nested within the limit: one that is not fails the write before anything reads it.
+///
+/// Batches whose schema holds no column of JSON, which every batch of a unit shares, are not sent
+/// to the pool.
 async fn checked(
     job: &PartitionJob,
     context: &PartitionContext,
     batches: &[RecordBatch],
 ) -> Result<(), Error> {
+    if !batches
+        .first()
+        .is_some_and(|batch| json::schema_holds_json(batch.schema_ref()))
+    {
+        return Ok(());
+    }
     let batches = batches.to_vec();
     let measured = batches.clone();
     let measure = move || measured.iter().map(json::held_by_check).max();
