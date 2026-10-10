@@ -93,7 +93,7 @@ fn a_recorded_merge_key_lacking_any_member_it_writes_is_refused() {
                 };
                 let recorded: serde_json::Value =
                     serde_json::from_str(&encode_merge_key(&key)).unwrap();
-                crate::required::every_member_required::<super::RecordedKey>(&recorded);
+                rdlt_testkit::required::every_member_required::<super::RecordedKey>(&recorded);
             }
         }
     }
