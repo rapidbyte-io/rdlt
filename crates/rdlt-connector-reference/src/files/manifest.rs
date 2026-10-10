@@ -16,7 +16,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use rdlt_connector::{
     CommitSeq, ConnectorError, Epoch, GenerationId, Horizon, LoadId, PipelineId, Receipt, Result,
-    StateChange, StateRecord,
+    StateChange, StateRecord, sqlgen::micros,
 };
 use serde::{Deserialize, Serialize};
 
@@ -244,11 +244,6 @@ pub(super) fn format_of(dir: &Dir, path: &str) -> Result<FileFormat> {
 /// `at` to the microsecond, the precision receipts keep, so a receipt reads back equal.
 pub(super) fn truncated(at: SystemTime) -> SystemTime {
     UNIX_EPOCH + Duration::from_micros(micros(at))
-}
-
-fn micros(at: SystemTime) -> u64 {
-    let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
-    u64::try_from(since.as_micros()).unwrap_or(u64::MAX)
 }
 
 /// The name of the directory holding `pipeline`'s manifests and staged files.
