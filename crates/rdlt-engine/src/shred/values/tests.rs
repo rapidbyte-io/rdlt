@@ -171,6 +171,14 @@ fn a_value_the_shredder_refuses_or_that_repeats_a_key_fits_no_column() {
     assert!(!fitting(&repeated, &object).value(0));
     let list = LogicalType::List(Box::new(Field::new("item", object, true)));
     assert!(fitting(&repeated, &list).value(1));
+    // Items of mixed kinds are not observed as objects, so only the key check sees a repeat.
+    let mixed = LogicalType::List(Box::new(Field::new("item", LogicalType::Json, true)));
+    let values = [
+        Some("[1,{\"b\":1}]"),
+        Some("[1,{\"b\":1,\"b\":2}]"),
+        Some("[1,{\"b\":{\"c\":1,\"c\":2}}]"),
+    ];
+    assert_eq!(fit(&values, &mixed), [true, false, false]);
     // A number beyond a float's range, text that is not JSON and nesting past the limit.
     let deep = format!("{}{}", "[".repeat(65), "]".repeat(65));
     let deep_item = LogicalType::List(Box::new(Field::new("item", LogicalType::Null, true)));
