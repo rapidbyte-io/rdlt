@@ -34,8 +34,10 @@ process; H1b fixed it (ADR 0025).
     refused or found imprecise can no longer exhaust the stack.
 - **A column of 64-bit integers is exact while a 64-bit float holds every value it stored.**
   - Exactness is judged from values, whatever the source: a batch's column of 64-bit integers
-    rounds when a value its rows hold is beyond 2⁵³ either way. An encoded column is decoded first,
-    so only values rows hold count. A declared schema holds no values, so it creates exact columns.
+    rounds when a value its rows hold is beyond 2⁵³ either way. A column is read where it lies,
+    in any encoding, a dictionary's values through the keys its rows hold and a run's through
+    the runs they fall in, so only values rows hold count and nothing is decoded. A declared
+    schema holds no values, so it creates exact columns.
   - Amended 2026-09-29: the batch judged is a partition's flush, every table's rows of it judged
     together, before its policy drops any. A flush is shredded in chunks and lowered in slices
     whose sizes fall where they may, and the nightly simulation found a push's exact integer cast

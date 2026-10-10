@@ -173,6 +173,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - The invariant is a test here too: every numeric, temporal, decimal, text, bytes and nested
     type, plain, behind keys and as runs, is lowered into every type its table may hold it in,
     as it is and as text, and the heap's peak is held to the charge.
+  - Judging which columns of 64-bit integers a batch holds a value a float would round in reads
+    each column where it lies, in any encoding, and holds nothing a row, so nothing is charged
+    for it; a test holds its peak beside long dictionary and run-end encoded columns.
 - **What is lowered at once is what was reserved.** A unit's plan is found first, and the unit
   is then cut by that cost, a piece at a time, on the compute pool.
   - A piece is at most a sixteenth of the budget, or one row where a row takes more, up to the
