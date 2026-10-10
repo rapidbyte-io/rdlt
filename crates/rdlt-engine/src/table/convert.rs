@@ -239,7 +239,7 @@ fn refuse_rounding(
     to: &LogicalType,
 ) -> Result<(), ArrowError> {
     let floats = (from, to) == (&LogicalType::Int64, &LogicalType::Float64);
-    if floats && super::exact::rounds(array) {
+    if floats && super::exact::rounds(array.as_ref()) {
         return Err(ArrowError::CastError(
             "an integer a 64-bit float would round".to_owned(),
         ));

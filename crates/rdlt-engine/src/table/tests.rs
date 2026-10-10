@@ -1806,6 +1806,31 @@ fn integers_convert_to_floats_only_where_a_float_holds_every_one_exactly() {
     assert_eq!(floats.data_type(), &DataType::Float64);
     let rounding: ArrayRef = Arc::new(Int64Array::from(vec![1, edge + 1]));
     assert!(convert(&rounding, &LogicalType::Int64, &LogicalType::Float64).is_err());
+    // Unsigned 32-bit integers never round, and an encoded column rounds only by what its
+    // rows name.
+    let unsigned: ArrayRef = Arc::new(arrow_array::UInt32Array::from(vec![u32::MAX]));
+    assert!(convert(&unsigned, &LogicalType::Int64, &LogicalType::Float64).is_ok());
+    let values: ArrayRef = Arc::new(Int64Array::from(vec![7, edge + 1]));
+    let keys = |keys: Vec<i32>| -> ArrayRef {
+        let keys = Int32Array::from(keys);
+        Arc::new(arrow_array::DictionaryArray::try_new(keys, Arc::clone(&values)).unwrap())
+    };
+    assert!(
+        convert(
+            &keys(vec![0, 0]),
+            &LogicalType::Int64,
+            &LogicalType::Float64
+        )
+        .is_ok()
+    );
+    assert!(
+        convert(
+            &keys(vec![0, 1]),
+            &LogicalType::Int64,
+            &LogicalType::Float64
+        )
+        .is_err()
+    );
 }
 
 #[test]

@@ -21,7 +21,9 @@ all_features = true
 # resolver widens no column kept from it on any path, so a refusal never names one, and the guard
 # only bounds the loop were that to change. A JSON lines reader's `Debug` names the type and
 # nothing else, since its decoder has none: what it writes is no behaviour a test can hold. The
-# engine's inline test env has one core, which a mutant answering one also has.
+# engine's inline test env has one core, which a mutant answering one also has. A mutant that
+# judges a plain column of 64-bit integers through the rows it names reads what the plain arm
+# reads, which spares only the mapping.
 exclude_re = [
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
   "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
@@ -29,6 +31,7 @@ exclude_re = [
   "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
   "crates/rdlt-engine/src/env/inline\\.rs:.*replace <impl Env for InlineEnv>::cores -> NonZeroUsize with 1\\.try_into\\(\\)\\.unwrap\\(\\)",
+  "crates/rdlt-engine/src/table/exact\\.rs:.*delete match arm DataType::Int64 in rounds$",
   "crates/rdlt-engine/src/table/registry\\.rs:.*replace match guard !resolver\\.unwidened\\.contains\\(&column\\) with true in Tables::fit$",
 ]
 # A mutant that hangs a test is caught when nextest terminates the test, which it does well within
