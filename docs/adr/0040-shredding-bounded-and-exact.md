@@ -100,10 +100,11 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
 - **A merge key stored as JSON on a normalized stream is refused** when its table is created,
   `merge_key_json` (`ErrorKind::Schema`). Its rows would merge by the text the destination stores,
   where `1` and `1.0` differ, while their child rows follow the root id the values give, where
-  they are one value. A stream that does not normalize keeps merging by the text. A key whose
-  values are objects or arrays, which normalizing flattens into columns or moves to a table of
+  they are one value. A stream that does not normalize keeps merging by the text. A key that
+  normalizing takes apart, an object it flattens into columns or an array it moves to a table of
   its own, is refused as the batch is normalized, `merge_key_nested` (`ErrorKind::Schema`): the
-  table would have no column for it.
+  table would have no column for it. A key normalizing keeps whole (named whole, deeper than
+  `max_depth`, or held in a dictionary or runs) stays a column and is not refused.
 - **A column of JSON is split value by value.** A column arriving as JSON text whose own column
   is of another type sends there each value that is a value of the column's type, read as the
   shredder reads that value alone, and converted: a null, of any column; an object whose fields
