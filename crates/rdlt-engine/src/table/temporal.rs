@@ -19,7 +19,6 @@ mod text;
 pub(crate) use days::{dated, micros_at};
 pub(crate) use text::{Renderer, text};
 
-use arrow_array::Array;
 use arrow_array::temporal_conversions::as_datetime;
 use arrow_array::types::{
     TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
@@ -27,7 +26,6 @@ use arrow_array::types::{
 };
 use arrow_schema::TimeUnit;
 use chrono::NaiveDateTime;
-use rdlt_connector::instants;
 
 /// Nanoseconds in a second.
 const NANOS_PER_SECOND: i128 = 1_000_000_000;
@@ -56,15 +54,4 @@ fn naive(value: i64, unit: TimeUnit) -> Option<NaiveDateTime> {
         TimeUnit::Microsecond => as_datetime::<TimestampMicrosecondType>(value),
         TimeUnit::Nanosecond => as_datetime::<TimestampNanosecondType>(value),
     }
-}
-
-/// The value at `row` of `array` as its type stores it; every array this module reads is a plain
-/// temporal one.
-fn raw(array: &dyn Array, row: usize) -> i64 {
-    instants::stored(array, row).unwrap_or_default()
-}
-
-/// `value`, in `unit`, in nanoseconds.
-fn nanos(value: i64, unit: TimeUnit) -> i128 {
-    i128::from(value) * instants::unit_nanos(unit)
 }

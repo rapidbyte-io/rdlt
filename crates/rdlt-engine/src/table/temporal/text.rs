@@ -17,9 +17,9 @@ use arrow_schema::{ArrowError, DataType, TimeUnit};
 use chrono::NaiveDateTime;
 use chrono::{Offset as _, TimeDelta, TimeZone as _};
 
-use rdlt_connector::instants::DAY;
+use rdlt_connector::instants::{self, DAY};
 
-use super::{NANOS_PER_SECOND, fixed_offset, naive, nanos, raw};
+use super::{NANOS_PER_SECOND, fixed_offset, naive};
 
 /// Each value of `array`, a boolean, number or temporal array, as text; nulls stay null.
 pub(crate) fn text(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
@@ -71,13 +71,16 @@ impl<'a> Renderer<'a> {
 
     /// Appends the text of the value at `row`, which is not null, to `out`.
     pub(crate) fn write(&self, row: usize, out: &mut String) {
-        match self.array.data_type() {
-            DataType::Duration(unit) => {
-                out.push_str(&duration(nanos(raw(self.array, row), *unit)));
+        let data_type = self.array.data_type();
+        let stored = || instants::stored(self.array, row).unwrap_or_default();
+        let denoted = || instants::nanos(data_type, i128::from(stored())).unwrap_or_default();
+        match data_type {
+            DataType::Duration(_) => {
+                out.push_str(&duration(denoted()));
                 return;
             }
-            DataType::Time32(unit) | DataType::Time64(unit) => {
-                out.push_str(&clock(nanos(raw(self.array, row), *unit)));
+            DataType::Time32(_) | DataType::Time64(_) => {
+                out.push_str(&clock(denoted()));
                 return;
             }
             _ => {}
@@ -85,7 +88,7 @@ impl<'a> Renderer<'a> {
         if self
             .zoned
             .as_ref()
-            .is_some_and(|renders| !renders(raw(self.array, row)))
+            .is_some_and(|renders| !renders(stored()))
         {
             out.push_str(&self.beyond(row));
             return;
@@ -99,15 +102,15 @@ impl<'a> Renderer<'a> {
 
     /// The text of a value Arrow cannot render: exact, and for instants in UTC.
     fn beyond(&self, row: usize) -> String {
-        let value = raw(self.array, row);
-        match self.array.data_type() {
-            DataType::Date32 => date(i128::from(value)),
-            DataType::Date64 => date(i128::from(value).div_euclid(86_400_000)),
-            DataType::Timestamp(unit, zone) => {
-                let instant = nanos(value, *unit);
-                let day = instant.div_euclid(DAY);
+        let data_type = self.array.data_type();
+        let stored = instants::stored(self.array, row).unwrap_or_default();
+        let instant = instants::nanos(data_type, i128::from(stored)).unwrap_or_default();
+        let day = date(instant.div_euclid(DAY));
+        match data_type {
+            DataType::Date32 | DataType::Date64 => day,
+            DataType::Timestamp(_, zone) => {
                 let suffix = if zone.is_some() { "Z" } else { "" };
-                format!("{}T{}{suffix}", date(day), clock(instant.rem_euclid(DAY)))
+                format!("{day}T{}{suffix}", clock(instant.rem_euclid(DAY)))
             }
             other => unreachable!("{other} is not temporal"),
         }
