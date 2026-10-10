@@ -37,7 +37,10 @@ things did not hold to that:
     an incomplete run in which a clause passed, and the report says incomplete all the same.
   - `S-RESUME` is unobserved without a checkpoint. It resumes from every checkpoint of a read
     that sent five at most, and else from five spread from the first to the last, so a resume
-    wrong only from a checkpoint between them is not caught.
+    wrong only from a checkpoint between them is not caught. It compares a resumed read's pushes
+    with the first read's only while their batches, both reads together, expand to 64 MiB at
+    most, as the cost model measures them: comparing compares every value each row names.
+    Beyond that the clause is unobserved.
 - **Every wait has a deadline, and no clause's work is unbounded.** The raw handshakes and
   configurations of the read-back and acknowledged probes keep the connection deadline. The
   question of where a source stands, asked before the clauses, runs under a clause's bound. What
