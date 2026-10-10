@@ -11,9 +11,10 @@ use rdlt_connector::{
 };
 
 use super::check::check_stream;
-use super::{Planned, RunContext, sequences};
+use super::{Planned, RunContext, sequences, together};
 use crate::coordinator::{Begun, Cycle, Phases, StreamRun, Template, plan_of};
 use crate::error::{Error, ErrorKind};
+use crate::limits::PLANS_AT_ONCE;
 use crate::naming::Naming;
 use crate::normalize::{self, Shape};
 use crate::partition::ChangeMode;
@@ -32,29 +33,73 @@ pub(super) struct Planning<'a> {
     pub(super) capabilities: Arc<Capabilities>,
 }
 
-impl Planning<'_> {
-    /// Checks `plan` against the catalog, the destination and committed state, prepares its
-    /// table, and plans its partitions.
+impl<'a> Planning<'a> {
+    /// Plans `plans`' streams: each checked in plan order against the catalog and the
+    /// destination, then their partitions planned by the source all together, [`PLANS_AT_ONCE`]
+    /// at most at once, then, in plan order, each one's table prepared and its partitions taken.
+    ///
+    /// The source plans no stream the checks refuse, nor any after it: the streams before it are
+    /// planned and prepared, and its refusal is returned unless one of them fails. The first
+    /// error in plan order is returned, whichever failed first, and no stream after it changes a
+    /// table. Each stream's read is chosen in plan order before any plan starts, as a new full
+    /// read draws its generation.
+    pub(super) async fn streams(
+        &mut self,
+        plans: &[StreamPlan],
+        tables: &Tables,
+    ) -> Result<Vec<Planned>, Error> {
+        let mut accepted = Vec::with_capacity(plans.len());
+        let mut refused = None;
+        for plan in plans {
+            match checked(self.context, plan, self.catalog) {
+                Ok(checked) => accepted.push(checked),
+                Err(error) => {
+                    refused = Some(error);
+                    break;
+                }
+            }
+        }
+        let plans = &plans[..accepted.len()];
+        let reads: Vec<Read> = plans
+            .iter()
+            .map(|plan| {
+                let name = plan.name();
+                let reset = self.state.resets.get(name).copied();
+                read(self.context, plan, self.state.streams.get(name), reset)
+            })
+            .collect();
+        let context = self.context;
+        let sourcing = plans
+            .iter()
+            .zip(reads)
+            .map(|(plan, read)| sourced(context, plan, read))
+            .collect();
+        let sourced = together::in_order(sourcing, PLANS_AT_ONCE).await;
+        let mut planned = Vec::with_capacity(plans.len());
+        for ((plan, checked), sourced) in plans.iter().zip(accepted).zip(sourced) {
+            planned.push(self.stream(plan, checked, tables, sourced).await?);
+        }
+        refused.map_or(Ok(planned), Err)
+    }
+
+    /// Prepares the table of `plan`, as `checked` accepted it, and takes the partitions
+    /// `sourced` planned.
     ///
     /// The table keeps its committed identifier and names; a new one gets a free identifier. A
     /// declared schema is resolved like a batch, so it creates the table or changes it under the
     /// stream's policy before anything is read.
-    pub(super) async fn stream(
+    async fn stream(
         &mut self,
         plan: &StreamPlan,
+        checked: Checked<'a>,
         tables: &Tables,
+        sourced: Sourced,
     ) -> Result<Planned, Error> {
-        let name = plan.name();
-        let spec = check_stream(self.context, plan, self.catalog)?;
-        let reset = self.state.resets.get(name).copied();
-        let read = read(self.context, plan, self.state.streams.get(name), reset);
-        let generation = match (plan.write_mode(), &read) {
-            (WriteMode::Replace, Read::Cycle(cycle, _)) => Some(cycle.generation),
+        let Checked { spec, shape, key } = checked;
+        let generation = match (plan.write_mode(), &sourced.cycle) {
+            (WriteMode::Replace, Some(cycle)) => Some(cycle.generation),
             _ => None,
         };
-        let shape = normalized(self.context, plan, spec);
-        unnormalizable(plan, shape.is_some())?;
-        let key = merge_key(plan, spec)?;
         let (resolver, table, model) =
             self.table(plan, spec, &key, generation, tables, shape.is_some())?;
         // Refused before the table changes, and recorded by the attempt's first commit.
@@ -83,13 +128,7 @@ impl Planning<'_> {
         for child in tables.recorded_children(index) {
             tables.child(index, &child).await?;
         }
-        let (cycle, partitioned) = match read {
-            Read::Incremental(state) => (None, partitions(self.context, plan, &state).await?),
-            Read::Cycle(cycle, state) => {
-                (Some(cycle), partitions(self.context, plan, &state).await?)
-            }
-            Read::Completed => (None, Partitioned::default()),
-        };
+        let (cycle, partitioned) = (sourced.cycle, sourced.partitioned?);
         let on_demand = spec.checkpointing() == Checkpointing::OnDemand;
         let partial_updates = self.capabilities.partial_updates;
         let follow = self.context.plan.until().follows();
@@ -161,6 +200,27 @@ impl Planning<'_> {
         };
         Ok((resolver, table, model))
     }
+}
+
+/// A stream the checks accept: its catalog entry, how it normalizes, and the columns it merges by.
+struct Checked<'a> {
+    spec: &'a StreamSpec,
+    shape: Option<Shape>,
+    key: Vec<ColumnPath>,
+}
+
+/// Checks `plan`'s settings against the catalog and the destination, none of which a stream's
+/// table work changes.
+fn checked<'a>(
+    context: &RunContext,
+    plan: &StreamPlan,
+    catalog: &'a Catalog,
+) -> Result<Checked<'a>, Error> {
+    let spec = check_stream(context, plan, catalog)?;
+    let shape = normalized(context, plan, spec);
+    unnormalizable(plan, shape.is_some())?;
+    let key = merge_key(plan, spec)?;
+    Ok(Checked { spec, shape, key })
 }
 
 /// `plan`'s stream, its table at `index`, ready to load `partitioned`, checkpointing on demand,
@@ -408,6 +468,32 @@ struct Partitioned {
     partitions: Vec<(Partition, Option<Cursor>)>,
     /// Every partition the plan names, those it leaves unread among them.
     named: BTreeSet<PartitionId>,
+}
+
+/// A stream's read, and the partitions its source planned for it.
+struct Sourced {
+    /// The full read it is, where it is one.
+    cycle: Option<Cycle>,
+    partitioned: Result<Partitioned, Error>,
+}
+
+/// The partitions the source plans for `plan`'s stream, read as `read` says; none for a read
+/// already completed.
+async fn sourced(context: &RunContext, plan: &StreamPlan, read: Read) -> Sourced {
+    match read {
+        Read::Incremental(state) => Sourced {
+            cycle: None,
+            partitioned: partitions(context, plan, &state).await,
+        },
+        Read::Cycle(cycle, state) => Sourced {
+            partitioned: partitions(context, plan, &state).await,
+            cycle: Some(cycle),
+        },
+        Read::Completed => Sourced {
+            cycle: None,
+            partitioned: Ok(Partitioned::default()),
+        },
+    }
 }
 
 /// The partitions of `plan`'s stream still to read, with their committed cursors; a plan

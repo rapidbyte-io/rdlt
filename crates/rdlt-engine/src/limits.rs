@@ -5,6 +5,7 @@
 //! bytes of one share are never reserved from another, so the shares together never pass the
 //! budget.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 /// The cursors of the seals waiting for a commit: a 64th of the budget, 4 MiB of the default
@@ -192,6 +193,11 @@ pub(crate) const LOG_BYTES: u64 = 4 << 30;
 /// keeps for a carry, which gathers many small chunks into one, and the least it keeps for a
 /// commit.
 pub(crate) const LOG_PARTS: u64 = 8;
+
+/// Source plans of an attempt's streams awaited at once, at most: far fewer than the calls a
+/// served connection holds open (ADR 0042), and each answer is charged to the share of answers
+/// being decoded before it is decoded, so more at once would only wait there.
+pub(crate) const PLANS_AT_ONCE: NonZeroUsize = NonZeroUsize::new(16).expect("sixteen is not zero");
 
 /// Bytes: what a carry reads back of a frame at a time, 256 KiB, held in the memory budget's
 /// share for logs while the log is written, so a carry of a frame of any size holds no more.

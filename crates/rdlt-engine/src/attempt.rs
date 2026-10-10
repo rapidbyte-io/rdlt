@@ -6,6 +6,7 @@ mod sequences;
 mod streams;
 #[cfg(test)]
 mod tests;
+mod together;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -185,10 +186,7 @@ async fn opened_run(
     let tables = Tables::new(Arc::clone(&opened.session))
         .growing(context.config.child_table_limit())
         .committed(&opened.state)?;
-    let mut planned = Vec::with_capacity(context.plan.streams().len());
-    for plan in context.plan.streams() {
-        planned.push(planning.stream(plan, &tables).await?);
-    }
+    let planned = planning.streams(context.plan.streams(), &tables).await?;
     let partitions = planned.iter().map(|stream| stream.partitions.len()).sum();
     within_partition_limit(partitions)?;
     launch(

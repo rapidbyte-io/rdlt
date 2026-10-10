@@ -1005,3 +1005,121 @@ async fn a_destination_whose_identifier_rules_pass_their_limits_is_refused() {
         (ErrorKind::Destination, Some("capabilities_invalid"), false)
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn streams_are_planned_together_a_bounded_number_at_once() {
+    // Twenty streams whose plans take a second each: sixteen at once, they take two seconds,
+    // where one after another took twenty.
+    let names: Vec<String> = (0..20).map(|index| format!("s{index}")).take(20).collect();
+    let streams = names
+        .iter()
+        .map(|name| {
+            let mut slow = ScriptStream::new(name, 1, 5, 5);
+            slow.plan_wait = Duration::from_secs(1);
+            slow
+        })
+        .take(names.len())
+        .collect();
+    let (_, source) = Script::new(streams).connect("planned_together").await;
+    let started = tokio::time::Instant::now();
+    let outcome = engine(commit_every(1000))
+        .run(
+            pipeline("planned-together", names.iter().map(|name| stream(name))),
+            source,
+            memory("planned_together").await,
+        )
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(3),
+        "{took:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_earlier_streams_failed_plan_wins_over_a_later_one_failing_sooner() {
+    let mut first = ScriptStream::new("first", 1, 5, 5);
+    first.plan_wait = Duration::from_secs(2);
+    let mut script = Script::new(vec![first, ScriptStream::new("second", 1, 5, 5)]);
+    script.planning = Planning::Fails;
+    let (_, source) = script.connect("plan_order").await;
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline("plan-order", [stream("first"), stream("second")]),
+            source,
+            memory("plan_order").await,
+        )
+        .await;
+    let error = outcome.error.expect("planning fails");
+    assert_eq!(
+        error.stream().map(ToString::to_string).as_deref(),
+        Some("first"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_stream_s_source_is_never_asked_to_plan() {
+    // The stream before the refused one is planned; the refused one and those after it are not.
+    let streams = vec![
+        ScriptStream::new("good", 1, 5, 5),
+        ScriptStream::new("refused", 1, 5, 5),
+        ScriptStream::new("after", 1, 5, 5),
+    ];
+    let (script, source) = Script::new(streams).connect("refused_unplanned").await;
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline(
+                "refused-unplanned",
+                [
+                    stream("good"),
+                    stream("refused").read(ReadMode::Cdc),
+                    stream("after"),
+                ],
+            ),
+            source,
+            memory("refused_unplanned").await,
+        )
+        .await;
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(error.code(), Some("read_mode_unsupported"), "{error:?}");
+    let plans: Vec<usize> = script
+        .streams
+        .iter()
+        .map(|stream| stream.plans.load(Ordering::SeqCst))
+        .take(3)
+        .collect();
+    assert_eq!(plans, [1, 0, 0]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_earlier_streams_failed_plan_wins_over_a_later_ones_refusal() {
+    let mut script = Script::new(vec![
+        ScriptStream::new("first", 1, 5, 5),
+        ScriptStream::new("refused", 1, 5, 5),
+    ]);
+    script.planning = Planning::Fails;
+    let (_, source) = script.connect("plan_before_refusal").await;
+    let outcome = engine(commit_every(10))
+        .run(
+            pipeline(
+                "plan-before-refusal",
+                [stream("first"), stream("refused").read(ReadMode::Cdc)],
+            ),
+            source,
+            memory("plan_before_refusal").await,
+        )
+        .await;
+    let error = outcome.error.expect("planning fails");
+    assert_eq!(
+        error.stream().map(ToString::to_string).as_deref(),
+        Some("first"),
+        "{error:?}"
+    );
+}
