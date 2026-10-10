@@ -17,6 +17,7 @@ fn received(received: u64, written: u64, cursor: Option<u64>) -> Ingested {
         sealed_rows: 0,
         stopped: false,
         coalescer: Coalescer::new(BatchPolicy::default()),
+        schemas: super::write::Schemas::default(),
     }
 }
 

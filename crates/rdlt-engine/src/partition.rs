@@ -299,6 +299,8 @@ struct Ingested {
     stopped: bool,
     /// Pushes gathered and not yet written.
     coalescer: Coalescer,
+    /// The table schema of the schema the partition's units had last.
+    schemas: write::Schemas,
 }
 
 /// The segment rows are written to until the next checkpoint seals it.
@@ -363,6 +365,7 @@ async fn ingest(
         sealed_rows: 0,
         stopped: false,
         coalescer: Coalescer::new(context.batch),
+        schemas: write::Schemas::default(),
     };
     let mut due = Due::default();
     loop {
@@ -462,7 +465,7 @@ impl Ingested {
             .ok_or_else(|| Error::internal("a push arrived without its permit"))?;
         let held: (u64, Permit) = (admitted.bytes, admitted);
         for flushed in self.coalescer.add(pushed, held, context.env.instant()) {
-            write_flushed(job, context, &mut self.open, flushed).await?;
+            write_flushed(job, context, &mut self.open, &mut self.schemas, flushed).await?;
         }
         Ok(())
     }
@@ -470,7 +473,9 @@ impl Ingested {
     /// Writes every push gathered.
     async fn flush(&mut self, job: &PartitionJob, context: &PartitionContext) -> Result<(), Error> {
         match self.coalescer.flush() {
-            Some(flushed) => write_flushed(job, context, &mut self.open, flushed).await,
+            Some(flushed) => {
+                write_flushed(job, context, &mut self.open, &mut self.schemas, flushed).await
+            }
             None => Ok(()),
         }
     }

@@ -375,7 +375,13 @@ fn a_unit_whose_every_row_its_stream_ignores_is_counted_and_dropped() {
     columns[1] = Arc::new(arrow_array::Int8Array::from_iter_values(ops));
     let unit = RecordBatch::try_new(deletes.schema(), columns).unwrap();
     let held = Held::of(Vec::new(), std::slice::from_ref(&unit));
-    let judged = super::judged(&job, &mut open, vec![(vec![unit], held)]).unwrap();
+    let judged = super::judged(
+        &job,
+        &mut open,
+        &mut super::Schemas::default(),
+        vec![(vec![unit], held)],
+    )
+    .unwrap();
     assert!(judged.is_empty());
     assert_eq!((open.deletes_ignored, open.truncates_ignored), (7, 5));
 }
