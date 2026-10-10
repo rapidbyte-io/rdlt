@@ -27,7 +27,7 @@ pub(crate) use self::arrow::limits;
 pub(crate) use self::len::{end_len, header_len};
 
 /// The format of the chunks this engine writes.
-pub(crate) const VERSION: u16 = 4;
+pub(crate) const VERSION: u16 = 5;
 
 /// What every chunk starts with.
 const MAGIC: [u8; 8] = *b"rdltwal\0";

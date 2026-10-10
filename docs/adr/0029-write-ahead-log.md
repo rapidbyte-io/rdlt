@@ -46,16 +46,16 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
     what the load meant to;
   - a `closed` frame ends a log whose load stopped appending.
 - **Writer.** One task per load appends frames in the order they are sent, through a bounded
-  channel; each batch frame's bytes are charged to the memory budget until appended.
-  (ADR 0039 charges seal and commit frames too, and writes a state value as base64 text.) A commit's
+  channel; each batch frame's bytes are charged to the memory budget until appended. (ADR 0039
+  charges seal and commit frames too; a frame holds a state value as the JSON it is.) A commit's
   frame is appended, made durable, then answered, and the log moves to a new chunk; a chunk goes
   once every segment and commit in it has a receipt. Every chunk starts with the header and the
   schema frames its batches name, so it reads alone. Amended 2026-10-03 (ADR 0041): segments still
   open are carried out of chunks whose other segments settled, and a version's schema frame is
-  forgotten once no batch of it can come. After a failed append or sync every later
-  command fails: what the chunk holds is unknown. Amended 2026-10-03 (ADR 0045): what was logged
-  since the previous commit, the commit's frame and an `End` naming the chunks still needed are
-  published as one chunk at the commit, and a receipt is recorded in the next chunk's `End`.
+  forgotten once no batch of it can come. After a failed append or sync every later command fails:
+  what the chunk holds is unknown. Amended 2026-10-03 (ADR 0045): what was logged since the previous
+  commit, the commit's frame and an `End` naming the chunks still needed are published as one chunk
+  at the commit, and a receipt is recorded in the next chunk's `End`.
 - **Order.** A batch's frame is queued before its partition can seal its segment, and a commit's
   frame is queued after the seals it takes; the channel keeps their order, so a commit's frame
   follows every batch of its segments. A test runs a whole load on a slow disk and checks it.

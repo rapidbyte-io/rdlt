@@ -348,7 +348,7 @@ const FRAMED: u64 = 4 << 10;
 
 /// Bytes: the most a log's store may stage in memory within a budget of `shares`: what leaves
 /// the log's share room for what a carry reads at once and for a commit's frame recording as
-/// many cursor bytes as the cursors' share holds, each twice over, beside a frame's head.
+/// many cursor bytes as the cursors' share holds, at most twice each, beside a frame's head.
 pub(crate) fn staged_at_most(shares: Shares) -> u64 {
     shares
         .log
@@ -357,11 +357,14 @@ pub(crate) fn staged_at_most(shares: Shares) -> u64 {
         .saturating_sub(FRAMED)
 }
 
-/// Bytes: the most a table's schema frame takes: its schema written twice over, as its fields
-/// with their names take, and a frame beside.
+/// Bytes a table's schema frame takes for each byte its fields take, at most: their names and
+/// types as JSON text.
+const DESCRIBED: u64 = 2;
+
+/// Bytes: the most a table's schema frame takes: its fields as JSON, and a frame beside.
 fn described(schema: &rdlt_connector::TableSchema) -> u64 {
     let fields = rdlt_connector::cost::schema_bytes(&schema.to_arrow());
-    RECORDED.saturating_mul(fields).saturating_add(FRAMED)
+    DESCRIBED.saturating_mul(fields).saturating_add(FRAMED)
 }
 
 /// What holds a frame of `frame` bytes that `held` was reserved for before it was encoded: what

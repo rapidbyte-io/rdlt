@@ -185,8 +185,8 @@ pub fn scan_log(bytes: &[u8]) -> Result<usize, Refused> {
 /// Panics where a frame does not encode, which a valid batch always does.
 pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
     use rdlt_connector::{
-        LoadId, PartitionId, PartitionState, PipelineId, SchemaVersion, SegmentId, StreamName,
-        TablePath, TableRef, TableSchema,
+        LoadId, PartitionId, PipelineId, SchemaVersion, SegmentId, StreamName, TablePath, TableRef,
+        TableSchema,
     };
 
     use crate::wal::frame::{self, Committing, End, Frame, Header};
@@ -228,7 +228,7 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
             replayable: true,
             phase: 0,
             from: None,
-            state: PartitionState::Done,
+            state: sample_position(),
             batches: 1,
             rows,
         }),
@@ -246,7 +246,7 @@ pub fn sample_log(batch: RecordBatch) -> Vec<u8> {
     log
 }
 
-/// The commit of segment 1 that [`sample_log`] holds.
+/// The commit of segment 1 that [`sample_log`] holds, recording where its partition stands.
 fn sample_commit(load: rdlt_connector::LoadId) -> rdlt_connector::CommitMeta {
     rdlt_connector::CommitMeta {
         load_id: load,
@@ -254,10 +254,25 @@ fn sample_commit(load: rdlt_connector::LoadId) -> rdlt_connector::CommitMeta {
         epoch: rdlt_connector::Epoch(1),
         segments: [rdlt_connector::SegmentId(1)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
-        state_delta: Vec::new(),
+        state_delta: vec![rdlt_connector::StateChange::Put(
+            rdlt_connector::StateEntry::Partition {
+                stream: rdlt_connector::StreamName::new("s").expect("a valid stream"),
+                partition: rdlt_connector::PartitionId::parse("p").expect("a valid partition"),
+                state: sample_position(),
+                load,
+            }
+            .to_record(),
+        )],
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
         horizon: None,
     }
+}
+
+/// Where the partition of [`sample_log`] stands once its segment is sealed and committed.
+fn sample_position() -> rdlt_connector::PartitionState {
+    rdlt_connector::PartitionState::Cursor(
+        rdlt_connector::Cursor::new(1, &[b'c'; 256]).expect("a cursor within the limit"),
+    )
 }

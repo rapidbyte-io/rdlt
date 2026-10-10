@@ -413,6 +413,11 @@ async fn logged(
         .await
 }
 
+/// A state value of `bytes` bytes, at least two: a JSON string.
+fn json_value(bytes: usize) -> bytes::Bytes {
+    format!("\"{}\"", "7".repeat(bytes - 2)).into_bytes().into()
+}
+
 /// What a piece reserved of `budget` for its frame in the log.
 fn frame(budget: &MemoryBudget) -> rdlt_connector::Permit {
     Box::new(
@@ -433,7 +438,7 @@ async fn a_commit_frame_is_charged_for_the_state_it_records_and_refused_beyond_t
         third.commit_seq = CommitSeq::FIRST;
         third.state_delta = vec![StateChange::Put(StateRecord {
             key: "k".repeat(1_000),
-            value: vec![7; 9_000].into(),
+            value: json_value(9_000),
         })];
         let begun = vec![frame::BegunPhase {
             stream: StreamName::new("orders").expect("a valid stream"),
@@ -506,7 +511,7 @@ async fn a_commit_recording_a_full_share_of_cursors_fits_beside_the_default_part
         .map(|partition| {
             StateChange::Put(StateRecord {
                 key: format!("position/orders/p{partition}"),
-                value: vec![7; 123_000].into(),
+                value: json_value(123_000),
             })
         })
         .collect();

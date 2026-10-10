@@ -162,7 +162,7 @@ fn recorded(state: &PartitionState) -> u64 {
 const PER_RECORD: u64 = 64;
 
 /// Bytes: the most the frames of the commit `meta` and of the phases `begun` with it take: each
-/// record's key and value written twice over, what a record and a frame take beside, and the
+/// record's key and value at most twice over, what a record and a frame take beside, and the
 /// segments, generations and tables the commit names.
 pub(super) fn commit_bytes(begun: &[frame::BegunPhase], meta: &CommitMeta) -> u64 {
     let changes = begun.iter().flat_map(|begun| &begun.changes);

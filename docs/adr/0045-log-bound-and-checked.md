@@ -122,11 +122,14 @@ a local directory, and `ObjectStoreWal` in S3 and in stores that answer as S3 do
   dot, which the store never writes, as NFS and file browsers make, is passed over, never read,
   and removed with the log where the system lets it.
 
-### Log format 4: every chunk says whose it is, and the highest says what is needed
+### Log format 5: every chunk says whose it is, and the highest says what is needed
 
 - Every chunk begins with a 14-byte preamble, `rdltwal\0`, the format as a u16, and a CRC32C of
   both, so a chunk of another format is refused rather than read as torn. A frame's checksum
   covers its kind and length as well as its payload.
+- A phase or commit frame holds each state record's value as the JSON it is, never encoded
+  again; a cursor, in a seal or commit frame, is base64 once, and a value that is not JSON text
+  alone is never written.
 - A writer's chunk holds a header naming its pipeline, load, number, session epoch, what the
   load opened on and the destination it is written for, then schemas, batches, seals and
   phases, then a commit or a close, then an `End` naming the chunks still needed and the commits
@@ -337,9 +340,9 @@ draw is then taken again among the reads and commits that run told, so every dra
 
 ## Consequences
 
-- A log's format changed, to 4: a log written before this is refused as `wal_unreadable`, and
-  an operator removes it after landing its rows by other means. rdlt is not released, so no
-  migration is kept.
+- A log's format is 5: a log of another format is refused as `wal_unreadable`, and an operator
+  removes it after landing its rows by other means. rdlt is not released, so no migration is
+  kept.
 - Every attempt of an engine that keeps logs opens one, and removes it where it logs nothing:
   two durable directory changes more an attempt.
 - A replay of a log whose load still runs is fenced and its load fails, rather than both

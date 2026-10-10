@@ -374,16 +374,21 @@ async fn a_log_whose_epochs_were_forged_past_a_reset_is_refused_not_replayed() {
         .await
         .expect("the reset commits");
     // Whoever can write the logs' directory says the load's session opened after the reset.
-    let forged = crate::support::logs::rewritten(base.path(), &|kind, value| match kind {
-        1 => value["epoch"] = json!(u64::MAX),
-        5 => value["meta"]["epoch"] = json!(u64::MAX),
-        _ => {}
+    let forged = crate::support::logs::rewritten(base.path(), &|kind| match kind {
+        1 => Some((&["epoch"], json!(u64::MAX))),
+        5 => Some((&["meta", "epoch"], json!(u64::MAX))),
+        _ => None,
     });
     assert!(forged > 0, "the failed load left a log");
     let after = run(memory("reset_forged").await).await;
     assert_eq!(after.report.status, RunStatus::Failed);
     let error = after.error.expect("the replay is refused");
     assert_eq!(error.code(), Some("wal_unreadable"), "{error:?}");
+    // Refused for its session, not for frames the forging garbled.
+    assert!(
+        error.to_string().contains("not older than this one"),
+        "{error:?}"
+    );
     let expected: Vec<i64> = (0..20).map(|offset| id(0, offset)).collect();
     assert_eq!(published_ids("reset_forged", "events"), expected);
 }
@@ -937,10 +942,10 @@ impl Destination for Rewritten {
 /// `records` as the previous format of state records would hold them.
 fn previous(records: &mut Vec<StateRecord>) {
     for record in records {
-        let mut value: serde_json::Value =
+        let value: serde_json::Value =
             serde_json::from_slice(&record.value).expect("a record is JSON");
-        value["v"] = json!(1);
-        record.value = serde_json::to_vec(&value).expect("JSON encodes").into();
+        let entry = &value["entry"];
+        record.value = format!(r#"{{"v":1,"entry":{entry}}}"#).into_bytes().into();
     }
 }
 
@@ -969,6 +974,34 @@ async fn state_of_the_previous_format_is_refused_by_a_run_and_a_reset() {
         .await
         .expect_err("a reset reads the state it resets");
     assert_eq!(refused.code(), Some("state_invalid"));
+}
+
+/// `records` with each value followed by text that is not JSON.
+fn trailed(records: &mut Vec<StateRecord>) {
+    for record in records {
+        let mut value = record.value.to_vec();
+        value.extend_from_slice(b"x");
+        record.value = value.into();
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_destination_s_state_value_that_is_not_json_is_refused_before_it_is_logged() {
+    let store = "trailed_state";
+    load(Target::Memory, store, store).await;
+    let trailed: Arc<dyn Destination> =
+        Arc::new(Rewritten(Target::Memory.destination(store).await, trailed));
+    let plan = pipeline(store, [stream("events").read(ReadMode::Incremental)]);
+    let outcome = engine(commit_every(16))
+        .run(plan, log(store).await, trailed)
+        .await;
+    assert_eq!(outcome.report.status, RunStatus::Failed);
+    let error = outcome.error.expect("the run fails");
+    assert_eq!(error.code(), Some("state_invalid"), "{error:?}");
+    assert_eq!(
+        outcome.report.counters.log.appended, 0,
+        "nothing was logged"
+    );
 }
 
 /// `records` with the table of stream `b` recorded under the identifier of stream `a`'s.

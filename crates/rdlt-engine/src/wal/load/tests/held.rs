@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rdlt_connector::{CommitMeta, Cursor, PartitionState, SegmentId, StateChange, StateRecord};
 
-use super::{frames, ids, meta, sealed_at, start};
+use super::{frames, ids, json_value, meta, sealed_at, start};
 use crate::budget::MemoryBudget;
 use crate::compute::Pool;
 use crate::error::ErrorKind;
@@ -53,7 +53,7 @@ fn recording(segments: &[u64], value: usize) -> CommitMeta {
     let mut commit = meta(segments);
     commit.state_delta = vec![StateChange::Put(StateRecord {
         key: "k".to_owned(),
-        value: vec![7; value].into(),
+        value: json_value(value),
     })];
     commit
 }
