@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 
 use arrow_buffer::i256;
+use rdlt_wire::limits::NESTING_DEPTH;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
@@ -17,9 +18,6 @@ use super::meter::{Columns, KEY, Meter, Over};
 use super::observe::{Observed, Shape};
 use super::render::Render;
 pub(crate) use skip::Skip;
-
-/// The deepest a value may nest, counting the record itself as depth 1.
-pub(crate) const MAX_DEPTH: u64 = rdlt_connector::limits::MAX_NESTING_DEPTH;
 
 /// Stack a nesting level may use before [`nest`] grows the stack, 128 KiB: more than any one level
 /// of the parse uses, in every build.
@@ -358,7 +356,7 @@ impl<'de> DeserializeSeed<'de> for Value<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > MAX_DEPTH {
+        if self.depth > NESTING_DEPTH {
             return Err(self.context.fail(ShredError::TooDeep));
         }
         if let Column::Json(..) = self.column {

@@ -69,7 +69,7 @@ Arrow columns and the rows normalizing makes of both escaped that in several way
   by `MAX_CELLS` (32 Mi) before anything is built. Both refuse with `limit_exceeded`.
 - **JSON text is read by one reader.** The engine's `json` module reads JSON text as tokens,
   iteratively, without recursion and without building a document; nesting past
-  `MAX_NESTING_DEPTH` is refused, `limit_exceeded`. Numbers stay text. Row identity reads JSON
+  `NESTING_DEPTH` is refused, `limit_exceeded`. Numbers stay text. Row identity reads JSON
   text through it: text that is not JSON fails the write, `json_invalid` (`ErrorKind::Source`),
   never hashed as a string.
 - **Numbers are hashed by their value.** A number's canonical text is its exact value in plain

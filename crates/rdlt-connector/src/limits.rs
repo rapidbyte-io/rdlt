@@ -1,37 +1,13 @@
-//! Limits on what a connector may send or receive; each is checked where the data enters rdlt.
+//! Limits the connector SDK keeps beside the protocol's own in `rdlt_wire::limits`: what a
+//! catalog, a plan, a destination's reserved names, a served source's acknowledgeable positions,
+//! a connector's errors and its configuration's schema may hold, how short a destination's
+//! identifiers may be, and how many connections a listening connector holds.
 
 mod listen;
 #[cfg(test)]
 mod tests;
 
 pub use listen::{ListenLimits, TooFewDescriptors, UnfairSessions};
-
-/// Bytes: bounds one JSON push.
-pub const MAX_JSON_PUSH_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Rows: bounds one Arrow or change batch.
-pub const MAX_BATCH_ROWS: u64 = 1024 * 1024;
-
-/// Values: bounds what a frame holding one batch's rows would hold, as the wire weighs it.
-///
-/// Nested values and the items list views name count, whether or not they take bytes. Each
-/// dictionary's values are bounded apart, as the frame of their own they would go in.
-pub const MAX_BATCH_VALUES: u64 = 64 * MAX_BATCH_ROWS;
-
-/// Bytes: bounds what the views of one batch name in their data buffers, counted once a view.
-pub const MAX_VIEW_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Bytes: bounds one batch twice: the bytes a frame holding its rows would hold, as the wire
-/// weighs it, and the allocations it keeps alive, each counted once, where a slice counts the
-/// whole buffer it shares.
-pub const MAX_BATCH_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Columns: bounds the width of one batch, counting nested fields.
-pub const MAX_COLUMNS: u64 = 10_000;
-
-/// Levels: bounds how deep a batch's types or a JSON value nest, counting a top-level column or
-/// the record itself as the first.
-pub const MAX_NESTING_DEPTH: u64 = 64;
 
 /// Streams: bounds one catalog.
 pub const MAX_CATALOG_STREAMS: usize = 65_536;
@@ -55,9 +31,6 @@ pub const MAX_RESERVED_BYTES: usize = 256;
 /// hash, the `_` before it, and a character of its name.
 pub const MIN_IDENTIFIER_LEN: u16 = 16;
 
-/// Bytes: bounds one encoded cursor.
-pub const MAX_CURSOR_BYTES: u64 = 4 * 1024 * 1024;
-
 /// Positions: how many checkpoints its reads sent one host a served source remembers, to hear
 /// that host report one of them committed, and for how many partitions where a read started.
 ///
@@ -77,9 +50,3 @@ pub const MAX_ERROR_CAUSES: usize = 8;
 
 /// Bytes: bounds the JSON schema of a connector's configuration, as its handshake answers it.
 pub const MAX_CONFIG_SCHEMA_BYTES: usize = 1024 * 1024;
-
-/// Bytes: bounds one connector configuration document.
-///
-/// Factories receive configuration already parsed, so the code that reads it as bytes checks this
-/// before parsing.
-pub const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;

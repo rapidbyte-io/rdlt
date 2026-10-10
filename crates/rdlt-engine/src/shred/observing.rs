@@ -14,8 +14,9 @@ use super::ShredError;
 use super::build::Scalar;
 use super::meter::{KEY, Meter, OBJECT_SHAPE};
 use super::observe::{Observed, Shape};
-use super::visit::{Context, MAX_DEPTH, Skip, nest};
+use super::visit::{Context, Skip, nest};
 use crate::limits::QUOTED_BYTES;
+use rdlt_wire::limits::NESTING_DEPTH;
 
 #[cfg(test)]
 mod tests;
@@ -183,7 +184,7 @@ impl<'de> DeserializeSeed<'de> for Look<'_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        if self.depth > MAX_DEPTH {
+        if self.depth > NESTING_DEPTH {
             return Err(self.context.fail(ShredError::TooDeep));
         }
         if *self.node == Observed::Json {

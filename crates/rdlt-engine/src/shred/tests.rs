@@ -5,8 +5,8 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Decimal128Type, Decimal256Type, Float64Type, Int64Type};
 use arrow_array::{Array, RecordBatch};
 use bytes::Bytes;
-use rdlt_connector::limits::{MAX_COLUMNS, MAX_NESTING_DEPTH};
 use rdlt_connector::{DecimalType, Field, LogicalType, TableSchema};
+use rdlt_wire::limits::{NESTING_DEPTH, SCHEMA_COLUMNS};
 
 use super::differential::shredded;
 use super::meter::{KEY, OBJECT_SHAPE};
@@ -17,7 +17,7 @@ use crate::report::ShredCounts;
 
 /// The limits of pushes whose records may hold as many columns as the wire's schemas.
 pub(crate) fn limits() -> ShredLimits {
-    ShredLimits::new(MAX_COLUMNS)
+    ShredLimits::new(SCHEMA_COLUMNS)
 }
 
 /// The first chunk of `text`, parsed with room to build whatever it holds.
@@ -182,12 +182,12 @@ fn values_nest_up_to_the_limit_and_no_deeper() {
     // after a float that may be a rounded integer, the chunk is parsed exactly.
     for before in ["", "{\"a\":1}\n", "{\"a\":1e30}\n"] {
         for (open, close) in [("[", "]"), ("{\"b\":", "}")] {
-            let deepest = format!("{before}{}", nested(MAX_NESTING_DEPTH, open, close));
+            let deepest = format!("{before}{}", nested(NESTING_DEPTH, open, close));
             assert_eq!(
                 batch_of(&[&deepest], 1 << 20).num_rows(),
                 1 + before.len().min(1)
             );
-            let deeper = format!("{before}{}", nested(MAX_NESTING_DEPTH + 1, open, close));
+            let deeper = format!("{before}{}", nested(NESTING_DEPTH + 1, open, close));
             assert_eq!(refused(&deeper), "limit_exceeded", "{before:?} {open}");
         }
     }
@@ -205,7 +205,7 @@ fn a_value_nested_far_past_the_limit_is_refused_without_exhausting_the_stack() {
 
 #[test]
 fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exactly() {
-    let depth = usize::try_from(MAX_NESTING_DEPTH).unwrap();
+    let depth = usize::try_from(NESTING_DEPTH).unwrap();
     // Each prefix sends the record, or its chunk, through the exact parse.
     let prefixes = [
         format!("{{\"n\":{},\"a\":", "9".repeat(400)),
@@ -243,7 +243,7 @@ fn a_value_nested_past_the_limit_is_refused_even_where_the_chunk_is_parsed_exact
 
 #[test]
 fn records_with_more_columns_than_the_limit_are_refused() {
-    let columns = usize::try_from(MAX_COLUMNS).unwrap();
+    let columns = usize::try_from(SCHEMA_COLUMNS).unwrap();
     let record = |count: usize| {
         let fields: Vec<String> = (0..count).map(|index| format!("\"c{index}\":1")).collect();
         format!("{{{}}}", fields.join(","))
@@ -670,7 +670,7 @@ fn wide_object(first: usize, count: usize) -> String {
 
 #[test]
 fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
-    let columns = usize::try_from(MAX_COLUMNS).unwrap();
+    let columns = usize::try_from(SCHEMA_COLUMNS).unwrap();
     // The invalid record after it, which adds no field, is never reached.
     let push = format!("{}\n{{\"c0\":", wide_object(0, columns + 1));
     let error = crate::compute::ready(shred(
@@ -681,13 +681,13 @@ fn a_record_over_the_column_limit_is_refused_as_soon_as_it_is_read() {
     ));
     assert_eq!(
         error.unwrap_err(),
-        super::ShredError::TooManyColumns(MAX_COLUMNS + 1, MAX_COLUMNS)
+        super::ShredError::TooManyColumns(SCHEMA_COLUMNS + 1, SCHEMA_COLUMNS)
     );
 }
 
 #[test]
 fn nested_objects_are_bound_by_the_column_limit_too() {
-    let columns = usize::try_from(MAX_COLUMNS).unwrap();
+    let columns = usize::try_from(SCHEMA_COLUMNS).unwrap();
     let nested = format!("{{\"o\":{}}}", wide_object(0, columns + 1));
     assert_eq!(refused(&nested), "limit_exceeded");
     let half = columns / 2 + 1;
@@ -846,13 +846,13 @@ fn values_at_the_nesting_limit_shred_on_a_small_stack_in_any_build() {
             for before in ["", "{\"a\":1}\n"] {
                 for (open, close) in [("[", "]"), ("{\"b\":", "}"), ("[{\"b\":", "}]")] {
                     let levels = if open.len() > 5 {
-                        MAX_NESTING_DEPTH / 2
+                        NESTING_DEPTH / 2
                     } else {
-                        MAX_NESTING_DEPTH
+                        NESTING_DEPTH
                     };
                     let deepest = format!("{before}{}", nested(levels, open, close));
                     assert!(shred_here(deepest).is_ok());
-                    let deeper = format!("{before}{}", nested(MAX_NESTING_DEPTH + 1, open, close));
+                    let deeper = format!("{before}{}", nested(NESTING_DEPTH + 1, open, close));
                     assert_eq!(shred_here(deeper).unwrap_err().code(), "limit_exceeded");
                 }
             }
@@ -1301,9 +1301,9 @@ fn a_build_refuses_arrays_nested_past_the_limit_as_it_parses_them() {
         let chunk = chunks(&[Bytes::from(text)], 1 << 20).unwrap().remove(0);
         parse(chunk, roomy, &roomy.beyond()).map(|parsed| parsed.record.is_some())
     };
-    assert_eq!(parse_once(nested(MAX_NESTING_DEPTH, "[", "]")), Ok(true));
+    assert_eq!(parse_once(nested(NESTING_DEPTH, "[", "]")), Ok(true));
     assert_eq!(
-        parse_once(nested(MAX_NESTING_DEPTH + 1, "[", "]")).err(),
+        parse_once(nested(NESTING_DEPTH + 1, "[", "]")).err(),
         Some(super::ShredError::TooDeep)
     );
 }

@@ -14,7 +14,7 @@ pub(crate) enum ShredError {
     /// A value nests deeper than the limit.
     #[error(
         "a value nests deeper than {} levels",
-        rdlt_connector::limits::MAX_NESTING_DEPTH
+        rdlt_wire::limits::NESTING_DEPTH
     )]
     TooDeep,
     /// An object repeats a key, which is shown cut to a limit.

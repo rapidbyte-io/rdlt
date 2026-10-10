@@ -46,8 +46,8 @@ fast-path evaluation. Building M3a surfaced decisions the spec leaves open or ge
   nesting policy: lowering applies the policy. Negative zero reads as zero.
 - **Hostile input is refused, typed.** A record that is not an object is `json_not_object`; an
   object repeating a key, however escaped and at any depth, `json_duplicate_key`; a value nested
-  deeper than `MAX_NESTING_DEPTH` (64, the record counting as the first level), an object of more
-  than `MAX_COLUMNS` fields at any depth (refused as the field past the limit is read, and again
+  deeper than `NESTING_DEPTH` (64, the record counting as the first level), an object of more
+  than `SCHEMA_COLUMNS` fields at any depth (refused as the field past the limit is read, and again
   when chunks join), or a shred of more than 32 Mi cells, `limit_exceeded`; anything else
   unparsable, `json_invalid`. A cell is a row under a column holding values: every row takes one
   in every column, so without the bound a small push of sparse, wide records builds gigabytes of

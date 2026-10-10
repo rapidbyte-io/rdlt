@@ -18,7 +18,8 @@ pub use resolve::{
     EnvSecrets, FileSecrets, SecretFault, SecretKind, SecretReference, SecretResolver, Secrets,
 };
 
-use crate::limits::{CONFIG_BYTES, SECRET_REFERENCES};
+use crate::limits::SECRET_REFERENCES;
+use rdlt_wire::limits::{CONFIG_BYTES, count};
 
 /// A connector's configuration, held as secret material: it has no `Debug` that shows it, is
 /// not `Clone`, and is wiped from memory when dropped.
@@ -53,7 +54,7 @@ impl Config {
     /// [`SecretError::TooLarge`] for one beyond the limit: neither says what the text holds.
     pub fn parse(json: impl Into<String>) -> Result<Self, SecretError> {
         let json = Zeroizing::new(json.into());
-        if json.len() > CONFIG_BYTES {
+        if count(json.len()) > CONFIG_BYTES {
             return Err(SecretError::TooLarge {
                 limit: CONFIG_BYTES,
             });
@@ -134,7 +135,7 @@ impl Config {
         let room = self.json.len().saturating_add(grown.saturating_mul(2));
         let mut json = Zeroizing::new(Vec::with_capacity(room));
         serde_json::to_writer(&mut *json, document).map_err(|_| SecretError::NotJson)?;
-        if json.len() > CONFIG_BYTES {
+        if count(json.len()) > CONFIG_BYTES {
             return Err(SecretError::TooLarge {
                 limit: CONFIG_BYTES,
             });
@@ -168,7 +169,7 @@ pub enum SecretError {
     #[error("the configuration is larger than {limit} bytes")]
     TooLarge {
         /// Bytes a configuration may take.
-        limit: usize,
+        limit: u64,
     },
     /// The configuration holds more references than one may.
     #[error("the configuration holds more than {limit} secret references")]

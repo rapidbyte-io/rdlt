@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use proptest::prelude::*;
-use rdlt_connector::limits::MAX_NESTING_DEPTH;
+use rdlt_wire::limits::NESTING_DEPTH;
 
 use super::number::PLAIN_BYTES;
 
@@ -108,7 +108,7 @@ fn text_that_is_not_one_json_value_is_refused() {
 
 #[test]
 fn nesting_is_read_to_the_limit_and_refused_one_past_it_on_a_small_stack() {
-    let limit = usize::try_from(MAX_NESTING_DEPTH).unwrap();
+    let limit = usize::try_from(NESTING_DEPTH).unwrap();
     let reading = std::thread::Builder::new()
         .stack_size(64 << 10)
         .spawn(move || {

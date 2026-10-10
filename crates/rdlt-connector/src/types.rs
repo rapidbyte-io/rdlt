@@ -181,7 +181,7 @@ pub enum TypeError {
         /// The repeated name.
         name: String,
     },
-    /// A schema's types nest deeper than [`MAX_NESTING_DEPTH`](crate::limits::MAX_NESTING_DEPTH)
+    /// A schema's types nest deeper than [`NESTING_DEPTH`](rdlt_wire::limits::NESTING_DEPTH)
     /// levels, counting a top-level column as the first.
     #[error("the schema nests {depth} levels deep, beyond the limit of {limit}")]
     TooDeep {

@@ -449,3 +449,21 @@ fn a_count_is_the_same_number_as_a_u64() {
         assert_eq!(u128::from(count(value)), u128::try_from(value).unwrap());
     }
 }
+
+#[test]
+fn the_protocol_limits_have_their_specified_values() {
+    use super::{
+        BATCH_ROWS, BATCH_VALUES, CONFIG_BYTES, CURSOR_BYTES, JSON_PUSH_BYTES, NESTING_DEPTH,
+        SCHEMA_COLUMNS,
+    };
+
+    let mib = 1 << 20;
+    assert_eq!(FRAME_BYTES, 64 * mib);
+    assert_eq!(BATCH_ROWS, mib);
+    assert_eq!(BATCH_VALUES, 64 * mib);
+    assert_eq!(SCHEMA_COLUMNS, 10_000);
+    assert_eq!(NESTING_DEPTH, 64);
+    assert_eq!(JSON_PUSH_BYTES, 64 * mib);
+    assert_eq!(CURSOR_BYTES, 4 * mib);
+    assert_eq!(CONFIG_BYTES, 8 * mib);
+}

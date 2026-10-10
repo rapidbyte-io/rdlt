@@ -11,7 +11,7 @@ use arrow_array::{
 };
 use arrow_buffer::{ArrowNativeType, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields, Schema};
-use rdlt_connector::limits::MAX_NESTING_DEPTH;
+use rdlt_wire::limits::NESTING_DEPTH;
 
 use super::{NotJson, check_batch};
 use crate::json::JsonError;
@@ -302,7 +302,7 @@ fn json_in_a_map_is_checked_where_its_entries_hold_it() {
 
 #[test]
 fn json_nested_past_the_limit_is_refused() {
-    let limit = usize::try_from(MAX_NESTING_DEPTH).unwrap();
+    let limit = usize::try_from(NESTING_DEPTH).unwrap();
     let nested = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
     let field = json(Field::new("c", DataType::Utf8, true));
     assert_eq!(

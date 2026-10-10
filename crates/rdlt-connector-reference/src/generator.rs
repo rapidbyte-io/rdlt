@@ -6,9 +6,9 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
-use rdlt_connector::limits::MAX_BATCH_ROWS;
 use rdlt_connector::prelude::*;
 use rdlt_connector::{Field, Partitioning};
+use rdlt_wire::limits::BATCH_ROWS;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -79,12 +79,7 @@ impl SourceConnector for GeneratorSource {
                 stream.partitions,
                 MAX_PARTITIONS,
             )?;
-            within(
-                &stream.name,
-                "batch_rows",
-                stream.batch_rows,
-                MAX_BATCH_ROWS,
-            )?;
+            within(&stream.name, "batch_rows", stream.batch_rows, BATCH_ROWS)?;
         }
         Ok(Self {
             seed: config.seed,

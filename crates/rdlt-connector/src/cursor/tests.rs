@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Cursor;
 use crate::error::ConnectorErrorKind;
-use crate::limits::MAX_CURSOR_BYTES;
+use rdlt_wire::limits::CURSOR_BYTES;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Since {
@@ -50,10 +50,10 @@ fn malformed_cursor_bytes_are_a_data_error() {
 
 #[test]
 fn cursors_over_the_limit_are_refused() {
-    let limit = usize::try_from(MAX_CURSOR_BYTES).unwrap();
+    let limit = usize::try_from(CURSOR_BYTES).unwrap();
     assert!(Cursor::new(1, &vec![0; limit]).is_ok());
     let error = Cursor::new(1, &vec![0; limit + 1]).unwrap_err();
-    assert_eq!(error.limit().unwrap().actual, MAX_CURSOR_BYTES + 1);
+    assert_eq!(error.limit().unwrap().actual, CURSOR_BYTES + 1);
 }
 
 #[test]

@@ -1,7 +1,7 @@
-use rdlt_connector::limits::MAX_BATCH_ROWS;
 use rdlt_connector::{
     ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, PartitionId, Source, source_factory,
 };
+use rdlt_wire::limits::BATCH_ROWS;
 use serde_json::{Value, json};
 
 use super::super::{Change, ChangedStream, ChangesSource, Position, change};
@@ -19,7 +19,7 @@ async fn a_stream_past_what_a_source_holds_is_refused() {
     let truncates = |count: u64| (1..=count).collect::<Vec<u64>>();
     let at_limits = json!({
         "name": "orders", "keys": MAX_SNAPSHOT_KEYS, "snapshot_partitions": MAX_PARTITIONS,
-        "changes": MAX_CHANGES, "batch_rows": MAX_BATCH_ROWS, "captured": MAX_SNAPSHOT_KEYS,
+        "changes": MAX_CHANGES, "batch_rows": BATCH_ROWS, "captured": MAX_SNAPSHOT_KEYS,
         "truncates": truncates(MAX_TRUNCATES),
     });
     let config = json!({ "seed": 3, "slot": "at_limits", "streams": [at_limits] });
@@ -28,7 +28,7 @@ async fn a_stream_past_what_a_source_holds_is_refused() {
         ("keys", json!(MAX_SNAPSHOT_KEYS + 1)),
         ("snapshot_partitions", json!(MAX_PARTITIONS + 1)),
         ("changes", json!(MAX_CHANGES + 1)),
-        ("batch_rows", json!(MAX_BATCH_ROWS + 1)),
+        ("batch_rows", json!(BATCH_ROWS + 1)),
         ("captured", json!(MAX_SNAPSHOT_KEYS + 1)),
         ("truncates", json!(truncates(MAX_TRUNCATES + 1))),
     ];

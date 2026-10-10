@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
-use crate::limits::MAX_NESTING_DEPTH;
 use crate::types::{Field, Fields, LogicalType};
+use rdlt_wire::limits::NESTING_DEPTH;
 
 /// A list type nested `levels` deep, counting itself as the first, its innermost item an integer.
 fn lists(levels: u64) -> LogicalType {
@@ -40,7 +40,7 @@ fn a_type_is_stored_as_its_nodes_in_preorder() {
 
 #[test]
 fn a_stored_type_nests_no_deeper_however_deep_the_type() {
-    for levels in [1, 2, MAX_NESTING_DEPTH] {
+    for levels in [1, 2, NESTING_DEPTH] {
         let field = Field::new("deep", lists(levels), true);
         let stored = serde_json::to_value(&field).unwrap();
         assert!(json_depth(&stored) <= 3, "{levels} levels");
@@ -50,9 +50,9 @@ fn a_stored_type_nests_no_deeper_however_deep_the_type() {
 
 #[test]
 fn a_stored_type_nested_past_the_limit_is_refused() {
-    let stored = serde_json::to_value(lists(MAX_NESTING_DEPTH + 1)).unwrap();
+    let stored = serde_json::to_value(lists(NESTING_DEPTH + 1)).unwrap();
     assert!(serde_json::from_value::<LogicalType>(stored).is_err());
-    let field = Field::new("deep", lists(MAX_NESTING_DEPTH + 1), true);
+    let field = Field::new("deep", lists(NESTING_DEPTH + 1), true);
     assert!(serde_json::from_value::<Field>(serde_json::to_value(field).unwrap()).is_err());
 }
 
@@ -182,7 +182,7 @@ fn every_type_at_every_shape_reads_back_to_the_nesting_limit() {
     use crate::{SchemaVersion, StateEntry, TablePath, TableSchema};
     for leaf in leaves() {
         for shape in 0..4 {
-            for depth in [1, 2, MAX_NESTING_DEPTH - 1, MAX_NESTING_DEPTH] {
+            for depth in [1, 2, NESTING_DEPTH - 1, NESTING_DEPTH] {
                 let logical = nested(&leaf, depth, shape);
                 let stored = serde_json::to_string(&logical).unwrap();
                 let read: LogicalType = serde_json::from_str(&stored).unwrap();
@@ -200,7 +200,7 @@ fn every_type_at_every_shape_reads_back_to_the_nesting_limit() {
                 };
                 assert_eq!(StateEntry::from_record(&entry.to_record()), Ok(entry));
             }
-            let deeper = nested(&leaf, MAX_NESTING_DEPTH + 1, shape);
+            let deeper = nested(&leaf, NESTING_DEPTH + 1, shape);
             assert!(TableSchema::new(vec![Field::new("c", deeper, true)]).is_err());
         }
     }

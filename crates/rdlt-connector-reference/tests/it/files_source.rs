@@ -541,7 +541,7 @@ async fn an_arrow_file_s_empty_batches_neither_end_its_partition_early_nor_keep_
 #[tokio::test]
 async fn a_line_limit_beyond_what_one_push_holds_is_a_configuration_error() {
     let root = crate::fixtures::tempdir().unwrap();
-    let push = rdlt_connector::limits::MAX_JSON_PUSH_BYTES;
+    let push = rdlt_wire::limits::JSON_PUSH_BYTES;
     for (limit, connects) in [(push - 2, true), (push - 1, false), (push, false)] {
         let connected = connect_with(root.path(), json!({ "max_line_bytes": limit })).await;
         assert_eq!(connected.is_ok(), connects, "{limit}");
