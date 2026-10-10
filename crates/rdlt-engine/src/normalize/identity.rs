@@ -48,7 +48,7 @@ use rdlt_connector::{LogicalType, instants};
 use super::as_list;
 use crate::json::{JsonError, Reader, Token, write_float, write_number};
 use crate::table::convert::decoded;
-use canonical::{Stored, decimal_scale, temporal_tag};
+use canonical::{DIGITS, Stored, decimal_scale, digits, temporal_tag};
 
 /// The ids of `batch`'s rows as roots: of the `key` columns' values in order, or of the whole row
 /// where there is no key.
@@ -321,8 +321,8 @@ impl Encoder {
         match self {
             Self::Null => out.push(NULL),
             Self::Boolean(values) => out.push(if values.value(index) { TRUE } else { FALSE }),
-            Self::Integer(_, values) => integer(out, values.value(index)),
-            Self::Unsigned(values) => integer(out, values.value(index).into()),
+            Self::Integer(_, values) => integer(out, NUMBER, values.value(index)),
+            Self::Unsigned(values) => integer(out, NUMBER, values.value(index).into()),
             Self::Float(values) => float64(out, values.value(index)),
             Self::Text(values) => {
                 out.push(STRING);
@@ -334,12 +334,11 @@ impl Encoder {
             }
             Self::Decimal(_, values, scale) => {
                 out.push(NUMBER);
-                length(out, values.decimal(*scale, index).as_bytes());
+                length_of(out, |out| values.write_decimal(*scale, index, out));
             }
             Self::Temporal(tag, array, values) => {
-                out.push(*tag);
                 let nanos = instants::nanos(array.data_type(), values.value(index));
-                length(out, nanos.unwrap_or_default().to_string().as_bytes());
+                integer(out, *tag, nanos.unwrap_or_default());
             }
             Self::Json(values) => json(values.value(index), out)
                 .map_err(|error| ArrowError::ExternalError(Box::new(error)))?,
@@ -459,45 +458,63 @@ fn no_table_holds(data_type: &DataType) -> ArrowError {
     ))
 }
 
-/// Appends an integer, as its decimal digits, with a minus sign where it is negative.
-fn integer(row: &mut Vec<u8>, value: i128) {
-    let mut buffer = [0_u8; 40];
-    let mut at = buffer.len();
-    let mut rest = value.unsigned_abs();
-    loop {
-        at -= 1;
-        buffer[at] = b'0' + u8::try_from(rest % 10).unwrap_or(0);
-        rest /= 10;
-        if rest == 0 {
-            break;
-        }
+/// Appends `tag` and an integer, as its decimal digits after their length, with a minus sign
+/// where it is negative.
+fn integer(row: &mut Vec<u8>, tag: u8, value: i128) {
+    let mut buffer = [0_u8; DIGITS];
+    let (negative, digits) = digits(value, &mut buffer);
+    row.push(tag);
+    leb128(row, usize::from(negative) + digits.len());
+    if negative {
+        row.push(b'-');
     }
-    if value < 0 {
-        at -= 1;
-        buffer[at] = b'-';
-    }
-    row.push(NUMBER);
-    length(row, &buffer[at..]);
+    row.extend_from_slice(digits);
 }
 
 /// Floats encode as the canonical text of the shortest text that reads back as them, a tie
 /// going to the even one as JSON writers break it, which is the text the engine writes a float
 /// into JSON as, so the float and that text hash alike; negative zero is zero.
 fn float64(row: &mut Vec<u8>, value: f64) {
-    let mut text = Vec::with_capacity(32);
-    write_float(value, &mut text);
     row.push(NUMBER);
-    length(row, &text);
+    length_of(row, |row| write_float(value, row));
 }
 
 /// Appends `bytes` after their length, in LEB128.
 fn length(row: &mut Vec<u8>, bytes: &[u8]) {
-    let mut rest = bytes.len();
-    while rest >= 0x80 {
-        // Seven bits of the length, and the high bit saying more follow.
-        row.push(u8::try_from(0x80 + (rest & 0x7f)).unwrap_or(u8::MAX));
-        rest >>= 7;
-    }
-    row.push(u8::try_from(rest).unwrap_or(0));
+    leb128(row, bytes.len());
     row.extend_from_slice(bytes);
+}
+
+/// Appends what `write` appends after its length, in LEB128: written where it goes, after a
+/// byte for its length, which a text of 128 bytes or more widens.
+fn length_of(row: &mut Vec<u8>, write: impl FnOnce(&mut Vec<u8>)) {
+    let at = row.len();
+    row.push(0);
+    write(row);
+    let written = row.len() - at - 1;
+    match u8::try_from(written) {
+        Ok(short) if short < 0x80 => row[at] = short,
+        // Splicing moves what was written along by the bytes the length grew.
+        _ => {
+            let mut prefix = [0_u8; 10];
+            let mut count = 0;
+            let mut rest = written;
+            while rest >= 0x80 {
+                prefix[count] = u8::try_from(0x80 + (rest & 0x7f)).unwrap_or(u8::MAX);
+                rest >>= 7;
+                count += 1;
+            }
+            prefix[count] = u8::try_from(rest).unwrap_or(0);
+            row.splice(at..=at, prefix[..=count].iter().copied());
+        }
+    }
+}
+
+/// Appends `count` in LEB128: seven bits a byte, lowest first, the high bit saying more follow.
+fn leb128(row: &mut Vec<u8>, mut count: usize) {
+    while count >= 0x80 {
+        row.push(u8::try_from(0x80 + (count & 0x7f)).unwrap_or(u8::MAX));
+        count >>= 7;
+    }
+    row.push(u8::try_from(count).unwrap_or(0));
 }

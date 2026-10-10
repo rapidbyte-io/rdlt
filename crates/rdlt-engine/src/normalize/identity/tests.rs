@@ -8,11 +8,12 @@ use arrow_array::builder::{
 };
 use arrow_array::types::{Int8Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, DictionaryArray,
+    Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, Decimal256Array, DictionaryArray,
     FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array, Int64Array,
     IntervalYearMonthArray, LargeBinaryArray, LargeListArray, LargeStringArray, RecordBatch,
     StringArray, StructArray, TimestampSecondArray, UInt64Array,
 };
+use arrow_buffer::i256;
 use arrow_schema::DataType;
 
 use super::root_ids;
@@ -389,6 +390,20 @@ fn json_numbers_hash_by_their_exact_value() {
         keyed_ids(Arc::new(Float64Array::from(vec![0.1])))[0],
         tenth[0]
     );
+}
+
+#[test]
+fn the_widest_integers_of_256_bits_encode_as_all_their_digits() {
+    let widest = Decimal256Array::from(vec![i256::MIN, i256::MAX])
+        .with_precision_and_scale(76, 0)
+        .unwrap();
+    check(vec![(
+        Arc::new(widest),
+        vec![
+            tagged(b'd', i256::MIN.to_string().as_bytes()),
+            tagged(b'd', i256::MAX.to_string().as_bytes()),
+        ],
+    )]);
 }
 
 #[test]

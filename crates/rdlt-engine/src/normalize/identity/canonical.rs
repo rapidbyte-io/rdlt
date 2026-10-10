@@ -1,5 +1,5 @@
 //! Values in the forms identity encodes them in, whatever type holds them: temporal values in
-//! nanoseconds and decimals as their shortest text.
+//! nanoseconds and decimals as their shortest text, written where they go.
 
 use arrow_array::Array;
 use arrow_array::cast::AsArray;
@@ -7,6 +7,9 @@ use arrow_buffer::{ScalarBuffer, i256};
 use arrow_schema::DataType;
 
 use super::{ELAPSED, INSTANT, TIME_OF_DAY};
+
+/// Digits: the most an integer of 256 bits has, beside its sign.
+pub(super) const DIGITS: usize = 77;
 
 /// The tag of a temporal type's kind: dates and timestamps are instants.
 pub(super) fn temporal_tag(data_type: &DataType) -> Option<u8> {
@@ -90,14 +93,18 @@ impl Stored {
         }
     }
 
-    /// The value at `index`, of a decimal array of `scale`, as its text without trailing zeros
-    /// after the point.
-    pub(super) fn decimal(&self, scale: i8, index: usize) -> String {
-        let digits = match self {
-            Self::I256(values) => values[index].to_string(),
-            narrower => narrower.value(index).to_string(),
+    /// Appends the value at `index`, of a decimal array of `scale`, to `out` as its text without
+    /// trailing zeros after the point.
+    pub(super) fn write_decimal(&self, scale: i8, index: usize, out: &mut Vec<u8>) {
+        let mut buffer = [0_u8; DIGITS];
+        let (negative, digits) = match self {
+            Self::I256(values) => match values[index].to_i128() {
+                Some(value) => digits(value, &mut buffer),
+                None => wide_digits(values[index], &mut buffer),
+            },
+            narrower => digits(narrower.value(index), &mut buffer),
         };
-        scaled(&digits, scale)
+        scaled(out, negative, digits, scale);
     }
 
     /// Whether the values are `array`'s own, shared and not copied.
@@ -130,25 +137,62 @@ pub(super) fn decimal_scale(data_type: &DataType) -> Option<i8> {
     }
 }
 
-/// `digits`, an unscaled value, with `scale` digits after the point, without trailing zeros
-/// after it.
-fn scaled(digits: &str, scale: i8) -> String {
-    let (sign, digits) = digits
-        .strip_prefix('-')
-        .map_or(("", digits), |rest| ("-", rest));
-    let Ok(scale) = usize::try_from(scale) else {
-        let zeros = "0".repeat(usize::from(scale.unsigned_abs()));
-        return format!("{sign}{digits}{zeros}");
-    };
-    if scale == 0 {
-        return format!("{sign}{digits}");
+/// Whether `value` is negative, and its magnitude's decimal digits, written at the end of
+/// `buffer`.
+pub(super) fn digits(value: i128, buffer: &mut [u8; DIGITS]) -> (bool, &[u8]) {
+    let mut at = DIGITS;
+    let mut rest = value.unsigned_abs();
+    loop {
+        at -= 1;
+        buffer[at] = b'0' + u8::try_from(rest % 10).unwrap_or(0);
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
     }
-    let padded = format!("{digits:0>width$}", width = scale + 1);
-    let (whole, fraction) = padded.split_at(padded.len() - scale);
-    let fraction = fraction.trim_end_matches('0');
-    if fraction.is_empty() {
-        format!("{sign}{whole}")
-    } else {
-        format!("{sign}{whole}.{fraction}")
+    (value < 0, &buffer[at..])
+}
+
+/// As [`digits`], for a 256-bit integer beyond 128 bits.
+fn wide_digits(value: i256, buffer: &mut [u8; DIGITS]) -> (bool, &[u8]) {
+    let ten = i256::from_i128(10);
+    let mut at = DIGITS;
+    let mut rest = value;
+    loop {
+        at -= 1;
+        // A remainder takes its dividend's sign, so its magnitude is the digit.
+        let digit = rest.wrapping_rem(ten).as_i128().unsigned_abs();
+        buffer[at] = b'0' + u8::try_from(digit).unwrap_or(0);
+        rest = rest.wrapping_div(ten);
+        if rest == i256::ZERO {
+            break;
+        }
+    }
+    (value.is_negative(), &buffer[at..])
+}
+
+/// Appends the decimal whose unscaled magnitude has `digits`, negative where `negative` says,
+/// with `scale` digits after the point and no trailing zeros after it.
+fn scaled(out: &mut Vec<u8>, negative: bool, digits: &[u8], scale: i8) {
+    if negative {
+        out.push(b'-');
+    }
+    let Ok(scale) = usize::try_from(scale) else {
+        out.extend_from_slice(digits);
+        out.extend(std::iter::repeat_n(b'0', usize::from(scale.unsigned_abs())));
+        return;
+    };
+    // The digits after enough zeros that a whole digit leads the scale's.
+    let zeros = (scale + 1).saturating_sub(digits.len());
+    let digit = |at: usize| at.checked_sub(zeros).map_or(b'0', |at| digits[at]);
+    let width = zeros + digits.len();
+    let point = width - scale;
+    out.extend((0..point).map(digit));
+    let end = (point..width)
+        .rfind(|at| digit(*at) != b'0')
+        .map_or(point, |at| at + 1);
+    if end > point {
+        out.push(b'.');
+        out.extend((point..end).map(digit));
     }
 }
