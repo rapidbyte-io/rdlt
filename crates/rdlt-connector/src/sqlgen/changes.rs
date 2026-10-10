@@ -19,7 +19,7 @@ use arrow_schema::{DataType, Field, Schema};
 
 use super::publish::keyless;
 use super::{Column, Owned, SqlDialect, SqlPlanner, Statement};
-use crate::change::ChangeOp;
+use crate::change::{ChangeOp, UnchangedFlags};
 use crate::destination::{ChangeColumns, Deletion, MergeKey, TableRef};
 use crate::error::{ConnectorError, Result};
 
@@ -221,27 +221,18 @@ fn flag_bytes(
     let mut staged = BinaryBuilder::new();
     let mut bytes: Vec<u8> = Vec::new();
     for row in 0..flags.len() {
-        let bitmap = if flags.is_null(row) {
-            &[][..]
-        } else {
-            flags.value(row)
-        };
         bytes.clear();
-        for (ordinal, position) in ordinals.iter().enumerate() {
-            let flagged = bitmap
-                .get(ordinal / 8)
-                .is_some_and(|byte| byte & (1 << (ordinal % 8)) != 0);
-            if !flagged {
-                continue;
-            }
-            match position {
-                Ok(position) => {
-                    if bytes.len() <= *position {
-                        bytes.resize(position + 1, 0);
+        if flags.is_valid(row) {
+            for ordinal in UnchangedFlags::new(flags.value(row)).ordinals_below(ordinals.len()) {
+                match &ordinals[ordinal] {
+                    Ok(position) => {
+                        if bytes.len() <= *position {
+                            bytes.resize(position + 1, 0);
+                        }
+                        bytes[*position] = 1;
                     }
-                    bytes[*position] = 1;
+                    Err(why) => return Err(why.refused(schema.field(ordinal).name())),
                 }
-                Err(why) => return Err(why.refused(schema.field(ordinal).name())),
             }
         }
         if bytes.is_empty() {

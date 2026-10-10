@@ -107,7 +107,10 @@ pub use capabilities::{
     NestedSupport, SchemaChanges, WriteModes,
 };
 pub use catalog::{Catalog, Checkpointing, InvalidCatalog, Partitioning, ReadMode, StreamSpec};
-pub use change::{ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, validate_change_batch};
+pub use change::{
+    ChangeOp, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, UnchangedFlags, remap_unchanged,
+    validate_change_batch,
+};
 pub use commit::{
     ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentRange, SegmentSet,
     UnorderedRanges,

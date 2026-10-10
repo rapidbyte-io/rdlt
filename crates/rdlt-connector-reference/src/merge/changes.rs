@@ -12,7 +12,7 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::{ArrowError, DataType, Schema, SchemaRef};
-use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
+use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey, UnchangedFlags};
 
 use super::refused::{FLAG_ON_KEY, SEQUENCE_MISSING, refused};
 use super::retype::retyped;
@@ -193,14 +193,11 @@ impl Flags {
         if bitmaps.is_null(row) {
             return Ok(None);
         }
-        let bitmap = bitmaps.value(row);
+        let flags = UnchangedFlags::new(bitmaps.value(row));
         let mut mask = vec![false; self.set_always.len()];
         let mut flagged = false;
         for (ordinal, stored) in self.stored.iter().enumerate() {
-            let set = bitmap
-                .get(ordinal / 8)
-                .is_some_and(|byte| byte & (1 << (ordinal % 8)) != 0);
-            let (true, Some(column)) = (set, stored) else {
+            let (true, Some(column)) = (flags.contains(ordinal), stored) else {
                 continue;
             };
             if self.set_always[*column] {
