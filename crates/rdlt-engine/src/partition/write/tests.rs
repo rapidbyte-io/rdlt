@@ -219,6 +219,9 @@ fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
         key: Vec::new(),
     };
     let parts = crate::normalize::normalize(&unit, &shape).unwrap();
+    // The roots' ids are one buffer of exactly a row's 32 bytes each.
+    let ids = parts[0].lineage.id.to_data();
+    assert_eq!(ids.buffers()[1].capacity(), 1000 * 32);
     // The part keeps the unit's column alive, which is held already: its lineage is new.
     let lineage: usize = parts
         .iter()

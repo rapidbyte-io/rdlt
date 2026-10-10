@@ -41,7 +41,7 @@ use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch,
     StringArray, UInt64Array,
 };
-use arrow_buffer::NullBuffer;
+use arrow_buffer::{Buffer, NullBuffer, OffsetBuffer};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
 use rdlt_connector::{LogicalType, instants};
 
@@ -97,16 +97,15 @@ fn hashes(
             .collect::<Result<_, _>>()?
     };
     let mut row = Vec::with_capacity(ROW_BYTES);
-    let ids: Vec<[u8; ID_BYTES]> = (0..batch.num_rows())
-        .map(|index| {
-            row.clear();
-            for encoder in &encoders {
-                encoder.write(index, &mut row)?;
-            }
-            Ok(hash(domain, &row))
-        })
-        .collect::<Result<_, ArrowError>>()?;
-    Ok(BinaryArray::from_iter_values(ids))
+    let mut values = Vec::with_capacity(batch.num_rows() * ID_BYTES);
+    for index in 0..batch.num_rows() {
+        row.clear();
+        for encoder in &encoders {
+            encoder.write(index, &mut row)?;
+        }
+        values.extend_from_slice(&hash(domain, &row));
+    }
+    Ok(ids(values))
 }
 
 /// The refusal behind `error`, where identity could not read a value of a column of JSON.
@@ -138,17 +137,14 @@ pub(crate) fn unread(
 /// The ids of child rows: of each row's parent's id and its index in the parent's array.
 pub(crate) fn child_ids(parents: &BinaryArray, idx: &Int64Array) -> BinaryArray {
     let mut bytes = Vec::with_capacity(ID_BYTES + 16);
-    let ids: Vec<[u8; ID_BYTES]> = parents
-        .iter()
-        .zip(idx.values())
-        .map(|(parent, idx)| {
-            bytes.clear();
-            length(&mut bytes, parent.unwrap_or_default());
-            bytes.extend_from_slice(&idx.to_be_bytes());
-            hash(Domain::Child, &bytes)
-        })
-        .collect();
-    BinaryArray::from_iter_values(ids)
+    let mut values = Vec::with_capacity(idx.len() * ID_BYTES);
+    for (parent, idx) in parents.iter().zip(idx.values()) {
+        bytes.clear();
+        length(&mut bytes, parent.unwrap_or_default());
+        bytes.extend_from_slice(&idx.to_be_bytes());
+        values.extend_from_slice(&hash(Domain::Child, &bytes));
+    }
+    ids(values)
 }
 
 /// Bytes in an id: BLAKE3's whole output.
@@ -160,6 +156,12 @@ fn hash(domain: Domain, bytes: &[u8]) -> [u8; ID_BYTES] {
     hasher.update(&[domain as u8]);
     hasher.update(bytes);
     *hasher.finalize().as_bytes()
+}
+
+/// The ids written one after another into `values`, as an array of them.
+fn ids(values: Vec<u8>) -> BinaryArray {
+    let offsets = OffsetBuffer::from_repeated_length(ID_BYTES, values.len() / ID_BYTES);
+    BinaryArray::new(offsets, Buffer::from_vec(values), None)
 }
 
 /// The bytes a row's encoding is expected to take, which its buffer starts with.
