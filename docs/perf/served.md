@@ -631,7 +631,7 @@ case and the tls guard each ran five rounds, base and prototype interleaved, the
 The rounds never agreed closely enough to stop early. Load average over a minute was 1.3–2.0 over
 the latency runs and 1.6–2.8 over the rounds.
 
-Each codec call that does work, in milliseconds over two runs of its case:
+Each codec call, in milliseconds over two runs of its case:
 
 | Site | Calls a run | Median | p99 | Maximum |
 |---|---|---|---|---|
@@ -661,8 +661,9 @@ The five rounds of `socket/destination/64x80000`, MB/s, and the CPU a GB:
 | Median (range) | 2 340 (1 951–2 713) | 2 588 (2 459–2 805) | +10.6 % | 0.71 → 0.74 |
 | `tls/destination/64x80000`, median (range) | 1 668 (1 473–1 731) | 1 774 (1 661–1 788) | +6.3 % | 1.07 → 1.14 |
 
-- **A long poll, an on-time heartbeat.** At about 56 MB a frame, each codec call holds a worker for
-  25–36 ms, and each worker has 357–433 polls of at least 1 ms a run. With two workers, a
+- **A long poll, an on-time heartbeat.** At about 56 MB a frame, each codec call that encodes or
+  decodes a frame holds a worker for 25–36 ms (the host write's calls that find nothing to encode
+  return within microseconds), and each worker has 357–433 polls of at least 1 ms a run. With two workers, a
   heartbeat's echo waited at most 29.4 ms: about one codec call, 0.4 % of a quarter of the default
   patience (7.5 s) and a fifth of the 150 ms a quarter of it comes to at the 100 ms setting.
 - **The prototype.** Its median clears 10 % by 0.6 of a point. Its rounds sit within 2 459–2 805,
