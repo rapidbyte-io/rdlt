@@ -83,6 +83,7 @@ mod error;
 mod factory;
 mod id;
 pub mod instants;
+pub mod json;
 pub mod limits;
 mod meta;
 mod schema;

@@ -2,7 +2,6 @@
 //! floats, temporal values beyond the years `chrono` holds, and lists of extension-typed items.
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{Array, ListArray};
 use arrow_json::writer::{Encoder, EncoderFactory, EncoderOptions, NullableEncoder, make_encoder};
 use arrow_schema::{ArrowError, DataType, FieldRef};
@@ -52,30 +51,13 @@ impl EncoderFactory for Extensions {
     }
 }
 
-/// Writes a finite float as the shortest text that reads back as the 64-bit float it is or widens
-/// to, and a non-finite one as a JSON string of its name: `NaN`, `Infinity` or `-Infinity`.
-///
-/// A 32-bit float is written as the 64-bit float it widens to, so its text reads back as that
-/// float, as its own reads back as it, and is the text of the column it widens to. A tie between
-/// two shortest texts goes to the even one, as JSON writers break it.
+/// Writes each float into JSON text as [`rdlt_connector::json::write_float`] does, the rule
+/// connectors share, not the canonical float text of identity.
 struct Floats<'a>(&'a dyn Array);
 
 impl Encoder for Floats<'_> {
     fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
-        let value = match self.0.data_type() {
-            DataType::Float32 => f64::from(self.0.as_primitive::<Float32Type>().value(idx)),
-            _ => self.0.as_primitive::<Float64Type>().value(idx),
-        };
-        let name: &[u8] = match value {
-            value if value.is_nan() => b"\"NaN\"",
-            value if value == f64::INFINITY => b"\"Infinity\"",
-            value if value == f64::NEG_INFINITY => b"\"-Infinity\"",
-            _ => {
-                let written = serde_json::to_writer(&mut *out, &value);
-                return written.expect("a finite float writes to a vector");
-            }
-        };
-        out.extend_from_slice(name);
+        rdlt_connector::json::write_float(self.0, idx, out);
     }
 }
 
