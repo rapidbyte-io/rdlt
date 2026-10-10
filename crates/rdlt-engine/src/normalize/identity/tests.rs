@@ -623,3 +623,16 @@ fn ids_take_one_buffer_of_exactly_their_bytes() {
         exact(&super::child_ids(&roots, &idx), rows);
     }
 }
+
+#[test]
+fn a_length_written_after_its_bytes_widens_past_127() {
+    for written in [0_usize, 1, 127, 128, 200, 255, 256, 16_383, 16_384] {
+        let mut row = vec![9_u8];
+        super::length_of(&mut row, |row| {
+            row.extend(std::iter::repeat_n(7_u8, written));
+        });
+        let mut expected = vec![9_u8];
+        expected.extend(prefixed(&vec![7_u8; written]));
+        assert_eq!(row, expected, "{written} bytes");
+    }
+}
