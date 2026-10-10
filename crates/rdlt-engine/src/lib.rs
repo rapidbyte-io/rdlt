@@ -58,6 +58,7 @@ mod fixtures;
 mod json;
 mod lane;
 mod limits;
+mod named;
 mod naming;
 mod normalize;
 mod partition;

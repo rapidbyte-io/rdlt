@@ -8,7 +8,7 @@ use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, Field};
 
 use super::field_holds_json;
-use super::rows::Views;
+use crate::named::Views;
 
 /// Bytes: what a dictionary's named values take a key, where a bitmap of its values would take
 /// more: a key's position, sorted.
