@@ -46,7 +46,10 @@ fn durations_render_as_arrow_renders_them() {
 
 fn timestamps(array: &ArrayRef) -> Vec<Option<i64>> {
     (0..array.len())
-        .map(|row| (!array.is_null(row)).then(|| raw(array.as_ref(), row)))
+        .map(|row| {
+            (!array.is_null(row))
+                .then(|| rdlt_connector::instants::stored(array.as_ref(), row).unwrap())
+        })
         .collect()
 }
 
