@@ -299,7 +299,8 @@ the destination's CPU a GB and CPUs busy are its process's alone:
   10 % asked, and the spawned socket destination in large frames is lower. The two stages land
   for the production layout, a connector in a process of its own over mutual TLS, with the
   regression confined to a spawned connector over the socket in large frames under glibc's
-  allocator defaults; the allocator is a decision of its own.
+  allocator defaults; that regression remained until the host set glibc's malloc tunables for the
+  connectors it spawns (below).
 
 ## Allocator
 
@@ -384,7 +385,117 @@ the rounds named:
   1 884–2 591 MB/s in process, and 1 940–2 073 against 1 421–2 019 spawned, at 98–99 MiB of
   peak memory in that process against 128–129. It loses that and more over mutual TLS and in
   small frames, so glibc's allocator stays, and the regression the two stages recorded for a
-  spawned socket destination in large frames remains.
+  spawned socket destination in large frames remained until the host set glibc's malloc tunables
+  for the connectors it spawns (next section).
+
+## Malloc tunables for spawned connectors
+
+The host starts each connector it spawns with
+`GLIBC_TUNABLES=glibc.malloc.trim_threshold=268435456:glibc.malloc.mmap_threshold=33554432`,
+keeping any tunable the operator passes (in `GLIBC_TUNABLES`, or in glibc's older
+`MALLOC_TRIM_THRESHOLD_` and `MALLOC_MMAP_THRESHOLD_`). The faults recorded above come from
+glibc returning the memory a connector frees, frames freed on another thread than their
+maker's, so each next frame is written to fresh pages; no heap trimming and a fixed 32 MiB mmap
+threshold keep that memory for the next frame.
+
+The rule set before measuring: `process/socket/destination/64x80000`, the spawned destination, at
+least +10 % in MB/s or at least 10 % lower in CPU seconds a GB; no served case lower beyond
+noise; the connector's peak resident memory rising by no more than the frames it keeps. The
+`process/tls/*` connectors listen in processes the bench starts itself, not the host, so they
+carry no tunables and serve as controls; the rule was judged on
+`process/socket/destination/64x80000`.
+
+Intel Core Ultra X7 358H, 2026-10-10, `1f8449b1` against `67a04794`, governor `powersave` with
+energy preference `performance`, `just bench served 0-3 '<filter>' 4-11`: the 10 cases of
+`process/socket/*` and `process/tls/{destination,both}/64x80000`, three rounds a side
+interleaved (base, branch, branch, base, base, branch), each in one timed lock hold. The machine
+was shared: the one-minute load average was 3–8 between rounds and reached 14 during a round's
+own perf and strace runs, so absolute figures carry noise of about ±15 % round to round. A
+sampler read each connector process's `/proc` page faults (minor plus major) and `VmHWM` every
+10 ms. It missed base round 1 and the branch's first two rounds of the TLS listeners (its first
+versions were still being fixed), so faults and peak memory rest on base rounds 2–3 and branch
+rounds 1–3 (the TLS listeners' on branch round 3 alone). Every sampled branch connector
+process had the tunables in its environment, and no base process did. Each round's figure, in
+round order (the unit is MB/s, converted from criterion's MiB/s):
+
+| Case | Base, MB/s | Branch, MB/s |
+|---|---|---|
+| `process/socket/destination/64x80000` | 1 258 / 1 265 / 1 279 | 1 615 / 2 135 / 2 432 |
+| `process/socket/source/64x80000` | 1 921 / 2 016 / 1 944 | 1 518 / 1 991 / 2 597 |
+| `process/socket/both/64x80000` | 1 261 / 1 295 / 1 257 | 1 253 / 1 311 / 1 800 |
+| `process/socket/destination/512x10000` | 3 902 / 3 598 / 3 087 | 3 881 / 4 258 / 3 245 |
+| `process/socket/source/512x10000` | 2 280 / 3 036 / 2 793 | 3 237 / 3 640 / 2 615 |
+| `process/socket/both/512x10000` | 1 364 / 2 405 / 2 572 | 2 756 / 2 744 / 2 892 |
+| `process/socket/both/64x80000/4-partitions` | 1 174 / 1 027 / 1 085 | 1 440 / 1 418 / 1 492 |
+| `process/socket/both/64x80000/8-partitions` | 1 162 / 1 067 / 1 076 | 1 273 / 1 354 / 1 460 |
+| `process/tls/destination/64x80000` (control) | 951 / 971 / 1 106 | 1 109 / 1 094 / 1 252 |
+| `process/tls/both/64x80000` (control) | 958 / 941 / 1 016 | 953 / 1 039 / 1 146 |
+
+The destination's CPU seconds a GB, for the cases with a destination process:
+
+| Case | Base | Branch |
+|---|---|---|
+| `process/socket/destination/64x80000` | 1.158 / 1.144 / 1.218 | 1.003 / 0.836 / 0.779 |
+| `process/socket/both/64x80000` | 1.168 / 1.015 / 1.063 | 0.906 / 0.875 / 0.849 |
+| `process/socket/destination/512x10000` | 0.545 / 0.611 / 0.596 | 0.540 / 0.532 / 0.577 |
+| `process/socket/both/512x10000` | 0.709 / 0.583 / 0.605 | 0.587 / 0.577 / 0.570 |
+| `process/socket/both/64x80000/4-partitions` | 1.073 / 1.237 / 1.131 | 0.877 / 0.864 / 0.837 |
+| `process/socket/both/64x80000/8-partitions` | 1.076 / 1.184 / 1.220 | 0.957 / 0.872 / 0.834 |
+| `process/tls/destination/64x80000` (control) | 1.191 / 1.090 / 0.994 | 1.015 / 0.973 / 0.916 |
+| `process/tls/both/64x80000` (control) | 1.041 / 1.154 / 1.028 | 1.088 / 1.016 / 0.967 |
+
+Page faults a spawned connector process, the median over the processes a case spawned, then
+the median of the rounds and their range:
+
+| Case | Base | Branch | Median |
+|---|---|---|---|
+| `process/socket/destination/64x80000` | 94 512 (92 666–96 358) | 28 099 (11 550–28 604) | −70 % |
+| `process/socket/source/64x80000` | 137 010 (135 067–138 954) | 129 914 (121 304–130 669) | −5 % |
+| `process/socket/both/64x80000` | 129 467 (126 485–132 449) | 78 954 (67 962–80 346) | −39 % |
+| `process/socket/destination/512x10000` | 14 702 (13 095–16 309) | 6 092 (5 796–6 360) | −59 % |
+| `process/socket/source/512x10000` | 145 272 (142 235–148 310) | 119 960 (119 935–120 237) | −17 % |
+| `process/socket/both/512x10000` | 82 088 (81 850–82 326) | 63 216 (63 196–63 325) | −23 % |
+| `process/socket/both/64x80000/4-partitions` | 158 283 (155 080–161 486) | 92 710 (85 558–94 038) | −41 % |
+| `process/socket/both/64x80000/8-partitions` | 173 432 (166 867–179 998) | 101 192 (95 743–103 276) | −42 % |
+
+Peak resident memory of a spawned connector process (`VmHWM`), MiB, the median over the
+processes a case spawned and the largest process, each the median of the rounds, base → branch:
+
+| Case | Median process | Largest process |
+|---|---|---|
+| `process/socket/destination/64x80000` | 93.7 → 120.5 | 134.9 → 135.9 |
+| `process/socket/source/64x80000` | 490.1 → 520.7 | 508.7 → 541.1 |
+| `process/socket/both/64x80000` | 302.9 → 323.2 | 511.9 → 533.7 |
+| `process/socket/destination/512x10000` | 30.5 → 32.4 | 34.5 → 36.2 |
+| `process/socket/source/512x10000` | 450.8 → 477.6 | 454.4 → 479.5 |
+| `process/socket/both/512x10000` | 241.2 → 256.2 | 456.3 → 480.5 |
+| `process/socket/both/64x80000/4-partitions` | 333.7 → 375.3 | 581.6 → 648.8 |
+| `process/socket/both/64x80000/8-partitions` | 372.3 → 410.1 | 668.1 → 732.5 |
+
+- **The spawned destination in large frames moves 69 % more at 28 % less CPU a GB**: medians
+  1 265 → 2 135 MB/s, the branch's rounds all above the base's, and 1.158 → 0.836 CPU seconds a
+  GB in the destination's process, with 70 % fewer page faults. The regression the two stages
+  recorded for a spawned socket destination in large frames is gone: base 1 258–1 279 MB/s
+  against 1 615–2 432.
+- **No case is lower.** No case's median throughput is lower on the branch; the smallest change
+  is `process/socket/source/64x80000` at +2 %, its ranges overlapping. The destination's CPU a
+  GB is lower in every case, and its range lies wholly below in four. The 4- and 8-partition
+  cases move 33 % and 26 % more, and `process/socket/both/512x10000` 15 % more.
+- **Faults are lower in every spawned case**, by 5–70 %, the branch's range wholly below the
+  base's in each.
+- **Peak memory rises in every spawned case**: the median process by 2–42 MiB, the largest
+  process by 1–67 MiB, the largest being the 4-partition case's, 582 → 649 MiB, about 12 %.
+  That is what the frames freed and kept for the next one cost. The 8-partition case's largest
+  process rises 64 MiB, 668 → 733.
+- **The TLS controls stay within noise.** They carry no tunables, yet their medians read +14 %
+  (destination) and +9 % (both) with every range overlapping the base's, and the base's own
+  destination ranged 951–1 106 MB/s across its rounds; the round-to-round noise is about
+  ±15 %, which is also the margin to read the small socket changes with. Their peak memory did
+  not move (357 → 354 MiB for the destination's listeners). Their page faults fell from
+  504 000 to 231 000 in the one branch round that sampled them, which the missing tunables do
+  not explain; one round, so it is not read.
+- **Adopted.** The host's own process, and a listening connector the host does not spawn, are not
+  changed; an operator running either may set the same `GLIBC_TUNABLES` for that process.
 
 ## One connection a connector
 

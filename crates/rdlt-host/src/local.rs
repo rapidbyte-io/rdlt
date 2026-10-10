@@ -152,8 +152,8 @@ impl Local {
     }
 
     /// Keeps the environment variable `name` in each connector's environment, which otherwise
-    /// starts with glibc's malloc tunables alone, those `GLIBC_TUNABLES` and glibc's older
-    /// variables do not already name.
+    /// holds only glibc's malloc tunables; a tunable a kept `GLIBC_TUNABLES` or `MALLOC_*_`
+    /// variable names is left as the operator set it.
     #[must_use]
     pub fn env_passthrough(mut self, name: impl Into<String>) -> Self {
         self.env_passthrough.push(name.into());

@@ -67,9 +67,9 @@ pub(crate) fn arguments(launch: &Launch) -> Vec<OsString> {
     std::iter::once(socket).chain(state).collect()
 }
 
-/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with only
-/// the environment `launch` keeps, in a process group of its own, inheriting no other
-/// descriptor of this process; and how the connector is asked to stop.
+/// The command that starts `launch`'s binary serving `socket` at file descriptor 3, with the
+/// environment `launch` keeps and glibc's malloc tunables, in a process group of its own,
+/// inheriting no other descriptor of this process; and how the connector is asked to stop.
 ///
 /// A sandboxed connector is spawned only where `marks_at_once` says the kernel marks every
 /// other descriptor close-on-exec in one call.
@@ -146,9 +146,9 @@ struct Tunable {
 /// The malloc tunables each connector starts with, which keep the memory it frees for its next
 /// frame.
 ///
-/// Without them glibc gives back to the kernel the memory a connector frees, frames freed on
-/// another thread than its maker's, so each next frame is written to fresh pages,
-/// a page fault each; no heap trimming and a fixed 32 MiB mmap threshold stop that.
+/// Without them glibc gives back to the kernel the memory a connector frees, often on another
+/// thread than its maker's. Each next frame is then written to fresh pages, a page
+/// fault each; no heap trimming and a fixed 32 MiB mmap threshold stop that.
 ///
 /// It is set whatever libc this host links, since the connector's libc is what reads it, and
 /// is ignored where glibc is not the connector's allocator: musl, macOS, a connector with an
