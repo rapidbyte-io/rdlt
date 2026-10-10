@@ -16,6 +16,7 @@
 //! # }
 //! ```
 
+mod allowance;
 mod denoted;
 mod destination;
 mod limits;
@@ -28,6 +29,7 @@ mod tests;
 use std::fmt;
 use std::future::Future;
 
+pub use allowance::Allowance;
 pub use denoted::denoted;
 pub use destination::{
     DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
