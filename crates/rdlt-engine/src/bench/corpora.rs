@@ -20,7 +20,7 @@ pub const CHUNK_BYTES: usize = 1 << 20;
 /// A generated corpus of JSON lines, the same bytes on every run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Corpus {
-    /// Nested rows of about 170 bytes.
+    /// Nested rows of about 180 bytes.
     Nested,
     /// Nested rows of which about one in ten thousand carries an optional key after its name, so
     /// most chunks lack a column the others have, and those that hold it meet it before most
