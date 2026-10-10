@@ -11,12 +11,12 @@ use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Statement};
+use rdlt_connector::sqlgen::{Column, SqlDialect, Statement};
 use rdlt_connector::{ConnectorError, Result};
 use rusqlite::Connection;
 use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 
-use super::database::{columns, failed};
+use super::database::{borrowed, columns, failed};
 
 #[cfg(test)]
 mod tests;
@@ -46,15 +46,11 @@ pub(super) fn stage(
     let mut prepared = connection
         .prepare_cached(&statement.sql)
         .map_err(failed("preparing to stage rows"))?;
-    let fixed: Vec<Value> = statement.params.iter().map(fixed).collect();
-    let mut bound: Vec<ToSqlOutput<'_>> = Vec::with_capacity(fixed.len() + columns.len());
+    let mut bound: Vec<ToSqlOutput<'_>> =
+        Vec::with_capacity(statement.params.len() + columns.len());
     for row in 0..batch.num_rows() {
         bound.clear();
-        bound.extend(
-            fixed
-                .iter()
-                .map(|value| ToSqlOutput::Borrowed(value.into())),
-        );
+        bound.extend(statement.params.iter().map(borrowed));
         for (name, cells) in &columns {
             let value = cells.value(row).map_err(|float| float.in_column(name))?;
             bound.push(ToSqlOutput::Borrowed(value));
@@ -64,15 +60,6 @@ pub(super) fn stage(
             .map_err(failed("staging a row"))?;
     }
     Ok(())
-}
-
-fn fixed(value: &SqlValue) -> Value {
-    match value {
-        SqlValue::Null => Value::Null,
-        SqlValue::Integer(integer) => Value::Integer(*integer),
-        SqlValue::Text(text) => Value::Text(text.clone()),
-        SqlValue::Blob(blob) => Value::Blob(blob.clone()),
-    }
 }
 
 /// A type the destination cannot store, in the column it was found in.

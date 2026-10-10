@@ -14,7 +14,7 @@ use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Statement};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
 use rusqlite::config::DbConfig;
 use rusqlite::limits::Limit;
-use rusqlite::types::Value;
+use rusqlite::types::{ToSqlOutput, Value, ValueRef};
 use rusqlite::{Connection, ErrorCode, OpenFlags, TransactionBehavior};
 
 use super::location::located;
@@ -128,7 +128,7 @@ fn harden(connection: &Connection) -> rusqlite::Result<()> {
 
 /// Runs `statement`; returns the number of rows it changed.
 pub(super) fn run(connection: &Connection, statement: &Statement) -> Result<usize> {
-    let params = rusqlite::params_from_iter(statement.params.iter().map(value));
+    let params = rusqlite::params_from_iter(statement.params.iter().map(borrowed));
     connection
         .execute(&statement.sql, params)
         .map_err(failed("running a statement"))
@@ -148,7 +148,7 @@ pub(super) fn query(connection: &Connection, statement: &Statement) -> Result<Ve
         .prepare_cached(&statement.sql)
         .map_err(failed("preparing a query"))?;
     let width = prepared.column_count();
-    let params = rusqlite::params_from_iter(statement.params.iter().map(value));
+    let params = rusqlite::params_from_iter(statement.params.iter().map(borrowed));
     let rows = prepared
         .query_map(params, |row| {
             (0..width).map(|index| row.get(index)).collect()
@@ -198,13 +198,14 @@ pub(super) fn integer(value: &Value) -> Result<i64> {
     }
 }
 
-fn value(value: &SqlValue) -> Value {
-    match value {
-        SqlValue::Null => Value::Null,
-        SqlValue::Integer(integer) => Value::Integer(*integer),
-        SqlValue::Text(text) => Value::Text(text.clone()),
-        SqlValue::Blob(blob) => Value::Blob(blob.clone()),
-    }
+/// `value` as SQLite binds it, borrowed from its statement.
+pub(super) fn borrowed(value: &SqlValue) -> ToSqlOutput<'_> {
+    ToSqlOutput::Borrowed(match value {
+        SqlValue::Null => ValueRef::Null,
+        SqlValue::Integer(integer) => ValueRef::Integer(*integer),
+        SqlValue::Text(text) => ValueRef::Text(text.as_bytes()),
+        SqlValue::Blob(blob) => ValueRef::Blob(blob.as_slice()),
+    })
 }
 
 /// Classifies a SQLite error from `what`: contention is transient, and so is a full disk, coded
