@@ -13,7 +13,7 @@ prints the binary's path last:
 
 ```sh
 bin=$(just profiling shred 2>&1 | sed -n 's/.*Executable .*(\(.*\))$/\1/p' | tail -1)
-perf record -o shred.perf -e cpu_core/cycles/u --call-graph fp -F 999 -- \
+perf record -o shred.perf -e cycles:u --call-graph fp -F 999 -- \
     taskset -c 0 "$bin" --bench '^shred/nested$' --profile-time 10
 perf report -i shred.perf --no-children --sort srcfile -g none --stdio
 ```
@@ -113,4 +113,4 @@ times; subtract the run matching no benchmark, as above.
 
 On btrfs, `cp` makes a reflink: the copy shares the original's extents, and its first read may
 go to disk. Read a copied file once before timing a bench that reads it, such as the corpus
-`RDLT_SHRED_CORPUS` names: `cat corpus.jsonl > /dev/null`.
+`RDLT_SHRED_CORPUS` names: `cat "$RDLT_SHRED_CORPUS" > /dev/null`.
