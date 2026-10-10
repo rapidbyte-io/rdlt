@@ -7,6 +7,7 @@ mod held;
 mod normalized;
 mod pieces;
 mod queue;
+mod schemas;
 #[cfg(test)]
 mod tests;
 mod units;
@@ -23,6 +24,7 @@ use self::changes::{Ignored, split_changes};
 use self::held::Held;
 use self::pieces::{Lowered, Piece, Pieces};
 use self::queue::queue;
+pub(super) use self::schemas::Schemas;
 use super::coalesce::{Flushed, Unit};
 use super::{ChangeMode, OpenSegment, PartitionContext, PartitionJob};
 use crate::budget::{Denied, MemoryBudget, Reservation, Shares, TooLarge};
@@ -37,6 +39,7 @@ pub(super) async fn write_flushed(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
+    schemas: &mut Schemas,
     flushed: Flushed,
 ) -> Result<(), Error> {
     let kind = match flushed.unit {
@@ -45,7 +48,7 @@ pub(super) async fn write_flushed(
     };
     let (units, shred) = units::of(job, context, flushed).await?;
     open.shred.add(&shred);
-    write(job, context, open, units, kind).await
+    write(job, context, open, schemas, units, kind).await
 }
 
 /// Reserves `bytes` for the lowering this partition does next, all of them in one request, so
@@ -111,13 +114,14 @@ async fn write(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
+    schemas: &mut Schemas,
     units: Vec<(Vec<RecordBatch>, Held)>,
     kind: PushKind,
 ) -> Result<(), Error> {
     if let Some(shape) = context.tables.shape(job.table) {
         return normalized::write_normalized(job, context, open, units, &shape, kind).await;
     }
-    let judged = judged(job, open, units)?;
+    let judged = judged(job, open, schemas, units)?;
     let rounding: BTreeSet<ColumnPath> = judged
         .iter()
         .flat_map(|unit| unit.incoming.rounding.iter().cloned())
@@ -332,6 +336,7 @@ struct Judged {
 fn judged(
     job: &PartitionJob,
     open: &mut OpenSegment,
+    schemas: &mut Schemas,
     units: Vec<(Vec<RecordBatch>, Held)>,
 ) -> Result<Vec<Judged>, Error> {
     let mut judged = Vec::with_capacity(units.len());
@@ -350,12 +355,9 @@ fn judged(
             None => parts.clone(),
         };
         let data: Vec<RecordBatch> = data;
-        let schema = schema_of(job, &data[0])?;
-        let paths = schema
-            .fields()
-            .iter()
-            .map(|field| ColumnPath::from(field.name()))
-            .collect();
+        let (schema, paths) = schemas
+            .of(data[0].schema_ref())
+            .map_err(|error| schema_invalid(job, &error))?;
         let incoming = Incoming::of(schema, paths, &data);
         judged.push(Judged {
             parts,
