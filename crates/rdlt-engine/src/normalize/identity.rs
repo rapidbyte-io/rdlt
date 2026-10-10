@@ -40,7 +40,7 @@ use arrow_array::{
 use arrow_buffer::NullBuffer;
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef};
-use rdlt_connector::instants;
+use rdlt_connector::{LogicalType, instants};
 
 use super::as_list;
 use crate::json::{JsonError, Reader, Token, write_float, write_number};
@@ -178,10 +178,6 @@ const ARRAY: u8 = b'[';
 const ARRAY_END: u8 = b']';
 const FIELD: u8 = b'k';
 
-/// The Arrow field metadata key naming an extension type, and the JSON extension's name.
-const EXTENSION_NAME: &str = "ARROW:extension:name";
-const JSON_EXTENSION: &str = "arrow.json";
-
 /// How one array's values encode, worked out once per batch.
 enum Encoder {
     Null,
@@ -217,7 +213,7 @@ impl Encoder {
                 ArrowError::CastError(format!("{} holds no stored values", array.data_type()))
             })
         };
-        let json = field.metadata().get(EXTENSION_NAME).map(String::as_str) == Some(JSON_EXTENSION);
+        let json = rdlt_connector::Field::extension_type(field) == Some(LogicalType::Json);
         Ok(match array.data_type() {
             DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View if json => {
                 Self::Json(cast(&DataType::Utf8)?.as_string::<i32>().clone())
