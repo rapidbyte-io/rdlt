@@ -172,3 +172,13 @@ fn rows_dropped_on_either_side_of_a_words_bits_take_their_children() {
     }
     assert!(lined_up(&items.part));
 }
+
+#[test]
+fn a_row_one_past_the_last_bit_was_not_dropped() {
+    let mut bits = super::Bits::default();
+    assert!(!bits.get(0));
+    bits.set(7);
+    assert!(bits.get(7));
+    assert!(!bits.get(6));
+    assert!(!bits.get(8));
+}
