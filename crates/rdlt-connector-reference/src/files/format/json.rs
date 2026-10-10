@@ -5,7 +5,6 @@ use std::fs::File;
 use std::io::BufReader;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Float32Type, Float64Type};
 use arrow_array::{Array, RecordBatch};
 use arrow_json::writer::{Encoder, EncoderFactory, EncoderOptions, NullableEncoder, make_encoder};
 use arrow_schema::{ArrowError, DataType, FieldRef, SchemaRef};
@@ -30,8 +29,7 @@ impl EncoderFactory for ExactFloats {
         options: &'a EncoderOptions,
     ) -> Result<Option<NullableEncoder<'a>>, ArrowError> {
         let encoder: Box<dyn Encoder + 'a> = match array.data_type() {
-            DataType::Float32 => Box::new(Floats(array.as_primitive::<Float32Type>())),
-            DataType::Float64 => Box::new(Floats(array.as_primitive::<Float64Type>())),
+            DataType::Float32 | DataType::Float64 => Box::new(Floats(array)),
             DataType::Dictionary(..) => {
                 let dictionary = array.as_any_dictionary();
                 let values = dictionary.values();
@@ -63,57 +61,13 @@ impl Encoder for Keyed<'_> {
     }
 }
 
-/// Writes a finite float as the shortest text that reads back as the 64-bit float it is or widens
-/// to, as the engine writes floats into JSON, and one that is not finite as a JSON string of its
-/// name: `NaN`, `Infinity` or `-Infinity`.
-///
-/// A 32-bit float's own shortest text names another 64-bit float: read back once its column
-/// widened, it would be another value.
-struct Floats<'a, T: arrow_array::ArrowPrimitiveType>(&'a arrow_array::PrimitiveArray<T>);
+/// Writes each float as [`rdlt_connector::json::write_float`] writes it, as the engine writes
+/// floats into JSON, so a value read back after its column widened is the value written.
+struct Floats<'a>(&'a dyn Array);
 
-/// A float as JSON text.
-trait Written: Copy {
-    fn name(self) -> Option<&'static [u8]>;
-    fn text(self, out: &mut Vec<u8>);
-}
-
-macro_rules! written {
-    ($float:ty) => {
-        impl Written for $float {
-            fn name(self) -> Option<&'static [u8]> {
-                if self.is_nan() {
-                    Some(b"\"NaN\"")
-                } else if self == <$float>::INFINITY {
-                    Some(b"\"Infinity\"")
-                } else if self == <$float>::NEG_INFINITY {
-                    Some(b"\"-Infinity\"")
-                } else {
-                    None
-                }
-            }
-
-            fn text(self, out: &mut Vec<u8>) {
-                let wide = f64::from(self);
-                serde_json::to_writer(out, &wide).expect("a finite float writes to a vector");
-            }
-        }
-    };
-}
-
-written!(f32);
-written!(f64);
-
-impl<T> Encoder for Floats<'_, T>
-where
-    T: arrow_array::ArrowPrimitiveType,
-    T::Native: Written,
-{
+impl Encoder for Floats<'_> {
     fn encode(&mut self, idx: usize, out: &mut Vec<u8>) {
-        let value = self.0.value(idx);
-        match value.name() {
-            Some(name) => out.extend_from_slice(name),
-            None => value.text(out),
-        }
+        rdlt_connector::json::write_float(self.0, idx, out);
     }
 }
 
