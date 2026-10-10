@@ -201,7 +201,14 @@ impl Record {
 
     /// The columns built, in the order first seen.
     pub(crate) fn finish_columns(self) -> Result<Vec<ArrayRef>, ShredError> {
-        self.columns.into_iter().map(Column::finish).collect()
+        let mut finished: Vec<ArrayRef> = self
+            .columns
+            .into_iter()
+            .map(Column::finish)
+            .collect::<Result<_, _>>()?;
+        // The collect reused the builders' buffer, and the batch holds this vector.
+        finished.shrink_to_fit();
+        Ok(finished)
     }
 
     /// The objects appended, as a struct column.
