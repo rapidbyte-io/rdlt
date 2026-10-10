@@ -8,34 +8,18 @@ use arrow_array::{
 };
 use bytes::Bytes;
 
-use super::{Budget, spend};
+use super::Budget;
 use crate::cost::{Allocations, push_charge};
 use crate::cursor::Cursor;
 use crate::sink::Push;
 use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES, HELD_ROWS};
 
 fn left(budget: &Budget) -> (usize, usize) {
-    use std::sync::atomic::Ordering::Relaxed;
-    (budget.bytes.load(Relaxed), budget.rows.load(Relaxed))
+    budget.allowance.left()
 }
 
 fn batch(column: ArrayRef) -> RecordBatch {
     RecordBatch::try_from_iter_with_nullable([("column", column, true)]).unwrap()
-}
-
-#[test]
-fn what_is_left_is_spent_to_nothing_and_never_below() {
-    let left = std::sync::atomic::AtomicUsize::new(10);
-    assert!(spend(&left, 0));
-    assert!(spend(&left, 4));
-    assert!(spend(&left, 6));
-    assert!(spend(&left, 0));
-    assert!(!spend(&left, 1));
-    let left = std::sync::atomic::AtomicUsize::new(10);
-    assert!(!spend(&left, 11));
-    // What was asked beyond what was left leaves nothing for what follows.
-    assert!(!spend(&left, 1));
-    assert!(!spend(&left, usize::MAX));
 }
 
 /// Columns in every encoding: plain, views, list views, dictionaries, runs, and nulls.

@@ -4,7 +4,6 @@
 mod tests;
 
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::json;
 use crate::catalog::StreamSpec;
@@ -13,13 +12,12 @@ use crate::cursor::Cursor;
 use crate::sink::{Push, SourceEvent, partition_channel};
 use crate::source::{Partition, ReadRequest, Source};
 use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES, HELD_ROWS};
-use crate::testing::{Violation, bounded};
+use crate::testing::{Allowance, Violation, bounded};
 
 /// What one clause may still hold of what its reads send: bytes and rows, all its reads
 /// together, so neither the partitions nor the streams a source plans multiply it.
 pub(in crate::testing) struct Budget {
-    bytes: AtomicUsize,
-    rows: AtomicUsize,
+    allowance: Allowance,
 }
 
 impl Budget {
@@ -31,8 +29,7 @@ impl Budget {
     /// A budget of `bytes` and [`HELD_ROWS`].
     pub(in crate::testing) fn holding(bytes: usize) -> Self {
         Self {
-            bytes: AtomicUsize::new(bytes),
-            rows: AtomicUsize::new(HELD_ROWS),
+            allowance: Allowance::new(bytes, HELD_ROWS),
         }
     }
 
@@ -55,7 +52,7 @@ impl Budget {
     /// source has sent more than the clause holds.
     fn charge(&self, bytes: usize, rows: usize) -> Result<(), Violation> {
         let bytes = bytes.saturating_add(HELD_EVENT_BYTES);
-        let within = spend(&self.bytes, bytes) & spend(&self.rows, rows);
+        let within = self.allowance.spend(bytes, rows);
         if within {
             Ok(())
         } else {
@@ -65,14 +62,6 @@ impl Budget {
             )))
         }
     }
-}
-
-/// Takes `spent` from what `left` holds; whether that much was left, none being left after.
-fn spend(left: &AtomicUsize, spent: usize) -> bool {
-    let took = left.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| {
-        Some(left.saturating_sub(spent))
-    });
-    took.is_ok_and(|left| left >= spent)
 }
 
 /// Everything one partition read produced, split at checkpoints.

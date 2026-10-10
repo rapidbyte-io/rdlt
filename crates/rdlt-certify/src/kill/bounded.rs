@@ -5,10 +5,11 @@
 mod tests;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use arrow_array::RecordBatch;
 use rdlt_connector::cost::Allocations;
+use rdlt_connector::testing::Allowance;
 use rdlt_connector::{
     BoxFuture, Capabilities, CommitMeta, ConnectorError, Destination, DestinationSession,
     DestinationWriter, OpenContext, OpenedSession, Receipt, Result, SegmentId, TableChange,
@@ -29,16 +30,14 @@ pub(crate) struct Bounded {
 
 /// What a load may still write, and whether it wrote beyond it.
 struct Load {
-    rows: AtomicUsize,
-    bytes: AtomicUsize,
+    allowance: Allowance,
     beyond: AtomicBool,
 }
 
 impl Bounded {
     pub(crate) fn new(destination: Arc<dyn Destination>) -> Self {
         let load = Load {
-            rows: AtomicUsize::new(LOADED_ROWS),
-            bytes: AtomicUsize::new(LOADED_BYTES),
+            allowance: Allowance::new(LOADED_BYTES, LOADED_ROWS),
             beyond: AtomicBool::new(false),
         };
         Self {
@@ -71,25 +70,16 @@ impl Beyond {
 impl Load {
     /// Charges `batch`; an error no load retries once it is beyond what the load takes.
     fn charge(&self, batch: &RecordBatch) -> Result<()> {
-        let rows = spend(&self.rows, batch.num_rows());
         // What the batch keeps alive, as the cost model counts it: each allocation once.
         let held = Allocations::of(batch).bytes();
-        let bytes = spend(&self.bytes, usize::try_from(held).unwrap_or(usize::MAX));
-        if rows && bytes {
+        let bytes = usize::try_from(held).unwrap_or(usize::MAX);
+        if self.allowance.spend(bytes, batch.num_rows()) {
             return Ok(());
         }
         self.beyond.store(true, Ordering::SeqCst);
         let message = "the load writes more than a kill clause takes";
         Err(ConnectorError::data(message).with_code(BEYOND))
     }
-}
-
-/// Takes `spent` from what `left` holds; whether that much was left, none being left after.
-fn spend(left: &AtomicUsize, spent: usize) -> bool {
-    let took = left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-        Some(left.saturating_sub(spent))
-    });
-    took.is_ok_and(|left| left >= spent)
 }
 
 impl Destination for Bounded {
