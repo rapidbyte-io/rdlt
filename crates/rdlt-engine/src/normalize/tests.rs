@@ -339,7 +339,7 @@ fn maps_and_large_lists_normalize_like_lists() {
 }
 
 #[test]
-fn other_arrow_types_hash_by_their_type_and_value() {
+fn numbers_hash_alike_whatever_their_type_and_apart_from_text() {
     let batch = |values: ArrayRef| RecordBatch::try_from_iter([("v", values)]).unwrap();
     let ids = |batch: RecordBatch| {
         normalize(&batch, &shape(8)).unwrap()[0]

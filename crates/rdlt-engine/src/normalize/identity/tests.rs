@@ -8,9 +8,10 @@ use arrow_array::builder::{
 };
 use arrow_array::types::{Int8Type, Int64Type};
 use arrow_array::{
-    ArrayRef, BinaryArray, BooleanArray, Decimal128Array, DictionaryArray, FixedSizeBinaryArray,
-    Float32Array, Float64Array, Int8Array, Int64Array, LargeBinaryArray, LargeListArray,
-    LargeStringArray, RecordBatch, StringArray, TimestampSecondArray, UInt64Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Decimal128Array, DictionaryArray,
+    FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array, Int64Array,
+    IntervalYearMonthArray, LargeBinaryArray, LargeListArray, LargeStringArray, RecordBatch,
+    StringArray, StructArray, TimestampSecondArray, UInt64Array,
 };
 use arrow_schema::DataType;
 
@@ -147,7 +148,7 @@ fn text_and_bytes_encode_alike_whatever_their_arrow_type() {
 }
 
 #[test]
-fn arrays_maps_and_other_types_encode_by_their_values() {
+fn arrays_maps_and_timestamps_encode_by_their_values() {
     let timestamps: ArrayRef = Arc::new(TimestampSecondArray::from(vec![-2]));
     let mut map = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
     map.keys().append_value("k");
@@ -531,4 +532,59 @@ fn a_date64_identifies_as_the_day_it_is_within() {
         (true, false)
     );
     assert_ne!(date64[6], date64[7]);
+}
+
+#[test]
+fn a_type_no_table_holds_is_refused_not_hashed_as_its_text() {
+    let intervals = || -> ArrayRef { Arc::new(IntervalYearMonthArray::from(vec![1, 2])) };
+    let field = Arc::new(arrow_schema::Field::new(
+        "i",
+        intervals().data_type().clone(),
+        true,
+    ));
+    let object: ArrayRef = Arc::new(StructArray::from(vec![(field, intervals())]));
+    let keys: [Vec<Arc<str>>; 2] = [Vec::new(), vec![Arc::from("k")]];
+    for column in [intervals(), object] {
+        let kind = column.data_type().to_string();
+        let batch = RecordBatch::try_from_iter([("k", column)]).unwrap();
+        for key in &keys {
+            let refused = root_ids(&batch, key).unwrap_err();
+            assert!(super::json_refusal(&refused).is_none(), "{kind}: {refused}");
+            assert!(
+                refused.to_string().contains("Interval(YearMonth)"),
+                "{kind}: {refused}"
+            );
+        }
+        assert!(super::version_hashes(&batch).is_err(), "{kind}");
+    }
+}
+
+#[test]
+fn a_float_whose_text_is_longer_than_a_length_byte_holds_takes_two() {
+    let floats = vec![1e300, 5e-324, f64::MIN, f64::NAN, f64::NEG_INFINITY, 1.5];
+    let encodings = floats
+        .iter()
+        .map(|value| tagged(b'd', crate::json::canonical_float(*value).as_bytes()))
+        .take(floats.len())
+        .collect();
+    assert!(crate::json::canonical_float(1e300).len() >= 0x80);
+    assert!(crate::json::canonical_float(5e-324).len() >= 0x80);
+    check(vec![(Arc::new(Float64Array::from(floats)), encodings)]);
+}
+
+#[test]
+fn a_batch_nested_deeper_than_a_table_may_be_still_hashes() {
+    let depth = usize::try_from(rdlt_wire::limits::NESTING_DEPTH).unwrap() + 8;
+    let mut column: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+    for _ in 0..depth {
+        let field = Arc::new(arrow_schema::Field::new(
+            "a",
+            column.data_type().clone(),
+            true,
+        ));
+        column = Arc::new(StructArray::from(vec![(field, column)]));
+    }
+    let batch = RecordBatch::try_from_iter([("k", column)]).unwrap();
+    assert_eq!(root_ids(&batch, &[]).unwrap().len(), 1);
+    assert_eq!(root_ids(&batch, &[Arc::from("k")]).unwrap().len(), 1);
 }
