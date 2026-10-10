@@ -454,12 +454,13 @@ those in which the process had at least half the samples of its busiest second.
   in proportion to its user time: 0.423 × 1.15 = 0.49 of a core on the destination,
   0.546 × 0.70 = 0.38 on the host. Even if all of a process's system time were its connection
   task's (CPUs busy in the rounds less the user-mode CPUs the profile counted, 0.87 on the
-  destination and 0.48 on the host), the task holds at most 0.65 of a core on the destination
-  (0.37 + 1.15 − 0.87) and 0.50 on the host (0.28 + 0.70 − 0.48).
+  destination and 0.48 on the host), the task, at its most and with the process at its busiest,
+  holds at most 0.68 of a core on the destination (0.40 + 1.15 − 0.87) and 0.62 on the host
+  (0.31 + 0.79 − 0.48).
 - **Over the socket**, the connection tasks hold 2 % of the host's samples and 0–3 % of each
   spawned destination's, at most 0.03 of a core.
 - **Against the rule.** tls moves 86–92 % of the socket's MB/s (rule: at most 70 %), and no
-  connection task holds more than 0.65 of a core even with all system time counted (rule: at
+  connection task holds more than 0.68 of a core even with all system time counted (rule: at
   least 0.8). Neither condition holds, so one connection a connector is kept: several
   connections would spread a task that does not limit the run.
 - **CPU.** tls costs no more CPU a GB than the spawned socket destination here: 1.45 against 1.51
@@ -467,5 +468,5 @@ those in which the process had at least half the samples of its busiest second.
   page-fault cost recorded under "A served write in two stages".
 - **The open question under "Partitions"**, whether one connection task framing TLS and HTTP/2
   holds the destination under one CPU, is answered: with its process at 1.15 CPUs busy, the
-  connection task holds 0.37 of a core in user mode and at most 0.65 with all system time
+  connection task holds 0.37 of a core in user mode and at most 0.68 with all system time
   counted, so it is not what limits the destination.
