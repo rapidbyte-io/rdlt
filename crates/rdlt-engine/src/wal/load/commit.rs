@@ -3,11 +3,13 @@
 
 use bytes::Bytes;
 use rdlt_connector::{CommitMeta, PartitionState, SegmentSet};
+use rdlt_wire::limits::count;
 use tokio::sync::oneshot;
 
 use super::super::frame::{self, Frame};
 use super::super::writer::Command;
-use super::{FRAMED, LoadLog, Sealed, count, reserved, settled};
+
+use super::{FRAMED, LoadLog, Sealed, reserved, settled};
 use crate::budget::MemoryBudget;
 use crate::error::Error;
 use crate::limits::RECORDED;

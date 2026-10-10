@@ -24,6 +24,7 @@ use arrow_array::builder::{
 };
 use arrow_array::{ArrayRef, NullArray};
 use arrow_buffer::i256;
+use rdlt_wire::limits::count;
 
 use super::ShredError;
 use super::meter::{BUILDER, Meter, Over, RECORD};
@@ -399,11 +400,6 @@ fn write_text(room: &mut Room, bytes: usize, meter: &Meter) -> Result<(), Over> 
 fn rows_of(rows: u64, width: u64, bits: u64) -> u64 {
     rows.saturating_mul(width)
         .saturating_add(rows.saturating_mul(bits).div_ceil(8))
-}
-
-/// A count as the meter's bytes are measured in.
-fn count(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// A builder of whole decimals of `digits` digits, which a 128-bit decimal holds.

@@ -8,6 +8,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, RecordBatch};
 use arrow_schema::DataType;
+use rdlt_wire::limits::count;
 
 use super::Bench;
 use crate::cost::Rendering;
@@ -238,8 +239,4 @@ fn scalar(kind: &DataType) -> bool {
         DataType::FixedSizeBinary(width) => *width > 0,
         kind => kind.primitive_width().is_some(),
     }
-}
-
-fn count(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }

@@ -15,6 +15,7 @@ use rdlt_connector::{
     CommitSeq, DeleteModes, Epoch, GenerationId, LoadId, PipelineId, SchemaChanges, SegmentId,
     SegmentSet, StateRecord, TablePath, TypeKind,
 };
+use rdlt_wire::limits::count;
 
 use crate::merge::Merged;
 use schemars::JsonSchema;
@@ -136,8 +137,8 @@ impl Store {
         for (name, staged, merged) in plans {
             let table = self.tables.entry(name).or_default();
             for (generation, batch) in staged {
-                rows += table::counted(batch.num_rows());
-                bytes += table::counted(batch.get_array_memory_size());
+                rows += count(batch.num_rows());
+                bytes += count(batch.get_array_memory_size());
                 if merged.is_none() {
                     match generation {
                         Some(generation) => {
@@ -446,8 +447,8 @@ impl TableWriter for MemoryWriter {
         }
         let mut stats = WriteStats::default();
         for (segment, batch) in self.buffered.drain(..) {
-            stats.rows += table::counted(batch.num_rows());
-            stats.bytes += table::counted(batch.get_array_memory_size());
+            stats.rows += count(batch.num_rows());
+            stats.bytes += count(batch.get_array_memory_size());
             table
                 .staged
                 .entry((self.pipeline.clone(), self.epoch, segment))

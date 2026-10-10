@@ -182,7 +182,7 @@ impl<'a> Walk<'a, '_, '_> {
             .zip(usize::try_from(length).ok())
             .and_then(|(start, length)| Some(start..start.checked_add(length)?));
         let Some(bytes) = range.and_then(|range| self.body.get(range)) else {
-            let body = len(self.body);
+            let body = crate::limits::count(self.body.len());
             return Err(self.malformed(Problem::BufferOutOfBounds {
                 index,
                 offset,
@@ -190,7 +190,7 @@ impl<'a> Walk<'a, '_, '_> {
                 body,
             }));
         };
-        let (offset, length) = (offset.unsigned_abs(), len(bytes));
+        let (offset, length) = (offset.unsigned_abs(), crate::limits::count(bytes.len()));
         if offset < self.end {
             let end = self.end;
             return Err(self.malformed(Problem::BufferOverlaps { index, offset, end }));
@@ -325,7 +325,7 @@ impl<'a> Walk<'a, '_, '_> {
         let views = self.each(node.length, 16)?;
         let mut data = Vec::new();
         for _ in 0..count {
-            data.push(len(self.buffer(0, 1)?));
+            data.push(crate::limits::count(self.buffer(0, 1)?.len()));
         }
         let named = views::named(views, &data).map_err(|index| {
             self.malformed(Problem::View {
@@ -366,9 +366,4 @@ impl<'a> Walk<'a, '_, '_> {
         })?;
         self.count(items)
     }
-}
-
-/// A slice's length as the `u64` limits and offsets count in.
-fn len(bytes: &[u8]) -> u64 {
-    u64::try_from(bytes.len()).unwrap_or(u64::MAX)
 }

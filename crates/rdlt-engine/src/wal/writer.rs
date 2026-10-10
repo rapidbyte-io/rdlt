@@ -422,7 +422,3 @@ impl Log {
         Ok(())
     }
 }
-
-fn count(bytes: usize) -> u64 {
-    u64::try_from(bytes).unwrap_or(u64::MAX)
-}

@@ -5,9 +5,10 @@ use std::ops::Range;
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, OffsetSizeTrait};
 use arrow_buffer::ArrowNativeType;
+use rdlt_wire::limits::count;
 
 use super::{Meter, SCANNED, Within};
-use crate::cost::widths::{BRACKETS, OFFSET, VIEW, count, escapes};
+use crate::cost::widths::{BRACKETS, OFFSET, VIEW, escapes};
 use crate::types::TypeKind;
 
 /// How a string or bytes value is rendered.

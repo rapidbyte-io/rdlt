@@ -6,6 +6,7 @@ mod tests;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Schema};
+use rdlt_wire::limits::count;
 use rdlt_wire::{Limits, Weigher, Weight};
 
 use crate::cost::Allocations;
@@ -73,10 +74,6 @@ fn check(name: &'static str, actual: u64, limit: u64) -> Result<(), LimitExceede
         });
     }
     Ok(())
-}
-
-fn count(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// Counts the columns of `schema`, nested ones too, and how deep they nest, a top-level column

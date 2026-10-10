@@ -9,6 +9,7 @@ use std::time::Instant;
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use rdlt_connector::Permit;
+use rdlt_wire::limits::count;
 
 use crate::config::BatchPolicy;
 
@@ -129,8 +130,4 @@ fn joins(unit: &Unit, pushed: &Pushed) -> bool {
             .is_none_or(|first| first.schema() == batch.schema()),
         _ => false,
     }
-}
-
-fn count(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }

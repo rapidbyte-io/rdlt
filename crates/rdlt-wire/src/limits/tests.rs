@@ -1,4 +1,4 @@
-use super::{CONTROL_STRING_BYTES, FRAME_BYTES, LIMIT_EXCEEDED, Limits, Refusal};
+use super::{CONTROL_STRING_BYTES, FRAME_BYTES, LIMIT_EXCEEDED, Limits, Refusal, count};
 use crate::v1;
 
 #[test]
@@ -441,4 +441,11 @@ fn each_call_s_request_is_bounded_as_what_it_carries() {
     let schema = usize::try_from(limits.schema_bytes).unwrap() + 65_536;
     assert_eq!((bounds.wire, bounds.decoded), (schema, schema * 16));
     assert!(bounds.wire > limits.decoding(Class::Control));
+}
+
+#[test]
+fn a_count_is_the_same_number_as_a_u64() {
+    for value in [0, 1, 7, 1 << 40, usize::MAX] {
+        assert_eq!(u128::from(count(value)), u128::try_from(value).unwrap());
+    }
 }

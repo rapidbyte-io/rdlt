@@ -7,8 +7,7 @@ use arrow_array::{Array, RecordBatch};
 use arrow_buffer::Buffer;
 use arrow_data::ArrayData;
 use arrow_schema::{DataType, Field, Schema};
-
-use super::widths::count;
+use rdlt_wire::limits::count;
 
 /// A set of allocations and the bytes they take.
 ///

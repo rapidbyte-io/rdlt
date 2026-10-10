@@ -36,6 +36,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
 use rdlt_connector::TableSchema;
+use rdlt_wire::limits::count;
 use serde::de::DeserializeSeed;
 
 use crate::compute::Pool;
@@ -437,11 +438,6 @@ fn again(
         return Err(unbuilt("its records"));
     }
     record.finish_columns()
-}
-
-/// A count as the meter's bytes are measured in.
-fn count(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// Stack a shredding job is sure of before it starts, 4 MiB: building and checking the columns of

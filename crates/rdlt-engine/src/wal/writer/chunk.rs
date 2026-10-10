@@ -6,10 +6,12 @@ use std::sync::atomic::Ordering;
 
 use bytes::Bytes;
 use rdlt_connector::{CommitSeq, SegmentId};
+use rdlt_wire::limits::count;
 
 use super::super::frame::{self, Frame, Header};
 use super::super::store::Chunk;
-use super::{Log, count};
+
+use super::Log;
 use crate::crash::crash_point;
 use crate::error::Error;
 use crate::limits::{LOG_COPY_BYTES, LOG_PARTS};
