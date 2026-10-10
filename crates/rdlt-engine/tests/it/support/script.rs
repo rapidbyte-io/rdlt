@@ -62,6 +62,10 @@ pub(crate) struct ScriptStream {
     pub(crate) hang: Hang,
     /// Whether the stream can read again what it acknowledged.
     pub(crate) replayable: bool,
+    /// How long the source takes to plan the stream's partitions.
+    pub(crate) plan_wait: Duration,
+    /// How many times the source was asked to plan the stream's partitions.
+    pub(crate) plans: AtomicUsize,
 }
 
 /// Where a scripted read waits forever.
@@ -91,6 +95,8 @@ impl ScriptStream {
             idle_flag: AtomicBool::new(true),
             hang: Hang::Never,
             replayable: true,
+            plan_wait: Duration::ZERO,
+            plans: AtomicUsize::new(0),
         }
     }
 
@@ -275,6 +281,12 @@ impl ReadStream<ScriptSource> for Scripted {
         source: &ScriptSource,
         _state: &StreamState,
     ) -> Result<Vec<Partition>> {
+        let stream = &source.script.streams[self.index];
+        stream.plans.fetch_add(1, Ordering::SeqCst);
+        let wait = stream.plan_wait;
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
         let planning = source.script.planning;
         if planning == Planning::Fails {
             return Err(ConnectorError::data("planning failed"));

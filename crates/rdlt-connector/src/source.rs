@@ -260,6 +260,9 @@ pub trait Source: Send + Sync {
     fn discover(&self) -> BoxFuture<'_, Result<Catalog>>;
 
     /// The phase and partitions of `stream` to read, given its committed state.
+    ///
+    /// The engine may plan several of an attempt's streams at once, calling `plan` concurrently
+    /// up to a fixed bound, so an implementation must allow concurrent calls.
     fn plan<'a>(
         &'a self,
         stream: &'a StreamName,
