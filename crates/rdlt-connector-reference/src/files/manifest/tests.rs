@@ -439,3 +439,8 @@ fn a_manifest_of_another_format_or_with_a_field_it_does_not_know_is_refused() {
         assert_eq!(error.code(), Some(MANIFEST_INVALID), "case {index}");
     }
 }
+
+#[test]
+fn a_commit_time_before_the_epoch_is_kept_as_the_epoch() {
+    assert_eq!(truncated(UNIX_EPOCH - Duration::from_secs(1)), UNIX_EPOCH);
+}
