@@ -1062,6 +1062,43 @@ fn held_within_charge(keys: usize, value: &str) {
     );
 }
 
+#[test]
+fn a_batch_holds_its_columns_at_their_count_not_the_builders_capacity() {
+    let heap = &crate::cost::tests::HEAP;
+    let keys = 1_025;
+    let fields: Vec<String> = (0..keys).map(|key| format!("\"c{key}\":1")).collect();
+    let records = Bytes::from(format!("{{{}}}", fields.join(",")));
+    let before = heap.current_usage();
+    let batches = crate::compute::ready(shred(
+        &crate::compute::Pool::inline(),
+        std::slice::from_ref(&records),
+        1 << 20,
+        limits(),
+    ))
+    .unwrap();
+    let held = heap.current_usage() - before;
+    let batch = batches.first().unwrap();
+    assert_eq!(batch.num_columns(), keys);
+    let arrays: usize = batch
+        .columns()
+        .iter()
+        .take(keys)
+        .map(Array::get_array_memory_size)
+        .sum();
+    let schema: usize = batch
+        .schema()
+        .fields()
+        .iter()
+        .take(keys)
+        .map(|field| size_of_val(field.as_ref()) + field.name().len() + 16)
+        .sum();
+    // What the batch holds beside its arrays and schema: the vector of columns, the arrays'
+    // handles and the batch itself; the builders' columns alone would take sixteen times that.
+    let extra = held.saturating_sub(arrays + schema);
+    let vector = keys * size_of::<arrow_array::ArrayRef>();
+    assert!(extra <= vector + 128 * 1024, "held {held}, extra {extra}");
+}
+
 /// How many chunks shredding `push` in one chunk builds again, and the batch.
 fn built_again(push: &str) -> (u64, RecordBatch) {
     let pool = crate::compute::Pool::inline();
