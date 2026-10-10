@@ -156,9 +156,10 @@ takes at most an hour unless `--timeout` says otherwise or `--no-timeout` lifts 
 clause being checked then fails, and nothing more is started.
 - A source clause holds at most 64 MiB and 1,048,576 rows of what its reads send, all its reads \
 together, and renders at most 64 MiB of text; a kill clause loads at most 100,000 rows and \
-64 MiB. A source that holds more leaves the clause unobserved. A JSON push is charged a row for \
-each record its text holds before any is parsed, and a record of more than 1 MiB leaves the \
-clause unobserved.
+64 MiB. A push is charged as the engine admits it: a batch what it keeps alive, and JSON three \
+times its text. A source that holds more leaves the clause unobserved. A JSON push is charged a \
+row for each record its text holds before any is parsed, and a record of more than 1 MiB leaves \
+the clause unobserved.
 - `S-RESUME` resumes from every checkpoint of a read that sent five at most, and else from \
 five spread from the first to the last: a resume that is wrong only from a checkpoint between \
 them is not caught. It compares the pushes of a resumed read only while their batches, with the \

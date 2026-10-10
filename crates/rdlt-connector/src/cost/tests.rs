@@ -16,9 +16,11 @@ use arrow_array::{
 };
 use arrow_buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields, IntervalUnit, UnionFields};
+use bytes::Bytes;
 use proptest::prelude::*;
 
-use super::{Allocations, Piece, Rendering, nulls, schema_bytes};
+use super::{Allocations, JSON_CHARGE, Piece, Rendering, nulls, push_charge, schema_bytes};
+use crate::sink::Push;
 use crate::types::TypeKind;
 
 /// A destination storing every scalar as it is.
@@ -466,8 +468,7 @@ fn a_batch_holds_every_allocation_it_pins_once() {
     let held = bytes + schema_bytes(&shared.schema());
     assert_eq!(schema_bytes(&shared.schema()), 2 * 129);
     assert_eq!(Allocations::of(&shared).bytes(), held);
-    assert_eq!(native().cost(&shared, u64::MAX).held, held);
-    assert!(native().cost(&shared, u64::MAX).charge() >= bytes);
+    assert_eq!(push_charge(&Push::Arrow(shared)), held);
 }
 
 #[test]
@@ -477,10 +478,29 @@ fn a_dictionary_column_holds_values_no_key_names() {
     let keyed: ArrayRef = Arc::new(
         DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![1]), Arc::new(values)).unwrap(),
     );
-    let cost = native().cost(&batch(keyed), u64::MAX);
-    assert!(cost.expanded < 100, "{cost:?}");
-    assert!(cost.held >= 1 << 20, "{cost:?}");
-    assert_eq!(cost.charge(), cost.held);
+    let keyed = batch(keyed);
+    assert!(native().expanded(&keyed, 0..1, u64::MAX) < 100);
+    assert!(Allocations::of(&keyed).bytes() >= 1 << 20);
+}
+
+#[test]
+fn a_push_is_charged_what_it_keeps_alive_and_json_three_bytes_a_byte_of_text() {
+    let large = "x".repeat(1 << 16);
+    let values = StringArray::from(vec![large.as_str()]);
+    let keyed: ArrayRef = Arc::new(
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0; 1024]), Arc::new(values))
+            .unwrap(),
+    );
+    let keyed = batch(keyed);
+    let held = Allocations::of(&keyed).bytes();
+    assert!(native().expanded(&keyed, 0..1024, u64::MAX) > held);
+    assert_eq!(push_charge(&Push::Arrow(keyed.clone())), held);
+    assert_eq!(push_charge(&Push::Changes(keyed)), held);
+    assert_eq!(
+        push_charge(&Push::Json(Bytes::from_static(b"[{}]"))),
+        4 * JSON_CHARGE
+    );
+    assert_eq!(JSON_CHARGE, 3);
 }
 
 #[test]
@@ -502,7 +522,7 @@ fn allocations_count_only_what_a_set_did_not_hold() {
 
 #[test]
 fn an_allocation_arrow_did_not_make_counts_whole() {
-    let owner = bytes::Bytes::from(vec![0_u8; 4_096]);
+    let owner = Bytes::from(vec![0_u8; 4_096]);
     let column: ArrayRef = Arc::new(Int8Array::new(
         ScalarBuffer::new(Buffer::from(owner), 4_000, 96),
         None,

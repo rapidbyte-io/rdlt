@@ -13,7 +13,8 @@ use arrow_array::{
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field, Fields};
-use rdlt_connector::cost::Rendering;
+use rdlt_connector::Push;
+use rdlt_connector::cost::{Rendering, push_charge};
 use rdlt_engine::RunStatus;
 
 use crate::HEAP;
@@ -43,29 +44,37 @@ fn costing_a_batch_allocates_nothing_a_value() {
     let keyed = DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0]), Arc::new(list))
         .expect("a valid dictionary");
     let batch = batch(Arc::new(keyed));
+    let push = Push::Arrow(batch.clone());
     let rendering = Rendering::text();
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
-    let cost = rendering.cost(&batch, u64::MAX);
+    let charged = push_charge(&push);
+    let expanded = rendering.expanded(&batch, 0..batch.num_rows(), u64::MAX);
     let cuts = rendering.measure(&batch, 1 << 20).cuts();
     let peak = HEAP.peak_usage().saturating_sub(before);
-    assert!(cost.expanded >= u64::try_from(ITEMS).expect("a count"));
+    // The booleans are held as bits.
+    assert!(charged >= u64::try_from(ITEMS / 8).expect("a count"));
+    assert!(expanded >= u64::try_from(ITEMS).expect("a count"));
     assert_eq!(cuts.len(), 1);
     assert!(peak < 64 << 10, "costing allocated {peak} bytes");
 }
 
-/// What costing and cutting `batch` allocates at its peak, and what the batch is charged.
+/// What charging, costing and cutting `batch` allocates at its peak, and what the batch expands
+/// to.
 fn costing(batch: &RecordBatch, max: u64) -> (usize, u64) {
+    let push = Push::Arrow(batch.clone());
     let rendering = Rendering::text();
     HEAP.reset_peak_usage();
     let before = HEAP.current_usage();
-    let cost = rendering.cost(batch, u64::MAX);
+    let charged = push_charge(&push);
+    let expanded = rendering.expanded(batch, 0..batch.num_rows(), u64::MAX);
     let cuts = rendering.measure(batch, max).cuts();
     let peak = HEAP.peak_usage().saturating_sub(before);
+    assert!(charged > 0, "a batch keeps its buffers alive");
     assert_eq!(cuts.last().map(|piece| piece.end), Some(batch.num_rows()));
     // The cuts themselves are a word a piece.
     let cuts = cuts.capacity() * size_of::<rdlt_connector::cost::Piece>();
-    (peak.saturating_sub(cuts), cost.charge())
+    (peak.saturating_sub(cuts), expanded)
 }
 
 /// A dictionary of `values` lists of twenty views each, keyed by `keys`.
@@ -104,15 +113,15 @@ fn costing_holds_nothing_for_the_values_no_row_names() {
 }
 
 #[test]
-fn costing_remembers_less_than_it_charges() {
+fn costing_remembers_less_than_the_batch_expands_to() {
     // Every one of a hundred thousand lists is named twice: each is remembered, in a few
-    // words, and charged for its twenty views twice over.
+    // words, and expands to its twenty views twice over.
     const VALUES: usize = 100_000;
     let keys = (0..2 * VALUES).map(|row| i32::try_from(row % VALUES).expect("a key"));
-    let (peak, charged) = costing(&keyed_lists(VALUES, keys.collect()), 1 << 20);
+    let (peak, expanded) = costing(&keyed_lists(VALUES, keys.collect()), 1 << 20);
     assert!(peak <= 16 << 20, "costing allocated {peak} bytes");
-    let charged = usize::try_from(charged).expect("a charge in memory");
-    assert!(peak <= charged / 16, "{peak} bytes to charge {charged}");
+    let expanded = usize::try_from(expanded).expect("an expansion in memory");
+    assert!(peak <= expanded / 16, "{peak} bytes to measure {expanded}");
 }
 
 #[tokio::test(start_paused = true)]

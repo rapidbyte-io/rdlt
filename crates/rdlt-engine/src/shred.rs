@@ -74,7 +74,7 @@ impl ShredLimits {
     pub(crate) fn new(columns: u64) -> Self {
         Self {
             columns,
-            admitted: crate::cost::JSON_CHARGE - 1,
+            admitted: rdlt_connector::cost::JSON_CHARGE - 1,
         }
     }
 

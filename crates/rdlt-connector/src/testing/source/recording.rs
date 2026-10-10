@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::json;
 use crate::catalog::StreamSpec;
-use crate::cost::Rendering;
+use crate::cost::push_charge;
 use crate::cursor::Cursor;
 use crate::sink::{Push, SourceEvent, partition_channel};
 use crate::source::{Partition, ReadRequest, Source};
@@ -42,9 +42,7 @@ impl Budget {
             Push::Arrow(batch) | Push::Changes(batch) => batch.num_rows(),
             Push::Json(text) => json::counted(text).await?,
         };
-        // As the engine charges a push, for what holds each value as it is.
-        let limit = u64::try_from(HELD_BYTES).unwrap_or(u64::MAX);
-        let bytes = Rendering::native().charge(push, limit);
+        let bytes = push_charge(push);
         self.charge(usize::try_from(bytes).unwrap_or(usize::MAX), rows)
     }
 

@@ -9,7 +9,7 @@ use arrow_array::{
 use bytes::Bytes;
 
 use super::{Budget, spend};
-use crate::cost::Rendering;
+use crate::cost::{Allocations, push_charge};
 use crate::cursor::Cursor;
 use crate::sink::Push;
 use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES, HELD_ROWS};
@@ -91,7 +91,7 @@ async fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_
         for push in [arrow, changes] {
             let budget = Budget::new();
             budget.push(&push).await.unwrap();
-            let cost = Rendering::native().charge(&push, u64::MAX);
+            let cost = push_charge(&push);
             let bytes = usize::try_from(cost).unwrap() + HELD_EVENT_BYTES;
             assert_eq!(
                 left(&budget),
@@ -108,12 +108,12 @@ async fn each_push_is_charged_its_bytes_its_rows_and_what_holds_it_whatever_its_
     // A JSON push is charged a row for each record its text holds.
     assert_eq!(
         left(&budget),
-        (HELD_BYTES - 9 - HELD_EVENT_BYTES, HELD_ROWS - 1)
+        (HELD_BYTES - 27 - HELD_EVENT_BYTES, HELD_ROWS - 1)
     );
     budget.cursor(&Cursor::new(1, b"abc").unwrap()).unwrap();
     assert_eq!(
         left(&budget),
-        (HELD_BYTES - 12 - 2 * HELD_EVENT_BYTES, HELD_ROWS - 1)
+        (HELD_BYTES - 30 - 2 * HELD_EVENT_BYTES, HELD_ROWS - 1)
     );
 }
 
@@ -138,9 +138,28 @@ async fn a_clause_holds_up_to_its_rows_and_its_bytes_and_nothing_once_beyond_eit
     assert!(budget.cursor(&cursor).is_err());
     assert!(budget.push(&nulls(1)).await.is_err());
     let budget = Budget::new();
-    let half = Push::Json(Bytes::from(vec![b' '; HELD_BYTES / 2 - HELD_EVENT_BYTES]));
-    budget.push(&half).await.unwrap();
-    budget.push(&half).await.unwrap();
+    // Text charged three bytes a byte, with what holds it, takes every byte a clause holds.
+    let third = Push::Json(Bytes::from(vec![b' '; (HELD_BYTES - HELD_EVENT_BYTES) / 3]));
+    budget.push(&third).await.unwrap();
     assert_eq!(left(&budget).0, 0);
     assert!(budget.cursor(&cursor).is_err());
+}
+
+#[tokio::test]
+async fn a_push_is_charged_what_it_keeps_alive_not_what_it_expands_to() {
+    // A value of 64 KiB named by every one of 1024 rows: 64 MiB once each row holds its own.
+    let large = "x".repeat(1 << 16);
+    let values = StringArray::from(vec![large.as_str()]);
+    let keyed: ArrayRef = Arc::new(
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0; 1024]), Arc::new(values))
+            .unwrap(),
+    );
+    let pushed = batch(keyed);
+    let held = usize::try_from(Allocations::of(&pushed).bytes()).unwrap();
+    let budget = Budget::new();
+    budget.push(&Push::Arrow(pushed)).await.unwrap();
+    assert_eq!(
+        left(&budget),
+        (HELD_BYTES - held - HELD_EVENT_BYTES, HELD_ROWS - 1024)
+    );
 }

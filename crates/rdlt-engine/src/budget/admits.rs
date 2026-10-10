@@ -4,11 +4,11 @@
 #[cfg(test)]
 mod tests;
 
+use rdlt_connector::cost::JSON_CHARGE;
 use rdlt_wire::Limits;
 use rdlt_wire::limits::Class;
 
 use super::Shares;
-use crate::cost::JSON_CHARGE;
 use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 
 /// The limits on what a read sends that a budget of `shares`, read by `readers` reads at once at
