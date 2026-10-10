@@ -5,7 +5,13 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use arrow_array::{ArrayRef, BinaryArray, NullArray, RecordBatch, TimestampSecondArray};
+use arrow_array::types::Int32Type;
+use arrow_array::{
+    ArrayRef, BinaryArray, DictionaryArray, Int8Array, Int32Array, ListArray, NullArray,
+    RecordBatch, TimestampSecondArray,
+};
+use arrow_buffer::OffsetBuffer;
+use arrow_schema::{DataType, Field};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -41,7 +47,8 @@ struct FloodConfig {
     /// The name its reads are counted under, apart from every other test's.
     name: String,
     /// What each push holds: `wide`, a row of a mebibyte; `nulls`, a million rows of
-    /// nothing; `edge`, an instant no calendar holds once its zone's offset is added.
+    /// nothing; `edge`, an instant no calendar holds once its zone's offset is added; `keyed`, a
+    /// quarter million rows each naming one list of four million items.
     pushes: String,
     /// How many pushes a read sends, unless it is stopped.
     count: u64,
@@ -104,6 +111,18 @@ impl ReadStream<Flood> for Pushes {
         let column: ArrayRef = match source.0.pushes.as_str() {
             "wide" => Arc::new(BinaryArray::from_iter_values([vec![7_u8; 1 << 20]])),
             "nulls" => Arc::new(NullArray::new(1 << 20)),
+            "keyed" => {
+                let items = Int8Array::from(vec![0_i8; 1 << 22]);
+                let item = Arc::new(Field::new("item", DataType::Int8, true));
+                let list = ListArray::new(
+                    item,
+                    OffsetBuffer::from_lengths([1 << 22]),
+                    Arc::new(items),
+                    None,
+                );
+                let keys = Int32Array::from(vec![0; 1 << 18]);
+                Arc::new(DictionaryArray::<Int32Type>::try_new(keys, Arc::new(list)).unwrap())
+            }
             _ => Arc::new(
                 TimestampSecondArray::from(vec![8_210_266_876_799_i64]).with_timezone("+14:00"),
             ),
@@ -285,5 +304,32 @@ async fn json_rows_within_what_a_clause_holds_are_compared_row_by_row() {
         report.outcome("S-RESUME"),
         Some(&Outcome::Passed),
         "{report}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn rows_naming_one_large_value_are_compared_within_what_a_comparison_renders() {
+    // Two pushes of a quarter million rows naming one list of four million items: a few
+    // mebibytes held, and a million million items once each row holds its own.
+    let before = peak();
+    let began = Instant::now();
+    let config = json!({ "name": "keyed", "pushes": "keyed", "count": 2, "checkpoints": true });
+    let report = certify_source::<Flood>(config).await;
+    assert!(failed(&report).is_empty(), "{report}");
+    for clause in ["S-RESUME", "S-PARTITION"] {
+        let outcome = report.outcome(clause);
+        assert!(
+            matches!(outcome, Some(Outcome::Unobserved(_))),
+            "{clause}: {report}"
+        );
+    }
+    // The text rendered within its limit, its strings at most twice their length, and the pushes.
+    let grown = peak().saturating_sub(before);
+    assert!(grown < 192, "{grown} MiB more were held");
+    assert!(
+        began.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        began.elapsed()
     );
 }
