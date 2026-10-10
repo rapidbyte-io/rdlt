@@ -603,3 +603,23 @@ fn a_batch_nested_deeper_than_a_table_may_be_still_hashes() {
     assert_eq!(root_ids(&batch, &[]).unwrap().len(), 1);
     assert_eq!(root_ids(&batch, &[Arc::from("k")]).unwrap().len(), 1);
 }
+
+#[test]
+fn ids_take_one_buffer_of_exactly_their_bytes() {
+    let exact = |ids: &BinaryArray, rows: usize| {
+        assert_eq!(ids.len(), rows);
+        assert_eq!(ids.values().capacity(), rows * 32);
+        assert_eq!(ids.offsets().inner().inner().capacity(), (rows + 1) * 4);
+        assert!(ids.nulls().is_none());
+    };
+    for rows in [0_usize, 1, 1000] {
+        let values = Int64Array::from_iter_values((0..i64::try_from(rows).unwrap()).take(rows));
+        let batch = RecordBatch::try_from_iter([("v", Arc::new(values) as ArrayRef)]).unwrap();
+        let roots = root_ids(&batch, &[]).unwrap();
+        exact(&roots, rows);
+        exact(&root_ids(&batch, &[Arc::from("v")]).unwrap(), rows);
+        exact(&super::version_hashes(&batch).unwrap(), rows);
+        let idx = Int64Array::from_iter_values((0..i64::try_from(rows).unwrap()).take(rows));
+        exact(&super::child_ids(&roots, &idx), rows);
+    }
+}
