@@ -483,6 +483,30 @@ async fn a_publish_whose_step_fails_once_its_log_is_closed_is_refused_as_removed
     }
 }
 
+#[tokio::test]
+async fn a_removal_whose_directory_cannot_go_but_for_what_fills_it_fails() {
+    let base = tempfile::tempdir().expect("a temporary directory");
+    let root = base.path().canonicalize().expect("a real path");
+    let wal = LocalWal::new(root.join("wal"));
+    let orders = pipeline("orders");
+    let load = chunk(1, 0).load;
+    published(&wal, &orders, chunk(1, 0), b"first").await;
+    // As the removal closes the log, a file takes its directory's name.
+    let load_dir = wal.pipeline_dir(&orders).join(names::load(load));
+    let armed = std::sync::atomic::AtomicBool::new(true);
+    *super::dir::SYNCING.lock() = Some(Box::new(move |path: &Path| {
+        if path == load_dir && armed.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            std::fs::remove_dir_all(path)?;
+            std::fs::write(path, b"")?;
+        }
+        Ok(())
+    }));
+    let failed = wal.remove_log(&orders, load).await;
+    *super::dir::SYNCING.lock() = None;
+    let failed = failed.expect_err("a file is no directory to remove");
+    assert_eq!(failed.kind(), std::io::ErrorKind::NotADirectory, "{failed}");
+}
+
 /// The directories synced under `base` since `from` syncs were recorded.
 fn synced_under(base: &Path, from: usize) -> Vec<std::path::PathBuf> {
     SYNCED.lock()[from..]
