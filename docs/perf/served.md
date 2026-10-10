@@ -147,8 +147,7 @@ destination gains beyond noise; the source does not, so the room keeps growing.
   ones. The medians agree: every large-frame case gains 2.4–10 %, every small-frame case is
   within 3 %. Only the served destination over the socket clears the noise; the served source's
   rounds over the socket spread 15 % on their own.
-- **Not measured.** Budget memory waits, the share of `realloc` in a profile, and rounds on
-  CPUs 4–11.
+- **Not measured.** Budget memory waits, and rounds on CPUs 4–11.
 - **Measured again** once a served write ran in two stages, on the process bench (below): with
   the two stages, reserving once moved `process/socket/destination/64x80000` 1 474 against
   1 460 MB/s and `process/tls/destination/64x80000` 1 286 against 1 268, within the rounds'
@@ -470,3 +469,135 @@ those in which the process had at least half the samples of its busiest second.
   holds the destination under one CPU, is answered: with its process at 1.15 CPUs busy, the
   connection task holds 0.37 of a core in user mode and at most 0.68 with all system time
   counted, so it is not what limits the destination.
+
+## Relocation and the arriving copy
+
+A served destination copies each batch frame twice in user space as it arrives. `Bounded` gathers
+the arriving message into one buffer, the room growing as it arrives, and relocation then lays each
+buffer out at the alignment its column's type needs, so that Arrow copies none to align it (ADR
+0038). The question was whether dropping `Bounded`'s copy would pay, with relocation kept as the one
+copy: `Bounded` would keep a message as the transport's chunks, and relocation would gather from
+them.
+
+The rule set before measuring: build it only if, profiled on `served/socket/destination/64x80000`
+on CPUs 4–11, both hold: relocation plus `Bounded`'s copy are at least 15 % of the receive stage's
+cycles, and the receive stage holds at least 0.8 of a core. Otherwise ADR 0038 stands unchanged.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-10, `61957288`, governor `powersave`, under the
+measurement lock, in two layouts:
+
+- **In one process.** The host, both connectors and the destination in the bench's process on
+  CPUs 4–11: the judged case.
+- **Apart.** The destination in a process of its own on CPUs 4–11, the host on 0–3
+  (`served/process/socket/destination/64x80000`), which corroborates.
+
+Each layout was profiled twice on the `just profiling served` build, 15 seconds a profile:
+
+```
+perf record -e task-clock -c 1000000 --call-graph fp -- \
+  taskset -c 4-11 "$bin" --bench '^served/socket/destination/64x80000$' --profile-time 15
+```
+
+and, apart, `RDLT_BENCH_CONNECTOR_CORES=4-11 taskset -c 0-3` over the process case. A sample is one
+millisecond of a thread's user-mode CPU. The one-minute load averages around the profiles were
+2.2–3.2. One `just bench served` round of each layout (`just bench served 4-11
+'^served/socket/destination/64x80000$'` and `just bench served 0-3
+'^served/process/socket/destination/64x80000$' 4-11`) gives the throughput; its load average
+before was 1.77 for the first and 3.56 for the second. Rounds stopped at two a layout: they agree
+to within three points and sit far from the cores threshold, and a rule that two consistent rounds
+settle needs no more.
+
+The receive stage is every sample whose stack holds the read of a frame into a decoded batch. The
+leaf of 74–77 % of its samples is `libc`, stripped here, and frame pointers lose its caller, so
+each such sample went to the first frame above it outside `libc`: `realloc` under the growth of
+`Bounded`'s room is its realloc copy, a callee of the decoder's frame is relocation, and a callee
+of the `Bounded` future is its gathering copy. A profile with DWARF unwinding gives the same three
+classes directly for the samples it could unwind, within a few points (relocation 37 %, gathering
+35 %, realloc 7 %), but most of its `libc` samples had no stack, so only the proportions are
+taken from it.
+
+| | In one process, round 1 | Round 2 | Apart, round 1 | Round 2 |
+|---|---|---|---|---|
+| Receive stage, cores, median (max) | 0.495 (0.532) | 0.524 (0.556) | 0.371 (0.410) | 0.369 (0.407) |
+| Receive stage, share of the process | 40.9 % | 40.3 % | 66.7 % | 67.0 % |
+| Relocation, of the receive stage | 33.7 % | 33.9 % | 33.9 % | 34.4 % |
+| `Bounded`'s copy, of the receive stage | 42.3 % | 42.4 % | 40.3 % | 40.0 % |
+| Relocation and `Bounded`'s copy | 76.0 % | 76.3 % | 74.2 % | 74.3 % |
+| Scan (`scan::decoded`) | 0.1 % | 0.1 % | 0.2 % | 0.1 % |
+| Decode total | 56.8 % | 56.8 % | 58.9 % | 59.3 % |
+
+"Share of the process" is of the destination's processes apart. `Bounded`'s copy is the gathering
+copy and the realloc growth: 34.4 and 8.0 % in the first round in one process, 31.3 and 11.1 % in
+the second, 33.9 and 6.4 % and 34.1 and 5.8 % apart. Decode total includes relocation and Arrow's
+building of the arrays. The copy that splits off a finished message never shows.
+
+The bench round, with 1 GiB taken as 1 073.74 MB: in one process 1 567 MB/s (1.459 GiB/s, range
+1.425–1.499), 1.263 CPU s a GB and 2.01 CPUs busy at 0.66 instructions a cycle; apart 1 427 MB/s
+(1.329 GiB/s, range 1.217–1.460), 1.569 CPU s a GB (0.494 the bench's process, 1.047 the
+destination's), the destination's process 1.528 CPUs busy (1.422–1.620), 2.03 busy overall at 0.83
+instructions a cycle.
+
+### Kernel time
+
+User-mode samples miss the receive stage's page faults, the only kernel time known for it: it makes
+no system call of its own. The process is 2.01 CPUs busy by `perf stat` against 1.18 user cores
+sampled, so about 0.8 of a core is kernel time. Page faults were sampled
+(`perf record -e page-faults -c 8 --call-graph fp`, 15 seconds a layout) and attributed with the
+same classes:
+
+| | In one process | Apart |
+|---|---|---|
+| Faults a second, steady median | 239 000 | 236 000 |
+| In the receive stage | 59.0 % (132 000 a second) | 97.5 % (229 000 a second) |
+| Its `Bounded` gathering, relocation, realloc growth | 27.8, 24.5, 6.7 % | 45.2, 46.3, 6.0 % |
+| In the writer stage | 1.1 % | 1.8 % |
+
+In one process, 39.8 % of the faults are the host's and the source side's, which share the process.
+
+A fault's kernel cost was measured as the change in system time over the change in faults, one
+process against itself with glibc's heap trimming off and the mmap threshold fixed at 32 MiB
+(`GLIBC_TUNABLES=glibc.malloc.trim_threshold=268435456:glibc.malloc.mmap_threshold=33554432`, as
+under "A served write in two stages"), interleaved, 15 seconds each:
+
+| Run | User s | System s | Page faults |
+|---|---|---|---|
+| Defaults 1 | 17.66 | 12.93 | 2 828 861 |
+| Tuned 1 | 20.81 | 10.27 | 161 078 |
+| Defaults 2 | 18.13 | 13.09 | 2 944 622 |
+| Tuned 2 | 21.69 | 10.23 | 161 306 |
+
+That is 1.00 and 1.03 µs a fault, which includes the `mremap`, `munmap` and `madvise` the
+thresholds also remove. The tuned runs do about a fifth more work in the same time, so the cost is
+taken as 1.5 µs at the pessimistic end. Faults are 22–33 % of the process's system time (2.8
+million faults at 1.0–1.5 µs is 2.8–4.3 s of 13 s); the rest, the socket's reads and writes, runs
+in the connection task and the host's.
+
+The receive stage's cores with its faults counted, its user cores plus its faults a second times
+the cost of a fault:
+
+| | In one process | Apart |
+|---|---|---|
+| User cores | 0.51 | 0.37 |
+| Faults at 1.0 µs, 1.5 µs | 0.13, 0.20 | 0.23, 0.34 |
+| Receive stage, cores at 1.0 µs, 1.5 µs | 0.64, 0.71 | 0.60, 0.71 |
+| Upper bound, all the process's faults at 1.0 µs, 1.5 µs | 0.75, 0.87 | 0.61, 0.72 |
+
+The upper bound is not reachable in one process: 40 % of its faults are the host's. Only all of
+them at 1.5 µs, 0.87, crosses 0.8, and the measured split rules it out.
+
+- **Where the destination's cycles go.** Apart, in user mode: the receive stage 66.7 % of the
+  process's samples, the writer stage (`serve::write::write`, the sink included) 27.0 %, the
+  runtime 4.2 % and the connection task 1.8 %. In one process, with the host and the source side
+  beside it, the receive stage is 40.9 %, the writer stage 15.3 % and the connection task 2.7 %.
+  The process holds 1.2 user cores in one process and the destination's process 0.55 apart, for
+  1 427–1 567 MB/s.
+- **Arrow's UTF-8 validation** is about a fifth of the receive stage: `run_utf8_validation` 7 %
+  and the array-building closure around it 11–13 %. The scan is 0.1 %.
+- **Realloc growth** is 6–11 % of the receive stage, of 74–77 % that is copying.
+- **Against the rule.** The copy condition holds: 76 % in one process and 74 % apart, against
+  15 %. The cores condition does not: 0.495 and 0.524 in user mode in one process, 0.37 apart, and
+  at most 0.71 with the faults counted at 1.5 µs, against 0.8. So ADR 0038 stands, and `Bounded`
+  keeps gathering each message whole.
+- **What removing both copies could free at most**, the stage's copy share times its cores in user
+  mode: 0.76 × 0.495 = 0.38 of a core in one process (0.763 × 0.524 = 0.40 in the second round) and
+  0.742 × 0.371 = 0.28 apart, from a process that holds 1.2 user cores and moves 1 427–1 567 MB/s.
