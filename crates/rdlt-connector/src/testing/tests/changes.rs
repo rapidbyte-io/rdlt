@@ -220,9 +220,7 @@ impl Merging<'_> {
                     .schema()
                     .index_of(field.name())
                     .expect("a stored column");
-                let flagged = flags
-                    .get(ordinal / 8)
-                    .is_some_and(|byte| byte & (1 << (ordinal % 8)) != 0);
+                let flagged = crate::UnchangedFlags::new(&flags).contains(ordinal);
                 let kept = current
                     .filter(|_| flagged && !self.flaws.drop_unchanged)
                     .and_then(|current| current.column_by_name(field.name()));

@@ -137,6 +137,29 @@ fn unchanged_flags_stage_as_a_byte_at_the_ordinal_of_each_table_column_they_name
 }
 
 #[test]
+fn flags_past_a_long_zero_tail_name_no_field() {
+    let (connection, planner) = database();
+    let orders = changed("orders");
+    let fields = [
+        ("seq", LogicalType::Int64, false),
+        ("id", LogicalType::Int64, false),
+        ("name", LogicalType::Int64, true),
+    ];
+    apply(&connection, &planner, &create(&orders, &fields)).unwrap();
+    let target = columns(&connection, &planner, "orders");
+    let mut tail = vec![0; 1 << 16];
+    tail.push(0xff);
+    let batch = written(&[Some(tail), Some(vec![0b10])]);
+    let staged = staged_changes(&batch, &orders, &target).unwrap();
+    let flags = staged
+        .column_by_name("unchanged")
+        .unwrap()
+        .as_binary::<i32>();
+    assert!(flags.is_null(0));
+    assert_eq!(flags.value(1), [0, 0, 1]);
+}
+
+#[test]
 fn flags_on_a_key_a_sequence_or_a_column_the_table_lacks_are_refused() {
     let (connection, planner) = database();
     let orders = changed("orders");

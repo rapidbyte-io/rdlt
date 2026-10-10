@@ -4,7 +4,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::Int8Type;
 use arrow_array::{Array, RecordBatch};
 use arrow_schema::{ArrowError, DataType, SchemaRef};
-use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey};
+use rdlt_connector::{ChangeColumns, ChangeOp, Deletion, MergeKey, UnchangedFlags};
 
 use super::refused::{
     DELETION_UNTIMED, FLAG_ON_KEY, FLAG_ON_MISSING_COLUMN, FLAGS_INVALID, MERGE_KEY_INVALID,
@@ -116,19 +116,11 @@ fn flags(
         })
         .collect();
     for row in (0..flags.len()).filter(|row| flags.is_valid(*row)) {
-        for (byte, bits) in flags
-            .value(row)
-            .iter()
-            .enumerate()
-            .filter(|(_, bits)| **bits != 0)
-        {
-            for bit in (0..8).filter(|bit| bits & (1 << bit) != 0) {
-                let field = byte * 8 + bit;
-                if let Some(code) = refusals.get(field).copied().flatten() {
-                    let name = schema.field(field).name();
-                    let message = format!("a change flags {name} unchanged");
-                    return Err(refused(code, message));
-                }
+        for field in UnchangedFlags::new(flags.value(row)).ordinals_below(refusals.len()) {
+            if let Some(code) = refusals[field] {
+                let name = schema.field(field).name();
+                let message = format!("a change flags {name} unchanged");
+                return Err(refused(code, message));
             }
         }
     }

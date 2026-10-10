@@ -11,7 +11,7 @@ use arrow_array::{Array, ArrayRef, RecordBatch, new_null_array};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
 use rdlt_connector::{
     ChangeColumns, ChangeOp, ColumnKey, ColumnPath, ConnectorError, Deletion, MergeKey, NameMap,
-    Result, RootKey, TableSchema,
+    Result, RootKey, TableSchema, UnchangedFlags,
 };
 use rdlt_testkit::canon::Canon;
 use rdlt_testkit::decode;
@@ -206,17 +206,13 @@ fn unchanged(row: &Stored, changes: &ChangeColumns) -> Vec<String> {
     if flags.is_null(0) {
         return Vec::new();
     }
-    let bitmap = flags.value(0);
+    let bitmap = UnchangedFlags::new(flags.value(0));
     row.row
         .schema()
         .fields()
         .iter()
         .enumerate()
-        .filter(|(ordinal, _)| {
-            bitmap
-                .get(ordinal / 8)
-                .is_some_and(|byte| byte & (1 << (ordinal % 8)) != 0)
-        })
+        .filter(|(ordinal, _)| bitmap.contains(*ordinal))
         .map(|(_, field)| field.name().clone())
         .collect()
 }

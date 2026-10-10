@@ -100,6 +100,21 @@ fn a_flag_on_a_key_the_sequence_or_no_stored_column_is_refused_under_its_code() 
 }
 
 #[test]
+fn flags_past_a_long_zero_tail_name_no_field() {
+    let mut tail = vec![0; 1 << 16];
+    tail.push(0xff);
+    let merged = apply(
+        &empty(),
+        &[&[Row {
+            unchanged: Some(tail),
+            ..row(1, "a", 1)
+        }]],
+        Deletion::Hard,
+    );
+    assert_eq!(rows(&merged), [(1, Some("a".into()), 1, None)]);
+}
+
+#[test]
 fn a_row_without_a_sequence_or_an_op_a_change_stream_has_is_refused_under_its_code() {
     let batch = written(&[row(1, "a", 1)]);
     let unsequenced = with(

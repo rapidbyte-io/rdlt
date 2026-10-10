@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use arrow_array::builder::BinaryBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int8Type, TimestampMicrosecondType};
 use arrow_array::{
@@ -17,7 +16,9 @@ use arrow_array::{
 use arrow_row::{RowConverter, SortField};
 use arrow_schema::{ArrowError, DataType};
 use rdlt_connector::cost::Stored;
-use rdlt_connector::{ChangeOp, LogicalType, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN};
+use rdlt_connector::{
+    ChangeOp, LogicalType, OP_COLUMN, SEQ_COLUMN, UNCHANGED_COLUMN, UnchangedFlags, remap_unchanged,
+};
 
 use super::merge::compact;
 use super::{LoweringPlan, Source, Stamp, lower_array};
@@ -79,7 +80,7 @@ impl ChangeRows {
         let data_ordinal = data_ordinals(batch);
         let unchanged = batch
             .column_by_name(UNCHANGED_COLUMN)
-            .map(|flags| remap(flags.as_binary::<i32>(), &data_ordinal));
+            .map(|flags| remap_unchanged(flags.as_binary::<i32>(), &data_ordinal));
         let data = Self::data(batch)?;
         Ok((data, Self { op, seq, unchanged }))
     }
@@ -118,13 +119,7 @@ impl ChangeRows {
         };
         let mut flagged = BTreeSet::new();
         for bitmap in flags.iter().flatten() {
-            for (byte, bits) in bitmap.iter().enumerate() {
-                for bit in 0..8 {
-                    if bits & (1 << bit) != 0 {
-                        flagged.insert(byte * 8 + bit);
-                    }
-                }
-            }
+            flagged.extend(UnchangedFlags::new(bitmap).ordinals());
         }
         flagged.into_iter().collect()
     }
@@ -134,7 +129,7 @@ impl ChangeRows {
     pub(crate) fn unchanged_over(&self, written: &[Option<usize>]) -> ArrayRef {
         let rows = self.op.len();
         match &self.unchanged {
-            Some(flags) => Arc::new(remap(flags, written)),
+            Some(flags) => Arc::new(remap_unchanged(flags, written)),
             None => Arc::new(BinaryArray::new_null(rows)),
         }
     }
@@ -153,30 +148,6 @@ impl ChangeRows {
     pub(crate) fn truncates(&self, row: usize) -> bool {
         self.op(row) == Some(ChangeOp::Truncate)
     }
-}
-
-/// `flags`, bitmaps over some fields' ordinals, over other ordinals: field `i` becomes field
-/// `to[i]`, or is dropped where that is `None`.
-fn remap(flags: &BinaryArray, to: &[Option<usize>]) -> BinaryArray {
-    let mut remapped = BinaryBuilder::with_capacity(flags.len(), flags.len());
-    for bitmap in flags {
-        let Some(bitmap) = bitmap else {
-            remapped.append_null();
-            continue;
-        };
-        let mut out: Vec<u8> = Vec::new();
-        for (ordinal, target) in to.iter().enumerate() {
-            let set = bitmap
-                .get(ordinal / 8)
-                .is_some_and(|byte| byte & (1 << (ordinal % 8)) != 0);
-            if let (true, Some(target)) = (set, target) {
-                out.resize(out.len().max(target / 8 + 1), 0);
-                out[target / 8] |= 1 << (target % 8);
-            }
-        }
-        remapped.append_value(out);
-    }
-    remapped.finish()
 }
 
 /// `batch`, a change stream's merge batch, without the rows a later row of their key supersedes.
