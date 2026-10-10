@@ -23,8 +23,8 @@ mod tests;
 #[derive(Clone, Debug, Default)]
 pub(super) struct Splits(Vec<(usize, LogicalType, Rest)>);
 
-/// Each split column of a batch by its position: its JSON text, plain, and which of its values
-/// its own column holds, null where the column holds none.
+/// Each split column of a batch by its position, in ascending order: its JSON text, plain, and
+/// which of its values its own column holds, null where the column holds none.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Fitted(Vec<(usize, StringArray, BooleanArray)>);
 
@@ -101,9 +101,12 @@ impl Splits {
 impl Fitted {
     fn split(&self, index: usize) -> Result<(&StringArray, &BooleanArray), ArrowError> {
         self.0
-            .iter()
-            .find(|(fitted, _, _)| *fitted == index)
-            .map(|(_, texts, fits)| (texts, fits))
+            .binary_search_by_key(&index, |(fitted, _, _)| *fitted)
+            .ok()
+            .map(|found| {
+                let (_, texts, fits) = &self.0[found];
+                (texts, fits)
+            })
             .ok_or_else(|| {
                 ArrowError::ComputeError("a split column's values were not fitted".to_owned())
             })
