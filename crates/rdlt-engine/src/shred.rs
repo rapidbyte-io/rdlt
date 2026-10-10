@@ -18,6 +18,7 @@ mod cost;
 mod differential;
 mod error;
 mod exact;
+mod keys;
 mod meter;
 mod observe;
 mod observing;
