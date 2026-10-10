@@ -8,7 +8,8 @@ use arrow_json::writer::{Encoder, EncoderFactory, EncoderOptions, NullableEncode
 use arrow_schema::{ArrowError, DataType, FieldRef};
 
 use super::super::temporal;
-use super::{EXTENSION_NAME, render_bytes};
+use super::render_bytes;
+use rdlt_connector::{Field, LogicalType};
 
 /// Encodes the canonical extension types: `Json` text as the JSON it holds, a UUID as its
 /// hyphenated string.
@@ -23,12 +24,12 @@ impl EncoderFactory for Extensions {
         options: &'a EncoderOptions,
     ) -> Result<Option<NullableEncoder<'a>>, ArrowError> {
         let nulls = array.nulls().cloned();
-        let encoder: Box<dyn Encoder + 'a> = match (
-            field.metadata().get(EXTENSION_NAME).map(String::as_str),
-            array.data_type(),
-        ) {
-            (Some("arrow.json"), DataType::Utf8) => Box::new(RawJson(array.as_string::<i32>())),
-            (Some("arrow.uuid"), DataType::FixedSizeBinary(16)) => {
+        let encoder: Box<dyn Encoder + 'a> = match (Field::extension_type(field), array.data_type())
+        {
+            (Some(LogicalType::Json), DataType::Utf8) => {
+                Box::new(RawJson(array.as_string::<i32>()))
+            }
+            (Some(LogicalType::Uuid), DataType::FixedSizeBinary(16)) => {
                 Box::new(UuidText(array.as_fixed_size_binary()))
             }
             // JSON has no non-finite numbers, which arrow-json writes as `null`; they are named.

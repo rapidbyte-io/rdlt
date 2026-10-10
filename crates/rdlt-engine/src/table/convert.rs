@@ -25,9 +25,6 @@ use rdlt_connector::{Field, LogicalType, instants};
 use super::temporal;
 use encoders::Extensions;
 
-/// The Arrow field metadata key naming an extension type.
-const EXTENSION_NAME: &str = "ARROW:extension:name";
-
 #[cfg(test)]
 thread_local! {
     /// How many whole columns this thread converted, which tests read.

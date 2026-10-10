@@ -1,6 +1,5 @@
 //! Mapping between logical types and Arrow types.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, TimeUnit as ArrowTimeUnit};
@@ -36,6 +35,40 @@ impl Field {
         serde_json::from_str(named).ok()
     }
 
+    /// The canonical Arrow extension type `field` names, where its storage type holds it as it is
+    /// or under a dictionary or run-end encoding: `Uuid` over 16-byte fixed binary, `Json` over
+    /// text; `None` for any other field.
+    pub fn extension_type(field: &ArrowField) -> Option<LogicalType> {
+        let storage = match field.data_type() {
+            DataType::Dictionary(_, values) => values.as_ref(),
+            DataType::RunEndEncoded(_, values) => values.data_type(),
+            other => other,
+        };
+        match (
+            field.metadata().get(EXTENSION_NAME).map(String::as_str),
+            storage,
+        ) {
+            (Some(UUID_EXTENSION), DataType::FixedSizeBinary(16)) => Some(LogicalType::Uuid),
+            (Some(JSON_EXTENSION), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) => {
+                Some(LogicalType::Json)
+            }
+            _ => None,
+        }
+    }
+
+    /// `field` carrying the canonical Arrow extension name of `logical`, `Uuid` or `Json`, beside
+    /// the metadata it holds; a field of any other type as it is.
+    pub fn carrying_extension(field: ArrowField, logical: &LogicalType) -> ArrowField {
+        let name = match logical {
+            LogicalType::Uuid => UUID_EXTENSION,
+            LogicalType::Json => JSON_EXTENSION,
+            _ => return field,
+        };
+        let mut metadata = field.metadata().clone();
+        metadata.insert(EXTENSION_NAME.to_owned(), name.to_owned());
+        field.with_metadata(metadata)
+    }
+
     /// The Arrow field for this field; `Uuid` and `Json` carry Arrow's canonical extension names.
     pub fn to_arrow(&self) -> ArrowField {
         let field = ArrowField::new(
@@ -43,18 +76,7 @@ impl Field {
             self.logical_type().to_arrow(),
             self.is_nullable(),
         );
-        let extension = match self.logical_type() {
-            LogicalType::Uuid => Some(UUID_EXTENSION),
-            LogicalType::Json => Some(JSON_EXTENSION),
-            _ => None,
-        };
-        match extension {
-            Some(name) => field.with_metadata(HashMap::from([(
-                EXTENSION_NAME.to_owned(),
-                name.to_owned(),
-            )])),
-            None => field,
-        }
+        Self::carrying_extension(field, self.logical_type())
     }
 
     /// The logical field for an Arrow field.
@@ -62,19 +84,9 @@ impl Field {
     /// Large, view, dictionary and run-end encoded types map to their plain logical type, maps map
     /// to lists of key/value structs, and unsigned integers map to the next wider signed type.
     pub fn from_arrow(field: &ArrowField) -> Result<Self, UnsupportedType> {
-        let extension = field.metadata().get(EXTENSION_NAME).map(String::as_str);
-        // An encoded column keeps its extension type: the encoding holds the storage type.
-        let storage = match field.data_type() {
-            DataType::Dictionary(_, values) => values.as_ref(),
-            DataType::RunEndEncoded(_, values) => values.data_type(),
-            other => other,
-        };
-        let logical_type = match (extension, storage) {
-            (Some(UUID_EXTENSION), DataType::FixedSizeBinary(16)) => LogicalType::Uuid,
-            (Some(JSON_EXTENSION), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) => {
-                LogicalType::Json
-            }
-            _ => from_data_type(field.name(), field.data_type())?,
+        let logical_type = match Self::extension_type(field) {
+            Some(extension) => extension,
+            None => from_data_type(field.name(), field.data_type())?,
         };
         Ok(Self::new(
             field.name().as_str(),

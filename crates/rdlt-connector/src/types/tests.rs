@@ -426,3 +426,67 @@ fn a_written_column_stored_as_another_type_names_its_logical_type() {
     let plain = ArrowField::new("day", DataType::Utf8, true);
     assert_eq!(Field::lowered_from(&plain), None);
 }
+
+#[test]
+fn an_extension_type_is_read_over_any_encoding_of_a_storage_type_that_holds_it() {
+    let named = |data_type: DataType, name: &str| {
+        ArrowField::new("c", data_type, true).with_metadata(HashMap::from([(
+            "ARROW:extension:name".to_owned(),
+            name.to_owned(),
+        )]))
+    };
+    let keyed =
+        |values: DataType| DataType::Dictionary(Box::new(DataType::Int32), Box::new(values));
+    let runs = |values: DataType| {
+        DataType::RunEndEncoded(
+            Arc::new(ArrowField::new("run_ends", DataType::Int32, false)),
+            Arc::new(ArrowField::new("values", values, true)),
+        )
+    };
+    let cases = vec![
+        (
+            named(DataType::FixedSizeBinary(16), "arrow.uuid"),
+            Some(LogicalType::Uuid),
+        ),
+        (
+            named(keyed(DataType::FixedSizeBinary(16)), "arrow.uuid"),
+            Some(LogicalType::Uuid),
+        ),
+        (named(DataType::FixedSizeBinary(8), "arrow.uuid"), None),
+        (named(DataType::Utf8, "arrow.json"), Some(LogicalType::Json)),
+        (
+            named(DataType::LargeUtf8, "arrow.json"),
+            Some(LogicalType::Json),
+        ),
+        (
+            named(DataType::Utf8View, "arrow.json"),
+            Some(LogicalType::Json),
+        ),
+        (
+            named(runs(DataType::Utf8), "arrow.json"),
+            Some(LogicalType::Json),
+        ),
+        (named(DataType::Binary, "arrow.json"), None),
+        (named(DataType::Utf8, "other"), None),
+        (ArrowField::new("c", DataType::Utf8, true), None),
+    ];
+    for (field, expected) in cases {
+        assert_eq!(Field::extension_type(&field), expected, "{field:?}");
+    }
+}
+
+#[test]
+fn a_field_carries_its_logical_type_s_extension_beside_its_other_metadata() {
+    let field = ArrowField::new("c", DataType::Utf8, true)
+        .with_metadata(HashMap::from([("k".to_owned(), "v".to_owned())]));
+    let json = Field::carrying_extension(field.clone(), &LogicalType::Json);
+    assert_eq!(Field::extension_type(&json), Some(LogicalType::Json));
+    assert_eq!(json.metadata().get("k").map(String::as_str), Some("v"));
+    let uuid = ArrowField::new("u", DataType::FixedSizeBinary(16), false);
+    let uuid = Field::carrying_extension(uuid, &LogicalType::Uuid);
+    assert_eq!(Field::extension_type(&uuid), Some(LogicalType::Uuid));
+    assert_eq!(
+        Field::carrying_extension(field.clone(), &LogicalType::Utf8),
+        field
+    );
+}

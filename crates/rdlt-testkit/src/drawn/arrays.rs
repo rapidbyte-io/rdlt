@@ -18,9 +18,6 @@ use rdlt_connector::{LogicalType, TimeUnit};
 
 use super::Scalar;
 
-/// The Arrow field metadata key naming an extension type.
-const EXTENSION_NAME: &str = "ARROW:extension:name";
-
 /// How a column's values travel in Arrow, beside the plain type of their logical type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -68,21 +65,9 @@ pub struct Shape {
 }
 
 /// The Arrow field `name` of `shape` holding `array`: its extension type named where it has one.
-#[expect(clippy::disallowed_types, reason = "Arrow field metadata is a HashMap")]
 pub fn field(name: &str, shape: &Shape, array: &ArrayRef, nullable: bool) -> ArrowField {
     let field = ArrowField::new(name, array.data_type().clone(), nullable);
-    let extension = match shape.logical {
-        LogicalType::Uuid => Some("arrow.uuid"),
-        LogicalType::Json => Some("arrow.json"),
-        _ => None,
-    };
-    match extension {
-        Some(extension) => field.with_metadata(std::collections::HashMap::from([(
-            EXTENSION_NAME.to_owned(),
-            extension.to_owned(),
-        )])),
-        None => field,
-    }
+    rdlt_connector::Field::carrying_extension(field, &shape.logical)
 }
 
 /// `values`, of `shape`, as an Arrow array in its encoding.

@@ -17,6 +17,7 @@ use arrow_array::types::{
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::{ArrowNativeType, BooleanBufferBuilder};
 use arrow_schema::{DataType, Field};
+use rdlt_connector::LogicalType;
 
 use super::{JsonError, check};
 use rows::{Ends, Offsets, Rows, Views};
@@ -27,10 +28,6 @@ mod rows;
 mod tests;
 
 pub(crate) use held::held;
-
-/// The Arrow field metadata key naming an extension type, and the JSON extension's name.
-const EXTENSION_NAME: &str = "ARROW:extension:name";
-const JSON_EXTENSION: &str = "arrow.json";
 
 /// A value of a column of JSON that is not JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,16 +65,7 @@ fn field_holds_json(field: &Field) -> bool {
 
 /// Whether `field` is a column of JSON: the JSON extension over text, as it is or encoded.
 fn is_json(field: &Field) -> bool {
-    let storage = match field.data_type() {
-        DataType::Dictionary(_, values) => values.as_ref(),
-        DataType::RunEndEncoded(_, values) => values.data_type(),
-        other => other,
-    };
-    field.metadata().get(EXTENSION_NAME).map(String::as_str) == Some(JSON_EXTENSION)
-        && matches!(
-            storage,
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-        )
+    rdlt_connector::Field::extension_type(field) == Some(LogicalType::Json)
 }
 
 /// The fields a value of `data_type` holds others in.
