@@ -1,8 +1,9 @@
 //! What a batch costs whoever holds it: the memory it keeps alive, and the memory it becomes
 //! once its encodings are decoded and its values rendered as the destination stores them.
 //!
-//! A batch is charged the larger of the two. What a frame of its rows would hold on the wire is
-//! not measured here: `rdlt_wire::Weigher` weighs that.
+//! A push is charged what it keeps alive ([`push_charge`]); what it becomes bounds what is
+//! lowered, read back or compared at once. What a frame of its rows would hold on the wire is not
+//! measured here: `rdlt_wire::Weigher` weighs that.
 
 mod expanded;
 mod held;
@@ -24,23 +25,6 @@ pub use held::{Allocations, schema_bytes};
 use crate::sink::Push;
 use crate::types::{LogicalType, TypeKind};
 use expanded::Meter;
-
-/// What a batch costs whoever holds it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Cost {
-    /// Bytes: every allocation the batch keeps alive, each counted once.
-    pub held: u64,
-    /// Bytes: what the batch's rows become once decoded and rendered, up to the limit they were
-    /// measured against.
-    pub expanded: u64,
-}
-
-impl Cost {
-    /// The bytes to charge: the larger of what is held and what it becomes.
-    pub fn charge(&self) -> u64 {
-        self.held.max(self.expanded)
-    }
-}
 
 /// Which values a destination stores as text, so what they cost is what they are rendered to.
 ///
@@ -77,27 +61,6 @@ impl Rendering {
             .is_some_and(|native| !native.contains(&kind))
     }
 
-    /// What `batch` costs, its expansion measured up to `limit`.
-    ///
-    /// An expansion beyond `limit` is reported as some value beyond it: measuring stops there, so
-    /// the work is bounded by `limit` however an encoding multiplies its values.
-    pub fn cost(&self, batch: &RecordBatch, limit: u64) -> Cost {
-        Cost {
-            held: Allocations::of(batch).bytes(),
-            expanded: self.expanded(batch, 0..batch.num_rows(), limit),
-        }
-    }
-
-    /// The bytes whoever holds `push` charges for it, its expansion measured up to `limit`: a
-    /// batch the larger of what it keeps alive and what it becomes, and JSON its text, whose
-    /// records are charged as they are parsed.
-    pub fn charge(&self, push: &Push, limit: u64) -> u64 {
-        match push {
-            Push::Arrow(batch) | Push::Changes(batch) => self.cost(batch, limit).charge(),
-            Push::Json(text) => count(text.len()),
-        }
-    }
-
     /// What `rows` of `batch` expand to, measured up to `limit`.
     pub fn expanded(&self, batch: &RecordBatch, rows: Range<usize>, limit: u64) -> u64 {
         self.measure(batch, limit).expanded(rows)
@@ -127,6 +90,23 @@ impl Rendering {
             row,
             meter: Meter::new(self, limit),
         }
+    }
+}
+
+/// Bytes a JSON push is charged for each byte of its text: the text, and twice it for the
+/// batches the engine shreds it into, which are paid for before they are built.
+///
+/// What sparse records become beyond that, a null in every column for every row, the shredder's
+/// limit on cells bounds, not the budget.
+pub const JSON_CHARGE: u64 = 3;
+
+/// The bytes holding `push` is charged, by the engine's admission and by certification alike: a
+/// batch every allocation it keeps alive, each counted once, and JSON [`JSON_CHARGE`] bytes for
+/// each byte of its text.
+pub fn push_charge(push: &Push) -> u64 {
+    match push {
+        Push::Arrow(batch) | Push::Changes(batch) => Allocations::of(batch).bytes(),
+        Push::Json(text) => count(text.len()).saturating_mul(JSON_CHARGE),
     }
 }
 

@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
-use rdlt_connector::cost::{Allocations, Rendering};
+use rdlt_connector::cost::{Rendering, push_charge};
 use rdlt_connector::{
     Admission, BoxFuture, Capabilities, ConnectorError, ConnectorErrorKind, LimitExceeded, Permit,
-    Push, SourceEvent,
+    SourceEvent,
 };
 use rdlt_wire::limits::count;
 
@@ -24,13 +24,6 @@ use crate::limits::PUSH_EXCEEDS_BUDGET;
 pub(crate) fn rendering(capabilities: &Capabilities) -> Rendering {
     Rendering::new(capabilities.types.iter().copied())
 }
-
-/// Bytes a JSON push is charged for each byte of its text: the text, and twice it for the
-/// batches it is shredded into, which are paid for before they are built.
-///
-/// What sparse records become beyond that, a null in every column for every row, the shredder's
-/// limit on cells bounds, not the budget.
-pub(crate) const JSON_CHARGE: u64 = 3;
 
 /// Bytes: what normalizing makes of each of a batch's rows beside its values: its id and its
 /// place.
@@ -126,12 +119,8 @@ impl Admission for Charging {
     ) -> BoxFuture<'a, rdlt_connector::Result<Option<Permit>>> {
         Box::pin(async move {
             let (bytes, admitted) = match event {
-                SourceEvent::Push(Push::Arrow(batch) | Push::Changes(batch)) => {
-                    let bytes = Allocations::of(batch).bytes();
-                    (bytes, self.budget.acquire(bytes).await)
-                }
-                SourceEvent::Push(Push::Json(json)) => {
-                    let bytes = count(json.len()).saturating_mul(JSON_CHARGE);
+                SourceEvent::Push(push) => {
+                    let bytes = push_charge(push);
                     (bytes, self.budget.acquire(bytes).await)
                 }
                 // A cursor waits with its seal for a commit, which alone releases it.

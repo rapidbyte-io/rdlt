@@ -259,9 +259,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     wire's `Cut` bounds a frame.
   - *How much text do these values render to?* `cost::text_bytes`, the same widths, for the
     engine's builders.
-  - *What is a push charged?* By the engine's admission, what it keeps alive, and three times
-    its text for JSON. By certification's source clauses, `Rendering::charge`: the larger of
-    what a batch keeps alive and what it expands to, for a holder that lowers nothing.
+  - *What is a push charged?* `cost::push_charge`, by the engine's admission and by
+    certification's source clauses alike: what it keeps alive, and `JSON_CHARGE` (three) times
+    its text for JSON.
   - *Do a schema's columns and depth fit?* The emitter counts them on the Arrow schema; the wire
     counts them on the schema's message.
 - **The engine materializes only what rows name.** Before anything converts a column, its
@@ -300,9 +300,10 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - The allocations it keeps alive are bounded by the same byte limit.
   - The connector crate depends on the wire crate for this whatever its features.
 - **Certification charges by the same model** (ADR 0050). A source clause charges a push with
-  `Rendering::charge`, for a holder that keeps each value as it is; a read-back is admitted by
-  what its batches expand to; a kill clause's load is charged the allocations each batch keeps
-  alive.
+  `cost::push_charge`, as the engine admits it; what the clause renders is held to its rendering
+  limit, and `S-RESUME` compares batches only while what they expand to is within it. A
+  read-back is admitted by what its batches expand to; a kill clause's load is charged the
+  allocations each batch keeps alive.
 - **Nothing waits uncharged.**
   - A cursor copies its bytes when it is built, and the host copies a JSON push out of its frame:
     neither keeps the message it arrived in alive.

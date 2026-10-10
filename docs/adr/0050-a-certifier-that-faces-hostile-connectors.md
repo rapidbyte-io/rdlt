@@ -54,9 +54,9 @@ things did not hold to that:
   role not yet begun. The binary prints each role's report as it ends.
 - **What a connector sends is charged before it is held, expanded or rendered.** The limits live
   in `testing/limits.rs` and `rdlt-certify/src/limits.rs`.
-  - A source clause holds 64 MiB and 2^20 rows of its reads, all of them together, charged as
-    the engine charges a push, plus a fixed cost per event. Beyond it the read is stopped and the
-    clause unobserved: a large table breaks no clause.
+  - A source clause holds 64 MiB and 2^20 rows of its reads, all of them together, charged by
+    `cost::push_charge`, as the engine admits a push, plus a fixed cost per event. Beyond it the
+    read is stopped and the clause unobserved: a large table breaks no clause.
   - A JSON push is scanned, not parsed, to count its records, and charged a row for each before
     any is parsed. Records are then parsed one at a time, each 1 MiB of text at most, with a
     yield every 1 MiB, so a push never expands beyond what its rows were charged.
@@ -161,5 +161,6 @@ things did not hold to that:
   casts listed, fails the clause: `K-DESTINATION` no longer takes ids read back as text.
 - `ClauseResult` has a `note`, and `rdlt_host::Kills` counts the connections it cut.
 - A read-back remains the destination's own account of what it published.
-- A source clause charges a push as the engine's cost model does (ADR 0039): for what it keeps
-  alive and for what it expands to, whichever is more.
+- A source clause charges a push with `cost::push_charge`, as the engine admits it (ADR 0039):
+  what it keeps alive, and JSON three times its text. What a batch expands to bounds what the
+  clause renders and compares, not what holding it is charged.
