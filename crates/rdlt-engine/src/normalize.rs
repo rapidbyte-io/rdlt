@@ -23,13 +23,16 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt32Type;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, Int64Array, ListArray, RecordBatch, RecordBatchOptions,
-    UInt32Array, make_array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Int64Array, ListArray, RecordBatch,
+    RecordBatchOptions, UInt32Array,
 };
 use arrow_buffer::NullBuffer;
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef, Schema};
+use arrow_select::nullif::nullif;
 use placement::{Container, Placement, placement};
 use rdlt_connector::ColumnPath;
+
+use crate::table::convert::decoded;
 
 pub(crate) use cascade::{Dropped, Pruned};
 
@@ -153,7 +156,10 @@ impl Table {
     }
 
     /// Places `array`, of `field`, the column at `path` whose values sit at `depth`, as
-    /// [`placement`] says.
+    /// [`placement`] says of `field`'s type.
+    ///
+    /// The field's type, not the array's, decides: a field nulled under an object with nulls
+    /// may hold its runs decoded, and an object or array in runs stays a column all the same.
     fn place(
         &mut self,
         path: Vec<Arc<str>>,
@@ -162,13 +168,13 @@ impl Table {
         depth: u8,
         max_depth: u8,
     ) -> Result<(), ArrowError> {
-        match placement(Container::of_arrow(array.data_type()), depth, max_depth) {
+        match placement(Container::of_arrow(field.data_type()), depth, max_depth) {
             Placement::Fields => {
                 let object = array.as_struct();
                 for (inner, values) in object.fields().iter().zip(object.columns()) {
                     let mut inner_path = path.clone();
                     inner_path.push(Arc::from(inner.name().as_str()));
-                    let values = within(values, object.nulls());
+                    let values = within(values, object.nulls())?;
                     self.place(inner_path, inner, &values, depth + 1, max_depth)?;
                 }
                 Ok(())
@@ -223,22 +229,19 @@ fn name(path: &ColumnPath) -> String {
 
 /// `values`, a field of an object, null wherever the object is.
 ///
-/// Values of a type that holds no null buffer stay as they are: `Null` values are null already,
-/// and unions and run-end encoded arrays keep their own.
-fn within(values: &ArrayRef, object: Option<&NullBuffer>) -> ArrayRef {
+/// A run-end encoded field holds no nulls of its own, so its values are decoded, then nulled, and
+/// a union, which no table holds, is refused.
+fn within(values: &ArrayRef, object: Option<&NullBuffer>) -> Result<ArrayRef, ArrowError> {
     let Some(object) = object else {
-        return Arc::clone(values);
+        return Ok(Arc::clone(values));
     };
-    if *values.data_type() == DataType::Null {
-        return Arc::clone(values);
+    match values.data_type() {
+        DataType::Union(..) => Err(ArrowError::InvalidArgumentError(
+            "a union cannot be a column of a table".to_owned(),
+        )),
+        DataType::RunEndEncoded(..) => within(&decoded(values)?, Some(object)),
+        _ => nullif(values.as_ref(), &BooleanArray::new(!object.inner(), None)),
     }
-    let nulls = NullBuffer::union(Some(object), values.nulls());
-    values
-        .to_data()
-        .into_builder()
-        .nulls(nulls)
-        .build()
-        .map_or_else(|_| Arc::clone(values), make_array)
 }
 
 /// The item field of an array type, if `data_type` is one.
@@ -362,8 +365,9 @@ impl Items {
     }
 }
 
-/// The child table of `values`, items at `depth`: placed as [`placement`] says, an array within
-/// depth a grandchild table under `value`, and anything else the column `value`.
+/// The child table of `values`, items of `item` at `depth`: placed as [`placement`] says of
+/// `item`'s type, an array within depth a grandchild table under `value`, and anything else the
+/// column `value`.
 fn items_table(
     item: &FieldRef,
     values: &ArrayRef,
@@ -371,11 +375,11 @@ fn items_table(
     max_depth: u8,
 ) -> Result<Table, ArrowError> {
     let mut table = Table::default();
-    match placement(Container::of_arrow(values.data_type()), depth, max_depth) {
+    match placement(Container::of_arrow(item.data_type()), depth, max_depth) {
         Placement::Fields => {
             let object = values.as_struct();
             for (field, column) in object.fields().iter().zip(object.columns()) {
-                let column = within(column, object.nulls());
+                let column = within(column, object.nulls())?;
                 let path = vec![Arc::from(field.name().as_str())];
                 table.place(path, field, &column, depth + 1, max_depth)?;
             }

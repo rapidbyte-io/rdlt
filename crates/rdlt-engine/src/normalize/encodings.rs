@@ -208,7 +208,7 @@ proptest! {
 
 /// `array` held in runs of one row each, or in a dictionary naming each row's value, as `runs`
 /// says.
-fn wrapped(array: &ArrayRef, runs: bool) -> ArrayRef {
+pub(super) fn wrapped(array: &ArrayRef, runs: bool) -> ArrayRef {
     let rows = i32::try_from(array.len()).expect("a drawn batch's rows fit 32 bits");
     if runs {
         let ends = Int32Array::from_iter_values(1..=rows);

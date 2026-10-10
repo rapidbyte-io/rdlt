@@ -3,10 +3,14 @@ use std::sync::Arc;
 
 use arrow_array::builder::{Int64Builder, MapBuilder, StringBuilder};
 use arrow_array::cast::AsArray;
-use arrow_array::types::Int64Type;
+use arrow_array::types::{Int32Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, Float64Array, Int64Array, LargeListArray, RecordBatch, StringArray, UInt8Array,
+    Array, ArrayRef, DictionaryArray, Float64Array, Int32Array, Int64Array, LargeListArray,
+    ListArray, NullArray, RecordBatch, RunArray, StringArray, StringViewArray, StructArray,
+    UInt8Array, UnionArray,
 };
+use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow_schema::{DataType, Field as ArrowField, Fields, UnionFields};
 use bytes::Bytes;
 use proptest::prelude::*;
 use serde_json::{Value as Json, json};
@@ -15,6 +19,7 @@ use super::reference::{self, Row, canonical_text};
 use super::{Part, Shape, normalize};
 use crate::compute::{Pool, ready};
 use crate::shred::shred;
+use crate::table::convert::decoded;
 
 fn shape(max_depth: u8) -> Shape {
     Shape {
@@ -52,17 +57,17 @@ fn json_of(array: &ArrayRef, row: usize) -> Json {
         return Json::Null;
     }
     match array.data_type() {
-        arrow_schema::DataType::Null => Json::Null,
-        arrow_schema::DataType::Boolean => Json::from(array.as_boolean().value(row)),
-        arrow_schema::DataType::Int64 => Json::from(array.as_primitive::<Int64Type>().value(row)),
-        arrow_schema::DataType::Float64 => {
+        DataType::Null => Json::Null,
+        DataType::Boolean => Json::from(array.as_boolean().value(row)),
+        DataType::Int64 => Json::from(array.as_primitive::<Int64Type>().value(row)),
+        DataType::Float64 => {
             let value = array
                 .as_primitive::<arrow_array::types::Float64Type>()
                 .value(row);
             serde_json::Number::from_f64(value).map_or(Json::Null, Json::Number)
         }
-        arrow_schema::DataType::Utf8 => Json::from(array.as_string::<i32>().value(row)),
-        arrow_schema::DataType::Struct(_) => {
+        DataType::Utf8 => Json::from(array.as_string::<i32>().value(row)),
+        DataType::Struct(_) => {
             let object = array.as_struct();
             Json::Object(
                 object
@@ -74,7 +79,7 @@ fn json_of(array: &ArrayRef, row: usize) -> Json {
                     .collect(),
             )
         }
-        arrow_schema::DataType::List(_) => {
+        DataType::List(_) => {
             let items = array.as_list::<i32>().value(row);
             Json::Array((0..items.len()).map(|item| json_of(&items, item)).collect())
         }
@@ -492,13 +497,9 @@ fn the_reference_names_child_tables_by_their_arrays_paths() {
 #[test]
 fn fields_of_a_null_object_are_null_whatever_the_array_holds_beneath() {
     let values: ArrayRef = Arc::new(Int64Array::from(vec![1, 2]));
-    let fields = arrow_schema::Fields::from(vec![arrow_schema::Field::new(
-        "a",
-        arrow_schema::DataType::Int64,
-        true,
-    )]);
-    let nulls = arrow_buffer::NullBuffer::from(vec![true, false]);
-    let object = arrow_array::StructArray::new(fields, vec![values], Some(nulls));
+    let fields = Fields::from(vec![ArrowField::new("a", DataType::Int64, true)]);
+    let nulls = NullBuffer::from(vec![true, false]);
+    let object = StructArray::new(fields, vec![values], Some(nulls));
     let batch = RecordBatch::try_from_iter([("o", Arc::new(object) as ArrayRef)]).unwrap();
     let parts = normalize(&batch, &shape(8)).unwrap();
     let a = parts[0].batch.column(0);
@@ -576,4 +577,88 @@ fn rows_that_differ_never_encode_alike() {
         })
         .collect();
     assert_ne!(ids[0], ids[1]);
+}
+
+/// A batch of one column `s`, objects of the field `v` holding `values`, the second row null.
+fn under_a_null_object(values: ArrayRef) -> RecordBatch {
+    let field = ArrowField::new("v", values.data_type().clone(), true);
+    let nulls = Some(NullBuffer::from(vec![true, false]));
+    let object = StructArray::try_new(Fields::from(vec![field]), vec![values], nulls).unwrap();
+    RecordBatch::try_from_iter([("s", Arc::new(object) as ArrayRef)]).unwrap()
+}
+
+/// Two-row fields of every encoding a field under a null object may have.
+fn encoded_fields() -> Vec<ArrayRef> {
+    let ends = || Int32Array::from(vec![1, 2]);
+    let integers = || Int64Array::from(vec![1, 2]);
+    let keyed: ArrayRef = Arc::new(
+        DictionaryArray::<Int32Type>::try_new(Int32Array::from(vec![0, 1]), Arc::new(integers()))
+            .unwrap(),
+    );
+    vec![
+        Arc::new(integers()),
+        Arc::new(RunArray::<Int32Type>::try_new(&ends(), &integers()).unwrap()),
+        Arc::clone(&keyed),
+        Arc::new(RunArray::<Int32Type>::try_new(&ends(), keyed.as_ref()).unwrap()),
+        Arc::new(StringViewArray::from(vec!["a", "b"])),
+    ]
+}
+
+#[test]
+fn every_field_under_a_null_object_is_null_whatever_its_encoding() {
+    for values in encoded_fields() {
+        let kind = values.data_type().clone();
+        let parts = normalize(&under_a_null_object(values), &shape(8)).unwrap();
+        let column = decoded(parts[0].batch.column(0)).unwrap();
+        assert_eq!(
+            (column.is_valid(0), column.is_null(1)),
+            (true, true),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn a_null_field_under_a_null_object_stays_null() {
+    let parts = normalize(&under_a_null_object(Arc::new(NullArray::new(2))), &shape(8)).unwrap();
+    let column = parts[0].batch.column(0);
+    assert_eq!(
+        (column.data_type(), column.logical_null_count()),
+        (&DataType::Null, 2)
+    );
+}
+
+#[test]
+fn every_item_field_under_a_null_object_is_null_whatever_its_encoding() {
+    for values in encoded_fields() {
+        let kind = values.data_type().clone();
+        let field = ArrowField::new("v", kind.clone(), true);
+        let nulls = Some(NullBuffer::from(vec![true, false]));
+        let items = StructArray::try_new(Fields::from(vec![field]), vec![values], nulls).unwrap();
+        let item = Arc::new(ArrowField::new("item", items.data_type().clone(), true));
+        let offsets = OffsetBuffer::from_lengths([2]);
+        let list = ListArray::try_new(item, offsets, Arc::new(items), None).unwrap();
+        let batch = RecordBatch::try_from_iter([("l", Arc::new(list) as ArrayRef)]).unwrap();
+        let parts = normalize(&batch, &shape(8)).unwrap();
+        let child = parts.iter().find(|part| !part.path.is_empty()).unwrap();
+        let column = decoded(child.batch.column(0)).unwrap();
+        assert_eq!(
+            (column.is_valid(0), column.is_null(1)),
+            (true, true),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn a_union_under_an_object_is_an_internal_error() {
+    let fields = UnionFields::try_new(
+        vec![0_i8],
+        vec![ArrowField::new("i", DataType::Int32, true)],
+    )
+    .unwrap();
+    let children: Vec<ArrayRef> = vec![Arc::new(Int32Array::from(vec![1, 2]))];
+    let union =
+        UnionArray::try_new(fields, ScalarBuffer::from(vec![0_i8, 0]), None, children).unwrap();
+    assert!(normalize(&under_a_null_object(Arc::new(union)), &shape(8)).is_err());
 }
