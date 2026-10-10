@@ -59,7 +59,7 @@ impl Cores {
     ///
     /// One worker runs the engine's per-row work and every lane's writes alone, so two and three
     /// cores take two workers beside the pool's one thread, two cores a thread more than they
-    /// have. `docs/perf/passthrough.md` records the layouts measured.
+    /// have.
     pub fn from_count(count: NonZeroUsize) -> Self {
         let workers = count.get().min(2).max(count.get() / 2);
         Self::new(
