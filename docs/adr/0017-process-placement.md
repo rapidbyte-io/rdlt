@@ -2,7 +2,7 @@
 
 Status: accepted, 2026-09-26; where the audited `unsafe` lives and what forbids the rest are
 amended by ADR 0048; lookup, trust, descriptors and output are amended by ADR 0043; the connector's
-environment, amended 2026-10-10.
+environment is amended 2026-10-10.
 
 ## Context
 
@@ -85,7 +85,7 @@ only at its end. The owner also asked for the host to be simulated over a networ
     `MALLOC_MMAP_THRESHOLD_`). They are a no-op where glibc is not the connector's allocator.
     The host's own process is unchanged: an operator running the host, or a listening
     connector it does not spawn, may set the same `GLIBC_TUNABLES` for that process. The
-    figures are in `docs/perf/served.md`.
+    figures are in `docs/perf/served.md`, in "Malloc tunables for spawned connectors".
   - Standard output is drained into `tracing` as warnings, and standard error as information,
     with the connector's id and process id. A line goes in pieces of at most 8 KiB, so a
     connector that never ends a line cannot grow the host's memory.
