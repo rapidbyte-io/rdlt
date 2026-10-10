@@ -4,14 +4,14 @@
 //! recurses no deeper than the nesting limit. Numbers keep the text they were written as: integers
 //! read exactly render as their digits, and a float only as the exact parse noted its text.
 
-use std::collections::BTreeSet;
+use std::borrow::Cow;
 use std::fmt;
 
 use serde::de::{DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::ShredError;
+use super::keys::ObjectKeys;
 use super::visit::{Context, nest};
-use crate::limits::QUOTED_BYTES;
 
 /// One value rendered onto `text`; an object repeating a key fails.
 pub(crate) struct Render<'a> {
@@ -113,19 +113,18 @@ impl<'de> Visitor<'de> for Render<'_> {
 
     fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<(), A::Error> {
         nest(move || {
-            let mut keys = BTreeSet::new();
+            let mut keys = ObjectKeys::default();
+            let mut first = true;
             self.text.push('{');
             while let Some(key) = map.next_key::<String>()? {
-                if keys.contains(&key) {
-                    let key = rdlt_connector::text::shown(&key, QUOTED_BYTES);
-                    return Err(self.context.fail(ShredError::DuplicateKey(key)));
-                }
-                if !keys.is_empty() {
+                if !first {
                     self.text.push(',');
                 }
+                first = false;
                 self.serialized(key.as_str())?;
                 self.text.push(':');
-                keys.insert(key);
+                keys.note(Cow::Owned(key))
+                    .map_err(|error| self.context.fail(error))?;
                 map.next_value_seed(self.inner())?;
             }
             self.text.push('}');

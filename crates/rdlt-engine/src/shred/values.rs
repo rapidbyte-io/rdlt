@@ -7,13 +7,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeSet;
-
 use arrow_array::{Array, ArrayRef, BooleanArray, StringArray};
 use rdlt_connector::LogicalType;
 
 use super::ShredError;
 use super::build::Column;
+use super::keys::ObjectKeys;
 use super::meter::{Columns, Meter};
 use super::observe::Observed;
 use super::observing::Look;
@@ -100,17 +99,17 @@ pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> BooleanArray
 /// Whether an object in the JSON value `text`, at any depth, repeats a key.
 fn repeats_a_key(text: &str) -> bool {
     let mut reader = Reader::new(text);
-    let mut open: Vec<Option<BTreeSet<String>>> = Vec::new();
+    let mut open: Vec<Option<ObjectKeys<'_>>> = Vec::new();
     while let Ok(Some(token)) = reader.next() {
         match token {
-            Token::BeginObject => open.push(Some(BTreeSet::new())),
+            Token::BeginObject => open.push(Some(ObjectKeys::default())),
             Token::BeginArray => open.push(None),
             Token::EndObject | Token::EndArray => {
                 open.pop();
             }
             Token::Key(key) => {
                 if let Some(Some(keys)) = open.last_mut()
-                    && !keys.insert(key.into_owned())
+                    && keys.note(key).is_err()
                 {
                     return true;
                 }
