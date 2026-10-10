@@ -301,7 +301,6 @@ the destination's CPU a GB and CPUs busy are its process's alone:
   regression confined to a spawned connector over the socket in large frames under glibc's
   allocator defaults; the allocator is a decision of its own.
 
-
 ## Allocator
 
 Each served connector's process and the bench's own ran on glibc's allocator, whose returning of
@@ -603,3 +602,73 @@ them at 1.5 µs, 0.87, crosses 0.8, and the measured split rules it out.
 - **What removing both copies could free at most**, the stage's copy share times its cores in user
   mode: 0.76 × 0.495 = 0.38 of a core in one process (0.763 × 0.524 = 0.40 in the second round) and
   0.742 × 0.371 = 0.28 apart, from a process that holds 1.2 user cores and moves 1 427–1 567 MB/s.
+
+## Codec work on the runtime's workers
+
+Every encode and decode of a batch frame runs inline on a tokio worker: the host's write encode, the
+served write's decode, the served read's encode and the host read's decode. The lane yields to the
+runtime after each piece it encodes. The question was whether moving that work onto a pool would
+pay, in latency (a long poll holding a worker, a heartbeat delayed) or in throughput.
+
+The rule set before measuring: build the move if either of these holds.
+
+- **The latency condition.** At frames near the 64 MiB limit, a codec poll holds a worker for at
+  least 1 ms, and heartbeats arrive later than a quarter of their patience.
+- **The prototype.** A prototype that runs the lane's encode off the workers moves at least 10 %
+  more on `served/socket/destination/64x80000` with the bench on CPUs 0–3. Better is read by this
+  file's protocol: the prototype's lowest round is above the base's highest, and the median gain
+  meets the threshold.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-10, `d2bcc6e4`, the bench on CPUs 0–3 under the
+measurement lock. For the latency condition, a build with tokio's unstable poll-time histogram (100
+µs buckets) on each worker, a timer around each codec call, a timer from each heartbeat's send to
+its echo, a heartbeat every 100 ms, and frames of 8 batches of 640 000 rows (the same 5.12 M rows,
+57.36 MB a frame on the host's write side and 55.92 MB from the served read, uncut, under the 64 MiB
+limit). Two runs of each of the destination and the source case, socket transport. This measurement
+code is not kept. For the prototype, the lane's encode ran on a `spawn_blocking` thread, a thread
+beside the two workers within CPUs 0–3, not the engine's compute pool, with the yield dropped; the
+case and the tls guard each ran five rounds, base and prototype interleaved, the order alternating.
+The rounds never agreed closely enough to stop early. Load average over a minute was 1.3–2.0 over
+the latency runs and 1.6–2.8 over the rounds.
+
+Each codec call that does work, in milliseconds over two runs of its case:
+
+| Site | Calls a run | Median | p99 | Maximum |
+|---|---|---|---|---|
+| Host write encode (half of the calls do nothing) | 272 | 0.001–0.002 | 29.62–29.75 | 31.08–32.14 |
+| Served write decode | 170 | 26.05–26.26 | 28.82–29.36 | 30.45–32.11 |
+| Served read encode | 136 | 24.88–25.69 | 30.84–31.85 | 33.68–35.76 |
+| Host read decode | 136 | 25.53–26.47 | 28.58–29.63 | 29.30–33.04 |
+
+Each worker's polls of at least 1 ms in a run, and the heartbeats' echoes (100–109 beats a run):
+
+| Run | Polls of 1 ms or more, per worker | Longest poll, at least, ms | Echo median, ms | Echo p99, ms | Echo maximum, ms |
+|---|---|---|---|---|---|
+| Destination, first | 364 / 357 | 57.3 | 0.088 | 1.93 | 29.4 |
+| Destination, second | 368 / 367 | 59.8 | 0.073 | 25.3 | 28.4 |
+| Source, first | 405 / 433 | 59.9 | 0.106 | 0.91 | 12.0 |
+| Source, second | 432 / 395 | 61.3 | 0.068 | 1.53 | 2.47 |
+
+The five rounds of `socket/destination/64x80000`, MB/s, and the CPU a GB:
+
+| Round | Base | Prototype | Gain | CPU s a GB, base → prototype |
+|---|---|---|---|---|
+| 1 | 1 951 | 2 618 | +34.2 % | 0.88 → 0.73 |
+| 2 | 2 340 | 2 805 | +19.9 % | 0.71 → 0.66 |
+| 3 | 2 713 | 2 531 | −6.7 % | 0.64 → 0.81 |
+| 4 | 2 443 | 2 459 | +0.7 % | 0.68 → 0.79 |
+| 5 | 2 165 | 2 588 | +19.5 % | 0.76 → 0.74 |
+| Median (range) | 2 340 (1 951–2 713) | 2 588 (2 459–2 805) | +10.6 % | 0.71 → 0.74 |
+| `tls/destination/64x80000`, median (range) | 1 668 (1 473–1 731) | 1 774 (1 661–1 788) | +6.3 % | 1.07 → 1.14 |
+
+- **A long poll, an on-time heartbeat.** At about 56 MB a frame, each codec call holds a worker for
+  25–36 ms, and each worker has 357–433 polls of at least 1 ms a run. With two workers, a
+  heartbeat's echo waited at most 29.4 ms: about one codec call, 0.4 % of a quarter of the default
+  patience (7.5 s) and a fifth of the 150 ms a quarter of it comes to at the 100 ms setting.
+- **The prototype.** Its median clears 10 % by 0.6 of a point. Its rounds sit within 2 459–2 805,
+  but the base's spread over 1 951–2 713, so the ranges overlap and the gain is not established on
+  this machine; the per-round gains run from −6.7 to +34.2 %. It also ran beside the workers on a
+  thread of its own, within the same four CPUs, rather than on the compute pool: the process kept
+  1.9–2.0 CPUs busy against 1.65–1.8. Its CPU a GB rose 5 %.
+- **Against the rule.** The latency condition fails on its heartbeats and the prototype on its
+  ranges, so the codec work stays on the workers and no pool is built.
