@@ -27,7 +27,7 @@ use crate::error::{Error, ErrorKind};
 
 #[cfg(test)]
 pub(crate) use convert::normalize as plain;
-pub(crate) use exact::EXACT_IN_FLOAT;
+pub(crate) use exact::{EXACT_IN_FLOAT, rounds_at};
 pub(crate) use lower::{ChangeLayout, LineageColumns, MetaNames};
 pub(crate) use lowering::{
     ChangeRows, LoweringPlan, Prepared, Stamp, aligned, key_values, with_columns,

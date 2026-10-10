@@ -168,7 +168,7 @@ impl Pieces {
 }
 
 /// `parts`, a unit `held` holds, cut into pieces as `lowered` measures them, before its tables
-/// are known: each piece's batches, in order, what holds it, and what it was measured to take.
+/// are known: each piece's batches, in order, and what holds it.
 ///
 /// The unit's permits stay with its last piece, so they hold until all of it is written.
 ///
@@ -179,13 +179,13 @@ pub(super) fn sliced(
     parts: Vec<RecordBatch>,
     held: Held,
     lowered: Lowered,
-) -> Result<Vec<(Vec<RecordBatch>, Held, u64)>, RowTooLarge> {
+) -> Result<Vec<(Vec<RecordBatch>, Held)>, RowTooLarge> {
     let mut pieces = Pieces::new(parts, lowered);
     let mut cut = Vec::new();
     while let Some(piece) = pieces.next()? {
-        cut.push((piece.parts, held.piece(), piece.bytes));
+        cut.push((piece.parts, held.piece()));
     }
-    if let Some((_, last, _)) = cut.last_mut() {
+    if let Some((_, last)) = cut.last_mut() {
         *last = held;
     }
     Ok(cut)

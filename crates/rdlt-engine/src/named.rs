@@ -63,17 +63,20 @@ impl Views<'_> {
         first..first.saturating_add(size)
     }
 
-    /// Whether the items its `rows` rows name lie in row order, none named twice: its rows then
-    /// name its items as a list's do.
-    pub(crate) fn ordered(self, rows: usize) -> bool {
+    /// Whether the items the rows of `rows` name lie in row order, none named twice, judged from
+    /// those rows alone: they then name the view's items as a list's offsets do.
+    pub(crate) fn ordered(self, rows: &Rows<'_>) -> bool {
         let mut end = 0;
-        (0..rows).map(|row| self.span(row)).all(|span| {
-            let ordered = span.is_empty() || span.start >= end;
-            if !span.is_empty() {
-                end = span.end;
-            }
-            ordered
-        })
+        rows.ranges()
+            .flatten()
+            .map(|row| self.span(row))
+            .all(|span| {
+                let ordered = span.is_empty() || span.start >= end;
+                if !span.is_empty() {
+                    end = span.end;
+                }
+                ordered
+            })
     }
 }
 

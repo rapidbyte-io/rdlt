@@ -8,7 +8,7 @@ use arrow_array::{Array, RecordBatch};
 use arrow_schema::{DataType, Field};
 
 use super::field_holds_json;
-use crate::named::Views;
+use crate::named::{Rows, Views};
 
 /// Bytes: what a dictionary's named values take a key, where a bitmap of its values would take
 /// more: a key's position, sorted.
@@ -81,7 +81,7 @@ fn array(array: &dyn Array) -> u64 {
 
 /// Bytes: what a list view of `len` rows holds to name its items, where they are out of order.
 fn gathered(views: Views<'_>, len: usize) -> u64 {
-    if views.ordered(len) {
+    if views.ordered(&Rows::All(len)) {
         0
     } else {
         GATHERED_SPAN.saturating_mul(len as u64)

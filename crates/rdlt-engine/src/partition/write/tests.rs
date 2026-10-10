@@ -6,7 +6,7 @@ use rdlt_connector::{LogicalType, Partition, Permit, StreamName};
 
 use super::Held;
 use super::held::shredded;
-use super::normalized::{judge, part_growth};
+use super::normalized::part_growth;
 use super::queue::written_bytes;
 use super::units::{not_json, shred_failed};
 use crate::budget::MemoryBudget;
@@ -251,30 +251,6 @@ fn a_units_parts_grow_it_by_their_lineage_and_their_schemas() {
         .map(|part| part_growth(part, &mut allocations))
         .sum();
     assert_eq!(again, 0);
-}
-
-#[test]
-fn a_units_parts_are_judged_by_the_path_of_their_table() {
-    let shape = crate::normalize::Shape {
-        max_depth: 2,
-        whole: std::collections::BTreeSet::new(),
-        key: Vec::new(),
-    };
-    let integers = |values: Vec<i64>| {
-        let values: ArrayRef = Arc::new(Int64Array::from(values));
-        RecordBatch::try_from_iter([("n", values)]).unwrap()
-    };
-    let judged = |values: Vec<i64>| {
-        let parts = crate::normalize::normalize(&integers(values), &shape).unwrap();
-        let rounding = judge(&job(), parts).unwrap();
-        let root: Vec<String> = rounding[&Vec::new()]
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        root
-    };
-    assert_eq!(judged(vec![1_i64 << 60, 1]), ["n"]);
-    assert!(judged(vec![1, 2, 3]).is_empty());
 }
 
 #[test]

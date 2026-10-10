@@ -13,6 +13,7 @@ pub(crate) mod identity;
 pub(crate) mod placement;
 #[cfg(test)]
 mod reference;
+pub(crate) mod rounding;
 #[cfg(test)]
 mod tests;
 
