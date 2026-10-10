@@ -14,9 +14,10 @@ mod runner;
 mod tests;
 mod wide;
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock};
 
-use arrow_array::RecordBatch;
+use arrow_array::{BooleanArray, RecordBatch};
 use arrow_schema::ArrowError;
 use bytes::Bytes;
 
@@ -104,6 +105,39 @@ pub fn normalize(
             (path, part.batch)
         })
         .collect())
+}
+
+/// `batch` normalized as a keyless stream to `max_depth`, every `every`th root row dropped, and
+/// each child table's rows pruned of those whose parent went: the rows left in all its tables.
+///
+/// # Errors
+///
+/// Where a value of a column of JSON identity cannot read.
+pub fn pruned(
+    batch: &RecordBatch,
+    max_depth: u8,
+    every: NonZeroUsize,
+) -> Result<usize, ArrowError> {
+    let shape = Shape {
+        max_depth,
+        whole: std::collections::BTreeSet::new(),
+        key: Vec::new(),
+    };
+    let mut parts = normalize::normalize(batch, &shape)?.into_iter();
+    let Some(root) = parts.next() else {
+        return Ok(0);
+    };
+    let root = normalize::Pruned::whole(root);
+    let kept: BooleanArray = (0..root.part.batch.num_rows())
+        .map(|row| Some(row % every.get() != 0))
+        .collect();
+    let mut dropped = normalize::Dropped::default();
+    dropped.unkept(&root, &kept);
+    let mut left = kept.true_count();
+    for part in parts {
+        left += dropped.prune(part)?.part.batch.num_rows();
+    }
+    Ok(left)
 }
 
 /// Reads `bytes` as the only chunk of a write-ahead log, as replay reads one, then each batch it

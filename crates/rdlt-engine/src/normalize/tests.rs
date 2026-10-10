@@ -22,7 +22,7 @@ use crate::compute::{Pool, ready};
 use crate::shred::shred;
 use crate::table::convert::decoded;
 
-fn shape(max_depth: u8) -> Shape {
+pub(super) fn shape(max_depth: u8) -> Shape {
     Shape {
         max_depth,
         whole: BTreeSet::new(),
@@ -44,7 +44,7 @@ fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch> {
 }
 
 /// The parts of `records`, shredded as one batch and normalized as `shape`.
-fn parts(records: &[Json], shape: &Shape) -> Vec<Part> {
+pub(super) fn parts(records: &[Json], shape: &Shape) -> Vec<Part> {
     shredded(records, 1 << 20)
         .iter()
         .flat_map(|batch| normalize(batch, shape).expect("the batch normalizes"))

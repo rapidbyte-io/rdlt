@@ -14,8 +14,8 @@ use serde_json::json;
 
 use super::connectors::Replay;
 use super::{
-    Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, register, replay,
-    replay_factory, shred, shred_on, split_replay_config,
+    Refused, Replayed, SinkWriter, Sinking, ipc_sink, normalize, null_sink, pruned, register,
+    replay, replay_factory, shred, shred_on, split_replay_config,
 };
 use crate::compute::Cores;
 use crate::env::Env;
@@ -226,6 +226,19 @@ fn normalizing_a_shredded_batch_names_each_table_by_its_path() {
         ]
     );
     assert!(parts.iter().all(|(_, batch)| batch.num_rows() == 1));
+}
+
+#[test]
+fn pruning_a_normalized_batch_drops_each_dropped_roots_children_with_it() {
+    let push = Bytes::from_static(
+        b"{\"id\":0,\"items\":[{\"tags\":[\"x\"]}]}\n{\"id\":1,\"items\":[{\"tags\":[\"y\",\"z\"]}]}",
+    );
+    let batches = shred(&[push], 1 << 20).unwrap();
+    // Root 0 goes with its item and its tag; root 1, its item and its two tags are left.
+    assert_eq!(
+        pruned(&batches[0], 8, NonZeroUsize::new(2).unwrap()).unwrap(),
+        4
+    );
 }
 
 #[test]
