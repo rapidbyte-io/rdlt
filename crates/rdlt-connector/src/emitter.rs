@@ -27,7 +27,7 @@ pub struct Emitter<C> {
     cursor_version: u16,
     follow: bool,
     resumes: bool,
-    /// The schema of the batch last pushed, which its schema message was found within limits.
+    /// The schema of the batch last checked, whose schema message was found within limits.
     schema: Option<SchemaRef>,
     cursor: PhantomData<fn(&C)>,
 }
@@ -112,13 +112,14 @@ impl<C: Serialize> Emitter<C> {
     }
 
     /// Checks that `batch`'s schema, as the message that carries it, is within the sink's limit
-    /// on schema bytes; a schema shared with the batch before is checked once.
+    /// on schema bytes; a schema equal to the schema checked last, its metadata included, is not
+    /// checked again.
     fn check_schema(&mut self, batch: &RecordBatch) -> Result<()> {
         let schema = batch.schema();
         if self
             .schema
             .as_ref()
-            .is_some_and(|checked| Arc::ptr_eq(checked, &schema))
+            .is_some_and(|checked| Arc::ptr_eq(checked, &schema) || **checked == *schema)
         {
             return Ok(());
         }
