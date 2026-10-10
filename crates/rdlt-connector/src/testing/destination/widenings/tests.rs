@@ -78,10 +78,7 @@ fn values_are_denoted_exactly_and_counts_as_their_unit() {
     // A date of milliseconds is the day it is within, as a timestamp column holds it.
     let within: ArrayRef = Arc::new(Date64Array::from(vec![1]));
     assert_eq!(denotations(within.as_ref(), &millis), ["0 ns"]);
-    // A value of no number or instant is named by its type alone, never read as a number.
+    // A value of no number or instant shows as Arrow shows it, never as a number.
     let flags: ArrayRef = Arc::new(arrow_array::BooleanArray::from(vec![true]));
-    assert_eq!(
-        denotations(flags.as_ref(), &LogicalType::Bool),
-        ["a value of Boolean"]
-    );
+    assert_eq!(denotations(flags.as_ref(), &LogicalType::Bool), ["true"]);
 }
