@@ -210,7 +210,7 @@ impl LoweringPlan {
         let stream = &self.stream;
         let view = &self.view;
         let failed = |error: arrow_schema::ArrowError| {
-            Error::internal(format!("stream {stream}: preparing a batch: {error}"))
+            Error::internal(format!("stream {stream}: preparing a batch")).with_source(error)
         };
         let (batch, kept, discarded_rows, fitted, mut converted) =
             self.kept_rows(batch).map_err(failed)?;
@@ -235,7 +235,8 @@ impl LoweringPlan {
         converted.retain(|(index, _)| Arc::ptr_eq(checked.column(*index), batch.column(*index)));
         let rows = batch.num_rows();
         let (mut columns, held) = self.model_columns(&batch, &fitted, &converted)?;
-        columns.extend(self.constants(stamp, rows).map_err(failed)?);
+        let (constants, loaded_at) = self.constants(stamp, rows).map_err(failed)?;
+        columns.extend(constants);
         if view.meta.seq.is_some() {
             let seq = match &changes {
                 Some(changes) => self
@@ -246,7 +247,7 @@ impl LoweringPlan {
             columns.push(seq);
         }
         if let Some(changes) = &changes {
-            self.stored_changes(changes, stamp, &mut columns)
+            self.stored_changes(changes, loaded_at, &mut columns)
                 .map_err(failed)?;
         }
         if let Some(held) = held {
@@ -334,7 +335,7 @@ impl LoweringPlan {
     ) -> Result<ArrayRef, Error> {
         let stream = &self.stream;
         let failed = |error: arrow_schema::ArrowError| {
-            Error::internal(format!("stream {stream}: sequencing a batch: {error}"))
+            Error::internal(format!("stream {stream}: sequencing a batch")).with_source(error)
         };
         let positions = match lineage {
             Some(lineage) => Some(kept_rows(&lineage.root_row, kept).map_err(failed)?),
@@ -364,13 +365,14 @@ impl LoweringPlan {
             .collect()
     }
 
-    /// The load id and load start columns for `rows` rows: slices of arrays built once, and
-    /// built again only for a batch more than the arrays hold, whose keys take a byte a row.
+    /// The load id and load start columns for `rows` rows, and the load start in microseconds
+    /// since the epoch: slices of arrays built once, and built again only for a batch more than
+    /// the arrays hold, whose keys take a byte a row.
     fn constants(
         &self,
         stamp: &Stamp,
         rows: usize,
-    ) -> Result<[ArrayRef; 2], arrow_schema::ArrowError> {
+    ) -> Result<([ArrayRef; 2], i64), arrow_schema::ArrowError> {
         let mut constants = self.constants.lock();
         let fits = constants.as_ref().is_some_and(|built| {
             built.load_id == stamp.load_id
@@ -381,7 +383,8 @@ impl LoweringPlan {
             *constants = Some(Constants::new(&self.view, stamp, rows)?);
         }
         let built = constants.as_ref().expect("the constants were just built");
-        Ok(built.columns.clone().map(|column| column.slice(0, rows)))
+        let columns = built.columns.clone().map(|column| column.slice(0, rows));
+        Ok((columns, built.micros))
     }
 }
 

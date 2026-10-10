@@ -6,15 +6,15 @@ use arrow_array::TimestampMicrosecondArray;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Int8Type, Int64Type, TimestampMicrosecondType};
 use arrow_array::{
-    Array, ArrayRef, FixedSizeBinaryArray, Float32Array, Float64Array, Int16Array, Int32Array,
-    Int64Array, ListArray, RecordBatch, StringArray, StructArray,
+    Array, ArrayRef, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array, Int16Array,
+    Int32Array, Int64Array, ListArray, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::{DataType, Field as ArrowField, TimeUnit};
 use proptest::prelude::*;
 use rdlt_connector::{
-    Capabilities, ColumnKey, ColumnPath, DecimalType, Field, GenerationId, LoadId, LogicalType,
-    SchemaChanges, SchemaVersion, SegmentId, StreamName, TablePath, TableRef, TableSchema,
-    TypeKind,
+    Capabilities, ChangeOp, ColumnKey, ColumnPath, DELETED_AT_COLUMN, DecimalType, Field,
+    GenerationId, LoadId, LogicalType, OP_COLUMN, SEQ_COLUMN, SchemaChanges, SchemaVersion,
+    SegmentId, StreamName, TablePath, TableRef, TableSchema, TypeKind,
 };
 
 mod decimals;
@@ -24,12 +24,12 @@ mod limits;
 mod unwidened;
 mod widenings;
 
-use super::TableView;
 use super::convert::{convert, json};
-use super::lower::MetaNames;
+use super::lower::{ChangeLayout, LineageColumns, MetaNames};
 use super::lowering::{LoweringPlan, Prepared, Stamp};
 use super::model::Model;
 use super::resolve::{Change, Incoming, Resolution, Resolver, Route, Settings};
+use super::{ChangeRows, TableView};
 use crate::error::ErrorKind;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
@@ -1977,4 +1977,95 @@ fn a_rows_metadata_of_bytes_costs_seventy_two_bytes_a_column() {
         row_bytes(capabilities(), true),
         (144, vec![LogicalType::Binary, LogicalType::Binary])
     );
+}
+
+/// The load start column of `ids` prepared as a load stamped `stamp`, or why it was refused.
+fn loaded_at(stamp: &Stamp) -> Result<i64, crate::error::Error> {
+    let resolver = resolver(capabilities(), plan(), &[]);
+    let ids = batch(vec![(
+        "id",
+        Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef,
+    )]);
+    let incoming = Incoming::declared(TableSchema::from_arrow(&ids.schema()).unwrap());
+    let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
+    let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
+    let prepared = decoded(&lowering.prepare(&ids, None, stamp, None)?.batch);
+    Ok(prepared
+        .column(2)
+        .as_primitive::<TimestampMicrosecondType>()
+        .value(0))
+}
+
+/// The deletion time a soft-deleting change stream's table records for a delete prepared as a
+/// load stamped `stamp`, or why it was refused.
+fn deleted_at(stamp: &Stamp) -> Result<i64, crate::error::Error> {
+    let mut resolver = resolver(capabilities(), plan(), &["id"]);
+    let layout = Some(ChangeLayout::Merge { soft: true });
+    resolver.meta = MetaNames::assign_changes(&resolver.naming, true, LineageColumns::None, layout);
+    let seq = FixedSizeBinaryArray::try_from_iter([[0_u8; 16]].into_iter()).unwrap();
+    let pushed = batch(vec![
+        ("id", Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef),
+        (
+            OP_COLUMN,
+            Arc::new(Int8Array::from(vec![ChangeOp::Delete.code()])) as ArrayRef,
+        ),
+        (SEQ_COLUMN, Arc::new(seq) as ArrayRef),
+    ]);
+    let (ids, changes) = ChangeRows::split(&pushed).unwrap();
+    let incoming = Incoming::declared(TableSchema::from_arrow(&ids.schema()).unwrap());
+    let resolution = resolver.resolve(&Model::default(), &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
+    let lowering = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes);
+    let prepared = decoded(&lowering.prepare(&ids, None, stamp, Some(&changes))?.batch);
+    let deleted = prepared
+        .column_by_name(DELETED_AT_COLUMN)
+        .expect("a soft-deleting table records when a row was deleted");
+    Ok(deleted.as_primitive::<TimestampMicrosecondType>().value(0))
+}
+
+#[test]
+fn a_load_started_before_the_epoch_stamps_its_rows_with_that_instant() {
+    let before = Stamp {
+        loaded_at: UNIX_EPOCH - Duration::from_nanos(1_500),
+        ..stamp()
+    };
+    assert_eq!(
+        loaded_at(&before).unwrap(),
+        -2,
+        "the earlier of two microseconds"
+    );
+    let whole = Stamp {
+        loaded_at: UNIX_EPOCH - Duration::from_secs(3),
+        ..stamp()
+    };
+    assert_eq!(loaded_at(&whole).unwrap(), -3_000_000);
+}
+
+#[test]
+fn a_load_stamped_beyond_what_microseconds_hold_is_refused() {
+    let beyond = Stamp {
+        loaded_at: UNIX_EPOCH + Duration::from_secs(10_000_000_000_000),
+        ..stamp()
+    };
+    let refused = loaded_at(&beyond).unwrap_err();
+    assert_eq!(refused.kind(), ErrorKind::Internal);
+    assert!(
+        std::error::Error::source(&refused).is_some(),
+        "{refused:?} keeps its cause"
+    );
+}
+
+#[test]
+fn a_soft_delete_is_stamped_exactly_before_the_epoch_and_refused_beyond() {
+    let before = Stamp {
+        loaded_at: UNIX_EPOCH - Duration::from_nanos(1_500),
+        ..stamp()
+    };
+    assert_eq!(deleted_at(&before).unwrap(), -2);
+    let beyond = Stamp {
+        loaded_at: UNIX_EPOCH + Duration::from_secs(10_000_000_000_000),
+        ..stamp()
+    };
+    assert_eq!(deleted_at(&beyond).unwrap_err().kind(), ErrorKind::Internal);
 }
