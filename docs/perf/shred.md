@@ -101,6 +101,10 @@ invocation started at a one-minute load average of at most 1.0 with its cores id
 and each round of every engine figure lies within 3 % of the median. A third round ran later under
 other load on the machine and is left out (the owner's ruling of 2026-10-10).
 
+The `normalize/*` rows of the Normalizing and Allocations tables come from commit `a40d359e`,
+2026-10-11: five rounds interleaved with the merge-base in alternating orders, each started at a
+one-minute load average of 0.38 to 0.97, the median with its range in brackets.
+
 ### Against the old engine
 
 | Corpus, one core | Old engine | This engine | Ratio | Spec's bound |
@@ -158,13 +162,13 @@ normalizes rows identified by their whole content, whose canonical encoding is t
 
 | Group | Time | Throughput | Against `shred_only` |
 |---|---|---|---|
-| `shred_only` | 67.4 ms | 475 MiB/s [471–479] | 1 |
-| `keyed` | 117.3 ms | 273 MiB/s [271–275] | 1.74× |
-| `keyless` | 181.2 ms | 177 MiB/s [176–178] | 2.69× |
+| `shred_only` | 66.9 ms | 479 MiB/s [476–482] | 1 |
+| `keyed` | 109.8 ms | 292 MiB/s [291–293] | 1.64× |
+| `keyless` | 168.8 ms | 190 MiB/s [189–191] | 2.52× |
 
 ### Allocations
 
-One run of each one-core group; the counts were the same in both rounds.
+One run of each one-core group; the counts were the same in every round.
 
 | Group | Allocations a row | Reallocations a row | Bytes a row | Allocations a batch | Bytes a batch |
 |---|---|---|---|---|---|
@@ -174,8 +178,8 @@ One run of each one-core group; the counts were the same in both rounds.
 | `shred/wide_200` | 3.538 | 0.077 | 2390 | 1386.969 | 936829 |
 | `shred/string_heavy` | 1.007 | 4.901 | 616 | 4772.531 | 2919291 |
 | `normalize/shred_only` | 2.562 | 0.003 | 298 | 10775.844 | 1255532 |
-| `normalize/keyed` | 2.615 | 0.036 | 1012 | 11000.844 | 4257929 |
-| `normalize/keyless` | 5.623 | 0.036 | 1109 | 23650.781 | 4665777 |
+| `normalize/keyed` | 2.604 | 0.006 | 654 | 10951.844 | 2749029 |
+| `normalize/keyless` | 2.611 | 0.006 | 655 | 10982.844 | 2753071 |
 
 ## Build profile
 
