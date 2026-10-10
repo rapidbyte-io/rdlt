@@ -387,3 +387,85 @@ the rounds named:
   peak memory in that process against 128–129. It loses that and more over mutual TLS and in
   small frames, so glibc's allocator stays, and the regression the two stages recorded for a
   spawned socket destination in large frames remains.
+
+## One connection a connector
+
+Every call of a served connector, all its data streams, runs over one HTTP/2 connection, and that
+connection's task, one task on one thread at a time, does the connection's TLS: on the host's side
+hyper's client connection task encrypts each frame into records, on the connector's side the
+server connection task decrypts them. The question was whether that task limits mutual TLS, so
+that several connections a connector, one session over N connections, would pay.
+
+The rule set before measuring: build several connections a connector only if
+`process/tls/destination/64x80000` moves at most 70 % of `process/socket/destination/64x80000`
+and one connection task holds at least 0.8 of a core on either end. Otherwise one connection is
+kept.
+
+Intel Core Ultra X7 358H, mains power, 2026-10-10, `dff5d4be42d6`, governor `powersave` with
+energy preference `performance` on the twelve CPUs used; the host on CPUs 0–3 and the
+destination's process on 4–11 (`just bench served 0-3 <filter> 4-11`). Three rounds, each a run
+of the tls case and one of the socket case back to back, the order alternating (tls first in
+rounds 1 and 3, socket first in round 2), under the measurement lock. The two profiles below ran
+first, under the same lock. Load average over a minute was 1.02 before the profiles and
+2.19–2.63 before and after each of the rounds' runs, the bench's own threads.
+The rounds stopped at three: every one fell far from both thresholds.
+
+| Round | tls, MB/s | socket, MB/s | tls of socket |
+|---|---|---|---|
+| 1 | 1 284 | 1 403 | 91.5 % |
+| 2 | 1 273 | 1 475 | 86.3 % |
+| 3 | 1 278 | 1 387 | 92.1 % |
+
+The median of the three rounds and their range: tls 1 278 (1 273–1 284) MB/s, socket 1 403
+(1 387–1 475), tls at 91 % of the socket's.
+
+| Median (range) | tls | socket |
+|---|---|---|
+| CPU s a GB, all | 1.45 (1.44–1.49) | 1.51 (1.49–1.58) |
+| Host's process, CPU s a GB | 0.55 (0.53–0.62) | 0.42 (0.41–0.52) |
+| Destination's process, CPU s a GB | 0.90 (0.87–0.91) | 1.08 (1.06–1.09) |
+| CPUs busy, host's process | 0.70 (0.68–0.79) | 0.59 (0.58–0.77) |
+| CPUs busy, destination's process | 1.15 (1.11–1.15) | 1.51 (1.51–1.52) |
+| `writev` a run (setup included) | 7 736 (7 726–7 763) | 1 684 (1 667–1 713) |
+| `recvfrom` a run (setup included) | 29 167 (29 061–29 223) | 2 359 (2 233–2 370) |
+
+One profile of each case, on the `just profiling served` build, `$bin`, with the host on CPUs 0–3
+and the destination on 4–11, 15 seconds of the case's runs:
+
+```
+RDLT_BENCH_CONNECTOR_CORES=4-11 perf record -e task-clock -c 1000000 --call-graph fp -- \
+  taskset -c 0-3 "$bin" --bench '^served/process/tls/destination/64x80000$' --profile-time 15
+```
+
+and the socket case alike. A sample is one millisecond of a thread's user-mode CPU; kernel time
+is not sampled (`perf_event_paranoid` 2). The connection task is every sample whose stack holds
+hyper's server connection (`hyper::server::conn::http2::Connection`, the connector's side) or
+hyper's client connection task (`hyper::proto::h2::client::Conn`, the host's side). A core's
+share is the task's samples in a second over the 1 000 a core gives, over the steady seconds:
+those in which the process had at least half the samples of its busiest second.
+
+- **Over mutual TLS, the destination's process** has 42.3 % of its samples under its connection
+  task. The task held 0.37 of a core (median over 12 seconds, 0.40 at most), and the aws-lc-rs
+  seal and open under it are 58 % of the task's samples.
+- **The host's process** has 54.6 % of its samples under the client connection task, which held
+  0.28 of a core (median over 13 seconds, 0.31 at most); crypto is 72 % of the task.
+- **The task's share of the process's samples times the process's CPUs busy**, user and system,
+  from the rounds, estimates the task's share of a core with the process's system time counted
+  in proportion to its user time: 0.423 × 1.15 = 0.49 of a core on the destination,
+  0.546 × 0.70 = 0.38 on the host. Even if all of a process's system time were its connection
+  task's (CPUs busy in the rounds less the user-mode CPUs the profile counted, 0.87 on the
+  destination and 0.48 on the host), the task holds at most 0.65 of a core on the destination
+  (0.37 + 1.15 − 0.87) and 0.50 on the host (0.28 + 0.70 − 0.48).
+- **Over the socket**, the connection tasks hold 2 % of the host's samples and 0–3 % of each
+  spawned destination's, at most 0.03 of a core.
+- **Against the rule.** tls moves 86–92 % of the socket's MB/s (rule: at most 70 %), and no
+  connection task holds more than 0.65 of a core even with all system time counted (rule: at
+  least 0.8). Neither condition holds, so one connection a connector is kept: several
+  connections would spread a task that does not limit the run.
+- **CPU.** tls costs no more CPU a GB than the spawned socket destination here: 1.45 against 1.51
+  all, with the socket destination's process taking 1.08 against 0.90, which is consistent with the
+  page-fault cost recorded under "A served write in two stages".
+- **The open question under "Partitions"**, whether one connection task framing TLS and HTTP/2
+  holds the destination under one CPU, is answered: with its process at 1.15 CPUs busy, the
+  connection task holds 0.37 of a core in user mode and at most 0.65 with all system time
+  counted, so it is not what limits the destination.
