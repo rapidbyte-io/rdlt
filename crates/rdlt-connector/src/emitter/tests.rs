@@ -335,3 +335,30 @@ async fn a_schema_whose_message_passes_the_schema_limit_is_refused_and_one_withi
         }
     }
 }
+
+#[tokio::test]
+async fn a_schema_equal_to_the_last_ones_is_checked_once_and_one_differing_in_metadata_again() {
+    let first = ids(vec![1]);
+    let again = ids(vec![2]);
+    assert!(!Arc::ptr_eq(&first.schema(), &again.schema()));
+    let (mut out, _feed) = emitter();
+    out.batch(first.clone()).await.unwrap();
+    out.batch(again).await.unwrap();
+    let kept = out.schema.clone().expect("a schema was checked");
+    assert!(
+        Arc::ptr_eq(&kept, &first.schema()),
+        "an equal schema is not checked again"
+    );
+    let marked = first
+        .schema()
+        .as_ref()
+        .clone()
+        .with_metadata([("source".to_owned(), "a".to_owned())].into());
+    let marked = first.clone().with_schema(Arc::new(marked)).unwrap();
+    out.batch(marked.clone()).await.unwrap();
+    let kept = out.schema.clone().expect("a schema was checked");
+    assert!(
+        Arc::ptr_eq(&kept, &marked.schema()),
+        "a schema differing in its metadata is checked"
+    );
+}
