@@ -84,10 +84,11 @@ machine (one-minute loads up to 32.4); the durations started below a one-minute 
   idle waiting, and how often the engine's futures are polled; the compute thread's own work
   counts alike. The gate cannot leave the waiting out, since the compute pool's jobs run inside
   rayon's loop, so the spread accepted for that case is 0.5%, against the 2% limit.
-- **Sensitivity.** Against a tree that writes identity's floats in place, today's code fails
-  exactly `normalize/keyless/nested` (+4.33% instructions, 104 → 17,624 allocations) and
+- **Sensitivity.** Against a tree that writes identity's floats in place, the tree that added the
+  gate, which wrote each float into a buffer of its own first, failed exactly
+  `normalize/keyless/nested` (+4.33% instructions, 104 → 17,624 allocations) and
   `normalize/keyless/with_arrays` (+2.31%, 256 → 12,991). Against a tree that skips the plain
-  Int64 rounding scan, it fails exactly `passthrough/null_sink` (+66.06% instructions). Every
+  Int64 rounding scan, it failed exactly `passthrough/null_sink` (+66.06% instructions). Every
   other case stayed within.
 - **Threads.** One run of `passthrough/null_sink` under `--separate-threads=yes` counted
   149,823,238 instructions on the main thread, 3,505,439 on the runtime worker and 796,563 on the
