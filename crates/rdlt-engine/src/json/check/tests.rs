@@ -10,10 +10,10 @@ use arrow_array::{
     StringArray, StringViewArray, StructArray,
 };
 use arrow_buffer::{ArrowNativeType, NullBuffer, OffsetBuffer, ScalarBuffer};
-use arrow_schema::{DataType, Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema, UnionFields};
 use rdlt_wire::limits::NESTING_DEPTH;
 
-use super::{NotJson, check_batch};
+use super::{NotJson, check_batch, schema_holds_json};
 use crate::json::JsonError;
 
 /// `field` marked as a column of JSON.
@@ -719,4 +719,61 @@ fn keys_listed_from_a_dictionary_of_many_values_hold_no_more_than_their_charge()
         peak <= charged + (16 << 10),
         "charged {charged} bytes, held {peak}"
     );
+}
+
+#[test]
+fn a_schema_holds_json_where_any_field_at_any_depth_is_a_column_of_json() {
+    let text = || Field::new("j", DataType::Utf8, true);
+    let one = |field: Field| Schema::new(vec![Field::new("id", DataType::Int64, false), field]);
+    let structs = |field: Field| DataType::Struct(Fields::from(vec![field]));
+    let entries = Field::new(
+        "entries",
+        DataType::Struct(Fields::from(vec![
+            Field::new("key", DataType::Utf8, false),
+            json(Field::new("value", DataType::Utf8, true)),
+        ])),
+        false,
+    );
+    let holding = [
+        json(Field::new("c", DataType::Utf8, true)),
+        json(Field::new(
+            "c",
+            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::Utf8)),
+            true,
+        )),
+        Field::new("c", structs(json(text())), true),
+        Field::new("c", DataType::List(Arc::new(json(text()))), true),
+        Field::new("c", DataType::Map(Arc::new(entries), false), true),
+        Field::new(
+            "c",
+            DataType::Dictionary(Box::new(DataType::Int8), Box::new(structs(json(text())))),
+            true,
+        ),
+        Field::new(
+            "c",
+            DataType::RunEndEncoded(
+                Arc::new(Field::new("run_ends", DataType::Int32, false)),
+                Arc::new(Field::new("values", structs(json(text())), true)),
+            ),
+            true,
+        ),
+    ];
+    for field in holding {
+        assert!(schema_holds_json(&one(field.clone())), "{field:?}");
+    }
+    let union = UnionFields::try_new([0], [json(text())]).unwrap();
+    let holding_none = [
+        Field::new("c", DataType::Utf8, true),
+        Field::new("c", structs(text()), true),
+        Field::new("c", DataType::List(Arc::new(text())), true),
+        // The check reads no union's values, so a union holds none.
+        Field::new(
+            "c",
+            DataType::Union(union, arrow_schema::UnionMode::Sparse),
+            true,
+        ),
+    ];
+    for field in holding_none {
+        assert!(!schema_holds_json(&one(field.clone())), "{field:?}");
+    }
 }

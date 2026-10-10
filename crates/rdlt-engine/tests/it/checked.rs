@@ -9,8 +9,8 @@ use arrow_array::{
     StringArray,
 };
 use arrow_buffer::{OffsetBuffer, ScalarBuffer};
-use arrow_schema::{Field, Schema};
-use rdlt_engine::RunOutcome;
+use arrow_schema::{DataType, Field, Schema};
+use rdlt_engine::{RunOutcome, RunStatus};
 
 use crate::HEAP;
 use crate::support::destinations::null;
@@ -85,8 +85,7 @@ async fn what_checking_holds_beside_a_push_is_reserved_before_it_is_held() {
     // Null rows whose views name items out of order, and one valid row naming text that is not
     // JSON: the check gathers a span a row before it reads that text and fails the write.
     let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
-    let item =
-        Field::new("item", arrow_schema::DataType::Utf8, true).with_metadata(extension.into());
+    let item = Field::new("item", DataType::Utf8, true).with_metadata(extension.into());
     let rows = i32::try_from(ROWS).expect("a count");
     let views = arrow_array::ListViewArray::new(
         Arc::new(item),
@@ -116,5 +115,51 @@ async fn what_checking_holds_beside_a_push_is_reserved_before_it_is_held() {
         outcome.report.peak_memory >= pushed + gathered,
         "the budget held at most {} bytes",
         outcome.report.peak_memory
+    );
+}
+
+/// The compute jobs a run of `flushes` pushes of `batch`, each checkpointed on its own, gave
+/// its pool.
+async fn jobs(name: &str, flushes: u64, batch: RecordBatch) -> u64 {
+    let steps = usize::try_from(2 * flushes).expect("a count");
+    let steps: Steps = Arc::new(move |step| {
+        (step < steps).then(|| match step % 2 {
+            0 => Step::Batch(batch.clone()),
+            _ => Step::Checkpoint(8),
+        })
+    });
+    let source = making(name, steps).await;
+    let outcome = engine(commit_every(1_000_000_000).lanes(1))
+        .run(pipeline(name, [stream("events")]), source, null().await)
+        .await;
+    assert_eq!(
+        outcome.report.status,
+        RunStatus::Succeeded,
+        "{:?}",
+        outcome.error
+    );
+    outcome.report.counters.pool.jobs
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_push_holding_no_json_is_written_with_two_fewer_compute_jobs() {
+    const FLUSHES: u64 = 4;
+    let batch = |doc: Field| {
+        let ids: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let docs: ArrayRef = Arc::new(StringArray::from(vec!["{}", "[1]", "2"]));
+        let id = Field::new("id", DataType::Int32, false);
+        RecordBatch::try_new(Arc::new(Schema::new(vec![id, doc])), vec![ids, docs])
+            .expect("a batch of three rows")
+    };
+    let text = Field::new("doc", DataType::Utf8, true);
+    let extension = [("ARROW:extension:name".to_owned(), "arrow.json".to_owned())];
+    let json = text.clone().with_metadata(extension.into());
+    let with_json = jobs("jobs_with_json", FLUSHES, batch(json)).await;
+    let without = jobs("jobs_without_json", FLUSHES, batch(text)).await;
+    // Measuring what the check holds and the check itself: a job each, a flush.
+    assert_eq!(
+        with_json,
+        without + 2 * FLUSHES,
+        "{with_json} compute jobs with a column of JSON, {without} without"
     );
 }

@@ -16,7 +16,7 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, RecordBatch};
 use arrow_buffer::{ArrowNativeType, BooleanBufferBuilder};
-use arrow_schema::{DataType, Field};
+use arrow_schema::{DataType, Field, Schema};
 use rdlt_connector::LogicalType;
 
 use super::{JsonError, check};
@@ -52,6 +52,12 @@ pub(crate) fn check_batch(batch: &RecordBatch) -> Result<(), NotJson> {
         })?;
     }
     Ok(())
+}
+
+/// Whether a field of `schema`, at any depth, is a column of JSON: a batch of a schema holding
+/// none has nothing for [`check_batch`] to check.
+pub(crate) fn schema_holds_json(schema: &Schema) -> bool {
+    schema.fields().iter().any(|field| field_holds_json(field))
 }
 
 /// Whether `field` is a column of JSON, or holds one at any depth.
