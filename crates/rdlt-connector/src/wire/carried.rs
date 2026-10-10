@@ -5,6 +5,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::sync::LazyLock;
+
 use rdlt_wire::prost::Message as _;
 use rdlt_wire::scan::{Form, decoded, request, response};
 
@@ -23,7 +25,8 @@ pub fn answer_bytes(records: &[StateRecord]) -> u64 {
 
 /// Bytes: what `record` adds to an open's answer decoded, as one of the records it carries.
 pub fn record_bytes(record: &StateRecord) -> u64 {
-    answer_bytes(std::slice::from_ref(record)).saturating_sub(answer_bytes(&[]))
+    static EMPTY: LazyLock<u64> = LazyLock::new(|| answer_bytes(&[]));
+    answer_bytes(std::slice::from_ref(record)).saturating_sub(*EMPTY)
 }
 
 /// Bytes: what a commit's request carrying `meta` holds decoded.

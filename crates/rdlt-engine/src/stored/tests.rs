@@ -7,7 +7,7 @@ use rdlt_connector::{
     CommitMeta, CommitSeq, Epoch, LoadId, SegmentSet, StateChange, StateKey, StateRecord,
 };
 
-use super::{StateLimits, Stored};
+use super::{Measured, StateLimits, Stored};
 use crate::config::EngineConfig;
 use crate::error::ErrorKind;
 
@@ -55,7 +55,7 @@ fn record(key: &str, bytes: usize) -> StateRecord {
 impl Stored {
     /// Admits `meta`, of no new child table.
     fn admit_all(&self, meta: &CommitMeta) -> Result<(), crate::error::Error> {
-        self.admit(meta, &[])
+        self.admit(&Measured::of(meta), &[])
     }
 }
 
@@ -182,13 +182,17 @@ fn landed_changes_replace_and_remove_what_is_stored() {
         StateChange::Put(record("c", 30)),
         StateChange::Delete("missing".to_owned()),
     ];
-    stored.apply(&delta);
+    stored.apply(Measured::of(&meta(delta.to_vec())));
     let expected = record_bytes(&record("a", 500)) + record_bytes(&record("c", 30));
     assert_eq!(stored.held(), expected);
     // A later change sees what landed: `b` is gone, so deleting it frees nothing more.
-    stored.apply(&[StateChange::Delete("b".to_owned())]);
+    stored.apply(Measured::of(&meta(vec![StateChange::Delete(
+        "b".to_owned(),
+    )])));
     assert_eq!(stored.held(), expected);
-    stored.apply(&[StateChange::Delete("a".to_owned())]);
+    stored.apply(Measured::of(&meta(vec![StateChange::Delete(
+        "a".to_owned(),
+    )])));
     assert_eq!(stored.held(), record_bytes(&record("c", 30)));
 }
 
@@ -201,8 +205,30 @@ fn a_key_changed_twice_in_one_commit_counts_its_last_change() {
     ]);
     stored.admit_all(&twice).unwrap();
     let mut landed = Stored::of(&[], limits(ROOM, ROOM));
-    landed.apply(&twice.state_delta);
+    landed.apply(Measured::of(&twice));
     assert_eq!(landed.held(), 0);
+}
+
+#[test]
+fn a_commit_is_measured_once_for_its_admission_its_relief_and_its_landing() {
+    let mut stored = Stored::of(&[record("a", 10)], limits(ROOM, ROOM));
+    let commit = meta(vec![
+        StateChange::Put(record("a", 20)),
+        StateChange::Put(record("b", 30)),
+        StateChange::Delete("c".to_owned()),
+        StateChange::Put(record("d", 40)),
+    ]);
+    super::MEASURES.with(|measures| measures.set(0));
+    let measured = Measured::of(&commit);
+    stored.admit(&measured, &[]).unwrap();
+    assert_eq!(stored.relief(&measured, &["a"]), Some(0));
+    stored.apply(measured);
+    // Three records and one request, however often the commit is judged.
+    assert_eq!(super::MEASURES.with(std::cell::Cell::get), 3 + 1);
+    assert_eq!(
+        stored.total(),
+        answer_bytes(&[record("a", 20), record("b", 30), record("d", 40)])
+    );
 }
 
 #[test]
@@ -234,7 +260,8 @@ fn stored_state_and_requests_are_held_to_the_state_limit_the_engine_advertises()
 fn an_empty_state_holds_the_answer_alone_and_a_record_its_bytes_and_more() {
     let empty = Stored::of(&[], limits(ROOM, ROOM));
     assert_eq!(empty.total(), answer_bytes(&[]));
-    let one = empty.after(&[StateChange::Put(record("key", 1000))]);
+    let one =
+        empty.after(&Measured::of(&meta(vec![StateChange::Put(record("key", 1000))])).changed);
     assert!(one >= empty.total() + 1000 + 3, "{one}");
 }
 
@@ -246,10 +273,10 @@ fn state_past_the_limit_only_with_new_child_tables_is_refused_for_them() {
     let born = [(stream.clone(), "child".to_owned())];
     let error = full
         .admit(
-            &meta(vec![
+            &Measured::of(&meta(vec![
                 StateChange::Put(record("b", 100)),
                 StateChange::Put(record("child", 500)),
-            ]),
+            ])),
             &born,
         )
         .unwrap_err();
@@ -260,17 +287,17 @@ fn state_past_the_limit_only_with_new_child_tables_is_refused_for_them() {
     // Without its child tables the state still passes the limit: it is the state's.
     let error = full
         .admit(
-            &meta(vec![
+            &Measured::of(&meta(vec![
                 StateChange::Put(record("b", 500)),
                 StateChange::Put(record("child", 100)),
-            ]),
+            ])),
             &born,
         )
         .unwrap_err();
     assert_eq!(error.code(), Some("state_bytes_exceeded"));
     // A commit within the limit is admitted, child tables and all.
     let commit = meta(vec![StateChange::Put(record("child", 100))]);
-    full.admit(&commit, &born).unwrap();
+    full.admit(&Measured::of(&commit), &born).unwrap();
 }
 
 #[test]
@@ -283,20 +310,26 @@ fn a_commit_past_the_limit_is_relieved_by_the_fewest_records_deleted_in_order() 
     let limit = room + answer_bytes(&[]);
     // A commit that fits needs nothing deleted.
     let fits = meta(vec![StateChange::Put(record("d", 10))]);
-    assert_eq!(stored.relief(&fits, &["a", "b", "c"]), Some(0));
+    assert_eq!(
+        stored.relief(&Measured::of(&fits), &["a", "b", "c"]),
+        Some(0)
+    );
     // One that passes the limit by a byte more than one record takes needs two.
     let one = bytes("a");
     let past = largest(small + one, |value| record_bytes(&record("d", value))) + 1;
     let grown = meta(vec![StateChange::Put(record("d", past))]);
-    let over = stored.after(&grown.state_delta) - limit;
+    let over = stored.after(&Measured::of(&grown).changed) - limit;
     assert!(
         over > bytes("a") && over <= bytes("a") + bytes("b"),
         "{over}"
     );
-    assert_eq!(stored.relief(&grown, &["a", "b", "c"]), Some(2));
+    assert_eq!(
+        stored.relief(&Measured::of(&grown), &["a", "b", "c"]),
+        Some(2)
+    );
     // Records it does not store free nothing, and too few records relieve nothing.
-    assert_eq!(stored.relief(&grown, &["x", "a"]), None);
-    assert_eq!(stored.relief(&grown, &[]), None);
+    assert_eq!(stored.relief(&Measured::of(&grown), &["x", "a"]), None);
+    assert_eq!(stored.relief(&Measured::of(&grown), &[]), None);
     let mut relieved = grown.clone();
     for key in ["a", "b"] {
         relieved
@@ -343,8 +376,8 @@ proptest! {
         let mut stored = Stored::of(&records, limits(ROOM, ROOM));
         prop_assert_eq!(stored.total(), answer_bytes(&records));
         let after = committed(&records, &then);
-        prop_assert_eq!(stored.after(&then), answer_bytes(&after));
-        stored.apply(&then);
+        prop_assert_eq!(stored.after(&Measured::of(&meta(then.clone())).changed), answer_bytes(&after));
+        stored.apply(Measured::of(&meta(then)));
         prop_assert_eq!(stored.total(), answer_bytes(&after));
     }
 }
