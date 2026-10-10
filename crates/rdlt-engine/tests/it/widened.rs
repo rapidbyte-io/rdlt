@@ -5,14 +5,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Decimal128Type, Decimal256Type, Float64Type, Int64Type};
+use arrow_array::types::Int64Type;
 use arrow_array::{
     Array, ArrayRef, Decimal128Array, Decimal256Array, Float64Array, Int32Array, Int64Array,
     RecordBatch,
 };
 use arrow_buffer::i256;
 use arrow_schema::{DataType, Field, Schema};
-use rdlt_connector::{DecimalType, LogicalType, TimeUnit, instants};
+use rdlt_connector::testing::denoted;
+use rdlt_connector::{DecimalType, LogicalType, TimeUnit};
 use rdlt_engine::RunStatus;
 
 use crate::support::batches::{BatchStream, batches};
@@ -108,67 +109,6 @@ fn values(logical: &LogicalType) -> ArrayRef {
             1_577_854_800,
             9_000_000_000,
         ]))),
-    }
-}
-
-/// What the value at `row` of `array`, as a destination read it back, denotes: an instant, time
-/// of day or duration in nanoseconds, a number as the shortest decimal text of its exact value,
-/// and anything else as Arrow shows it.
-fn denoted(array: &dyn Array, row: usize) -> String {
-    if array.is_null(row) {
-        return "null".to_owned();
-    }
-    if let Some(value) = instants::stored(array, row) {
-        let nanos = instants::nanos(array.data_type(), i128::from(value)).expect("temporal");
-        return format!("{nanos} ns");
-    }
-    let one = array.slice(row, 1);
-    match array.data_type() {
-        DataType::Decimal128(_, scale) => exact(
-            &one.as_primitive::<Decimal128Type>().value(0).to_string(),
-            *scale,
-        ),
-        DataType::Decimal256(_, scale) => exact(
-            &one.as_primitive::<Decimal256Type>().value(0).to_string(),
-            *scale,
-        ),
-        DataType::Float16 | DataType::Float32 | DataType::Float64 => {
-            let wide = arrow_cast::cast(&one, &DataType::Float64).expect("a float");
-            let value = wide.as_primitive::<Float64Type>().value(0);
-            exact(&format!("{}", if value == 0.0 { 0.0 } else { value }), 0)
-        }
-        data_type if data_type.is_integer() => {
-            let wide = arrow_cast::cast(&one, &DataType::Int64).expect("an integer");
-            wide.as_primitive::<Int64Type>().value(0).to_string()
-        }
-        _ => {
-            let shown = arrow_cast::display::ArrayFormatter::try_new(
-                &one,
-                &arrow_cast::display::FormatOptions::default(),
-            )
-            .expect("a formatter");
-            shown.value(0).to_string()
-        }
-    }
-}
-
-/// `digits`, a number's text, divided by ten to the `scale`, without trailing zeros.
-fn exact(digits: &str, scale: i8) -> String {
-    let (sign, digits) = digits
-        .strip_prefix('-')
-        .map_or(("", digits), |rest| ("-", rest));
-    let scale = usize::try_from(scale).expect("no negative scale");
-    let text = if digits.contains('.') || scale == 0 {
-        format!("{sign}{digits}")
-    } else {
-        let padded = format!("{digits:0>width$}", width = scale + 1);
-        let (whole, fraction) = padded.split_at(padded.len() - scale);
-        format!("{sign}{whole}.{fraction}")
-    };
-    if text.contains('.') {
-        text.trim_end_matches('0').trim_end_matches('.').to_owned()
-    } else {
-        text
     }
 }
 

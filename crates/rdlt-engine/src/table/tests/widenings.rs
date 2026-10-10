@@ -4,13 +4,14 @@
 use std::sync::Arc;
 
 use arrow_array::cast::AsArray;
-use arrow_array::types::{Decimal128Type, Decimal256Type, Float64Type};
+use arrow_array::types::Float64Type;
 use arrow_array::{
     Array, ArrayRef, Decimal128Array, Decimal256Array, Float64Array, Int64Array, RecordBatch,
 };
 use arrow_buffer::i256;
 use arrow_schema::DataType;
-use rdlt_connector::{DecimalType, LogicalType, TimeUnit, instants};
+use rdlt_connector::testing::denoted;
+use rdlt_connector::{DecimalType, LogicalType, TimeUnit};
 
 use crate::normalize::identity::{root_ids, version_hashes};
 use crate::table::convert::convert;
@@ -115,56 +116,6 @@ fn values(logical: &LogicalType) -> ArrayRef {
     }
 }
 
-/// What the value at `row` of `array` denotes: an instant, time of day or duration in
-/// nanoseconds, or a number as the shortest decimal text of its exact value.
-fn denoted(array: &dyn Array, row: usize) -> String {
-    if let Some(value) = instants::stored(array, row) {
-        let nanos = instants::nanos(array.data_type(), i128::from(value)).unwrap();
-        return format!("{nanos} ns");
-    }
-    let exact = |digits: String, scale: i8| trimmed(shifted(&digits, scale));
-    match array.data_type() {
-        DataType::Decimal128(_, scale) => {
-            let value = array.as_primitive::<Decimal128Type>().value(row);
-            exact(value.to_string(), *scale)
-        }
-        DataType::Decimal256(_, scale) => {
-            let value = array.as_primitive::<Decimal256Type>().value(row);
-            exact(value.to_string(), *scale)
-        }
-        DataType::Float32 | DataType::Float64 => {
-            let wide = arrow_cast::cast(&array.slice(row, 1), &DataType::Float64).unwrap();
-            let value = wide.as_primitive::<Float64Type>().value(0);
-            trimmed(format!("{}", if value == 0.0 { 0.0 } else { value }))
-        }
-        _ => {
-            let wide = arrow_cast::cast(&array.slice(row, 1), &DataType::Int64).unwrap();
-            wide.as_primitive::<arrow_array::types::Int64Type>()
-                .value(0)
-                .to_string()
-        }
-    }
-}
-
-/// `digits`, an integer, divided by ten to the `scale`, as text.
-fn shifted(digits: &str, scale: i8) -> String {
-    let (sign, digits) = digits
-        .strip_prefix('-')
-        .map_or(("", digits), |digits| ("-", digits));
-    let scale = usize::try_from(scale).unwrap();
-    let padded = format!("{digits:0>width$}", width = scale + 1);
-    let (whole, fraction) = padded.split_at(padded.len() - scale);
-    format!("{sign}{whole}.{fraction}")
-}
-
-/// `text`, a number, without trailing zeros after its point, or the point itself.
-fn trimmed(text: String) -> String {
-    if !text.contains('.') {
-        return text;
-    }
-    text.trim_end_matches('0').trim_end_matches('.').to_owned()
-}
-
 /// The row id and history hash of each value of `array`, a column `v` keyed by itself.
 fn identities(array: &ArrayRef) -> Vec<(Vec<u8>, Vec<u8>)> {
     let batch = RecordBatch::try_from_iter([("v", Arc::clone(array))]).unwrap();
@@ -203,4 +154,16 @@ fn every_widening_keeps_each_value_its_id_and_its_history_hash() {
         }
     }
     assert!(widenings > 500, "{widenings} widenings");
+}
+
+#[test]
+fn a_float_widened_keeps_the_sign_of_its_zero() {
+    let zero: ArrayRef = Arc::new(arrow_array::Float32Array::from(vec![-0.0_f32]));
+    let widened = convert(&zero, &LogicalType::Float32, &LogicalType::Float64).unwrap();
+    assert!(
+        widened
+            .as_primitive::<Float64Type>()
+            .value(0)
+            .is_sign_negative()
+    );
 }

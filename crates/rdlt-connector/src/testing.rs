@@ -16,6 +16,7 @@
 //! # }
 //! ```
 
+mod denoted;
 mod destination;
 mod limits;
 mod reason;
@@ -27,6 +28,7 @@ mod tests;
 use std::fmt;
 use std::future::Future;
 
+pub use denoted::denoted;
 pub use destination::{
     DESTINATION_CLAUSES, Probe, Unprobed, certify_destination, certify_destination_factory,
     certify_destination_factory_observed, read_back_integers,

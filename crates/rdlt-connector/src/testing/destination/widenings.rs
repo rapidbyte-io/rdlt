@@ -7,10 +7,7 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
-use arrow_array::cast::AsArray;
-use arrow_array::types::{Decimal128Type, Decimal256Type, Float64Type, Int64Type};
 use arrow_array::{Array, ArrayRef, Decimal128Array, Float64Array, Int32Array, Int64Array};
-use arrow_schema::DataType;
 
 use super::{Bench, commit, meta};
 use crate::OpenedSession;
@@ -18,7 +15,6 @@ use crate::capabilities::Capabilities;
 use crate::commit::CommitMeta;
 use crate::destination::TableChange;
 use crate::id::{CommitSeq, SegmentId};
-use crate::instants;
 use crate::schema::TableSchema;
 use crate::testing::reason::Listed;
 use crate::testing::{Violation, bounded_call};
@@ -208,57 +204,7 @@ fn denotations(column: &dyn Array, to: &LogicalType) -> Vec<String> {
     } else {
         column
     };
-    (0..column.len()).map(|row| denoted(column, row)).collect()
-}
-
-/// What the value at `row` of `column` denotes.
-fn denoted(column: &dyn Array, row: usize) -> String {
-    if column.is_null(row) {
-        return "null".to_owned();
-    }
-    if let Some(value) = instants::stored(column, row) {
-        let nanos = instants::nanos(column.data_type(), i128::from(value));
-        return format!("{} ns", nanos.unwrap_or_default());
-    }
-    let one = column.slice(row, 1);
-    let number = match column.data_type() {
-        DataType::Decimal128(_, scale) => shifted(
-            &one.as_primitive::<Decimal128Type>().value(0).to_string(),
-            *scale,
-        ),
-        DataType::Decimal256(_, scale) => shifted(
-            &one.as_primitive::<Decimal256Type>().value(0).to_string(),
-            *scale,
-        ),
-        DataType::Float16 | DataType::Float32 | DataType::Float64 => {
-            match arrow_cast::cast(&one, &DataType::Float64) {
-                Ok(wide) => format!("{}", wide.as_primitive::<Float64Type>().value(0)),
-                Err(error) => return format!("unreadable: {error}"),
-            }
-        }
-        data_type if data_type.is_integer() => match arrow_cast::cast(&one, &DataType::Int64) {
-            Ok(wide) => wide.as_primitive::<Int64Type>().value(0).to_string(),
-            Err(error) => return format!("unreadable: {error}"),
-        },
-        other => return format!("a value of {other}"),
-    };
-    if number.contains('.') {
-        number
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_owned()
-    } else {
-        number
-    }
-}
-
-/// `digits`, an integer's text, divided by ten to the `scale`.
-fn shifted(digits: &str, scale: i8) -> String {
-    let (sign, digits) = digits
-        .strip_prefix('-')
-        .map_or(("", digits), |digits| ("-", digits));
-    let scale = usize::try_from(scale).unwrap_or(0);
-    let padded = format!("{digits:0>width$}", width = scale + 1);
-    let (whole, fraction) = padded.split_at(padded.len() - scale);
-    format!("{sign}{whole}.{fraction}")
+    (0..column.len())
+        .map(|row| crate::testing::denoted(column, row))
+        .collect()
 }
