@@ -8,7 +8,7 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use rdlt_connector::{CommitSeq, SegmentId, StateChange, StateRecord};
 
-use super::{load, logged, meta, pipeline, receipt, sealed_at};
+use super::{json_value, load, logged, meta, pipeline, receipt, sealed_at};
 use crate::budget::MemoryBudget;
 use crate::table::testing::view;
 use crate::wal::frame::{self, Frame};
@@ -77,7 +77,7 @@ impl Load {
         if self.recorded > 0 {
             commit.state_delta = vec![StateChange::Put(StateRecord {
                 key: "k".to_owned(),
-                value: vec![7; self.recorded].into(),
+                value: json_value(self.recorded),
             })];
         }
         commit

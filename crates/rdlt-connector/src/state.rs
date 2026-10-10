@@ -6,7 +6,7 @@ mod key;
 mod names;
 #[cfg(test)]
 mod tests;
-mod value_text;
+mod value_json;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -32,9 +32,8 @@ const STATE_VERSION: u16 = 2;
 pub struct StateRecord {
     /// The record's key; a commit's `Put` replaces the record with the same key.
     pub key: String,
-    /// The record's value; base64 text where the record is written as JSON, a third longer than
-    /// its bytes, where a number a byte would be four times them.
-    #[serde(with = "value_text")]
+    /// The record's value: JSON text, which a record written as JSON holds as it is.
+    #[serde(with = "value_json")]
     pub value: Bytes,
 }
 
@@ -166,13 +165,6 @@ pub enum Sequences {
     Source,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct VersionedEntry {
-    v: u16,
-    entry: StateEntry,
-}
-
 impl StateEntry {
     /// The key this entry is stored under.
     pub fn key(&self) -> StateKey {
@@ -200,9 +192,9 @@ impl StateEntry {
         reason = "state entries always serialize to JSON"
     )]
     pub fn to_record(&self) -> StateRecord {
-        let value = serde_json::to_vec(&VersionedEntry {
+        let value = serde_json::to_vec(&Writing {
             v: STATE_VERSION,
-            entry: self.clone(),
+            entry: self,
         })
         .expect("state entries serialize to JSON");
         StateRecord {
@@ -218,28 +210,24 @@ impl StateEntry {
             key: error::shown(&record.key),
             reason: error::shown(&reason),
         };
-        let version: VersionOnly =
+        let read: Reading =
             serde_json::from_slice(&record.value).map_err(|error| malformed(error.to_string()))?;
-        if version.v != STATE_VERSION {
-            return Err(StateError::UnsupportedVersion {
-                key: error::shown(&record.key),
-                version: version.v,
-            });
-        }
-        let versioned: VersionedEntry =
-            serde_json::from_slice(&record.value).map_err(|error| malformed(error.to_string()))?;
-        if versioned.entry.key() != key {
+        let entry = match read {
+            Reading::Entry(entry) => entry,
+            Reading::Other(version) => {
+                return Err(StateError::UnsupportedVersion {
+                    key: error::shown(&record.key),
+                    version,
+                });
+            }
+        };
+        if entry.key() != key {
             return Err(StateError::KeyMismatch {
                 key: error::shown(&record.key),
             });
         }
-        Ok(versioned.entry)
+        Ok(entry)
     }
-}
-
-#[derive(Deserialize)]
-struct VersionOnly {
-    v: u16,
 }
 
 /// A stream's committed position.
@@ -327,5 +315,67 @@ impl PipelineState {
             StateChange::Delete(key) => self.delete(&StateKey::parse(key)?),
         }
         Ok(())
+    }
+}
+
+/// A state value as this crate writes it: its format, then its entry.
+#[derive(Serialize)]
+struct Writing<'a> {
+    v: u16,
+    entry: &'a StateEntry,
+}
+
+/// A state value as it is read, its format first: its entry, or the other format it is of,
+/// whose entry is passed over unread.
+enum Reading {
+    Entry(StateEntry),
+    Other(u16),
+}
+
+/// A member of a state value.
+#[derive(Deserialize, PartialEq)]
+#[serde(field_identifier, rename_all = "lowercase")]
+enum Member {
+    V,
+    Entry,
+}
+
+impl<'de> Deserialize<'de> for Reading {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(ReadingVisitor)
+    }
+}
+
+/// Reads a state value's members in the order they are written.
+struct ReadingVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ReadingVisitor {
+    type Value = Reading;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a state value: its format, then its entry")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Reading, A::Error> {
+        use serde::de::Error as _;
+        if map.next_key::<Member>()? != Some(Member::V) {
+            return Err(A::Error::custom("a state value names its format first"));
+        }
+        let version: u16 = map.next_value()?;
+        if map.next_key::<Member>()? != Some(Member::Entry) {
+            return Err(A::Error::missing_field("entry"));
+        }
+        let read = if version == STATE_VERSION {
+            Reading::Entry(map.next_value()?)
+        } else {
+            map.next_value::<serde::de::IgnoredAny>()?;
+            Reading::Other(version)
+        };
+        if map.next_key::<Member>()?.is_some() {
+            return Err(A::Error::custom(
+                "a state value holds its format and its entry alone",
+            ));
+        }
+        Ok(read)
     }
 }

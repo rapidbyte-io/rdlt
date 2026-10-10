@@ -36,8 +36,7 @@ pub(super) fn records(view: &TableView) -> [StateChange; 2] {
     ]
 }
 
-/// Bytes: what `changes` take in a commit's frame in the log, where each record's bytes are
-/// written twice over.
+/// Bytes: what `changes` take in a commit's frame in the log, at most twice each record's bytes.
 pub(super) fn recorded_bytes(changes: &[StateChange]) -> u64 {
     let record = |change: &StateChange| match change {
         StateChange::Put(record) => record.key.len().saturating_add(record.value.len()),

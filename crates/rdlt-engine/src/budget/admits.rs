@@ -23,10 +23,10 @@ use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 ///   frame, lowered as it arrives, with a null in each column of the widest table and the
 ///   metadata lowering adds, fits what one request for lowering a row may take where the load
 ///   keeps a log, half a request.
-/// - What a commit records of a table, its schema and names twice over, fits the tables' share
-///   where its columns, nested fields too, are no more than the share over what a column's
-///   record takes with names of up to a hundred and fifty bytes; and no more than a schema's
-///   message may carry of columns with short names.
+/// - What a commit records of a table, its schema and names at most twice over, fits the
+///   tables' share where its columns, nested fields too, are no more than the share over what a
+///   column's record takes with names of up to a hundred and fifty bytes; and no more than a
+///   schema's message may carry of columns with short names.
 /// - A frame is charged, before it is decoded, what its scan counts decoding it holds, at most
 ///   twice its bytes and the fields around them, to what pushes may take: a frame within half a
 ///   request beside a row's nulls is within half of that too.
@@ -38,8 +38,8 @@ use crate::limits::{COLUMN_RECORD, RECORDED, SCHEMA_KEPT};
 /// - Every read may hold a cursor waiting for a commit and a barrier's answer beside it, and the
 ///   commit a barrier calls is due once waiting cursors take half their share: half the share,
 ///   one cursor more and every read's answer fit it when a cursor is the share over twice one
-///   more than the reads. A seal's frame records two cursors, each twice over, within the log's
-///   share.
+///   more than the reads. A seal's frame records two cursors, each at most twice over, within the
+///   log's share.
 ///
 /// Rows, values and nesting are not the budget's to bound: a batch is lowered a piece at a time,
 /// whatever it holds. A table whose records take more than its share all the same, as one of
@@ -61,8 +61,8 @@ pub(crate) fn admitted(shares: Shares, readers: usize) -> Limits {
         state_bytes: decoded(Class::State),
         control_message_bytes: decoded(Class::Control),
         json_push_bytes: shares.intake / JSON_CHARGE,
-        // A quarter of the log's share, which a commit recording each cursor twice holds, is
-        // the cursors' share itself: the partitions' bound is the lesser.
+        // A quarter of the log's share, which a commit taking at most twice each cursor holds,
+        // is the cursors' share itself: the partitions' bound is the lesser.
         cursor_bytes: shares.cursors / readers.saturating_add(1).saturating_mul(2),
         schema_bytes,
         dictionary_bytes: kept / 2,

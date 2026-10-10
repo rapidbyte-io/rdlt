@@ -41,10 +41,9 @@ fn commit_meta() -> CommitMeta {
         epoch: Epoch(3),
         segments: [SegmentId(1), SegmentId(4)].into_iter().collect(),
         abandoned: rdlt_connector::SegmentSet::new(),
-        state_delta: vec![StateChange::Put(StateRecord {
-            key: "k".to_owned(),
-            value: Bytes::from_static(b"\x00\xffvalue"),
-        })],
+        state_delta: vec![StateChange::Put(
+            rdlt_connector::StateEntry::Epoch(Epoch(3)).to_record(),
+        )],
         finish_generations: Vec::new(),
         child_tables: Vec::new(),
         drop_tables: Vec::new(),
@@ -510,14 +509,35 @@ fn a_commit_frame_takes_little_more_than_the_state_it_records() {
     let frame = Frame::Commit(Box::new(committing.clone()))
         .encode()
         .expect("the frame encodes");
-    // The cursor is base64 in its state value, and the value base64 in the frame: under twice
-    // the cursor, where a number a byte took five times it.
-    assert!(frame.len() < 2 * 300_000, "{} bytes", frame.len());
+    // The cursor is base64 in its state value, which the frame holds as the JSON it is: four
+    // bytes for every three of the cursor, and the frame's names and numbers beside.
+    let base64 = 300_000 / 3 * 4;
+    assert!(
+        (base64..base64 + 1_024).contains(&frame.len()),
+        "{} bytes",
+        frame.len()
+    );
     assert_eq!(
         super::commit(&committing.meta, 0, 0).expect("the frame encodes"),
         frame
     );
     assert_eq!(decoded(&frame), Frame::Commit(Box::new(committing)));
+}
+
+#[test]
+fn a_commit_recording_a_value_that_is_not_json_does_not_encode() {
+    let mut meta = commit_meta();
+    meta.state_delta = vec![StateChange::Put(StateRecord {
+        key: "k".to_owned(),
+        value: Bytes::from_static(b"\x00\xffvalue"),
+    })];
+    let refused = super::commit(&meta, 0, 0).unwrap_err().report();
+    assert!(
+        refused
+            .message
+            .starts_with("encoding a write-ahead log frame"),
+        "{refused:?}"
+    );
 }
 
 #[test]
@@ -623,6 +643,9 @@ fn a_frame_with_a_field_this_build_does_not_know_is_refused() {
         };
         let mut found = Vec::new();
         objects(&payload, String::new(), &mut found);
+        // The frame holds each state value as JSON it never reads; a member added inside one is
+        // the value's, refused where state is read.
+        found.retain(|pointer| !pointer.contains("/put/value"));
         for pointer in found {
             let mut grown = payload.clone();
             grown
@@ -692,10 +715,13 @@ fn a_frame_lacking_any_member_it_writes_is_refused() {
         rows: 7,
     };
     every_member_required::<BatchHeader>(&serde_json::to_value(head).expect("serializes"));
-    let commit = serde_json::json!({ "meta": metadata().into_iter().find_map(|frame| match frame {
-        Frame::Commit(commit) => Some(commit.meta),
-        _ => None,
-    }), "seals": 1, "phases": 0 });
+    // Every member of a state value is the value's, so the commit records one with none.
+    let mut meta = commit_meta();
+    meta.state_delta = vec![StateChange::Put(StateRecord {
+        key: "k".to_owned(),
+        value: Bytes::from_static(b"7"),
+    })];
+    let commit = serde_json::json!({ "meta": meta, "seals": 1, "phases": 0 });
     every_member_required::<Committing>(&commit);
 }
 

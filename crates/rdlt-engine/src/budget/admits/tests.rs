@@ -122,8 +122,8 @@ fn what_each_limit_admits_all_at_once_fits_the_share_it_draws_on() {
         let readers = u64::try_from(readers).expect("a count");
         let cursors = limits.cursor_bytes.saturating_mul(2 * (readers + 1));
         assert!(cursors <= shares.cursors, "{what}");
-        // A seal's frame records two cursors twice over; a commit's every cursor waiting, its
-        // value in base64 twice over.
+        // A seal's frame records two cursors, each at most twice over; a commit's every cursor
+        // waiting, each at most twice over.
         assert!(
             limits.cursor_bytes.saturating_mul(4) <= shares.log,
             "{what}"

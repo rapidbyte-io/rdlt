@@ -221,7 +221,7 @@ fn a_schema_record_without_its_exact_columns_is_refused_and_deleting_it_forgets_
         .expect("the exact columns are recorded");
     let lacking = StateRecord {
         key: record.key.clone(),
-        value: serde_json::to_vec(&json).unwrap().into(),
+        value: versioned(super::STATE_VERSION, &json["entry"]),
     };
     assert!(matches!(
         sample_state().apply(&StateChange::Put(lacking)),
@@ -337,6 +337,16 @@ fn unreadable_records_are_typed_errors() {
             StateRecord {
                 key: epoch.key.clone(),
                 value: Bytes::from_static(b"{\"v\":3,\"entry\":{}}"),
+            },
+            StateError::UnsupportedVersion {
+                key: epoch.key.clone(),
+                version: 3,
+            },
+        ),
+        (
+            StateRecord {
+                key: epoch.key.clone(),
+                value: Bytes::from_static(b"{\"v\":3,\"entry\":{\"no\":[\"such\"]}}"),
             },
             StateError::UnsupportedVersion {
                 key: epoch.key.clone(),
@@ -683,31 +693,6 @@ fn deleting_entries_that_do_not_exist_changes_nothing() {
 }
 
 #[test]
-fn a_records_value_is_json_text_a_third_longer_than_its_bytes() {
-    let value: Vec<u8> = (0..=255).cycle().take(30_000).collect();
-    let record = StateRecord {
-        key: "k".to_owned(),
-        value: Bytes::from(value),
-    };
-    let json = serde_json::to_vec(&record).unwrap();
-    // Base64 text, not a number a byte.
-    assert!(json.len() <= 30_000 * 4 / 3 + 64, "{} bytes", json.len());
-    assert_eq!(
-        serde_json::from_slice::<StateRecord>(&json).unwrap(),
-        record
-    );
-    // Text that is not base64 is no record.
-    assert!(serde_json::from_str::<StateRecord>(r#"{"key":"k","value":"*"}"#).is_err());
-    let empty = StateRecord {
-        key: "k".to_owned(),
-        value: Bytes::new(),
-    };
-    let json = serde_json::to_string(&empty).unwrap();
-    assert_eq!(json, r#"{"key":"k","value":""}"#);
-    assert_eq!(serde_json::from_str::<StateRecord>(&json).unwrap(), empty);
-}
-
-#[test]
 fn a_recorded_name_map_naming_two_columns_alike_is_refused() {
     let two_on_one = serde_json::json!([[{"source": ["a"]}, "c"], [{"source": ["b"]}, "c"]]);
     assert!(serde_json::from_value::<NameMap>(two_on_one).is_err());
@@ -821,18 +806,35 @@ fn objects(value: &serde_json::Value, at: String, found: &mut Vec<String>) {
 fn a_state_record_with_a_field_this_build_does_not_know_is_refused() {
     for record in records_of(&sample_state()) {
         let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
+        let entry = &value["entry"];
         let mut found = Vec::new();
-        objects(&value, String::new(), &mut found);
-        for pointer in found {
-            let mut grown = value.clone();
-            grown
-                .pointer_mut(&pointer)
-                .and_then(serde_json::Value::as_object_mut)
-                .unwrap()
-                .insert("unknown".to_owned(), serde_json::json!(1));
+        objects(entry, String::new(), &mut found);
+        let mut cases: Vec<(String, Bytes)> = found
+            .into_iter()
+            .map(|pointer| {
+                let mut grown = entry.clone();
+                grown
+                    .pointer_mut(&pointer)
+                    .and_then(serde_json::Value::as_object_mut)
+                    .unwrap()
+                    .insert("unknown".to_owned(), serde_json::json!(1));
+                (pointer, versioned(super::STATE_VERSION, &grown))
+            })
+            .collect();
+        cases.push((
+            "the value".to_owned(),
+            format!(
+                r#"{{"v":{},"entry":{},"unknown":1}}"#,
+                super::STATE_VERSION,
+                entry
+            )
+            .into_bytes()
+            .into(),
+        ));
+        for (pointer, value) in cases {
             let grown = StateRecord {
                 key: record.key.clone(),
-                value: serde_json::to_vec(&grown).unwrap().into(),
+                value,
             };
             assert!(
                 matches!(
@@ -849,11 +851,10 @@ fn a_state_record_with_a_field_this_build_does_not_know_is_refused() {
 #[test]
 fn a_state_record_of_the_previous_format_is_refused() {
     for record in records_of(&sample_state()) {
-        let mut value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
-        value["v"] = serde_json::json!(1);
+        let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
         let previous = StateRecord {
             key: record.key.clone(),
-            value: serde_json::to_vec(&value).unwrap().into(),
+            value: versioned(1, &value["entry"]),
         };
         assert_eq!(
             StateEntry::from_record(&previous),
@@ -873,6 +874,110 @@ fn a_state_record_lacking_any_member_it_writes_is_refused() {
     }
     for record in records_of(&state) {
         let value: serde_json::Value = serde_json::from_slice(&record.value).unwrap();
-        rdlt_testkit::required::every_member_required::<super::VersionedEntry>(&value);
+        rdlt_testkit::required::every_member_required::<StateEntry>(&value["entry"]);
     }
+}
+
+/// A state value of format `v` holding `entry`, its format first, as this crate writes them.
+fn versioned(v: u16, entry: &serde_json::Value) -> Bytes {
+    format!(r#"{{"v":{v},"entry":{entry}}}"#)
+        .into_bytes()
+        .into()
+}
+
+#[test]
+fn a_state_value_naming_its_entry_before_its_format_is_refused() {
+    let epoch = StateEntry::Epoch(Epoch(1)).to_record();
+    let value: serde_json::Value = serde_json::from_slice(&epoch.value).unwrap();
+    let entry = &value["entry"];
+    let cases = [
+        format!(r#"{{"entry":{entry},"v":{}}}"#, super::STATE_VERSION),
+        format!(r#"{{"entry":{entry}}}"#),
+        format!(r#"{{"v":{}}}"#, super::STATE_VERSION),
+        format!(r#"{{"v":{},"entry":{entry},"v":2}}"#, super::STATE_VERSION),
+    ];
+    for case in cases {
+        let record = StateRecord {
+            key: epoch.key.clone(),
+            value: case.clone().into_bytes().into(),
+        };
+        assert!(
+            matches!(
+                StateEntry::from_record(&record),
+                Err(StateError::MalformedValue { .. })
+            ),
+            "{case}"
+        );
+    }
+    // Written by this crate, its format comes first and it reads back.
+    assert_eq!(epoch.value, versioned(super::STATE_VERSION, entry));
+}
+
+#[test]
+fn a_state_value_that_is_not_an_object_is_refused_saying_what_one_is() {
+    let epoch = StateEntry::Epoch(Epoch(1)).to_record();
+    for case in ["[1]", "\"x\"", "7", "null"] {
+        let record = StateRecord {
+            key: epoch.key.clone(),
+            value: Bytes::from_static(case.as_bytes()),
+        };
+        let Err(StateError::MalformedValue { reason, .. }) = StateEntry::from_record(&record)
+        else {
+            panic!("{case} was not refused as a malformed value");
+        };
+        assert!(
+            reason.contains("expected a state value: its format, then its entry"),
+            "{case}: {reason}"
+        );
+    }
+}
+
+#[test]
+fn a_record_s_value_is_written_as_the_json_it_holds() {
+    let entry = StateEntry::Partition {
+        stream: stream("orders"),
+        partition: partition("p0"),
+        state: PartitionState::Cursor(Cursor::new(1, &vec![b'c'; 30_000]).unwrap()),
+        load: load(1),
+    };
+    let record = entry.to_record();
+    let json = serde_json::to_vec(&record).unwrap();
+    let key = serde_json::to_string(&record.key).unwrap();
+    let value = std::str::from_utf8(&record.value).unwrap();
+    assert_eq!(
+        String::from_utf8(json.clone()).unwrap(),
+        format!(r#"{{"key":{key},"value":{value}}}"#)
+    );
+    // The cursor is base64 once: a third more than its bytes, and the record's text beside.
+    assert!(json.len() <= 30_000 / 3 * 4 + 512, "{} bytes", json.len());
+    assert_eq!(
+        serde_json::from_slice::<StateRecord>(&json).unwrap(),
+        record
+    );
+    // A value that is not JSON text alone is no record's.
+    for value in [&b"\xff"[..], b"not json", b" {} ", b"", b"{}{}"] {
+        let record = StateRecord {
+            key: "k".to_owned(),
+            value: Bytes::copy_from_slice(value),
+        };
+        assert!(serde_json::to_vec(&record).is_err(), "{value:?}");
+    }
+    assert!(serde_json::from_str::<StateRecord>(r#"{"key":"k","value":*}"#).is_err());
+    assert!(serde_json::from_str::<StateRecord>(r#"{"key":"k"}"#).is_err());
+}
+
+#[test]
+fn a_destination_s_state_value_with_whitespace_around_it_reads_as_its_entry() {
+    let epoch = StateEntry::Epoch(Epoch(1)).to_record();
+    let mut spaced = b" \n".to_vec();
+    spaced.extend_from_slice(&epoch.value);
+    spaced.extend_from_slice(b"\t ");
+    let record = StateRecord {
+        key: epoch.key.clone(),
+        value: spaced.into(),
+    };
+    let entry = StateEntry::from_record(&record).expect("the value is its entry's JSON");
+    assert_eq!(entry, StateEntry::Epoch(Epoch(1)));
+    // What the engine records of it again is the entry's own JSON, with nothing around it.
+    assert_eq!(entry.to_record(), epoch);
 }

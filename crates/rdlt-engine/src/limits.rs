@@ -87,8 +87,9 @@ pub(crate) const BUDGET_WAIT: Duration = Duration::from_secs(3600);
 /// it, which takes up to four times as much where its fields are many and their names short.
 pub(crate) const SCHEMA_KEPT: u64 = 5;
 
-/// Bytes a frame of the log takes for each byte of a cursor or state value it records: the value
-/// is base64 text in its record, and the record base64 text in the frame.
+/// Bytes a frame of the log takes for each byte of a cursor or state record it records, at
+/// most: a cursor is base64 text, a third longer; a record's value is the JSON it is, and its key
+/// JSON text in a JSON string, which escaping its quotes may double.
 pub(crate) const RECORDED: u64 = 2;
 
 /// The code of the error for a configuration whose memory admits less than the protocol's

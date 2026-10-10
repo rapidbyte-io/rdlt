@@ -93,8 +93,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
 
   - **Cursors.** Every partition may hold a cursor waiting for a commit and a barrier's answer
     at once, with room for one more: a barrier's answers always fit, so a source that keeps to
-    its cursor limit never waits on a barrier for room. A commit records each cursor twice
-    over, so a quarter of the log's share holds it.
+    its cursor limit never waits on a barrier for room. A commit's frame takes at most twice
+    each cursor's bytes, so a quarter of the log's share holds it.
   - **Rows.** A row as long as a frame lowers within half a request for lowering, its nulls a
     column and its metadata beside it, so it lowers with or without a log: a row within the
     frame limit is never `row_exceeds_budget`. That refusal is left to a row its table widens
@@ -328,9 +328,9 @@ budget before it is held, or bounded by a limit with a typed refusal.
     keep while the decoder holds them.
   - A JSON push's records are found by a scan that keeps a span a chunk, not a range a record.
   - Row identity reads integers, temporal values and decimals where they lie.
-  - A state record's value is base64 text wherever the record is JSON, and the log's seal and
-    commit frames are reserved from the log's share before they are encoded, for the cursors
-    and state they record twice over, and hold what they take until they are appended
+  - A state record's value is the JSON it is wherever the record is JSON, and the log's seal
+    and commit frames are reserved from the log's share before they are encoded, at most twice
+    the cursors and state they record, and hold what they take until they are appended
     (ADR 0029). A frame larger than what was reserved for it reserves the rest before it waits
     to be appended.
   - A served write refuses more than four frames' bytes between two flushes, and the host's
