@@ -1,9 +1,12 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use rdlt_connector::{Field, Fields, LogicalType, TableSchema};
+use proptest::prelude::*;
+use rdlt_connector::{ColumnPath, Field, Fields, LogicalType, TableSchema};
 
 use super::{children, root_columns};
-use crate::normalize::Shape;
+use crate::normalize::encodings::{batch, drawn, plainly};
+use crate::normalize::{Shape, normalize};
 use crate::table::Incoming;
 
 /// A column's path within its table and its type.
@@ -163,4 +166,29 @@ fn an_array_of_objects_beyond_the_depth_limit_keeps_its_items_as_the_column_valu
         [(path(&["lines"]), vec![(path(&["value"]), line())])],
     );
     assert_eq!(root(&lines(), 1), [(path(&["id"]), LogicalType::Int64)]);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(rdlt_testkit::cases(256)))]
+
+    #[test]
+    fn a_declared_schema_makes_each_table_and_column_its_plain_batch_normalizes_into(
+        drawn in drawn(),
+        max_depth in 0_u8..4,
+    ) {
+        let plain = batch(&drawn, plainly);
+        let schema = TableSchema::from_arrow(&plain.schema()).expect("a drawn schema");
+        let shape = shape(max_depth);
+        let mut declared: BTreeMap<Vec<Arc<str>>, Vec<ColumnPath>> = children(&schema, &shape)
+            .expect("a drawn schema's child tables")
+            .into_iter()
+            .take(64)
+            .map(|(path, incoming)| (path, incoming.paths))
+            .collect();
+        let root = root_columns(&schema, &shape).expect("a drawn schema's own table");
+        declared.insert(Vec::new(), root.paths);
+        for part in normalize(&plain, &shape).expect("a plain batch normalizes") {
+            prop_assert_eq!(declared.get(&part.path), Some(&part.columns), "{:?}", part.path);
+        }
+    }
 }

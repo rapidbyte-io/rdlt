@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use rdlt_connector::{ColumnPath, Field, LogicalType, TableSchema};
 
+use super::placement::{Container, Placement, placement};
 use super::{Shape, VALUE, name};
 use crate::error::Error;
 use crate::table::Incoming;
@@ -25,12 +26,14 @@ struct Table {
 
 impl Table {
     /// Places `field`, at `path` with values at `depth`, as normalizing places a column of its
-    /// type: an object within depth flattens into its fields, an array within depth waits to
-    /// become a child table, and anything else is a column.
+    /// type ([`placement`]).
     fn place(&mut self, path: Vec<Arc<str>>, field: &Field, depth: u8, max_depth: u8) {
-        match field.logical_type() {
-            _ if depth > max_depth => self.columns.push((path, field.clone())),
-            LogicalType::Struct(fields) => {
+        let logical = field.logical_type();
+        match (
+            placement(Container::of_logical(logical), depth, max_depth),
+            logical,
+        ) {
+            (Placement::Fields, LogicalType::Struct(fields)) => {
                 for inner in fields.iter() {
                     let mut inner_path = path.clone();
                     inner_path.push(Arc::from(inner.name()));
@@ -38,7 +41,9 @@ impl Table {
                     self.place(inner_path, &inner, depth.saturating_add(1), max_depth);
                 }
             }
-            LogicalType::List(item) => self.arrays.push((path, item.as_ref().clone(), depth)),
+            (Placement::Items, LogicalType::List(item)) => {
+                self.arrays.push((path, item.as_ref().clone(), depth));
+            }
             _ => self.columns.push((path, field.clone())),
         }
     }
@@ -115,18 +120,22 @@ fn items(
     let depth = depth.saturating_add(1);
     let mut table = Table::default();
     let value = || vec![Arc::from(VALUE)];
-    match item.logical_type() {
-        LogicalType::Struct(fields) if depth <= max_depth => {
+    let logical = item.logical_type();
+    match (
+        placement(Container::of_logical(logical), depth, max_depth),
+        logical,
+    ) {
+        (Placement::Fields, LogicalType::Struct(fields)) => {
             for field in fields.iter() {
                 let inner = Field::new(field.name(), field.logical_type().clone(), true);
                 let inner_path = vec![Arc::from(field.name())];
                 table.place(inner_path, &inner, depth.saturating_add(1), max_depth);
             }
         }
-        LogicalType::List(inner) if depth <= max_depth => {
+        (Placement::Items, LogicalType::List(inner)) => {
             table.arrays.push((value(), inner.as_ref().clone(), depth));
         }
-        logical => {
+        (_, logical) => {
             let column = Field::new(VALUE, logical.clone(), true);
             table.columns.push((value(), column));
         }

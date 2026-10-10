@@ -10,6 +10,7 @@ pub(crate) mod declared;
 #[cfg(test)]
 mod encodings;
 pub(crate) mod identity;
+pub(crate) mod placement;
 #[cfg(test)]
 mod reference;
 #[cfg(test)]
@@ -26,6 +27,7 @@ use arrow_array::{
 };
 use arrow_buffer::NullBuffer;
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, FieldRef, Schema};
+use placement::{Container, Placement, placement};
 use rdlt_connector::ColumnPath;
 
 pub(crate) use cascade::{Dropped, Pruned};
@@ -149,9 +151,8 @@ impl Table {
         Ok(())
     }
 
-    /// Places `array`, of `field`, the column at `path` whose values sit at `depth`: an object
-    /// within depth flattens into its fields, an array within depth waits to become a child
-    /// table, and anything else is a column.
+    /// Places `array`, of `field`, the column at `path` whose values sit at `depth`, as
+    /// [`placement`] says.
     fn place(
         &mut self,
         path: Vec<Arc<str>>,
@@ -160,11 +161,8 @@ impl Table {
         depth: u8,
         max_depth: u8,
     ) -> Result<(), ArrowError> {
-        if depth > max_depth {
-            return self.column(path, field, Arc::clone(array));
-        }
-        match array.data_type() {
-            DataType::Struct(_) => {
+        match placement(Container::of_arrow(array.data_type()), depth, max_depth) {
+            Placement::Fields => {
                 let object = array.as_struct();
                 for (inner, values) in object.fields().iter().zip(object.columns()) {
                     let mut inner_path = path.clone();
@@ -174,11 +172,11 @@ impl Table {
                 }
                 Ok(())
             }
-            data_type if item_field(data_type).is_some() => {
+            Placement::Items => {
                 self.arrays.push((path, Arc::clone(array), depth));
                 Ok(())
             }
-            _ => self.column(path, field, Arc::clone(array)),
+            Placement::Column => self.column(path, field, Arc::clone(array)),
         }
     }
 
@@ -363,9 +361,8 @@ impl Items {
     }
 }
 
-/// The child table of `values`, items at `depth`: an object within depth flattens into columns,
-/// an array within depth becomes a grandchild table under `value`, and anything else is the column
-/// `value`.
+/// The child table of `values`, items at `depth`: placed as [`placement`] says, an array within
+/// depth a grandchild table under `value`, and anything else the column `value`.
 fn items_table(
     item: &FieldRef,
     values: &ArrayRef,
@@ -373,8 +370,8 @@ fn items_table(
     max_depth: u8,
 ) -> Result<Table, ArrowError> {
     let mut table = Table::default();
-    match values.data_type() {
-        DataType::Struct(_) if depth <= max_depth => {
+    match placement(Container::of_arrow(values.data_type()), depth, max_depth) {
+        Placement::Fields => {
             let object = values.as_struct();
             for (field, column) in object.fields().iter().zip(object.columns()) {
                 let column = within(column, object.nulls());
@@ -382,12 +379,12 @@ fn items_table(
                 table.place(path, field, &column, depth + 1, max_depth)?;
             }
         }
-        data_type if item_field(data_type).is_some() && depth <= max_depth => {
+        Placement::Items => {
             table
                 .arrays
                 .push((vec![Arc::from(VALUE)], Arc::clone(values), depth));
         }
-        _ => table.column(vec![Arc::from(VALUE)], item, Arc::clone(values))?,
+        Placement::Column => table.column(vec![Arc::from(VALUE)], item, Arc::clone(values))?,
     }
     Ok(table)
 }

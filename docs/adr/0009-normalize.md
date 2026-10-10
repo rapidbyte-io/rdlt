@@ -25,9 +25,10 @@ leaves open, and one it words otherwise.
   table and plan in order, then lowers the parts on the pool; plain streams keep their single pool
   round trip.
 - **Depth.** Entering an object or an array is one level; a container deeper than `max_depth` stays
-  whole and lowers to `Json`, or text where the destination has no JSON type. Only pipelines and
-  streams normalize: a column set to `native` or `json` in a normalized stream is kept whole, and a
-  column set to `normalize` is refused when the plan is built.
+  whole and lowers to `Json`, or text where the destination has no JSON type, and an object or
+  array held in a dictionary or runs stays a whole column at any depth. Only pipelines and streams
+  normalize: a column set to `native` or `json` in a normalized stream is kept whole, and a column
+  set to `normalize` is refused when the plan is built.
 - **Identity.** A root row's id is the BLAKE3 hash, all 256 bits, of a canonical encoding of its
   key (the plan's merge key or the source's primary key) or, without one, of its whole row; a
   child's is the BLAKE3 hash of its parent's id and its position; each kind of id is hashed
