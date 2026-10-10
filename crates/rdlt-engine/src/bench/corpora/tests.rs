@@ -130,3 +130,15 @@ fn the_benches_shred_four_pushes_of_the_engine_s_default_sizes() {
     assert_eq!(CHUNK_BYTES, policy.chunk_bytes().get());
     assert_eq!(CORPUS_BYTES.div_ceil(PUSH_BYTES), 4);
 }
+
+#[test]
+fn nested_rows_are_about_180_bytes() {
+    let pushes = Corpus::Nested.pushes(CORPUS_BYTES);
+    let bytes: usize = pushes.iter().map(bytes::Bytes::len).sum();
+    let rows: usize = pushes
+        .iter()
+        .map(|push| String::from_utf8(push.to_vec()).unwrap().lines().count())
+        .sum();
+    let mean = (bytes - rows) / rows;
+    assert!((178..=182).contains(&mean), "{mean} bytes a row");
+}
