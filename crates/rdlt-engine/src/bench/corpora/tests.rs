@@ -68,6 +68,12 @@ fn a_corpus_is_cut_into_pushes_of_whole_lines_once_it_holds_its_bytes() {
 }
 
 #[test]
+fn a_corpus_whose_bytes_end_on_a_row_holds_no_row_more() {
+    let pushes = corpus(50, 1_000, |_, _| "row!".to_owned());
+    assert_eq!(pushes.concat(), b"row!\n".repeat(10));
+}
+
+#[test]
 fn the_corpora_shredded_on_one_core_are_named_as_their_benchmarks() {
     let names: Vec<String> = Corpus::SHREDDED.into_iter().map(Corpus::name).collect();
     assert_eq!(
