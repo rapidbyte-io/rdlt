@@ -3,18 +3,20 @@
 
 use std::sync::Arc;
 
+use arrow_array::cast::AsArray;
+use arrow_array::types::Float64Type;
 use arrow_array::types::{Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type};
 use arrow_array::types::{UInt32Type, UInt64Type};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, DictionaryArray, Float32Array, Float64Array, Int8Array,
     Int16Array, Int32Array, Int64Array, RecordBatch, RunArray, StringArray, StructArray,
 };
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Field as ArrowField, Fields};
 use rdlt_connector::{ChangeOp, LogicalType, TableSchema};
 
 use super::{batch, capabilities, created, plan, resolver, stamp, table};
 use crate::table::TableView;
-use crate::table::lowering::{ChangeRows, LoweringPlan};
+use crate::table::lowering::{ChangeRows, LoweringPlan, key_values};
 use crate::table::resolve::Incoming;
 
 /// The code of the error preparing `batch` for a merge table keyed by `id`, its rows `changes`
@@ -148,8 +150,7 @@ fn a_key_holding_nan_in_any_float_width_and_encoding_is_refused() {
 #[test]
 fn a_key_holding_nan_within_a_struct_is_refused() {
     let inner: ArrayRef = Arc::new(Float64Array::from(vec![1.0, f64::NAN]));
-    let fields =
-        arrow_schema::Fields::from(vec![arrow_schema::Field::new("x", DataType::Float64, true)]);
+    let fields = Fields::from(vec![arrow_schema::Field::new("x", DataType::Float64, true)]);
     let key: ArrayRef = Arc::new(StructArray::try_new(fields, vec![inner], None).unwrap());
     assert_eq!(refusal(&keyed(key), None).as_deref(), Some("merge_key_nan"));
 }
@@ -194,7 +195,7 @@ fn zero_signs(array: &dyn Array) -> Vec<bool> {
     match array.data_type() {
         DataType::Float16 | DataType::Float32 | DataType::Float64 => {
             let wide = arrow_cast::cast(array, &DataType::Float64).unwrap();
-            wide.as_primitive::<arrow_array::types::Float64Type>()
+            wide.as_primitive::<Float64Type>()
                 .values()
                 .iter()
                 .filter(|value| **value == 0.0)
@@ -244,8 +245,7 @@ fn a_negative_zero_key_is_stored_as_zero_in_any_float_width_and_encoding() {
 #[test]
 fn a_negative_zero_within_a_nested_key_is_stored_as_zero() {
     let inner: ArrayRef = Arc::new(Float64Array::from(vec![1.0, -0.0]));
-    let fields =
-        arrow_schema::Fields::from(vec![arrow_schema::Field::new("x", DataType::Float64, true)]);
+    let fields = Fields::from(vec![arrow_schema::Field::new("x", DataType::Float64, true)]);
     let within_struct: ArrayRef =
         Arc::new(StructArray::try_new(fields, vec![Arc::clone(&inner)], None).unwrap());
     let within_list: ArrayRef = Arc::new(arrow_array::ListArray::new(
@@ -372,4 +372,24 @@ fn a_key_holding_nan_is_refused_in_the_fixed_size_list_row_or_map_that_names_it(
     }
     let map: ArrayRef = Arc::new(map.finish());
     assert_eq!(refusal(&keyed(map), None).as_deref(), Some("merge_key_nan"));
+}
+
+#[test]
+fn a_nested_key_is_zeroed_and_refused_for_a_nan_only_in_a_row_that_names_a_key() {
+    let floats: ArrayRef = Arc::new(Float64Array::from(vec![-0.0, f64::NAN, 1.0]));
+    let fields = Fields::from(vec![ArrowField::new("f", DataType::Float64, true)]);
+    let column: ArrayRef = Arc::new(StructArray::new(fields, vec![floats], None));
+    let stream = rdlt_connector::StreamName::new("s").unwrap();
+    // Row 1 truncates, so it names no key and its NaN is not refused.
+    let zeroed = key_values(&stream, "k", &column, &|row| row != 1).unwrap();
+    let values = zeroed
+        .as_struct()
+        .column(0)
+        .as_primitive::<Float64Type>()
+        .clone();
+    assert!(values.value(0) == 0.0 && values.value(0).is_sign_positive());
+    assert!(values.value(1).is_nan());
+    assert_eq!(values.value(2).to_bits(), 1.0_f64.to_bits());
+    let refused = key_values(&stream, "k", &column, &|_| true).unwrap_err();
+    assert_eq!(refused.code(), Some("merge_key_nan"));
 }

@@ -10,7 +10,7 @@ use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, GenericListArray, MapArray, OffsetSizeTrait, RecordBatch,
     RecordBatchOptions, StructArray,
 };
-use arrow_schema::{ArrowError, DataType, FieldRef};
+use arrow_schema::{ArrowError, DataType, FieldRef, Fields};
 use rdlt_connector::StreamName;
 
 use super::{ChangeRows, Source};
@@ -115,103 +115,19 @@ pub(crate) fn key_values(
     if nulls(column, keyed) {
         return refuse("merge_key_null", "a null");
     }
-    let decoded = decoded(column).map_err(|error| {
-        Error::internal(format!(
-            "stream {stream}: reading key column {name}: {error}"
-        ))
-    })?;
-    if nans(decoded.as_ref())
+    let read = |error: ArrowError| {
+        Error::internal(format!("stream {stream}: reading key column {name}")).with_source(error)
+    };
+    let found = floats(&decoded(column).map_err(read)?).map_err(read)?;
+    if found
+        .nans
         .iter()
         .enumerate()
         .any(|(row, nan)| *nan && keyed(row))
     {
         return refuse("merge_key_nan", "a NaN, which equals no value");
     }
-    let zeroed = zeroed(&decoded).map_err(|error| {
-        Error::internal(format!(
-            "stream {stream}: reading key column {name}: {error}"
-        ))
-    })?;
-    Ok(zeroed.unwrap_or_else(|| Arc::clone(column)))
-}
-
-/// `array`, holding only what its rows name, with every negative zero at any depth the zero it
-/// equals; none where it holds no negative zero.
-fn zeroed(array: &ArrayRef) -> Result<Option<ArrayRef>, ArrowError> {
-    macro_rules! floats {
-        ($type:ty) => {{
-            let floats = array.as_primitive::<$type>();
-            let negative = |value: <$type as ArrowPrimitiveType>::Native| {
-                value.is_sign_negative() && value.classify() == FpCategory::Zero
-            };
-            if !floats.values().iter().any(|value| negative(*value)) {
-                return Ok(None);
-            }
-            let zeroed =
-                floats.unary::<_, $type>(|value| if negative(value) { -value } else { value });
-            Ok(Some(Arc::new(zeroed) as ArrayRef))
-        }};
-    }
-    match array.data_type() {
-        DataType::Float16 => floats!(Float16Type),
-        DataType::Float32 => floats!(Float32Type),
-        DataType::Float64 => floats!(Float64Type),
-        DataType::Struct(fields) => {
-            let rows = array.as_struct();
-            let zeroed = rows
-                .columns()
-                .iter()
-                .map(zeroed)
-                .collect::<Result<Vec<_>, _>>()?;
-            if zeroed.iter().all(Option::is_none) {
-                return Ok(None);
-            }
-            let columns = zeroed
-                .into_iter()
-                .zip(rows.columns())
-                .map(|(zeroed, column)| zeroed.unwrap_or_else(|| Arc::clone(column)))
-                .collect();
-            let rows = StructArray::try_new(fields.clone(), columns, rows.nulls().cloned())?;
-            Ok(Some(Arc::new(rows)))
-        }
-        DataType::List(field) => listed(array.as_list::<i32>(), field),
-        DataType::LargeList(field) => listed(array.as_list::<i64>(), field),
-        DataType::FixedSizeList(field, size) => {
-            let list = array.as_fixed_size_list();
-            let Some(values) = zeroed(list.values())? else {
-                return Ok(None);
-            };
-            let nulls = list.nulls().cloned();
-            let list = FixedSizeListArray::try_new(Arc::clone(field), *size, values, nulls)?;
-            Ok(Some(Arc::new(list)))
-        }
-        DataType::Map(field, sorted) => {
-            let map = array.as_map();
-            let entries: ArrayRef = Arc::new(map.entries().clone());
-            let Some(entries) = zeroed(&entries)? else {
-                return Ok(None);
-            };
-            let (offsets, nulls) = (map.offsets().clone(), map.nulls().cloned());
-            let entries = entries.as_struct().clone();
-            let map = MapArray::try_new(Arc::clone(field), offsets, entries, nulls, *sorted)?;
-            Ok(Some(Arc::new(map)))
-        }
-        _ => Ok(None),
-    }
-}
-
-/// `list`, of items `field`, with every negative zero in its items the zero it equals; none where
-/// they hold no negative zero.
-fn listed<O: OffsetSizeTrait>(
-    list: &GenericListArray<O>,
-    field: &FieldRef,
-) -> Result<Option<ArrayRef>, ArrowError> {
-    let Some(values) = zeroed(list.values())? else {
-        return Ok(None);
-    };
-    let (offsets, nulls) = (list.offsets().clone(), list.nulls().cloned());
-    let list = GenericListArray::<O>::try_new(Arc::clone(field), offsets, values, nulls)?;
-    Ok(Some(Arc::new(list)))
+    Ok(found.zeroed.unwrap_or_else(|| Arc::clone(column)))
 }
 
 /// Whether `column` holds a null in a row `keyed` says names a key.
@@ -224,60 +140,148 @@ fn nulls(column: &ArrayRef, keyed: &dyn Fn(usize) -> bool) -> bool {
         .any(|row| keyed(row) && nulls.as_ref().is_some_and(|nulls| nulls.is_null(row)))
 }
 
-/// Which rows of `array`, decoded, hold a NaN at any depth.
+/// What `array`'s floats hold at any depth: which rows hold a NaN, and the array with each
+/// negative zero the zero it equals, where it holds one.
+struct Floats {
+    nans: Vec<bool>,
+    zeroed: Option<ArrayRef>,
+}
+
+/// The floats of `array`, holding only what its rows name, walked once.
 ///
 /// Decoding leaves nothing beneath a null row, so only a float's own validity is read.
-fn nans(array: &dyn Array) -> Vec<bool> {
-    let floats = |nan: &dyn Fn(usize) -> bool| {
-        (0..array.len())
-            .map(|row| array.is_valid(row) && nan(row))
-            .collect()
-    };
+fn floats(array: &ArrayRef) -> Result<Floats, ArrowError> {
+    macro_rules! leaf {
+        ($type:ty) => {{
+            let floats = array.as_primitive::<$type>();
+            let nans = (0..floats.len())
+                .map(|row| floats.is_valid(row) && floats.value(row).is_nan())
+                .collect();
+            let negative = |value: <$type as ArrowPrimitiveType>::Native| {
+                value.is_sign_negative() && value.classify() == FpCategory::Zero
+            };
+            let zeroed = floats
+                .values()
+                .iter()
+                .any(|value| negative(*value))
+                .then(|| {
+                    let zeroed = floats
+                        .unary::<_, $type>(|value| if negative(value) { -value } else { value });
+                    Arc::new(zeroed) as ArrayRef
+                });
+            Ok(Floats { nans, zeroed })
+        }};
+    }
     match array.data_type() {
-        DataType::Float16 => floats(&|row| array.as_primitive::<Float16Type>().value(row).is_nan()),
-        DataType::Float32 => floats(&|row| array.as_primitive::<Float32Type>().value(row).is_nan()),
-        DataType::Float64 => floats(&|row| array.as_primitive::<Float64Type>().value(row).is_nan()),
-        DataType::Struct(_) => {
-            let mut rows = vec![false; array.len()];
-            for column in array.as_struct().columns() {
-                for (row, nan) in nans(column.as_ref()).into_iter().enumerate() {
-                    rows[row] |= nan;
-                }
-            }
-            rows
-        }
-        DataType::List(_) => items(
-            array.as_list::<i32>().offsets(),
-            array.as_list::<i32>().values(),
-        ),
-        DataType::LargeList(_) => items(
-            array.as_list::<i64>().offsets(),
-            array.as_list::<i64>().values(),
-        ),
-        DataType::Map(..) => {
-            let map = array.as_map();
-            let entries: ArrayRef = Arc::new(map.entries().clone());
-            items(map.offsets(), &entries)
-        }
-        DataType::FixedSizeList(_, size) => {
-            let list = array.as_fixed_size_list();
-            let size = usize::try_from(*size).unwrap_or(0);
-            let held = nans(list.values().as_ref());
-            (0..array.len())
-                .map(|row| held.iter().skip(row * size).take(size).any(|nan| *nan))
-                .collect()
-        }
-        _ => vec![false; array.len()],
+        DataType::Float16 => leaf!(Float16Type),
+        DataType::Float32 => leaf!(Float32Type),
+        DataType::Float64 => leaf!(Float64Type),
+        DataType::Struct(fields) => structured(array, fields),
+        DataType::List(field) => listed(array.as_list::<i32>(), field),
+        DataType::LargeList(field) => listed(array.as_list::<i64>(), field),
+        DataType::FixedSizeList(field, size) => fixed(array, field, *size),
+        DataType::Map(field, sorted) => mapped(array, field, *sorted),
+        _ => Ok(Floats {
+            nans: vec![false; array.len()],
+            zeroed: None,
+        }),
     }
 }
 
-/// Which rows of a list, whose items are `values` and whose rows `offsets` bound, hold an item
-/// holding a NaN.
-fn items<O: OffsetSizeTrait>(
+/// The floats of `array`, a struct of `fields`.
+fn structured(array: &ArrayRef, fields: &Fields) -> Result<Floats, ArrowError> {
+    let rows = array.as_struct();
+    let mut nans = vec![false; array.len()];
+    let mut zeroed = Vec::with_capacity(rows.num_columns());
+    for column in rows.columns() {
+        let found = floats(column)?;
+        for (row, nan) in found.nans.into_iter().enumerate() {
+            nans[row] |= nan;
+        }
+        zeroed.push(found.zeroed);
+    }
+    if zeroed.iter().all(Option::is_none) {
+        return Ok(Floats { nans, zeroed: None });
+    }
+    let columns = zeroed
+        .into_iter()
+        .zip(rows.columns())
+        .map(|(zeroed, column)| zeroed.unwrap_or_else(|| Arc::clone(column)))
+        .collect();
+    let rows = StructArray::try_new(fields.clone(), columns, rows.nulls().cloned())?;
+    Ok(Floats {
+        nans,
+        zeroed: Some(Arc::new(rows)),
+    })
+}
+
+/// The floats of `array`, a fixed-size list of items `field` and `size` items a row.
+fn fixed(array: &ArrayRef, field: &FieldRef, size: i32) -> Result<Floats, ArrowError> {
+    let list = array.as_fixed_size_list();
+    let found = floats(list.values())?;
+    let width = usize::try_from(size).unwrap_or(0);
+    let nans = (0..array.len())
+        .map(|row| {
+            found
+                .nans
+                .iter()
+                .skip(row * width)
+                .take(width)
+                .any(|nan| *nan)
+        })
+        .collect();
+    let zeroed = found
+        .zeroed
+        .map(|values| {
+            let nulls = list.nulls().cloned();
+            FixedSizeListArray::try_new(Arc::clone(field), size, values, nulls)
+                .map(|list| Arc::new(list) as ArrayRef)
+        })
+        .transpose()?;
+    Ok(Floats { nans, zeroed })
+}
+
+/// The floats of `array`, a map of entries `field`, `sorted` or not.
+fn mapped(array: &ArrayRef, field: &FieldRef, sorted: bool) -> Result<Floats, ArrowError> {
+    let map = array.as_map();
+    let entries: ArrayRef = Arc::new(map.entries().clone());
+    let found = floats(&entries)?;
+    let nans = rows_of(map.offsets(), &found.nans);
+    let zeroed = found
+        .zeroed
+        .map(|entries| {
+            let (offsets, nulls) = (map.offsets().clone(), map.nulls().cloned());
+            let entries = entries.as_struct().clone();
+            MapArray::try_new(Arc::clone(field), offsets, entries, nulls, sorted)
+                .map(|map| Arc::new(map) as ArrayRef)
+        })
+        .transpose()?;
+    Ok(Floats { nans, zeroed })
+}
+
+/// The floats of `list`, of items `field`.
+fn listed<O: OffsetSizeTrait>(
+    list: &GenericListArray<O>,
+    field: &FieldRef,
+) -> Result<Floats, ArrowError> {
+    let found = floats(list.values())?;
+    let nans = rows_of(list.offsets(), &found.nans);
+    let zeroed = found
+        .zeroed
+        .map(|values| {
+            let (offsets, nulls) = (list.offsets().clone(), list.nulls().cloned());
+            GenericListArray::<O>::try_new(Arc::clone(field), offsets, values, nulls)
+                .map(|list| Arc::new(list) as ArrayRef)
+        })
+        .transpose()?;
+    Ok(Floats { nans, zeroed })
+}
+
+/// Which rows of a list, whose rows `offsets` bound, hold an item `held` says holds a NaN.
+fn rows_of<O: OffsetSizeTrait>(
     offsets: &arrow_buffer::OffsetBuffer<O>,
-    values: &ArrayRef,
+    held: &[bool],
 ) -> Vec<bool> {
-    let held = nans(values.as_ref());
     offsets
         .windows(2)
         .map(|bounds| {
