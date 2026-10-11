@@ -17,16 +17,6 @@ enum ReadMode {
   READ_MODE_CDC = 3;
 }
 
-// How a stream is split for parallel reads.
-enum Partitioning {
-  // Never sent; a receiver refuses it.
-  PARTITIONING_UNSPECIFIED = 0;
-  // One partition.
-  PARTITIONING_SINGLE = 1;
-  // Partitions the source plans from committed state.
-  PARTITIONING_PLANNED = 2;
-}
-
 // When a stream's reads checkpoint.
 enum Checkpointing {
   // Never sent; a receiver refuses it.
@@ -51,18 +41,14 @@ message StreamSpec {
   optional TableSchema schema = 2;
   // Its primary key, if it declares one.
   optional ColumnPaths primary_key = 3;
-  // Candidate cursor fields for incremental reads.
-  repeated ColumnPath cursor_fields = 4;
   // The read modes it supports.
-  repeated ReadMode read_modes = 5;
-  // How it is partitioned.
-  Partitioning partitioning = 6;
+  repeated ReadMode read_modes = 4;
   // When its reads checkpoint.
-  Checkpointing checkpointing = 7;
+  Checkpointing checkpointing = 5;
   // Whether a read from a cursor sees the same rows again.
-  bool replayable = 8;
+  bool replayable = 6;
   // The column holding each change's time, for change streams.
-  optional ColumnPath change_time = 9;
+  optional ColumnPath change_time = 7;
 }
 
 // Every stream a source offers.

@@ -11,7 +11,7 @@ use crate::capabilities::{
     Capabilities, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules, NestedSupport,
     SchemaChanges, WriteModes,
 };
-use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec};
+use crate::catalog::{Catalog, Checkpointing, ReadMode, StreamSpec};
 use crate::commit::{ChildTable, CommitMeta, DroppedTable, Horizon, Receipt, SegmentSet};
 use crate::cursor::Cursor;
 use crate::destination::{
@@ -73,22 +73,15 @@ fn stream_spec() -> impl Strategy<Value = StreamSpec> {
         stream_name(),
         proptest::option::of(schema()),
         proptest::option::of(proptest::collection::vec(path(), 0..3)),
-        proptest::collection::vec(path(), 0..3),
         modes,
-        any::<bool>(),
         any::<bool>(),
         any::<bool>(),
         proptest::option::of(path()),
     )
         .prop_map(
-            |(name, schema, key, cursors, modes, planned, on_demand, replayable, change)| {
+            |(name, schema, key, modes, on_demand, replayable, change)| {
                 let mut spec = StreamSpec::new(name)
                     .with_read_modes(modes)
-                    .with_partitioning(if planned {
-                        Partitioning::Planned
-                    } else {
-                        Partitioning::Single
-                    })
                     .with_checkpointing(if on_demand {
                         Checkpointing::OnDemand
                     } else {
@@ -100,9 +93,6 @@ fn stream_spec() -> impl Strategy<Value = StreamSpec> {
                 }
                 if let Some(key) = key {
                     spec = spec.with_primary_key(key);
-                }
-                for cursor in cursors {
-                    spec = spec.with_cursor_field(cursor);
                 }
                 if let Some(change) = change {
                     spec = spec.with_change_time(change);

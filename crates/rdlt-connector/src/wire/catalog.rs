@@ -9,7 +9,7 @@ use crate::capabilities::{
     Capabilities, DeleteModes, IdentifierCase, IdentifierChars, IdentifierRules, NestedSupport,
     SchemaChanges, WriteModes,
 };
-use crate::catalog::{Catalog, Checkpointing, Partitioning, ReadMode, StreamSpec};
+use crate::catalog::{Catalog, Checkpointing, ReadMode, StreamSpec};
 use crate::id::StreamName;
 use crate::schema::{ColumnPath, TableSchema};
 
@@ -33,14 +33,6 @@ pub(super) fn read_mode(value: i32) -> Result<ReadMode, Invalid> {
     }
 }
 
-fn partitioning(value: i32) -> Result<Partitioning, Invalid> {
-    match v1::Partitioning::try_from(value) {
-        Ok(v1::Partitioning::Single) => Ok(Partitioning::Single),
-        Ok(v1::Partitioning::Planned) => Ok(Partitioning::Planned),
-        Ok(v1::Partitioning::Unspecified) | Err(_) => Err(Invalid::Unknown("partitioning")),
-    }
-}
-
 fn checkpointing(value: i32) -> Result<Checkpointing, Invalid> {
     match v1::Checkpointing::try_from(value) {
         Ok(v1::Checkpointing::Natural) => Ok(Checkpointing::Natural),
@@ -58,16 +50,11 @@ impl From<&StreamSpec> for v1::StreamSpec {
             primary_key: spec
                 .primary_key()
                 .map(|key| v1::ColumnPaths { paths: paths(key) }),
-            cursor_fields: paths(spec.cursor_fields()),
             read_modes: spec
                 .read_modes()
                 .iter()
                 .map(|mode| v1::ReadMode::from(*mode) as i32)
                 .collect(),
-            partitioning: match spec.partitioning() {
-                Partitioning::Single => v1::Partitioning::Single,
-                Partitioning::Planned => v1::Partitioning::Planned,
-            } as i32,
             checkpointing: match spec.checkpointing() {
                 Checkpointing::Natural => v1::Checkpointing::Natural,
                 Checkpointing::OnDemand => v1::Checkpointing::OnDemand,
@@ -95,7 +82,6 @@ impl TryFrom<v1::StreamSpec> for StreamSpec {
             .collect::<Result<Vec<_>, _>>()?;
         let mut decoded = Self::new(name)
             .with_read_modes(modes)
-            .with_partitioning(partitioning(spec.partitioning)?)
             .with_checkpointing(checkpointing(spec.checkpointing)?)
             .with_replayable(spec.replayable);
         if let Some(schema) = spec.schema {
@@ -103,9 +89,6 @@ impl TryFrom<v1::StreamSpec> for StreamSpec {
         }
         if let Some(key) = spec.primary_key {
             decoded = decoded.with_primary_key(column_paths(key.paths)?);
-        }
-        for field in column_paths(spec.cursor_fields)? {
-            decoded = decoded.with_cursor_field(field);
         }
         if let Some(column) = spec.change_time {
             decoded = decoded.with_change_time(ColumnPath::try_from(column)?);

@@ -16,8 +16,7 @@ use arrow_array::{
 };
 use rdlt_connector::prelude::*;
 use rdlt_connector::{
-    ChangeOp, Field, OP_COLUMN, PartitionPlan, PartitionState, Partitioning, SEQ_COLUMN,
-    UNCHANGED_COLUMN,
+    ChangeOp, Field, OP_COLUMN, PartitionPlan, PartitionState, SEQ_COLUMN, UNCHANGED_COLUMN,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -227,7 +226,6 @@ impl ReadStream<ChangesSource> for Changed {
         spec.with_schema(schema)
             .with_primary_key(["id"])
             .with_read_modes([ReadMode::Cdc])
-            .with_partitioning(Partitioning::Planned)
             .with_checkpointing(Checkpointing::Natural)
             .with_replayable(self.0.replayable)
     }

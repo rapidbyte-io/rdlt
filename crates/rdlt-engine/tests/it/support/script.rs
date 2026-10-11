@@ -9,8 +9,8 @@ use arrow_array::{Int64Array, RecordBatch, StringArray};
 use parking_lot::Mutex;
 use rdlt_connector::{
     Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, Field, LogicalType,
-    Partition, PartitionId, Partitioning, ReadMode, ReadStream, Result, Source, SourceConnector,
-    StreamName, StreamSpec, StreamState, Streams, TableSchema, source_factory,
+    Partition, PartitionId, ReadMode, ReadStream, Result, Source, SourceConnector, StreamName,
+    StreamSpec, StreamState, Streams, TableSchema, source_factory,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -266,7 +266,6 @@ impl ReadStream<ScriptSource> for Scripted {
     fn spec(&self) -> StreamSpec {
         let spec = StreamSpec::new(StreamName::new(&self.name).expect("valid stream name"))
             .with_read_modes([ReadMode::Full, ReadMode::Incremental])
-            .with_partitioning(Partitioning::Planned)
             .with_checkpointing(self.checkpointing)
             .with_replayable(self.replayable);
         if self.declares_schema {

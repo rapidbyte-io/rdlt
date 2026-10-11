@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use rdlt_connector::{
     Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Emitter, Field, LogicalType,
-    Partition, PartitionId, Partitioning, ReadMode, ReadStream, Result, SourceConnector,
-    StreamName, StreamSpec, StreamState, Streams, TableSchema,
+    Partition, PartitionId, ReadMode, ReadStream, Result, SourceConnector, StreamName, StreamSpec,
+    StreamState, Streams, TableSchema,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -133,7 +133,6 @@ impl ReadStream<SimSource> for SimStreamReader {
             StreamSpec::new(StreamName::new(name).expect("simulated stream names are valid"))
                 .with_schema(self.schema.clone())
                 .with_read_modes([ReadMode::Full, ReadMode::Incremental])
-                .with_partitioning(Partitioning::Planned)
                 .with_checkpointing(self.checkpointing)
                 .with_replayable(self.replayable);
         match &self.key {

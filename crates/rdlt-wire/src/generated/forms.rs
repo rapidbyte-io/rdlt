@@ -1522,31 +1522,21 @@ pub(crate) static STREAM_SPEC: Form = Form {
         },
         Field {
             number: 4,
-            kind: Kind::Message(&COLUMN_PATH),
+            kind: Kind::Scalar(4),
             repeated: true,
         },
         Field {
             number: 5,
             kind: Kind::Scalar(4),
-            repeated: true,
+            repeated: false,
         },
         Field {
             number: 6,
-            kind: Kind::Scalar(4),
-            repeated: false,
-        },
-        Field {
-            number: 7,
-            kind: Kind::Scalar(4),
-            repeated: false,
-        },
-        Field {
-            number: 8,
             kind: Kind::Scalar(1),
             repeated: false,
         },
         Field {
-            number: 9,
+            number: 7,
             kind: Kind::Message(&COLUMN_PATH),
             repeated: false,
         },
