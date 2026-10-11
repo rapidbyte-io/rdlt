@@ -83,6 +83,11 @@ impl Recording {
         match event {
             SourceEvent::Push(push) => {
                 budget.push(&push).await?;
+                if let Push::Changes(batch) = &push {
+                    // The engine refuses a change batch it cannot read; so does the clause.
+                    crate::change::validate_change_batch(batch)
+                        .map_err(|error| Violation::from(format!("a change push: {error}")))?;
+                }
                 self.tail.push(normalize(push).await);
             }
             SourceEvent::Checkpoint { cursor, answers } => {

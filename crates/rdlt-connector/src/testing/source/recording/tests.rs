@@ -8,10 +8,10 @@ use arrow_array::{
 };
 use bytes::Bytes;
 
-use super::Budget;
+use super::{Budget, Recording};
 use crate::cost::{Allocations, push_charge};
 use crate::cursor::Cursor;
-use crate::sink::Push;
+use crate::sink::{Push, SourceEvent};
 use crate::testing::limits::{HELD_BYTES, HELD_EVENT_BYTES, HELD_ROWS};
 
 fn left(budget: &Budget) -> (usize, usize) {
@@ -146,4 +146,18 @@ async fn a_push_is_charged_what_it_keeps_alive_not_what_it_expands_to() {
         left(&budget),
         (HELD_BYTES - held - HELD_EVENT_BYTES, HELD_ROWS - 1024)
     );
+}
+
+#[tokio::test]
+async fn a_recorded_change_push_that_is_invalid_fails_its_clause() {
+    // The batch has no operation column, so the engine would refuse it.
+    let batch =
+        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
+            .unwrap();
+    let mut recording = Recording::default();
+    let error = recording
+        .hold(SourceEvent::Push(Push::Changes(batch)), &Budget::new())
+        .await
+        .unwrap_err();
+    assert!(format!("{error:?}").contains("change batch"), "{error:?}");
 }
