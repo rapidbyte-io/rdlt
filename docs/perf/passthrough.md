@@ -70,3 +70,188 @@ range.
 |---|---|---|
 | Bare loop | 0.001, 0.000, 3 B | 62.062, 22.156, 270028 B |
 | Engine | 0.004, 0.000, 4 B | 351.969 [351.969–351.969], 30.484 [30.484–30.484], 318137 B [318137–318137] |
+
+## Where the overhead goes
+
+The question was where the engine's time beyond the bare loop's goes on the performance cores,
+component by component, and how the production path, a destination spawned as a process of its
+own, spends its run. Measured only; nothing here changed the engine.
+
+Commit `a64e6585`, 2026-10-11, the machine above, governor `powersave` with energy preference
+`performance` on CPUs 0–3, each hold under the measurement lock and started at a one-minute load
+average of 0.79–0.98.
+
+- **Profiles.** `just profiling passthrough` and `just profiling served`, as
+  [profiling.md](profiling.md) records them: `cpu_core/cycles/u` at 999 Hz with frame pointers
+  over 15 seconds of `passthrough/paired/2+2` on CPUs 0–3, and `task-clock` at one sample a
+  millisecond over 15 seconds of `served/process/socket/destination/64x80000`, the host on CPUs
+  0–3 and the spawned destination on 4–11. Samples are classed by the frames on their stack; a
+  sample whose leaf is `libc` (`memcpy`, mostly) goes to the first frame above it.
+- **Each side alone.** A driver outside the repository, built against this tree's
+  `rdlt_engine::bench` (`Passthrough`, `replay`, `ipc_sink`, `SinkWriter`), with the bench's
+  configuration and cores, runs one side many times and prints each engine run's report
+  counters. It also times the bare loop over the batches the lane is handed, captured from one
+  run. This measurement code is not kept. Run times are medians, the first three runs of each
+  invocation left out.
+- **Scheduling and syscalls.** Each thread's switches from `/proc/<pid>/task/*/sched` as the
+  process ends, and `strace -f -c` over 20 runs less a run of none, as profiling.md says.
+
+### The lane bounds the run
+
+The engine's runs alone took 28.80 ms against the bare loop's 25.17 ms (200 runs each), 14.4 %
+more. The run report's counters, medians over 195 runs:
+
+| Counter | A run |
+|---|---|
+| Lane writing (the sink's `write` calls) | 27.50 ms |
+| Partitions blocked on the lane's full queue | 15.88 ms |
+| Lane flushing | 0.002 ms |
+| Commit phases: flush, horizon, log, destination commit, ack | 1.03, 0.0003, 0.014, 0.019, 0.006 ms |
+| Pool jobs; queued and running, summed | 128; 1.01 and 1.43 ms |
+| Budget waits | one, of the intake share, 0.29 ms |
+
+The lane writes for 95 % of the run while the partition waits more than half of it for room in the
+lane's queue, so the run is the lane's writes plus what keeps the lane from writing. The commit's
+flush phase is mostly the lane finishing the writes queued before it.
+
+Run times against the batches a run moves split the overhead into a part each run pays once and
+a part each batch pays. Two rounds, the sides in opposite orders, medians of 37 runs:
+
+| Batches | Bare loop | Engine | Overhead |
+|---|---|---|---|
+| 8 | 2.95, 3.17 ms | 4.72, 4.66 ms | 60 %, 47 % |
+| 16 | 6.04, 6.13 ms | 8.07, 8.59 ms | 34 %, 40 % |
+| 32 | 12.10, 12.52 ms | 14.44, 14.76 ms | 19 %, 18 % |
+| 64 | 23.87, 24.42 ms | 28.42, 28.33 ms | 19 %, 16 % |
+| 128 | 48.06, 48.65 ms | 54.82, 54.38 ms | 14 %, 12 % |
+
+A line through each round: the bare loop pays 0.0–0.2 ms a run and 0.375–0.379 ms a batch, the
+engine 1.34–1.68 ms a run and 0.413–0.419 ms a batch. At 64 batches the engine's 3.9–4.6 ms over
+the bare loop is 1.3–1.5 ms paid once a run and 2.2–2.8 ms paid by the batches, 34–43 µs each (9–12
+% of a batch's bare time). Sides run alone drift more than the paired bench's blocks, whose ratio
+stays the recorded overhead.
+
+### What a batch pays: the lane's writes are slower
+
+The lane's writes take 27.2–27.5 ms against the bare loop's 24.2–25.2 ms for the same batches,
+9–13 % more, inside the sink's `write` call, which returns without yielding. What goes with it:
+
+- **The metadata columns.** The lane is handed each batch with the two columns every table
+  stores, `_rdlt_load_id` and `_rdlt_loaded_at`, as dictionaries of one value with 8-bit keys.
+  Each batch's Arrow IPC grows from 6 991 944 to 7 173 000 bytes (2.6 %), and one thread encodes
+  the 64 lowered batches in 24.59 ms against 23.78 ms for the batches pushed (3.4 %; 30 blocks
+  of both, interleaved; 2.3–3.8 % in three later invocations on one core).
+- **Other cores busy.** One core encoding the pushed batches takes 24.58 ms with CPUs 1–3 idle,
+  25.12 ms with one of them running a busy loop and 25.55 ms with all three (2.2 % and 3.9 %).
+  While the engine runs, its other threads keep about half a core busy beside the lane.
+- **A lower clock.** In user mode the runtime's workers ran at 1.14–1.15 times the reference
+  clock, the bare loop's thread at 1.22–1.28 (`cycles` over `ref-cycles`, each thread over 4
+  seconds of runs, two rounds): 6–11 % slower. The workers park and are woken about twice a batch;
+  the bare loop's thread never waits. With a queue of one write the workers ran at 1.03–1.04
+  times the reference clock, and the writes took 28 % longer than with four (the table below).
+
+A second thread scanning the 64-bit integers of the batch four ahead of the one being encoded,
+as the partition does while the lane writes, did not slow the encode (25.63 ms without, 24.76 ms
+with). Two runtime workers and one compute thread run as fast as two and two (28.39 and 28.33 ms
+against 28.32 and 28.42 ms; the bare loop 24.80 and 24.67 ms).
+
+The lane's queue holds four writes. Fewer slow the writes themselves; more do not speed them
+(medians of 37 runs of 64 batches):
+
+| Queue | Run | Lane writing | Partitions blocked | Commit's flush phase |
+|---|---|---|---|---|
+| 1 | 37.21 ms | 35.25 ms | 23.18 ms | 0.93 ms |
+| 2 | 32.08 ms | 30.49 ms | 18.77 ms | 0.95 ms |
+| 4 | 28.83 ms | 27.63 ms | 16.03 ms | 1.28 ms |
+| 8 | 28.76 ms | 27.55 ms | 16.93 ms | 1.02 ms |
+| 16 | 28.20 ms | 26.87 ms | 13.15 ms | 4.00 ms |
+
+### What a run pays once
+
+Before the lane's first write and after its last, the run plans its stream, opens the
+destination, takes the first batch through the partition and commits. A profile of 400 runs of
+four batches (`cpu_core/cycles/u` at 9 999 Hz) gives the CPU each takes a run:
+
+| Work | CPU a run |
+|---|---|
+| Building the metadata columns' keys for the run's load (`Constants::new`) | 0.12 ms |
+| The 64-bit integer scan of a batch (`exact::beyond`), each batch | 0.14 ms |
+| The pool's jobs but the keys, eight a run | 0.23 ms |
+| The partition's planning and writing but its jobs (`Resolver::resolve`, `Naming`) | 0.15 ms |
+| The coordinator, its commit's state included | 0.09 ms |
+| The run's own task (`attempt::launch`, `TableView::new`, `Naming::clean`) | 0.08 ms |
+
+The first batch waits for the keys, the scan and two pool jobs before the lane can write it, and
+each step is a hand-off between threads.
+
+### Where the CPU goes
+
+The engine takes 1.74 times the bare loop's user-mode CPU over the same runs: in the paired
+profile, 61.5 % of the 19 384 samples are the engine's and 35.4 % the bare loop's (setup and
+criterion the rest). The engine's samples by component, and each one's share of the CPU it takes
+beyond the bare loop's:
+
+| Component | Samples | Of the extra |
+|---|---|---|
+| The lane's writes (the sink's encode, `memcpy` 97 % of it) | 40.6 % (the bare loop's 35.4 %) | 19.7 % |
+| The 64-bit integer scan (`exact::beyond`) | 10.6 % | 40.8 % |
+| Pool jobs: cutting a piece and lowering it | 3.8 % | 14.7 % |
+| Pool threads idle between jobs (rayon's spinning and `sched_yield`) | 2.4 % | 9.1 % |
+| The partition's reads of the feed, its coalescing and its writes, but the above | 1.5 % | 5.6 % |
+| Weighing the bytes written (`written_bytes`) | 1.3 % | 4.8 % |
+| The source's reads and pushes | 0.6 % | 2.2 % |
+| The coordinator and its commit | 0.3 % | 1.2 % |
+| The lane's queue and loop, tokio's scheduling, the budget, the run's own task | 0.5 % | 1.9 % |
+
+Over 200 runs alone the engine took 34.3 G user-mode cycles and 43.9 G instructions against
+24.4 G and 12.0 G, the batches' generation included in both. The scan and the pool threads'
+spinning hold most of the extra instructions; the scan runs on the partition's worker while the
+lane writes, and leaves the lane's path but for the first batch.
+
+### Scheduling and syscalls
+
+A batch, over 200 runs of the engine (12 800 batches): 1.58 voluntary switches of the runtime's
+workers and 0.05 involuntary, and 2.37 voluntary and 2.05 involuntary switches of the compute
+threads. The bare loop's thread is switched out involuntarily 0.15 times a batch and never
+waits. Syscalls a batch, the engine's, less a run of none: 20.2 `sched_yield` (the compute
+threads waiting for work), 2.0 `epoll_wait` and 2.0 `write` (a worker parking and being woken), and
+1.1 `futex`. The bare loop makes none a batch.
+
+### The destination in a process of its own
+
+`served/process/socket/destination/64x80000`, the host on CPUs 0–3, the sink spawned through `Local`
+on 4–11. The bench's round under `perf record`: 1.201 CPU s a GB, the host's process 0.431 and the
+destination's 0.778; the host's process 0.985 CPUs busy and the destination's 1.809. The run
+report's counters, medians over 57 runs:
+
+| Counter | A run |
+|---|---|
+| Run | 207.7 ms (184.6–222.6) |
+| Lane writing (`RemoteDestination`'s writes) | 197.4 ms |
+| Partitions blocked on the lane's full queue | 159.4 ms |
+| Lane flushing | 6.4 ms |
+| Commit phases: flush, destination commit | 14.8, 0.21 ms |
+| Pool jobs; queued and running, summed | 128; 2.56 and 4.09 ms |
+
+The lane writes for 95 % of the run, most of it waiting for the destination to take frames. The
+host's engine work beside it is off that path: of the host's 7 816 samples, the lane holds 2 723,
+the 64-bit integer scan 593 and the compute threads 422. Another 2 927, outside the timed runs,
+hash the connector's binary as each run spawns it (`Binary::digest`; the bench's binary is 116 MB),
+which is also the run's 3 552 `pread64` calls. The destination's processes hold 11 021 samples:
+receiving and decoding frames 46 %, the sink's writes (the bare loop's work) 24 %, Arrow's
+validation of what arrives (`validate_values`, `from_utf8`, `check_bounds`) 15 %, and `realloc` 7 %.
+Syscalls a run, both processes, spawning included: 2 343 `recvfrom`, 1 556 `writev`, 8 828
+`epoll_wait`, 4 094 `sched_yield` and 2 359 `futex`.
+
+### Reading
+
+- The run is lane-bound in both layouts. In process, the lane's writes are the bare loop's
+  encode, 9–13 % slower; served, they wait on the destination's process.
+- At 64 batches, about a third of the overhead is paid once a run: planning, the first batch's way
+  through the partition to the lane, and the commit. It falls as runs move more batches: 12–14 %
+  at 128.
+- About two thirds is the lane's writes taking 9–12 % longer a batch. The metadata columns every
+  table stores account for 3.4 points; the rest goes with the lane's workers running at a clock
+  6–11 % lower than the bare loop's thread, of which other cores kept busy account for 2–4 points.
+- The engine's extra CPU is mostly the 64-bit integer scan and the compute pool's jobs and idle
+  spinning; both run beside the lane rather than on its path, but for the first batch.
