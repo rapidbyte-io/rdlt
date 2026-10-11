@@ -199,17 +199,36 @@ fn a_database_that_is_missing_is_created_only_where_asked() {
     assert_eq!(located(&path, false).expect("found"), Some(path));
 }
 
-/// The locks this process holds through its descriptors' files, as the kernel lists them.
+/// The locks this process holds on the file at `path`, as the kernel lists them for each open
+/// descriptor.
+///
+/// Not `/proc/locks`: the kernel serves it in pages, so a read that overlaps another process
+/// taking or dropping a lock repeats or skips lines of this process's locks.
 #[cfg(target_os = "linux")]
-fn locks() -> Vec<String> {
-    let process = std::process::id().to_string();
-    let mut held: Vec<String> = std::fs::read_to_string("/proc/locks")
-        .expect("the kernel lists locks")
-        .lines()
-        .map(|line| line.split_whitespace().skip(1).collect::<Vec<_>>())
-        .filter(|fields| fields.first() == Some(&"POSIX") && fields.get(3) == Some(&&*process))
-        .map(|fields| fields.join(" "))
-        .collect();
+fn locks(path: &Path) -> Vec<String> {
+    use std::os::unix::fs::MetadataExt;
+    let inode = std::fs::metadata(path)
+        .expect("the file is there")
+        .ino()
+        .to_string();
+    let mut held = Vec::new();
+    for descriptor in std::fs::read_dir("/proc/self/fd").expect("the descriptors are listed") {
+        let name = descriptor.expect("a descriptor").file_name();
+        // The directory's own descriptor, and one closed since the listing, are not files.
+        let Ok(info) = std::fs::read_to_string(Path::new("/proc/self/fdinfo").join(name)) else {
+            continue;
+        };
+        for line in info.lines().filter_map(|line| line.strip_prefix("lock:")) {
+            // `1: POSIX ADVISORY READ <pid> <major>:<minor>:<inode> <start> <end>`
+            let fields: Vec<&str> = line.split_whitespace().skip(1).collect();
+            let on_file = fields
+                .get(4)
+                .is_some_and(|id| id.rsplit(':').next() == Some(inode.as_str()));
+            if fields.first() == Some(&"POSIX") && on_file {
+                held.push(fields.join(" "));
+            }
+        }
+    }
     held.sort();
     held
 }
@@ -293,11 +312,11 @@ fn checking_a_database_s_place_releases_no_lock_the_process_holds() {
     let directory = tempfile::tempdir().expect("a temporary directory");
     let path = directory.path().join("orders.db");
     let writer = writing(&path);
-    let before = locks();
+    let before = locks(&path);
     assert!(!before.is_empty(), "the writer holds locks");
     located(&path, true).expect("the place is private");
     located(&path, false).expect("the place is private");
-    assert_eq!(locks(), before);
+    assert_eq!(locks(&path), before);
     writer.execute_batch("COMMIT").expect("the writer commits");
 }
 
