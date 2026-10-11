@@ -41,7 +41,9 @@ to another machine and replay what the first left.
   and its body where it is not and answering `NotFound`. A removal deletes the mark first, then
   lists and deletes the log's objects: a publish that asked before the mark went is listed
   after, and one that asked after deletes itself. A publish that finds the name taken deletes
-  its body and answers `AlreadyExists`.
+  its body and answers `AlreadyExists`. A publish denied asks for the mark too, as MinIO denies
+  a write racing the deletion of the directory it lands in, which a removal makes: where the
+  mark is gone it deletes its body and answers `NotFound`, and the denial stands otherwise.
 - Every create marks its object with a random token in its metadata (`rdlt-token`). A create
   answered as taken is another's, unless an attempt of it failed with no answer known: then the
   object's token is read back, and one bearing its own is its own, made by the attempt whose
