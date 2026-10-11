@@ -31,7 +31,7 @@ pub(super) fn shape(max_depth: u8) -> Shape {
 }
 
 /// `records` shredded as one push into batches of about `chunk_bytes` each.
-fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch> {
+pub(super) fn shredded(records: &[Json], chunk_bytes: usize) -> Vec<RecordBatch> {
     let lines: Vec<String> = records.iter().map(Json::to_string).collect();
     let push = Bytes::from(lines.join("\n"));
     ready(shred(

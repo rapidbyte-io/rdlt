@@ -160,11 +160,11 @@ impl Tables {
     /// What becomes of rows for the child table at `path` below `root`, which may be new.
     ///
     /// A child table that exists, which includes one the stream's declared schema made, or that
-    /// state records takes its rows, as does a new one while the stream's table is being created: before a unit that
-    /// `existed` says found it created, as a table being created takes every column. After that,
-    /// a new child table is a change to the stream's schema, which its policy for the array's
-    /// column decides. So is an array no table can be named after, whenever it arrives: a stream
-    /// that discards changes drops it, and any other is refused.
+    /// state records takes its rows, as does a new one while the stream's table is being created:
+    /// in a flush that `existed` says found it not yet created, as a table being created takes
+    /// every column. After that, a new child table is a change to the stream's schema, which its
+    /// policy for the array's column decides. So is an array no table can be named after,
+    /// whenever it arrives: a stream that discards changes drops it, and any other is refused.
     pub(crate) fn admit_child(&self, root: usize, path: &[Arc<str>], existed: bool) -> Admission {
         let key = (root, path.to_vec());
         let base = self.view(root).table.path.clone();

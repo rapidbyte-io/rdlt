@@ -13,7 +13,7 @@ mod draft;
 mod width;
 
 use super::lower::{LineageColumns, MetaNames, lower};
-use super::model::Model;
+use super::model::{Creation, Model};
 use crate::error::Error;
 use crate::naming::Naming;
 use crate::plan::StreamPlan;
@@ -124,6 +124,8 @@ pub(crate) struct Incoming {
     pub(crate) paths: Vec<ColumnPath>,
     /// The columns of 64-bit integers holding a value a 64-bit float would round.
     pub(crate) rounding: BTreeSet<ColumnPath>,
+    /// Whether the table takes every column as one being created does.
+    pub(crate) creation: Creation,
 }
 
 impl Incoming {
@@ -139,6 +141,7 @@ impl Incoming {
             schema,
             paths,
             rounding: BTreeSet::new(),
+            creation: Creation::AsModeled,
         }
     }
 
@@ -150,6 +153,7 @@ impl Incoming {
             schema,
             paths,
             rounding,
+            creation: Creation::AsModeled,
         }
     }
 
@@ -213,7 +217,8 @@ impl Resolver {
 
     /// How `incoming` fits `model`: the changes the table needs and where each column goes.
     ///
-    /// A table not yet created takes every column of its first batch. After that, a column the
+    /// A table not yet created takes every column of its first batch, and every batch of the
+    /// flush that creates it, as `incoming`'s creation says. After that, a column the
     /// table lacks or a value its column cannot hold is a change, which the column's policy
     /// applies, refuses or discards. The identifiers of added columns are assigned together, so
     /// they do not depend on the batch's column order.
@@ -231,7 +236,7 @@ impl Resolver {
                 rounding: incoming.rounding.contains(&path),
                 path,
             };
-            routes.push(self.route(&mut draft, &column, model.created())?);
+            routes.push(self.route(&mut draft, &column, model, incoming.creation)?);
         }
         let stream = |error: Error| error.with_stream(&self.stream);
         let mut resolution = draft.finish(routes, &self.naming).map_err(stream)?;
@@ -253,7 +258,8 @@ impl Resolver {
         &self,
         draft: &mut Draft,
         column: &Arriving<'_>,
-        created: bool,
+        model: &Model,
+        creation: Creation,
     ) -> Result<Route, Error> {
         let key = ColumnKey::Source(column.path.clone());
         let original = draft.find(&key);
@@ -263,7 +269,7 @@ impl Resolver {
         let original = if let Some(original) = original {
             original
         } else {
-            if let Some(route) = self.admit(column, created)? {
+            if let Some(route) = self.admit(column, model, creation)? {
                 return Ok(route);
             }
             let hint = self.settings.stream.hinted(&column.path);
@@ -287,12 +293,19 @@ impl Resolver {
 
     /// Where a column the table lacks goes instead of a new column of its own, if anywhere.
     ///
-    /// A table being created takes every column; an existing one follows the column's policy.
-    fn admit(&self, column: &Arriving<'_>, created: bool) -> Result<Option<Route>, Error> {
-        if !created {
+    /// A table being created takes every column, as does one the batch's flush creates; an
+    /// existing one follows the column's policy. A column added to a created table needs the
+    /// destination to add columns.
+    fn admit(
+        &self,
+        column: &Arriving<'_>,
+        model: &Model,
+        creation: Creation,
+    ) -> Result<Option<Route>, Error> {
+        if !model.created() {
             return Ok(None);
         }
-        if !column.is_key {
+        if !column.is_key && creation == Creation::AsModeled {
             match column.settings.policy {
                 SchemaPolicy::Freeze => {
                     return Err(self.refused(column, "schema_frozen", "a new column appeared"));

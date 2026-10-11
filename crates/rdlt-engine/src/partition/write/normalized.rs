@@ -3,7 +3,7 @@
 
 mod keys;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use arrow_array::RecordBatch;
@@ -23,11 +23,13 @@ use crate::cost::{LINEAGE_ITEM, LINEAGE_ROW, SPLIT_COPIES};
 use crate::error::Error;
 use crate::limits::MIN_PIECE;
 use crate::normalize::rounding::Rounding;
-use crate::normalize::{self, Dropped, Part, Pruned, Shape};
-use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp, key_values, with_columns};
+use crate::normalize::{self, Dropped, Part, Pruned, PushKind, Shape};
+use crate::table::{
+    Admission, Creation, Incoming, LoweringPlan, Prepared, Stamp, key_values, with_columns,
+};
 
-/// Lowers `units` of a stream that normalizes as `shape` into its table and child tables, and
-/// queues them on their lanes.
+/// Lowers `units`, written from pushes of `kind`, of a stream that normalizes as `shape` into its
+/// table and child tables, and queues them on their lanes.
 ///
 /// - Each unit is cut, before its tables are known, into pieces whose split makes no more than a
 ///   piece may hold.
@@ -39,16 +41,18 @@ use crate::table::{Admission, Incoming, LoweringPlan, Prepared, Stamp, key_value
 ///   to be written, never for the budget, while it holds any of them.
 ///
 /// The units are one flush, so each table's integers are judged over all of them where they lie,
-/// before any is split: where the flush was cut decides no column's type.
+/// before any is split, and a table the flush finds not yet created takes every column and array
+/// of every piece: where the flush was cut decides no column's existence or type.
 pub(super) async fn write_normalized(
     job: &PartitionJob,
     context: &PartitionContext,
     open: &mut OpenSegment,
     units: Vec<(Vec<RecordBatch>, Held)>,
     shape: &Arc<Shape>,
+    kind: PushKind,
 ) -> Result<(), Error> {
     let pieces = sliced(job, context, units).await?;
-    let rounding = judged(job, &pieces, shape)?;
+    let mut flush = Flush::new(context, job.table, judged(job, &pieces, shape)?, kind);
     let request = context.budget.shares().request;
     for (parts, held) in pieces {
         let mut reserved = reserve(job, context, request).await?;
@@ -65,7 +69,7 @@ pub(super) async fn write_normalized(
             continue;
         }
         let stamp = stamp(context, open, received);
-        let (unit, discarded) = plan_parts(job, context, parts, &rounding).await?;
+        let (unit, discarded) = plan_parts(job, context, parts, &mut flush).await?;
         open.discarded_values += discarded.values;
         open.discarded_rows += discarded.rows;
         let cutter = Cutter::within(context, request.saturating_sub(made));
@@ -160,6 +164,42 @@ async fn sliced(
     Ok(cut)
 }
 
+/// What a flush judges as it begins and its pieces are planned, so where it was cut decides no
+/// column's existence or type.
+struct Flush {
+    rounding: Rounding,
+    kind: PushKind,
+    /// Whether the stream's table had been created as the flush began.
+    existed: bool,
+    /// The tables the flush has met, each found created, or not yet, the first time.
+    creation: BTreeMap<usize, Creation>,
+}
+
+impl Flush {
+    fn new(context: &PartitionContext, table: usize, rounding: Rounding, kind: PushKind) -> Self {
+        let mut flush = Self {
+            rounding,
+            kind,
+            existed: false,
+            creation: BTreeMap::new(),
+        };
+        flush.existed = flush.creation(context, table) == Creation::AsModeled;
+        flush
+    }
+
+    /// How `table` takes columns for the rest of the flush: every one where the flush found it
+    /// not yet created.
+    fn creation(&mut self, context: &PartitionContext, table: usize) -> Creation {
+        *self.creation.entry(table).or_insert_with(|| {
+            if context.tables.view(table).model.created() {
+                Creation::AsModeled
+            } else {
+                Creation::ByFlush
+            }
+        })
+    }
+}
+
 /// The parts of a unit, each with its table and plan.
 pub(super) type PlannedParts = Vec<(usize, Part, Arc<LoweringPlan>)>;
 
@@ -200,15 +240,16 @@ async fn plan_parts(
     job: &PartitionJob,
     context: &PartitionContext,
     parts: Vec<Part>,
-    judged: &Rounding,
+    flush: &mut Flush,
 ) -> Result<(PlannedParts, Discarded), Error> {
-    let (admitted, mut dropped) = admit(job, context, parts);
+    let kind = flush.kind;
+    let (admitted, mut dropped) = admit(job, context, parts, flush);
     let mut discarded = Discarded::default();
     let mut planned = Vec::with_capacity(admitted.len());
     for (part, fate) in admitted {
-        let rounding = judged.get(&part.path).cloned().unwrap_or_default();
+        let rounding = flush.rounding.get(&part.path).cloned().unwrap_or_default();
         let pruned = if dropped.is_empty() {
-            Pruned::whole(part)
+            Pruned::whole(part, kind)
         } else {
             let pruning = move || {
                 let pruned = dropped.prune(part);
@@ -245,6 +286,7 @@ async fn plan_parts(
             schema: schema_of(job, &pruned.part.batch)?,
             paths: pruned.part.columns.clone(),
             rounding,
+            creation: flush.creation(context, table),
         };
         let plan = context.tables.plan(table, incoming).await?;
         if plan.drops_rows() {
@@ -279,14 +321,16 @@ async fn unkept(
 ///
 /// A part below the stream's table goes to its child table, added the first time unless the
 /// stream's policy refuses or discards a new one, whose descendants then go with it, uncounted:
-/// they are part of the array value already discarded.
+/// they are part of the array value already discarded. An array is new only where the stream's
+/// table had been created as `flush` began.
 fn admit(
     job: &PartitionJob,
     context: &PartitionContext,
     parts: Vec<Part>,
+    flush: &Flush,
 ) -> (Vec<(Part, Fate)>, Dropped) {
-    let existed = context.tables.view(job.table).model.created();
-    let (mut admitted, mut dropped) = (Vec::with_capacity(parts.len()), Dropped::default());
+    let existed = flush.existed;
+    let (mut admitted, mut dropped) = (Vec::with_capacity(parts.len()), Dropped::new(flush.kind));
     let mut skipped: BTreeSet<Vec<Arc<str>>> = BTreeSet::new();
     for part in parts {
         let parent = part.lineage.parent.as_ref();
