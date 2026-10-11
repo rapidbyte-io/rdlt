@@ -25,6 +25,8 @@ mod tables;
 mod tests;
 mod upsert;
 
+use bytes::Bytes;
+
 use crate::commit::SegmentSet;
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded, Result};
 use crate::id::{Epoch, PipelineId};
@@ -48,7 +50,7 @@ pub enum SqlValue {
     /// Text.
     Text(String),
     /// Bytes.
-    Blob(Vec<u8>),
+    Blob(Bytes),
 }
 
 /// One statement and the values of its placeholders, in order.

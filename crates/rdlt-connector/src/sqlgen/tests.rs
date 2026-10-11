@@ -3,6 +3,7 @@ mod staging;
 use std::time::SystemTime;
 
 use bytes::Bytes;
+use proptest::prelude::*;
 use rusqlite::Connection;
 use rusqlite::types::Value;
 
@@ -647,7 +648,7 @@ pub(super) fn value(value: &SqlValue) -> Value {
         SqlValue::Null => Value::Null,
         SqlValue::Integer(integer) => Value::Integer(*integer),
         SqlValue::Text(text) => Value::Text(text.clone()),
-        SqlValue::Blob(blob) => Value::Blob(blob.clone()),
+        SqlValue::Blob(blob) => Value::Blob(blob.to_vec()),
     }
 }
 
@@ -962,6 +963,73 @@ fn a_plan_binding_more_than_the_dialect_takes_is_refused() {
 }
 
 #[test]
+fn a_plan_binding_exactly_the_dialects_limit_is_taken_and_one_more_is_refused() {
+    let planner = SqlPlanner::try_new(Narrow).unwrap();
+    let binding = |count: usize| {
+        vec![Statement {
+            sql: String::new(),
+            params: vec![SqlValue::Null; count],
+        }]
+    };
+    assert_eq!(planner.bounded(binding(7)).unwrap(), binding(7));
+    let error = planner.bounded(binding(8)).unwrap_err();
+    assert_eq!(error.limit().unwrap().actual, 8);
+}
+
+#[test]
+fn a_dialect_that_does_not_override_max_params_binds_999() {
+    assert_eq!(Widening.max_params(), 999);
+}
+
+fn state_operations() -> impl Strategy<Value = Vec<Vec<(u8, Option<u8>)>>> {
+    proptest::collection::vec(
+        proptest::collection::vec((0u8..4, proptest::option::of(any::<u8>())), 0..=10),
+        1..=2,
+    )
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+
+    #[test]
+    fn chunked_state_changes_write_what_the_changes_in_order_would(commits in state_operations()) {
+        let connection = Connection::open_in_memory().unwrap();
+        let planner = SqlPlanner::try_new(Narrow).unwrap();
+        run_all(&connection, &planner.bootstrap());
+        let mine = pipeline("mine");
+        let mut model = std::collections::BTreeMap::new();
+        for commit in &commits {
+            let changes: Vec<StateChange> = commit
+                .iter()
+                .map(|(key, value)| match value {
+                    Some(byte) => StateChange::Put(StateRecord {
+                        key: format!("k{key}"),
+                        value: Bytes::from(vec![*byte]),
+                    }),
+                    None => StateChange::Delete(format!("k{key}")),
+                })
+                .collect();
+            for change in &changes {
+                match change {
+                    StateChange::Put(record) => {
+                        model.insert(record.key.clone(), record.value.to_vec());
+                    }
+                    StateChange::Delete(key) => {
+                        model.remove(key);
+                    }
+                }
+            }
+            run_all(&connection, &planner.state_changes(&mine, &changes));
+        }
+        let expected: Vec<Vec<Value>> = model
+            .into_iter()
+            .map(|(key, value)| vec![text(&key), Value::Blob(value)])
+            .collect();
+        prop_assert_eq!(query(&connection, &planner.state(&mine)), expected);
+    }
+}
+
+#[test]
 fn each_open_increments_the_epoch_and_only_the_latest_epoch_fences_through() {
     let (connection, planner) = database();
     let orders = pipeline("orders");
@@ -1009,6 +1077,76 @@ fn state_changes_put_replace_and_delete_one_pipelines_records() {
     );
     let state = query(&connection, &planner.state(&orders));
     assert_eq!(state, [[text("a"), Value::Blob(b"3".to_vec())]]);
+}
+
+#[test]
+fn a_commits_state_is_written_in_chunks_the_dialect_bounds() {
+    let planner = SqlPlanner::try_new(Narrow).unwrap();
+    let put = |key: String| {
+        StateChange::Put(StateRecord {
+            key,
+            value: Bytes::from_static(b"v"),
+        })
+    };
+    // Seven values a statement: six keys a delete beside the pipeline, two rows an insert.
+    let changes: Vec<StateChange> = (0..13).map(|n| put(format!("k{n:02}"))).collect();
+    let plan = planner.state_changes(&pipeline("mine"), &changes);
+    let deletes = plan.iter().filter(|s| s.sql.starts_with("DELETE")).count();
+    let inserts = plan.iter().filter(|s| s.sql.starts_with("INSERT")).count();
+    assert_eq!(
+        (deletes, inserts),
+        (13_usize.div_ceil(6), 13_usize.div_ceil(2))
+    );
+    assert!(plan.iter().all(|statement| statement.params.len() <= 7));
+    let first_insert = plan
+        .iter()
+        .position(|s| s.sql.starts_with("INSERT"))
+        .unwrap();
+    assert!(
+        plan[first_insert..]
+            .iter()
+            .all(|s| s.sql.starts_with("INSERT"))
+    );
+}
+
+#[test]
+fn a_commit_that_changes_no_state_plans_no_statement() {
+    let (_, planner) = database();
+    assert!(planner.state_changes(&pipeline("mine"), &[]).is_empty());
+}
+
+#[test]
+fn the_last_change_of_a_key_in_a_commit_is_the_one_kept() {
+    let (connection, planner) = database();
+    let put = |key: &str, value: &'static [u8]| {
+        StateChange::Put(StateRecord {
+            key: key.to_owned(),
+            value: Bytes::from_static(value),
+        })
+    };
+    let mine = pipeline("mine");
+    run_all(
+        &connection,
+        &planner.state_changes(&mine, &[put("a", b"0"), put("b", b"0")]),
+    );
+    let delete = |key: &str| StateChange::Delete(key.to_owned());
+    run_all(
+        &connection,
+        &planner.state_changes(
+            &mine,
+            &[
+                put("a", b"1"),
+                delete("a"),
+                put("a", b"2"),
+                put("b", b"1"),
+                delete("b"),
+            ],
+        ),
+    );
+    let state = query(&connection, &planner.state(&mine));
+    assert_eq!(state, [[text("a"), Value::Blob(b"2".to_vec())]]);
+    let plan = planner.state_changes(&mine, &[put("a", b"1"), delete("a"), put("a", b"2")]);
+    assert_eq!(plan.len(), 2, "one delete and one insert for one key");
 }
 
 #[test]

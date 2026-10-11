@@ -76,8 +76,8 @@ impl SqlDialect for Dual {
 }
 
 /// What the catalog holds after two opens, two pipelines claiming one table, a state record put
-/// twice, and a table registered under a path it then takes another name for: the epoch, the
-/// owner, the state and the registered names.
+/// in two commits, and a table registered under a path it then takes another name for: the
+/// epoch, the owner, the state and the registered names.
 fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
     let connection = Connection::open_in_memory().unwrap();
     connection
@@ -97,10 +97,9 @@ fn catalog<D: SqlDialect>(dialect: D) -> Vec<Vec<Vec<Value>>> {
             value: Bytes::from_static(value),
         })
     };
-    run_all(
-        &connection,
-        &planner.state_changes(&orders, &[put(b"1"), put(b"2")]),
-    );
+    // Two commits, the second replacing the first's row.
+    run_all(&connection, &planner.state_changes(&orders, &[put(b"1")]));
+    run_all(&connection, &planner.state_changes(&orders, &[put(b"2")]));
     run_all(&connection, &planner.register_of(&table("events")));
     let generation = TableRef {
         generation: Some(GenerationId(3)),
