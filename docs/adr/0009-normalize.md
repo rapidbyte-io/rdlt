@@ -71,8 +71,9 @@ leaves open, and one it words otherwise.
   with it. Child tables state records are added when the attempt plans the stream, so one the new
   cycle never writes swaps in empty.
 - **Declared schemas.** A normalized stream's declared schema creates the columns of its own table
-  that it holds, objects flattened; it creates the child table of each array it holds within depth
-  too, with the columns the array's rows bring, so state records it before any row does.
+  that it holds, objects flattened; when it creates that table, it creates the child table of each
+  array it holds within depth too, with the columns the array's rows bring, so state records it
+  before any row does.
 - **Reports.** A stream's reported rows count the rows of its child tables too; reports stay per
   stream.
 - **Merges, rows a policy drops and arrays new to a table** follow ADR 0010.
