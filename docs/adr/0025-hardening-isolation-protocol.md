@@ -44,10 +44,9 @@ follows H1c.
     table again, as a retry does, succeeds.
   - Each destination records the owner:
     - memory and the simulation in the table;
-    - sqlgen in a new catalog table, `_rdlt_owners`, keyed by the table's name. Amended
-      2026-10-01: the planner takes the owner for every statement that changes a table, child
-      tables, swaps, drops and discarded staging included, and writes the record only where a
-      table is created (ADR 0049);
+    - sqlgen in a new catalog table, `_rdlt_owners`, keyed by the table's name; the planner takes
+      the owner for every statement that changes a table, child tables, swaps, drops and discarded
+      staging included, and writes the record only where a table is created (ADR 0049);
     - the files destination in an `owner` file in the table's catalog, created exclusively.
   - The simulation's two pipelines never share a table. So once a phase converges, a third
     pipeline loads one of the first pipeline's tables. It must be refused as `table_owned` and
@@ -61,10 +60,9 @@ follows H1c.
     - over the wire, as `invalid_message`.
 
     The answered barrier only moves forward.
-  - A connector's `retry_after` is waited for no longer than the retry policy's `max_delay`, as
-    every other backoff is. The simulation now and then asks for ten years, which the cap keeps
-    within the run's limit. Amended by ADR 0042: only a rate limit's wait is kept, and no shorter
-    than the policy's first delay.
+  - Only a rate limit's `retry_after` is kept, held between the retry policy's first and longest
+    delays (ADR 0042), so the ten years the simulation now and then asks for stay within the
+    run's limit.
   - `Options::missed` is a `NonZeroU32`, and `Connection::handshake` refuses a zero heartbeat
     interval as `options_invalid` before any I/O.
 - **The handshake answers who the connector is before it sees its configuration.**
@@ -87,11 +85,10 @@ follows H1c.
   - `ConnectorRef` gains an optional `digest`, which the binary must match before it spawns.
   - Every respawn hashes the binary again and refuses one changed since placement
     (`DigestMismatch`, and `connector_changed` to the engine).
-  - Rejected: executing from a content-addressed private copy to close the window between
-    hashing and executing. It costs a copy of every binary, and whoever can write the binary's
-    path already controls the host. Amended 2026-10-02 (ADR 0043): the window is closed
-    without a copy, by hashing and executing one open file, and a binary another user may
-    write is refused; a raw wire compares the digest too.
+  - On Linux a binary is hashed and executed as one open file, so what runs is what was hashed,
+    and a binary another user may write is refused; a raw wire compares the digest too (ADR 0043).
+    Rejected: executing from a content-addressed private copy, which costs a copy of every
+    binary.
 - **A served read knows whether its partition ends.** `ReadStart.unbounded` carries it.
 - **The files destination's directories are durable.**
   - A directory it creates is synced into its parent, and each new file's directory after the
@@ -139,19 +136,14 @@ follows H1c.
     results are taken from a quiet run. Mutated against its own and the engine's tests only, the
     crate showed which mutants only certification's tests had caught; its own tests catch them
     now.
-- **Dialects' identifiers hold at least 30 bytes.** That is the shortest limit a supported
-  database has, and it keeps a staging table's reserved prefix, its hash and part of the table's
-  name. A generation table's name, whose generation id takes most of it at that limit, keeps its
-  prefix, part of the id and the hash, so its distinctness rests on the 32-bit hash; widening
-  that hash waits for a dialect that limits identifiers. `SqlPlanner::try_new` refuses a dialect
-  below 30 bytes as `Unsupported`. Amended 2026-10-01: a cut name ends in no 32-bit hash: it is a
-  SHA-256 of the whole name, and identifiers hold at least 63 bytes to fit it (ADR 0049).
+- **Dialects' identifiers hold at least 63 bytes.** A name too long is cut to a SHA-256 of the
+  whole name under a prefix no table may take, which fits them; `SqlPlanner::try_new` refuses a
+  dialect below that as `Unsupported` (ADR 0049).
 
 ## Consequences
 
-- Connectors built for protocol 1 must be rebuilt. Nothing is published, so none exists
-  outside this repository.
-- Spec §12.3 gains `Configure`, and §13.1's `ConnectorRef` gains `digest`. This ADR amends both.
+- The protocol has `Configure`, which spec §12.3 lacks, and `ConnectorRef` has `digest`, which
+  §13.1 lacks.
 - A table another pipeline created cannot be loaded until that pipeline releases it, which reset
   brings in M5d.
 - The hash of a spawned connector's binary is computed again at every respawn. That is a cost for

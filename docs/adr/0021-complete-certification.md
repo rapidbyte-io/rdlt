@@ -1,8 +1,6 @@
 # ADR 0021: Certification complete for today's features
 
-Status: accepted, 2026-09-27; amended 2026-10-01 by ADR 0050: a read-back is bounded in rows and
-in what its rows expand to, only `P-HANDSHAKE`'s handshake offers an unknown feature, and the
-probes' own handshakes keep a deadline.
+Status: accepted, 2026-09-27.
 
 ## Context
 
@@ -24,7 +22,7 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
   - M4g (this record) completes certification for the features that exist.
   - M4h is the `K` kill clauses and `S-ARROW-JSON`: both run an engine, the latter its
     shredder. The owner ruled that `rdlt-certify` gains an optional `kill` cargo feature, on in
-    its binary, that depends on `rdlt-engine`; the §4 crate map is amended in M4h's record.
+    its binary, that depends on `rdlt-engine`; ADR 0022 records the crate map that follows.
   - `S-PARTITION` ("planned partitions cover the stream exactly once") waits for M5: a plan takes
     no partition count, so nothing gives the clause a truth to compare the partitions with. M5
     re-plans partitions for streaming, and settles it.
@@ -39,12 +37,14 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
   - The engine never calls it: the reader is kept beside the served destination, not on the
     engine-facing `Destination`, and only `rdlt-certify`'s raw client calls it.
   - `rdlt-certify` reads back through its `ReadBackProbe` when the destination accepts the
-    feature, and skips the clauses that read published data otherwise, as before. A read-back
-    that fails, takes longer than 30 s, or sends more than 64 MiB of a table fails what needs
-    it; so does every read-back of a destination whose handshake offering the feature failed.
-  - Every handshake of certification also offers a feature no host defines: a connector ignores
-    the features it does not know (§12.7), and `P-HANDSHAKE` fails one that accepts or refuses
-    it.
+    feature; otherwise the clauses that read published data are unobserved (ADR 0050). A
+    read-back that fails, takes longer than 30 s, or sends more than 64 MiB of frames or
+    100,000 rows of a table fails what needs it, and so does one whose rows expand past what a
+    clause admits (ADR 0050); so does every read-back of a destination whose handshake offering
+    the feature failed. The probe's own handshakes keep the connection deadline.
+  - Only `P-HANDSHAKE`'s handshake offers a feature no host defines, named anew each time: a
+    connector ignores the features it does not know (§12.7), and `P-HANDSHAKE` fails one that
+    accepts or refuses it (ADR 0050).
   - The reference destinations (memory, SQLite, files) read back, with the reference crate's
     `certify` feature. Their own binaries serve no read-back: they are certified in process, or
     served by a binary built for certification.
@@ -53,9 +53,9 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
 - **New and stronger clauses.**
   - `D-NAMES`: a table and a column named as long as the destination's rules allow, a column
     beyond ASCII when it allows any character, and one in mixed case when it keeps case, each
-    folded as its rules fold, are published under their names. Skipped below 32 bytes.
+    folded as its rules fold, are published under their names. Unobserved below 32 bytes.
   - `D-LANES`: as many writers of one table as the destination runs at once, up to four, stage
-    at the same time, and a commit publishes what each staged. Skipped for one writer.
+    at the same time, and a commit publishes what each staged. Inapplicable for one writer.
   - `S-CHECK`: check succeeds exactly when a read of the first partition starts, and both do.
   - `D-CHECK`: check succeeds exactly when opening a session does, and both do.
   - `P-MALFORMED` also sends a destination a batch frame that is no IPC message: it must be
@@ -77,7 +77,8 @@ ADR 0020 left the `K` kill clauses to M4g. Certifying a connector over the wire 
 ## Consequences
 
 - A connector author makes a destination fully certifiable from its binary by reading back what
-  it published; one that does not is certified as before.
+  it published; one that does not is certified with those clauses unobserved, so its report is
+  incomplete (ADR 0050).
 - `D-NAMES` and `D-LANES` read what was published, so they run wherever that can be read; the P
   clauses send a destination a frame as large as its frame limit, 64 MiB by default.
 - M4's exit criterion (`P` and `K` clauses green) completes with M4h.

@@ -1,9 +1,6 @@
 # ADR 0020: Certifying connectors over the wire
 
-Status: accepted, 2026-09-27; outcomes, the pass rule and exit codes are amended by ADR 0050
-(2026-10-01): a skipped clause is inapplicable or unobserved, and an unobserved one does not pass.
-Where the configuration is read from, the sandbox a binary is certified in and how a
-connector's text is shown are amended by ADR 0043 (2026-10-02).
+Status: accepted, 2026-09-27.
 
 ## Context
 
@@ -34,8 +31,8 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
 - **The source and destination clauses are `rdlt_connector::testing`'s**, run over the host's
   `RemoteSource` and `RemoteDestination`.
   - A destination whose published data nothing can read is certified with the `Unprobed` probe:
-    the eleven clauses that read what it published are skipped, and `D-CHECK`, `D-EPOCH` and
-    `D-STATE` run. The binary certifies destinations so.
+    the eleven clauses that read what it published are unobserved (ADR 0050), and `D-CHECK`,
+    `D-EPOCH` and `D-STATE` run. The binary certifies destinations so.
 - **The protocol's clauses** are checked by a client that speaks the protocol raw:
   - `P-HANDSHAKE`: the handshake answers the protocol's major version with the spec and limits,
     and refuses another as unsupported;
@@ -43,7 +40,7 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
   - `P-ROLE`: a role the connector does not serve is refused as unsupported;
   - `P-LIMITS`: a configuration beyond the connector's limit is refused with `limit_exceeded`.
     A limit beyond the largest configuration this host sends is never met, and is not exceeded:
-    the clause is skipped, rather than let a connector size this process's memory;
+    the clause is inapplicable, rather than let a connector size this process's memory;
   - `P-HEARTBEAT`: each heartbeat is answered with its sequence number, in order;
   - `P-MALFORMED`: a read or write that does not begin with its start is refused, typed, and the
     connection serves on;
@@ -55,21 +52,23 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
 - **`rdlt-host` gains raw wires** for clients that speak the protocol themselves: `Local::wire`,
   `Remote::wire`, `remote::client`, and `Connection::connector_spec`.
 - **The binary**: `rdlt-certify <binary | grpcs://host:port>` certifies every role the connector
-  serves, or `--role`'s, with one configuration (`--config`, `--config-file`; amended
-  2026-10-02 by ADR 0043: from a file or standard input only, and a binary is certified inside
-  a sandbox unless `--trusted`); an endpoint needs
-  `--tls-cert`, `--tls-key` and `--tls-ca`. It prints plain text or JSON (`--output`), and exits
-  0 when every report passed, 1 on findings, 64 on a wrong command line and 74 when the
-  connector or a file named cannot be read (§19). `--clauses` prints the registry.
-  - A report passes when no clause failed and one passed at least: one whose every clause was
-    skipped certified nothing, in the library as in the binary, and its JSON says so.
-  - A role the connector does not serve skips each of its clauses. Without `--role`, its report
-    is left out; with `--role` naming such a role, nothing was certified, and it exits 1 saying
-    so.
+  serves, or `--role`'s, with one configuration, read from a file or standard input
+  (`--config-file`), never the command line, and certifies a binary inside a sandbox unless
+  `--trusted` (ADR 0043); an endpoint needs `--tls-cert`, `--tls-key` and `--tls-ca`. It prints
+  plain text or JSON (`--output`), and exits 0 when every report passed, 2 when one is
+  incomplete and none failed, 1 on findings or when the connector serves none of the roles
+  asked, 64 on a wrong command line and 74 when the connector or a file named cannot be read
+  (§19; ADR 0050); `--require partial` exits 0 for an incomplete run in which a clause passed.
+  `--clauses` prints the registry.
+  - A clause passes, fails, is inapplicable by the connector's declaration, or is unobserved.
+    A report passes when no clause failed, none was unobserved and one passed; otherwise it is
+    incomplete, in the library as in the binary, and its JSON says so (ADR 0050).
+  - No clause of a role the connector does not serve applies. Without `--role`, its report is
+    left out; with `--role` naming such a role, nothing was certified, and it exits 1 saying so.
   - Plain output shows what the connector said, not obeys it (§19): its controls, line breaks
     among them, and the marks that reorder text are escaped. JSON output carries it verbatim.
-    Amended 2026-10-02 (ADR 0043): a reason is shown where it is made, so the plain report,
-    its `Display` and the JSON carry the same escaped text.
+    A reason is shown where it is made, so the plain report, its `Display` and the JSON carry
+    the same escaped text (ADR 0043).
     A closed standard output ends quietly; one that cannot be written exits 74.
   - A malformed endpoint is a wrong command line, and exits 64.
   - Its help and its reports are snapshots (§20.11), with `insta`.
@@ -77,9 +76,9 @@ a binary that certifies any connector binary or endpoint and also runs `K`.
   a test holds equal to `rdlt-certify --clauses`.
 - **What certification found**: a barrier pending when a read starts was forwarded after the
   read's start, so a read too short to see it never answered it, where in the engine's process it
-  always does. `ReadStart` now carries the barrier pending at the start (`barrier`, field 5),
-  and the host still sends it as a control too, before the read's credit. A connector that does not know the field reads 0
-  and answers the control, as before; one that knows both answers the barrier once.
+  always does. `ReadStart` carries the barrier pending at the start (`barrier`, field 5), and the
+  host also sends it as a control, before the read's credit. A connector that does not know the
+  field reads 0 and answers the control; one that knows both answers the barrier once.
 
 ## Consequences
 

@@ -1,7 +1,6 @@
 # ADR 0022: The kill clauses
 
-Status: accepted, 2026-09-28; amended 2026-10-01 by ADR 0050: a kill reaches a spawned
-connector's process group, and a clause passes only on a kill seen to have ended a connection.
+Status: accepted, 2026-09-28.
 
 ## Context
 
@@ -12,13 +11,14 @@ through the connector, and a host that can kill what it placed. The owner ruled 
 
 ## Decision
 
-- **The crate map (§4.2, §4.3) is amended.** `rdlt-certify` depends on `rdlt-connector`,
+- **The crate map differs from spec §4.2 and §4.3.** `rdlt-certify` depends on `rdlt-connector`,
   `rdlt-host` and `rdlt-wire`, and, with its `kill` feature, on `rdlt-engine` and
   `rdlt-connector-reference` too. The binary requires the feature. A library build without it
-  still lists the `K` clauses in its reports and registry, each skipped as unbuilt, so a report
+  still lists the `K` clauses in its reports and registry, each unobserved as unbuilt, so a report
   has the same clauses whatever the build.
 - **A host kills what it placed.** `rdlt_host::Kills` is a shared handle. `Local::kills`
-  SIGKILLs each process the provider spawned; `Remote::kills` and the new `Connect::kills` cut
+  sends `SIGKILL` to the process group of each connector the provider spawned, which the host
+  owns (ADR 0050); `Remote::kills` and the new `Connect::kills` cut
   each connection they opened, which is all a host can do to a connector it did not start. The
   supervisor then starts or reaches the connector again for the next call, as it does for one
   that crashed. `Connect` is a provider of connectors reached through a function that opens a
@@ -26,12 +26,14 @@ through the connector, and a host that can kill what it placed. The owner ruled 
 - **`K-SOURCE`**: the target source is loaded into a memory destination twice, placed and
   supervised as an engine's placement is: once never killed, and once killed at scheduled
   points. The second load's tables must equal the first's, row for row, without the engine's
-  `_rdlt_` columns. A stream is read incrementally and appended when it can be, else read in
-  full and replaced; a source with neither is skipped.
-- **`K-DESTINATION`**: 2,000 generated rows are appended into the target destination while it is
-  killed at scheduled points; the table read back through the probe must hold each row exactly
-  once. It is skipped when nothing reads back what the destination published, and when the
-  destination does not append.
+  `_rdlt_` columns. Each stream is read in the first of incremental, full and change reads it
+  serves, and appended, replaced or merged as that read requires; a source with no stream read in
+  any mode is inapplicable (ADR 0050).
+- **`K-DESTINATION`**: 2,000 generated rows are written into the target destination, in the
+  first of append, merge and replace it declares, while it is killed at scheduled points; the
+  table read back through the probe must hold each row exactly once. It is unobserved when
+  nothing reads back what the destination published or it keeps history alone, and inapplicable
+  when it declares no write mode (ADR 0050).
 - **Where the kills land.** A seed draws three points, counted in commits across the loads: at
   the first write after the second or third commit, before the third to fifth commit, and, for
   a destination, after the second to fourth commit, reporting its answer lost as a kill between
@@ -48,10 +50,13 @@ through the connector, and a host that can kill what it placed. The owner ruled 
   a read's credit floor of 64 KiB, so a source runs little ahead of the commits: 64 KiB, or two
   of its frames where they are larger. A load retries 20 times, quickly, and up to three loads
   run until one succeeds.
-- **A clause passes only on evidence.** When no kill interrupted a load (the load ended first,
-  as a source smaller than about its credit floor does), the clause is skipped with the seed,
-  not passed. A clause takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`)
-  gives it: a connector slower than about two seconds a commit needs more.
+- **A clause passes only on a kill that landed** (ADR 0050): for a spawned connector, `SIGKILL`
+  to its process group, which the host then sees end the connection; for one reached at an
+  endpoint or served in process, the host's cut of its connection, which lands by itself. The
+  pass notes which (`killed`, `cut`). When no kill landed (the load ended first, as a source
+  smaller than about one credit window does), the clause is unobserved, with the seed. A clause
+  takes at most 300 s, or what `--kill-timeout` (`Target::kill_timeout`) gives it: a connector
+  slower than about two seconds a commit needs more.
 - **`S-ARROW-JSON` waits for M8.** The engine infers the types of JSON pushes where Arrow pushes
   carry their own, so the same data rendered both ways publishes the same values only once a
   schema pins both; certification has no way to ask a source for both renderings. The Python
@@ -66,7 +71,7 @@ through the connector, and a host that can kill what it placed. The owner ruled 
     listening (`rdlt-certify/tests/it`);
   - P1–P4 and L3 are pinned by `rdlt-host/tests/it/process.rs` and `protocol.rs`.
 - A connector author learns from the binary whether the connector survives being killed. A
-  source must hold enough data for a kill to land mid-read, or the clause is skipped, and must
+  source must hold enough data for a kill to land mid-read, or the clause is unobserved, and must
   read the same data both times, as a fixture does: `K-SOURCE` compares two loads.
 - A killed spawned connector writes no coverage profile, so its killed runs go unmeasured; the
   processes that start again are measured.

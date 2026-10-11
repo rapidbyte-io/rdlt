@@ -30,9 +30,8 @@ M5b follows H1b.
     uncut and no catalog table begins with that prefix, so a cut name meets only another cut name
     (ADR 0049).
   - The name functions became planner methods.
-  - User columns may still start with `_rdlt_`: the engine names its own metadata columns around
-    them. Amended 2026-10-03 (ADR 0046): one named exactly as a metadata column, folded and
-    cleaned, is refused, whatever metadata columns its table has yet.
+  - User columns may start with `_rdlt_`, but one named exactly as a metadata column, folded and
+    cleaned, is refused, whatever metadata columns its table has yet (ADR 0046).
 - **A merge key changes type only where equal keys keep matching.**
   - That holds where the destination stores both types by value: as themselves, or as integers of
     another width.
@@ -40,7 +39,7 @@ M5b follows H1b.
     decimal's scale, a date widened to a timestamp, a time zone. Such a change is refused as
     `merge_key_changed` before any row.
   - The simulation's model predicts the refusal independently.
-- **JSON integers beyond 64 bits are read exactly** (ADR 0011 holds again).
+- **JSON integers beyond 64 bits are read exactly** (ADR 0011).
   - The fast parse reads such an integer as the float nearest it, and nothing else parses as a
     whole float of magnitude 2⁶³ or more, so such a float flags its chunk.
   - A flagged chunk is parsed again with exact numbers: sonic-rs's raw numbers, walked through the
@@ -81,7 +80,4 @@ M5b follows H1b.
     fenced by epoch.
   - The design belongs with M5b's change merges for the SQL destinations and the `D-DELETE`
     clause.
-- **Deferred to H1b: JSON integers beyond 64 bits in the simulation, and int-then-float
-  columns.** The model's JSON number inference needs value-level exactness for both.
-- **Deferred to M5b: portable sqlgen.** Moving DDL out of the commit transaction and replacing
-  `ON CONFLICT` and row-value `IN` are part of making sqlgen fit Postgres and warehouses.
+- **Portable sqlgen** is ADR 0028's.
