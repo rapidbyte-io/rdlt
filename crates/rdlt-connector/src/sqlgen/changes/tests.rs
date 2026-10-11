@@ -201,6 +201,30 @@ fn flags_on_a_key_a_sequence_or_a_column_the_table_lacks_are_refused() {
     assert_eq!(error.code(), Some("flags_invalid"));
 }
 
+#[test]
+fn two_refused_flags_refuse_the_lowest_ordinal() {
+    let (connection, planner) = database();
+    let orders = changed("orders");
+    let fields = [
+        ("id", LogicalType::Int64, false),
+        ("seq", LogicalType::Int64, false),
+    ];
+    apply(&connection, &planner, &create(&orders, &fields)).unwrap();
+    let target = columns(&connection, &planner, "orders");
+    // Fields 0, 1 and 2: the key `id`, `name`, which the table lacks, and the sequence `seq`.
+    let lowest = [
+        (0b101, "flag_on_key", "id"),
+        (0b110, "flag_on_missing_column", "name"),
+        (0b111, "flag_on_key", "id"),
+    ];
+    for (bitmap, code, field) in lowest {
+        let batch = written(&[Some(vec![bitmap])]);
+        let error = staged_changes(&batch, &orders, &target).unwrap_err();
+        assert_eq!(error.code(), Some(code), "{bitmap:b}");
+        assert!(error.to_string().contains(field), "{bitmap:b}: {error}");
+    }
+}
+
 /// `batch` with each column of `columns` in place of the column at its index.
 fn replaced(batch: &RecordBatch, columns: &[(usize, ArrayRef)]) -> RecordBatch {
     let schema = batch.schema();
