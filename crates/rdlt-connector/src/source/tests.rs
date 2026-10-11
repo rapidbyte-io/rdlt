@@ -51,6 +51,10 @@ impl SourceConnector for Counter {
     }
 
     fn streams(&self) -> Streams<Self> {
+        if self.limit == 13 {
+            // A source that lists a stream twice.
+            return Streams::new().with(Numbers).with(Numbers);
+        }
         Streams::new().with(Numbers).with(Silent)
     }
 }
@@ -280,6 +284,22 @@ async fn unknown_streams_are_config_errors() {
     assert_eq!(
         source.committed(&other, &[]).await.unwrap_err().code(),
         Some("unknown_stream")
+    );
+}
+
+#[tokio::test]
+async fn a_source_listing_a_stream_twice_is_refused_at_connect() {
+    let error = source_factory::<Counter>()
+        .connect(json!({ "limit": 13 }), ConnectContext::new())
+        .await
+        .err()
+        .expect("a source listing a stream twice is refused");
+    assert_eq!(error.kind(), ConnectorErrorKind::Internal);
+    assert!(
+        error
+            .to_string()
+            .contains("stream numbers appears more than once"),
+        "{error}"
     );
 }
 

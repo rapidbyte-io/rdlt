@@ -1,9 +1,10 @@
 //! Turns an author's [`SourceConnector`] into the engine-facing [`Source`].
 
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 use super::{PartitionPlan, ReadRequest, ReadStream, Source, SourceConnector, SourceFactory};
-use crate::catalog::{Catalog, StreamSpec};
+use crate::catalog::{Catalog, InvalidCatalog, StreamSpec};
 use crate::config;
 use crate::cursor::Cursor;
 use crate::emitter::Emitter;
@@ -13,7 +14,7 @@ use crate::sink::PartitionSink;
 use crate::spec::{BoxFuture, ConnectContext, ConnectorSpec};
 use crate::state::StreamState;
 
-/// A [`ReadStream`] with its cursor type erased, so streams of one source fit in one list.
+/// A [`ReadStream`] with its cursor type erased, so streams of one source fit in one map by name.
 pub(crate) trait ErasedStream<S>: Send + Sync {
     fn spec(&self) -> StreamSpec;
 
@@ -122,19 +123,15 @@ fn decode<S: SourceConnector, R: ReadStream<S>>(stream: &R, cursor: &Cursor) -> 
 
 pub(super) struct SourceAdapter<C: SourceConnector> {
     pub(super) connector: C,
-    streams: Vec<(StreamName, Box<dyn ErasedStream<C>>)>,
+    streams: BTreeMap<StreamName, Box<dyn ErasedStream<C>>>,
 }
 
 impl<C: SourceConnector> SourceAdapter<C> {
     pub(super) fn stream(&self, name: &StreamName) -> Result<&dyn ErasedStream<C>> {
-        self.streams
-            .iter()
-            .find(|(candidate, _)| candidate == name)
-            .map(|(_, stream)| stream.as_ref())
-            .ok_or_else(|| {
-                ConnectorError::config(format!("stream {name} is not in this source's catalog"))
-                    .with_code("unknown_stream")
-            })
+        self.streams.get(name).map(AsRef::as_ref).ok_or_else(|| {
+            ConnectorError::config(format!("stream {name} is not in this source's catalog"))
+                .with_code("unknown_stream")
+        })
     }
 }
 
@@ -184,11 +181,14 @@ pub(super) async fn adapted<C: SourceConnector>(
 ) -> Result<SourceAdapter<C>> {
     let config = config::parse::<C::Config>(&config)?;
     let connector = C::connect(config, context).await?;
-    let streams = connector.streams().streams;
-    let streams = streams
-        .into_iter()
-        .map(|stream| (stream.spec().name().clone(), stream))
-        .collect();
+    let mut streams = BTreeMap::new();
+    for stream in connector.streams().streams {
+        let name = stream.spec().name().clone();
+        if streams.contains_key(&name) {
+            return Err(super::invalid_catalog(&InvalidCatalog::Duplicate(name)));
+        }
+        streams.insert(name, stream);
+    }
     Ok(SourceAdapter { connector, streams })
 }
 
