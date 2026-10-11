@@ -4,17 +4,17 @@ Status: accepted, 2026-10-01.
 
 ## Context
 
-The memory budget charged a push by an estimate of its decoded rows (ADR 0024). The estimate
-was one idea with four failures:
+An estimate of a push's decoded rows (ADR 0024) cannot bound what the engine holds; it fails
+four ways:
 
-- It undercounted what the engine materializes: views and list views naming the same bytes or
+- It undercounts what the engine materializes: views and list views naming the same bytes or
   items many times, a null dictionary key that still takes its value's slot, a dictionary or run
   multiplying a value that takes no bytes, a column typed null widened to its table column's
   type, and the names of a struct's fields written into every row's JSON text.
-- It ignored what a batch keeps alive: a few rows sliced from a frame, a file block or a
-  dictionary were charged for the rows.
-- Computing it allocated a vector a value.
-- Much of what the engine holds was never charged: the decoder's dictionaries, the cursors of
+- It ignores what a batch keeps alive: a few rows sliced from a frame, a file block or a
+  dictionary are charged for the rows.
+- Computing it allocates a vector a value.
+- Much of what the engine holds is not charged by it: the decoder's dictionaries, the cursors of
   checkpoints waiting as seals, signals queued while a commit is in flight, the ranges of a JSON
   push's records, the copies row identity made, the log's seal and commit frames, and what a
   served destination stages.
@@ -106,8 +106,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
     held until a commit records it: the commit's frame reserves the rest from the log's share.
     A table's first frame in the log, its schema, is reserved from the log's share until the
     log appends it. A table wider than a schema may be is refused where the source pushes it,
-    and, across pushes, at the schema change that would make it so (ADR 0041, amended
-    2026-10-03).
+    and, across pushes, at the schema change that would make it so (ADR 0041).
   - **Dictionaries.** The sender and the decoder hold dictionaries to the limit by one
     function of the wire crate, `held_bytes`, what the decoder lays out rounded up to 64
     bytes; the sender counts what its receiver holds from every batch since the last schema,
@@ -204,12 +203,11 @@ budget before it is held, or bounded by a limit with a typed refusal.
   - A JSON push reserves three times its text when it is admitted: the text, and twice it for
     the batches it is shredded into, which are paid for before they are built. Once shredded
     the push holds what its batches keep alive, where that is less.
-  - Amended 2026-10-03 (ADR 0040): what a JSON push's batches take beyond twice its text is
-    reckoned before they are built and reserved from the data share, held with the batches;
-    beyond one request it is refused, `json_exceeds_budget`. A null converted to a type of no
-    fixed width is charged that type's null slot, inside structs and lists too. A piece and a
-    row take at most `i32::MAX` bytes whatever the budget, as far as a text array's offsets
-    reach.
+  - What a JSON push's batches take beyond twice its text is reckoned before they are built and
+    reserved from the data share, held with the batches; beyond one request it is refused,
+    `json_exceeds_budget`. A null converted to a type of no fixed width is charged that type's
+    null slot, inside structs and lists too. A piece and a row take at most `i32::MAX` bytes
+    whatever the budget, as far as a text array's offsets reach (ADR 0040).
 - **No request waits on the budget for ever.**
   - Every wait ends at a deadline on the engine's clock, `memory_wait`, an hour by default,
     longer than any call of a destination may take by default. The attempt then fails with
@@ -279,7 +277,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   has (decoding, the plain type, conversion, text, JSON text, listing) makes no more than the
   batch expands to. What a consumer makes is measured by the rows of its output, or by the
   allocations it does not share with its input where those are fewer: a builder's spare capacity
-  stays the overdraft ADR 0024 documents.
+  is the overdraft ADR 0024 documents.
 - **Admission takes the event.** `Admission::admit` is given the event, and the engine costs it:
   a push by what it keeps alive, a checkpoint by its cursor's bytes.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
@@ -358,16 +356,12 @@ admitted, and what a remote connector's calls hold in transport.
   which HTTP/2 enforces on a connector that ignores its credit; the connection's window holds
   every call's and one more, so no connection holds more than 804 MiB (ADR 0016). A read's
   frames beyond it wait in the connector.
-- What a JSON push's records become beyond three times their text was a third, bounded only by
-  the shredder's limit on cells: a megabyte of records of one key each, three hundred keys in
-  turn, became 241 MB under a budget of 16 MiB, of which 10 MiB were reserved. Since ADR 0040
-  it is reserved before it is built, and that push is refused unbuilt.
+- What a JSON push's records become beyond three times their text is reserved before it is
+  built, and a push whose records could not fit is refused unbuilt (ADR 0040).
 - The fifth and the 32 MiB are measured, not derived: what the runtime, the channels and the
   builders' spare capacity take. The loads above peak far below them: 5 MB of heap where 300 KB
   pushed fill a table of two hundred 256-bit columns, 9 MB where sixteen million small integers
   widen to 256 bits, and 22 MB with sixteen partitions doing so at once, under 16 MiB.
-
-This supersedes ADR 0024 where it charges memory at its decoded size.
 
 ## Consequences
 
@@ -440,6 +434,6 @@ This supersedes ADR 0024 where it charges memory at its decoded size.
   wire's weigher can stop within a row, but only for the wire crate's own cut, so one row
   whose list views nest and name the same items is weighed to its end before it is refused.
 - Not bounded here: how much one push may expand to in total, which costs CPU and destination
-  storage in proportion; and what replay stages, which ADR 0045 reserves since. The nulls of a
-  nested column's fields the shredder builds, and what a JSON push of sparse records becomes
-  beyond three times its text, are reserved before they are built since ADR 0040.
+  storage in proportion. What replay stages is reserved (ADR 0045), and so are the nulls of a
+  nested column's fields the shredder builds and what a JSON push of sparse records becomes
+  beyond three times its text, before they are built (ADR 0040).
