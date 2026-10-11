@@ -8,6 +8,7 @@
 
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, StringArray};
+use arrow_buffer::BooleanBuffer;
 use arrow_schema::ArrowError;
 use rdlt_connector::LogicalType;
 
@@ -68,16 +69,16 @@ impl Splits {
         if dropping.is_empty() {
             return None;
         }
-        let kept: BooleanArray = (0..rows)
-            .map(|row| {
-                Some(
-                    dropping
-                        .iter()
-                        .all(|fits| fits.is_null(row) || fits.value(row)),
-                )
-            })
-            .collect();
-        Some(kept)
+        let rows = BooleanBuffer::new_set(rows);
+        let kept = dropping.iter().fold(rows, |kept, fits| {
+            // A null fit holds no value, so its row is kept.
+            let fits = match fits.nulls() {
+                Some(nulls) => &!nulls.inner() | fits.values(),
+                None => fits.values().clone(),
+            };
+            &kept & &fits
+        });
+        Some(BooleanArray::new(kept, None))
     }
 
     /// The values of `batch`'s split columns whose own column does not hold them and the policy

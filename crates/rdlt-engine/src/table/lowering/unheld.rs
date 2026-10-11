@@ -2,6 +2,9 @@
 //! version can begin at — which the column's schema policy decides row by row: refused with the
 //! batch, the row dropped, or the value nulled.
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
@@ -59,6 +62,28 @@ impl Converted {
                 *slot = other;
             }
         }
+    }
+
+    /// Each conversion of a column of `whole`, of the rows `keep` keeps, which are `kept`: a
+    /// column that converted to itself is `kept`'s, and any other is filtered.
+    pub(super) fn filter(
+        &mut self,
+        whole: &RecordBatch,
+        kept: &RecordBatch,
+        keep: &BooleanArray,
+    ) -> Result<(), ArrowError> {
+        for (index, slot) in self.0.iter_mut().enumerate() {
+            let Some(array) = slot.as_ref() else {
+                continue;
+            };
+            let filtered = if Arc::ptr_eq(array, whole.column(index)) {
+                Arc::clone(kept.column(index))
+            } else {
+                arrow_select::filter::filter(array.as_ref(), keep)?
+            };
+            *slot = Some(filtered);
+        }
+        Ok(())
     }
 
     /// Forgets the conversion of each column of `before` that `after`, the same batch, holds
@@ -131,13 +156,12 @@ impl LoweringPlan {
         batch: &RecordBatch,
     ) -> Result<(Option<BooleanArray>, Converted), ArrowError> {
         let Checked { unheld, converted } = self.unheld(batch, SchemaPolicy::DiscardRow)?;
-        if unheld.is_empty() {
-            return Ok((None, converted));
-        }
-        let kept = (0..batch.num_rows())
-            .map(|row| Some(!unheld.iter().any(|(_, rows)| rows.value(row))))
-            .collect();
-        Ok((Some(kept), converted))
+        let refused = unheld
+            .iter()
+            .map(|(_, rows)| rows.values().clone())
+            .reduce(|left, right| &left | &right);
+        let kept = refused.map(|refused| BooleanArray::new(!&refused, None));
+        Ok((kept, converted))
     }
 
     /// `batch` with each value its column cannot hold nulled, where the column's policy discards
@@ -183,12 +207,9 @@ pub(crate) enum Check {
     Refused(BooleanArray),
 }
 
-/// The rows `one` or `other` names.
+/// The rows `one` or `other` names; neither mask holds a null.
 fn either(one: &BooleanArray, other: &BooleanArray) -> BooleanArray {
-    one.iter()
-        .zip(other.iter())
-        .map(|(one, other)| Some(one == Some(true) || other == Some(true)))
-        .collect()
+    BooleanArray::new(one.values() | other.values(), None)
 }
 
 /// `array`, of `from`, as a column of `to` holds it, or the rows it cannot hold: found by

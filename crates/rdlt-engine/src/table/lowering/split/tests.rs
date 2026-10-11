@@ -4,6 +4,7 @@ use std::sync::Arc;
 use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, StringArray};
+use arrow_buffer::{BooleanBuffer, NullBuffer};
 use arrow_schema::ArrowError;
 use rdlt_connector::LogicalType;
 
@@ -115,4 +116,24 @@ fn a_plan_s_split_columns_are_fitted_and_filtered_each_at_its_position() {
     for position in [0, 2, 3, 5, 6] {
         assert!(fitted.rest(position).is_err(), "{position}");
     }
+}
+
+/// A fit that is null in a row whose value bit is set keeps that row, as a null fit in any row
+/// does; only a row whose fit is false is dropped.
+#[test]
+fn a_row_whose_fit_is_null_is_kept_whatever_its_value_bit() {
+    let routes = [Route::Split {
+        own: 0,
+        rest: Rest::DiscardRows,
+    }];
+    let splits = Splits::of(&routes, &[LogicalType::Int64]);
+    let values = BooleanBuffer::from(vec![true, true, false, false]);
+    let nulls = NullBuffer::from(vec![true, false, true, false]);
+    let fits = BooleanArray::new(values, Some(nulls));
+    let fitted = Fitted(vec![(0, StringArray::from(vec!["1", "2", "x", "y"]), fits)]);
+    let kept = splits.kept(&fitted, 4).expect("the split drops rows");
+    assert_eq!(
+        kept.values().iter().take(4).collect::<Vec<_>>(),
+        [true, true, false, true]
+    );
 }

@@ -2,6 +2,7 @@
 //! nor a value of a column of JSON its own column does not hold, where the others drop rows.
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow_buffer::BooleanBuffer;
 
 use super::super::resolve::Route;
 
@@ -45,17 +46,18 @@ pub(super) fn kept_by(
     if nulls.iter().all(empty) {
         return split;
     }
-    let kept: BooleanArray = (0..batch.num_rows())
-        .map(|row| {
-            let absent = |nulls: &Option<arrow_buffer::NullBuffer>| {
-                nulls.as_ref().is_some_and(|nulls| nulls.is_null(row))
-            };
-            Some(nulls.iter().all(absent))
-        })
-        .collect();
-    let Some(split) = split else {
-        return Some(kept);
+    // A row is kept where every discarding column is null in it; a column without nulls holds
+    // a value in every row.
+    let mut kept = BooleanBuffer::new_set(batch.num_rows());
+    for nulls in &nulls {
+        kept = match nulls {
+            Some(nulls) => &kept & &!nulls.inner(),
+            None => BooleanBuffer::new_unset(batch.num_rows()),
+        };
+    }
+    let kept = match split {
+        Some(split) => &kept & split.values(),
+        None => kept,
     };
-    let both = (0..batch.num_rows()).map(|row| Some(kept.value(row) && split.value(row)));
-    Some(both.collect())
+    Some(BooleanArray::new(kept, None))
 }

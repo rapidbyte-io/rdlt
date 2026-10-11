@@ -306,21 +306,21 @@ impl LoweringPlan {
     }
 
     /// The rows of `batch` the schema policy keeps, which those are where it drops some, how many
-    /// it drops, and which values of its columns of JSON their own columns hold, of those kept.
+    /// it drops, which values of its columns of JSON their own columns hold, and what the
+    /// columns the policies decide converted to, each of the kept rows.
     fn kept_rows(&self, batch: &RecordBatch) -> Result<Kept, arrow_schema::ArrowError> {
         let fitted = self.splits.fit(batch, false)?;
         let (held, mut converted) = self.held(batch)?;
         let split = both(self.splits.kept(&fitted, batch.num_rows()), held);
-        let (batch, kept, discarded_rows) = discard_rows(batch, &self.routes, split)?;
+        let (kept_batch, kept, discarded_rows) = discard_rows(batch, &self.routes, split)?;
         let fitted = match &kept {
-            Some(kept) => {
-                // Rows went, so what the columns converted to holds rows the batch does not.
-                converted = unheld::Converted::default();
-                fitted.filtered(kept)?
+            Some(keep) => {
+                converted.filter(batch, &kept_batch, keep)?;
+                fitted.filtered(keep)?
             }
             None => fitted,
         };
-        Ok((batch, kept, discarded_rows, fitted, converted))
+        Ok((kept_batch, kept, discarded_rows, fitted, converted))
     }
 
     /// The error for a value of a column of JSON that `column` holds in part that cannot be read,
@@ -437,15 +437,11 @@ fn lineage_columns(
         .collect()
 }
 
-/// The rows both `left` and `right` keep, where either keeps fewer than every row.
+/// The rows both `left` and `right` keep, where either keeps fewer than every row; neither mask
+/// holds a null.
 fn both(left: Option<BooleanArray>, right: Option<BooleanArray>) -> Option<BooleanArray> {
     match (left, right) {
-        (Some(left), Some(right)) => Some(
-            left.iter()
-                .zip(right.iter())
-                .map(|(left, right)| Some(left == Some(true) && right == Some(true)))
-                .collect(),
-        ),
+        (Some(left), Some(right)) => Some(BooleanArray::new(left.values() & right.values(), None)),
         (left, right) => left.or(right),
     }
 }
