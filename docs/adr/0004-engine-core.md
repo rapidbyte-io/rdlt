@@ -67,11 +67,11 @@ Building M2a surfaced decisions the spec leaves open or gets wrong.
 - **The lattice never rounds.** `Int64 ∨ Float` joins to `Json`: `Float64` holds integers exactly
   only up to 2^53. `Int8`, `Int16` and `Int32` still join floats as `Float64`.
 - **Tests fail instead of hanging.** Engine tests run on tokio's paused clock with time limits,
-  and mutation testing uses a nextest profile that terminates any test still running after ten
-  seconds, so a mutant that makes the engine spin fails its tests rather than timing out. The
-  simulation suite builds with a `sim` profile (optimised, without release's fat LTO and single
-  codegen unit, and with overflow checks and debug assertions kept);
-  [docs/perf/sim.md](../perf/sim.md) records how fast it runs.
+  and mutation testing uses a nextest profile whose time limits end a test still running long
+  past what it takes unmutated, so a mutant that makes the engine spin fails its tests rather
+  than timing out. The simulation suite builds with a `sim` profile (optimised, without
+  release's fat LTO and single codegen unit, and with overflow checks and debug assertions
+  kept); [docs/perf/sim.md](../perf/sim.md) records how fast it runs.
 - **Reports** add `peak_memory`, the most of the memory budget the run reserved at once across
   all its shares, so budget accounting is observable.
 - **Deferred:** the loom model of the memory budget (M9); the configuration size limit, which
