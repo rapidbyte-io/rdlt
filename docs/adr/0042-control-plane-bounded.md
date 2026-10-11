@@ -149,13 +149,14 @@ still taken largely on trust:
   it; otherwise each is the side's failure. A retention reset whose read loses its place again
   before sealing a row fails the attempt as retryable, so backoff and attempts bound it.
 - **The commit policy is due by rows a commit can take.** Rows of a partition that seals when a
-  barrier asks count until they are sealed, as only a barrier, raised by rows that are due, seals
-  them; but those a partition held when it did not answer a barrier within `barrier_wait` count
-  no more, so it is asked again only once it has written as much again, and a partition that
-  never answers makes no later event wait a barrier out. A barrier that stops waiting because a
-  cursor waits for room asks again those still owing: their answer may be that cursor. Rows of a partition that seals on its
-  own count until a commit passes them by, and again once sealed, so a partition that
-  checkpoints only at its end keeps no commit due.
+  barrier asks count from when they are written until they are sealed, as only a barrier,
+  raised by rows that are due, seals them; but those a partition held when it did not answer a
+  barrier within `barrier_wait` count no more, so it is asked again only once it has written as
+  much again, and a partition that never answers makes no later event wait a barrier out. A
+  barrier that stops waiting because a cursor waits for room asks again those still owing:
+  their answer may be that cursor. Rows of a partition that seals on its own count once sealed,
+  and only then, so a commit is due at the threshold of sealed rows, and a partition that
+  checkpoints only at its end makes no commit due before it.
 - **Machine strings and the protocol are the host's to check.** A code a connector's error
   carries must be `[a-z0-9_.-]`, within the code limit, and none of the host's own codes
   (`connector_lost`, `deadline_exceeded`, `tls`, `transport`); otherwise it is `invalid_code`.

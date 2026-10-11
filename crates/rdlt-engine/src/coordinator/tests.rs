@@ -675,6 +675,47 @@ async fn commits_follow_the_row_threshold_and_count_their_sequence() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_partition_that_seals_on_its_own_commits_once_its_seals_reach_the_threshold() {
+    let mut setup = Setup::new(
+        vec![stream(WriteMode::Append, None, 1)],
+        vec![partition("p0", false)],
+    );
+    setup.policy = CommitPolicy::new(None, Some(10), None).unwrap();
+    let (task, harness) = setup.start().await;
+    // Batches of four, each sealed: 8 sealed rows and 4 written make no commit due.
+    for segment in 1..=2 {
+        harness.send(Progress::Written {
+            partition: 0,
+            rows: 4,
+            bytes: 32,
+        });
+        harness.seal(
+            0,
+            segment,
+            4,
+            PartitionState::Cursor(cursor(segment * 4)),
+            None,
+        );
+    }
+    harness.send(Progress::Written {
+        partition: 0,
+        rows: 4,
+        bytes: 32,
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(harness.commit_count(), 0, "8 sealed rows are not 10");
+    harness.seal(0, 3, 4, PartitionState::Cursor(cursor(12)), None);
+    until(|| harness.commit_count() == 1).await;
+    assert_eq!(
+        harness.commits.lock()[0].segments.len(),
+        3,
+        "the commit took 12 rows"
+    );
+    harness.end(0, false);
+    ended(task).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn rows_a_partition_abandoned_make_no_commit_due() {
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
@@ -738,7 +779,7 @@ async fn rows_that_miss_a_commit_stay_due_until_they_seal() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn rows_a_commit_passed_by_unsealed_make_none_due_until_they_seal() {
+async fn rows_of_a_partition_that_seals_on_its_own_make_no_commit_due_until_sealed() {
     // p0 checkpoints only at its end; p1 answers every barrier.
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 2)],
@@ -754,9 +795,14 @@ async fn rows_a_commit_passed_by_unsealed_make_none_due_until_they_seal() {
         rows: 10,
         bytes: 80,
     });
-    assert_eq!(raised(&mut harness, "a barrier is raised").await, 1);
-    // p0's rows can make one commit due, which takes none of them. p1's rows after it each
-    // seal at once: they take a commit only once they reach the threshold.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        harness.barrier.borrow_and_update(),
+        0,
+        "p0's unsealed rows raise no barrier"
+    );
+    // p0's rows make no commit due. p1's rows after them each seal at once: they take a
+    // commit only once they reach the threshold.
     for segment in 1..=9 {
         tokio::time::sleep(Duration::from_secs(2)).await;
         harness.send(Progress::Written {
@@ -772,11 +818,7 @@ async fn rows_a_commit_passed_by_unsealed_make_none_due_until_they_seal() {
         0,
         "nine rows a commit can take are not ten"
     );
-    assert_eq!(
-        harness.barrier.borrow_and_update(),
-        1,
-        "no barrier since the first"
-    );
+    assert_eq!(harness.barrier.borrow_and_update(), 0, "no barrier");
     harness.send(Progress::Written {
         partition: 1,
         rows: 1,
@@ -1350,26 +1392,18 @@ async fn a_receipt_for_another_commit_fails_the_commit_before_the_log_settles_it
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_byte_threshold_commits_as_bytes_arrive() {
+async fn the_byte_threshold_commits_as_sealed_bytes_reach_it() {
     let mut setup = Setup::new(
         vec![stream(WriteMode::Append, None, 1)],
         vec![partition("p0", false)],
     );
     setup.policy = CommitPolicy::new(None, None, Some(100)).unwrap();
     let (task, harness) = setup.start().await;
-    harness.seal(0, 1, 1, PartitionState::Cursor(cursor(1)), None);
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 1,
-        bytes: 60,
-    });
+    // The harness's seals weigh 8 bytes a row.
+    harness.seal(0, 1, 7, PartitionState::Cursor(cursor(7)), None);
     tokio::time::sleep(Duration::from_secs(1)).await;
-    assert_eq!(harness.commit_count(), 0, "60 of 100 bytes");
-    harness.send(Progress::Written {
-        partition: 0,
-        rows: 1,
-        bytes: 40,
-    });
+    assert_eq!(harness.commit_count(), 0, "56 of 100 bytes");
+    harness.seal(0, 2, 6, PartitionState::Cursor(cursor(13)), None);
     until(|| harness.commit_count() == 1).await;
     harness.end(0, false);
     ended(task).await.unwrap();

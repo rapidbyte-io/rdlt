@@ -1,60 +1,35 @@
 use super::Due;
 
 #[test]
-fn rows_count_from_writing_to_their_commit_but_not_once_a_commit_passed_them_by() {
+fn rows_of_a_partition_that_seals_on_its_own_count_once_sealed() {
     let mut due = Due::default();
-    due.written(0, false, 4, 40);
-    due.written(1, false, 6, 60);
-    assert_eq!((due.rows(), due.bytes()), (10, 100));
-    due.sealed(1);
-    assert_eq!(
-        (due.rows(), due.bytes()),
-        (10, 100),
-        "sealed, they still count"
-    );
+    // p0 seals on its own: the coordinator tells only its seals.
+    due.sealed(0, 4, 40);
+    assert_eq!((due.rows(), due.bytes()), (4, 40));
     due.committing();
     assert_eq!(
         (due.rows(), due.bytes()),
         (0, 0),
-        "the seal went, p0's rows were passed by"
+        "the commit took the seal"
     );
-    due.written(0, false, 5, 50);
-    due.written(1, false, 3, 30);
-    assert_eq!(
-        (due.rows(), due.bytes()),
-        (3, 30),
-        "p0 stays passed by until it seals"
-    );
-    due.sealed(0);
-    assert_eq!((due.rows(), due.bytes()), (12, 120));
-    due.abandoned(1);
+    due.sealed(0, 6, 60);
+    due.sealed(0, 3, 30);
     assert_eq!((due.rows(), due.bytes()), (9, 90));
-    due.written(1, false, 2, 20);
-    assert_eq!((due.rows(), due.bytes()), (11, 110));
-    // A seal of nothing written since the last makes nothing more due.
-    due.sealed(2);
-    assert_eq!((due.rows(), due.bytes()), (11, 110));
 }
 
 #[test]
-fn rows_a_barrier_seals_count_until_they_are_sealed() {
+fn rows_a_barrier_seals_count_from_writing_until_sealed_once() {
     let mut due = Due::default();
-    due.written(0, true, 4, 40);
-    due.written(1, false, 6, 60);
+    due.written(0, 4, 40);
     due.committing();
     assert_eq!(
         (due.rows(), due.bytes()),
         (4, 40),
-        "a barrier seals p0's rows: they still count"
+        "a barrier seals them: they still count"
     );
-    due.written(0, true, 6, 60);
-    due.written(1, false, 1, 10);
-    assert_eq!(
-        (due.rows(), due.bytes()),
-        (10, 100),
-        "p1's rows were passed by"
-    );
-    due.sealed(0);
+    due.written(0, 6, 60);
+    assert_eq!((due.rows(), due.bytes()), (10, 100));
+    due.sealed(0, 10, 100);
     assert_eq!(
         (due.rows(), due.bytes()),
         (10, 100),
@@ -62,30 +37,33 @@ fn rows_a_barrier_seals_count_until_they_are_sealed() {
     );
     due.committing();
     assert_eq!((due.rows(), due.bytes()), (0, 0));
+    due.written(1, 5, 50);
     due.abandoned(1);
-    due.sealed(1);
     assert_eq!(
         (due.rows(), due.bytes()),
         (0, 0),
         "abandoned rows count no more"
     );
+    // A seal of nothing written makes nothing more due.
+    due.sealed(2, 0, 0);
+    assert_eq!((due.rows(), due.bytes()), (0, 0));
 }
 
 #[test]
-fn rows_a_partition_held_when_it_did_not_answer_count_no_more() {
+fn rows_a_partition_held_when_it_did_not_answer_count_no_more_until_sealed() {
     let mut due = Due::default();
-    due.written(0, true, 10, 100);
+    due.written(0, 10, 100);
     due.unanswered(0);
     assert_eq!((due.rows(), due.bytes()), (0, 0));
     due.committing();
     assert_eq!((due.rows(), due.bytes()), (0, 0), "nor after a commit");
-    due.written(0, true, 3, 30);
+    due.written(0, 3, 30);
     assert_eq!(
         (due.rows(), due.bytes()),
         (3, 30),
         "what it writes next counts"
     );
-    due.sealed(0);
+    due.sealed(0, 13, 130);
     assert_eq!(
         (due.rows(), due.bytes()),
         (13, 130),
@@ -93,4 +71,26 @@ fn rows_a_partition_held_when_it_did_not_answer_count_no_more() {
     );
     due.unanswered(1);
     assert_eq!((due.rows(), due.bytes()), (13, 130));
+}
+
+#[test]
+fn a_seal_takes_only_the_rows_it_seals_from_those_written() {
+    let mut due = Due::default();
+    // Rows of the next segment heard before the seal of its predecessor.
+    due.written(0, 4, 40);
+    due.written(0, 3, 30);
+    due.sealed(0, 4, 40);
+    assert_eq!(
+        (due.rows(), due.bytes()),
+        (7, 70),
+        "four sealed, three still written"
+    );
+    due.committing();
+    assert_eq!((due.rows(), due.bytes()), (3, 30));
+    due.sealed(0, 3, 30);
+    assert_eq!(
+        (due.rows(), due.bytes()),
+        (3, 30),
+        "the three sealed count once"
+    );
 }
