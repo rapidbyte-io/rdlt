@@ -16,7 +16,7 @@ use crate::network::{identity, listening, port};
 use crate::process::{example, local, scripted};
 
 /// Each requirement a reference may state beyond its id and version, on `reference`.
-fn requiring(reference: &ConnectorRef) -> [(&'static str, ConnectorRef); 6] {
+fn requiring(reference: &ConnectorRef) -> [(&'static str, ConnectorRef); 9] {
     let from = || reference.clone();
     [
         ("a path", from().path(example("scripted_connector"))),
@@ -25,6 +25,9 @@ fn requiring(reference: &ConnectorRef) -> [(&'static str, ConnectorRef); 6] {
         ("an isolation", from().isolation(Isolation::Process)),
         ("an isolation", from().isolation(Isolation::Sandbox)),
         ("an isolation", from().isolation(Isolation::Remote)),
+        ("grants", from().grant_read("/granted")),
+        ("grants", from().grant_write("/granted")),
+        ("grants", from().grant_network()),
     ]
 }
 

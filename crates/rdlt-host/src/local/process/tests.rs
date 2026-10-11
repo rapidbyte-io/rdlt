@@ -220,6 +220,28 @@ async fn a_panic_while_a_connector_is_launched_is_raised_where_it_was_asked_for(
     assert_eq!(stopping.await.expect("it returns"), Ok(()));
 }
 
+#[test]
+fn a_launch_whose_runtime_has_shut_down_is_refused_not_raised() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let launch = sleeper(directory.path());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a runtime");
+    let handle = runtime.handle().clone();
+    runtime.shutdown_background();
+    // The blocking task it is launched on is cancelled before it starts.
+    let launched = handle.block_on(Process::launching(launch, Redactions::new()));
+    let Err(refused) = launched else {
+        panic!("it was launched");
+    };
+    let (asked, unspawned) = *refused;
+    assert_eq!(
+        asked.id,
+        ConnectorId::parse("test.sleeper").expect("a valid id")
+    );
+    assert!(matches!(unspawned, Unspawned::Io(_)), "{unspawned}");
+}
+
 /// The `GLIBC_TUNABLES` a connector is started with, given the environment passed through.
 fn tunables(passed: &[(&str, &str)]) -> String {
     let mut env: Vec<(OsString, OsString)> = passed

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use rdlt_connector::BoxFuture;
@@ -100,6 +102,19 @@ async fn a_kill_lands_once_when_the_connection_it_awaits_ends_after_it() {
     assert_eq!(watched.read(&mut read).await.expect("the end, again"), 0);
     watched.write_all(b"d").await.expect_err("the peer is gone");
     assert_eq!(kills.landed(), 1, "a connection ends once");
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutting_down_a_watched_connection_ends_it_for_its_peer() {
+    let kills = Kills::new();
+    let (mut peer, stream) = tokio::io::duplex(64);
+    let mut watched = kills.watch(stream, kills.next());
+    watched.write_all(b"x").await.expect("it writes");
+    watched.shutdown().await.expect("it shuts down");
+    let mut read = Vec::new();
+    let ended = tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut read)).await;
+    assert_eq!(ended.expect("the peer sees the end").expect("it reads"), 1);
+    assert_eq!(read, b"x");
 }
 
 #[tokio::test]
