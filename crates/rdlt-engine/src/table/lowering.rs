@@ -83,6 +83,9 @@ pub(crate) struct LoweringPlan {
     routes: Vec<Route>,
     /// Where each of the view's columns takes its values from, in the view's order.
     sources: Vec<Source>,
+    /// Where each incoming column is written: the position of the table's column it goes to,
+    /// if any.
+    written: Vec<Option<usize>>,
     /// The incoming columns whose values the schema policy discards.
     discarded: Vec<usize>,
     /// The incoming columns of JSON whose values their own columns hold in part.
@@ -140,6 +143,7 @@ impl LoweringPlan {
             .iter()
             .map(|column| column.logical_type().clone())
             .collect();
+        let written = changes::written(&sources, incoming.schema.fields().len());
         Self {
             splits: Splits::of(&routes, &types),
             stream,
@@ -147,6 +151,7 @@ impl LoweringPlan {
             incoming,
             routes,
             sources,
+            written,
             discarded,
             constants: Mutex::new(None),
             policies: Vec::new(),
@@ -289,7 +294,7 @@ impl LoweringPlan {
         }
         let mut columns: Vec<ArrayRef> = vec![Arc::new(changes.op.clone())];
         if view.meta.history.is_none() {
-            columns.push(changes.unchanged_over(&self.written_ordinals()));
+            columns.push(changes.unchanged_over(&self.written));
         }
         columns
     }

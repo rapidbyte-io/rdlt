@@ -162,6 +162,7 @@ fn a_change_flagging_its_key_unchanged_is_refused_before_any_destination_sees_it
         op: Int8Array::from(vec![ChangeOp::Update.code(); 2]),
         seq: BinaryArray::from_iter_values([[0_u8; 16], [1_u8; 16]]),
         unchanged: Some(BinaryArray::from(flags)),
+        ordinals: Arc::from([Some(0), Some(1)]),
     };
     // Bit 0 is `id`, the key; bit 1 is `v`.
     let key = changes(vec![None, Some(&[0b01])]);
@@ -358,6 +359,7 @@ fn a_key_holding_nan_is_refused_in_the_fixed_size_list_row_or_map_that_names_it(
         op: Int8Array::from(vec![ChangeOp::Insert.code(), ChangeOp::Truncate.code()]),
         seq: BinaryArray::from_iter_values([[0_u8; 16], [1_u8; 16]]),
         unchanged: None,
+        ordinals: Arc::from([Some(0), Some(1)]),
     };
     assert_eq!(refusal(&keyed(fixed(second())), Some(&truncated)), None);
     let mut map = arrow_array::builder::MapBuilder::new(
