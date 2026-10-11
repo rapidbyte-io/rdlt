@@ -2175,3 +2175,42 @@ fn a_soft_delete_is_stamped_exactly_before_the_epoch_and_refused_beyond() {
     };
     assert_eq!(deleted_at(&beyond).unwrap_err().kind(), ErrorKind::Internal);
 }
+
+/// Bytes render as lower-case hex and UUIDs hyphenated, in text and in JSON, every byte value
+/// at every position.
+#[test]
+fn bytes_and_uuids_render_as_lower_case_hex() {
+    use super::convert::text;
+    use arrow_array::BinaryArray;
+    use std::fmt::Write as _;
+    let every: Vec<u8> = (0..=255).collect();
+    let mut expected = String::new();
+    for byte in &every {
+        write!(expected, "{byte:02x}").unwrap();
+    }
+    let bytes: ArrayRef = Arc::new(BinaryArray::from(vec![Some(every.as_slice()), None]));
+    let rendered = text(&bytes, &LogicalType::Binary).unwrap();
+    assert_eq!(rendered.as_string::<i32>().value(0), expected);
+    assert!(rendered.is_null(1));
+    let uuid: [u8; 16] = [
+        0x00, 0x1f, 0xa0, 0xff, 0x10, 0x01, 0x7e, 0x80, 0x09, 0x90, 0xab, 0xcd, 0xef, 0x12, 0x34,
+        0x56,
+    ];
+    let uuids: ArrayRef =
+        Arc::new(FixedSizeBinaryArray::try_from_iter([uuid].into_iter()).unwrap());
+    let hyphenated = "001fa0ff-1001-7e80-0990-abcdef123456";
+    let rendered = text(&uuids, &LogicalType::Uuid).unwrap();
+    assert_eq!(rendered.as_string::<i32>().value(0), hyphenated);
+    let list = LogicalType::List(Box::new(Field::new("item", LogicalType::Uuid, true)));
+    let items: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(Field::new("item", LogicalType::Uuid, true).to_arrow()),
+        arrow_buffer::OffsetBuffer::from_lengths([1]),
+        uuids,
+        None,
+    ));
+    let encoded = json(&items, &list).unwrap();
+    assert_eq!(
+        encoded.as_string::<i32>().value(0),
+        format!("[\"{hyphenated}\"]")
+    );
+}

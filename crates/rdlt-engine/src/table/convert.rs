@@ -9,7 +9,6 @@ mod encoders;
 mod hidden;
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use arrow_array::builder::StringBuilder;
@@ -319,16 +318,19 @@ pub(crate) fn text(array: &ArrayRef, logical: &LogicalType) -> Result<ArrayRef, 
             let array = normalize(array, logical)?;
             let mut builder =
                 StringBuilder::with_capacity(array.len(), text_capacity(&array, false));
+            let mut value = String::new();
             for row in 0..array.len() {
                 if array.is_null(row) {
                     builder.append_null();
-                } else {
-                    let bytes = match logical {
-                        LogicalType::Uuid => array.as_fixed_size_binary().value(row),
-                        _ => array.as_binary::<i32>().value(row),
-                    };
-                    builder.append_value(render_bytes(bytes, *logical == LogicalType::Uuid));
+                    continue;
                 }
+                let bytes = match logical {
+                    LogicalType::Uuid => array.as_fixed_size_binary().value(row),
+                    _ => array.as_binary::<i32>().value(row),
+                };
+                value.clear();
+                hex(bytes, *logical == LogicalType::Uuid, &mut value);
+                builder.append_value(&value);
             }
             Ok(Arc::new(builder.finish()))
         }
@@ -371,14 +373,14 @@ pub(super) fn text_capacity(array: &ArrayRef, json: bool) -> usize {
     usize::try_from(bytes).unwrap_or(0)
 }
 
-/// `bytes` in lower-case hex; a UUID's 16 bytes in its hyphenated form.
-pub(super) fn render_bytes(bytes: &[u8], uuid: bool) -> String {
-    let mut rendered = String::with_capacity(bytes.len() * 2 + 4);
+/// Appends `bytes` in lower-case hex to `out`; a UUID's 16 bytes in its hyphenated form.
+pub(super) fn hex(bytes: &[u8], uuid: bool, out: &mut String) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     for (index, byte) in bytes.iter().enumerate() {
         if uuid && matches!(index, 4 | 6 | 8 | 10) {
-            rendered.push('-');
+            out.push('-');
         }
-        write!(rendered, "{byte:02x}").expect("writing to a string cannot fail");
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
-    rendered
 }
