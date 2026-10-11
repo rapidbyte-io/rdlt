@@ -47,7 +47,7 @@ impl LoweringPlan {
                 Check::Refused(rows) => unheld.push((*index, rows)),
             }
         }
-        if let Some(index) = self.change_time().filter(|index| following(*index))
+        if let Some(index) = self.change_time.filter(|index| following(*index))
             && let Some(rows) = unbegun(batch.column(index))?
         {
             // A value refused on both counts is one value its column cannot hold.
@@ -63,17 +63,10 @@ impl LoweringPlan {
         Ok(checked)
     }
 
-    /// The incoming column holding a history table's change times, where it has one.
-    pub(super) fn change_time(&self) -> Option<usize> {
-        let column = self.view.meta.history.as_ref()?.change_time.as_deref()?;
-        let fields = self.incoming.schema.fields();
-        fields.iter().position(|field| field.name() == column)
-    }
-
     /// Whether a change time a version cannot begin at is the batch's to refuse: unless the
     /// change time's schema policy discards it.
     pub(super) fn change_time_policy(&self) -> SchemaPolicy {
-        self.change_time()
+        self.change_time
             .and_then(|index| self.policies.get(index).copied())
             .unwrap_or_default()
     }

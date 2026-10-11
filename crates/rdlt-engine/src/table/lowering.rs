@@ -74,7 +74,8 @@ enum Source {
     Nulls,
 }
 
-/// How batches of `incoming` become rows of `view`'s table, worked out once.
+/// How batches of `incoming` become rows of `view`'s table, worked out once: where each column
+/// goes, what each policy decides, and where change flags and change times sit.
 #[derive(Debug)]
 pub(crate) struct LoweringPlan {
     stream: StreamName,
@@ -86,6 +87,9 @@ pub(crate) struct LoweringPlan {
     /// Where each incoming column is written: the position of the table's column it goes to,
     /// if any.
     written: Vec<Option<usize>>,
+    /// The incoming column holding a history table's change times, where the table names one
+    /// and the batches carry it.
+    change_time: Option<usize>,
     /// The incoming columns whose values the schema policy discards.
     discarded: Vec<usize>,
     /// The incoming columns of JSON whose values their own columns hold in part.
@@ -144,6 +148,7 @@ impl LoweringPlan {
             .map(|column| column.logical_type().clone())
             .collect();
         let written = changes::written(&sources, incoming.schema.fields().len());
+        let change_time = history::change_time(&view, &incoming);
         Self {
             splits: Splits::of(&routes, &types),
             stream,
@@ -152,6 +157,7 @@ impl LoweringPlan {
             routes,
             sources,
             written,
+            change_time,
             discarded,
             constants: Mutex::new(None),
             policies: Vec::new(),
