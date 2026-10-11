@@ -7,7 +7,7 @@ Status: accepted, 2026-09-30.
 Spec §15.6 makes a load keep a write-ahead log when a stream's source cannot read again what it
 acknowledged, as a message queue that forgets what its consumer committed cannot: the engine
 acknowledges such a source before the destination commits, so the log is the only copy of those
-rows until the commit lands. Until M5c the engine had no log, and a source had to be replayable.
+rows until the commit lands. Without the log, a source would have to be replayable.
 
 A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object storage
 (`ObjectStoreWal`, ADR 0051).
@@ -18,20 +18,17 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
   selected stream's source declares `replayable: false`; the log's store comes from the
   environment (`Env::wal`, `SystemEnv::with_wal`). Without a store, a stream that cannot read again
   is refused as `wal_required`, and a pipeline asking for a log as `wal_store_missing`. Such a
-  stream is read incrementally: a full read starts again from the beginning, which its source no
-  longer holds (`full_read_unreplayable`), and a change stream's phases drop the positions replay
-  goes by (`change_read_unreplayable`; M5d's streaming sources take this up). Amended 2026-09-30:
-  ADR 0034 logs phase transitions and lifts `change_read_unreplayable`, so such a stream is read
-  incrementally or as changes.
+  stream is read incrementally, or as changes whose phase transitions the log records
+  (ADR 0034); a full read starts again from the beginning, which its source has dropped, so it
+  is refused (`full_read_unreplayable`).
 - **Source contract.** A source that cannot read again serves each row to at most one reader: two
   loads of one pipeline must not both be served, and acknowledged for, the same rows, which no
   log could tell apart (`StreamSpec::with_replayable` says so).
 - **Store.** `WalStore` keeps each load's log as numbered chunks, and `LocalWal` keeps them in a
-  local directory: `<base>/<sanitized pipeline>-<hash8>/<load>/<chunk:08>.wal`, directories created
-  0700 and refused where another user owns them. The embedder chooses the base. Amended
-  2026-10-03 (ADR 0045): a chunk is staged and published whole where its name is free, as an
-  object store would; the pipeline's directory is `p.<id>` or `x.<base32 of the id>`, and every
-  directory and file beneath the base must be the user's alone, checked at every open.
+  local directory: `<base>/<pipeline>/<load>/<chunk:08>.wal`, the pipeline's directory being
+  `p.<id>` or `x.<base32 of the id>`. The embedder chooses the base. A chunk is staged and
+  published whole where its name is free, as an object store would, and every directory and file
+  beneath the base must be the user's alone, checked at every open (ADR 0045).
 - **Frames** are spec §15.6's, `[kind u8][len u32 LE][crc32c u32 LE][payload]`: metadata as JSON,
   a batch as a JSON header then its Arrow data in the wire's framing (`rdlt_wire::codec`), whose
   decoder checks each message against its body and contains Arrow's panics. A raw Arrow reader
@@ -46,30 +43,25 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
     what the load meant to;
   - a `closed` frame ends a log whose load stopped appending.
 - **Writer.** One task per load appends frames in the order they are sent, through a bounded
-  channel; each batch frame's bytes are charged to the memory budget until appended. (ADR 0039
-  charges seal and commit frames too; a frame holds a state value as the JSON it is.) A commit's
-  frame is appended, made durable, then answered, and the log moves to a new chunk; a chunk goes
-  once every segment and commit in it has a receipt. Every chunk starts with the header and the
-  schema frames its batches name, so it reads alone. Amended 2026-10-03 (ADR 0041): segments still
-  open are carried out of chunks whose other segments settled, and a version's schema frame is
-  forgotten once no batch of it can come. After a failed append or sync every later command fails:
-  what the chunk holds is unknown. Amended 2026-10-03 (ADR 0045): what was logged since the previous
-  commit, the commit's frame and an `End` naming the chunks still needed are published as one chunk
-  at the commit, and a receipt is recorded in the next chunk's `End`.
+  channel; each batch, seal, commit and table frame's bytes are charged to the memory budget
+  until appended (ADR 0039). What was logged since the previous commit, the commit's frame and
+  an `End` naming the chunks still needed are published as one chunk at the commit, then the
+  commit is answered, and a receipt is recorded in the next chunk's `End` (ADR 0045); a chunk
+  goes once every segment and commit in it has a receipt. Every chunk starts with the header and
+  the schema frames its batches name, so it reads alone. Segments still open are carried out of
+  chunks whose other segments settled, and a version's schema frame is forgotten once no batch
+  of it can come (ADR 0041). After a failed append or publish every later command fails: what
+  the chunk holds is unknown.
 - **Order.** A batch's frame is queued before its partition can seal its segment, and a commit's
   frame is queued after the seals it takes; the channel keeps their order, so a commit's frame
   follows every batch of its segments. A test runs a whole load on a slow disk and checks it.
 - **Acknowledgement.** A source that cannot read again is acknowledged once the commit frame
-  covering its segments is durable, before the destination commits; the others after the receipt,
-  as before.
-- **Claims.** A log has one claimant at a time: its load, which claims it before anything of it
-  exists and holds it while writing, then whoever replays it once that load is gone.
-  `LocalWal` locks a file beside the load's directory (`std::fs::File::try_lock`, which a process's
-  death releases). The lock is advisory, and unreliable on network filesystems: the directory is a
-  local one. Amended 2026-10-03 (ADR 0045): claims are gone; a replay fences a log by publishing
-  its next chunk, which a load still running then finds taken.
-- **Replay.** Before each attempt opens, in a session of its own, every log the attempt can claim
-  is read (one frame in memory at a time, each chunk up to its first torn frame), and each commit
+  covering its segments is durable, before the destination commits; the others after the receipt.
+- **Fences.** A replay takes a log over by publishing its next chunk, a fence, which a load still
+  running then finds taken and fails as `wal_fenced` before it answers its commit (ADR 0045).
+- **Replay.** Before each attempt opens, in a session of its own, every log of its
+  pipeline the attempt lists is read (one frame in memory at a time, the highest chunk and the
+  chunks its `End` names, ADR 0045), and each commit
   without a receipt is committed again under its original `(load_id, commit_seq)`:
   - where the destination stands exactly where the load left it (its last receipt is the load's
     previous commit, or what the load opened on), the whole commit applies;
@@ -80,29 +72,27 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
     to the next load: its positions cannot tell whether its segments landed, as a completed full
     read leaves every partition without one. Positions of a stream that cannot read again only move
     forward, since its full reads are refused, but for a change stream's phase transitions, which
-    ADR 0034 logs and replays (amended 2026-09-30);
+    ADR 0034 logs and replays;
   - the staged segments' batch frames are written again through writers of the logged tables,
-    created first, each segment's in the order its batches were logged, and the log is removed
-    (amended 2026-10-03: a batch frame carries its ordinal among the load's batches, ADR 0041).
+    created first, each segment's in the order its batches were logged, each batch frame carrying
+    its ordinal among the load's batches (ADR 0041), and the log is removed.
 - **The simulation** keeps logs in a store of the world that outlives runs; a run's crash keeps
-  what its worker's logs made durable and a drawn part of the rest, torn or garbled, and leaves
-  other pipelines' logs to their own workers (seed 7331 found a crash tearing another's live log). A swarm feature, drawn apart
-  from the seed's generator, has the pipelines log and every other incremental stream forget what it
-  acknowledged: a read from before it fails, retryably, until the rows land. A phase converges only
-  once no log is left to replay, and then every offset such a stream acknowledged is committed.
+  every chunk its worker's logs published and loses what they staged, and leaves other
+  pipelines' logs to their own workers (seed 7331 found a crash tearing another's live log). A
+  swarm feature, drawn apart from the seed's generator, has the pipelines log and every other
+  incremental stream forget what it acknowledged: a read from before it fails, retryably, until
+  the rows land. A phase converges only once no log is left to replay, and then every offset such
+  a stream acknowledged is committed.
   Seed 8746 found the phase ending with a failed load's log of a new full read, which the next
   phase replayed as the rows the load had read. So the simulation never replays a log across a
   phase's end, where the source's rows change. With replay disabled, seed 61
   fails: its rows were only in the log.
 - **Fuzzing.** `wal_log` reads any bytes, and valid logs cut and garbled, their checksums
   rewritten or not, as replay does.
-- **Damage.** Only a log's last chunk can end torn: every other ends with a commit's frame, made
-  durable, so a chunk before the last that ends early or garbled makes the log unreadable rather
-  than losing the commits past the damage. A load that claimed its log and failed before its first
-  frame leaves only the claim's mark, which replay lists and removes. Amended 2026-10-03
-  (ADR 0045): no chunk is ever torn, being published whole, so any damage, and any chunk the
-  highest one names that is missing, makes the log unreadable; a logged commit is replayed only
-  whole and only as the engine writes one, and what replay stages is charged to the budget.
+- **Damage.** A chunk is published whole, so none is ever torn: any damage, and any chunk the
+  highest one names that is missing, makes the log unreadable (`wal_unreadable`). A logged commit
+  is replayed only whole and only as the engine writes one, and what replay stages is charged to
+  the budget (ADR 0045).
 
 ## Deviations from spec §15.6
 
@@ -113,9 +103,9 @@ A load's log is kept in a `WalStore`: a local directory (`LocalWal`) or object s
   that includes the replayed commits. Both opens discard unpublished staging.
 - **A partition moved by a newer load is left to it** (the seal rule above): a fenced load's frame
   must not publish rows the load that fenced it committed.
-- **A crashed load's log is replayed by the next attempt that can claim it**, not only by its own
-  load; logs are chunked, and committed chunks removed as the load goes, so a continuous run's log
-  stays small.
+- **A crashed load's log is replayed by the next attempt of its pipeline, which fences it
+  first**, not only by its own load; logs are chunked, and committed chunks removed as the load
+  goes, so a continuous run's log stays small.
 
 ## Consequences
 
