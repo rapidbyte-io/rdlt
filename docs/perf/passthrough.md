@@ -114,8 +114,9 @@ more. The run report's counters, medians over 195 runs:
 | Pool jobs; queued and running, summed | 128; 1.01 and 1.43 ms |
 | Budget waits | one, of the intake share, 0.29 ms |
 
-The lane writes for 95 % of the run while the partition waits more than half of it for room in the
-lane's queue, so the run is the lane's writes plus what keeps the lane from writing. The commit's
+The lane writes for 95 % of the run, and for more than half of it the partition waits, at the same
+time, for room in the lane's queue: the two overlap rather than add, and the run is the lane's
+writes plus what keeps the lane from writing. The commit's
 flush phase is mostly the lane finishing the writes queued before it.
 
 Run times against the batches a run moves split the overhead into a part each run pays once and
