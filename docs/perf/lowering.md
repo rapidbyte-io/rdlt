@@ -44,6 +44,17 @@ than 8 KiB. Every mode is within its charge: the highest peaks are a merge with 
 text, 0.86 of its charge, and a merge of unique keys into text, 0.71; history and changes into text
 reach 0.59 and 0.55 (measured at 2 048, 16 384 and 65 536 rows alike). No cost term is missing.
 
+## Text builders
+
+Each text builder reserves the most the cost model says its text takes. Measured on `append_text`
+(65 536 rows), the text columns' buffers held 19 924 527 bytes, and 11 603 809 (0.58 of it) once
+each builder gave back what its text did not take. The builders keep it nonetheless: giving it back
+reallocates the buffer, which holds the reservation and the text at once, and the cost tests then
+fail where a lowering's heap peak passes its charge: a dictionary-encoded timestamp lowered into
+JSON allocated 221 791 bytes for 180 224 charged (1.23), and a run-end-encoded struct 1 538 159 for
+1 435 648 (1.07). Rows a second were not timed. Sizing each builder exactly by rendering twice is
+not built: rendering is what these cases spend.
+
 ## Results
 
 Intel Core Ultra X7 358H, mains power, 2026-10-11, commit `57d5f5066dc8`, governor `powersave`

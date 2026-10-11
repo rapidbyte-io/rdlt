@@ -277,7 +277,7 @@ budget before it is held, or bounded by a limit with a typed refusal.
   has (decoding, the plain type, conversion, text, JSON text, listing) makes no more than the
   batch expands to. What a consumer makes is measured by the rows of its output, or by the
   allocations it does not share with its input where those are fewer: a builder's spare capacity
-  is the overdraft ADR 0024 documents.
+  is held, and charged by the capacity of its buffers, until the piece is written.
 - **Admission takes the event.** `Admission::admit` is given the event, and the engine costs it:
   a push by what it keeps alive, a checkpoint by its cursor's bytes.
 - **A unit's pieces share what is charged.** A piece lowered from a unit is charged for the
