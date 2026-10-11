@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch};
+use arrow_buffer::BooleanBufferBuilder;
 use arrow_schema::{ArrowError, Schema};
 
 use super::{LoweringPlan, Source};
@@ -147,8 +148,11 @@ fn either(one: &BooleanArray, other: &BooleanArray) -> BooleanArray {
         .collect()
 }
 
-/// `array`, of `from`, as a column of `to` holds it, or the rows it cannot hold: those whose
-/// conversion alone is refused.
+/// `array`, of `from`, as a column of `to` holds it, or the rows it cannot hold: found by
+/// converting halves of it, and the halves of a half that fails, down to a row alone.
+///
+/// Every check a conversion makes is of each row, so a half fails when a row of it does, and a
+/// conversion refused by no row alone leaves every row unmarked.
 pub(crate) fn refused(
     array: &ArrayRef,
     from: &rdlt_connector::LogicalType,
@@ -158,10 +162,26 @@ pub(crate) fn refused(
         return Ok(Check::Converted(converted));
     }
     let array = decoded(array)?;
-    let rows: BooleanArray = (0..array.len())
-        .map(|row| Some(array.is_valid(row) && convert(&array.slice(row, 1), from, to).is_err()))
-        .collect();
-    Ok(Check::Refused(rows))
+    let mut rows = BooleanBufferBuilder::new(array.len());
+    rows.append_n(array.len(), false);
+    // Ranges of rows whose conversion failed, each `(offset, length)`.
+    let mut failed = vec![(0, array.len())];
+    while let Some((offset, length)) = failed.pop() {
+        if length < 2 {
+            if length == 1 && array.is_valid(offset) {
+                rows.set_bit(offset, true);
+            }
+            continue;
+        }
+        let half = length / 2;
+        for (start, length) in [(offset, half), (offset + half, length - half)] {
+            // What a half converts to is dropped at once, so one half is held at a time.
+            if convert(&array.slice(start, length), from, to).is_err() {
+                failed.push((start, length));
+            }
+        }
+    }
+    Ok(Check::Refused(BooleanArray::new(rows.finish(), None)))
 }
 
 /// Which rows of `times`, a change time, no version can begin at: a null, or a time an `i64` of

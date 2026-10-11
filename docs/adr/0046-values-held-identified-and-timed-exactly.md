@@ -95,11 +95,12 @@ trusted them in ways that broke data quietly or failed whole streams on one row:
   typed error as before (`value_unrepresentable`, `change_time_invalid`, `change_time_null`);
   DiscardRow drops the row, its child rows with it in a normalized stream; DiscardValue nulls
   the value, and a version whose change time it nulls begins when its batch arrived. Each is
-  counted, a value refused on two counts once. A value is found refused by converting its row
-  alone, once its batch's conversion failed, in a column whose policy discards; a column whose
-  every value converts is converted once, and lowered as the check converted it. What a null
-  row of a struct or a list holds beneath it is no value: decoding nulls or drops it before
-  anything converts, checks or counts it.
+  counted, a value refused on two counts once. A value is found refused by converting halves of
+  its column, and the halves of a half that fails, down to its row alone, once its batch's
+  conversion failed, in a column whose policy discards; a column whose every value converts is
+  converted once, and lowered as the check converted it. What a null row of a struct or a list
+  holds beneath it is no value: decoding nulls or drops it before anything converts, checks or
+  counts it.
 - **A version never ends before it begins.** A history destination begins a version when its
   change says, or at the latest instant its key's versions already hold where that is later: the
   latest start or end of the key's versions in the table, and of the versions the commit opened

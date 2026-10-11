@@ -9,9 +9,9 @@ use arrow_array::{
     Array, ArrayRef, BinaryArray, BinaryViewArray, BooleanArray, DictionaryArray,
     FixedSizeBinaryArray, FixedSizeListArray, Int8Array, Int32Array, Int64Array, LargeBinaryArray,
     LargeStringArray, ListArray, ListViewArray, MapArray, NullArray, RecordBatch, RunArray,
-    StringArray, StringViewArray, StructArray,
+    StringArray, StringViewArray, StructArray, TimestampSecondArray,
 };
-use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_schema::{DataType, Field as ArrowField, Fields, TimeUnit as U};
 use rdlt_connector::cost::{Rendering, Stored};
 use rdlt_connector::{DecimalType, Field, LogicalType, TimeUnit};
@@ -613,7 +613,7 @@ fn a_run_end_encoded_field_under_a_nullable_object_splits_within_what_is_reserve
     for values in [Arc::new(runs) as ArrayRef, Arc::new(sliced) as ArrayRef] {
         let field = ArrowField::new("r", values.data_type().clone(), true);
         let valid: Vec<bool> = (0..ROWS).map(|row| row % 2 == 0).collect();
-        let nulls = arrow_buffer::NullBuffer::from(valid);
+        let nulls = NullBuffer::from(valid);
         let fields = Fields::from(vec![field]);
         let object = StructArray::try_new(fields, vec![values], Some(nulls)).unwrap();
         let batch = RecordBatch::try_from_iter([("s", Arc::new(object) as ArrayRef)]).unwrap();
@@ -753,8 +753,9 @@ fn unholdable() -> Vec<(ArrayRef, LogicalType, LogicalType)> {
     ]
 }
 
-/// Finding the values a column cannot hold row by row, and nulling them, holds marks of a bit a
-/// row and shares the column's values: the column's charge covers it, in every encoding.
+/// Finding the values a column cannot hold by converting halves of it, and nulling them, holds
+/// marks of a bit a row and one half converted at a time: the column's charge covers it, in
+/// every encoding.
 #[test]
 fn a_column_discarded_value_by_value_allocates_no_more_than_its_charge() {
     use crate::table::{Check, nulled_at, refused};
@@ -785,4 +786,114 @@ fn a_column_discarded_value_by_value_allocates_no_more_than_its_charge() {
         }
     }
     assert!(measured >= 3, "{measured}");
+}
+
+/// Instants in seconds: those of `bad` rows beyond what a nanosecond holds, every fifth row null
+/// over such a value, the rest near.
+fn instants(bad: &[usize]) -> ArrayRef {
+    let values: Vec<i64> = (0..ROWS)
+        .map(|row| {
+            if bad.contains(&row) || row % 5 == 4 {
+                i64::MAX
+            } else {
+                7
+            }
+        })
+        .collect();
+    let nulls = NullBuffer::from_iter((0..ROWS).map(|row| row % 5 != 4));
+    Arc::new(TimestampSecondArray::new(values.into(), Some(nulls)))
+}
+
+/// The rows a column cannot hold are found by converting halves of it, down to a row alone, and
+/// only halves holding one: a bad value in `n` rows takes two conversions a level, and the whole
+/// search fewer than two conversions a row.
+#[test]
+fn rows_a_column_cannot_hold_are_found_by_halving_in_every_encoding() {
+    use crate::table::convert::CONVERSIONS;
+    use crate::table::{Check, refused};
+    let seconds = LogicalType::Timestamp(TimeUnit::Second, None);
+    let nanos = LogicalType::Timestamp(TimeUnit::Nanosecond, None);
+    let block: Vec<usize> = (300..340).filter(|row| row % 5 != 4).collect();
+    let every: Vec<usize> = (0..ROWS).filter(|row| row % 5 != 4).collect();
+    let patterns: [&[usize]; 6] = [&[], &[0], &[ROWS - 1], &[1000, 1001], &block, &every];
+    let depth = usize::try_from(ROWS.next_power_of_two().trailing_zeros()).unwrap();
+    for bad in patterns {
+        for encoded in encodings(&instants(bad)) {
+            let kind = encoded.data_type().clone();
+            // A dictionary's keys name the values last first.
+            let reversed = matches!(kind, DataType::Dictionary(..));
+            let expected: Vec<bool> = (0..ROWS)
+                .map(|row| bad.contains(&if reversed { ROWS - 1 - row } else { row }))
+                .collect();
+            CONVERSIONS.with(|conversions| conversions.set(0));
+            let check = refused(&encoded, &seconds, &nanos).unwrap();
+            let conversions = CONVERSIONS.with(std::cell::Cell::get);
+            match check {
+                Check::Converted(_) => {
+                    assert!(bad.is_empty(), "{kind}: converted with bad rows");
+                    assert_eq!(conversions, 1, "{kind}");
+                }
+                Check::Refused(rows) => {
+                    assert_eq!(rows.null_count(), 0, "{kind}");
+                    let found: Vec<bool> = rows.values().iter().take(ROWS).collect();
+                    assert_eq!(found, expected, "{kind}: {} bad rows", bad.len());
+                    assert!(conversions < 2 * ROWS, "{kind}: {conversions} conversions");
+                    assert!(
+                        conversions <= 1 + 2 * bad.len() * depth,
+                        "{kind}: {conversions} conversions for {} bad rows",
+                        bad.len()
+                    );
+                    if bad.len() == 1 {
+                        assert!(conversions <= 2 * depth + 2, "{kind}: {conversions}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A column of no rows whose conversion is refused has no row to refuse it: the search ends with
+/// no row marked.
+#[test]
+fn an_empty_column_whose_conversion_fails_is_searched_to_no_rows() {
+    use crate::table::{Check, refused};
+    let from = LogicalType::Bool;
+    let to = LogicalType::Timestamp(TimeUnit::Second, None);
+    let empty: ArrayRef = Arc::new(BooleanArray::from(Vec::<bool>::new()));
+    assert!(
+        convert(&empty, &from, &to).is_err(),
+        "the conversion is refused whatever the rows"
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a search that never ends can only be bounded from another thread"
+    )]
+    let _search = std::thread::spawn(move || {
+        let found = refused(&empty, &from, &to).map(|check| match check {
+            Check::Refused(rows) => Some((rows.len(), rows.null_count())),
+            Check::Converted(_) => None,
+        });
+        sender.send(found).ok();
+    });
+    let searched = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the search ends");
+    assert_eq!(searched.unwrap(), Some((0, 0)));
+}
+
+/// A column whose conversion fails whatever its values has its valid rows refused and its null
+/// rows not: a null holds no value its column cannot hold.
+#[test]
+fn a_null_row_of_a_column_refused_whatever_its_values_is_not_marked() {
+    use crate::table::{Check, refused};
+    let from = LogicalType::Bool;
+    let to = LogicalType::Timestamp(TimeUnit::Second, None);
+    let flags: ArrayRef = Arc::new(BooleanArray::from(vec![Some(true), None]));
+    let Check::Refused(rows) = refused(&flags, &from, &to).unwrap() else {
+        panic!("no boolean converts to an instant");
+    };
+    assert_eq!(rows.null_count(), 0);
+    let marked: Vec<bool> = rows.values().iter().take(2).collect();
+    assert_eq!(marked, [true, false]);
 }
