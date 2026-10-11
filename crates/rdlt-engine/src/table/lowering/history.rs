@@ -19,8 +19,10 @@ use super::{ChangeRows, LoweringPlan, Source, Stamp, lower_array};
 use crate::error::Error;
 use crate::normalize::identity::{unread, version_hashes};
 use crate::policy::SchemaPolicy;
+use crate::table::TableView;
 use crate::table::convert::decoded;
 use crate::table::lower::loaded_at_type;
+use crate::table::resolve::Incoming;
 use crate::table::temporal;
 
 impl LoweringPlan {
@@ -44,18 +46,17 @@ impl LoweringPlan {
                 "stream {stream}: lowering history columns: {error}"
             ))
         };
-        let data = self
-            .data(batch.num_rows(), held, names.change_time.as_deref())
-            .map_err(failed)?;
-        let from = match &names.change_time {
-            Some(column) => Some(batch.column_by_name(column).ok_or_else(|| {
-                Error::schema(format!(
+        let data = self.data(batch.num_rows(), held).map_err(failed)?;
+        let from = match (&names.change_time, self.change_time) {
+            (Some(_), Some(index)) => Some(batch.column(index)),
+            (Some(column), None) => {
+                return Err(Error::schema(format!(
                     "stream {stream}: a batch has no change time {column}"
                 ))
                 .with_code("change_time_missing")
-                .with_stream(stream)
-            })?),
-            None => None,
+                .with_stream(stream));
+            }
+            (None, _) => None,
         };
         let deleting = |row: usize| {
             changes.is_some_and(|changes| {
@@ -96,22 +97,15 @@ impl LoweringPlan {
     }
 
     /// The rows' data columns, from `held`, as the model's types hold them, as a batch of `rows`
-    /// rows, without the column the stream's `change_time` fills: when a change happened is not
+    /// rows, without the column the stream's change time fills: when a change happened is not
     /// what it changed.
     fn data(
         &self,
         rows: usize,
         held: &[ArrayRef],
-        change_time: Option<&str>,
     ) -> Result<RecordBatch, arrow_schema::ArrowError> {
         let timed = |source: &Source| match source {
-            Source::Incoming(index, _) => self
-                .incoming
-                .schema
-                .fields()
-                .iter()
-                .nth(*index)
-                .is_some_and(|field| Some(field.name()) == change_time),
+            Source::Incoming(index, _) => Some(*index) == self.change_time,
             Source::Read(_) | Source::Rest(_) | Source::Nulls => false,
         };
         // Each column keeps its type's metadata, which says, for one, that its text is JSON.
@@ -137,6 +131,17 @@ impl LoweringPlan {
         let schema = Arc::new(arrow_schema::Schema::new(fields));
         RecordBatch::try_new_with_options(schema, arrays, &options)
     }
+}
+
+/// The incoming column holding the change times of `view`'s history table, by its position
+/// among `incoming`'s columns, where the table names a change time and the batches carry it.
+pub(super) fn change_time(view: &TableView, incoming: &Incoming) -> Option<usize> {
+    let column = view.meta.history.as_ref()?.change_time.as_deref()?;
+    incoming
+        .schema
+        .fields()
+        .iter()
+        .position(|field| field.name() == column)
 }
 
 /// The history columns of rows holding `data`, the table's data columns as stored: when each
