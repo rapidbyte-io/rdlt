@@ -54,6 +54,35 @@ async fn a_lock_another_holds_is_waited_for_a_bounded_time() {
         .expect("the lock is free again");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lock_held_briefly_is_waited_for_where_no_wait_is_configured() {
+    let root = crate::fixtures::tempdir().unwrap();
+    let destination = connect(root.path(), "jsonl").await;
+    let mut opened = open(destination.as_ref(), 1).await;
+    let (schema, batch) = ids(&[1]);
+    let orders = table("orders");
+    stage(&mut opened, &orders, &schema, batch, 1).await;
+    let path = root.path().join("_rdlt").join("locks").join("orders");
+    let holder = std::fs::File::open(&path).expect("the lock file opens");
+    holder.lock().expect("the lock is free");
+    // Released long before the 30 seconds a destination waits where its configuration names
+    // no wait.
+    let releasing = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(2));
+        drop(holder);
+    });
+    let add = TableChange::AddColumn {
+        table: orders,
+        field: Field::new("more", LogicalType::Int64, true),
+    };
+    let changing = opened.session.apply_schema(&add);
+    tokio::time::timeout(Duration::from_secs(20), changing)
+        .await
+        .expect("the schema change ends")
+        .expect("the lock was waited for");
+    releasing.join().expect("the holder lets go");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn concurrent_checks_never_fail_each_other() {
     let root = crate::fixtures::tempdir().unwrap();

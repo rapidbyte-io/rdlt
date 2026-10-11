@@ -7,8 +7,8 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use rdlt_connector::{
-    CommitSeq, ConnectorErrorKind, DroppedTable, Field, LogicalType, TableChange, TablePath,
-    TableRef, TableSchema,
+    ChildTable, CommitSeq, ConnectorErrorKind, DroppedTable, Field, LogicalType, MergeKey, RootKey,
+    TableChange, TablePath, TableRef, TableSchema,
 };
 use rdlt_connector_reference::files;
 use serde_json::json;
@@ -184,6 +184,43 @@ async fn a_dropped_name_that_is_no_identifier_is_refused() {
         .filter(|path| !path.starts_with(&root))
         .collect();
     assert!(outside.is_empty(), "{outside:?}");
+}
+
+#[tokio::test]
+async fn a_child_or_root_name_that_is_no_identifier_is_refused() {
+    let base = crate::fixtures::tempdir().unwrap();
+    let root = base.path().join("root");
+    let destination = connect(&root, "jsonl").await;
+    let mut opened = open(destination.as_ref(), 1).await;
+    let child = |table: &str, root: &str| ChildTable {
+        table: table.into(),
+        merge: MergeKey {
+            columns: vec!["root".into()],
+            seq: "seq".into(),
+            root: Some(RootKey {
+                table: root.into(),
+                id: "rid".into(),
+                seq: "seq".into(),
+            }),
+            changes: None,
+            history: None,
+        },
+    };
+    let mut seq = CommitSeq::FIRST;
+    for name in bad_names() {
+        for named in [child(&name, "roots"), child("items", &name)] {
+            let mut committing = meta(&opened, 1, seq, &[]);
+            committing.child_tables = vec![named];
+            let error = opened
+                .session
+                .commit(&committing)
+                .await
+                .expect_err("the name is refused");
+            assert_eq!(error.kind(), ConnectorErrorKind::Data, "{name:?}");
+            assert_eq!(error.code(), Some("invalid_name"), "{name:?}");
+            seq = seq.next();
+        }
+    }
 }
 
 #[tokio::test]
