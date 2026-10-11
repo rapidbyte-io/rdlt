@@ -1,6 +1,6 @@
 //! Lowering plans: how batches of one incoming schema become rows of one table view, worked out
-//! once and applied to every batch — discards, exact conversions, lowering, metadata columns and,
-//! for merge tables, the sequence column and compaction.
+//! once and applied to every batch — discards, exact conversions and lowering, a merge table's
+//! compaction, then the metadata columns, a merge table's sequence column among them.
 
 mod changes;
 mod constants;
@@ -209,8 +209,9 @@ impl LoweringPlan {
     /// `batch`, whose columns are the plan's incoming ones, as rows of its table.
     ///
     /// Every column goes where the plan's routes send it, converted exactly and lowered to how
-    /// the destination stores it, and the metadata columns follow, `lineage` last for the tables
-    /// of normalized streams. A merge table's batch keeps only the last row of each key.
+    /// the destination stores it; a merge table's batch then keeps the rows its merge keeps,
+    /// and the metadata columns follow for those rows, `lineage` last for the tables of
+    /// normalized streams.
     pub(crate) fn prepare(
         &self,
         batch: &RecordBatch,
@@ -223,11 +224,11 @@ impl LoweringPlan {
         let failed = |error: arrow_schema::ArrowError| {
             Error::internal(format!("stream {stream}: preparing a batch")).with_source(error)
         };
-        let (batch, kept, discarded_rows, fitted, mut converted) =
+        let (batch, mut kept, discarded_rows, fitted, mut converted) =
             self.kept_rows(batch).map_err(failed)?;
         let (batch, nulled, left) = self.nulled(batch).map_err(failed)?;
         converted.extend(left);
-        let changes = match (changes, &kept) {
+        let mut changes = match (changes, &kept) {
             (Some(changes), Some(kept)) => Some(changes.filter(kept).map_err(failed)?),
             (changes, _) => changes.cloned(),
         };
@@ -244,8 +245,10 @@ impl LoweringPlan {
         let batch = keyed(stream, view, batch, &self.sources, changes.as_ref())?;
         // A key column changed in a zero holds no longer what it converted to.
         converted.stale(&checked, &batch);
-        let rows = batch.num_rows();
         let (mut columns, held) = self.model_columns(&batch, &fitted, &converted)?;
+        self.merged(&mut columns, &mut kept, &mut changes)
+            .map_err(failed)?;
+        let rows = columns.first().map_or(batch.num_rows(), Array::len);
         let (constants, loaded_at) = self.constants(stamp, rows).map_err(failed)?;
         columns.extend(constants);
         if view.meta.seq.is_some() {
@@ -269,7 +272,6 @@ impl LoweringPlan {
         columns.extend(self.lineage(lineage, kept.as_ref(), first)?);
         columns.extend(self.directives(changes.as_ref()));
         let prepared = RecordBatch::try_new(Arc::clone(&view.schema), columns).map_err(failed)?;
-        let prepared = self.compacted(prepared).map_err(failed)?;
         Ok(Prepared {
             batch: prepared,
             view: Arc::clone(view),

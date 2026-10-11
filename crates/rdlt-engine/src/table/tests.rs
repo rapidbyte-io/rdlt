@@ -608,6 +608,58 @@ fn merge_batches_keep_the_last_row_of_each_key_in_sequence_order() {
     assert_eq!([decode(0), decode(1)], [(7, 11), (7, 12)]);
 }
 
+/// Resolves and prepares `batch` for `model`, as a partition does, each incoming column dropping
+/// a row holding a value its column cannot hold.
+fn prepared_dropping(resolver: &Resolver, model: &Model, batch: &RecordBatch) -> Prepared {
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let resolution = resolver.resolve(model, &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, resolver).unwrap());
+    let policies = vec![SchemaPolicy::DiscardRow; batch.num_columns()];
+    LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+        .with_policies(policies)
+        .prepare(batch, None, &stamp(), None)
+        .unwrap()
+}
+
+/// The positions in its segment of each row of `out`, a merge table's rows, from its sequence
+/// column, stored as bytes or as their hex text.
+fn seq_offsets(out: &RecordBatch) -> Vec<u64> {
+    let seq = out.column_by_name("_rdlt_seq").unwrap();
+    (0..seq.len())
+        .map(|row| match seq.data_type() {
+            DataType::Utf8 => {
+                u64::from_str_radix(&seq.as_string::<i32>().value(row)[16..], 16).unwrap()
+            }
+            _ => u64::from_be_bytes(seq.as_binary::<i32>().value(row)[8..].try_into().unwrap()),
+        })
+        .collect()
+}
+
+/// A merge whose `DiscardRow` policy drops a row keeps the last kept row of each key, each at its
+/// position among the rows received.
+#[test]
+fn a_merge_after_a_dropped_row_keeps_each_key_s_last_kept_row_at_its_received_position() {
+    use arrow_array::TimestampSecondArray;
+    let resolver = resolver(capabilities(), plan(), &["id"]);
+    let nanos = LogicalType::Timestamp(rdlt_connector::TimeUnit::Nanosecond, Some("UTC".into()));
+    let model = created(&resolver, &[("id", LogicalType::Int64), ("at", nanos)]);
+    // Row 2, key 1's second, holds an instant nanoseconds cannot hold, so its row drops.
+    let at = TimestampSecondArray::from(vec![10, 20, i64::MAX, 40, 50]).with_timezone("UTC");
+    let rows = batch(vec![
+        ("id", Arc::new(Int64Array::from(vec![1, 2, 1, 2, 3])) as _),
+        ("at", Arc::new(at) as _),
+    ]);
+    let prepared = prepared_dropping(&resolver, &model, &rows);
+    let out = prepared.batch;
+    assert_eq!(prepared.discarded_rows, 1);
+    assert_eq!(
+        out.column(0).as_primitive::<Int64Type>().values(),
+        &[1, 2, 3]
+    );
+    // The stamp's first row is 10: rows 0, 3 and 4 of the batch received.
+    assert_eq!(seq_offsets(&out), [10, 13, 14]);
+}
+
 #[test]
 fn merge_batches_without_a_whole_key_are_refused() {
     let resolver = resolver(capabilities(), plan(), &["id"]);
@@ -706,26 +758,55 @@ fn structs_widen_field_by_field_and_json_embeds_its_text() {
     );
 }
 
-/// The rows a merge keeps, the slow way: the last row of each key, in row order.
-fn fold(keys: &[i64]) -> Vec<i64> {
+/// The keys a merge keeps and their rows' positions among the rows received, the slow way: the
+/// last row of each key a policy keeps, in row order, of rows `(key, dropped)`.
+fn fold(rows: &[(i64, bool)]) -> Vec<(i64, u64)> {
     let mut last: BTreeMap<i64, usize> = BTreeMap::new();
-    for (row, key) in keys.iter().enumerate() {
-        last.insert(*key, row);
+    for (row, (key, dropped)) in rows.iter().enumerate() {
+        if !dropped {
+            last.insert(*key, row);
+        }
     }
-    let mut rows: Vec<usize> = last.into_values().collect();
-    rows.sort_unstable();
-    rows.into_iter().map(|row| keys[row]).collect()
+    let mut kept: Vec<usize> = last.into_values().collect();
+    kept.sort_unstable();
+    kept.into_iter()
+        .map(|row| (rows[row].0, row as u64))
+        .collect()
 }
 
 proptest! {
     #[test]
-    fn compaction_keeps_what_a_sort_and_fold_keeps(keys in proptest::collection::vec(0_i64..6, 1..40)) {
-        let resolver = resolver(capabilities(), plan(), &["id"]);
-        let model = created(&resolver, &[("id", LogicalType::Int64)]);
-        let batch = batch(vec![("id", Arc::new(Int64Array::from(keys.clone())) as _)]);
-        let out = prepared(&resolver, &model, &batch).batch;
-        let kept = out.column(0).as_primitive::<Int64Type>().values().to_vec();
-        prop_assert_eq!(kept, fold(&keys));
+    fn compaction_keeps_what_a_sort_and_fold_keeps(
+        rows in proptest::collection::vec((0_i64..6, proptest::bool::weighted(0.2)), 1..40),
+        as_text in proptest::bool::ANY,
+    ) {
+        let mut capabilities = capabilities();
+        if as_text {
+            // A destination storing every column as text, as the lowering bench's `Storage::Text`.
+            capabilities.types = [TypeKind::Utf8].into();
+        }
+        let resolver = resolver(capabilities, plan(), &["id"]);
+        let nanos =
+            LogicalType::Timestamp(rdlt_connector::TimeUnit::Nanosecond, Some("UTC".into()));
+        let model = created(&resolver, &[("id", LogicalType::Int64), ("at", nanos)]);
+        let keys = Int64Array::from_iter_values(rows.iter().map(|row| row.0));
+        // A row holding an instant nanoseconds cannot hold drops.
+        let at = arrow_array::TimestampSecondArray::from_iter_values(
+            rows.iter().map(|row| if row.1 { i64::MAX } else { 0 }),
+        )
+        .with_timezone("UTC");
+        let batch = batch(vec![("id", Arc::new(keys) as _), ("at", Arc::new(at) as _)]);
+        let out = prepared_dropping(&resolver, &model, &batch).batch;
+        let kept: Vec<String> = if as_text {
+            out.column(0).as_string::<i32>().iter().map(|key| key.unwrap().to_owned()).collect()
+        } else {
+            out.column(0).as_primitive::<Int64Type>().values().iter().map(i64::to_string).collect()
+        };
+        let expected = fold(&rows);
+        let keys: Vec<String> = expected.iter().map(|(key, _)| key.to_string()).collect();
+        prop_assert_eq!(kept, keys);
+        let offsets: Vec<u64> = expected.iter().map(|(_, row)| 10 + row).collect();
+        prop_assert_eq!(seq_offsets(&out), offsets);
     }
 }
 

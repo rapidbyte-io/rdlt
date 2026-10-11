@@ -1,7 +1,7 @@
 # Lowering
 
 `LoweringPlan::prepare` turns a pushed batch into rows of its table: exact conversions, the
-destination's storage types, metadata columns, and a merge's compaction, a history table's
+destination's storage types, a merge's compaction, the metadata columns, and a history table's
 hashes or a change stream's flags. This record keeps its cost a batch in each mode, the
 allocations it makes, and the heap-peak check that holds each mode to the charge the write path
 reserves for it.

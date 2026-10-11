@@ -1,16 +1,18 @@
-//! The parts of a lowering plan only merge tables use: sequences and compaction.
+//! The parts of a lowering plan only merge tables use: sequences, and the rows a merge keeps.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use arrow_array::builder::BinaryBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::types::UInt32Type;
-use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, UInt32Array};
-use arrow_row::{RowConverter, SortField};
+use arrow_array::{Array, ArrayRef, BooleanArray, UInt32Array};
+use arrow_buffer::{BooleanBuffer, BooleanBufferBuilder};
+use arrow_row::{RowConverter, Rows, SortField};
+use arrow_schema::ArrowError;
+use arrow_select::filter::FilterBuilder;
 use rdlt_connector::LogicalType;
 
-use super::{Stamp, lower_array};
+use super::{ChangeRows, LoweringPlan, Stamp, lower_array};
 use crate::table::TableView;
 
 /// The positions of the rows `kept` keeps.
@@ -28,7 +30,7 @@ pub(super) fn sequence(
     stamp: &Stamp,
     rows: usize,
     positions: Option<&ArrayRef>,
-) -> Result<ArrayRef, arrow_schema::ArrowError> {
+) -> Result<ArrayRef, ArrowError> {
     let lowered = view.physical[view.model.columns.len() + 2].logical_type();
     let positions = positions.map(AsArray::as_primitive::<UInt32Type>);
     let mut seq = BinaryBuilder::with_capacity(rows, rows * 16);
@@ -43,28 +45,108 @@ pub(super) fn sequence(
     lower_array(&seq, &LogicalType::Binary, lowered)
 }
 
-/// `batch` with only the last row of each key, in their order: the rows a merge keeps.
-pub(super) fn compact(
-    batch: &RecordBatch,
-    key: &[usize],
-) -> Result<RecordBatch, arrow_schema::ArrowError> {
-    let columns: Vec<ArrayRef> = key
-        .iter()
-        .map(|index| Arc::clone(batch.column(*index)))
-        .collect();
-    let fields = columns
-        .iter()
-        .map(|column| SortField::new(column.data_type().clone()))
-        .collect();
-    let rows = RowConverter::new(fields)?.convert_columns(&columns)?;
-    let mut last: BTreeMap<&[u8], u32> = BTreeMap::new();
-    for row in 0..batch.num_rows() {
-        last.insert(rows.row(row).data(), u32::try_from(row).unwrap_or(u32::MAX));
+/// Which rows of a batch whose key columns are `keys` are the last of their key: the rows a
+/// merge keeps; none where every row is.
+pub(super) fn last_of_each_key(keys: &[ArrayRef]) -> Result<Option<BooleanArray>, ArrowError> {
+    let (rows, order) = sorted(keys)?;
+    let mut kept = BooleanBufferBuilder::new(order.len());
+    kept.append_n(order.len(), false);
+    for run in order.chunk_by(|left, right| rows.row(*left) == rows.row(*right)) {
+        if let Some(last) = run.last() {
+            kept.set_bit(*last, true);
+        }
     }
-    if last.len() == batch.num_rows() {
-        return Ok(batch.clone());
-    }
-    let mut kept: Vec<u32> = last.into_values().collect();
-    kept.sort_unstable();
-    arrow_select::take::take_record_batch(batch, &UInt32Array::from(kept))
+    Ok(kept_or_none(kept.finish()))
 }
+
+/// The keys of a batch whose key columns are `keys`, as rows, and its rows' positions ordered by
+/// key, then by position.
+pub(super) fn sorted(keys: &[ArrayRef]) -> Result<(Rows, Vec<usize>), ArrowError> {
+    let fields = keys
+        .iter()
+        .map(|key| SortField::new(key.data_type().clone()))
+        .collect();
+    let rows = RowConverter::new(fields)?.convert_columns(keys)?;
+    let mut order: Vec<usize> = (0..rows.num_rows()).collect();
+    order.sort_unstable_by(|left, right| {
+        rows.row(*left).cmp(&rows.row(*right)).then(left.cmp(right))
+    });
+    Ok((rows, order))
+}
+
+/// `kept` as a mask of the rows kept, or none where it keeps every row.
+pub(super) fn kept_or_none(kept: BooleanBuffer) -> Option<BooleanArray> {
+    (kept.count_set_bits() < kept.len()).then(|| BooleanArray::new(kept, None))
+}
+
+/// The rows of a batch that `outer` keeps and `inner`, which says which of those rows stay,
+/// keeps too; `inner` where `outer` keeps every row.
+pub(super) fn within(outer: Option<&BooleanArray>, inner: &BooleanArray) -> BooleanArray {
+    let Some(outer) = outer else {
+        return inner.clone();
+    };
+    let mut kept = BooleanBufferBuilder::new(outer.len());
+    kept.append_n(outer.len(), false);
+    for (row, stays) in outer.values().set_indices().zip(inner.values().iter()) {
+        if stays {
+            kept.set_bit(row, true);
+        }
+    }
+    BooleanArray::new(kept.finish(), None)
+}
+
+impl LoweringPlan {
+    /// Cuts `columns`, a batch's model columns as its table stores them, `kept`, which of the
+    /// rows received they are where the schema policy dropped some, and `changes`, their change
+    /// rows, to the rows the table's merges keep.
+    pub(super) fn merged(
+        &self,
+        columns: &mut [ArrayRef],
+        kept: &mut Option<BooleanArray>,
+        changes: &mut Option<ChangeRows>,
+    ) -> Result<(), ArrowError> {
+        let Some(keep) = self.compaction(columns, changes.as_ref())? else {
+            return Ok(());
+        };
+        let predicate = FilterBuilder::new(&keep).optimize().build();
+        for column in columns.iter_mut() {
+            *column = predicate.filter(column.as_ref())?;
+        }
+        if let Some(rows) = changes {
+            *rows = rows.filter(&keep)?;
+        }
+        *kept = Some(within(kept.as_ref(), &keep));
+        Ok(())
+    }
+
+    /// Which rows of a batch whose model columns, as stored, are `columns` its table's merges
+    /// keep: the last row of each key, or for a change stream's, the rows no later row of their
+    /// key supersedes; none where the table keeps every row, as history and child tables do.
+    fn compaction(
+        &self,
+        columns: &[ArrayRef],
+        changes: Option<&ChangeRows>,
+    ) -> Result<Option<BooleanArray>, ArrowError> {
+        let view = &self.view;
+        if !view.compacts() {
+            return Ok(None);
+        }
+        let keys: Vec<ArrayRef> = view
+            .key
+            .iter()
+            .map(|column| Arc::clone(&columns[*column]))
+            .collect();
+        match (&view.meta.changes, changes) {
+            (None, _) => last_of_each_key(&keys),
+            (Some(names), Some(changes)) => {
+                changes.unsuperseded(&keys, &self.written, names.deleted_at.is_none())
+            }
+            (Some(_), None) => Err(ArrowError::SchemaError(
+                "a change stream's batch carries no change rows".to_owned(),
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
