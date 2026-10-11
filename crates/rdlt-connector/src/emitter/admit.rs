@@ -7,10 +7,9 @@ mod tests;
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
 use rdlt_wire::limits::{FRAME_BYTES, count};
-use rdlt_wire::{Limits, Weigher, Weight, child_fields};
+use rdlt_wire::{Limit, Limits, Refusal, Weigher, Weight, child_fields};
 
 use crate::cost::Allocations;
-use crate::error::LimitExceeded;
 
 /// Rows: how many are weighed between two checks of the limits.
 const STRETCH: usize = 1024;
@@ -27,14 +26,10 @@ const STRETCH: usize = 1024;
 ///
 /// # Errors
 ///
-/// The first [`LimitExceeded`] found; weighing stops with the stretch of rows that passed it.
-pub(super) fn admit(
-    batch: &RecordBatch,
-    whole: bool,
-    limits: &Limits,
-) -> Result<(), LimitExceeded> {
+/// The first [`Refusal`] found; weighing stops with the stretch of rows that passed it.
+pub(super) fn admit(batch: &RecordBatch, whole: bool, limits: &Limits) -> Result<(), Refusal> {
     let rows = batch.num_rows();
-    check("batch rows", count(rows), limits.batch_rows)?;
+    Limits::admit(Limit::BatchRows, limits.batch_rows, count(rows))?;
     columns(&batch.schema(), limits)?;
     if !whole {
         return Ok(());
@@ -50,7 +45,7 @@ pub(super) fn admit(
         within(&weight, limits)?;
     }
     let held = Allocations::of(batch).bytes();
-    check("batch bytes", held, limits.frame_bytes)
+    Limits::admit(Limit::BatchBytes, limits.frame_bytes, held)
 }
 
 /// Checks what a frame would hold, `weight`, against `limits`.
@@ -58,26 +53,15 @@ pub(super) fn admit(
 /// Its bytes are held to the most any frame holds, not to `limits`' frame: what a batch held
 /// whole takes of whoever holds it is what it keeps alive, which is checked apart, and what its
 /// rows become is lowered a piece at a time.
-fn within(weight: &Weight, limits: &Limits) -> Result<(), LimitExceeded> {
-    check("batch values", weight.values, limits.batch_values)?;
-    check("view bytes", weight.view_bytes, FRAME_BYTES)?;
-    check("batch bytes", weight.frame_bytes(), FRAME_BYTES)
-}
-
-fn check(name: &'static str, actual: u64, limit: u64) -> Result<(), LimitExceeded> {
-    if actual > limit {
-        return Err(LimitExceeded {
-            name,
-            limit,
-            actual,
-        });
-    }
-    Ok(())
+fn within(weight: &Weight, limits: &Limits) -> Result<(), Refusal> {
+    Limits::admit(Limit::BatchValues, limits.batch_values, weight.values)?;
+    Limits::admit(Limit::ViewBytes, FRAME_BYTES, weight.view_bytes)?;
+    Limits::admit(Limit::BatchBytes, FRAME_BYTES, weight.frame_bytes())
 }
 
 /// Counts the columns of `schema`, nested ones too, and how deep they nest, a top-level column
 /// being the first level; a type nested beyond the limit is not looked into.
-fn columns(schema: &Schema, limits: &Limits) -> Result<(), LimitExceeded> {
+fn columns(schema: &Schema, limits: &Limits) -> Result<(), Refusal> {
     let mut columns = 0_u64;
     let mut pending: Vec<(&Field, u64)> = schema
         .fields()
@@ -85,9 +69,9 @@ fn columns(schema: &Schema, limits: &Limits) -> Result<(), LimitExceeded> {
         .map(|field| (field.as_ref(), 1))
         .collect();
     while let Some((field, depth)) = pending.pop() {
-        check("nesting depth", depth, limits.nesting_depth)?;
+        Limits::admit(Limit::NestingDepth, limits.nesting_depth, depth)?;
         columns += 1;
-        check("batch columns", columns, limits.schema_columns)?;
+        Limits::admit(Limit::SchemaColumns, limits.schema_columns, columns)?;
         pending.extend(child_fields(field.data_type()).map(|child| (child, depth + 1)));
     }
     Ok(())

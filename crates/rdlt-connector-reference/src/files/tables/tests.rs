@@ -163,7 +163,10 @@ fn a_catalog_version_beyond_the_limit_is_neither_written_nor_read() {
     let wide = "x".repeat(usize::try_from(CATALOG_BYTES).unwrap());
     let changed = update(&rdlt, "t", |current| Ok(Some(with(current, &wide))));
     let error = changed.unwrap_err();
-    assert_eq!(error.limit().map(|limit| limit.name), Some("catalog bytes"));
+    assert_eq!(
+        error.limit().map(|limit| limit.name),
+        Some("table catalog bytes")
+    );
     let catalog = root.path().join("tables").join("t");
     assert_eq!(std::fs::read_dir(&catalog).unwrap().count(), 0);
     let huge = std::fs::File::create(catalog.join("00000000000000000001.json")).unwrap();

@@ -36,7 +36,7 @@ const TRASH: &str = "trash";
 const OWNER: &str = "owner";
 
 const CATALOG_LIMIT: Limit = Limit {
-    name: "catalog bytes",
+    name: "table catalog bytes",
     bytes: CATALOG_BYTES,
 };
 

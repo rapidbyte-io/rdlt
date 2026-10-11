@@ -11,7 +11,7 @@ use rdlt_connector::{ConnectorErrorKind, Result};
 use rdlt_wire::Limits;
 use rdlt_wire::limits::{BATCH_ROWS, FRAME_BYTES};
 
-use super::chunks;
+use super::{chunks, unfit};
 use crate::files::FileFormat;
 use crate::rooted::Dir;
 
@@ -263,4 +263,29 @@ fn a_batch_is_halved_until_its_parts_fit_and_refused_only_as_one_row() {
     })
     .unwrap();
     assert!(measured > 1 && measured <= 1024, "{measured}");
+}
+
+#[test]
+fn a_batch_whose_frame_is_the_limit_fits_and_one_byte_less_refuses_it() {
+    let batch = single(Arc::new(StringArray::from(vec!["x".repeat(4096)])));
+    let limits = |frame_bytes| Limits {
+        frame_bytes,
+        ..Limits::default()
+    };
+    let size = unfit(&batch, &limits(0))
+        .unwrap()
+        .expect("no frame fits no bytes")
+        .limit()
+        .map(|limit| limit.actual)
+        .expect("a limit");
+    assert!(size > 4096, "{size}");
+    assert!(unfit(&batch, &limits(size)).unwrap().is_none());
+    let refusal = unfit(&batch, &limits(size - 1))
+        .unwrap()
+        .expect("one byte over");
+    let limit = refusal.limit().expect("a limit");
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("frame bytes", size - 1, size)
+    );
 }

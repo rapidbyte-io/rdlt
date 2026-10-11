@@ -193,7 +193,7 @@ async fn batches_over_the_row_or_column_limit_are_refused() {
     .unwrap();
     assert_eq!(
         out.changes(wide).await.unwrap_err().limit().unwrap().name,
-        "batch columns"
+        "schema columns"
     );
     assert!(drain(out, feed).await.is_empty());
 }
@@ -361,4 +361,39 @@ async fn a_schema_equal_to_the_last_ones_is_checked_once_and_one_differing_in_me
         Arc::ptr_eq(&kept, &marked.schema()),
         "a schema differing in its metadata is checked"
     );
+}
+
+#[cfg(feature = "wire")]
+#[tokio::test]
+async fn a_batch_too_wide_is_refused_as_schema_columns_in_process_and_on_the_wire() {
+    let columns = usize::try_from(SCHEMA_COLUMNS).unwrap() + 1;
+    let wide = RecordBatch::try_from_iter((0..columns).map(|index| {
+        (
+            format!("c{index}"),
+            Arc::new(Int64Array::from(vec![1])) as _,
+        )
+    }))
+    .unwrap();
+    let (mut out, feed) = emitter();
+    let refused = out.batch(wide.clone()).await.unwrap_err();
+    assert_eq!(
+        refused.limit().map(|limit| limit.name),
+        Some("schema columns")
+    );
+    // A host's decoder refuses the same schema, arriving from a served source, by the same name.
+    let message = rdlt_wire::Encoder::default()
+        .schema(&wide.schema())
+        .unwrap();
+    let decoded = rdlt_wire::Decoder::new(rdlt_wire::Limits::default()).schema(&message);
+    let Err(rdlt_wire::WireError::Refused(refusal)) = decoded else {
+        panic!("the decoder refuses the schema by a limit");
+    };
+    assert_eq!(refusal.field, rdlt_wire::Limit::SchemaColumns);
+    assert_eq!(
+        crate::wire::frame_error(&rdlt_wire::WireError::Refused(refusal))
+            .limit()
+            .map(|limit| limit.name),
+        Some("schema columns")
+    );
+    assert!(drain(out, feed).await.is_empty());
 }

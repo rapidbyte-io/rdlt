@@ -11,7 +11,7 @@ mod tests;
 
 use rdlt_connector::limits::MAX_CONFIG_SCHEMA_BYTES;
 use rdlt_connector::wire::{Invalid, v1};
-use rdlt_connector::{ConnectorError, ConnectorErrorKind, LimitExceeded};
+use rdlt_connector::{ConnectorError, ConnectorErrorKind};
 use rdlt_wire::PROTOCOL_MAJOR;
 
 use super::source::invalid;
@@ -70,14 +70,9 @@ pub(super) fn spec_within(spec: &v1::ConnectorSpec) -> Result<(), ConnectorError
     if !version(&spec.version) {
         return Err(invalid(&Invalid::rejected("connector version", Malformed)));
     }
-    let bytes = spec.config_schema_json.len();
-    if bytes > MAX_CONFIG_SCHEMA_BYTES {
-        return Err(ConnectorError::exceeds(LimitExceeded {
-            name: "config schema bytes",
-            limit: u64::try_from(MAX_CONFIG_SCHEMA_BYTES).unwrap_or(u64::MAX),
-            actual: u64::try_from(bytes).unwrap_or(u64::MAX),
-        }));
-    }
+    let bytes = rdlt_wire::limits::count(spec.config_schema_json.len());
+    let limit = rdlt_wire::limits::count(MAX_CONFIG_SCHEMA_BYTES);
+    rdlt_wire::Limits::admit(rdlt_wire::Limit::ConfigSchemaBytes, limit, bytes)?;
     Ok(())
 }
 

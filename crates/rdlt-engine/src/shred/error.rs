@@ -59,7 +59,7 @@ impl ShredError {
             | Self::ColumnsBeyondText(_)
             | Self::TooManyColumns(..)
             | Self::TooManyCells(_)
-            | Self::TooLarge => "limit_exceeded",
+            | Self::TooLarge => rdlt_wire::limits::LIMIT_EXCEEDED,
             Self::DuplicateKey(_) => "json_duplicate_key",
             Self::Internal(_) => "shred_internal",
         }

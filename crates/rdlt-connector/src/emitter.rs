@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::change::validate_change_batch;
 use crate::cursor::Cursor;
-use crate::error::{ConnectorError, LimitExceeded, Result, ResultExt};
+use crate::error::{Result, ResultExt};
 use crate::sink::{LogLevel, PartitionSink, Push, SourceEvent};
 
 /// Sends one partition's data and checkpoints to the engine, with cursors of type `C`.
@@ -83,8 +83,7 @@ impl<C: Serialize> Emitter<C> {
 
     /// Pushes raw JSON: an array of objects or newline-delimited objects.
     pub async fn json(&mut self, json: Bytes) -> Result<()> {
-        let limit = self.sink.limits().json_push_bytes;
-        check_limit("json push bytes", json.len(), limit)?;
+        self.sink.limits().admit_json(json.len())?;
         self.sink.send(SourceEvent::Push(Push::Json(json))).await
     }
 
@@ -124,7 +123,7 @@ impl<C: Serialize> Emitter<C> {
             return Ok(());
         }
         let message = rdlt_wire::schema_message_bytes(&schema);
-        check_limit("schema bytes", message, self.sink.limits().schema_bytes)?;
+        self.sink.limits().admit_schema(message)?;
         self.schema = Some(schema);
         Ok(())
     }
@@ -135,8 +134,7 @@ impl<C: Serialize> Emitter<C> {
     /// recorded done ([`ReadStream::read`](crate::ReadStream::read)).
     pub async fn checkpoint(&mut self, cursor: &C) -> Result<()> {
         let cursor = Cursor::encode(self.cursor_version, cursor)?;
-        let limit = self.sink.limits().cursor_bytes;
-        check_limit("cursor bytes", cursor.bytes().len(), limit)?;
+        self.sink.limits().admit_cursor(cursor.bytes().len())?;
         let answers = self.sink.pending_barrier();
         self.sink
             .send(SourceEvent::Checkpoint { cursor, answers })
@@ -185,17 +183,5 @@ impl<C: Serialize> Emitter<C> {
 /// Checks `batch` against `sink`'s limits on a batch, before anything else walks it; one the
 /// sink holds whole, as it is, against what a frame may hold too.
 fn check_batch(batch: &RecordBatch, sink: &PartitionSink) -> Result<()> {
-    admit::admit(batch, sink.holds_whole(), &sink.limits()).map_err(ConnectorError::exceeds)
-}
-
-fn check_limit(name: &'static str, actual: usize, limit: u64) -> Result<()> {
-    let actual = u64::try_from(actual).unwrap_or(u64::MAX);
-    if actual > limit {
-        return Err(ConnectorError::exceeds(LimitExceeded {
-            name,
-            limit,
-            actual,
-        }));
-    }
-    Ok(())
+    Ok(admit::admit(batch, sink.holds_whole(), &sink.limits())?)
 }
