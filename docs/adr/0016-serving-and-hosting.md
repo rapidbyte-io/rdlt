@@ -114,18 +114,14 @@ socket will be.
   error or a cancelled request, so the host classes a failure by the same code. It re-exports
   tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` (3), which both ends
   must match.
-- **The gates follow the code.**
-  - The served end is tested from `rdlt-host`, where a client exists. So mutation testing runs the
-    engine's, connector's, wire's and host's tests for every mutant (`--test-package`), and
-    mutates `rdlt-host` too.
-  - Coverage runs `rdlt-host`'s tests with the other three.
+- **The gates follow the code.** The served end is tested from `rdlt-host`, where a client
+  exists, so `rdlt-host`'s tests run against `rdlt-wire`'s mutants (ADR 0003), and coverage runs
+  `rdlt-host`'s tests with the engine's, connector's and wire's.
 
 ## Consequences
 
 - Any gRPC implementation can serve a connector: the protocol's behaviour is in its messages,
   its statuses and this record.
-- Mutation testing takes longer per mutant, as it runs four packages' tests: about five minutes
-  for this milestone's diff.
 - `serve::<C>()`, a connector binary's whole `main` (§11.7), with `--rdlt-fd` and `--listen`, lands
   with M4c's placements. Taking a pre-connected socket from file descriptor 3 needs the audited
   `unsafe` §20.14 allows.

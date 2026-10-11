@@ -145,7 +145,7 @@ mutants crate *args:
 # Mutation testing over this branch's changes, including uncommitted ones, against `base`, in
 # `jobs` parallel builds; incremental builds are what make rebuilding per mutant cheap. Each changed
 # crate's mutants run the tests of the packages that drive it, and the nightly full pass runs every
-# mutant against the tests of every package that links its crate (ADR 0025)
+# mutant against the tests of every package that links its crate (ADR 0003)
 mutants-diff base="origin/main" jobs="4":
     #!/usr/bin/env bash
     set -euo pipefail

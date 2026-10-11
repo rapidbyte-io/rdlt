@@ -139,39 +139,6 @@ follows H1c.
     results are taken from a quiet run. Mutated against its own and the engine's tests only, the
     crate showed which mutants only certification's tests had caught; its own tests catch them
     now.
-- **Mutation testing runs crate by crate on a branch, and whole every night** (amends ADR 0003).
-  - A milestone's loop had grown to hours, most of it the same checks run again. The branch keeps
-    its gate, zero surviving mutants, but `just mutants-diff` now tests each changed crate's
-    mutants against the packages whose tests can catch them:
-
-    | Mutated crate | Tests it runs |
-    |---|---|
-    | `rdlt-engine` | `rdlt-engine` |
-    | `rdlt-connector` | `rdlt-connector`, `rdlt-connector-reference`, `rdlt-engine`, `rdlt-host`, `rdlt-certify` |
-    | `rdlt-connector-reference` | `rdlt-connector-reference`, `rdlt-engine` |
-    | `rdlt-wire` | `rdlt-wire`, `rdlt-host` |
-    | `rdlt-host` | `rdlt-host`, `rdlt-certify` |
-    | `rdlt-certify` | `rdlt-certify` |
-
-  - The nightly workflow runs the full pass: every crate's mutants against the tests of every
-    package that links the crate, which are all the tests that can catch them, the crate's own
-    first through a nextest profile of its own, where most mutants are caught. Dependencies are
-    optimised in the mutation build, builds link with mold, and two mutants run at once on two
-    threads each. The whole pass is some sixty runner-hours, more than a night's runners hold
-    beside the simulation, so it runs over four nights: each crate's mutants are cut into shards
-    that finish within their limit, the large crates' shards are taken a quarter a night, and the
-    small crates run whole every night. A missed mutant is found within four nights, fixed the
-    next day, and, where the branch's packages missed it, adds the package that caught it.
-    - A test's limit in the mutants profile sits far enough above what it takes on the nightly's
-      runners, beside another mutant's tests, that only a test hung on its mutant reaches it:
-      twenty seconds for any test, more for those the profile names.
-  - `just ready` runs lint, tests and `mutants-diff`. CI's pull-request gate runs the rest:
-    coverage, Miri, the simulation, macOS and the instruction and allocation counts against
-    `main`.
-  - The reference connectors' tests sync files and SQLite to disk, and four mutants tested at once
-    made a one-second test take ten, which counted mutants as caught by no assertion. Those tests
-    get thirty seconds before the mutants profile counts them hung.
-  - Rejected: a RAM disk for mutation runs, which the development machine's memory cannot spare.
 - **Dialects' identifiers hold at least 30 bytes.** That is the shortest limit a supported
   database has, and it keeps a staging table's reserved prefix, its hash and part of the table's
   name. A generation table's name, whose generation id takes most of it at that limit, keeps its

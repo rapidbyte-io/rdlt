@@ -21,7 +21,7 @@ decisions and their reasons are in `docs/adr/`. Read those before changing code.
   valgrind, so `just instructions` and `just ci` run on Linux only.
 - `just mutants-diff` tests each changed crate's mutants against the packages whose tests can
   catch them; the nightly workflow runs the full pass, every mutant against the tests of every
-  package that links its crate, over four nights (ADR 0025). Fix a mutant the nightly finds the
+  package that links its crate, over four nights (ADR 0003). Fix a mutant the nightly finds the
   next day, and when the crate's packages in `mutants-diff` missed it, add the package that
   caught it. `just mutants <crate>` runs one crate's part of the full pass.
 - Test mutants on an otherwise idle machine: a test that times out counts its mutant as caught, so
