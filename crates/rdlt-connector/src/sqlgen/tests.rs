@@ -1,3 +1,5 @@
+mod staging;
+
 use std::time::SystemTime;
 
 use bytes::Bytes;
@@ -182,7 +184,8 @@ fn every_name_derived_from_a_table_is_compared() {
         ]);
         derived.push(table);
     }
-    assert_eq!(derived.len(), 11);
+    derived.push(planner.staged_index_name(&planner.staging_table("y")));
+    assert_eq!(derived.len(), 12);
     for name in derived {
         // An index of another base's generation table would take the name too.
         let filling = [(name.clone(), "other".to_owned())];
@@ -523,6 +526,18 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.publish(&owned, staged, columns, epoch, segments)
     }
 
+    pub(in crate::sqlgen) fn abandon_as(
+        &self,
+        staged: &Staged,
+        pipeline: &PipelineId,
+        epoch: Epoch,
+        segments: &SegmentSet,
+    ) -> Statement {
+        let owned = self.own(pipeline, &staged.name);
+        self.abandon(&owned, staged, (pipeline, epoch), segments)
+            .unwrap()
+    }
+
     pub(in crate::sqlgen) fn stage_as(
         &self,
         table: &TableRef,
@@ -562,6 +577,11 @@ impl<D: SqlDialect> SqlPlanner<D> {
     ) -> crate::error::Result<Vec<Statement>> {
         let owned = self.own(&pipeline("mine"), base);
         self.swap(&owned, base_exists, generation, generations)
+    }
+
+    pub(in crate::sqlgen) fn staged_index_of(&self, table: &TableRef) -> Statement {
+        let owned = self.own(&pipeline("mine"), &table.name);
+        self.staged_index(&owned, table).unwrap()
     }
 
     pub(in crate::sqlgen) fn key_indexes_of(&self, table: &TableRef) -> Vec<Statement> {

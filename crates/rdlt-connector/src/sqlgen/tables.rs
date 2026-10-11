@@ -36,6 +36,40 @@ impl<D: SqlDialect> SqlPlanner<D> {
         self.fitted(format!("_rdlt_generation_{generation}__{name}"))
     }
 
+    /// The name of the index of the staging table `staging` by who staged its rows.
+    pub fn staged_index_name(&self, staging: &str) -> String {
+        self.fitted(format!("_rdlt_staged__{staging}"))
+    }
+
+    /// The statement indexing the staging of `table`, which `owned` names, by who staged its
+    /// rows where `table` has no merge key, and dropping that index where it has one.
+    ///
+    /// It runs where the table's rows are staged, so the index stands while the table's writer
+    /// appends: an append commit finds its own rows by it. A keyed commit scans its staging and
+    /// finds each key's rows by its key index, a lookup this index would take.
+    pub fn staged_index(&self, owned: &Owned<'_>, table: &TableRef) -> Result<Statement> {
+        owned.is(&table.name)?;
+        let staging = self.staging_table(&table.name);
+        let (name, indexed) = (
+            self.quote(&self.staged_index_name(&staging)),
+            self.quote(&staging),
+        );
+        let sql = match table.merge {
+            None => {
+                let [pipeline, epoch, segment, _] =
+                    STAGING_COLUMNS.map(|column| self.quote(column));
+                let columns = [pipeline, epoch, segment];
+                self.dialect
+                    .create_index(&name, &indexed, &columns.join(", "))
+            }
+            Some(_) => self.dialect.drop_index(&name, &indexed),
+        };
+        Ok(Statement {
+            sql,
+            params: Vec::new(),
+        })
+    }
+
     /// `derived`, a name derived from a table's, within the dialect's longest identifier: one too
     /// long becomes the reserved prefix of cut names and the SHA-256 of the whole, in base 32.
     ///
@@ -55,8 +89,8 @@ impl<D: SqlDialect> SqlPlanner<D> {
 
     /// Refuses `table` where a table of `owned`, the tables pipelines own, or of `generations`,
     /// every generation table with its base, would share one of the tables or indexes derived
-    /// from its name: its staging, tombstones, root index and key indexes, and for a generation
-    /// its generation table with that table's indexes.
+    /// from its name: its staging, its staging's index, tombstones, root index and key indexes,
+    /// and for a generation its generation table with that table's indexes.
     ///
     /// Two such tables would publish each other's rows, so the clash is a `Config` error, coded
     /// `table_name_clash`, which renaming either table resolves.
@@ -76,7 +110,11 @@ impl<D: SqlDialect> SqlPlanner<D> {
         };
         let derived = |table: &str| {
             let (staging, tombstones) = (self.staging_table(table), self.tombstone_table(table));
-            let mut names = vec![self.key_index_name(table), self.root_index_name(table)];
+            let mut names = vec![
+                self.key_index_name(table),
+                self.root_index_name(table),
+                self.staged_index_name(&staging),
+            ];
             names.extend(
                 [indexed(staging), indexed(tombstones)]
                     .into_iter()

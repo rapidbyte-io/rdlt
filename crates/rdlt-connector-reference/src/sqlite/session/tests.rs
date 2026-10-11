@@ -1,27 +1,29 @@
-//! A session's writers index the tables a commit finds rows in by key, so a commit changes no
-//! table or index.
+//! A session's writers index what a commit finds rows in, so a commit changes no table or
+//! index: an appending writer the staging by who staged its rows, which a keyed writer drops, and
+//! a keyed writer its tables by key.
 
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field as ArrowField, Schema};
+use rdlt_connector::sqlgen::{SqlPlanner, Sqlite};
 use rdlt_connector::{
     ChildTable, CommitMeta, CommitSeq, ConnectContext, Destination, Field, LoadId, LogicalType,
-    MergeKey, OpenContext, PipelineId, RootKey, SEQ_COLUMN, SchemaVersion, SegmentId, TableChange,
-    TablePath, TableRef, TableSchema, destination_factory,
+    MergeKey, OpenContext, OpenedSession, PipelineId, RootKey, SEQ_COLUMN, SchemaVersion,
+    SegmentId, TableChange, TablePath, TableRef, TableSchema, destination_factory,
 };
 use serde_json::json;
 
 use super::super::{SqliteDestination, database};
 
-fn table(name: &str, merge: MergeKey) -> TableRef {
+fn table(name: &str, merge: Option<MergeKey>) -> TableRef {
     TableRef {
         path: TablePath::new([name]).expect("a valid table path"),
         name: name.into(),
         version: SchemaVersion(1),
         generation: None,
-        merge: Some(merge),
+        merge,
     }
 }
 
@@ -46,7 +48,7 @@ fn roots_and_items() -> (TableRef, TableRef) {
         changes: None,
         history: None,
     };
-    (table("roots", roots), table("items", items))
+    (table("roots", Some(roots)), table("items", Some(items)))
 }
 
 /// A batch of one row whose `key` column holds 1.
@@ -87,10 +89,33 @@ fn create(table: &TableRef, key: &str) -> TableChange {
     }
 }
 
-#[tokio::test]
-async fn writers_index_what_a_commit_finds_by_key_and_the_commit_changes_no_schema() {
-    let directory = tempfile::tempdir().expect("a temporary directory");
-    let path = directory.path().join("indexes.db");
+/// Checks that `staged`, the tables and indexes once `events`, `roots` and `items` are staged,
+/// index the append table's staging by who staged its rows, and the keyed tables by key alone.
+fn indexed_as_a_commit_finds_rows(staged: &[(String, String)]) {
+    for (index, table) in [
+        by_stager("events"),
+        ("_rdlt_key__roots".to_owned(), "roots".to_owned()),
+        ("_rdlt_root__items".to_owned(), "items".to_owned()),
+    ] {
+        assert!(
+            staged.contains(&(index.clone(), table.clone())),
+            "{index} on {table}: {staged:?}"
+        );
+    }
+    for name in ["roots", "items"] {
+        assert!(!staged.contains(&by_stager(name)), "{name}: {staged:?}");
+    }
+}
+
+/// The index of the staging of the table `name` by who staged its rows, and that staging.
+fn by_stager(name: &str) -> (String, String) {
+    let planner = SqlPlanner::try_new(Sqlite).expect("a planner");
+    let staging = planner.staging_table(name);
+    (planner.staged_index_name(&staging), staging)
+}
+
+/// A session of the pipeline `indexes` on the database at `path`, and the context it opened in.
+async fn open_session(path: &std::path::Path) -> (OpenedSession, OpenContext) {
     let destination: Box<dyn Destination> = destination_factory::<SqliteDestination>()
         .connect(json!({ "path": path }), ConnectContext::new())
         .await
@@ -99,9 +124,54 @@ async fn writers_index_what_a_commit_finds_by_key_and_the_commit_changes_no_sche
         pipeline: PipelineId::parse("indexes").expect("a valid pipeline id"),
         load_id: LoadId::from_parts(UNIX_EPOCH, 1),
     };
-    let mut opened = destination.open(&context).await.expect("a session opens");
+    let opened = destination.open(&context).await.expect("a session opens");
+    (opened, context)
+}
+
+#[tokio::test]
+async fn a_staging_index_stands_while_its_table_s_writer_appends() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("appends.db");
+    let (mut opened, _) = open_session(&path).await;
+    let events = table("events", None);
+    opened
+        .session
+        .apply_schema(&create(&events, "id"))
+        .await
+        .expect("the table is created");
+    let key = MergeKey {
+        columns: vec!["id".into()],
+        seq: SEQ_COLUMN.into(),
+        root: None,
+        changes: None,
+        history: None,
+    };
+    let keyed = table("events", Some(key));
+    for (written, indexed) in [(&events, true), (&keyed, false), (&events, true)] {
+        drop(
+            opened
+                .session
+                .writer(written)
+                .await
+                .expect("a writer opens"),
+        );
+        let objects = schema_objects(&path);
+        assert_eq!(
+            objects.contains(&by_stager("events")),
+            indexed,
+            "{objects:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn writers_index_what_a_commit_finds_and_the_commit_changes_no_schema() {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let path = directory.path().join("indexes.db");
+    let (mut opened, context) = open_session(&path).await;
     let (roots, items) = roots_and_items();
-    for (table, key) in [(&roots, "id"), (&items, "root")] {
+    let events = table("events", None);
+    for (table, key) in [(&events, "id"), (&roots, "id"), (&items, "root")] {
         let create = create(table, key);
         opened
             .session
@@ -116,15 +186,7 @@ async fn writers_index_what_a_commit_finds_by_key_and_the_commit_changes_no_sche
         writer.flush().await.expect("the flush stages");
     }
     let staged = schema_objects(&path);
-    for (index, table) in [
-        ("_rdlt_key__roots", "roots"),
-        ("_rdlt_root__items", "items"),
-    ] {
-        assert!(
-            staged.contains(&(index.to_owned(), table.to_owned())),
-            "{index} on {table}: {staged:?}"
-        );
-    }
+    indexed_as_a_commit_finds_rows(&staged);
     let meta = CommitMeta {
         load_id: context.load_id,
         commit_seq: CommitSeq::FIRST,
@@ -145,13 +207,13 @@ async fn writers_index_what_a_commit_finds_by_key_and_the_commit_changes_no_sche
         .commit(&meta)
         .await
         .expect("the commit lands");
-    assert_eq!(receipt.rows, 2);
+    assert_eq!(receipt.rows, 3);
     assert_eq!(schema_objects(&path), staged);
 }
 
 #[test]
 fn a_catalog_that_cannot_be_read_is_an_error_where_a_table_is_read_back() {
-    use rdlt_connector::sqlgen::{SqlDialect as _, SqlPlanner, Sqlite};
+    use rdlt_connector::sqlgen::SqlDialect as _;
     let directory = crate::scratch::tempdir().expect("a temporary directory");
     let path = directory.path().join("orders.db");
     let connection = database::connect(&path).expect("the database opens");

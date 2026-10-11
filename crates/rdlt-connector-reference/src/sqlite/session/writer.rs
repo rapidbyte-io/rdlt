@@ -17,7 +17,8 @@ use super::owners::{changed, derived, distinct, owned};
 /// Readies `table`, which its pipeline created, for a writer of `pipeline`'s session: readies a
 /// change stream's tables, checks that it holds its merge key, creates the generation table it fills
 /// where that is missing, and indexes what a commit finds rows in, which a commit never does
-/// itself.
+/// itself: the staging by who staged its rows while the table appends, and by key where it
+/// merges.
 pub(super) fn ready(
     transaction: &Transaction<'_>,
     planner: &SqlPlanner<Sqlite>,
@@ -51,7 +52,8 @@ pub(super) fn ready(
             &planner.generation(&table_owner, table, &base)?,
         )?;
     }
-    let mut indexes = planner.key_indexes(&table_owner, table)?;
+    let mut indexes = vec![planner.staged_index(&table_owner, table)?];
+    indexes.extend(planner.key_indexes(&table_owner, table)?);
     indexes.extend(planner.root_index(&table_owner, table)?);
     run_all(transaction, &indexes)
 }
