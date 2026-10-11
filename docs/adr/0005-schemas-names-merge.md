@@ -30,14 +30,13 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   reflects the change; a widen makes the column the join of its type and the new one, so a
   committed column a crashed attempt widened along another branch still ends up holding both;
   a new column clashing with a leftover, or a join the destination cannot store, is a `Data`
-  error coded `schema_conflict` that changes nothing. The engine then resolves the change again with every new identifier hash-suffixed,
-  the hash seeded with a fresh salt on each of up to four retries, and a further conflict fails
-  the run. Recording names in state before applying changes was rejected: it needs a commit per
-  schema change, against one commit per barrier. A widen whose join the destination cannot
-  store fails the stream until destinations report their columns. Amended 2026-10-03 (ADR 0041):
-  a widen the destination refuses keeps that column as it is for the attempt, its values
-  routed to variant columns; a refused new column still has new names hashed.
-- **The first batch, or the declared schema, creates the table.** A stream no longer needs a
+  error coded `schema_conflict` that changes nothing. The engine then resolves the change again with
+  every new identifier hash-suffixed, the hash seeded with a fresh salt on each of up to four
+  retries, and a further conflict fails the run. Recording names in state before applying changes
+  was rejected: it needs a commit per schema change, against one commit per barrier. A widen the
+  destination refuses keeps that column as it is for the attempt, its values routed to variant
+  columns; a refused new column still has new names hashed (ADR 0041).
+- **The first batch, or the declared schema, creates the table.** A stream needs no
   declared schema; a declared one is resolved like a batch before anything is read. After the
   table exists, a new column or a value its column cannot hold is a change, which the column's
   policy applies (`evolve`), refuses (`freeze`) or discards (`discard_row`, `discard_value`).
@@ -61,12 +60,10 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   logical type stays a struct or list.
 - **Metadata columns.** Every row carries `_rdlt_load_id` (the load's UUID) and
   `_rdlt_loaded_at` (the attempt's start, microseconds, UTC); merge rows carry `_rdlt_seq`, 16
-  bytes of `Binary`: the segment id then the row's index in the segment, big-endian. Their
-  identifiers follow the destination's rules, and source columns never take them. The spec's
+  bytes of `Binary`: the segment id then the row's index in the segment, big-endian. Every
+  metadata column's identifier is fixed by the rules alone, whatever columns a table has, and a
+  source column asking for one is refused (`column_name_reserved`). The spec's
   dictionary-encoded load id arrives with the lowering plan (M3).
-  - Amended 2026-10-03 (ADR 0046): every metadata column's identifier is fixed by the rules
-    alone, whatever columns a table has, and a source column asking for one is refused
-    (`column_name_reserved`), not renamed.
 - **Merge.** The key comes from the plan or the catalog's primary key. `TableRef::merge` names the
   key columns and the sequence column; the engine keeps the last row of each key within a batch,
   and the destination keeps one row per key: the newest commit's, and within a commit the
@@ -81,16 +78,14 @@ contract M2b settles. Building M2b surfaced decisions the spec leaves open or ge
   and the difference is reserved without waiting.
 - **Discards are counted per stream** in the commit that publishes their segment. Samples and
   `Discarded` events arrive with events (M7).
-- **Identifiers.** A source name is folded and cleaned under the destination's rules; a taken,
-  reserved or metadata identifier gets `_` and six base32 digits of the xxh3 hash of the exact
-  source path, extended while still taken. The columns one batch adds are named in sorted order,
-  so arrival order never matters.
-  - Amended 2026-10-03 (ADR 0046): a source column whose name folds and cleans to a metadata
-    column's is refused rather than suffixed.
-- **M2a's deferred minors.** Configured lanes never exceed the destination's
-  `max_parallel_writers`; a budget waiter that gave up no longer counts toward `peak_memory`;
-  `RunOutcome` documents the error a stop during backoff carries; the coordinator's commit
-  building moved to its own file.
+- **Identifiers.** A source name is folded and cleaned under the destination's rules; a taken
+  or reserved identifier gets `_` and six base32 digits of the xxh3 hash of the exact source path,
+  extended while still taken. A source column whose name folds and cleans to a metadata column's
+  is refused. The columns one batch adds are named in sorted order, so arrival order never
+  matters.
+- **Lanes and waiters.** Configured lanes never exceed the destination's `max_parallel_writers`; a
+  budget waiter that gave up does not count toward `peak_memory`; `RunOutcome` documents the error
+  a stop during backoff carries.
 - **Dependencies.** `arrow-array` enables `chrono-tz`, since rendering a timestamp with a named
   zone as text or JSON needs it. `xxhash-rust` is licensed BSL-1.0, now allowed.
 - **Deferred:** JSON and change pushes, `normalize` and child tables (M3); the lowering plan and
