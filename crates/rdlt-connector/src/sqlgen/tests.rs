@@ -847,13 +847,18 @@ fn a_commit_finds_its_segments_in_as_many_steps_however_many_others_the_catalog_
             ))
             .unwrap();
         [
-            planned(&connection, &[planner.forget(&mine, Epoch(2), &committed)]),
+            planned(
+                &connection,
+                &[planner.forget(&mine, Epoch(2), &committed).unwrap()],
+            ),
             planned(&connection, &planner.discard_of(&mine, Epoch(2), &[])),
         ]
     };
     let (few, many) = (steps(10), steps(10_000));
     assert_eq!(many, few, "steps beside 10,000 rows, then beside 10");
-    let staged = planner.staged(&mine, Epoch(2), &segments(&[1, 2, 4, 5]));
+    let staged = planner
+        .staged(&mine, Epoch(2), &segments(&[1, 2, 4, 5]))
+        .unwrap();
     let explain = Statement {
         sql: format!("EXPLAIN QUERY PLAN {}", staged.sql),
         params: staged.params.clone(),
@@ -870,6 +875,70 @@ fn a_commit_finds_its_segments_in_as_many_steps_however_many_others_the_catalog_
             .all(|step| !step.starts_with("SCAN _rdlt_segments")),
         "{plan:?}"
     );
+}
+
+/// SQLite binding at most seven parameters a statement.
+#[derive(Debug)]
+struct Narrow;
+
+impl SqlDialect for Narrow {
+    fn placeholder(&self, index: usize) -> String {
+        Sqlite.placeholder(index)
+    }
+
+    fn column_type(&self, logical: &LogicalType) -> Option<String> {
+        Sqlite.column_type(logical)
+    }
+
+    fn columns(&self, table: &str) -> Statement {
+        Sqlite.columns(table)
+    }
+
+    fn resolves(&self, name: &str) -> Statement {
+        Sqlite.resolves(name)
+    }
+
+    fn transactional_ddl(&self) -> bool {
+        Sqlite.transactional_ddl()
+    }
+
+    fn max_params(&self) -> usize {
+        7
+    }
+}
+
+#[test]
+fn a_plan_binding_more_than_the_dialect_takes_is_refused() {
+    let planner = SqlPlanner::try_new(Narrow).unwrap();
+    let mine = pipeline("mine");
+    // Pipeline and epoch, then two bounds a range: two ranges bind six, three bind eight.
+    planner.forget(&mine, Epoch(2), &segments(&[1, 3])).unwrap();
+    let error = planner
+        .forget(&mine, Epoch(2), &segments(&[1, 3, 5]))
+        .unwrap_err();
+    let limit = error.limit().expect("a limit refused it");
+    assert_eq!(
+        (limit.name, limit.limit, limit.actual),
+        ("statement parameters", 7, 8)
+    );
+    let error = planner
+        .staged(&mine, Epoch(2), &segments(&[1, 3, 5]))
+        .unwrap_err();
+    assert_eq!(error.limit().unwrap().name, "statement parameters");
+    let columns = [Column {
+        name: "id".to_owned(),
+        declared: "INTEGER".to_owned(),
+    }];
+    let error = planner
+        .publish_as(
+            &staged("orders", None, None),
+            &columns,
+            &mine,
+            Epoch(2),
+            &segments(&[1, 3, 5]),
+        )
+        .unwrap_err();
+    assert_eq!(error.limit().unwrap().name, "statement parameters");
 }
 
 #[test]
@@ -1296,7 +1365,7 @@ fn a_merge_replaces_every_published_row_of_its_keys_whatever_the_table_held() {
     );
     let rows = query(
         &connection,
-        &planner.staged(&mine, Epoch(1), &segments(&[1])),
+        &planner.staged(&mine, Epoch(1), &segments(&[1])).unwrap(),
     );
     let [row] = &rows[..] else { panic!("{rows:?}") };
     let [_, _, Value::Text(key), Value::Text(seq), ..] = &row[..] else {
@@ -1344,7 +1413,7 @@ fn a_recorded_merge_key_keeps_a_change_stream_s_columns() {
     );
     let rows = query(
         &connection,
-        &planner.staged(&mine, Epoch(1), &segments(&[1])),
+        &planner.staged(&mine, Epoch(1), &segments(&[1])).unwrap(),
     );
     let [row] = &rows[..] else { panic!("{rows:?}") };
     let [_, _, Value::Text(key), Value::Text(seq), ..] = &row[..] else {
@@ -1391,7 +1460,9 @@ fn a_recorded_merge_key_keeps_a_history_table_s_columns() {
         );
         let rows = query(
             &connection,
-            &planner.staged(&mine, Epoch(1), &segments(&[segment])),
+            &planner
+                .staged(&mine, Epoch(1), &segments(&[segment]))
+                .unwrap(),
         );
         let [row] = &rows[..] else { panic!("{rows:?}") };
         let [_, _, Value::Text(key), Value::Text(seq), ..] = &row[..] else {
@@ -1470,7 +1541,10 @@ fn staged_rows_are_counted_by_table_and_generation_until_forgotten() {
     let (connection, planner) = database();
     let mine = staged_orders(&connection, &planner);
     let committed = segments(&[1, 2, 5]);
-    let rows = query(&connection, &planner.staged(&mine, Epoch(2), &committed));
+    let rows = query(
+        &connection,
+        &planner.staged(&mine, Epoch(2), &committed).unwrap(),
+    );
     let count = |generation, rows, bytes| {
         vec![
             text("orders"),
@@ -1485,15 +1559,18 @@ fn staged_rows_are_counted_by_table_and_generation_until_forgotten() {
         rows,
         [count(Value::Null, 3, 30), count(Value::Integer(3), 1, 10)]
     );
-    run(&connection, &planner.forget(&mine, Epoch(2), &committed));
+    run(
+        &connection,
+        &planner.forget(&mine, Epoch(2), &committed).unwrap(),
+    );
     let all = segments(&[1, 2, 4, 5]);
-    let rows = query(&connection, &planner.staged(&mine, Epoch(2), &all));
+    let rows = query(&connection, &planner.staged(&mine, Epoch(2), &all).unwrap());
     assert_eq!(
         rows,
         [count(Value::Null, 1, 10)],
         "segment 4 is still recorded"
     );
-    let none = planner.staged(&mine, Epoch(2), &SegmentSet::new());
+    let none = planner.staged(&mine, Epoch(2), &SegmentSet::new()).unwrap();
     assert!(query(&connection, &none).is_empty());
 }
 
@@ -2158,7 +2235,9 @@ fn discarding_removes_only_what_older_sessions_of_the_pipeline_staged() {
     let staged = |pipeline, epoch| {
         query(
             &connection,
-            &planner.staged(pipeline, Epoch(epoch), &segments(&[1])),
+            &planner
+                .staged(pipeline, Epoch(epoch), &segments(&[1]))
+                .unwrap(),
         )
     };
     assert!(staged(&mine, 1).is_empty());
@@ -2268,7 +2347,7 @@ fn ids_beyond_the_signed_range_keep_their_value() {
     );
     let rows = query(
         &connection,
-        &planner.staged(&mine, Epoch(1), &segments(&[1])),
+        &planner.staged(&mine, Epoch(1), &segments(&[1])).unwrap(),
     );
     let [row] = &rows[..] else { panic!("{rows:?}") };
     let Value::Integer(stored) = row[1] else {

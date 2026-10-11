@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::limits::{BUSY_WAIT, JOURNAL_BYTES};
 
 use parking_lot::Mutex;
-use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Statement};
+use rdlt_connector::sqlgen::{Column, SqlDialect, SqlValue, Sqlite, Statement};
 use rdlt_connector::{ConnectorError, ConnectorErrorKind, Result};
 use rusqlite::config::DbConfig;
 use rusqlite::limits::Limit;
@@ -122,6 +122,10 @@ fn harden(connection: &Connection) -> rusqlite::Result<()> {
         connection.set_db_config(setting, on)?;
     }
     connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    // Never more values a statement than the planner keeps within; never above the build's own
+    // limit, which SQLite holds a lower setting to.
+    let params = i32::try_from(Sqlite.max_params()).unwrap_or(i32::MAX);
+    connection.set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, params)?;
     connection.pragma_update(None, "cell_size_check", true)?;
     connection.pragma_update_and_check(None, "mmap_size", 0, |_| Ok(()))
 }

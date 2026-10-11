@@ -49,6 +49,8 @@ fn a_connection_is_opened_hardened() {
     }
     let attached = connection.limit(Limit::SQLITE_LIMIT_ATTACHED);
     assert_eq!(attached.expect("the limit reads"), 0);
+    let params = connection.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER);
+    assert_eq!(params.expect("the limit reads"), 32_766);
     assert_eq!(
         pragma(&connection, "journal_mode"),
         Value::Text("wal".into())
