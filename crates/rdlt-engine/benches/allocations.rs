@@ -44,7 +44,7 @@ const COUNTED: [(&str, fn()); 5] = [
 const COUNTED_BYTES: usize = 1 << 20;
 /// Batches the passthrough case moves each time.
 const BATCHES: u32 = 8;
-/// Rows of each batch the passthrough, log and codec cases move.
+/// Rows of each batch the passthrough, log, codec and lowering cases move.
 const ROWS: u32 = 8192;
 /// One runtime worker and one compute thread, whatever the host has: a case counts the same on
 /// every machine only on a layout it fixes, which is a measuring fixture and no deployment's.
@@ -57,7 +57,7 @@ const LAYOUT: Cores = Cores::new(
 type Case = (&'static str, fn(usize));
 
 /// Every case the instruction counts run.
-const CASES: [Case; 13] = [
+const CASES: [Case; 17] = [
     ("passthrough/null_sink", passed_through),
     ("shred/nested", |times| shredded(Corpus::Nested, times)),
     ("shred/with_arrays", |times| {
@@ -87,6 +87,14 @@ const CASES: [Case; 13] = [
     ("wal/encode", log_encoded),
     ("wal/scan", log_scanned),
     ("ipc/roundtrip", round_tripped),
+    ("lowering/history", |times| lowered("history", times)),
+    ("lowering/changes", |times| lowered("changes", times)),
+    ("lowering/one_bad_value", |times| {
+        lowered("one_bad_value", times);
+    }),
+    ("lowering/temporal_widening", |times| {
+        lowered("temporal_widening", times);
+    }),
 ];
 
 #[expect(
@@ -317,6 +325,18 @@ fn dropped(corpus: Corpus, times: usize) {
         for batch in &batches {
             black_box(pruned(batch, 8, every).expect("the batch normalizes"));
         }
+    }
+}
+
+/// Preparing the lowering bench's batch `name`, of [`ROWS`] rows, on the calling thread; the
+/// first prepare makes its plan.
+fn lowered(name: &str, times: usize) {
+    let lowering = Lowering::all(ROWS)
+        .into_iter()
+        .find(|lowering| lowering.name() == name)
+        .expect("the lowering bench prepares a batch of each name a case gives");
+    for _ in 0..times {
+        black_box(lowering.prepare());
     }
 }
 
