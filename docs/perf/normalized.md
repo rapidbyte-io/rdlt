@@ -39,5 +39,6 @@ median of five rounds and their range.
 | 10 000 | 0.490 | 150 | 26 962 |
 | 50 000 | 0.486 | 150 | 133 662 |
 
-A flush of two or more units takes 24–33 % less time than flushes of one unit moving the same
-rows, and allocates 9–10 % fewer times a row for 3 % fewer bytes. A run keeps 1.10–1.18 CPUs busy.
+The runs whose flushes hold two or nine units take 24–33 % less time than the run whose flushes
+hold one unit, moving the same rows, and allocate 9–10 % fewer times a row for 3 % fewer bytes. A
+run keeps 1.10–1.18 CPUs busy.
