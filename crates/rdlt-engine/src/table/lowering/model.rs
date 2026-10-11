@@ -35,12 +35,10 @@ impl LoweringPlan {
             .zip(&self.sources)
         {
             let converted = match source {
-                Source::Incoming(index, from) if !source.is_null() => {
-                    match converted.iter().find(|(converted, _)| converted == index) {
-                        Some((_, converted)) => Arc::clone(converted),
-                        None => held_as(&self.stream, batch.column(*index), from, column)?,
-                    }
-                }
+                Source::Incoming(index, from) if !source.is_null() => match converted.get(*index) {
+                    Some(converted) => Arc::clone(converted),
+                    None => held_as(&self.stream, batch.column(*index), from, column)?,
+                },
                 Source::Read(index) => {
                     let own = fitted.own(*index, column.logical_type());
                     let own = own.map_err(|error| self.unread(column, error))?;

@@ -13,8 +13,10 @@ use crate::policy::SchemaPolicy;
 use crate::table::convert::{convert, decoded};
 use crate::table::temporal::micros_at;
 
-/// Incoming columns, by their place in a batch, each converted to the type its column holds.
-pub(super) type Converted = Vec<(usize, ArrayRef)>;
+/// Incoming columns, by their place in a batch, each converted to the type its column holds
+/// where its schema policy decided it.
+#[derive(Default)]
+pub(super) struct Converted(Vec<Option<ArrayRef>>);
 
 /// What checking the columns a schema policy decides found: the rows of each holding a value its
 /// column cannot hold, and the others converted whole, which lowering takes as they are.
@@ -22,6 +24,52 @@ pub(super) type Converted = Vec<(usize, ArrayRef)>;
 pub(super) struct Checked {
     unheld: Vec<(usize, BooleanArray)>,
     pub(super) converted: Converted,
+}
+
+impl Converted {
+    /// The conversion of the incoming column at `index`, where its policy made one.
+    pub(super) fn get(&self, index: usize) -> Option<&ArrayRef> {
+        self.0.get(index).and_then(Option::as_ref)
+    }
+
+    /// Keeps `array` as the conversion of the incoming column at `index` of a batch of
+    /// `columns` columns.
+    fn set(&mut self, columns: usize, index: usize, array: ArrayRef) {
+        if self.0.is_empty() {
+            self.0.resize(columns, None);
+        }
+        self.0[index] = Some(array);
+    }
+
+    /// Forgets the conversion of the incoming column at `index`.
+    fn forget(&mut self, index: usize) {
+        if let Some(slot) = self.0.get_mut(index) {
+            *slot = None;
+        }
+    }
+
+    /// These and `other`'s conversions, of columns that two policies decide apart.
+    pub(super) fn extend(&mut self, other: Self) {
+        if self.0.is_empty() {
+            *self = other;
+            return;
+        }
+        for (slot, other) in self.0.iter_mut().zip(other.0) {
+            if other.is_some() {
+                *slot = other;
+            }
+        }
+    }
+
+    /// Forgets the conversion of each column of `before` that `after`, the same batch, holds
+    /// changed: what it converted to is no longer what lowering takes.
+    pub(super) fn stale(&mut self, before: &RecordBatch, after: &RecordBatch) {
+        for (index, slot) in self.0.iter_mut().enumerate() {
+            if slot.is_some() && !Arc::ptr_eq(before.column(index), after.column(index)) {
+                *slot = None;
+            }
+        }
+    }
 }
 
 impl LoweringPlan {
@@ -43,7 +91,11 @@ impl LoweringPlan {
                 continue;
             }
             match refused(batch.column(*index), from, column.logical_type())? {
-                Check::Converted(converted) => checked.converted.push((*index, converted)),
+                Check::Converted(converted) => {
+                    checked
+                        .converted
+                        .set(batch.num_columns(), *index, converted);
+                }
                 Check::Refused(rows) => unheld.push((*index, rows)),
             }
         }
@@ -56,9 +108,7 @@ impl LoweringPlan {
                 None => unheld.push((index, rows)),
             }
             // The column changes, so what it converted to is not what lowering takes.
-            checked
-                .converted
-                .retain(|(converted, _)| *converted != index);
+            checked.converted.forget(index);
         }
         Ok(checked)
     }

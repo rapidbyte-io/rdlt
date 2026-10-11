@@ -395,3 +395,26 @@ fn a_nested_key_is_zeroed_and_refused_for_a_nan_only_in_a_row_that_names_a_key()
     let refused = key_values(&stream, "k", &column, &|_| true).unwrap_err();
     assert_eq!(refused.code(), Some("merge_key_nan"));
 }
+
+/// A key a discarding policy converted, whose negative zero keying then made the zero it
+/// equals, is stored as that zero, not as what the policy converted.
+#[test]
+fn a_negative_zero_key_a_discarding_policy_converted_is_stored_as_zero() {
+    use crate::policy::{SchemaPolicy, SchemaSettings};
+    let stream = plan().schema(SchemaSettings::new().policy(SchemaPolicy::DiscardValue));
+    let resolver = resolver(capabilities(), stream, &["id"]);
+    let model = created(
+        &resolver,
+        &[("id", LogicalType::Float64), ("v", LogicalType::Utf8)],
+    );
+    let batch = keyed(Arc::new(Float32Array::from(vec![1.5, -0.0, 2.5])));
+    let incoming = Incoming::declared(TableSchema::from_arrow(&batch.schema()).unwrap());
+    let resolution = resolver.resolve(&model, &incoming).unwrap();
+    let view = Arc::new(TableView::new(&table("t"), resolution.model, &resolver).unwrap());
+    let prepared = LoweringPlan::new(resolver.stream.clone(), view, incoming, resolution.routes)
+        .with_policies(vec![SchemaPolicy::DiscardValue; 2])
+        .prepare(&batch, None, &stamp(), None)
+        .unwrap();
+    let id = prepared.batch.column_by_name("id").unwrap();
+    assert_eq!(zero_signs(id.as_ref()), [false]);
+}
