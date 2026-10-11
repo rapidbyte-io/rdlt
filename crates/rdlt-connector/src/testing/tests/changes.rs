@@ -28,6 +28,9 @@ pub(super) struct Flaws {
     pub(super) hard_on_soft: bool,
     /// Stores null in the columns an update flags unchanged.
     pub(super) drop_unchanged: bool,
+    /// Skips a change whose key is null, as a merge joining on its key does: a truncate, which
+    /// names no key, never applies.
+    pub(super) skip_unkeyed: bool,
 }
 
 /// What a table remembers of the rows its change stream removed outright.
@@ -119,6 +122,13 @@ impl Merging<'_> {
         values.join("\u{1}")
     }
 
+    fn unkeyed(&self, row: &RecordBatch) -> bool {
+        self.key.columns.iter().any(|column| {
+            row.column_by_name(column)
+                .is_none_or(|values| values.is_null(0))
+        })
+    }
+
     fn op(&self, row: &RecordBatch) -> Option<ChangeOp> {
         let ops = row.column_by_name(&self.changes.op)?;
         let ops = arrow_cast::cast(ops, &DataType::Int8).ok()?;
@@ -134,6 +144,9 @@ impl Merging<'_> {
     }
 
     fn apply(&self, stored: &mut Vec<RecordBatch>, tombstones: &mut Tombstones, row: &RecordBatch) {
+        if self.flaws.skip_unkeyed && self.unkeyed(row) {
+            return;
+        }
         let seq = self.seq(row);
         let op = self.op(row);
         let admitted =

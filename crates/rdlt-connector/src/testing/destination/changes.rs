@@ -164,8 +164,7 @@ impl Bench<'_> {
         commits: &[&[Change]],
     ) -> Result<Vec<Vec<Marked>>, Violation> {
         let mut published = Vec::with_capacity(commits.len());
-        for (index, changes) in commits.iter().enumerate() {
-            let load = load * 16 + u8::try_from(index).unwrap_or(0);
+        for (load, changes) in (load * 16..).zip(commits) {
             let mut opened = self.open(self.destination, load).await?;
             let create = TableChange::Create {
                 table: table.clone(),
