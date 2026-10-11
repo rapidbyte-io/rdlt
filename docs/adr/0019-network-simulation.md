@@ -16,7 +16,7 @@ the whole engine on a paused clock from a seed, with connectors in the engine's 
     `serve_listener`. The binary's `--listen` serves a TCP listener with it.
   - `rdlt-host`'s `Remote` reaches endpoints through any `rdlt_host::Network`; `Tcp`, the
     operating system's, is the default.
-  - The host no longer reads the TCP socket directly to see whether the connector accepted its
+  - The host does not read the TCP socket directly to see whether the connector accepted its
     certificate: it reads the connector's first bytes through the TLS stream, and hands them to
     the protocol again. The same code runs over any network.
 - **A simulated network, from turmoil.** turmoil 0.7 runs each host on a tokio runtime of its own

@@ -25,8 +25,8 @@ data is replayed from the source.
   - **M5c**, the WAL: `WalStore`, `LocalWal`, replay, and acknowledging non-replayable sources
     once their seal is durable.
   - **M5d**, continuous runs (`until`) and the owner's streaming items 1–4, and `S-PARTITION`.
-  - **M5e**, history (SCD2) and `D-HIST`. Amended 2026-09-30: ADR 0035 leaves history for
-    normalized streams and updates leaving columns unchanged to M5e2.
+  - **M5e**, history (SCD2) and `D-HIST`. ADR 0035 leaves history
+    for normalized streams and updates leaving columns unchanged to M5e2.
   - **M5f**, the failpoint sweep, the kill matrix with spawned connectors, and M5's exit
     criterion (ADR 0036).
 - **The WAL's store is a trait.** `WalStore` keeps a load's log: `LocalWal` in a local
@@ -119,19 +119,17 @@ data is replayed from the source.
 ## Consequences
 
 - A CDC source loads into the memory, JSON lines and Arrow IPC destinations with every delete and
-  truncate mode: in process, spawned, and remote. The SQL destinations refuse change merges
-  (`delete_mode_unsupported`) until M5b.
+  truncate mode: in process, spawned, and remote. The SQL destinations take change merges too
+  (ADR 0027).
 - `ChangeColumns`, `Deletion` and `PartitionPlan` are public contract. Connectors built on
   `Vec<Partition>` still compile through `From`.
 - A destination that implements change merges must honour the seq guard across commits, and a
   truncate's seq bound. M5b's clauses check this for any destination.
-- A remote destination built before M5a would drop `MergeKey.changes` as an unknown field and
-  upsert change rows as data. Nothing is published, so M5b settles it with a capability for
-  change merges when the SQL destinations learn them.
-- State written by this build can hold `Sequences` entries, which a build before it cannot read:
-  a pipeline's state moves forward only. Nothing is published, so no deployed build meets it.
-  Amended 2026-10-03 (ADR 0041): records name their format and refuse fields their reader does
-  not know, so a build reading another's state refuses it rather than misread it.
+- A destination declares that it merges change streams (`Capabilities::merge_changes`; ADR 0027),
+  which a remote destination built before M5a does not, so none is sent change rows to upsert as
+  data.
+- State records name their format and refuse fields their reader does not know, so a build
+  reading another's state refuses it (ADR 0041).
 - Switching an existing merge table to CDC needs a new table; a reset that clears a stream's
   table and state is owed with M5d's retention reset.
 - A log kept in a local directory does not survive the loss of a worker's disk. That costs a
