@@ -11,23 +11,21 @@
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
-
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
     ArrowPrimitiveType, Date32Type, Date64Type, DurationMicrosecondType, DurationMillisecondType,
-    DurationNanosecondType, DurationSecondType, Time32MillisecondType, Time32SecondType,
-    Time64MicrosecondType, Time64NanosecondType, TimestampMicrosecondType,
+    DurationNanosecondType, DurationSecondType, Int32Type, Int64Type, Time32MillisecondType,
+    Time32SecondType, Time64MicrosecondType, Time64NanosecondType, TimestampMicrosecondType,
     TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType,
 };
-use arrow_array::{Array, ArrayRef, PrimitiveArray};
+use arrow_array::{Array, ArrayRef};
 use arrow_schema::{ArrowError, DataType, TimeUnit};
 
 /// Nanoseconds in a day.
 pub const DAY: i128 = 86_400_000_000_000;
 
 /// Milliseconds in a day: a `Date64`'s step.
-const DAY_MILLIS: i128 = 86_400_000;
+const DAY_MILLIS: i64 = 86_400_000;
 
 /// Nanoseconds in one `unit`.
 #[must_use]
@@ -41,13 +39,13 @@ pub fn unit_nanos(unit: TimeUnit) -> i128 {
 }
 
 /// The nanoseconds `value`, as a column of `data_type` stores it, denotes: since the epoch for
-/// dates and timestamps, since midnight for times of day, and elapsed for durations; `None` for
-/// a type that is not temporal.
+/// dates and timestamps (a `Date64` floored to its day), since midnight for times of day, and
+/// elapsed for durations; `None` for a type that is not temporal.
 #[must_use]
 pub fn nanos(data_type: &DataType, value: i128) -> Option<i128> {
     Some(match data_type {
         DataType::Date32 => value * DAY,
-        DataType::Date64 => value.div_euclid(DAY_MILLIS) * DAY,
+        DataType::Date64 => value.div_euclid(i128::from(DAY_MILLIS)) * DAY,
         DataType::Timestamp(unit, _)
         | DataType::Time32(unit)
         | DataType::Time64(unit)
@@ -87,43 +85,38 @@ pub fn stored(array: &dyn Array, row: usize) -> Option<i64> {
 /// `array`, a plain temporal array, as `to`: each value the same instant, time of day or
 /// duration, exactly.
 ///
+/// A widening multiplies each value by what one of `from`'s units counts in `to`'s, a whole
+/// number since `to`'s unit is as fine or finer; a `Date64` is first the day it is within.
+///
 /// # Errors
 ///
 /// A conversion that is no widening, such as an instant into a time of day or a zoned instant
-/// into a wall-clock time, and a value `to` cannot hold exactly.
+/// into a wall-clock time, and a value `to` cannot hold.
 pub fn widened(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
+    use DataType as T;
     let from = array.data_type();
     let unwidened = || ArrowError::CastError(format!("{from} does not widen to {to}"));
     if !widens(from, to) {
         return Err(unwidened());
     }
-    // A unit of `to`, in nanoseconds: what one of its values counts.
-    let per = nanos(to, 1).ok_or_else(unwidened)?;
-    if let (DataType::Timestamp(unit, _), DataType::Timestamp(wider, _)) = (from, to)
-        && unit == wider
-    {
-        // The same count in the same unit, under another zone: the buffers as they are.
-        let data = array
-            .to_data()
-            .into_builder()
-            .data_type(to.clone())
-            .build()?;
-        return Ok(arrow_array::make_array(data));
-    }
-    let count = |row: usize| -> Result<i128, ArrowError> {
-        let value = stored(array.as_ref(), row).map(i128::from);
-        let nanos = value
-            .and_then(|value| nanos(from, value))
-            .ok_or_else(unwidened)?;
-        // No widening ends in a `Date64`, whose unit counts no whole nanosecond: none is divided by.
-        if nanos.checked_rem(per) != Some(0) {
-            return Err(ArrowError::CastError(format!(
-                "{nanos} ns is no whole number of a {to}'s units"
-            )));
-        }
-        Ok(nanos / per)
+    let unit = match from {
+        T::Date32 | T::Date64 => DAY,
+        _ => nanos(from, 1).ok_or_else(unwidened)?,
     };
-    built(array.as_ref(), to, count)
+    let factor = nanos(to, 1)
+        .and_then(|finer| i64::try_from(unit / finer).ok())
+        .ok_or_else(unwidened)?;
+    match from {
+        // The same count in the same unit, under another zone.
+        T::Timestamp(..) if factor == 1 => retyped(array, to),
+        T::Date64 => scaled::<Int64Type>(array, to, |millis| {
+            millis.div_euclid(DAY_MILLIS).checked_mul(factor)
+        }),
+        T::Date32 | T::Time32(_) => {
+            scaled::<Int32Type>(array, to, |value| value.checked_mul(factor))
+        }
+        _ => scaled::<Int64Type>(array, to, |value| value.checked_mul(factor)),
+    }
 }
 
 /// Whether `data_type` is a temporal type: a date, a time of day, a timestamp or a duration.
@@ -160,59 +153,46 @@ pub fn widens(from: &DataType, to: &DataType) -> bool {
     }
 }
 
-/// The array of `to` holding `count` of each row of `array` that is not null, with `array`'s
-/// nulls; refused where a count is beyond what `to` stores.
-fn built(
-    array: &dyn Array,
+/// `array` as `to`, its buffers as they are.
+fn retyped(array: &ArrayRef, to: &DataType) -> Result<ArrayRef, ArrowError> {
+    let data = array
+        .to_data()
+        .into_builder()
+        .data_type(to.clone())
+        .build()?;
+    Ok(arrow_array::make_array(data))
+}
+
+/// `array`, stored as `I`'s integers, as `to`, each value `widen`ed into `to`'s integer and
+/// `array`'s nulls kept; a null's slot is never read.
+fn scaled<I>(
+    array: &ArrayRef,
     to: &DataType,
-    count: impl Fn(usize) -> Result<i128, ArrowError>,
-) -> Result<ArrayRef, ArrowError> {
-    macro_rules! of {
-        ($type:ty) => {{
-            let mut values: Vec<<$type as ArrowPrimitiveType>::Native> =
-                Vec::with_capacity(array.len());
-            for row in 0..array.len() {
-                if array.is_null(row) {
-                    values.push(Default::default());
-                    continue;
-                }
-                let value = count(row)?;
-                values.push(value.try_into().map_err(|_| {
-                    ArrowError::CastError(format!("value {value} is beyond what a {to} holds"))
-                })?);
-            }
-            PrimitiveArray::<$type>::try_new(values.into(), array.nulls().cloned())?
-        }};
-    }
-    Ok(match to {
-        DataType::Date32 => Arc::new(of!(Date32Type)),
-        DataType::Timestamp(unit, zone) => {
-            let zone = zone.clone();
-            match unit {
-                TimeUnit::Second => Arc::new(of!(TimestampSecondType).with_timezone_opt(zone)),
-                TimeUnit::Millisecond => {
-                    Arc::new(of!(TimestampMillisecondType).with_timezone_opt(zone))
-                }
-                TimeUnit::Microsecond => {
-                    Arc::new(of!(TimestampMicrosecondType).with_timezone_opt(zone))
-                }
-                TimeUnit::Nanosecond => {
-                    Arc::new(of!(TimestampNanosecondType).with_timezone_opt(zone))
-                }
-            }
-        }
-        DataType::Time32(TimeUnit::Second) => Arc::new(of!(Time32SecondType)),
-        DataType::Time32(_) => Arc::new(of!(Time32MillisecondType)),
-        DataType::Time64(TimeUnit::Microsecond) => Arc::new(of!(Time64MicrosecondType)),
-        DataType::Time64(_) => Arc::new(of!(Time64NanosecondType)),
-        DataType::Duration(TimeUnit::Second) => Arc::new(of!(DurationSecondType)),
-        DataType::Duration(TimeUnit::Millisecond) => Arc::new(of!(DurationMillisecondType)),
-        DataType::Duration(TimeUnit::Microsecond) => Arc::new(of!(DurationMicrosecondType)),
-        DataType::Duration(TimeUnit::Nanosecond) => Arc::new(of!(DurationNanosecondType)),
-        other => {
-            return Err(ArrowError::CastError(format!(
-                "{other} is no temporal type a widening reaches"
-            )));
-        }
-    })
+    widen: impl Fn(i64) -> Option<i64>,
+) -> Result<ArrayRef, ArrowError>
+where
+    I: ArrowPrimitiveType,
+    I::Native: Into<i64>,
+{
+    let stored = retyped(array, &I::DATA_TYPE)?;
+    let values = stored.as_primitive::<I>();
+    let beyond =
+        |value: i64| ArrowError::CastError(format!("value {value} is beyond what a {to} holds"));
+    let data = match to {
+        DataType::Date32 | DataType::Time32(_) => values
+            .try_unary::<_, Int32Type, _>(|value| {
+                let value = value.into();
+                widen(value)
+                    .and_then(|widened| i32::try_from(widened).ok())
+                    .ok_or_else(|| beyond(value))
+            })?
+            .into_data(),
+        _ => values
+            .try_unary::<_, Int64Type, _>(|value| {
+                let value = value.into();
+                widen(value).ok_or_else(|| beyond(value))
+            })?
+            .into_data(),
+    };
+    retyped(&arrow_array::make_array(data), to)
 }

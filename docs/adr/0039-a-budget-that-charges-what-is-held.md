@@ -165,8 +165,8 @@ budget before it is held, or bounded by a limit with a typed refusal.
     escapes counted as they are, not at their worst.
   - A nested column converts field by field and item by item; a field the table's struct has
     and the batch's lacks costs a null a row. Stored as text it costs its JSON text beside.
-  - A conversion between dates, times and instants costs four slots a value: it holds each as
-    an optional 64-bit integer twice beside its result.
+  - A conversion between dates, times and instants holds its result beside the value: one slot
+    a value, as its column's type takes.
   - Every row costs the nulls of the table's columns the batch holds nothing in.
   - The engine's text builders reserve what the model says the text takes at most, so they
     never grow beyond what was charged.
