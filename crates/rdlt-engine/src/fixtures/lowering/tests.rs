@@ -34,6 +34,7 @@ fn each_case_keeps_the_rows_and_discards_the_values_it_says() {
         (LoweringCase::Changes, all, 0),
         (LoweringCase::SplitJson, all, 0),
         (LoweringCase::OneBadValue, all, 1),
+        (LoweringCase::OneDroppedRow, all - 1, 0),
         (LoweringCase::TemporalWidening, all, 0),
     ] {
         let (built, batch) = prepared(case);
@@ -64,6 +65,7 @@ fn every_case_is_named_once() {
             "changes",
             "split_json",
             "one_bad_value",
+            "one_dropped_row",
             "temporal_widening",
         ]
     );
@@ -177,6 +179,19 @@ fn instants_widen_into_their_column_and_one_it_cannot_hold_is_discarded() {
     let at = batch.column_by_name("at").unwrap();
     assert_eq!(at.null_count(), 1);
     assert!(at.is_null(32));
+}
+
+#[test]
+fn a_row_holding_an_instant_its_column_cannot_hold_is_dropped_and_its_integers_widen() {
+    let (dropped, batch) = prepared(LoweringCase::OneDroppedRow);
+    let columns = &dropped.plan().view().model.columns;
+    let n = columns.iter().find(|column| column.name() == "n").unwrap();
+    assert_eq!(n.logical_type(), &LogicalType::Int64);
+    // Row 32 holds the instant no nanosecond holds.
+    let n = batch.column_by_name("n").unwrap();
+    let kept: Vec<i64> = (0..64).filter(|row| *row != 32).collect();
+    assert_eq!(n.as_primitive::<Int64Type>().values().to_vec(), kept);
+    assert_eq!(batch.column_by_name("at").unwrap().null_count(), 0);
 }
 
 #[test]

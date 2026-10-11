@@ -59,13 +59,16 @@ pub(crate) enum LoweringCase {
     SplitJson,
     /// An append whose one instant its column cannot hold, a value the stream discards.
     OneBadValue,
+    /// An append whose one instant its column cannot hold, its row dropped by the stream, and
+    /// whose 32-bit integers a column of 64 bits holds.
+    OneDroppedRow,
     /// An append of instants in seconds into a column of microseconds, a tenth of them null.
     TemporalWidening,
 }
 
 impl LoweringCase {
     /// Every case, in the order the bench reports them.
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::AppendNative,
         Self::AppendText,
         Self::MergeUnique,
@@ -74,6 +77,7 @@ impl LoweringCase {
         Self::Changes,
         Self::SplitJson,
         Self::OneBadValue,
+        Self::OneDroppedRow,
         Self::TemporalWidening,
     ];
 
@@ -88,6 +92,7 @@ impl LoweringCase {
             Self::Changes => "changes",
             Self::SplitJson => "split_json",
             Self::OneBadValue => "one_bad_value",
+            Self::OneDroppedRow => "one_dropped_row",
             Self::TemporalWidening => "temporal_widening",
         }
     }
@@ -256,6 +261,7 @@ impl Case {
                 made.stream = made.stream.schema(policy);
                 made
             }
+            LoweringCase::OneDroppedRow => dropped_row(&mixed, rows),
             LoweringCase::TemporalWidening => {
                 let seconds = (0..i64::from(rows)).map(|row| (row % 10 != 0).then_some(row));
                 let seconds = TimestampSecondArray::from(seconds.collect::<Vec<_>>());
@@ -268,6 +274,7 @@ impl Case {
         match case {
             LoweringCase::MergeDuplicates => built.kept.rows /= 2,
             LoweringCase::OneBadValue => built.kept.discarded_values = 1,
+            LoweringCase::OneDroppedRow => built.kept.rows -= 1,
             _ => {}
         }
         built
@@ -425,6 +432,17 @@ fn bad_instant(mixed: &RecordBatch, rows: u32) -> Made {
     let seconds = Arc::new(seconds.with_timezone("UTC"));
     let pushed = replaced(&created, "at", instant(TimeUnit::Second), seconds);
     Made::into_table(created, pushed)
+}
+
+/// [`bad_instant`]'s append, the bad instant's row dropped by the stream, into a table holding
+/// `n`, which arrives in 32 bits, in 64.
+fn dropped_row(mixed: &RecordBatch, rows: u32) -> Made {
+    let mut made = bad_instant(mixed, rows);
+    let wide: ArrayRef = Arc::new(Int64Array::from_iter_values(0..i64::from(rows)));
+    made.created = replaced(&made.created, "n", LogicalType::Int64, wide);
+    let policy = SchemaSettings::new().policy(SchemaPolicy::DiscardRow);
+    made.stream = made.stream.schema(policy);
+    made
 }
 
 /// The columns of `batch` as they arrive, its integers judged.
