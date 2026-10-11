@@ -6,6 +6,9 @@
 //! where they stood, as the engine does after a commit, and reads what that plan names from
 //! there: the rows of the two reads must be the same, each as many times.
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::BTreeMap;
 
 use super::json::Records;

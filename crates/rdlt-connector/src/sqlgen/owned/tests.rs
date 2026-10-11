@@ -93,6 +93,22 @@ fn a_table_is_changed_only_by_the_pipeline_its_owner_record_names() {
 }
 
 #[test]
+fn an_unowned_table_is_refused_naming_what_the_database_holds_under_its_name() {
+    let mine = pipeline("mine");
+    let unowned = standing("orders", None, &["orders"]).owned(&mine);
+    assert_eq!(
+        unowned.unwrap_err().to_string(),
+        "table orders belongs to no pipeline, so no pipeline's session changes it"
+    );
+    let taken = standing("orders", Some("mine"), &["Orders"]).owned(&mine);
+    assert_eq!(
+        taken.unwrap_err().to_string(),
+        "the database takes the name orders for Orders, which belongs to no pipeline, so no \
+         pipeline's session changes it"
+    );
+}
+
+#[test]
 fn a_dropped_table_is_the_one_its_owner_record_names_or_was_dropped_before() {
     let mine = pipeline("mine");
     assert_eq!(standing("gone", None, &[]).dropped(&mine).unwrap(), None);

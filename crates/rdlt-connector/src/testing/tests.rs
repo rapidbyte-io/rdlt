@@ -726,6 +726,8 @@ struct VaultConfig {
     hard_on_soft: bool,
     /// Stores null in the columns an update flags unchanged.
     drop_unchanged: bool,
+    /// Skips a change whose key is null: a truncate never applies.
+    skip_unkeyed: bool,
     /// Keeps a change stream's tombstones only as long as the session that made them.
     session_tombstones: bool,
     /// Keeps a table's tombstones when a generation replaces its rows.
@@ -1609,6 +1611,7 @@ impl VaultConfig {
             truncate_everything: self.truncate_everything,
             hard_on_soft: self.hard_on_soft,
             drop_unchanged: self.drop_unchanged,
+            skip_unkeyed: self.skip_unkeyed,
         }
     }
 
@@ -1989,6 +1992,7 @@ const BROKEN: &[(&str, &[&str])] = &[
     ("truncate_everything", &["D-TRUNCATE"]),
     ("hard_on_soft", &["D-DELETE", "D-TRUNCATE"]),
     ("drop_unchanged", &["D-PARTIAL"]),
+    ("skip_unkeyed", &["D-TRUNCATE"]),
     ("session_tombstones", &["D-DELETE", "D-TRUNCATE"]),
     ("keep_replaced_tombstones", &["D-DELETE"]),
 ];
