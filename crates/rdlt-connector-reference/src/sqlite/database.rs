@@ -52,8 +52,8 @@ impl Database {
 }
 
 /// A connection to the database at `path`, created when missing and private to its user, in
-/// write-ahead-log mode so readers never wait for a writer, and hardened against a database
-/// file another program wrote.
+/// write-ahead-log mode so readers never wait for a writer, syncing its log at every commit
+/// (`synchronous=FULL`), and hardened against a database file another program wrote.
 ///
 /// SQLite is handed the path from the root, which it reads as a file's name and never as a URI.
 pub(super) fn connect(path: &Path) -> Result<Connection> {
@@ -77,6 +77,10 @@ fn connect_waiting(path: &Path, wait: Duration) -> Result<Connection> {
     connection.busy_timeout(wait).map_err(&configuring)?;
     connection
         .pragma_update(None, "journal_mode", "WAL")
+        .map_err(&configuring)?;
+    // The commit's durability is this setting's, never a build default's.
+    connection
+        .pragma_update(None, "synchronous", "FULL")
         .map_err(&configuring)?;
     let journal = i64::try_from(JOURNAL_BYTES).unwrap_or(i64::MAX);
     connection

@@ -90,7 +90,9 @@ given:
   - `SQLITE_DBCONFIG_DEFENSIVE` on, `TRUSTED_SCHEMA` off, double-quoted strings off for DDL and
     DML, no attached database (`SQLITE_LIMIT_ATTACHED` 0, and none created or written),
     `cell_size_check` on, no memory map, and the write-ahead log cut back to 64 MiB once its
-    content is in the database.
+    content is in the database; every commit syncs the log (`synchronous=FULL`), so a receipt is
+    durable once returned, and a statement binds at most the values `sqlgen` plans for
+    (`SQLITE_LIMIT_VARIABLE_NUMBER`).
   - Triggers, views and foreign keys are off (`ENABLE_TRIGGER`, `ENABLE_VIEW`, `ENABLE_FKEY`).
     The destination creates none, so one in the file is another program's: a trigger would
     change other tables during a load with the connection's rights, and a foreign key would
