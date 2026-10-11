@@ -18,16 +18,20 @@ all_features = true
 # limits are the wire's defaults, a dialect reserves no table name, and a sandbox names no program
 # that confines a connector, unless they say otherwise; one that names an empty path for a sandbox
 # is the code as it is too, as the guard on roots passes over a path that is not absolute.
-# So is one that joins a directory's open flags, each a bit of its own, with `^` for `|`; and one
-# that takes every widen a destination refuses for a column not yet kept from widening: the
-# resolver widens no column kept from it on any path, so a refusal never names one, and the guard
-# only bounds the loop were that to change. A JSON lines reader's `Debug` names the type and
-# nothing else, since its decoder has none: what it writes is no behaviour a test can hold; so does
-# the `Debug` of what a host is told each spawned connector's process id by, a function. The
-# engine's inline test env has one core, which a mutant answering one also has. A mutant that
-# judges a plain column of 64-bit integers through the rows it names reads what the plain arm
-# reads, which spares only the mapping; and one that has a normalized flush's walk read every
-# column for such integers, not only one whose type holds them, finds none in the others.
+# So is one that joins a directory's or a database's open flags, each a bit of its own, with `^` for
+# `|`; and one that takes every widen a destination refuses for a column not yet kept from widening:
+# the resolver widens no column kept from it on any path, so a refusal never names one, and the
+# guard only bounds the loop were that to change. So is one that opens a database to write with
+# neither the flag that creates it nor the one that spares SQLite's own lock, by `&` for the second
+# `|`: the database was created, private, before SQLite opens it, in a directory no one else writes,
+# and a connection is used by one thread at a time, so that lock never holds anything up. A JSON
+# lines reader's `Debug` names the type and nothing else, since its decoder has none, and so does
+# that of the function a host is told each spawned connector's process id through; a file writer's
+# names its path only for a failing test's message: what they write is no behaviour a test can hold.
+# The engine's inline test env has one core, which a mutant answering one also has. A mutant that
+# judges a plain column of 64-bit integers through the rows it names reads what the plain arm reads,
+# which spares only the mapping; and one that has a normalized flush's walk read every column for
+# such integers, not only one whose type holds them, finds none in the others.
 #
 # One mutant is excluded because it never ends rather than because it is the code as it is: one
 # that writes a length in LEB128 while the length is under 0x80 pushes bytes until memory runs out,
@@ -36,7 +40,10 @@ all_features = true
 exclude_re = [
   "crates/rdlt-adopt/src/exec\\.rs:.*replace marks_at_once -> bool with true",
   "crates/rdlt-connector-reference/src/files/format/json\\.rs:.*replace <impl std::fmt::Debug for Rows>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
+  "crates/rdlt-connector-reference/src/files/format\\.rs:.*replace <impl std::fmt::Debug for Writer<'_>>::fmt -> std::fmt::Result with Ok\\(Default::default\\(\\)\\)",
   "crates/rdlt-connector-reference/src/rooted\\.rs:.*replace \\| with \\^ in Dir::(resolved|dir|opened|create)$",
+  "crates/rdlt-connector-reference/src/sqlite/database\\.rs:.*replace \\| with \\^ in (connect_waiting|reading)$",
+  "crates/rdlt-connector-reference/src/sqlite/database\\.rs:72:9: replace \\| with & in connect_waiting$",
   "crates/rdlt-connector/src/sink\\.rs:.*replace Admission::limits -> Limits with Default::default\\(\\)",
   "crates/rdlt-connector/src/sqlgen\\.rs:.*replace SqlDialect::reserves_table -> bool with false",
   "crates/rdlt-engine/src/env/inline\\.rs:.*replace <impl Env for InlineEnv>::cores -> NonZeroUsize with 1\\.try_into\\(\\)\\.unwrap\\(\\)",
