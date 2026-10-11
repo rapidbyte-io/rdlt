@@ -46,7 +46,7 @@ child tables and lineage ids. Building M3b surfaced decisions the spec leaves op
 ## Consequences
 
 The metadata columns cost the destination 2 bytes a row instead of 24. How far passthrough is
-over the bare loop, against the spec's 10 %, is recorded in
+over the bare loop, against its bound, is recorded in
 [docs/perf/passthrough.md](../perf/passthrough.md). Destinations must decode dictionary-encoded
 columns they cannot store as such.
 
