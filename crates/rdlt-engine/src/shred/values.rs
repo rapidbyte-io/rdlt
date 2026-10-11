@@ -2,7 +2,9 @@
 //! and those that fit built into a column, their numbers exact.
 //!
 //! A column of JSON whose table holds the column as another type sends there each value that
-//! type holds; this is how it finds them, and reads them.
+//! type holds; this is how it finds them, and reads them. Each value is observed once, to fit
+//! it, and the join of those that fit is kept to read them; where rows are dropped between, the
+//! kept ones are observed again to join them alone.
 
 #[cfg(test)]
 mod tests;
@@ -19,6 +21,23 @@ use super::observing::Look;
 use super::visit::{Context, Value};
 use crate::json::{Reader, Token};
 
+#[cfg(test)]
+thread_local! {
+    /// How many values of JSON text this thread observed, which tests read.
+    pub(crate) static OBSERVED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The join of what the values a column of JSON sends its own column were observed as: the type
+/// they are read into.
+#[derive(Clone, Debug)]
+pub(crate) struct Joined(Observed);
+
+impl Default for Joined {
+    fn default() -> Self {
+        Self(Observed::Null)
+    }
+}
+
 /// A parse of single values, which a lowering piece has reserved what it builds for.
 fn context() -> Context {
     Context::new(Meter::reserved(), Columns::new(u64::MAX))
@@ -26,6 +45,8 @@ fn context() -> Context {
 
 /// What the JSON value `text` is observed as, its numbers exact.
 fn observed(text: &str, context: &Context) -> Result<Observed, ShredError> {
+    #[cfg(test)]
+    OBSERVED.with(|observed| observed.set(observed.get() + 1));
     let mut node = Observed::Null;
     let look = Look {
         node: &mut node,
@@ -75,24 +96,34 @@ fn fits(column: &LogicalType, observed: &Observed, nullable: bool) -> bool {
     }
 }
 
-/// Which values of `texts`, JSON text, a column of `column` holds: null for a null.
+/// Which values of `texts`, JSON text, a column of `column` holds, null for a null, and the join
+/// of what those values were observed as.
 ///
 /// A value the shredder would refuse, as a number beyond a float's range is, fits no column:
 /// JSON text keeps it, as it keeps an object repeating a key. A table's column that a column of
 /// JSON is split into is never a merge key, so it holds nulls.
-pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> BooleanArray {
+pub(crate) fn fitting(texts: &StringArray, column: &LogicalType) -> (BooleanArray, Joined) {
     // Each value is parsed as a shredding job is, sure of its stack at the nesting limit.
     super::job(|| {
         let nested = matches!(column, LogicalType::Struct(_) | LogicalType::List(_));
-        texts
+        let mut joined = Observed::Null;
+        let held: BooleanArray = texts
             .iter()
             .map(|text| {
                 let text = text?;
-                let fits =
-                    observed(text, &context()).is_ok_and(|observed| fits(column, &observed, true));
-                Some(fits && !(nested && repeats_a_key(text)))
+                let held = match observed(text, &context()) {
+                    Ok(observed)
+                        if fits(column, &observed, true) && !(nested && repeats_a_key(text)) =>
+                    {
+                        joined.join(&observed);
+                        true
+                    }
+                    _ => false,
+                };
+                Some(held)
             })
-            .collect()
+            .collect();
+        (held, Joined(joined))
     })
 }
 
@@ -120,8 +151,27 @@ fn repeats_a_key(text: &str) -> bool {
     false
 }
 
-/// The values of `texts` that `taken` names, read into a column typed by their join, the others
-/// null: the column and its type.
+/// The join of what the values of `texts` that `taken` names are observed as, for values some
+/// rows of which were dropped since `fitting` joined them.
+///
+/// # Errors
+///
+/// Where a value is not JSON or nests past the limit.
+pub(crate) fn rejoined(texts: &StringArray, taken: &BooleanArray) -> Result<Joined, ShredError> {
+    super::job(|| {
+        let context = context();
+        let named = |row: &usize| texts.is_valid(*row) && taken.is_valid(*row) && taken.value(*row);
+        let mut joined = Observed::Null;
+        for row in (0..texts.len()).filter(named) {
+            joined.join(&observed(texts.value(row), &context)?);
+        }
+        Ok(Joined(joined))
+    })
+}
+
+/// The values of `texts` that `taken` names, read into a column typed by `joined`, the join of
+/// their types as `fitting` found it, or `rejoined` after rows were dropped, the others null: the
+/// column and its type.
 ///
 /// # Errors
 ///
@@ -129,23 +179,21 @@ fn repeats_a_key(text: &str) -> bool {
 pub(crate) fn read(
     texts: &StringArray,
     taken: &BooleanArray,
+    joined: &Joined,
 ) -> Result<(ArrayRef, LogicalType), ShredError> {
-    super::job(|| read_values(texts, taken))
+    super::job(|| read_values(texts, taken, &joined.0))
 }
 
 /// The values of `texts` that `taken` names, read as [`read`] reads them.
 fn read_values(
     texts: &StringArray,
     taken: &BooleanArray,
+    joined: &Observed,
 ) -> Result<(ArrayRef, LogicalType), ShredError> {
     let context = context();
     let named = |row: usize| texts.is_valid(row) && taken.is_valid(row) && taken.value(row);
-    let mut joined = Observed::Null;
-    for row in (0..texts.len()).filter(|row| named(*row)) {
-        joined.join(&observed(texts.value(row), &context)?);
-    }
     let unbuilt = |_| ShredError::Internal("a reserved build ran out of room".to_owned());
-    let mut column = Column::new(&joined, 0, texts.len(), &context.meter).map_err(unbuilt)?;
+    let mut column = Column::new(joined, 0, texts.len(), &context.meter).map_err(unbuilt)?;
     for row in 0..texts.len() {
         if !named(row) {
             column.null(&context.meter).map_err(unbuilt)?;

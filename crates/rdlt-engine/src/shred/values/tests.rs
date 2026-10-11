@@ -1,6 +1,6 @@
 use arrow_array::cast::AsArray;
 use arrow_array::types::{Decimal128Type, Float64Type, Int64Type};
-use arrow_array::{Array, BooleanArray, StringArray};
+use arrow_array::{Array, StringArray};
 use rdlt_connector::{DecimalType, Field, Fields, LogicalType};
 
 use super::{fitting, read};
@@ -11,6 +11,7 @@ fn texts(values: &[Option<&str>]) -> StringArray {
 
 fn fit(values: &[Option<&str>], column: &LogicalType) -> Vec<bool> {
     fitting(&texts(values), column)
+        .0
         .iter()
         .map(|fits| fits.unwrap_or(false))
         .collect()
@@ -131,30 +132,32 @@ fn values_read_into_their_join_exactly_and_the_rest_are_null() {
         Some("100000000000000000000"),
         None,
     ]);
-    let taken = BooleanArray::from(vec![true, false, true, true]);
-    let (column, joined) = read(&values, &taken).unwrap();
-    assert_eq!(
-        joined,
-        LogicalType::Decimal(DecimalType::new(38, 0).unwrap())
-    );
+    let decimal = LogicalType::Decimal(DecimalType::new(38, 0).unwrap());
+    let fit = fitting(&values, &decimal);
+    let (column, joined) = read(&values, &fit.0, &fit.1).unwrap();
+    assert_eq!(joined, decimal);
     let decimals = column.as_primitive::<Decimal128Type>();
     assert_eq!(decimals.value(0), 1);
     assert!(decimals.is_null(1) && decimals.is_null(3));
     assert_eq!(decimals.value(2), 100_000_000_000_000_000_000);
     let floats = texts(&[Some("0.5"), Some("2")]);
-    let (column, joined) = read(&floats, &BooleanArray::from(vec![true, true])).unwrap();
+    let fit = fitting(&floats, &LogicalType::Float64);
+    let (column, joined) = read(&floats, &fit.0, &fit.1).unwrap();
     assert_eq!(joined, LogicalType::Float64);
     assert_eq!(
         column.as_primitive::<Float64Type>().values().to_vec(),
         [0.5, 2.0]
     );
-    let (column, joined) = read(&floats, &BooleanArray::from(vec![false, false])).unwrap();
+    let fit = fitting(&floats, &LogicalType::Bool);
+    let (column, joined) = read(&floats, &fit.0, &fit.1).unwrap();
     assert_eq!(
         (joined, column.logical_null_count()),
         (LogicalType::Null, 2)
     );
     let ints = texts(&[Some("[1,2]")]);
-    let (column, _) = read(&ints, &BooleanArray::from(vec![true])).unwrap();
+    let of_ints = LogicalType::List(Box::new(Field::new("item", LogicalType::Int64, true)));
+    let fit = fitting(&ints, &of_ints);
+    let (column, _) = read(&ints, &fit.0, &fit.1).unwrap();
     let list = column.as_list::<i32>();
     assert_eq!(
         list.values().as_primitive::<Int64Type>().values().to_vec(),
@@ -168,9 +171,9 @@ fn a_value_the_shredder_refuses_or_that_repeats_a_key_fits_no_column() {
     let object =
         LogicalType::Struct(Fields::new(vec![Field::new("a", LogicalType::Int64, true)]).unwrap());
     let repeated = texts(&[Some("{\"a\":1,\"a\":2}"), Some("[{\"a\":1},{\"a\":2}]")]);
-    assert!(!fitting(&repeated, &object).value(0));
+    assert!(!fitting(&repeated, &object).0.value(0));
     let list = LogicalType::List(Box::new(Field::new("item", object, true)));
-    assert!(fitting(&repeated, &list).value(1));
+    assert!(fitting(&repeated, &list).0.value(1));
     // Items of mixed kinds are not observed as objects, so only the key check sees a repeat.
     let mixed = LogicalType::List(Box::new(Field::new("item", LogicalType::Json, true)));
     let values = [
@@ -206,10 +209,10 @@ fn values_nested_to_the_limit_are_fitted_and_read_on_a_small_stack() {
                 }
                 let values = texts(&[Some(text.as_str())]);
                 let fit = fitting(&values, &list);
-                if fit.value(0) {
-                    read(&values, &fit).unwrap();
+                if fit.0.value(0) {
+                    read(&values, &fit.0, &fit.1).unwrap();
                 }
-                fits.push(fit.value(0));
+                fits.push(fit.0.value(0));
             }
             fits
         })
@@ -232,4 +235,15 @@ fn a_key_repeated_after_a_list_is_found() {
     );
     assert_eq!(fit(&[Some("{\"l\":[1],\"l\":[2]}")], &lists), [false]);
     assert_eq!(fit(&[Some("{\"l\":[1]}")], &lists), [true]);
+}
+
+/// Each value that is not null is observed once, to fit it; reading the fitting ones observes
+/// none of them again.
+#[test]
+fn each_value_is_observed_once_from_fitting_to_reading() {
+    let values = texts(&[Some("1"), Some("\"x\""), Some("{\"a\":1}"), None, Some("2")]);
+    super::OBSERVED.with(|observed| observed.set(0));
+    let fit = fitting(&values, &LogicalType::Int64);
+    read(&values, &fit.0, &fit.1).unwrap();
+    assert_eq!(super::OBSERVED.with(std::cell::Cell::get), 4);
 }

@@ -10,6 +10,7 @@ use rdlt_connector::LogicalType;
 
 use super::{Fitted, Splits};
 use crate::shred::ShredError;
+use crate::shred::values::{self, Joined};
 use crate::table::resolve::{Rest, Route};
 
 #[test]
@@ -18,6 +19,7 @@ fn a_value_its_own_column_cannot_read_fails_with_the_shredder_s_error_as_its_cau
         0,
         StringArray::from(vec!["{"]),
         BooleanArray::from(vec![true]),
+        Joined::default(),
     )]);
     let error = fitted
         .own(0, &LogicalType::Int64)
@@ -31,19 +33,14 @@ fn a_value_its_own_column_cannot_read_fails_with_the_shredder_s_error_as_its_cau
 
 #[test]
 fn a_split_column_is_found_by_its_position_and_one_not_fitted_is_refused() {
-    let fitted = |text: &str| {
-        (
-            StringArray::from(vec![text]),
-            BooleanArray::from(vec![true]),
-        )
-    };
     let positions = [1, 4, 9];
     let fitted = Fitted(
         positions
             .iter()
             .map(|position| {
-                let (texts, fits) = fitted(&position.to_string());
-                (*position, texts, fits)
+                let texts = StringArray::from(vec![position.to_string()]);
+                let (fits, joined) = values::fitting(&texts, &LogicalType::Int64);
+                (*position, texts, fits, joined)
             })
             .collect(),
     );
@@ -130,10 +127,81 @@ fn a_row_whose_fit_is_null_is_kept_whatever_its_value_bit() {
     let values = BooleanBuffer::from(vec![true, true, false, false]);
     let nulls = NullBuffer::from(vec![true, false, true, false]);
     let fits = BooleanArray::new(values, Some(nulls));
-    let fitted = Fitted(vec![(0, StringArray::from(vec!["1", "2", "x", "y"]), fits)]);
+    let texts = StringArray::from(vec!["1", "2", "x", "y"]);
+    let fitted = Fitted(vec![(0, texts, fits, Joined::default())]);
     let kept = splits.kept(&fitted, 4).expect("the split drops rows");
     assert_eq!(
         kept.values().iter().take(4).collect::<Vec<_>>(),
         [true, true, false, true]
     );
+}
+
+/// Values read after the rows holding others were dropped read as a fit of the kept rows alone
+/// reads them: a dropped row's float or its field the kept rows lack, or its text beside kept
+/// numbers a JSON field renders, changes nothing a kept value becomes.
+#[test]
+fn values_kept_after_a_drop_read_as_a_fit_of_the_kept_rows_alone_reads_them() {
+    use rdlt_connector::{Field, Fields};
+    let wider = LogicalType::Struct(
+        Fields::new(vec![
+            Field::new("a", LogicalType::Float64, true),
+            Field::new("z", LogicalType::Int64, true),
+        ])
+        .unwrap(),
+    );
+    let json =
+        LogicalType::Struct(Fields::new(vec![Field::new("a", LogicalType::Json, true)]).unwrap());
+    let cases = [
+        (
+            wider,
+            vec![
+                Some(r#"{"a":1}"#),
+                Some(r#"{"a":0.5,"z":7}"#),
+                Some(r#"{"a":2}"#),
+                Some("1"),
+                None,
+            ],
+        ),
+        (
+            json,
+            vec![
+                Some(r#"{"a":1.50}"#),
+                Some(r#"{"a":"x"}"#),
+                Some(r#"{"a":1e2}"#),
+                Some("1"),
+                None,
+            ],
+        ),
+    ];
+    let kept = BooleanArray::from(vec![true, false, true, true, true]);
+    for (own, texts) in cases {
+        let texts: ArrayRef = Arc::new(StringArray::from(texts));
+        let batch = RecordBatch::try_from_iter([("c", texts)]).unwrap();
+        let splits = Splits(vec![(0, own.clone(), Rest::DiscardRows)]);
+        let dropped = splits.fit(&batch, false).unwrap().filtered(&kept).unwrap();
+        let alone = arrow_select::filter::filter_record_batch(&batch, &kept).unwrap();
+        let alone = splits.fit(&alone, false).unwrap();
+        assert_eq!(
+            dropped.own(0, &own).unwrap().to_data(),
+            alone.own(0, &own).unwrap().to_data(),
+            "{own:?}"
+        );
+    }
+}
+
+/// A filter that drops no row keeps the join fitting took, observing no value again; one that
+/// drops a row observes the kept values that fit once more.
+#[test]
+fn only_a_filter_that_drops_a_row_observes_the_kept_values_again() {
+    let texts: ArrayRef = Arc::new(StringArray::from(vec![Some("1"), Some("2"), Some("x")]));
+    let batch = RecordBatch::try_from_iter([("c", texts)]).unwrap();
+    let splits = Splits(vec![(0, LogicalType::Int64, Rest::DiscardRows)]);
+    let observed = |kept: Vec<bool>| {
+        let fitted = splits.fit(&batch, false).unwrap();
+        values::OBSERVED.with(|observed| observed.set(0));
+        fitted.filtered(&BooleanArray::from(kept)).unwrap();
+        values::OBSERVED.with(std::cell::Cell::get)
+    };
+    assert_eq!(observed(vec![true, true, true]), 0);
+    assert_eq!(observed(vec![true, false, true]), 1);
 }

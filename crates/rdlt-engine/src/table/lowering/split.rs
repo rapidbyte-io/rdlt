@@ -25,9 +25,10 @@ mod tests;
 pub(super) struct Splits(Vec<(usize, LogicalType, Rest)>);
 
 /// Each split column of a batch by its position, in ascending order: its JSON text, plain, and
-/// which of its values its own column holds, null where the column holds none.
+/// which of its values its own column holds, null where the column holds none, and the join of
+/// those values' types.
 #[derive(Clone, Debug, Default)]
-pub(super) struct Fitted(Vec<(usize, StringArray, BooleanArray)>);
+pub(super) struct Fitted(Vec<(usize, StringArray, BooleanArray, values::Joined)>);
 
 impl Splits {
     /// The split columns `routes` names, whose own columns are of `types`, the model's.
@@ -51,8 +52,8 @@ impl Splits {
             .filter(|(_, _, rest)| !dropping || *rest == Rest::DiscardRows);
         let fitted = splits.map(|(index, own, _)| {
             let texts = texts(batch.column(*index))?;
-            let fits = values::fitting(&texts, own);
-            Ok((*index, texts, fits))
+            let (fits, joined) = values::fitting(&texts, own);
+            Ok((*index, texts, fits, joined))
         });
         Ok(Fitted(fitted.collect::<Result<_, ArrowError>>()?))
     }
@@ -100,13 +101,16 @@ impl Splits {
 }
 
 impl Fitted {
-    fn split(&self, index: usize) -> Result<(&StringArray, &BooleanArray), ArrowError> {
+    fn split(
+        &self,
+        index: usize,
+    ) -> Result<(&StringArray, &BooleanArray, &values::Joined), ArrowError> {
         self.0
-            .binary_search_by_key(&index, |(fitted, _, _)| *fitted)
+            .binary_search_by_key(&index, |(fitted, ..)| *fitted)
             .ok()
             .map(|found| {
-                let (_, texts, fits) = &self.0[found];
-                (texts, fits)
+                let (_, texts, fits, joined) = &self.0[found];
+                (texts, fits, joined)
             })
             .ok_or_else(|| {
                 ArrowError::ComputeError("a split column's values were not fitted".to_owned())
@@ -114,19 +118,25 @@ impl Fitted {
     }
 
     fn mask(&self, index: usize) -> Option<&BooleanArray> {
-        self.split(index).ok().map(|(_, fits)| fits)
+        self.split(index).ok().map(|(_, fits, _)| fits)
     }
 
-    /// The texts and masks of the rows `kept` keeps.
+    /// The texts, masks and joins of the rows `kept` keeps: where it drops any, the kept values
+    /// are joined again, since a dropped value can change how the others read.
     pub(super) fn filtered(self, kept: &BooleanArray) -> Result<Self, ArrowError> {
-        let fitted = self.0.into_iter().map(|(index, texts, fits)| {
+        let fitted = self.0.into_iter().map(|(index, texts, fits, joined)| {
+            let rows = texts.len();
             let texts = arrow_select::filter::filter(&texts, kept)?;
+            let texts = texts.as_string::<i32>().clone();
             let fits = arrow_select::filter::filter(&fits, kept)?;
-            Ok((
-                index,
-                texts.as_string::<i32>().clone(),
-                fits.as_boolean().clone(),
-            ))
+            let fits = fits.as_boolean().clone();
+            let joined = if texts.len() < rows {
+                values::rejoined(&texts, &fits)
+                    .map_err(|error| ArrowError::ExternalError(Box::new(error)))?
+            } else {
+                joined
+            };
+            Ok((index, texts, fits, joined))
         });
         Ok(Self(fitted.collect::<Result<_, ArrowError>>()?))
     }
@@ -134,8 +144,8 @@ impl Fitted {
     /// The values of the split column at `index` in its batch that its own column of `own`
     /// holds, read into that type; the others null.
     pub(super) fn own(&self, index: usize, own: &LogicalType) -> Result<ArrayRef, ArrowError> {
-        let (texts, fits) = self.split(index)?;
-        let (values, read) = values::read(texts, fits)
+        let (texts, fits, joined) = self.split(index)?;
+        let (values, read) = values::read(texts, fits, joined)
             .map_err(|error| ArrowError::ExternalError(Box::new(error)))?;
         convert(&values, &read, own)
     }
@@ -143,7 +153,7 @@ impl Fitted {
     /// The values of the split column at `index` in its batch that its own column does not
     /// hold, as JSON text; the others null.
     pub(super) fn rest(&self, index: usize) -> Result<ArrayRef, ArrowError> {
-        let (texts, fits) = self.split(index)?;
+        let (texts, fits, _) = self.split(index)?;
         arrow_select::nullif::nullif(texts, fits)
     }
 }
