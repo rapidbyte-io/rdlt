@@ -7,8 +7,8 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use bytes::Bytes;
-use rdlt_connector::{ConnectorError, LimitExceeded, Result};
-use rdlt_wire::{Decoder, IpcFrame, Limits, WireError};
+use rdlt_connector::{ConnectorError, Result};
+use rdlt_wire::{Decoder, IpcFrame, Limit, Limits, WireError};
 
 /// What an Arrow IPC file starts with, padded to eight bytes, and ends with.
 const MAGIC: &[u8; 6] = b"ARROW1";
@@ -46,11 +46,7 @@ fn malformed(what: impl std::fmt::Display) -> ConnectorError {
 /// A frame the wire's decoder refused, as a data error: a limit's refusal keeps its limit.
 fn refused(error: WireError) -> ConnectorError {
     match error {
-        WireError::Refused(refusal) => ConnectorError::exceeds(LimitExceeded {
-            name: refusal.field,
-            limit: refusal.limit,
-            actual: refusal.actual,
-        }),
+        WireError::Refused(refusal) => ConnectorError::from(refusal),
         other => {
             ConnectorError::data(format!("the Arrow file is malformed: {other}")).with_source(other)
         }
@@ -243,7 +239,7 @@ fn checked(block: &arrow_ipc::Block, from: u64, footer: u64, limits: &Limits) ->
     if offset.checked_sub(from).is_none() || footer.checked_sub(end).is_none() {
         return Err(outside());
     }
-    Limits::admit("frame bytes", limits.frame_bytes, frame)
+    Limits::admit(Limit::FrameBytes, limits.frame_bytes, frame)
         .map_err(WireError::from)
         .map_err(refused)?;
     let size = |bytes: u64| usize::try_from(bytes).map_err(|_| outside());

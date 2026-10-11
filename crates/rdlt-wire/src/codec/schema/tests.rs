@@ -10,7 +10,7 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use crate::codec::tests::frames::{problem, refusal};
 use crate::codec::{Decoder, Encoder};
 use crate::error::Problem;
-use crate::limits::{CONTROL_STRING_BYTES, Limits, NESTING_DEPTH, SCHEMA_COLUMNS};
+use crate::limits::{CONTROL_STRING_BYTES, Limit, Limits, NESTING_DEPTH, SCHEMA_COLUMNS};
 
 /// The text every field of a hand-built schema shares.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -186,7 +186,7 @@ fn text_a_schema_repeats_counts_wherever_a_field_repeats_it() {
         let refusal = refusal(within(text - 1));
         assert_eq!(
             (refusal.field, refusal.limit, refusal.actual),
-            ("schema bytes", text - 1, text),
+            (Limit::SchemaBytes, text - 1, text),
             "{shared:?}"
         );
     }
@@ -208,7 +208,7 @@ fn a_schema_message_beyond_its_byte_limit_is_refused() {
     let refusal = refusal(within(bytes - 1));
     assert_eq!(
         (refusal.field, refusal.limit, refusal.actual),
-        ("schema bytes", bytes - 1, bytes)
+        (Limit::SchemaBytes, bytes - 1, bytes)
     );
     // A frame's limit does not bound a schema message.
     let small = Limits {
@@ -237,13 +237,13 @@ fn a_field_name_beyond_the_control_string_limit_is_refused_wherever_it_nests() {
         let refusal = refusal(within(99));
         assert_eq!(
             (refusal.field, refusal.limit, refusal.actual),
-            ("control string bytes", 99, 100)
+            (Limit::ControlStringBytes, 99, 100)
         );
     }
     let beyond = usize::try_from(CONTROL_STRING_BYTES).unwrap() + 1;
     let message = Sharing::names(1, beyond).message();
     let refusal = refusal(Decoder::new(Limits::default()).schema(&message));
-    assert_eq!(refusal.field, "control string bytes");
+    assert_eq!(refusal.field, Limit::ControlStringBytes);
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn a_schema_beyond_the_column_limit_is_refused_before_it_is_converted() {
     // The count stops at the first column beyond the limit.
     assert_eq!(
         (refusal.field, refusal.actual),
-        ("schema columns", SCHEMA_COLUMNS + 1)
+        (Limit::SchemaColumns, SCHEMA_COLUMNS + 1)
     );
 }
 
@@ -332,14 +332,14 @@ fn every_kind_of_nested_type_counts_its_columns_and_levels() {
             let refusal = refusal(within(columns - 1, depth));
             assert_eq!(
                 (refusal.field, refusal.actual),
-                ("schema columns", columns),
+                (Limit::SchemaColumns, columns),
                 "{data_type}"
             );
         }
         let refusal = refusal(within(columns, depth - 1));
         assert_eq!(
             (refusal.field, refusal.actual),
-            ("nesting depth", depth),
+            (Limit::NestingDepth, depth),
             "{data_type}"
         );
     }

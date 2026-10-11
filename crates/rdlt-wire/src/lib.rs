@@ -46,7 +46,7 @@ pub use codec::{
     Cut, Decoder, Encoder, IpcFrame, Shape, Weigher, Weight, child_fields, schema_message_bytes,
 };
 pub use error::{Frame, Part, Problem, WireError};
-pub use limits::{Limits, Refusal, Shortfall};
+pub use limits::{Limit, Limits, Refusal, Shortfall};
 pub use prost;
 pub use tonic;
 

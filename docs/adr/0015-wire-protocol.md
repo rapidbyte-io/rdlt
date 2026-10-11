@@ -55,8 +55,8 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
   - Decoding fails with a typed `Invalid`: a required field is missing, an enum value is unknown,
     a number does not fit, or a value breaks its type's rules (duplicate fields or streams,
     empty paths, unordered segments).
-  - An error of a kind this end does not know decodes as internal. A limit this end does not know
-    keeps its numbers under the name `limit`.
+  - An error of a kind this end does not know decodes as internal. A limit name this end does
+    not know decodes with no limit attached, its code and message kept.
   - M4b's `serve` feature will imply `wire`.
 - **State records travel as their opaque bytes.** A destination stores state records verbatim and
   never reads them, and the contract types their values as bytes. So `StateRecord` is a key and
@@ -80,7 +80,8 @@ hold the whole of M4's code and review it only at the end. M4a is the protocol a
     `panic = "abort"`. On corrupt node lengths Arrow's readers panic; the decoder turns such a
     panic into a typed error (§12.8; ADR 0038).
 - **Limits** (§12.8) are `rdlt_wire::Limits`, with the spec's defaults, enforced on receive with a
-  typed `Refusal { code, field, limit, actual }`.
+  typed `Refusal { field, limit, actual }`, its `field` an `rdlt_wire::Limit` and its code
+  `limit_exceeded`.
   - The decoder enforces frame size, rows per batch, columns per schema, nesting depth, the values
     of a frame, the bytes its views name and the bytes of a schema message, each with a limit or a
     refusal field of its own, and a sender cuts a batch to its receiver's limits (ADR 0038).

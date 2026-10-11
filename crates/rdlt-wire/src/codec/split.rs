@@ -14,7 +14,7 @@ use super::relocate::held_bytes;
 use super::weigh::{Weigher, Weight};
 use super::{Encoder, IpcFrame};
 use crate::error::{Frame, WireError};
-use crate::limits::{Limits, Refusal};
+use crate::limits::{Limit, Limits, Refusal};
 
 /// A batch on its way to a receiver, and how far it has got.
 #[derive(Debug)]
@@ -79,9 +79,9 @@ impl Cut {
     fn dictionaries(&mut self) -> Result<(), Refusal> {
         let limits = self.limits;
         for weight in self.weigher.dictionaries() {
-            Limits::admit("batch values", limits.batch_values, weight.values)?;
-            Limits::admit("view bytes", limits.frame_bytes, weight.view_bytes)?;
-            Limits::admit("frame bytes", limits.frame_bytes, weight.frame_bytes())?;
+            Limits::admit(Limit::BatchValues, limits.batch_values, weight.values)?;
+            Limits::admit(Limit::ViewBytes, limits.frame_bytes, weight.view_bytes)?;
+            Limits::admit(Limit::FrameBytes, limits.frame_bytes, weight.frame_bytes())?;
         }
         Ok(())
     }
@@ -102,7 +102,7 @@ impl Cut {
     /// as long once one did not: a piece costs a few times the weighing of its own rows.
     fn longest(&mut self) -> Result<(usize, Weight), Refusal> {
         let limits = self.limits;
-        Limits::admit("batch rows", limits.batch_rows, 1)?;
+        Limits::admit(Limit::BatchRows, limits.batch_rows, 1)?;
         let most = usize::try_from(limits.batch_rows).unwrap_or(usize::MAX);
         let most = most.min(self.batch.num_rows() - self.sent);
         let overhead = self.overhead();
@@ -115,9 +115,9 @@ impl Cut {
         // A row's values and view bytes are weighed as its receiver counts them, and its bytes
         // are no more than its frame's: a row beyond a limit is refused before it is copied.
         let mut weight = self.weighed(self.sent, 1);
-        Limits::admit("batch values", limits.batch_values, weight.values)?;
-        Limits::admit("view bytes", limits.frame_bytes, weight.view_bytes)?;
-        Limits::admit("frame bytes", limits.frame_bytes, weight.frame_bytes())?;
+        Limits::admit(Limit::BatchValues, limits.batch_values, weight.values)?;
+        Limits::admit(Limit::ViewBytes, limits.frame_bytes, weight.view_bytes)?;
+        Limits::admit(Limit::FrameBytes, limits.frame_bytes, weight.frame_bytes())?;
         // How many more rows are tried while every stretch fitted, and once one did not, how
         // many are known not to fit.
         let (mut taken, mut step, mut unfit) = (1, 1_usize, None);

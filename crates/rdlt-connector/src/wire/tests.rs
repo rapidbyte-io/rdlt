@@ -759,21 +759,24 @@ fn a_partition_named_twice_in_a_stream_state_repeats() {
 }
 
 #[test]
-fn an_error_of_a_kind_this_end_does_not_know_is_internal_and_an_unknown_limit_generic() {
-    let error = v1::Error {
-        kind: 42,
-        message: "m".to_owned(),
-        code: None,
-        retry_after: None,
-        limit: Some(v1::LimitExceeded {
-            name: "rows per fortnight".to_owned(),
-            limit: 1,
-            actual: 2,
-        }),
-    };
-    let decoded = ConnectorError::try_from(error).unwrap();
-    assert_eq!(decoded.kind(), ConnectorErrorKind::Internal);
-    assert_eq!(decoded.limit().map(|limit| limit.name), Some("limit"));
+fn an_error_naming_no_limit_this_end_knows_is_decoded_without_one() {
+    for name in ["rows per fortnight", "keeper bytes", "batch columns", ""] {
+        let error = v1::Error {
+            kind: 42,
+            message: "m".to_owned(),
+            code: Some(rdlt_wire::limits::LIMIT_EXCEEDED.to_owned()),
+            retry_after: None,
+            limit: Some(v1::LimitExceeded {
+                name: name.to_owned(),
+                limit: 1,
+                actual: 2,
+            }),
+        };
+        let decoded = ConnectorError::try_from(error).unwrap();
+        assert_eq!(decoded.kind(), ConnectorErrorKind::Internal);
+        assert_eq!(decoded.code(), Some("limit_exceeded"), "{name}");
+        assert_eq!(decoded.limit(), None, "{name}");
+    }
 }
 
 /// A list type nested `levels` deep, its innermost item an integer.
@@ -831,21 +834,17 @@ fn a_type_nested_to_the_protocols_depth_crosses_the_wire_and_one_deeper_is_refus
 
 #[test]
 fn every_limit_either_end_refuses_by_keeps_its_name_across_the_wire() {
-    let contract = [
-        "batch columns",
-        "batch rows",
-        "cursor bytes",
-        "json push bytes",
-    ];
-    for name in rdlt_wire::limits::FIELDS.iter().chain(&contract) {
-        let error =
-            ConnectorError::new(ConnectorErrorKind::Data, "over").with_limit(Some(LimitExceeded {
-                name,
-                limit: 1,
-                actual: 2,
-            }));
+    for limit in rdlt_wire::Limit::ALL {
+        let refusal = rdlt_wire::Refusal {
+            field: limit,
+            limit: 1,
+            actual: 2,
+        };
+        let error = ConnectorError::from(refusal);
+        assert_eq!(error.code(), Some("limit_exceeded"));
         let back = crossed::<_, v1::Error>(&error).unwrap();
-        assert_eq!(back.limit().map(|limit| limit.name), Some(*name));
+        assert_eq!(back.limit(), Some(LimitExceeded::from(refusal)), "{limit}");
+        assert_eq!(back.limit().map(|limit| limit.name), Some(limit.name()));
     }
 }
 
@@ -975,8 +974,7 @@ fn a_connectors_error_text_is_shown_and_bounded_where_the_wire_delivers_it() {
 fn what_the_codec_refuses_is_reported_by_what_went_wrong() {
     use rdlt_wire::{Frame, Problem, Refusal, WireError};
     let refusal = Refusal {
-        code: "limit_exceeded",
-        field: "batch values",
+        field: rdlt_wire::Limit::BatchValues,
         limit: 1,
         actual: 2,
     };

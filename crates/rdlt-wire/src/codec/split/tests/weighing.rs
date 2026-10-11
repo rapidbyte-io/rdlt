@@ -13,7 +13,7 @@ use arrow_schema::{DataType, Field};
 use super::{cost, cut, least};
 use crate::codec::tests::samples::batch_of;
 use crate::error::WireError;
-use crate::limits::Limits;
+use crate::limits::{Limit, Limits};
 
 /// One list of `items` texts too long for a view to hold.
 fn texts(items: usize) -> ArrayRef {
@@ -109,7 +109,7 @@ fn a_row_beyond_a_frame_is_refused_from_its_weight_before_it_is_narrowed_or_enco
             panic!("{}: {refused}", batch.schema());
         };
         // The list view's row is also beyond a frame's values, which are weighed first.
-        let named = ["frame bytes", "view bytes", "batch values"];
+        let named = [Limit::FrameBytes, Limit::ViewBytes, Limit::BatchValues];
         assert!(named.contains(&refusal.field), "{refusal:?}");
         assert!(refusal.actual >= 5 << 20, "{refusal:?}");
         assert_eq!(
@@ -178,7 +178,7 @@ fn keys_are_weighed_by_arithmetic_whatever_the_value_they_name_holds() {
 
 /// Checks a one-row batch of the dictionary `values` is refused by a sender at a peer's least
 /// limits, naming `field`, before anything is rebuilt or encoded and holding little beside it.
-fn refused_from_the_weight_of_its_dictionary(values: ArrayRef, field: &str) {
+fn refused_from_the_weight_of_its_dictionary(values: ArrayRef, field: Limit) {
     let batch = one_key(0, values);
     let mut sender = crate::codec::Encoder::default();
     sender.schema(&batch.schema()).unwrap();
@@ -202,18 +202,18 @@ fn a_dictionary_beyond_a_frame_is_refused_from_its_weight_before_it_is_rebuilt_o
     let (views, buffers, _) = one.into_parts();
     let shared = vec![views[0]; 600];
     let views: ArrayRef = Arc::new(StringViewArray::new(shared.into(), buffers, None));
-    refused_from_the_weight_of_its_dictionary(views, "view bytes");
+    refused_from_the_weight_of_its_dictionary(views, Limit::ViewBytes);
     // Three hundred list views each naming the same mebibyte of items.
     let items = Arc::new(arrow_array::Int8Array::from(vec![7; 1 << 20]));
     let field = Arc::new(Field::new("item", DataType::Int8, true));
     let (offsets, sizes) = (vec![0_i64; 300], vec![1_i64 << 20; 300]);
     let lists =
         arrow_array::LargeListViewArray::new(field, offsets.into(), sizes.into(), items, None);
-    refused_from_the_weight_of_its_dictionary(Arc::new(lists), "batch values");
+    refused_from_the_weight_of_its_dictionary(Arc::new(lists), Limit::BatchValues);
     // Two hundred thousand texts no key but one names: eight megabytes as they are.
     let texts = (0..200_000).map(|at| format!("a value no key names, number {at:08}"));
     let texts = arrow_array::StringArray::from_iter_values(texts);
-    refused_from_the_weight_of_its_dictionary(Arc::new(texts), "frame bytes");
+    refused_from_the_weight_of_its_dictionary(Arc::new(texts), Limit::FrameBytes);
 }
 
 #[test]

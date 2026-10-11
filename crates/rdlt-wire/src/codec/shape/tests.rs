@@ -15,7 +15,7 @@ use crate::codec::tests::frames::{Parts, changed, decoder, problem, refusal, ref
 use crate::codec::tests::samples::{self, ROWS, batch_of};
 use crate::codec::{Decoder, Encoder, IpcFrame};
 use crate::error::{Frame, Part, Problem, WireError};
-use crate::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES, Limits};
+use crate::limits::{BATCH_ROWS, BATCH_VALUES, FRAME_BYTES, Limit, Limits};
 
 /// A one-row frame of `columns` `Int64` columns whose data buffers all lie at `offsets`, in
 /// turn, each reaching the end of one body of `body` bytes.
@@ -76,7 +76,7 @@ fn one_row_of_lists_of_nulls_beyond_the_value_limit_is_refused() {
     let refusal = refusal(decoder.frame(&frames[0]));
     assert_eq!(
         (refusal.field, refusal.limit),
-        ("batch values", BATCH_VALUES)
+        (Limit::BatchValues, BATCH_VALUES)
     );
     // Refused at the first node beyond the limit, not after all the frame's values, about five billion.
     let items = u64::try_from(items).unwrap();
@@ -101,7 +101,7 @@ fn null_columns_beyond_the_value_limit_are_refused() {
     let refusal = refusal(decoder.frame(&frames[0]));
     assert_eq!(
         (refusal.field, refusal.limit, refusal.actual),
-        ("batch values", BATCH_VALUES, BATCH_VALUES + BATCH_ROWS)
+        (Limit::BatchValues, BATCH_VALUES, BATCH_VALUES + BATCH_ROWS)
     );
 }
 
@@ -136,7 +136,7 @@ fn views_aliasing_one_buffer_beyond_the_frame_limit_are_refused() {
     let refusal = refusal(decoder.frame(&frame));
     assert_eq!(
         (refusal.field, refusal.limit, refusal.actual),
-        ("view bytes", FRAME_BYTES, 4_096 << 20)
+        (Limit::ViewBytes, FRAME_BYTES, 4_096 << 20)
     );
 }
 
@@ -159,7 +159,7 @@ fn views_aliasing_one_buffer_within_the_frame_limit_decode_and_count_what_they_n
     let refusal = refusal(within(2_999));
     assert_eq!(
         (refusal.field, refusal.limit, refusal.actual),
-        ("view bytes", 2_999, 3_000)
+        (Limit::ViewBytes, 2_999, 3_000)
     );
 }
 
@@ -177,7 +177,7 @@ fn the_views_of_every_column_count_toward_the_frame_limit() {
     assert_eq!(shape.view_bytes, 6_000);
     let (mut decoder, frames) = sent(&batch, limits(5_999));
     let refusal = refusal(decoder.frame(&frames[0]));
-    assert_eq!((refusal.field, refusal.actual), ("view bytes", 6_000));
+    assert_eq!((refusal.field, refusal.actual), (Limit::ViewBytes, 6_000));
 }
 
 /// Views, the sizes of their column's data buffers, and the bytes the views name or the first
@@ -444,7 +444,7 @@ fn values_of_every_kind_count_toward_the_value_limit_whether_or_not_they_take_by
         );
         assert_eq!(
             (refusal.field, refusal.limit),
-            ("batch values", values - 1),
+            (Limit::BatchValues, values - 1),
             "{}",
             batch.schema()
         );

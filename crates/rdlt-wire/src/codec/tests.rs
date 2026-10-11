@@ -19,7 +19,7 @@ use rdlt_testkit::drawn::{Drawn, Scalar, array, field};
 
 use super::{Decoder, Encoder, IpcFrame, Shape};
 use crate::error::{Frame, Problem, WireError};
-use crate::limits::Limits;
+use crate::limits::{Limit, Limits};
 
 /// The batch `drawn` describes.
 pub(crate) fn batch((columns, rows): &Drawn) -> RecordBatch {
@@ -304,7 +304,7 @@ fn batches_beyond_the_row_limit_and_frames_beyond_the_byte_limit_are_refused() {
     };
     assert_eq!(
         refused(decoder.frame(&frame).unwrap_err()),
-        ("batch rows", 2, 3)
+        (Limit::BatchRows, 2, 3)
     );
     let bytes = u64::try_from(frame.header.len() + frame.body.len()).unwrap();
     let mut decoder = frames::decoder(
@@ -316,7 +316,7 @@ fn batches_beyond_the_row_limit_and_frames_beyond_the_byte_limit_are_refused() {
     );
     assert_eq!(
         refused(decoder.frame(&frame).unwrap_err()),
-        ("frame bytes", bytes - 1, bytes)
+        (Limit::FrameBytes, bytes - 1, bytes)
     );
     let mut decoder = frames::decoder(
         &batch.schema(),
@@ -349,14 +349,14 @@ fn schemas_beyond_the_column_and_depth_limits_are_refused() {
             schema_columns: 4,
             ..Limits::default()
         }),
-        ("schema columns", 5)
+        (Limit::SchemaColumns, 5)
     );
     assert_eq!(
         refusal(Limits {
             nesting_depth: 3,
             ..Limits::default()
         }),
-        ("nesting depth", 4)
+        (Limit::NestingDepth, 4)
     );
     assert!(
         Decoder::new(Limits {
@@ -418,7 +418,7 @@ fn a_schema_nested_to_the_limit_decodes_and_one_level_deeper_is_refused_by_name(
         .schema(&encoder.schema(&nested(depth + 1)).unwrap())
         .unwrap_err()
     {
-        WireError::Refused(refusal) => assert_eq!(refusal.field, "nesting depth"),
+        WireError::Refused(refusal) => assert_eq!(refusal.field, Limit::NestingDepth),
         other => panic!("{other}"),
     }
 }
@@ -704,7 +704,7 @@ fn the_dictionaries_a_decoder_holds_are_bounded_together() {
         };
         assert_eq!(
             (refusal.field, refusal.limit, refusal.actual),
-            ("dictionary bytes", limit, 3 * each)
+            (Limit::DictionaryBytes, limit, 3 * each)
         );
         // The dictionary refused is not held.
         assert_eq!(decoder.dictionary_bytes(), 2 * each);
@@ -1005,7 +1005,7 @@ fn a_sender_counts_the_dictionaries_its_receiver_holds_from_the_batches_before()
     let WireError::Refused(refusal) = refused else {
         panic!("{refused}");
     };
-    assert_eq!(refusal.field, "dictionary bytes");
+    assert_eq!(refusal.field, Limit::DictionaryBytes);
     assert_eq!(refusal.limit, 2 << 20);
     assert!(refusal.actual > 3_000_000, "{refusal:?}");
     // A schema sent again clears what its receiver holds, and the batch is sent then.
@@ -1090,7 +1090,7 @@ fn a_schema_nested_to_the_limit_through_unions_or_dictionaries_is_sent_and_one_l
         );
         let deeper = encoder.schema(&nested_through(depth + 1, &level)).unwrap();
         match decoder.schema(&deeper).unwrap_err() {
-            WireError::Refused(refusal) => assert_eq!(refusal.field, "nesting depth", "{what}"),
+            WireError::Refused(refusal) => assert_eq!(refusal.field, Limit::NestingDepth, "{what}"),
             other => panic!("{what}: {other}"),
         }
     }

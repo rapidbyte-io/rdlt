@@ -4,19 +4,6 @@ use super::types::{duration, std_duration};
 use super::{Invalid, v1};
 use crate::error::{ConnectorError, ConnectorErrorKind, LimitExceeded};
 
-/// The names of the limits the contract enforces where data enters rdlt, besides those of the
-/// protocol, [`rdlt_wire::limits::FIELDS`].
-const CONTRACT_LIMITS: &[&str] = &[
-    "batch columns",
-    "batch rows",
-    "config schema bytes",
-    "cursor bytes",
-    "json push bytes",
-];
-
-/// The name a limit that `name` does not match goes by.
-const UNKNOWN_LIMIT: &str = "limit";
-
 /// The code an error a connector sent goes by when the code it chose is not one it may use.
 pub const INVALID_CODE: &str = "invalid_code";
 
@@ -89,15 +76,14 @@ impl TryFrom<v1::Error> for ConnectorError {
     type Error = Invalid;
 
     fn try_from(error: v1::Error) -> Result<Self, Invalid> {
-        let limit = error.limit.map(|limit| LimitExceeded {
-            name: rdlt_wire::limits::FIELDS
-                .iter()
-                .chain(CONTRACT_LIMITS)
-                .find(|name| **name == limit.name)
-                .copied()
-                .unwrap_or(UNKNOWN_LIMIT),
-            limit: limit.limit,
-            actual: limit.actual,
+        let limit = error.limit.and_then(|limit| {
+            // A name no limit has, a connector's own among them, carries no limit across.
+            let named = rdlt_wire::Limit::named(&limit.name)?;
+            Some(LimitExceeded {
+                name: named.name(),
+                limit: limit.limit,
+                actual: limit.actual,
+            })
         });
         let mut decoded = Self::new(kind(error.kind), error.message)
             .with_retry_after(error.retry_after.map(std_duration).transpose()?)

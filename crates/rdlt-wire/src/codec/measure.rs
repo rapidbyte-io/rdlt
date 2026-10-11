@@ -12,7 +12,7 @@ use super::IpcFrame;
 use super::framing::{framing, kind};
 use super::shape::{Walked, walk};
 use crate::error::{Frame, Problem, WireError};
-use crate::limits::Limits;
+use crate::limits::{Limit, Limits};
 
 /// What the frames in one schema hold: a batch's columns, and each dictionary's values.
 #[derive(Debug)]
@@ -72,7 +72,7 @@ pub(super) fn measured<'a>(
     // which the walk counts.
     if framed.dictionary.is_none() {
         let rows = u64::try_from(framed.batch.length()).unwrap_or(u64::MAX);
-        Limits::admit("batch rows", limits.batch_rows, rows)?;
+        Limits::admit(Limit::BatchRows, limits.batch_rows, rows)?;
     }
     let columns = match framed.dictionary {
         None => Arc::clone(&columns.schema),

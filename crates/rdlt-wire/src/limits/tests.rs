@@ -1,4 +1,4 @@
-use super::{CONTROL_STRING_BYTES, FRAME_BYTES, LIMIT_EXCEEDED, Limits, Refusal, count};
+use super::{CONTROL_STRING_BYTES, FRAME_BYTES, Limit, Limits, Refusal, count};
 use crate::v1;
 
 #[test]
@@ -9,8 +9,7 @@ fn a_value_at_its_limit_is_admitted_and_one_beyond_refused_with_what_it_measured
     assert_eq!(
         limits.admit_frame(at + 1),
         Err(Refusal {
-            code: LIMIT_EXCEEDED,
-            field: "frame bytes",
+            field: Limit::FrameBytes,
             limit: FRAME_BYTES,
             actual: FRAME_BYTES + 1,
         })
@@ -19,7 +18,7 @@ fn a_value_at_its_limit_is_admitted_and_one_beyond_refused_with_what_it_measured
     let refusal = limits.admit_string(&long).unwrap_err();
     assert_eq!(
         (refusal.field, refusal.actual),
-        ("control string bytes", CONTROL_STRING_BYTES + 1)
+        (Limit::ControlStringBytes, CONTROL_STRING_BYTES + 1)
     );
 }
 
@@ -41,14 +40,26 @@ fn each_admission_measures_against_its_own_limit() {
     };
     let refused =
         |result: Result<(), Refusal>| result.map_err(|refusal| (refusal.field, refusal.limit));
-    assert_eq!(refused(limits.admit_json(6)), Err(("json push bytes", 5)));
-    assert_eq!(refused(limits.admit_cursor(7)), Err(("cursor bytes", 6)));
-    assert_eq!(refused(limits.admit_config(8)), Err(("config bytes", 7)));
+    assert_eq!(
+        refused(limits.admit_json(6)),
+        Err((Limit::JsonPushBytes, 5))
+    );
+    assert_eq!(
+        refused(limits.admit_cursor(7)),
+        Err((Limit::CursorBytes, 6))
+    );
+    assert_eq!(
+        refused(limits.admit_config(8)),
+        Err((Limit::ConfigBytes, 7))
+    );
     assert_eq!(
         refused(limits.admit_string("123456789")),
-        Err(("control string bytes", 8))
+        Err((Limit::ControlStringBytes, 8))
     );
-    assert_eq!(refused(limits.admit_schema(11)), Err(("schema bytes", 10)));
+    assert_eq!(
+        refused(limits.admit_schema(11)),
+        Err((Limit::SchemaBytes, 10))
+    );
     assert_eq!(refused(limits.admit_schema(10)), Ok(()));
     assert_eq!(refused(limits.admit_json(5)), Ok(()));
 }
@@ -109,7 +120,7 @@ fn a_limit_the_peer_leaves_unset_is_the_protocols_default() {
         }
     );
     let refused = Limits::from(unset).admit_peer().unwrap_err();
-    assert_eq!((refused.field, refused.actual), ("dictionary bytes", 0));
+    assert_eq!((refused.field, refused.actual), (Limit::DictionaryBytes, 0));
     let partly = v1::Limits {
         batch_rows: 7,
         batch_values: 8,
@@ -159,25 +170,25 @@ fn a_peers_limit_below_its_protocol_minimum_is_refused() {
         MIN_FRAME_BYTES, Shortfall,
     };
     type Field = fn(&mut Limits) -> &mut u64;
-    let short: [(Field, &str, u64); 4] = [
+    let short: [(Field, Limit, u64); 4] = [
         (
             |limits| &mut limits.frame_bytes,
-            "frame bytes",
+            Limit::FrameBytes,
             MIN_FRAME_BYTES,
         ),
         (
             |limits| &mut limits.batch_rows,
-            "batch rows",
+            Limit::BatchRows,
             MIN_BATCH_ROWS,
         ),
         (
             |limits| &mut limits.batch_values,
-            "batch values",
+            Limit::BatchValues,
             MIN_BATCH_VALUES,
         ),
         (
             |limits| &mut limits.dictionary_bytes,
-            "dictionary bytes",
+            Limit::DictionaryBytes,
             MIN_DICTIONARY_BYTES,
         ),
     ];
@@ -287,15 +298,14 @@ fn dictionaries_and_staged_frames_are_bounded_in_frames() {
     assert_eq!(
         limits.admit_dictionaries(11),
         Err(Refusal {
-            code: LIMIT_EXCEEDED,
-            field: "dictionary bytes",
+            field: Limit::DictionaryBytes,
             limit: 10,
             actual: 11,
         })
     );
     assert_eq!(limits.admit_staged(40), Ok(()));
     let refusal = limits.admit_staged(41).unwrap_err();
-    assert_eq!((refusal.field, refusal.limit), ("staged bytes", 40));
+    assert_eq!((refusal.field, refusal.limit), (Limit::StagedBytes, 40));
     // A limit of their own below a frame's bytes bounds dictionaries, and staged frames not.
     let fewer = Limits {
         dictionary_bytes: 4,
@@ -306,7 +316,7 @@ fn dictionaries_and_staged_frames_are_bounded_in_frames() {
         (4, 40)
     );
     let refusal = fewer.admit_dictionaries(5).unwrap_err();
-    assert_eq!((refusal.field, refusal.limit), ("dictionary bytes", 4));
+    assert_eq!((refusal.field, refusal.limit), (Limit::DictionaryBytes, 4));
     // A receiver that lifts both limits lifts these with them.
     let unlimited = Limits {
         frame_bytes: u64::MAX,
@@ -466,4 +476,18 @@ fn the_protocol_limits_have_their_specified_values() {
     assert_eq!(JSON_PUSH_BYTES, 64 * mib);
     assert_eq!(CURSOR_BYTES, 4 * mib);
     assert_eq!(CONFIG_BYTES, 8 * mib);
+}
+
+#[test]
+fn every_limit_has_one_name_and_is_found_by_it() {
+    let mut names = std::collections::BTreeSet::new();
+    for limit in Limit::ALL {
+        assert!(names.insert(limit.name()), "{limit:?} shares its name");
+        assert_eq!(Limit::named(limit.name()), Some(limit));
+        assert_eq!(limit.to_string(), limit.name());
+    }
+    // One limit, one name: a schema's width is "schema columns" wherever it is refused.
+    assert_eq!(Limit::named("batch columns"), None);
+    assert_eq!(Limit::named(""), None);
+    assert_eq!(Limit::named("frame bytes "), None);
 }

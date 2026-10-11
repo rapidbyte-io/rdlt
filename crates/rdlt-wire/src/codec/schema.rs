@@ -8,7 +8,7 @@ use arrow_ipc::{Endianness, Field, KeyValue, Schema};
 use flatbuffers::{ForwardsUOffset, Vector};
 
 use crate::error::{Frame, Problem, WireError};
-use crate::limits::Limits;
+use crate::limits::{Limit, Limits};
 
 /// Admits `schema` if converting it holds no more than `limits` allow.
 ///
@@ -43,9 +43,13 @@ impl Measured<'_> {
         depth: u64,
     ) -> Result<(), WireError> {
         for field in fields.into_iter().flatten() {
-            Limits::admit("nesting depth", self.limits.nesting_depth, depth)?;
+            Limits::admit(Limit::NestingDepth, self.limits.nesting_depth, depth)?;
             self.columns += 1;
-            Limits::admit("schema columns", self.limits.schema_columns, self.columns)?;
+            Limits::admit(
+                Limit::SchemaColumns,
+                self.limits.schema_columns,
+                self.columns,
+            )?;
             let name = field.name().unwrap_or_default();
             self.limits.admit_string(name)?;
             self.text(name)?;
@@ -74,7 +78,7 @@ impl Measured<'_> {
         let bytes = u64::try_from(text.len()).unwrap_or(u64::MAX);
         self.text = self.text.saturating_add(bytes);
         Ok(Limits::admit(
-            "schema bytes",
+            Limit::SchemaBytes,
             self.limits.schema_bytes,
             self.text,
         )?)
