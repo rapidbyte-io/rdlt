@@ -9,9 +9,9 @@ use arrow_array::{
 };
 use rdlt_connector::{
     ChangeOp, Checkpointing, ConnectContext, ConnectorError, ConnectorErrorKind, Cursor, Emitter,
-    Field, LogicalType, OP_COLUMN, Partition, PartitionId, PartitionPlan, PartitionState,
-    Partitioning, ReadMode, ReadStream, Result, SEQ_COLUMN, SourceConnector, StateEntry,
-    StreamName, StreamSpec, StreamState, Streams, TableSchema, UNCHANGED_COLUMN,
+    Field, LogicalType, OP_COLUMN, Partition, PartitionId, PartitionPlan, PartitionState, ReadMode,
+    ReadStream, Result, SEQ_COLUMN, SourceConnector, StateEntry, StreamName, StreamSpec,
+    StreamState, Streams, TableSchema, UNCHANGED_COLUMN,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -124,7 +124,6 @@ impl ReadStream<SimChangeSource> for Reader {
         };
         spec.with_primary_key(["id"])
             .with_read_modes([ReadMode::Cdc])
-            .with_partitioning(Partitioning::Planned)
             .with_checkpointing(Checkpointing::Natural)
             .with_replayable(self.replayable)
     }

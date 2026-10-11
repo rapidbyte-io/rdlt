@@ -6,8 +6,8 @@ mod tests;
 use std::sync::Arc;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
+use rdlt_connector::Field;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{Field, Partitioning};
 use rdlt_wire::limits::BATCH_ROWS;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -137,7 +137,6 @@ impl ReadStream<GeneratorSource> for Generated {
         StreamSpec::new(StreamName::new(&self.0.name).expect("connect validated stream names"))
             .with_schema(schema)
             .with_primary_key(["id"])
-            .with_partitioning(Partitioning::Planned)
             .with_checkpointing(Checkpointing::OnDemand)
     }
 

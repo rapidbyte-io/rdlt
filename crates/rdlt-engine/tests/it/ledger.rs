@@ -644,7 +644,6 @@ impl rdlt_connector::Source for Waiting {
         Box::pin(async {
             let specs = self.streams.iter().map(|name| {
                 rdlt_connector::StreamSpec::new(StreamName::new(*name).expect("a name"))
-                    .with_partitioning(rdlt_connector::Partitioning::Planned)
             });
             Ok(rdlt_connector::Catalog::new(specs.collect()).expect("a catalog"))
         })

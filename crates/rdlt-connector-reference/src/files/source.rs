@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
+use rdlt_connector::StreamName;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{Partitioning, StreamName};
 use rdlt_wire::limits::JSON_PUSH_BYTES;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -243,9 +243,7 @@ impl ReadStream<FilesSource> for FileStream {
     type Cursor = Position;
 
     fn spec(&self) -> StreamSpec {
-        StreamSpec::new(self.name.clone())
-            .with_partitioning(Partitioning::Planned)
-            .with_checkpointing(Checkpointing::OnDemand)
+        StreamSpec::new(self.name.clone()).with_checkpointing(Checkpointing::OnDemand)
     }
 
     async fn partitions(

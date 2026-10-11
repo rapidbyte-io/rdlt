@@ -186,8 +186,8 @@ fn a_report_of_committed_positions_is_counted_as_it_decodes() {
 
 #[test]
 fn entries_whose_vectors_hold_one_each_are_counted_as_they_decode() {
-    // Streams of one column of one node, of one cursor field of one empty segment, and of one
-    // read mode: each vector holds the room of its first growth for one entry.
+    // Streams of one column of one node, of a primary key of one path of one empty segment, and of
+    // one read mode: each vector holds the room of its first growth for one entry.
     let node = v1::TypeNode {
         kind: Some(v1::type_node::Kind::Int64(v1::Unit {})),
         ..v1::TypeNode::default()
@@ -202,9 +202,11 @@ fn entries_whose_vectors_hold_one_each_are_counted_as_they_decode() {
         ..v1::StreamSpec::default()
     };
     let segment = v1::StreamSpec {
-        cursor_fields: vec![v1::ColumnPath {
-            segments: vec![String::new()],
-        }],
+        primary_key: Some(v1::ColumnPaths {
+            paths: vec![v1::ColumnPath {
+                segments: vec![String::new()],
+            }],
+        }),
         ..v1::StreamSpec::default()
     };
     let mode = v1::StreamSpec {

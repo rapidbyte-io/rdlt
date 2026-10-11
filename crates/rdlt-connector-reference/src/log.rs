@@ -8,8 +8,8 @@ pub(crate) mod tests;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rdlt_connector::Field;
 use rdlt_connector::prelude::*;
-use rdlt_connector::{Field, Partitioning};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -335,7 +335,6 @@ impl ReadStream<LogSource> for Logged {
             .with_schema(schema)
             .with_primary_key(["partition", "offset"])
             .with_read_modes([ReadMode::Incremental])
-            .with_partitioning(Partitioning::Planned)
             .with_checkpointing(Checkpointing::Natural)
             .with_replayable(self.0.replayable)
     }

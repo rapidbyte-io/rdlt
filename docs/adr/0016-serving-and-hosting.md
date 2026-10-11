@@ -112,7 +112,7 @@ socket will be.
   to the plane, a read-back once its one request has arrived whole, and every other call to the
   generated server; it ends calls as tonic does, by trailers, a trailers-only answer, a body's
   error or a cancelled request, so the host classes a failure by the same code. It re-exports
-  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` (3), which both ends
+  tonic and prost, and states the protocol's version as `PROTOCOL_MAJOR` (4), which both ends
   must match.
 - **The gates follow the code.** The served end is tested from `rdlt-host`, where a client
   exists, so `rdlt-host`'s tests run against `rdlt-wire`'s mutants (ADR 0003), and coverage runs

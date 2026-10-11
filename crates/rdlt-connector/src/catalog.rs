@@ -22,17 +22,6 @@ pub enum ReadMode {
     Cdc,
 }
 
-/// Whether the source splits a stream into several partitions.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Partitioning {
-    /// One partition.
-    #[default]
-    Single,
-    /// Partitions planned by the source for each run.
-    Planned,
-}
-
 /// When a stream's partitions emit checkpoints.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,24 +39,20 @@ pub struct StreamSpec {
     name: StreamName,
     schema: Option<TableSchema>,
     primary_key: Option<Vec<ColumnPath>>,
-    cursor_fields: Vec<ColumnPath>,
     read_modes: Vec<ReadMode>,
-    partitioning: Partitioning,
     checkpointing: Checkpointing,
     replayable: bool,
     change_time: Option<ColumnPath>,
 }
 
 impl StreamSpec {
-    /// A stream read in full, as one partition, with natural checkpoints and replayable reads.
+    /// A stream read in full, with natural checkpoints and replayable reads.
     pub fn new(name: StreamName) -> Self {
         Self {
             name,
             schema: None,
             primary_key: None,
-            cursor_fields: Vec::new(),
             read_modes: vec![ReadMode::Full],
-            partitioning: Partitioning::Single,
             checkpointing: Checkpointing::Natural,
             replayable: true,
             change_time: None,
@@ -91,24 +76,10 @@ impl StreamSpec {
         self
     }
 
-    /// Adds a candidate cursor field for incremental reads.
-    #[must_use]
-    pub fn with_cursor_field(mut self, column: impl Into<ColumnPath>) -> Self {
-        self.cursor_fields.push(column.into());
-        self
-    }
-
     /// Replaces the supported read modes.
     #[must_use]
     pub fn with_read_modes(mut self, modes: impl IntoIterator<Item = ReadMode>) -> Self {
         self.read_modes = modes.into_iter().collect();
-        self
-    }
-
-    /// Sets how the stream is partitioned.
-    #[must_use]
-    pub fn with_partitioning(mut self, partitioning: Partitioning) -> Self {
-        self.partitioning = partitioning;
         self
     }
 
@@ -156,11 +127,6 @@ impl StreamSpec {
         self.primary_key.as_deref()
     }
 
-    /// Candidate cursor fields.
-    pub fn cursor_fields(&self) -> &[ColumnPath] {
-        &self.cursor_fields
-    }
-
     /// The read modes the stream supports, in the order declared.
     pub fn read_modes(&self) -> &[ReadMode] {
         &self.read_modes
@@ -169,11 +135,6 @@ impl StreamSpec {
     /// Whether the stream supports `mode`.
     pub fn supports(&self, mode: ReadMode) -> bool {
         self.read_modes.contains(&mode)
-    }
-
-    /// How the stream is partitioned.
-    pub fn partitioning(&self) -> Partitioning {
-        self.partitioning
     }
 
     /// When the stream checkpoints.

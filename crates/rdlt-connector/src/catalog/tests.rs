@@ -1,4 +1,4 @@
-use super::{Catalog, Checkpointing, InvalidCatalog, Partitioning, ReadMode, StreamSpec};
+use super::{Catalog, Checkpointing, InvalidCatalog, ReadMode, StreamSpec};
 use crate::id::StreamName;
 use crate::limits::MAX_CATALOG_STREAMS;
 use crate::schema::{ColumnPath, TableSchema};
@@ -13,7 +13,6 @@ fn a_new_stream_has_the_documented_defaults() {
     let spec = StreamSpec::new(name("orders"));
     assert!(spec.supports(ReadMode::Full));
     assert!(!spec.supports(ReadMode::Cdc));
-    assert_eq!(spec.partitioning(), Partitioning::Single);
     assert_eq!(spec.checkpointing(), Checkpointing::Natural);
     assert!(spec.is_replayable());
     assert!(
@@ -27,17 +26,13 @@ fn builders_set_every_property() {
     let spec = StreamSpec::new(name("orders"))
         .with_schema(schema.clone())
         .with_primary_key(["id"])
-        .with_cursor_field("updated_at")
         .with_read_modes([ReadMode::Full, ReadMode::Cdc])
-        .with_partitioning(Partitioning::Planned)
         .with_checkpointing(Checkpointing::OnDemand)
         .with_replayable(false)
         .with_change_time("committed_at");
     assert_eq!(spec.schema(), Some(&schema));
     assert_eq!(spec.primary_key(), Some(&[ColumnPath::from("id")][..]));
-    assert_eq!(spec.cursor_fields(), &[ColumnPath::from("updated_at")]);
     assert!(spec.supports(ReadMode::Cdc) && !spec.supports(ReadMode::Incremental));
-    assert_eq!(spec.partitioning(), Partitioning::Planned);
     assert_eq!(spec.checkpointing(), Checkpointing::OnDemand);
     assert!(!spec.is_replayable());
     assert_eq!(spec.change_time(), Some(&ColumnPath::from("committed_at")));

@@ -347,23 +347,17 @@ pub struct StreamSpec {
     /// Its primary key, if it declares one.
     #[prost(message, optional, tag = "3")]
     pub primary_key: ::core::option::Option<ColumnPaths>,
-    /// Candidate cursor fields for incremental reads.
-    #[prost(message, repeated, tag = "4")]
-    pub cursor_fields: ::prost::alloc::vec::Vec<ColumnPath>,
     /// The read modes it supports.
-    #[prost(enumeration = "ReadMode", repeated, tag = "5")]
+    #[prost(enumeration = "ReadMode", repeated, tag = "4")]
     pub read_modes: ::prost::alloc::vec::Vec<i32>,
-    /// How it is partitioned.
-    #[prost(enumeration = "Partitioning", tag = "6")]
-    pub partitioning: i32,
     /// When its reads checkpoint.
-    #[prost(enumeration = "Checkpointing", tag = "7")]
+    #[prost(enumeration = "Checkpointing", tag = "5")]
     pub checkpointing: i32,
     /// Whether a read from a cursor sees the same rows again.
-    #[prost(bool, tag = "8")]
+    #[prost(bool, tag = "6")]
     pub replayable: bool,
     /// The column holding each change's time, for change streams.
-    #[prost(message, optional, tag = "9")]
+    #[prost(message, optional, tag = "7")]
     pub change_time: ::core::option::Option<ColumnPath>,
 }
 /// Every stream a source offers.
@@ -518,39 +512,6 @@ impl ReadMode {
             "READ_MODE_FULL" => Some(Self::Full),
             "READ_MODE_INCREMENTAL" => Some(Self::Incremental),
             "READ_MODE_CDC" => Some(Self::Cdc),
-            _ => None,
-        }
-    }
-}
-/// How a stream is split for parallel reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum Partitioning {
-    /// Never sent; a receiver refuses it.
-    Unspecified = 0,
-    /// One partition.
-    Single = 1,
-    /// Partitions the source plans from committed state.
-    Planned = 2,
-}
-impl Partitioning {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "PARTITIONING_UNSPECIFIED",
-            Self::Single => "PARTITIONING_SINGLE",
-            Self::Planned => "PARTITIONING_PLANNED",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "PARTITIONING_UNSPECIFIED" => Some(Self::Unspecified),
-            "PARTITIONING_SINGLE" => Some(Self::Single),
-            "PARTITIONING_PLANNED" => Some(Self::Planned),
             _ => None,
         }
     }
