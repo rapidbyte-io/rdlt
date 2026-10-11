@@ -51,7 +51,8 @@ through the connector, and a host that can kill what it placed. The owner ruled 
   of its frames where they are larger. A load retries 20 times, quickly, and up to three loads
   run until one succeeds.
 - **A clause passes only on a kill that landed** (ADR 0050): for a spawned connector, `SIGKILL`
-  to its process group, which the host then sees end the connection; for one reached at an
+  to its process group, which the host then sees end the connection unless a process outside
+  the group holds it open (`docs/certify/clauses.md`); for one reached at an
   endpoint or served in process, the host's cut of its connection, which lands by itself. The
   pass notes which (`killed`, `cut`). When no kill landed (the load ended first, as a source
   smaller than about one credit window does), the clause is unobserved, with the seed. A clause
