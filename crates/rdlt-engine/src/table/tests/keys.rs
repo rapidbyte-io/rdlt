@@ -443,3 +443,31 @@ fn a_key_holding_no_float_is_neither_decoded_nor_walked() {
         assert!(peak < 1_024, "{}: {peak} bytes", column.data_type());
     }
 }
+
+/// A struct key mixing an integer and a float zeroes and refuses by its float alone: the integer
+/// field comes back as it arrived.
+#[test]
+fn a_struct_key_mixing_a_float_and_an_integer_is_judged_by_its_float() {
+    use arrow_array::cast::AsArray;
+    let stream = rdlt_connector::StreamName::new("s").unwrap();
+    let fields = Fields::from(vec![
+        arrow_schema::Field::new("n", DataType::Int64, true),
+        arrow_schema::Field::new("x", DataType::Float64, true),
+    ]);
+    let key = |floats: Vec<f64>| -> ArrayRef {
+        let ints: ArrayRef = Arc::new(Int64Array::from(vec![7, 8]));
+        let floats: ArrayRef = Arc::new(Float64Array::from(floats));
+        Arc::new(StructArray::try_new(fields.clone(), vec![ints, floats], None).unwrap())
+    };
+
+    let zeroed = key_values(&stream, "id", &key(vec![1.0, -0.0]), &|_| true).unwrap();
+    let columns = zeroed.as_struct().columns();
+    assert_eq!(zero_signs(columns[1].as_ref()), [false]);
+    assert_eq!(
+        columns[0].as_primitive::<Int64Type>().values().as_ref(),
+        [7, 8]
+    );
+
+    let refused = key_values(&stream, "id", &key(vec![1.0, f64::NAN]), &|_| true).unwrap_err();
+    assert_eq!(refused.code(), Some("merge_key_nan"));
+}
