@@ -93,18 +93,7 @@ pub fn frame_error(error: &rdlt_wire::WireError) -> ConnectorError {
             ConnectorError::new(ConnectorErrorKind::Internal, error.to_string())
                 .with_code(UNENCODABLE_BATCH)
         }
-        WireError::Refused(refusal) => {
-            let limit = crate::error::LimitExceeded {
-                name: rdlt_wire::limits::FIELDS
-                    .iter()
-                    .find(|name| **name == refusal.field)
-                    .copied()
-                    .unwrap_or("limit"),
-                limit: refusal.limit,
-                actual: refusal.actual,
-            };
-            ConnectorError::exceeds(limit)
-        }
+        WireError::Refused(refusal) => ConnectorError::from(*refusal),
         other => ConnectorError::new(ConnectorErrorKind::Internal, other.to_string())
             .with_code(MALFORMED_FRAME),
     }
@@ -113,7 +102,7 @@ pub fn frame_error(error: &rdlt_wire::WireError) -> ConnectorError {
 /// A peer's limit below the protocol's minimum, as the error its handshake is refused with.
 pub fn shortfall_error(shortfall: &rdlt_wire::Shortfall) -> ConnectorError {
     let limit = crate::error::LimitExceeded {
-        name: shortfall.field,
+        name: shortfall.field.name(),
         limit: shortfall.minimum,
         actual: shortfall.actual,
     };

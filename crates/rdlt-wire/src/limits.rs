@@ -124,25 +124,105 @@ pub fn count(value: usize) -> u64 {
 /// The code of every refusal.
 pub const LIMIT_EXCEEDED: &str = "limit_exceeded";
 
-/// The field each refusal names; a receiver that decodes a refusal keeps these.
-pub const FIELDS: &[&str] = &[
-    "frame bytes",
-    "batch rows",
-    "schema columns",
-    "nesting depth",
-    "json push bytes",
-    "cursor bytes",
-    "config bytes",
-    "control string bytes",
-    "batch values",
-    "schema bytes",
-    "view bytes",
-    "dictionary bytes",
-    "staged bytes",
-    "catalog bytes",
-    "state bytes",
-    "control message bytes",
-];
+/// A limit a refusal names, in either end's process and on the wire: one name each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Limit {
+    /// Bytes in one frame.
+    FrameBytes,
+    /// Rows in one batch.
+    BatchRows,
+    /// Columns in one schema, nested ones counted.
+    SchemaColumns,
+    /// Levels of nesting.
+    NestingDepth,
+    /// Bytes in one JSON push.
+    JsonPushBytes,
+    /// Bytes in one cursor.
+    CursorBytes,
+    /// Bytes in the configuration document.
+    ConfigBytes,
+    /// Bytes in one string field of a control message.
+    ControlStringBytes,
+    /// Values in one frame.
+    BatchValues,
+    /// Bytes in one schema message.
+    SchemaBytes,
+    /// Bytes the views of one frame name.
+    ViewBytes,
+    /// Bytes the dictionaries one read or write holds at once.
+    DictionaryBytes,
+    /// Bytes one write stages between two flushes.
+    StagedBytes,
+    /// Bytes in one catalog.
+    CatalogBytes,
+    /// Bytes a message carrying state holds decoded.
+    StateBytes,
+    /// Bytes in any other control message.
+    ControlMessageBytes,
+    /// Bytes a batch a source pushes would fill a frame with or keeps alive in its host's process.
+    BatchBytes,
+    /// Bytes in a connector's configuration schema, as its handshake answers it.
+    ConfigSchemaBytes,
+}
+
+impl Limit {
+    /// Every limit.
+    pub const ALL: [Self; 18] = [
+        Self::FrameBytes,
+        Self::BatchRows,
+        Self::SchemaColumns,
+        Self::NestingDepth,
+        Self::JsonPushBytes,
+        Self::CursorBytes,
+        Self::ConfigBytes,
+        Self::ControlStringBytes,
+        Self::BatchValues,
+        Self::SchemaBytes,
+        Self::ViewBytes,
+        Self::DictionaryBytes,
+        Self::StagedBytes,
+        Self::CatalogBytes,
+        Self::StateBytes,
+        Self::ControlMessageBytes,
+        Self::BatchBytes,
+        Self::ConfigSchemaBytes,
+    ];
+
+    /// The limit's name, as a refusal carries it on the wire.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::FrameBytes => "frame bytes",
+            Self::BatchRows => "batch rows",
+            Self::SchemaColumns => "schema columns",
+            Self::NestingDepth => "nesting depth",
+            Self::JsonPushBytes => "json push bytes",
+            Self::CursorBytes => "cursor bytes",
+            Self::ConfigBytes => "config bytes",
+            Self::ControlStringBytes => "control string bytes",
+            Self::BatchValues => "batch values",
+            Self::SchemaBytes => "schema bytes",
+            Self::ViewBytes => "view bytes",
+            Self::DictionaryBytes => "dictionary bytes",
+            Self::StagedBytes => "staged bytes",
+            Self::CatalogBytes => "catalog bytes",
+            Self::StateBytes => "state bytes",
+            Self::ControlMessageBytes => "control message bytes",
+            Self::BatchBytes => "batch bytes",
+            Self::ConfigSchemaBytes => "config schema bytes",
+        }
+    }
+
+    /// The limit called `name`; none for a name no limit has.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|limit| limit.name() == name)
+    }
+}
+
+impl std::fmt::Display for Limit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
 
 /// The code of a limit a peer set below the protocol's minimum.
 pub const LIMIT_BELOW_MINIMUM: &str = "limit_below_minimum";
@@ -153,8 +233,8 @@ pub const LIMIT_BELOW_MINIMUM: &str = "limit_below_minimum";
 pub struct Shortfall {
     /// Always [`LIMIT_BELOW_MINIMUM`].
     pub code: &'static str,
-    /// The limit, as a [`Refusal`] names it.
-    pub field: &'static str,
+    /// The limit below its minimum.
+    pub field: Limit,
     /// The least a peer may set it to.
     pub minimum: u64,
     /// What the peer set.
@@ -291,15 +371,13 @@ impl Default for Limits {
     }
 }
 
-/// A value beyond a limit, refused where it was received.
+/// A value beyond a limit, refused where it was received, with code [`LIMIT_EXCEEDED`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{field} is {actual}, beyond the limit of {limit}")]
 pub struct Refusal {
-    /// Always [`LIMIT_EXCEEDED`].
-    pub code: &'static str,
-    /// What was measured, with its unit.
-    pub field: &'static str,
-    /// The limit.
+    /// The limit passed.
+    pub field: Limit,
+    /// The limit's value.
     pub limit: u64,
     /// The value.
     pub actual: u64,
@@ -311,12 +389,11 @@ impl Limits {
     /// # Errors
     ///
     /// A [`Refusal`] naming `field` when `actual` exceeds `limit`.
-    pub fn admit(field: &'static str, limit: u64, actual: u64) -> Result<(), Refusal> {
+    pub fn admit(field: Limit, limit: u64, actual: u64) -> Result<(), Refusal> {
         if actual <= limit {
             return Ok(());
         }
         Err(Refusal {
-            code: LIMIT_EXCEEDED,
             field,
             limit,
             actual,
@@ -375,7 +452,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when they exceed [`Limits::held_dictionary_bytes`].
     pub fn admit_dictionaries(&self, bytes: u64) -> Result<(), Refusal> {
-        Self::admit("dictionary bytes", self.held_dictionary_bytes(), bytes)
+        Self::admit(Limit::DictionaryBytes, self.held_dictionary_bytes(), bytes)
     }
 
     /// Admits what a write would have staged since its last flush, `bytes` together.
@@ -384,7 +461,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when it exceeds [`Limits::staged_bytes`].
     pub fn admit_staged(&self, bytes: u64) -> Result<(), Refusal> {
-        Self::admit("staged bytes", self.staged_bytes(), bytes)
+        Self::admit(Limit::StagedBytes, self.staged_bytes(), bytes)
     }
 
     /// Admits a frame of `bytes`.
@@ -393,7 +470,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the frame exceeds [`Limits::frame_bytes`].
     pub fn admit_frame(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("frame bytes", self.frame_bytes, count(bytes))
+        Self::admit(Limit::FrameBytes, self.frame_bytes, count(bytes))
     }
 
     /// The lesser of each of these limits and of `other`'s: what a sender keeps within, of its
@@ -426,11 +503,11 @@ impl Limits {
     /// A [`Shortfall`] naming the first limit below its minimum.
     pub fn admit_peer(&self) -> Result<(), Shortfall> {
         let floors = [
-            ("frame bytes", MIN_FRAME_BYTES, self.frame_bytes),
-            ("batch rows", MIN_BATCH_ROWS, self.batch_rows),
-            ("batch values", MIN_BATCH_VALUES, self.batch_values),
+            (Limit::FrameBytes, MIN_FRAME_BYTES, self.frame_bytes),
+            (Limit::BatchRows, MIN_BATCH_ROWS, self.batch_rows),
+            (Limit::BatchValues, MIN_BATCH_VALUES, self.batch_values),
             (
-                "dictionary bytes",
+                Limit::DictionaryBytes,
                 MIN_DICTIONARY_BYTES,
                 self.dictionary_bytes,
             ),
@@ -455,7 +532,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the message exceeds [`Limits::schema_bytes`].
     pub fn admit_schema(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("schema bytes", self.schema_bytes, count(bytes))
+        Self::admit(Limit::SchemaBytes, self.schema_bytes, count(bytes))
     }
 
     /// Admits a string field of a control message.
@@ -465,7 +542,7 @@ impl Limits {
     /// A [`Refusal`] when the string exceeds [`Limits::control_string_bytes`].
     pub fn admit_string(&self, value: &str) -> Result<(), Refusal> {
         Self::admit(
-            "control string bytes",
+            Limit::ControlStringBytes,
             self.control_string_bytes,
             count(value.len()),
         )
@@ -477,7 +554,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the push exceeds [`Limits::json_push_bytes`].
     pub fn admit_json(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("json push bytes", self.json_push_bytes, count(bytes))
+        Self::admit(Limit::JsonPushBytes, self.json_push_bytes, count(bytes))
     }
 
     /// Admits a cursor.
@@ -486,7 +563,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the cursor exceeds [`Limits::cursor_bytes`].
     pub fn admit_cursor(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("cursor bytes", self.cursor_bytes, count(bytes))
+        Self::admit(Limit::CursorBytes, self.cursor_bytes, count(bytes))
     }
 
     /// Admits a configuration document.
@@ -495,7 +572,7 @@ impl Limits {
     ///
     /// A [`Refusal`] when the document exceeds [`Limits::config_bytes`].
     pub fn admit_config(&self, bytes: usize) -> Result<(), Refusal> {
-        Self::admit("config bytes", self.config_bytes, count(bytes))
+        Self::admit(Limit::ConfigBytes, self.config_bytes, count(bytes))
     }
 }
 

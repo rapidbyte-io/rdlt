@@ -19,7 +19,7 @@ use crate::codec::tests::samples::batch_of;
 use crate::codec::weigh::{Weigher, Weight};
 use crate::codec::{Cut, Decoder, Encoder, IpcFrame};
 use crate::error::WireError;
-use crate::limits::{BATCH_ROWS, BATCH_VALUES, Limits};
+use crate::limits::{BATCH_ROWS, BATCH_VALUES, Limit, Limits};
 
 /// The frames a sender within `limits` cuts `batch` into, or its refusal.
 fn cut(batch: &RecordBatch, limits: &Limits) -> Result<Vec<IpcFrame>, WireError> {
@@ -207,14 +207,14 @@ fn one_row_beyond_a_limit_is_refused_by_its_sender_naming_the_limit() {
         None,
     );
     let blob = BinaryArray::from_iter_values([vec![7_u8; 4_096]]);
-    let cases: [(RecordBatch, Limits, &str); 4] = [
+    let cases: [(RecordBatch, Limits, Limit); 4] = [
         (
             nulls(100),
             Limits {
                 batch_values: 100,
                 ..Limits::default()
             },
-            "batch values",
+            Limit::BatchValues,
         ),
         (
             batch_of(Arc::new(blob)),
@@ -222,7 +222,7 @@ fn one_row_beyond_a_limit_is_refused_by_its_sender_naming_the_limit() {
                 frame_bytes: 4_096,
                 ..Limits::default()
             },
-            "frame bytes",
+            Limit::FrameBytes,
         ),
         (
             batch_of(Arc::new(views)),
@@ -230,7 +230,7 @@ fn one_row_beyond_a_limit_is_refused_by_its_sender_naming_the_limit() {
                 frame_bytes: 2_999,
                 ..Limits::default()
             },
-            "view bytes",
+            Limit::ViewBytes,
         ),
         (
             rows(1),
@@ -238,12 +238,12 @@ fn one_row_beyond_a_limit_is_refused_by_its_sender_naming_the_limit() {
                 batch_rows: 0,
                 ..Limits::default()
             },
-            "batch rows",
+            Limit::BatchRows,
         ),
     ];
     for (batch, limits, field) in cases {
         let refusal = refusal(cut(&batch, &limits));
-        assert_eq!((refusal.field, refusal.code), (field, "limit_exceeded"));
+        assert_eq!(refusal.field, field);
     }
     // One value more in the limit, and the row goes.
     let within = Limits {
@@ -279,7 +279,7 @@ fn a_dictionary_goes_once_ahead_of_the_batches_cut_from_its_batch() {
         batch_values: 2,
         ..Limits::default()
     };
-    assert_eq!(refusal(cut(&batch, &small)).field, "batch values");
+    assert_eq!(refusal(cut(&batch, &small)).field, Limit::BatchValues);
     // Its dictionary fits and is queued; its one row does not.
     let tag = DictionaryArray::try_new(Int8Array::from(vec![0]), Arc::new(nested())).unwrap();
     let wide = nulls(100).column(0).clone();
@@ -293,7 +293,7 @@ fn a_dictionary_goes_once_ahead_of_the_batches_cut_from_its_batch() {
     };
     assert_eq!(
         refusal(stepped(&mut encoder, &both, &few)).field,
-        "batch values"
+        Limit::BatchValues
     );
     // The schema epoch ended with the refusal: the next begins with its dictionary.
     let unsent = stepped(&mut encoder, &both, &Limits::default());
@@ -778,7 +778,7 @@ fn a_refused_row_ends_its_batchs_cut_after_the_pieces_before_it() {
         [10]
     );
     assert!(!cut.is_done());
-    assert_eq!(refusal(encoder.piece(&mut cut)).field, "frame bytes");
+    assert_eq!(refusal(encoder.piece(&mut cut)).field, Limit::FrameBytes);
     assert!(cut.is_done());
     assert_eq!(encoder.piece(&mut cut).unwrap(), None);
 }
@@ -834,7 +834,7 @@ fn a_dictionary_is_bounded_by_the_values_of_a_frame_not_the_rows_of_a_batch() {
     let refusal = refusal(cut(&batch, &fewer));
     assert_eq!(
         (refusal.field, refusal.limit, refusal.actual),
-        ("batch values", 99, 100)
+        (Limit::BatchValues, 99, 100)
     );
 }
 

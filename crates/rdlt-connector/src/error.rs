@@ -49,12 +49,28 @@ pub enum ConnectorErrorKind {
 /// A numeric limit that a value exceeded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LimitExceeded {
-    /// The limit's name, as in [`crate::limits`].
+    /// The limit's name: a [`rdlt_wire::Limit`]'s, or one the connector names its own limit by.
     pub name: &'static str,
     /// The largest allowed value.
     pub limit: u64,
     /// The value seen.
     pub actual: u64,
+}
+
+impl From<rdlt_wire::Refusal> for LimitExceeded {
+    fn from(refusal: rdlt_wire::Refusal) -> Self {
+        Self {
+            name: refusal.field.name(),
+            limit: refusal.limit,
+            actual: refusal.actual,
+        }
+    }
+}
+
+impl From<rdlt_wire::Refusal> for ConnectorError {
+    fn from(refusal: rdlt_wire::Refusal) -> Self {
+        Self::exceeds(refusal.into())
+    }
 }
 
 /// A connector failure: a kind, a one-line message, an optional machine code and the cause.

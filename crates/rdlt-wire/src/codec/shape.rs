@@ -13,7 +13,7 @@ use flatbuffers::VectorIter;
 
 use self::layout::{Layout, layout};
 use crate::error::{Frame, Part, Problem, WireError};
-use crate::limits::Limits;
+use crate::limits::{Limit, Limits};
 
 /// What a frame holds, measured before Arrow reads it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -133,7 +133,7 @@ impl<'a> Walk<'a, '_, '_> {
         }
         self.values = self.values.saturating_add(values);
         Ok(Limits::admit(
-            "batch values",
+            Limit::BatchValues,
             self.limits.batch_values,
             self.values,
         )?)
@@ -339,7 +339,7 @@ impl<'a> Walk<'a, '_, '_> {
         }
         self.view_bytes = self.view_bytes.saturating_add(named);
         Ok(Limits::admit(
-            "view bytes",
+            Limit::ViewBytes,
             self.limits.frame_bytes,
             self.view_bytes,
         )?)
